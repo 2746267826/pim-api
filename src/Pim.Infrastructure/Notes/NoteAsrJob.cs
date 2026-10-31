@@ -400,15 +400,40 @@ public sealed class NoteAsrJob(NoteAsrTaskStore tasks, NoteMaterialUploadStore m
                 x.OwnerId == owner && x.AttemptId == attemptEntity.Id &&
                 x.FencingToken == attemptEntity.FencingToken)
             .Select(x => x.SegmentIndex).Distinct().CountAsync(ct);
-        await db.NoteAsrAttempts.Where(x => x.Id == attemptEntity.Id && x.OwnerId == owner &&
-                x.State != "Succeeded")
-            .ExecuteUpdateAsync(setters => setters
-                .SetProperty(x => x.CompletedSegments, completed)
-                .SetProperty(x => x.State, "Running")
-                .SetProperty(x => x.LastErrorCode, (string?)null)
-                .SetProperty(x => x.LastErrorMessage, (string?)null)
-                .SetProperty(x => x.UpdatedAt, DateTimeOffset.UtcNow), ct);
+        await UpdateAttemptCountersAsync(owner, attemptEntity, completed, ct);
         await SyncCloudAttemptAsync(owner, taskId, ct);
+    }
+
+    /// <summary>
+    /// Atomically advances the frozen attempt for an adaptive success, guarding route, version,
+    /// fence and a concurrent stop. Non-relational test providers use an explicit tracked branch.
+    /// </summary>
+    private async Task UpdateAttemptCountersAsync(Guid owner, NoteAsrAttemptEntity attempt, int completed,
+        CancellationToken ct)
+    {
+        if (db.Database.IsRelational())
+        {
+            await db.NoteAsrAttempts.Where(x => x.Id == attempt.Id && x.OwnerId == owner &&
+                    x.Route == attempt.Route && x.VersionId == attempt.VersionId &&
+                    x.FencingToken == attempt.FencingToken && !x.StopRequested &&
+                    x.State != "Succeeded" && x.State != "Cancelled" && x.State != "Failed")
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(x => x.CompletedSegments, completed)
+                    .SetProperty(x => x.State, x => x.State == "Queued" ? "Running" : x.State)
+                    .SetProperty(x => x.LastErrorCode, (string?)null)
+                    .SetProperty(x => x.LastErrorMessage, (string?)null)
+                    .SetProperty(x => x.UpdatedAt, DateTimeOffset.UtcNow), ct);
+            return;
+        }
+        var tracked = await db.NoteAsrAttempts.SingleOrDefaultAsync(x => x.Id == attempt.Id && x.OwnerId == owner, ct);
+        if (tracked is null || tracked.Route != attempt.Route || tracked.VersionId != attempt.VersionId ||
+            tracked.FencingToken != attempt.FencingToken || tracked.StopRequested ||
+            tracked.State is "Succeeded" or "Cancelled" or "Failed") return;
+        tracked.CompletedSegments = completed;
+        if (tracked.State == "Queued") tracked.State = "Running";
+        tracked.LastErrorCode = null; tracked.LastErrorMessage = null;
+        tracked.UpdatedAt = DateTimeOffset.UtcNow;
+        await db.SaveChangesAsync(ct);
     }
 
     private async Task RecordAdaptiveFailureAsync(Guid owner, Guid taskId, NoteAsrStep step,
@@ -550,12 +575,38 @@ public sealed class NoteAsrJob(NoteAsrTaskStore tasks, NoteMaterialUploadStore m
         var failed = state.Steps.Count(x => x.Current.Status is not ("Queued" or "Running" or "Succeeded"));
         var terminal = state.Steps.Count > 0 && completed == state.Steps.Count;
         var stopped = state.StopRequested;
-        await db.NoteAsrAttempts.Where(x => x.Id == attemptId && x.OwnerId == owner)
-            .ExecuteUpdateAsync(setters => setters
-                .SetProperty(x => x.CompletedSegments, completed)
-                .SetProperty(x => x.FailedSegments, failed)
-                .SetProperty(x => x.State, terminal ? "Succeeded" : stopped ? "Failed" : "Running")
-                .SetProperty(x => x.StopRequested, stopped)
-                .SetProperty(x => x.UpdatedAt, DateTimeOffset.UtcNow), ct);
+        var nextState = terminal ? "Succeeded" : stopped ? "Failed" : "Running";
+        if (db.Database.IsRelational())
+        {
+            // CAS against the observed attempt: a concurrent stop, new attempt version or terminal
+            // transition must not be overwritten by this stale job pass.
+            var observed = await db.NoteAsrAttempts.AsNoTracking()
+                .SingleOrDefaultAsync(x => x.Id == attemptId && x.OwnerId == owner, ct);
+            if (observed is null) return;
+            // A stop that landed after this pass read the task file is never cleared by the stale pass.
+            if (observed.StopRequested && !stopped) return;
+            await db.NoteAsrAttempts.Where(x => x.Id == attemptId && x.OwnerId == owner &&
+                    x.Route == observed.Route && x.VersionId == observed.VersionId &&
+                    x.FencingToken == observed.FencingToken && x.StopRequested == observed.StopRequested &&
+                    x.State != "Succeeded" && x.State != "Cancelled")
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(x => x.CompletedSegments, completed)
+                    .SetProperty(x => x.FailedSegments, failed)
+                    .SetProperty(x => x.State, nextState)
+                    .SetProperty(x => x.StopRequested, stopped)
+                    .SetProperty(x => x.UpdatedAt, DateTimeOffset.UtcNow), ct);
+            return;
+        }
+        // Explicit non-relational branch for in-memory test providers; production always uses the
+        // single-statement CAS above.
+        var tracked = await db.NoteAsrAttempts.SingleOrDefaultAsync(x => x.Id == attemptId && x.OwnerId == owner, ct);
+        if (tracked is null || tracked.StopRequested && !stopped ||
+            tracked.State is "Succeeded" or "Cancelled") return;
+        tracked.CompletedSegments = completed;
+        tracked.FailedSegments = failed;
+        tracked.State = nextState;
+        tracked.StopRequested = stopped;
+        tracked.UpdatedAt = DateTimeOffset.UtcNow;
+        await db.SaveChangesAsync(ct);
     }
 }

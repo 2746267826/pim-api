@@ -54,26 +54,27 @@ public sealed class NoteAsrRoutingService(PimDbContext db, ICurrentUserService u
             throw new DomainException(40001, "默认执行位置无效或未选择对应模型");
         if (request.ConsentVersion is { Length: > 64 }) throw new DomainException(40001, "同意版本过长");
         if (request.CloudModelId is { } cloudId) await ValidateCloudDestinationAsync(cloudId, ct);
-        await using var tx = db.Database.IsRelational() ? await db.Database.BeginTransactionAsync(ct) : null;
-        var current = await db.NoteAsrRouteConfigs.SingleOrDefaultAsync(x => x.OwnerId == owner, ct);
-        if ((current?.Revision ?? Guid.Empty) != request.ExpectedRevision)
-            throw new DomainException(40901, "路由配置已变化，请刷新后重新确认");
-        if (current is null)
+        return await ExecuteDbTransactionAsync(async token =>
         {
-            current = new NoteAsrRouteConfigEntity { OwnerId = owner };
-            db.NoteAsrRouteConfigs.Add(current);
-        }
-        current.Revision = Guid.NewGuid(); current.DefaultRoute = route;
-        current.LocalModelId = string.IsNullOrWhiteSpace(request.LocalModelId) ? null : request.LocalModelId.Trim();
-        current.LocalModelRevision = string.IsNullOrWhiteSpace(request.LocalModelRevision) ? null : request.LocalModelRevision.Trim();
-        current.CloudModelId = request.CloudModelId;
-        current.ConsentVersion = request.ConsentVersion ?? ""; current.UpdatedAt = DateTimeOffset.UtcNow;
-        try { await db.SaveChangesAsync(ct); }
-        catch (DbUpdateConcurrencyException) { throw new DomainException(40901, "路由配置已被并发修改，请刷新后重试"); }
-        catch (DbUpdateException) when (current is not null && db.Entry(current).State == EntityState.Added)
-        { throw new DomainException(40901, "路由配置已被并发创建，请刷新后重试"); }
-        if (tx is not null) await tx.CommitAsync(ct);
-        return Describe(current);
+            var current = await db.NoteAsrRouteConfigs.SingleOrDefaultAsync(x => x.OwnerId == owner, token);
+            if ((current?.Revision ?? Guid.Empty) != request.ExpectedRevision)
+                throw new DomainException(40901, "路由配置已变化，请刷新后重新确认");
+            if (current is null)
+            {
+                current = new NoteAsrRouteConfigEntity { OwnerId = owner };
+                db.NoteAsrRouteConfigs.Add(current);
+            }
+            current.Revision = Guid.NewGuid(); current.DefaultRoute = route;
+            current.LocalModelId = string.IsNullOrWhiteSpace(request.LocalModelId) ? null : request.LocalModelId.Trim();
+            current.LocalModelRevision = string.IsNullOrWhiteSpace(request.LocalModelRevision) ? null : request.LocalModelRevision.Trim();
+            current.CloudModelId = request.CloudModelId;
+            current.ConsentVersion = request.ConsentVersion ?? ""; current.UpdatedAt = DateTimeOffset.UtcNow;
+            try { await db.SaveChangesAsync(token); }
+            catch (DbUpdateConcurrencyException) { throw new DomainException(40901, "路由配置已被并发修改，请刷新后重试"); }
+            catch (DbUpdateException) when (db.Entry(current).State == EntityState.Added)
+            { throw new DomainException(40901, "路由配置已被并发创建，请刷新后重试"); }
+            return Describe(current);
+        }, ct);
     }
 
     public async Task<IReadOnlyList<NoteAsrNodeDto>> ListNodesAsync(CancellationToken ct)
@@ -132,35 +133,36 @@ public sealed class NoteAsrRoutingService(PimDbContext db, ICurrentUserService u
     public async Task<NoteAsrNodeDto> WithdrawNodeAsync(Guid nodeId, CancellationToken ct)
     {
         var owner = await RequireActiveOwnerAsync(ct);
-        await using var tx = db.Database.IsRelational() ? await db.Database.BeginTransactionAsync(ct) : null;
-        var node = await OwnedNodeAsync(owner, nodeId, ct);
-        var now = DateTimeOffset.UtcNow;
-        node.Enabled = false;
-        node.UpdatedAt = now;
-        var leases = await db.NoteAsrLeases.AsNoTracking().Where(x => x.OwnerId == owner && x.NodeId == nodeId &&
-            x.Status == "Active").OrderByDescending(x => x.FencingToken).Take(100)
-            .Select(x => new { x.Id, x.AttemptId, x.LeaseToken, x.FencingToken }).ToListAsync(ct);
-        foreach (var lease in leases)
+        return await ExecuteDbTransactionAsync(async token =>
         {
-            var leaseAffected = await db.NoteAsrLeases
-                .Where(x => x.Id == lease.Id && x.OwnerId == owner && x.AttemptId == lease.AttemptId &&
-                    x.LeaseToken == lease.LeaseToken && x.FencingToken == lease.FencingToken && x.Status == "Active")
-                .ExecuteUpdateAsync(setters => setters
-                    .SetProperty(x => x.Status, "Expired")
-                    .SetProperty(x => x.EndedAt, now), ct);
-            if (leaseAffected == 0) continue;
-            await db.NoteAsrAttempts
-                .Where(x => x.Id == lease.AttemptId && x.OwnerId == owner && x.State == "Leased" &&
-                    x.FencingToken == lease.FencingToken)
-                .ExecuteUpdateAsync(setters => setters
-                    .SetProperty(x => x.State, "Unknown")
-                    .SetProperty(x => x.LastErrorCode, "node_withdrawn")
-                    .SetProperty(x => x.LastErrorMessage, "节点已撤回，未证明本机已停止推理；旧租约仅保留核对")
-                    .SetProperty(x => x.UpdatedAt, now), ct);
-        }
-        await db.SaveChangesAsync(ct);
-        if (tx is not null) await tx.CommitAsync(ct);
-        return Describe(node, now);
+            var node = await OwnedNodeAsync(owner, nodeId, token);
+            var now = DateTimeOffset.UtcNow;
+            node.Enabled = false;
+            node.UpdatedAt = now;
+            var leases = await db.NoteAsrLeases.AsNoTracking().Where(x => x.OwnerId == owner && x.NodeId == nodeId &&
+                x.Status == "Active").OrderByDescending(x => x.FencingToken).Take(100)
+                .Select(x => new { x.Id, x.AttemptId, x.LeaseToken, x.FencingToken }).ToListAsync(token);
+            foreach (var lease in leases)
+            {
+                var leaseAffected = await db.NoteAsrLeases
+                    .Where(x => x.Id == lease.Id && x.OwnerId == owner && x.AttemptId == lease.AttemptId &&
+                        x.LeaseToken == lease.LeaseToken && x.FencingToken == lease.FencingToken && x.Status == "Active")
+                    .ExecuteUpdateAsync(setters => setters
+                        .SetProperty(x => x.Status, "Expired")
+                        .SetProperty(x => x.EndedAt, now), token);
+                if (leaseAffected == 0) continue;
+                await db.NoteAsrAttempts
+                    .Where(x => x.Id == lease.AttemptId && x.OwnerId == owner && x.State == "Leased" &&
+                        x.FencingToken == lease.FencingToken)
+                    .ExecuteUpdateAsync(setters => setters
+                        .SetProperty(x => x.State, "Unknown")
+                        .SetProperty(x => x.LastErrorCode, "node_withdrawn")
+                        .SetProperty(x => x.LastErrorMessage, "节点已撤回，未证明本机已停止推理；旧租约仅保留核对")
+                        .SetProperty(x => x.UpdatedAt, now), token);
+            }
+            await db.SaveChangesAsync(token);
+            return Describe(node, now);
+        }, ct);
     }
 
     public async Task<NoteAsrClaimDto> ClaimAsync(ClaimNoteAsrTaskRequest request, CancellationToken ct)
@@ -169,55 +171,139 @@ public sealed class NoteAsrRoutingService(PimDbContext db, ICurrentUserService u
         if (string.IsNullOrWhiteSpace(request.IdempotencyKey) || request.IdempotencyKey.Length > 128 ||
             request.LeaseSeconds is < 15 or > 3600)
             throw new DomainException(40001, "领取标识或租约时长无效");
-        await using var tx = await db.Database.BeginTransactionAsync(ct);
-        var node = await OwnedNodeAsync(owner, request.NodeId, ct);
-        var now = DateTimeOffset.UtcNow;
-        if (!NodeClaimable(node, now)) return new(null, "unavailable", null);
-        // Replays must return the same live lease and fencing token, not mint a second lease.
-        var replay = await TryReplayClaimAsync(owner, node.Id, request.IdempotencyKey, now, ct);
-        if (replay is not null) return replay;
-        var expired = await ExpireStaleNodeLeasesAsync(owner, node.Id, now, ct);
-        var attempt = await NextLocalAttemptAsync(owner, node, now, ct);
-        if (attempt is null)
-        {
-            await tx.CommitAsync(ct);
-            return new(null, expired > 0 ? "lease_expired" : "empty", null);
-        }
-        var leaseSeconds = Math.Min(request.LeaseSeconds, Options.MaxLeaseSeconds);
-        // Single-winner CAS: only one concurrent claimant can move Queued -> Leased and bump the fence.
-        var won = await db.NoteAsrAttempts
-            .Where(x => x.Id == attempt.Id && x.OwnerId == owner && x.State == "Queued" && !x.StopRequested)
-            .ExecuteUpdateAsync(setters => setters
-                .SetProperty(x => x.State, "Leased")
-                .SetProperty(x => x.FencingToken, x => x.FencingToken + 1)
-                .SetProperty(x => x.UpdatedAt, now), ct);
-        if (won == 0)
-        {
-            // Another transaction won (possibly the identical idempotent request). Never mint a second lease.
-            await tx.RollbackAsync(ct);
-            return await TryReplayClaimAsync(owner, node.Id, request.IdempotencyKey, now, ct)
-                ?? new(null, "contended", null);
-        }
-        var fencing = await db.NoteAsrAttempts.AsNoTracking()
-            .Where(x => x.Id == attempt.Id && x.OwnerId == owner).Select(x => x.FencingToken).SingleAsync(ct);
-        var newLease = new NoteAsrLeaseEntity { OwnerId = owner, AttemptId = attempt.Id, NodeId = node.Id,
-            LeaseToken = Guid.NewGuid(), FencingToken = fencing, ExpiresAt = now.AddSeconds(leaseSeconds) };
-        db.NoteAsrLeases.Add(newLease);
-        db.NoteAsrAckReceipts.Add(new NoteAsrAckReceiptEntity { OwnerId = owner, AttemptId = attempt.Id,
-            LeaseId = newLease.Id, FencingToken = fencing, Kind = "claim", Result = "claimed",
-            ProviderHandle = request.IdempotencyKey });
         try
         {
-            await db.SaveChangesAsync(ct); await tx.CommitAsync(ct);
+            var claimed = await ExecuteDbTransactionAsync(async token =>
+            {
+                var node = await OwnedNodeAsync(owner, request.NodeId, token);
+                var now = DateTimeOffset.UtcNow;
+                if (!NodeClaimable(node, now)) return (Result: new NoteAsrClaimDto(null, "unavailable", null), Lease: (NoteAsrLeaseEntity?)null);
+                // Replays must return the same live lease and fencing token, not mint a second lease.
+                var replay = await TryReplayClaimAsync(owner, node.Id, request.IdempotencyKey, now, token);
+                if (replay is not null) return (Result: replay, Lease: (NoteAsrLeaseEntity?)null);
+                var expired = await ExpireStaleNodeLeasesAsync(owner, node.Id, now, token);
+                await RecoverFileCommittedRetriesAsync(owner, now, token);
+                var leaseSeconds = Math.Min(request.LeaseSeconds, Options.MaxLeaseSeconds);
+                var (attempt, newLease, outcome) = await ClaimNextLocalAttemptAsync(owner, node, now, leaseSeconds, token);
+                if (attempt is null || newLease is null)
+                {
+                    var replayAfter = await TryReplayClaimAsync(owner, node.Id, request.IdempotencyKey, now, token);
+                    if (replayAfter is not null) return (Result: replayAfter, Lease: (NoteAsrLeaseEntity?)null);
+                    var activeLease = await db.NoteAsrLeases.AsNoTracking().AnyAsync(x =>
+                        x.OwnerId == owner && x.Status == "Active" && x.ExpiresAt > now, token);
+                    return (Result: new NoteAsrClaimDto(null, activeLease || outcome == "contended" ? "contended"
+                        : expired > 0 ? "lease_expired" : "empty", null), Lease: (NoteAsrLeaseEntity?)null);
+                }
+                db.NoteAsrAckReceipts.Add(new NoteAsrAckReceiptEntity { OwnerId = owner, AttemptId = attempt.Id,
+                    LeaseId = newLease.Id, FencingToken = newLease.FencingToken, Kind = "claim", Result = "claimed",
+                    ProviderHandle = request.IdempotencyKey });
+                try { await db.SaveChangesAsync(token); }
+                catch (DbUpdateException error) when (IsUniqueViolation(error))
+                {
+                    // The partial indexes choose one active lease/claim. The outer transaction is
+                    // rolled back by disposal, then the exact idempotency key is replayed outside.
+                    throw new ClaimLeaseConflictException(error);
+                }
+                return (Result: (NoteAsrClaimDto?)null, Lease: (NoteAsrLeaseEntity?)newLease);
+            }, ct);
+            return claimed.Lease is { } lease
+                ? await ClaimAsync(owner, lease, ct)
+                : claimed.Result!;
         }
-        catch (DbUpdateException)
+        catch (ClaimLeaseConflictException)
         {
-            // Partial unique indexes protect one Active lease per attempt/node and one claim per idempotency key.
-            await tx.RollbackAsync(ct);
-            return await TryReplayClaimAsync(owner, node.Id, request.IdempotencyKey, now, ct)
+            db.ChangeTracker.Clear();
+            return await TryReplayClaimAsync(owner, request.NodeId, request.IdempotencyKey,
+                    DateTimeOffset.UtcNow, ct)
                 ?? throw new DomainException(40901, "领取已被并发请求占用，请按同一幂等标识重试");
         }
-        return await ClaimAsync(owner, newLease, ct);
+    }
+
+    /// <summary>
+    /// Claims while holding the task-store owner lock, so a stop committed to the task file cannot
+    /// race the Queued -> Leased CAS. A stopped or newly unbound candidate is not dispatched.
+    /// </summary>
+    private async Task<(NoteAsrAttemptEntity? Attempt, NoteAsrLeaseEntity? Lease, string Outcome)>
+        ClaimNextLocalAttemptAsync(Guid owner, NoteAsrNodeEntity node, DateTimeOffset now,
+            int leaseSeconds, CancellationToken ct)
+    {
+        var busy = await db.NoteAsrLeases.AnyAsync(x =>
+            x.OwnerId == owner && x.Status == "Active" && x.ExpiresAt > now, ct);
+        if (busy) return (null, null, "contended");
+        var candidates = await db.NoteAsrAttempts.AsNoTracking().Where(x => x.OwnerId == owner &&
+                x.Route == NoteAsrRoute.Local && x.State == "Queued" && !x.StopRequested &&
+                (x.ExecutionMode == null || x.ExecutionMode == NoteAsrExecutionMode.Realtime) &&
+                (x.LocalModelId == null || x.LocalModelId == node.ModelId) &&
+                (x.LocalModelRevision == null || x.LocalModelRevision == node.ModelRevision))
+            .OrderBy(x => x.CreatedAt).Take(Options.NodeScanLimit).ToListAsync(ct);
+        foreach (var candidate in candidates)
+        {
+            var result = await legacyTasks.WithLockAsync(owner, async lockedCt =>
+            {
+                NoteAsrState state;
+                try { state = await legacyTasks.ReadAsync(owner, candidate.TaskId, lockedCt); }
+                catch (DomainException error) when (error.ErrorCode == 40401)
+                {
+                    await QuarantineClaimAsync(owner, candidate,
+                        "task_binding_missing", "任务快照缺失，无法执行；需重新发起明确重跑", lockedCt);
+                    return (null, null, "invalid");
+                }
+                if (state.StopRequested)
+                    return (null, null, "stopped");
+                if (state.Request.VersionId != candidate.VersionId ||
+                    state.InputSha256 != candidate.InputSha256 ||
+                    state.Steps.Count != candidate.ExpectedSegments ||
+                    !string.Equals(state.Request.Language, candidate.Language, StringComparison.Ordinal))
+                {
+                    await QuarantineClaimAsync(owner, candidate,
+                        "task_binding_mismatch",
+                        "任务快照与固定材料、分片或语言不一致，无法执行；需重新发起明确重跑", lockedCt);
+                    return (null, null, "invalid");
+                }
+                int won;
+                if (db.Database.IsRelational())
+                {
+                    won = await db.NoteAsrAttempts
+                        .Where(x => x.Id == candidate.Id && x.OwnerId == owner &&
+                            x.State == "Queued" && !x.StopRequested)
+                        .ExecuteUpdateAsync(setters => setters
+                            .SetProperty(x => x.State, "Leased")
+                            .SetProperty(x => x.FencingToken, x => x.FencingToken + 1)
+                            .SetProperty(x => x.UpdatedAt, now), lockedCt);
+                }
+                else
+                {
+                    var tracked = await db.NoteAsrAttempts.SingleOrDefaultAsync(x =>
+                        x.Id == candidate.Id && x.OwnerId == owner, lockedCt);
+                    won = tracked is { State: "Queued", StopRequested: false } ? 1 : 0;
+                    if (won == 1)
+                    {
+                        tracked!.State = "Leased";
+                        tracked.FencingToken++;
+                        tracked.UpdatedAt = now;
+                        await db.SaveChangesAsync(lockedCt);
+                    }
+                }
+                if (won == 0) return (null, null, "contended");
+                var fencing = await db.NoteAsrAttempts.AsNoTracking()
+                    .Where(x => x.Id == candidate.Id && x.OwnerId == owner)
+                    .Select(x => x.FencingToken).SingleAsync(lockedCt);
+                var lease = new NoteAsrLeaseEntity
+                {
+                    OwnerId = owner,
+                    AttemptId = candidate.Id,
+                    NodeId = node.Id,
+                    LeaseToken = Guid.NewGuid(),
+                    FencingToken = fencing,
+                    ExpiresAt = now.AddSeconds(leaseSeconds)
+                };
+                db.NoteAsrLeases.Add(lease);
+                await db.SaveChangesAsync(lockedCt);
+                return ((NoteAsrAttemptEntity?)candidate, (NoteAsrLeaseEntity?)lease, "claimed");
+            }, ct);
+            if (result.Item1 is not null) return result;
+        }
+        return (null, null, "empty");
     }
 
     private async Task<NoteAsrClaimDto?> TryReplayClaimAsync(Guid owner, Guid nodeId, string idempotencyKey,
@@ -232,6 +318,70 @@ public sealed class NoteAsrRoutingService(PimDbContext db, ICurrentUserService u
         return new(null, "replayed", null);
     }
 
+    /// <summary>
+    /// A retry writes the task file before the attempt CAS. If that CAS failed or the process died,
+    /// the file says Queued while the row stays Failed/Unknown. Converge only when the file still
+    /// records the retry and is not stopped, so a genuine concurrent stop is never cleared.
+    /// </summary>
+    private async Task RecoverFileCommittedRetriesAsync(Guid owner, DateTimeOffset now, CancellationToken ct)
+    {
+        var candidates = await db.NoteAsrAttempts.AsNoTracking()
+            .Where(x => x.OwnerId == owner && x.Route == NoteAsrRoute.Local &&
+                (x.State == "Failed" || x.State == "Unknown") &&
+                !db.NoteAsrLeases.Any(l => l.OwnerId == owner && l.AttemptId == x.Id && l.Status == "Active"))
+            .OrderBy(x => x.UpdatedAt).Take(Options.NodeScanLimit).ToListAsync(ct);
+        foreach (var candidate in candidates)
+        {
+            await legacyTasks.WithLockAsync(owner, async lockedCt =>
+            {
+                NoteAsrState state;
+                try { state = await legacyTasks.ReadAsync(owner, candidate.TaskId, lockedCt); }
+                catch (DomainException error) when (error.ErrorCode == 40401) { return true; }
+                var intent = state.RetryIntents.Values.Where(x => x.AttemptId == candidate.Id)
+                    .OrderByDescending(x => x.CreatedAt).FirstOrDefault();
+                if (state.AttemptId != candidate.Id || state.StopRequested || intent is null ||
+                    state.Request.VersionId != candidate.VersionId ||
+                    state.InputSha256 != candidate.InputSha256)
+                    return true;
+                if (db.Database.IsRelational())
+                {
+                    await db.NoteAsrAttempts
+                        .Where(x => x.Id == candidate.Id && x.OwnerId == owner && x.Route == NoteAsrRoute.Local &&
+                            x.State == intent.AttemptState && x.FencingToken == intent.FencingToken &&
+                            x.UpdatedAt == intent.AttemptUpdatedAt &&
+                            x.StopRequested == intent.AttemptStopRequested &&
+                            !db.NoteAsrLeases.Any(l => l.OwnerId == owner && l.AttemptId == x.Id &&
+                                l.Status == "Active"))
+                        .ExecuteUpdateAsync(setters => setters
+                            .SetProperty(x => x.State, "Queued")
+                            .SetProperty(x => x.StopRequested, false)
+                            .SetProperty(x => x.LastErrorCode, (string?)null)
+                            .SetProperty(x => x.LastErrorMessage, (string?)null)
+                            .SetProperty(x => x.UpdatedAt, now), lockedCt);
+                }
+                else
+                {
+                    // Explicit non-relational host branch; production uses the relational CAS above.
+                    var tracked = await db.NoteAsrAttempts.SingleOrDefaultAsync(x =>
+                        x.Id == candidate.Id && x.OwnerId == owner, lockedCt);
+                    if (tracked is not null && tracked.Route == NoteAsrRoute.Local &&
+                        tracked.State == intent.AttemptState && tracked.FencingToken == intent.FencingToken &&
+                        tracked.UpdatedAt == intent.AttemptUpdatedAt &&
+                        tracked.StopRequested == intent.AttemptStopRequested &&
+                        !await db.NoteAsrLeases.AnyAsync(l => l.OwnerId == owner &&
+                            l.AttemptId == candidate.Id && l.Status == "Active", lockedCt))
+                    {
+                        tracked.State = "Queued"; tracked.StopRequested = false;
+                        tracked.LastErrorCode = null; tracked.LastErrorMessage = null;
+                        tracked.UpdatedAt = now;
+                        await db.SaveChangesAsync(lockedCt);
+                    }
+                }
+                return true;
+            }, ct);
+        }
+    }
+
     private async Task<NoteAsrClaimDto> ClaimAsync(Guid owner, NoteAsrLeaseEntity lease, CancellationToken ct)
     {
         var attempt = await db.NoteAsrAttempts.AsNoTracking().SingleAsync(x => x.Id == lease.AttemptId && x.OwnerId == owner, ct);
@@ -243,12 +393,7 @@ public sealed class NoteAsrRoutingService(PimDbContext db, ICurrentUserService u
             throw new DomainException(40901, "attempt 分片覆盖与任务快照不一致，不能下发执行");
         // Re-leasing the same attempt must not redo segments that already have durable success
         // evidence from an earlier fence; that history stays authoritative for coverage.
-        var provenRows = await db.NoteAsrSegmentEvidence.AsNoTracking()
-            .Where(x => x.OwnerId == owner && x.AttemptId == attempt.Id &&
-                x.TaskId == attempt.TaskId && x.VersionId == attempt.VersionId).ToListAsync(ct);
-        var proven = provenRows.Where(x => x.SegmentIndex >= 0 && x.SegmentIndex < state.Steps.Count &&
-                EvidenceMatchesStep(x, state.Steps[x.SegmentIndex]))
-            .Select(x => x.SegmentIndex).Distinct().ToList();
+        var proven = (await AcceptedEvidenceAsync(owner, attempt, state, ct)).Keys.ToList();
         var segments = state.Steps.Where(x => !proven.Contains(x.Index)).Select(x => new NoteAsrSegmentInputDto(x.Index, x.RecordingId,
             x.RecordingSegment, x.ChunkIndex, x.FileIndex, x.Sha256, x.SourceOffset, x.Samples,
             $"/api/v1/native-notes/asr-routing/leases/{lease.Id:D}/segments/{x.Index}/content")).ToArray();
@@ -309,45 +454,20 @@ public sealed class NoteAsrRoutingService(PimDbContext db, ICurrentUserService u
         var segments = receipts.Where(x => x.Kind == "segment")
             .GroupBy(x => x.SegmentIndex).ToDictionary(x => x.Key,
                 x => x.OrderByDescending(r => r.ReceivedAt).ToArray());
-        var proof = (await db.NoteAsrSegmentEvidence.AsNoTracking().Where(x => x.OwnerId == owner &&
-                x.AttemptId == attemptId && x.TaskId == attempt.TaskId && x.VersionId == attempt.VersionId)
-            .OrderBy(x => x.CreatedAt).ToListAsync(ct))
-            .GroupBy(x => x.SegmentIndex).ToDictionary(x => x.Key, x => x.Last());
-        // A segment is success only when a durable evidence row and the success receipt that produced
-        // it agree on the same fence, handle, text and attempt/task/version identity.
-        var acceptedByIndex = new Dictionary<int, (NoteAsrAckReceiptEntity Receipt, NoteAsrSegmentEvidenceEntity Row)>();
-        foreach (var (index, claims) in segments)
-            foreach (var claim in claims)
-                if (IsAcceptedSuccess(attempt, index, claim, proof.TryGetValue(index, out var row) ? row : null))
-                {
-                    acceptedByIndex[index] = (claim, proof[index]);
-                    break;
-                }
+        // One route-aware acceptance rule for Claim, Complete, Repair and Segments.
+        var acceptedByIndex = await AcceptedEvidenceAsync(owner, attempt, state, ct);
         var successful = acceptedByIndex.Keys.ToHashSet();
         var complete = terminal is { Kind: "complete", Result: "Succeeded" } &&
             attempt.State == "Succeeded" && successful.Count == attempt.ExpectedSegments &&
             Enumerable.Range(0, attempt.ExpectedSegments).All(successful.Contains);
         var stopped = terminal?.Kind == "fail" || attempt.State is "Failed" or "Unknown";
         var projected = new Dictionary<int, (string Status, string? Error, Guid? EvidenceId)>();
-        var durable = (await db.NoteAsrSegmentEvidence.AsNoTracking().Where(x => x.OwnerId == owner &&
-                x.AttemptId == attemptId && x.TaskId == attempt.TaskId && x.VersionId == attempt.VersionId)
-            .OrderBy(x => x.CreatedAt).ToListAsync(ct))
-            .Where(x => x.SegmentIndex >= 0 && x.SegmentIndex < state.Steps.Count &&
-                EvidenceMatchesStep(x, state.Steps[x.SegmentIndex]))
-            .Select(x => x.SegmentIndex).ToHashSet();
+        foreach (var (index, row) in acceptedByIndex)
+            projected[index] = ("Succeeded", null, row.Id);
         foreach (var (index, claims) in segments)
-        {
-            if (acceptedByIndex.TryGetValue(index, out var accepted))
-                projected[index] = ("Succeeded", null, accepted.Row.Id);
-            else if (durable.Contains(index))
-                continue; // another channel (adaptive/batch) owns a valid proof; never downgrade it
-            else
-            {
-                var latest = claims[0];
-                projected[index] = (latest.Result == "Succeeded" ? "Unknown" : latest.Result,
-                    latest.ErrorMessage, null);
-            }
-        }
+            if (!acceptedByIndex.ContainsKey(index))
+                projected[index] = (claims[0].Result == "Succeeded" ? "Unknown" : claims[0].Result,
+                    claims[0].ErrorMessage, null);
         // A no-op GET must not rotate Revision; that would invalidate a revision the user just read.
         var unchanged = projected.All(x => x.Key < state.Steps.Count &&
                 state.Steps[x.Key].Current.Status == x.Value.Status &&
@@ -382,25 +502,16 @@ public sealed class NoteAsrRoutingService(PimDbContext db, ICurrentUserService u
     }
 
     internal static bool EvidenceMatchesStep(NoteAsrSegmentEvidenceEntity proof, NoteAsrStep step) =>
-        proof.SegmentIndex == step.Index && proof.RecordingId == step.RecordingId &&
-        proof.RecordingSegment == step.RecordingSegment && proof.ChunkIndex == step.ChunkIndex &&
-        proof.SourceFileIndex == step.FileIndex && proof.SourceSha256 == step.Sha256 &&
-        proof.SourceOffsetSamples == step.SourceOffset && proof.Samples == step.Samples &&
-        proof.ProviderHandle.Length > 0 && proof.ResultText.Length > 0 &&
-        proof.ResultSha256 == Convert.ToHexString(SHA256.HashData(
-            System.Text.Encoding.UTF8.GetBytes(proof.ResultText))).ToLowerInvariant();
+        NoteAsrAcceptedEvidence.MatchesStep(proof, step);
 
-    private static bool IsAcceptedSuccess(NoteAsrAttemptEntity attempt, int index,
-        NoteAsrAckReceiptEntity receipt, NoteAsrSegmentEvidenceEntity? row) =>
-        receipt.Result == "Succeeded" && receipt.SegmentIndex == index &&
-        row is not null && row.OwnerId == attempt.OwnerId && row.AttemptId == attempt.Id &&
-        row.TaskId == attempt.TaskId && row.VersionId == attempt.VersionId &&
-        row.FencingToken == receipt.FencingToken && row.SegmentIndex == index && row.ResultText.Length > 0 &&
-        row.ResultText == receipt.ResultText &&
-        row.ReceiptKind == "local" && row.ProviderHandle == receipt.ProviderHandle?.Trim() &&
-        row.ResultText.Length > 0 &&
-        row.ResultSha256 == Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(
-            receipt.ResultText ?? ""))).ToLowerInvariant();
+    /// <summary>
+    /// Route-aware accepted evidence: identity-bound to the frozen step plan, and additionally bound
+    /// to the receipt that produced it for the local route. Batch and adaptive rows are accepted by
+    /// their own producers, never by arbitrary rows that merely share an attempt.
+    /// </summary>
+    internal Task<Dictionary<int, NoteAsrSegmentEvidenceEntity>> AcceptedEvidenceAsync(Guid owner,
+        NoteAsrAttemptEntity attempt, NoteAsrState state, CancellationToken ct) =>
+        NoteAsrAcceptedEvidence.LoadAsync(db, owner, attempt, state, ct);
 
     /// <summary>Stops one executable attempt; a worker sees the flag on renew and must acknowledge the stop.</summary>
     public async Task<NoteAsrAttemptDetailDto> StopAttemptAsync(Guid attemptId, CancellationToken ct)
@@ -430,25 +541,28 @@ public sealed class NoteAsrRoutingService(PimDbContext db, ICurrentUserService u
     public async Task<NoteAsrLeaseDto> RenewLeaseAsync(Guid leaseId, NoteAsrLeaseHeartbeatRequest request, CancellationToken ct)
     {
         var owner = await RequireActiveOwnerAsync(ct);
-        await using var tx = db.Database.IsRelational() ? await db.Database.BeginTransactionAsync(ct) : null;
-        var lease = await db.NoteAsrLeases.AsNoTracking().SingleOrDefaultAsync(x => x.Id == leaseId && x.OwnerId == owner, ct)
-            ?? throw new DomainException(40401, "租约不存在");
-        if (lease.LeaseToken != request.LeaseToken || lease.FencingToken != request.FencingToken)
-            throw new DomainException(40901, "租约、attempt 或 fence 不匹配");
-        var now = DateTimeOffset.UtcNow;
-        var newExpiry = now.AddSeconds(Options.NodeHeartbeatTimeoutSeconds);
-        var renewed = await db.NoteAsrLeases
-            .Where(x => x.Id == leaseId && x.OwnerId == owner && x.LeaseToken == request.LeaseToken &&
-                x.FencingToken == request.FencingToken && x.Status == "Active" && x.ExpiresAt > now)
-            .ExecuteUpdateAsync(setters => setters.SetProperty(x => x.ExpiresAt, newExpiry), ct);
-        if (renewed == 0)
-            throw new DomainException(40901, "租约已失效，不能续租或复活");
-        var node = await OwnedNodeAsync(owner, lease.NodeId, ct);
-        node.LastHeartbeatAt = now;
-        await db.SaveChangesAsync(ct);
-        var current = await db.NoteAsrLeases.AsNoTracking().SingleAsync(x => x.Id == leaseId && x.OwnerId == owner, ct);
-        if (tx is not null) await tx.CommitAsync(ct);
-        return await Describe(db, owner, current, ct);
+        return await ExecuteDbTransactionAsync(async token =>
+        {
+            var lease = await db.NoteAsrLeases.AsNoTracking()
+                .SingleOrDefaultAsync(x => x.Id == leaseId && x.OwnerId == owner, token)
+                ?? throw new DomainException(40401, "租约不存在");
+            if (lease.LeaseToken != request.LeaseToken || lease.FencingToken != request.FencingToken)
+                throw new DomainException(40901, "租约、attempt 或 fence 不匹配");
+            var now = DateTimeOffset.UtcNow;
+            var newExpiry = now.AddSeconds(Options.NodeHeartbeatTimeoutSeconds);
+            var renewed = await db.NoteAsrLeases
+                .Where(x => x.Id == leaseId && x.OwnerId == owner && x.LeaseToken == request.LeaseToken &&
+                    x.FencingToken == request.FencingToken && x.Status == "Active" && x.ExpiresAt > now)
+                .ExecuteUpdateAsync(setters => setters.SetProperty(x => x.ExpiresAt, newExpiry), token);
+            if (renewed == 0)
+                throw new DomainException(40901, "租约已失效，不能续租或复活");
+            var node = await OwnedNodeAsync(owner, lease.NodeId, token);
+            node.LastHeartbeatAt = now;
+            await db.SaveChangesAsync(token);
+            var current = await db.NoteAsrLeases.AsNoTracking()
+                .SingleAsync(x => x.Id == leaseId && x.OwnerId == owner, token);
+            return await Describe(db, owner, current, token);
+        }, ct);
     }
 
     /// <summary>Repeated identical acknowledgements are harmless but never complete or mutate twice.</summary>
@@ -464,119 +578,153 @@ public sealed class NoteAsrRoutingService(PimDbContext db, ICurrentUserService u
         if (request.Kind == "segment" && request.Result == "Succeeded" &&
             (string.IsNullOrWhiteSpace(request.ProviderHandle) || string.IsNullOrWhiteSpace(request.ResultText)))
             throw new DomainException(40001, "成功分片必须同时提交受鉴权文本和 provider handle");
-        await using var tx = await db.Database.BeginTransactionAsync(ct);
-        var lease = await LockLeaseForAckAsync(owner, attemptId, request.LeaseId, ct)
-            ?? throw new DomainException(40401, "租约不存在");
-        var attempt = await db.NoteAsrAttempts.AsNoTracking().SingleAsync(x => x.Id == attemptId && x.OwnerId == owner, ct);
-        // Identity is checked before duplicate handling: another lease/attempt/fence is never a replay.
-        if (lease.LeaseToken != request.LeaseToken || lease.FencingToken != request.FencingToken ||
-            attempt.FencingToken != request.FencingToken)
-            throw new DomainException(40901, "租约、attempt 或 fence 不匹配，结果未写入");
-        if (await IsExactReceiptAsync(owner, attemptId, lease.Id, request, ct))
+        AckOutcome outcome;
+        try
         {
-            await tx.CommitAsync(ct);
-            await ApplyAckToTaskAsync(owner, attempt, request, ct);
-            return new(lease.Id, "duplicate", true, lease.FencingToken);
+            outcome = await ExecuteDbTransactionAsync(async token =>
+            {
+                var lease = await LockLeaseForAckAsync(owner, attemptId, request.LeaseId, token)
+                    ?? throw new DomainException(40401, "租约不存在");
+                var attempt = await db.NoteAsrAttempts.AsNoTracking()
+                    .SingleAsync(x => x.Id == attemptId && x.OwnerId == owner, token);
+                // Identity is checked before duplicate handling: another lease/attempt/fence is never a replay.
+                if (lease.LeaseToken != request.LeaseToken || lease.FencingToken != request.FencingToken ||
+                    attempt.FencingToken != request.FencingToken)
+                    throw new DomainException(40901, "租约、attempt 或 fence 不匹配，结果未写入");
+                if (await IsExactReceiptAsync(owner, attemptId, lease.Id, request, token))
+                    return new AckOutcome(new(lease.Id, "duplicate", true, lease.FencingToken), attempt);
+                if (await db.NoteAsrAckReceipts.AnyAsync(x => x.OwnerId == owner && x.AttemptId == attemptId &&
+                    x.LeaseId == lease.Id && x.FencingToken == request.FencingToken && x.Kind == request.Kind &&
+                    x.SegmentIndex == request.SegmentIndex, token))
+                    throw new DomainException(40901, "同一分片/终态已有不同内容回执，未覆盖");
+                var stoppedFail = attempt.StopRequested && request.Kind == "fail" && request.Result == "Failed";
+                if (attempt.State != "Leased" || attempt.StopRequested && !stoppedFail)
+                    throw new DomainException(40901, "attempt 当前状态不接受回执");
+                if (request.SegmentIndex >= attempt.ExpectedSegments)
+                    throw new DomainException(40901, "分片不属于该 attempt");
+                var now = DateTimeOffset.UtcNow;
+                if (lease.Status != "Active" || lease.ExpiresAt <= now)
+                    throw new DomainException(40901, "租约已失效或过期，回执不能覆盖新结果");
+                if (request.Kind == "complete")
+                {
+                    // Coverage is attempt-scoped, not fence-scoped: a re-lease after a partial failure must
+                    // keep earlier proven segments instead of silently re-running or dropping them.
+                    var plan = await legacyTasks.ReadAsync(owner, attempt.TaskId, token);
+                    if (plan.Request.VersionId != attempt.VersionId || plan.InputSha256 != attempt.InputSha256 ||
+                        plan.Steps.Count != attempt.ExpectedSegments)
+                        throw new DomainException(40901, "固定材料与执行快照不一致，不能完成");
+                    var succeeded = (await AcceptedEvidenceAsync(owner, attempt, plan, token)).Keys.ToList();
+                    var missing = Enumerable.Range(0, attempt.ExpectedSegments).Except(succeeded).Take(5).ToArray();
+                    if (missing.Length > 0)
+                        throw new DomainException(40901, $"尚缺分片 {string.Join(",", missing)} 的成功结果，不能完成；已有结果保留");
+                }
+                // Success evidence from an earlier fence is final for that segment; a newer lease only
+                // carries the still-missing work and must never overwrite that history.
+                if (request.Kind == "segment" && request.Result == "Succeeded" &&
+                    await HasEarlierFenceAcceptedAsync(owner, attempt, request.SegmentIndex,
+                        request.FencingToken, token))
+                    throw new DomainException(40901, "该分片已有更早 fence 的成功证据，旧结果保留，不再重复接收");
+                var receipt = new NoteAsrAckReceiptEntity { OwnerId = owner, AttemptId = attemptId,
+                    LeaseId = lease.Id, FencingToken = request.FencingToken, Kind = request.Kind, Result = request.Result,
+                    SegmentIndex = request.SegmentIndex, ProviderHandle = request.ProviderHandle,
+                    ResultText = request.ResultText, CoverageJson = request.CoverageJson,
+                    ErrorCode = request.ErrorCode, ErrorMessage = request.ErrorMessage, ReceivedAt = now };
+                db.NoteAsrAckReceipts.Add(receipt);
+                try { await db.SaveChangesAsync(token); }
+                catch (DbUpdateException error) when (IsUniqueViolation(error))
+                {
+                    throw new AckConflictException(error);
+                }
+                if (request.Kind == "segment" && request.Result == "Succeeded")
+                    _ = await evidence.WriteAsync(owner, attemptId, request.SegmentIndex, "local",
+                        request.ProviderHandle!, request.ResultText!, request.CoverageJson, false, token);
+                // CAS on the exact fencing token: a late/old acknowledgement can never mutate a newer attempt.
+                var terminalState = request.Kind == "complete" ? "Succeeded" : request.Kind == "fail" ? "Failed" : "Leased";
+                var successDelta = request.Kind == "segment" && request.Result == "Succeeded" ? 1 : 0;
+                var failDelta = request.Kind == "segment" && request.Result == "Failed" ? 1 : 0;
+                var affected = 0;
+                if (db.Database.IsRelational())
+                {
+                    affected = await db.NoteAsrAttempts
+                        .Where(x => x.Id == attemptId && x.OwnerId == owner && x.State == "Leased" &&
+                            (!x.StopRequested || request.Kind == "fail") &&
+                            x.FencingToken == request.FencingToken && db.NoteAsrLeases.Any(l => l.Id == lease.Id &&
+                                l.OwnerId == owner && l.AttemptId == attemptId && l.LeaseToken == request.LeaseToken &&
+                                l.FencingToken == request.FencingToken && l.Status == "Active" && l.ExpiresAt > now))
+                        .ExecuteUpdateAsync(setters => setters
+                            .SetProperty(x => x.CompletedSegments, x => x.CompletedSegments + successDelta)
+                            .SetProperty(x => x.FailedSegments, x => x.FailedSegments + failDelta)
+                            .SetProperty(x => x.State, x => request.Kind == "segment" ? x.State : terminalState)
+                            .SetProperty(x => x.LastErrorCode, request.ErrorCode)
+                            .SetProperty(x => x.LastErrorMessage, request.ErrorMessage)
+                            .SetProperty(x => x.UpdatedAt, now), token);
+                }
+                else
+                {
+                    // Explicit non-relational branch for in-memory test hosts; relational hosts use the
+                    // single-statement CAS above so a stale/expired lease can never mutate the attempt.
+                    var trackedAttempt = await db.NoteAsrAttempts
+                        .SingleOrDefaultAsync(x => x.Id == attemptId && x.OwnerId == owner, token);
+                    if (trackedAttempt is { State: "Leased" } && trackedAttempt.FencingToken == request.FencingToken &&
+                        (!trackedAttempt.StopRequested || request.Kind == "fail") &&
+                        lease is { Status: "Active" } && lease.ExpiresAt > now)
+                    {
+                        trackedAttempt.CompletedSegments += successDelta;
+                        trackedAttempt.FailedSegments += failDelta;
+                        if (request.Kind != "segment") trackedAttempt.State = terminalState;
+                        trackedAttempt.LastErrorCode = request.ErrorCode;
+                        trackedAttempt.LastErrorMessage = request.ErrorMessage;
+                        trackedAttempt.UpdatedAt = now;
+                        await db.SaveChangesAsync(token);
+                        affected = 1;
+                    }
+                }
+                if (affected == 0)
+                    throw new DomainException(40901, "回执与当前 attempt/fence 不一致，结果未写入");
+                if (request.Kind is "complete" or "fail")
+                {
+                    var leaseState = request.Result == "Succeeded" ? "Completed" : "Failed";
+                    var leaseAffected = 0;
+                    if (db.Database.IsRelational())
+                    {
+                        leaseAffected = await db.NoteAsrLeases
+                            .Where(x => x.Id == lease.Id && x.OwnerId == owner && x.Status == "Active" &&
+                                x.LeaseToken == request.LeaseToken && x.FencingToken == request.FencingToken &&
+                                x.ExpiresAt > now)
+                            .ExecuteUpdateAsync(setters => setters
+                                .SetProperty(x => x.Status, leaseState)
+                                .SetProperty(x => x.EndedAt, now), token);
+                    }
+                    else
+                    {
+                        if (lease is { Status: "Active" } && lease.ExpiresAt > now)
+                        {
+                            lease.Status = leaseState;
+                            lease.EndedAt = now;
+                            await db.SaveChangesAsync(token);
+                            leaseAffected = 1;
+                        }
+                    }
+                    if (leaseAffected == 0)
+                        throw new DomainException(40901, "租约已被并发终结，回执未重复完成");
+                }
+                return new AckOutcome(new(lease.Id, "accepted", false, lease.FencingToken), attempt);
+            }, ct);
         }
-        if (await db.NoteAsrAckReceipts.AnyAsync(x => x.OwnerId == owner && x.AttemptId == attemptId &&
-            x.LeaseId == lease.Id && x.FencingToken == request.FencingToken && x.Kind == request.Kind &&
-            x.SegmentIndex == request.SegmentIndex, ct))
-            throw new DomainException(40901, "同一分片/终态已有不同内容回执，未覆盖");
-        var stoppedFail = attempt.StopRequested && request.Kind == "fail" && request.Result == "Failed";
-        if (attempt.State != "Leased" || attempt.StopRequested && !stoppedFail)
-            throw new DomainException(40901, "attempt 当前状态不接受回执");
-        if (request.SegmentIndex >= attempt.ExpectedSegments)
-            throw new DomainException(40901, "分片不属于该 attempt");
-        var now = DateTimeOffset.UtcNow;
-        if (lease.Status != "Active" || lease.ExpiresAt <= now)
-            throw new DomainException(40901, "租约已失效或过期，回执不能覆盖新结果");
-        if (request.Kind == "complete")
+        catch (AckConflictException)
         {
-            // Coverage is attempt-scoped, not fence-scoped: a re-lease after a partial failure must
-            // keep earlier proven segments instead of silently re-running or dropping them.
-            var plan = await legacyTasks.ReadAsync(owner, attempt.TaskId, ct);
-            if (plan.Request.VersionId != attempt.VersionId || plan.InputSha256 != attempt.InputSha256 ||
-                plan.Steps.Count != attempt.ExpectedSegments)
-                throw new DomainException(40901, "固定材料与执行快照不一致，不能完成");
-            var rows = await db.NoteAsrSegmentEvidence.AsNoTracking().Where(x => x.OwnerId == owner &&
-                x.AttemptId == attemptId && x.TaskId == attempt.TaskId && x.VersionId == attempt.VersionId &&
-                x.SegmentIndex >= 0 && x.SegmentIndex < attempt.ExpectedSegments).ToListAsync(ct);
-            var succeeded = rows.Where(x => EvidenceMatchesStep(x, plan.Steps[x.SegmentIndex]))
-                .Select(x => x.SegmentIndex).Distinct().ToList();
-            var missing = Enumerable.Range(0, attempt.ExpectedSegments).Except(succeeded).Take(5).ToArray();
-            if (missing.Length > 0)
-                throw new DomainException(40901, $"尚缺分片 {string.Join(",", missing)} 的成功结果，不能完成；已有结果保留");
-        }
-        // Success evidence from an earlier fence is final for that segment; a newer lease only
-        // carries the still-missing work and must never overwrite that history.
-        if (request.Kind == "segment" && request.Result == "Succeeded" &&
-            await db.NoteAsrSegmentEvidence.AsNoTracking().AnyAsync(x => x.OwnerId == owner &&
-                x.AttemptId == attemptId && x.SegmentIndex == request.SegmentIndex &&
-                x.TaskId == attempt.TaskId && x.VersionId == attempt.VersionId &&
-                x.FencingToken != request.FencingToken && x.ProviderHandle != "" && x.ResultText != "", ct))
-            throw new DomainException(40901, "该分片已有更早 fence 的成功证据，旧结果保留，不再重复接收");
-        var receipt = new NoteAsrAckReceiptEntity { OwnerId = owner, AttemptId = attemptId,
-            LeaseId = lease.Id, FencingToken = request.FencingToken, Kind = request.Kind, Result = request.Result,
-            SegmentIndex = request.SegmentIndex, ProviderHandle = request.ProviderHandle,
-            ResultText = request.ResultText, CoverageJson = request.CoverageJson,
-            ErrorCode = request.ErrorCode, ErrorMessage = request.ErrorMessage, ReceivedAt = now };
-        db.NoteAsrAckReceipts.Add(receipt);
-        try { await db.SaveChangesAsync(ct); }
-        catch (DbUpdateException error) when (IsUniqueViolation(error))
-        {
-            await tx.RollbackAsync(ct);
-            db.Entry(receipt).State = EntityState.Detached;
-            if (await IsExactReceiptAsync(owner, attemptId, lease.Id, request, ct))
+            db.ChangeTracker.Clear();
+            var attempt = await db.NoteAsrAttempts.AsNoTracking()
+                .SingleAsync(x => x.Id == attemptId && x.OwnerId == owner, ct);
+            if (await IsExactReceiptAsync(owner, attemptId, request.LeaseId, request, ct))
             {
                 await ApplyAckToTaskAsync(owner, attempt, request, ct);
-                return new(lease.Id, "duplicate", true, lease.FencingToken);
+                return new(request.LeaseId, "duplicate", true, request.FencingToken);
             }
             throw new DomainException(40901, "同一分片/终态已有不同内容回执，未覆盖");
         }
-        if (request.Kind == "segment" && request.Result == "Succeeded")
-            _ = await evidence.WriteAsync(owner, attemptId, request.SegmentIndex, "local",
-                request.ProviderHandle!, request.ResultText!, request.CoverageJson, false, ct);
-        // CAS on the exact fencing token: a late/old acknowledgement can never mutate a newer attempt.
-        var terminalState = request.Kind == "complete" ? "Succeeded" : request.Kind == "fail" ? "Failed" : "Leased";
-        var successDelta = request.Kind == "segment" && request.Result == "Succeeded" ? 1 : 0;
-        var failDelta = request.Kind == "segment" && request.Result == "Failed" ? 1 : 0;
-        var affected = await db.NoteAsrAttempts
-            .Where(x => x.Id == attemptId && x.OwnerId == owner && x.State == "Leased" &&
-                (!x.StopRequested || request.Kind == "fail") &&
-                x.FencingToken == request.FencingToken && db.NoteAsrLeases.Any(l => l.Id == lease.Id &&
-                    l.OwnerId == owner && l.AttemptId == attemptId && l.LeaseToken == request.LeaseToken &&
-                    l.FencingToken == request.FencingToken && l.Status == "Active" && l.ExpiresAt > now))
-            .ExecuteUpdateAsync(setters => setters
-                .SetProperty(x => x.CompletedSegments, x => x.CompletedSegments + successDelta)
-                .SetProperty(x => x.FailedSegments, x => x.FailedSegments + failDelta)
-                .SetProperty(x => x.State, x => request.Kind == "segment" ? x.State : terminalState)
-                .SetProperty(x => x.LastErrorCode, request.ErrorCode)
-                .SetProperty(x => x.LastErrorMessage, request.ErrorMessage)
-                .SetProperty(x => x.UpdatedAt, now), ct);
-        if (affected == 0)
-        {
-            await tx.RollbackAsync(ct);
-            throw new DomainException(40901, "回执与当前 attempt/fence 不一致，结果未写入");
-        }
-        if (request.Kind is "complete" or "fail")
-        {
-            var leaseState = request.Result == "Succeeded" ? "Completed" : "Failed";
-            var leaseAffected = await db.NoteAsrLeases
-                .Where(x => x.Id == lease.Id && x.OwnerId == owner && x.Status == "Active" &&
-                    x.LeaseToken == request.LeaseToken && x.FencingToken == request.FencingToken &&
-                    x.ExpiresAt > now)
-                .ExecuteUpdateAsync(setters => setters
-                    .SetProperty(x => x.Status, leaseState)
-                    .SetProperty(x => x.EndedAt, now), ct);
-            if (leaseAffected == 0)
-            {
-                await tx.RollbackAsync(ct);
-                throw new DomainException(40901, "租约已被并发终结，回执未重复完成");
-            }
-        }
-        await tx.CommitAsync(ct);
-        await ApplyAckToTaskAsync(owner, attempt, request, ct);
-        return new(lease.Id, "accepted", false, lease.FencingToken);
+        await ApplyAckToTaskAsync(owner, outcome.Attempt, request, ct);
+        return outcome.Dto;
     }
 
     private async Task ApplyAckToTaskAsync(Guid owner, NoteAsrAttemptEntity attempt,
@@ -611,6 +759,15 @@ public sealed class NoteAsrRoutingService(PimDbContext db, ICurrentUserService u
                 state.CompletionAcknowledged = false;
             }
         }, linked.Token);
+    }
+
+    private async Task<bool> HasEarlierFenceAcceptedAsync(Guid owner, NoteAsrAttemptEntity attempt,
+        int segmentIndex, long currentFence, CancellationToken ct)
+    {
+        var plan = await legacyTasks.ReadAsync(owner, attempt.TaskId, ct);
+        if (plan.Request.VersionId != attempt.VersionId || plan.InputSha256 != attempt.InputSha256) return false;
+        var accepted = await AcceptedEvidenceAsync(owner, attempt, plan, ct);
+        return accepted.TryGetValue(segmentIndex, out var row) && row.FencingToken != currentFence;
     }
 
     private async Task<NoteAsrLeaseEntity?> LockLeaseForAckAsync(Guid owner, Guid attemptId, Guid leaseId,
@@ -787,37 +944,10 @@ public sealed class NoteAsrRoutingService(PimDbContext db, ICurrentUserService u
         return attempt;
     }
 
-    private async Task<NoteAsrAttemptEntity?> NextLocalAttemptAsync(Guid owner, NoteAsrNodeEntity node, DateTimeOffset now, CancellationToken ct)
+    private async Task QuarantineClaimAsync(Guid owner, NoteAsrAttemptEntity attempt,
+        string code, string message, CancellationToken ct)
     {
-        var busy = await db.NoteAsrLeases.AnyAsync(x => x.OwnerId == owner && x.Status == "Active" && x.ExpiresAt > now, ct);
-        if (busy) return null;
-        // Apply the node model/revision predicate in SQL before taking the oldest row. A poisoned
-        // first row must not permanently starve a later compatible task: missing task bindings are
-        // quarantined in the same transaction instead of being returned as a claimable candidate.
-        var candidates = await db.NoteAsrAttempts.AsNoTracking().Where(x => x.OwnerId == owner &&
-                x.Route == NoteAsrRoute.Local && x.State == "Queued" && !x.StopRequested &&
-                (x.ExecutionMode == null || x.ExecutionMode == NoteAsrExecutionMode.Realtime) &&
-                (x.LocalModelId == null || x.LocalModelId == node.ModelId) &&
-                (x.LocalModelRevision == null || x.LocalModelRevision == node.ModelRevision))
-            .OrderBy(x => x.CreatedAt).Take(Options.NodeScanLimit).ToListAsync(ct);
-        foreach (var candidate in candidates)
-        {
-            var bound = await TryReadBoundTaskAsync(owner, candidate, ct);
-            if (bound) return candidate;
-        }
-        // Legacy tasks without a persisted local attempt are historical dedicated cloud-ASR work. They are
-        // deliberately not migrated by current config; only an explicit new reprocess may create a local attempt.
-        return null;
-    }
-
-    /// <summary>
-    /// Quarantines an unexecutable attempt inside the claim transaction when its projected task is
-    /// missing or no longer matches the frozen material/steps/language snapshot.
-    /// </summary>
-    private async Task<bool> TryReadBoundTaskAsync(Guid owner, NoteAsrAttemptEntity attempt,
-        CancellationToken ct)
-    {
-        async Task QuarantineAsync(string code, string message)
+        if (db.Database.IsRelational())
         {
             await db.NoteAsrAttempts
                 .Where(x => x.Id == attempt.Id && x.OwnerId == owner && x.State == "Queued")
@@ -826,28 +956,16 @@ public sealed class NoteAsrRoutingService(PimDbContext db, ICurrentUserService u
                     .SetProperty(x => x.LastErrorCode, code)
                     .SetProperty(x => x.LastErrorMessage, message)
                     .SetProperty(x => x.UpdatedAt, DateTimeOffset.UtcNow), ct);
+            return;
         }
-
-        try
-        {
-            var state = await legacyTasks.ReadAsync(owner, attempt.TaskId, ct);
-            if (state.Request.VersionId != attempt.VersionId ||
-                state.InputSha256 != attempt.InputSha256 ||
-                state.Steps.Count != attempt.ExpectedSegments ||
-                !string.Equals(state.Request.Language, attempt.Language, StringComparison.Ordinal))
-            {
-                await QuarantineAsync("task_binding_mismatch",
-                    "任务快照与固定材料、分片或语言不一致，无法执行；需重新发起明确重跑");
-                return false;
-            }
-            return true;
-        }
-        catch (DomainException)
-        {
-            await QuarantineAsync("task_binding_missing",
-                "任务快照缺失，无法执行；需重新发起明确重跑");
-            return false;
-        }
+        var tracked = await db.NoteAsrAttempts.SingleOrDefaultAsync(x =>
+            x.Id == attempt.Id && x.OwnerId == owner, ct);
+        if (tracked is not { State: "Queued" }) return;
+        tracked.State = "Failed";
+        tracked.LastErrorCode = code;
+        tracked.LastErrorMessage = message;
+        tracked.UpdatedAt = DateTimeOffset.UtcNow;
+        await db.SaveChangesAsync(ct);
     }
 
     /// <summary>
@@ -922,6 +1040,31 @@ public sealed class NoteAsrRoutingService(PimDbContext db, ICurrentUserService u
         return owner;
     }
 
+    /// <summary>
+    /// Production enables Npgsql retrying, which rejects user-created transactions unless the whole
+    /// transaction unit runs through the configured execution strategy. Callers keep file/provider
+    /// side effects outside this DB-only boundary.
+    /// </summary>
+    private async Task<T> ExecuteDbTransactionAsync<T>(Func<CancellationToken, Task<T>> operation,
+        CancellationToken ct)
+    {
+        if (!db.Database.IsRelational()) return await operation(ct);
+        var strategy = db.Database.CreateExecutionStrategy();
+        return await strategy.ExecuteAsync(async token =>
+        {
+            // A retry starts a new logical unit; never re-save entities tracked by a failed attempt.
+            db.ChangeTracker.Clear();
+            await using var transaction = await db.Database.BeginTransactionAsync(token);
+            var result = await operation(token);
+            await transaction.CommitAsync(token);
+            return result;
+        }, ct);
+    }
+
+    private sealed record AckOutcome(NoteAsrAckDto Dto, NoteAsrAttemptEntity Attempt);
+    private sealed class ClaimLeaseConflictException(Exception inner) : Exception("claim conflict", inner);
+    private sealed class AckConflictException(Exception inner) : Exception("ack conflict", inner);
+
     private static bool ValidCapabilities(IReadOnlyList<string>? values) =>
         values is not null && values.Count <= 16 && values.All(x => !string.IsNullOrWhiteSpace(x) && x.Length <= 64);
 
@@ -977,4 +1120,63 @@ public sealed class NoteAsrRoutingService(PimDbContext db, ICurrentUserService u
             x.LocalModelId, x.LocalModelRevision, x.Language,
             x.FencingToken, x.ExpectedSegments, x.CompletedSegments, x.FailedSegments, x.LastErrorCode,
             x.LastErrorMessage, x.CreatedAt, x.UpdatedAt);
+}
+
+/// <summary>
+/// Single route-aware evidence rule shared by routing, task views and derived-note input assembly.
+/// A row is never accepted merely because it shares an attempt id.
+/// </summary>
+internal static class NoteAsrAcceptedEvidence
+{
+    internal static bool MatchesStep(NoteAsrSegmentEvidenceEntity proof, NoteAsrStep step) =>
+        proof.SegmentIndex == step.Index && proof.RecordingId == step.RecordingId &&
+        proof.RecordingSegment == step.RecordingSegment && proof.ChunkIndex == step.ChunkIndex &&
+        proof.SourceFileIndex == step.FileIndex && proof.SourceSha256 == step.Sha256 &&
+        proof.SourceOffsetSamples == step.SourceOffset && proof.Samples == step.Samples &&
+        !string.IsNullOrWhiteSpace(proof.ProviderHandle) && !string.IsNullOrWhiteSpace(proof.ResultText) &&
+        proof.ResultSha256 == Convert.ToHexString(SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes(proof.ResultText))).ToLowerInvariant();
+
+    internal static async Task<Dictionary<int, NoteAsrSegmentEvidenceEntity>> LoadAsync(PimDbContext db,
+        Guid owner, NoteAsrAttemptEntity attempt, NoteAsrState state, CancellationToken ct)
+    {
+        // This is the single acceptance boundary used by routing, note views and derived notes.
+        // Any incomplete or stale projection binding fails closed before evidence rows are considered.
+        if (state.AttemptId != attempt.Id ||
+            attempt.TaskId != state.Request.TaskId ||
+            attempt.VersionId != state.Request.VersionId ||
+            !string.Equals(attempt.InputSha256, state.InputSha256, StringComparison.Ordinal) ||
+            state.Steps.Count != attempt.ExpectedSegments ||
+            state.Steps.Count == 0)
+            return [];
+        var rows = await db.NoteAsrSegmentEvidence.AsNoTracking().Where(x => x.OwnerId == owner &&
+                x.AttemptId == attempt.Id && x.TaskId == attempt.TaskId && x.VersionId == attempt.VersionId)
+            .OrderBy(x => x.CreatedAt).ToListAsync(ct);
+        if (rows.Count == 0) return [];
+        var receipts = await db.NoteAsrAckReceipts.AsNoTracking().Where(x => x.OwnerId == owner &&
+                x.AttemptId == attempt.Id && x.Kind == "segment" && x.Result == "Succeeded")
+            .ToListAsync(ct);
+        var accepted = new Dictionary<int, NoteAsrSegmentEvidenceEntity>();
+        foreach (var row in rows)
+        {
+            if (row.SegmentIndex < 0 || row.SegmentIndex >= state.Steps.Count) continue;
+            if (!MatchesStep(row, state.Steps[row.SegmentIndex])) continue;
+            if (row.Route != attempt.Route || row.FencingToken < 0 ||
+                row.FencingToken > attempt.FencingToken) continue;
+            var valid = row.ReceiptKind switch
+            {
+                "local" => attempt.Route == NoteAsrRoute.Local && receipts.Any(r =>
+                    r.FencingToken == row.FencingToken && r.SegmentIndex == row.SegmentIndex &&
+                    r.ProviderHandle?.Trim() == row.ProviderHandle && r.ResultText == row.ResultText),
+                "batch" => attempt.Route == NoteAsrRoute.CloudMultimodal &&
+                    attempt.ExecutionMode == NoteAsrExecutionMode.Batch,
+                "adaptive" => NoteAsrRoute.IsCloud(attempt.Route) &&
+                    row.ProviderHandle.StartsWith("adaptive:", StringComparison.Ordinal) &&
+                    !string.IsNullOrWhiteSpace(row.CoverageJson),
+                _ => false
+            };
+            if (valid) accepted[row.SegmentIndex] = row;
+        }
+        return accepted;
+    }
 }

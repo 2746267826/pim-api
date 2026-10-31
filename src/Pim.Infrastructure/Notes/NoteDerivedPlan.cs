@@ -45,7 +45,7 @@ internal sealed class NoteDerivedPlanner : INoteDerivedPlanner
         var coverage = new NoteDerivedCoverageDto(
             input.TextBlocks.Count,
             input.Transcripts.Count,
-            0,
+            input.Transcripts.Count,
             input.Images.Count(x => x.Kind == "Photo"),
             0,
             input.Images.Count(x => x.Kind == "InkPreview"),
