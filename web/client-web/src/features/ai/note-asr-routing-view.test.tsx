@@ -167,6 +167,24 @@ describe('NoteAsrRoutingView actual generated consumers', () => {
     })
   })
 
+  it('离线旧revision在前、在线已保存revision在后时，云端保存不得覆盖已保存revision', async () => {
+    api.asrRouteConfig.mockResolvedValue({ ...config, defaultRoute: 'cloud-multimodal' })
+    api.asrRoutingNodes.mockResolvedValue([
+      { ...node, modelRevision: 'local-rev-old', enabled: false, claimable: false },
+      { ...node, modelRevision: 'local-rev-1', enabled: true, claimable: true },
+    ])
+    page()
+    expect(await screen.findByText(/local-rev-1/)).toBeTruthy()
+    await userEvent.click(screen.getByRole('checkbox', { name: '确认保存路由设置' }))
+    await userEvent.click(screen.getByRole('button', { name: '保存路由设置' }))
+    await waitFor(() => expect(api.asrRouteConfigSave).toHaveBeenCalledOnce())
+    expect(api.asrRouteConfigSave.mock.calls[0]?.[0]).toMatchObject({
+      defaultRoute: 'cloud-multimodal',
+      localModelId: config.localModelId,
+      localModelRevision: 'local-rev-1',
+    })
+  })
+
   it('Completed但存在失败项或错误码仍显示部分成功，不冒充完整成功', async () => {
     api.asrBatchJobs.mockResolvedValue([{
       ...batch, status: 'COMPLETED', outputImported: true, failedItems: 1,

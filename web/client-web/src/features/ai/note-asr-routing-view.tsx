@@ -35,14 +35,15 @@ export function NoteAsrRoutingView({ userId }: { userId: string }) {
   const localModels = useMemo(() => {
     const installed = new Map<string, { id: string; label: string; revision: string; enabled: boolean }>()
     for (const node of nodes.data ?? []) {
+      const savedMatch = node.modelId === config.data?.localModelId &&
+        node.modelRevision === config.data?.localModelRevision
       const existing = installed.get(node.modelId)
-      if (!existing) installed.set(node.modelId, {
+      if (savedMatch || !existing) installed.set(node.modelId, {
         id: node.modelId,
         label: `${node.modelId} · ${node.nodeIdExternal || '本机节点'} · ${node.modelRevision}`,
         revision: node.modelRevision,
         enabled: node.enabled && node.modelVerified,
       })
-      else if (node.modelRevision !== existing.revision) existing.enabled = false
     }
     const saved = config.data?.localModelId
     const currentConfig = config.data
