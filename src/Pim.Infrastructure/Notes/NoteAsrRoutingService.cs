@@ -662,7 +662,8 @@ public sealed class NoteAsrRoutingService(PimDbContext db, ICurrentUserService u
             ExecutionMode = executionMode, Language = language, ExpectedSegments = expectedSegments };
         if (route == NoteAsrRoute.Local)
         {
-            if (config?.LocalModelId is not { } localModelId || config.DefaultRoute != NoteAsrRoute.Local)
+            // An explicit per-task local route is valid even when the account default remains cloud.
+            if (config?.LocalModelId is not { } localModelId)
                 throw new DomainException(40901, "本机执行位置尚未配置模型");
             // The local model lives on registered Windows nodes; it is not a cloud profile and needs no key.
             attempt.LocalModelId = localModelId;
@@ -670,7 +671,12 @@ public sealed class NoteAsrRoutingService(PimDbContext db, ICurrentUserService u
         }
         else
         {
-            var modelId = config?.CloudModelId;
+            // Freeze the explicit destination carried by the trusted task request; only fall back to
+            // the global cloud default for legacy callers without a target.
+            if (task.Request.Consent?.Confirmed != true)
+                throw new DomainException(40001, "云端执行缺少明确外发确认");
+            var modelId = task.Request.Consent.ModelId != Guid.Empty
+                ? task.Request.Consent.ModelId : config?.CloudModelId;
             if (modelId is null && route == NoteAsrRoute.CloudAsr)
             {
                 var legacy = await db.AiModelProfiles.AsNoTracking().Where(x => x.Enabled &&
