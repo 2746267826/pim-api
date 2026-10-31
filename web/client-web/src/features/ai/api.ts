@@ -39,8 +39,8 @@ export const aiApi = {
   noteAsrSegments: (id: string, offset: number, signal?: AbortSignal) => apiGet<NoteAsrSegments>(`/api/v1/native-notes/asr-tasks/${encodeURIComponent(id)}/segments?offset=${offset}&limit=10`, { signal }),
   noteAsrStop: (id: string) => apiPost<NoteAsrTask>(`/api/v1/native-notes/asr-tasks/${encodeURIComponent(id)}/stop`, {}),
   noteAsrRetry: (id: string, body: NoteAsrRetry) => apiPost<NoteAsrTask>(`/api/v1/native-notes/asr-tasks/${encodeURIComponent(id)}/retry`, body),
-  asrReprocessHistory: (sourceTaskId: string, offset = 0, limit = 20, signal?: AbortSignal) =>
-    apiGet<NoteAsrReprocessHistory>(`/api/v1/native-notes/asr-tasks/${encodeURIComponent(sourceTaskId)}/reprocess-history?offset=${offset}&limit=${limit}`, { signal }),
+  asrReprocessHistory: (sourceTaskId: string, expectedUserId: string, offset = 0, limit = 20, signal?: AbortSignal) =>
+    apiGet<NoteAsrReprocessHistory>(`/api/v1/native-notes/asr-tasks/${encodeURIComponent(sourceTaskId)}/reprocess-history?expectedUserId=${encodeURIComponent(expectedUserId)}&offset=${offset}&limit=${limit}`, { signal }),
   asrReprocess: (sourceTaskId: string, body: NoteAsrReprocessRequest) =>
     apiPost<NoteAsrReprocessResult>(`/api/v1/native-notes/asr-tasks/${encodeURIComponent(sourceTaskId)}/reprocess`, body),
   asrRouteConfig: (signal?: AbortSignal) => apiGet<NoteAsrRouteConfig>('/api/v1/native-notes/asr-routing/config', { signal }),

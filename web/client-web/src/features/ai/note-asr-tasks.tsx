@@ -4,6 +4,7 @@ import { Button, Card, EmptyState, Label, Select, Skeleton, StatusBadge } from '
 import { formatTime } from '@/lib/datetime'
 import { aiApi, type Model, type ModelSettings, type NoteAsrStart, type NoteAsrTask } from './api'
 import { createAiRequestId } from './request-id'
+import { NoteAsrReprocessPanel } from './note-asr-reprocess-panel'
 
 const errorText = (error: unknown) => error instanceof Error ? error.message : '请求失败，请刷新核对'
 const names: Record<string, string> = { Queued: '等待处理', Running: '转写中', Succeeded: '转写完成', NeedsAttention: '有分片需处理', Stopped: '已停止',
@@ -126,6 +127,7 @@ function TaskDetail({ id, userId, prefix, showDetail }: { id: string; userId: st
         <label className="flex items-start gap-2 text-xs text-text-2"><input type="checkbox" aria-label="确认分片恢复和可能重复计费" checked={approved === approvalKey} onChange={(event) => setApproved(event.target.checked ? approvalKey : '')} /><span>已核对原目标和记录，确认恢复，理解未知结果的重试可能重复计费</span></label>
         <Button disabled={busy || approved !== approvalKey} onClick={() => void change((value) => aiApi.noteAsrRetry(id, { retryId: createAiRequestId(), expectedUserId: userId, expectedRevision: value.revision,
           segmentIndexes: selected, consent: value.destination, acknowledgePossibleDuplicateCharge: true }))}>恢复所选分片</Button></div>}
+      <NoteAsrReprocessPanel task={task.data} userId={userId} />
       {message && <p role="alert" className="text-sm text-text-2">{message}</p>}
     </>}
   </Card>
