@@ -128,6 +128,20 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
         if (before.Route != NoteAsrRoute.Local)
             await ValidateDestinationAsync(request.Consent, before.Request.Language, ct);
         _ = await materials.GetAsync(owner, before.Request.VersionId, ct);
+        // Validate every retry precondition before any mutation: a rejected request must leave both
+        // the task file and the routing attempt exactly as it found them.
+        if (before.Route == NoteAsrRoute.Local)
+        {
+            if (before.AttemptId is not { } attemptId) throw new DomainException(40901, "本机任务缺少执行快照");
+            var attempt = await db.NoteAsrAttempts.AsNoTracking()
+                .SingleOrDefaultAsync(x => x.Id == attemptId && x.OwnerId == owner, ct)
+                ?? throw new DomainException(40901, "本机任务缺少执行快照");
+            var hasActiveLease = await db.NoteAsrLeases.AsNoTracking().AnyAsync(l =>
+                l.OwnerId == owner && l.AttemptId == attemptId && l.Status == "Active", ct);
+            if (attempt.Route != NoteAsrRoute.Local || hasActiveLease ||
+                attempt.State is not ("Failed" or "Unknown" or "Queued"))
+                throw new DomainException(40901, "本机执行快照未处于可人工恢复状态，原记录保留");
+        }
         var updated = await tasks.UpdateAsync(owner, id, state =>
         {
             if (state.Retries.TryGetValue(request.RetryId, out var existing))
@@ -144,6 +158,8 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
                 if (state.Steps[index].Current.Status != "Queued") state.Steps[index].Attempts.Add(new());
             state.Retries.Add(request.RetryId, fingerprint); state.StopRequested = false;
         }, ct);
+        // The task file is committed first; only then requeue the durable attempt. A crash between
+        // the two leaves Queued work that claim reconciles and the retry is replayable idempotently.
         if (before.Route == NoteAsrRoute.Local) await RequireLocalRetryAttemptAsync(owner, updated, ct);
         return Describe(updated);
     }
@@ -209,7 +225,7 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
                 executionMode, NoteAsrPlan.SamplesPerCall);
         }
 
-        if (!request.Consent.Confirmed || request.Route is { Confirmed: false })
+        if (request.Consent is not { Confirmed: true } || request.Route is { Confirmed: false })
             throw new DomainException(40001, "请明确确认云端音频外发、长等待与可能计费");
         if (request.Consent.ModelId == Guid.Empty)
             throw new DomainException(40901, "云端目标未选择，请刷新后重新确认");

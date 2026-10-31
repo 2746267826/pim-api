@@ -873,6 +873,35 @@ public sealed class NoteAsrRoutingConcurrencyTests
                     new AiAsrDestinationConsent(Guid.NewGuid(), Guid.NewGuid(), "https://example.invalid/v1/chat/completions",
                         "mimo-asr", "1", true), true), CancellationToken.None));
             Assert.Equal(40901, error.ErrorCode);
+            // A real local resume needs no cloud consent, no cloud profile and no runtime key.
+            var resumed = await service.RetryAsync(taskId,
+                new RetryNoteAsrRequest(Guid.NewGuid(), owner, read.Revision, [0], null, false), CancellationToken.None);
+            Assert.Equal(NoteAsrRoute.Local, resumed.Route);
+            Assert.Null(resumed.Destination);
+            var resumedState = await tasks.ReadAsync(owner, taskId, CancellationToken.None);
+            Assert.Single(resumedState.Retries);
+            Assert.Equal(0, await db.AiModelRuntime.CountAsync(x => x.Enabled));
+            // A rejected resume must not mutate the task file at all.
+            await db.NoteAsrAttempts.Where(x => x.Id == resumedState.AttemptId)
+                .ExecuteUpdateAsync(s => s.SetProperty(x => x.State, "Succeeded"));
+            var beforeReject = await tasks.ReadAsync(owner, taskId, CancellationToken.None);
+            var attemptBeforeReject = await db.NoteAsrAttempts.AsNoTracking()
+                .SingleAsync(x => x.Id == resumedState.AttemptId);
+            var rejected = await Assert.ThrowsAsync<DomainException>(() => service.RetryAsync(taskId,
+                new RetryNoteAsrRequest(Guid.NewGuid(), owner, beforeReject.Revision, [0], null, false),
+                CancellationToken.None));
+            Assert.Equal(40901, rejected.ErrorCode);
+            var attemptAfterReject = await db.NoteAsrAttempts.AsNoTracking()
+                .SingleAsync(x => x.Id == resumedState.AttemptId);
+            Assert.Equal("Succeeded", attemptAfterReject.State);
+            Assert.Equal(attemptBeforeReject.FencingToken, attemptAfterReject.FencingToken);
+            Assert.Equal(attemptBeforeReject.StopRequested, attemptAfterReject.StopRequested);
+            Assert.Equal(attemptBeforeReject.UpdatedAt, attemptAfterReject.UpdatedAt);
+            var afterReject = await tasks.ReadAsync(owner, taskId, CancellationToken.None);
+            Assert.Equal(beforeReject.Revision, afterReject.Revision);
+            Assert.Equal(beforeReject.Retries.Count, afterReject.Retries.Count);
+            Assert.Equal(beforeReject.Steps[0].Current.Status, afterReject.Steps[0].Current.Status);
+            Assert.Equal(beforeReject.Steps[0].Attempts.Count, afterReject.Steps[0].Attempts.Count);
         }
         await CleanupAsync(owner);
     }
@@ -967,6 +996,46 @@ public sealed class NoteAsrRoutingConcurrencyTests
             Assert.StartsWith("Selected prompt", existing.PromptTemplate);
             Assert.StartsWith("https://selected.example.invalid/", existing.Endpoint);
         }
+        await CleanupAsync(owner);
+    }
+
+    [SkippableFact]
+    public async Task Cloud_route_without_consent_is_rejected_with_domain_error_not_null_reference()
+    {
+        Skip.If(string.IsNullOrWhiteSpace(ConnectionString), "PIM_ASR516_PG is not configured");
+        var owner = Guid.NewGuid();
+        await CleanupAsync(owner);
+        var options = Options.Create(new NoteMaterialUploadOptions { StorageRoot = StorageRoot });
+        var materials = new NoteMaterialUploadStore(options);
+        var tasks = new NoteAsrTaskStore(options);
+        var material = NoteDerivedFixture.CreateMaterial(audioSamples: 1_000);
+        await NoteDerivedFixture.UploadAsync(materials, owner, material);
+        await using (var db = NewDb(owner))
+        {
+            await db.Database.EnsureCreatedAsync();
+            await db.Users.AddAsync(NewUser(owner));
+            db.NoteAsrRouteConfigs.Add(new NoteAsrRouteConfigEntity
+            {
+                OwnerId = owner, Revision = Guid.NewGuid(), DefaultRoute = NoteAsrRoute.CloudAsr,
+                LocalModelId = "local-model", LocalModelRevision = "r1",
+                CloudModelId = Guid.NewGuid(), ConsentVersion = "consent-cloud"
+            });
+            await db.SaveChangesAsync();
+        }
+        var taskId = Guid.NewGuid();
+        await using (var db = NewDb(owner))
+        {
+            var service = new NoteAsrService(tasks, materials, db, new FixedUser(owner),
+                new AiAsrPresetRegistry(Array.Empty<IAiAsrPreset>()), new ConfigurationBuilder().Build(),
+                new PassthroughSecrets(), NewService(db, owner));
+            var request = new StartNoteAsrRequest(taskId, owner, material.Request.VersionId, null, "zh");
+            var error = await Assert.ThrowsAsync<DomainException>(() =>
+                service.StartAsync(request, CancellationToken.None));
+            Assert.Equal(40001, error.ErrorCode);
+            Assert.Equal(0, await db.NoteAsrAttempts.CountAsync(x => x.OwnerId == owner));
+        }
+        await Assert.ThrowsAsync<DomainException>(async () =>
+            await tasks.ReadAsync(owner, taskId, CancellationToken.None));
         await CleanupAsync(owner);
     }
 
