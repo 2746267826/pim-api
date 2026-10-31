@@ -121,6 +121,69 @@ public sealed class OpenApiContractShapeTests
             Assert.True(response.Headers.ContainsKey(name), $"segment response header 未导出：{name}");
     }
 
+    [Fact]
+    public void UrlTranscriptionEndpointsExposeTypedCreateReadAndReplayShapes()
+    {
+        var create = Document.Paths["/api/v1/ai/asr-url-calls"].Operations[OperationType.Post];
+        Assert.NotNull(create.RequestBody);
+        Assert.True(create.RequestBody!.Required);
+        Assert.True(create.RequestBody.Content.TryGetValue("application/json", out var createContent));
+        Assert.Equal(
+            "#/components/schemas/AiAsrUrlCallRequest",
+            createContent!.Schema.Reference?.ReferenceV3);
+
+        var read = Document.Paths["/api/v1/ai/asr-url-calls/{clientRequestId}"]
+            .Operations[OperationType.Get];
+        var clientRequestId = Assert.Single(read.Parameters);
+        Assert.Equal("clientRequestId", clientRequestId.Name);
+        Assert.Equal(ParameterLocation.Path, clientRequestId.In);
+        Assert.True(clientRequestId.Required);
+        Assert.Equal("string", clientRequestId.Schema.Type);
+        Assert.Equal("uuid", clientRequestId.Schema.Format);
+        Assert.Equal(
+            "#/components/schemas/AiAsrUrlCallResultDtoApiResponse",
+            read.Responses["200"].Content["application/json"].Schema.Reference?.ReferenceV3);
+
+        var request = Schema("AiAsrUrlCallRequest");
+        Assert.Equal(
+            new[] { "audio", "clientRequestId", "consent", "expectedUserId" },
+            RequiredOf(request).OrderBy(x => x, StringComparer.Ordinal));
+        foreach (var optional in new[] { "language", "modelId", "prompt" })
+            Assert.DoesNotContain(optional, RequiredOf(request));
+        Assert.True(request.Properties["modelId"].Nullable);
+        Assert.Equal(
+            "#/components/schemas/AiAsrUrlAudioRequest",
+            request.Properties["audio"].Reference?.ReferenceV3);
+        Assert.Equal(
+            "#/components/schemas/AiAsrDestinationConsent",
+            request.Properties["consent"].Reference?.ReferenceV3);
+        Assert.Equal(
+            "#/components/schemas/AiAsrPromptSnapshot",
+            request.Properties["prompt"].Reference?.ReferenceV3);
+
+        var audio = Schema("AiAsrUrlAudioRequest");
+        Assert.Equal(
+            new[] { "format", "name", "providerFetchConfirmed", "sourceConfirmed", "url" },
+            RequiredOf(audio).OrderBy(x => x, StringComparer.Ordinal));
+        Assert.DoesNotContain("expectedSha256", RequiredOf(audio));
+        Assert.True(audio.Properties["expectedSha256"].Nullable);
+        Assert.Equal("boolean", audio.Properties["providerFetchConfirmed"].Type);
+        Assert.Equal("boolean", audio.Properties["sourceConfirmed"].Type);
+
+        var result = Schema("AiAsrUrlCallResultDto");
+        Assert.Equal(
+            new[] { "logId", "preflightVerified", "providerFetchVerified", "replayed", "status", "warning" },
+            RequiredOf(result).OrderBy(x => x, StringComparer.Ordinal));
+        foreach (var optional in new[]
+                 {
+                     "errorMessage", "preflightSha256", "responseText", "sourceOrigin"
+                 })
+        {
+            Assert.DoesNotContain(optional, RequiredOf(result));
+            Assert.True(result.Properties[optional].Nullable, $"{optional} must remain nullable");
+        }
+    }
+
     [Theory]
     // issue #417 逐条点名的 6 处（服务端都是 C# record 里的只读计算属性）
     [InlineData("MobileDeviceDto", "apiLevel")]
