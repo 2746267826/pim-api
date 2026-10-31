@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using Microsoft.OpenApi.Models;
 using Swashbuckle.AspNetCore.SwaggerGen;
 
@@ -9,13 +10,18 @@ namespace Pim.Api.Infrastructure.OpenApi;
 /// </summary>
 public sealed class NoteAsrSegmentContentOperationFilter : IOperationFilter
 {
-    private const string RelativePath = "api/v1/native-notes/asr-routing/leases/{leaseId}/segments/{segmentIndex}/content";
+    // ApiDescription can retain the route constraints ({leaseId:guid}); compare the
+    // structural path only so this filter does not depend on Swashbuckle's display form.
+    private static readonly Regex RoutingSegmentContent = new(
+        @"^/?api/v1/native-notes/asr-routing/leases/\{leaseId(?::guid)?\}/segments/\{segmentIndex(?::int)?\}/content/?$",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
 
     public void Apply(OpenApiOperation operation, OperationFilterContext context)
     {
         var description = context.ApiDescription;
         if (!string.Equals(description.HttpMethod, "GET", StringComparison.OrdinalIgnoreCase) ||
-            !string.Equals(description.RelativePath?.TrimStart('/'), RelativePath, StringComparison.Ordinal))
+            description.RelativePath is null ||
+            !RoutingSegmentContent.IsMatch(description.RelativePath))
             return;
 
         operation.Responses.TryAdd("200", new OpenApiResponse { Description = "Success" });
