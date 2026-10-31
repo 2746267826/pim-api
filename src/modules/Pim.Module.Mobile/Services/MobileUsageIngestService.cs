@@ -156,14 +156,15 @@ public sealed class MobileUsageIngestService
             }
             catch (DbUpdateException) when (!ct.IsCancellationRequested)
             {
-                // 并发重投：另一个请求先插入了同一批次，回放它的结果。
+                // 并发重投：另一个请求先插入了同一批次。赢家可能仍在处理中，
+                // 不能假设它已是终态；重入后按 active lease / cooldown / terminal 分类。
                 _db.ChangeTracker.Clear();
                 var winner = await FindBatchAsync(userId, request, ct);
                 if (winner is null)
                     throw;
 
                 EnsurePayloadMatches(winner, payloadSha256);
-                return BuildReplayResult(winner, request);
+                return await IngestAttemptAsync(userId, request, attemptState, ct);
             }
         }
         else if (existingBatch.Id == attemptState.OwnedPendingBatchId)
@@ -177,22 +178,30 @@ public sealed class MobileUsageIngestService
                 ct);
             attemptState.LeaseId = leaseId;
         }
-        else if (await TryClaimStalePendingBatchAsync(
-                     existingBatch,
-                     payloadSha256,
-                     RequestItemCount(request),
-                     now,
-                     leaseId,
-                     ct) is { } claimed)
-        {
-            // 上一个处理者已经消失（租约过期），原子认领后幂等重跑。
-            batch = claimed;
-            attemptState.LeaseId = leaseId;
-        }
         else
         {
-            // 同一 batchId 仍在处理中：不得返回全 0 + 空 itemResults 的假成功确认。
-            return BuildInFlightResult(existingBatch, request);
+            var claim = await TryClaimStalePendingBatchAsync(
+                existingBatch,
+                payloadSha256,
+                RequestItemCount(request),
+                now,
+                leaseId,
+                ct);
+            if (claim.Kind == MobilePendingClaimKind.Terminal)
+                return BuildReplayResult(claim.TerminalBatch!, request);
+            if (claim.Kind != MobilePendingClaimKind.Claimed)
+            {
+                // 只读分类：active lease 与 retry cooldown 都不能修改 pending 行。
+                return BuildProcessingResult(
+                    claim.PendingBatch ?? existingBatch,
+                    request,
+                    now,
+                    claim.Kind);
+            }
+
+            // 上一个处理者已经消失（租约过期），原子认领后幂等重跑。
+            batch = claim.PendingBatch!;
+            attemptState.LeaseId = leaseId;
         }
 
         attemptState.AttemptCount = Math.Max(
@@ -312,7 +321,7 @@ public sealed class MobileUsageIngestService
     /// 原子认领租约已过、且不在冷却期的 pending 批次。每次认领换新 LeaseId，
     /// 旧 owner 的完成/失败条件写会因此失败并回滚。
     /// </summary>
-    private async Task<MobileSyncBatchEntity?> TryClaimStalePendingBatchAsync(
+    private async Task<MobilePendingClaim> TryClaimStalePendingBatchAsync(
         MobileSyncBatchEntity batch,
         string payloadSha256,
         int requestItemCount,
@@ -321,14 +330,11 @@ public sealed class MobileUsageIngestService
         CancellationToken ct)
     {
         var envelope = MobileSyncBatchEnvelopeCodec.DeserializeOrEmpty(batch.ErrorJson);
-        if (envelope.RetryAfterUtc is { } retryAfter && retryAfter > now)
-            return null;
+        if (envelope.RetryAfterUtc > now)
+            return MobilePendingClaim.RetryScheduled(batch);
 
-        var leaseUntilUtc = MobileSyncBatchEnvelopeCodec.EffectiveLeaseUntil(
-            batch.CreatedAt,
-            envelope);
-        if (leaseUntilUtc > now)
-            return null;
+        if (MobileSyncBatchEnvelopeCodec.EffectiveLeaseUntil(batch.CreatedAt, envelope) > now)
+            return MobilePendingClaim.InFlight(batch);
 
         if (envelope.AttemptCount >= MaxProcessingAttempts)
         {
@@ -358,7 +364,7 @@ public sealed class MobileUsageIngestService
         {
             batch.ErrorJson = nextEnvelope;
             await _db.SaveChangesAsync(ct);
-            return batch;
+            return MobilePendingClaim.Claimed(batch);
         }
 
         FormattableString claim = $@"
@@ -377,10 +383,39 @@ public sealed class MobileUsageIngestService
                AND COALESCE((error_json->>'RetryAfterUtc')::timestamptz, {now}) <= {now};";
         var claimed = await _db.Database.ExecuteSqlInterpolatedAsync(claim, ct);
         if (claimed == 0)
-            return null;
+            return await ReclassifyPendingClaimAsync(batch, now, ct);
 
         _db.ChangeTracker.Clear();
-        return await _db.Set<MobileSyncBatchEntity>().SingleOrDefaultAsync(b => b.Id == batch.Id, ct);
+        var claimedBatch = await _db.Set<MobileSyncBatchEntity>()
+            .SingleOrDefaultAsync(b => b.Id == batch.Id, ct)
+            ?? throw new InvalidOperationException("Claimed mobile sync batch disappeared.");
+        return MobilePendingClaim.Claimed(claimedBatch);
+    }
+
+    /// <summary>
+    /// 条件认领失败后必须重读。另一方可能已把批次写成终态，这时应回放结果，
+    /// 而不是声称自己的 lease 丢失或仍在处理。
+    /// </summary>
+    private async Task<MobilePendingClaim> ReclassifyPendingClaimAsync(
+        MobileSyncBatchEntity observedBatch,
+        DateTimeOffset now,
+        CancellationToken ct)
+    {
+        _db.ChangeTracker.Clear();
+        var current = await _db.Set<MobileSyncBatchEntity>()
+            .AsNoTracking()
+            .SingleAsync(b => b.Id == observedBatch.Id, ct);
+        if (MobileSyncBatchStatus.IsTerminal(current.Status))
+            return MobilePendingClaim.Terminal(current);
+
+        var envelope = MobileSyncBatchEnvelopeCodec.DeserializeOrEmpty(current.ErrorJson);
+        if (envelope.RetryAfterUtc > now)
+            return MobilePendingClaim.RetryScheduled(current);
+
+        if (MobileSyncBatchEnvelopeCodec.EffectiveLeaseUntil(current.CreatedAt, envelope) > now)
+            return MobilePendingClaim.InFlight(current);
+
+        throw new MobileSyncBatchLeaseLostException();
     }
 
     private async Task MarkAttemptsExhaustedAsync(
@@ -603,7 +638,7 @@ public sealed class MobileUsageIngestService
         MobileUsageEventsUploadRequest request)
     {
         if (!MobileSyncBatchStatus.IsTerminal(batch.Status))
-            return BuildInFlightResult(batch, request);
+            throw new InvalidOperationException("Replay requires a terminal mobile sync batch.");
 
         var envelope = MobileSyncBatchEnvelopeCodec.DeserializeOrEmpty(batch.ErrorJson);
         if (string.Equals(batch.Status, MobileSyncBatchStatus.Failed, StringComparison.OrdinalIgnoreCase)
@@ -623,16 +658,90 @@ public sealed class MobileUsageIngestService
         return BuildPersistedResult(batch);
     }
 
-    private static MobileUsageIngestResult BuildInFlightResult(
+    private static MobileUsageIngestResult BuildProcessingResult(
         MobileSyncBatchEntity batch,
-        MobileUsageEventsUploadRequest request)
-        => new(
+        MobileUsageEventsUploadRequest request,
+        DateTimeOffset now,
+        MobilePendingClaimKind pendingKind)
+    {
+        var envelope = MobileSyncBatchEnvelopeCodec.DeserializeOrEmpty(batch.ErrorJson);
+        var leaseUntilUtc = MobileSyncBatchEnvelopeCodec.EffectiveLeaseUntil(batch.CreatedAt, envelope);
+        var retryAtUtc = envelope.RetryAfterUtc > now ? envelope.RetryAfterUtc : null;
+        string state;
+        DateTimeOffset hintAtUtc;
+        switch (pendingKind)
+        {
+            case MobilePendingClaimKind.InFlight when leaseUntilUtc > now:
+                state = MobileProcessingStates.InFlight;
+                hintAtUtc = leaseUntilUtc;
+                retryAtUtc = null;
+                break;
+            case MobilePendingClaimKind.RetryScheduled when retryAtUtc > now:
+                state = MobileProcessingStates.RetryScheduled;
+                hintAtUtc = retryAtUtc.Value;
+                break;
+            case MobilePendingClaimKind.RetryScheduled:
+                throw new InvalidOperationException(
+                    "Retry schedule expired before the response was built.");
+            default:
+                throw new InvalidOperationException(
+                    "Unexpected pending mobile sync batch classification.");
+        }
+        var retryAfterSeconds = RetryAfterSeconds(hintAtUtc - now);
+        return new MobileUsageIngestResult(
             batch.BatchId,
             0,
             0,
             0,
             RequestItemCount(request),
-            []);
+            [],
+            state,
+            retryAfterSeconds,
+            state == MobileProcessingStates.InFlight ? leaseUntilUtc : null,
+            state == MobileProcessingStates.RetryScheduled ? retryAtUtc : null);
+    }
+
+    private static int RetryAfterSeconds(TimeSpan remaining)
+        => Math.Max(
+            1,
+            (int)Math.Min(
+                int.MaxValue,
+                Math.Ceiling(Math.Max(0, remaining.TotalSeconds))));
+
+    internal static int? TestRetryAfterSeconds(TimeSpan remaining)
+        => RetryAfterSeconds(remaining);
+
+    private enum MobilePendingClaimKind
+    {
+        Claimed,
+        InFlight,
+        RetryScheduled,
+        Terminal
+    }
+
+    private sealed record MobilePendingClaim(
+        MobilePendingClaimKind Kind,
+        MobileSyncBatchEntity? PendingBatch,
+        MobileSyncBatchEntity? TerminalBatch)
+    {
+        public static MobilePendingClaim Claimed(MobileSyncBatchEntity batch)
+            => new(MobilePendingClaimKind.Claimed, batch, null);
+
+        public static MobilePendingClaim InFlight(MobileSyncBatchEntity batch)
+            => new(MobilePendingClaimKind.InFlight, batch, null);
+
+        public static MobilePendingClaim RetryScheduled(MobileSyncBatchEntity batch)
+            => new(MobilePendingClaimKind.RetryScheduled, batch, null);
+
+        public static MobilePendingClaim Terminal(MobileSyncBatchEntity batch)
+            => new(MobilePendingClaimKind.Terminal, null, batch);
+    }
+
+    private static class MobileProcessingStates
+    {
+        public const string InFlight = "in-flight";
+        public const string RetryScheduled = "retry-scheduled";
+    }
 
     private sealed class IngestAttemptState
     {

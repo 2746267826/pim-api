@@ -114,6 +114,37 @@ public sealed class MobileUsageIngestServiceTests
     }
 
     [Fact]
+    public async Task IngestAsync_PendingWinnerAfterConcurrentInsertIsClassifiedInsteadOfThrowing()
+    {
+        MobileTestHelpers.RegisterMobileModule();
+        var now = DateTimeOffset.Parse("2026-07-06T12:00:00Z");
+        var options = new DbContextOptionsBuilder<PimDbContext>()
+            .UseInMemoryDatabase($"mobile-race-pending-{Guid.NewGuid()}")
+            .Options;
+        var request = UploadRequest("batch-race-pending", "Messages");
+        var leaseUntilUtc = now.AddMinutes(10);
+        await using var db = new PendingWinnerRacePimDbContext(options, request, leaseUntilUtc);
+        var service = new MobileUsageIngestService(
+            db,
+            MobileTestHelpers.CurrentUser(),
+            new MobileSessionInterpreter(db),
+            MobileTestHelpers.Time(now));
+
+        var result = await service.IngestAsync(request, CancellationToken.None);
+
+        Assert.Equal("in-flight", result.ProcessingState);
+        Assert.Equal(600, result.RetryAfterSeconds);
+        Assert.Equal(leaseUntilUtc, result.LeaseUntilUtc);
+        Assert.Null(result.RetryAtUtc);
+        Assert.Equal(4, result.FailedCount);
+        Assert.Empty(result.ItemResults);
+        Assert.Equal(1, await db.Set<MobileSyncBatchEntity>().CountAsync());
+        var batch = await db.Set<MobileSyncBatchEntity>().SingleAsync();
+        Assert.Equal(MobileSyncBatchStatus.Pending, batch.Status);
+        Assert.Equal(0, batch.FailedCount);
+    }
+
+    [Fact]
     public async Task IngestAsync_ExecutionStrategyRetryTakesOverOwnPendingBatch()
     {
         MobileTestHelpers.RegisterMobileModule();
@@ -190,6 +221,149 @@ public sealed class MobileUsageIngestServiceTests
         Assert.Equal(2, result.AcceptedCount);
         Assert.Equal(1, result.FailedCount);
         Assert.Empty(result.ItemResults);
+    }
+
+    [Fact]
+    public async Task IngestAsync_ActiveLeaseIsReadOnlyAndReturnsInFlightProtocol()
+    {
+        await using var db = MobileTestHelpers.CreateDb();
+        var now = DateTimeOffset.Parse("2026-07-06T12:00:00Z");
+        var request = UploadRequest("batch-in-flight", "Messages");
+        var leaseUntilUtc = now.AddMinutes(10);
+        db.Set<MobileSyncBatchEntity>().Add(new MobileSyncBatchEntity
+        {
+            UserId = MobileTestHelpers.UserId,
+            DeviceId = request.DeviceId,
+            BatchId = request.BatchId,
+            WindowStartUtc = request.WindowStartUtc,
+            WindowEndUtc = request.WindowEndUtc,
+            Status = MobileSyncBatchStatus.Pending,
+            ErrorJson = MobileSyncBatchEnvelopeCodec.Serialize(
+                [],
+                [],
+                MobileUsageIngestService.ComputePayloadSha256(request),
+                leaseUntilUtc,
+                attemptCount: 1,
+                leaseId: Guid.NewGuid().ToString("N")),
+            CreatedAt = now.AddMinutes(-1)
+        });
+        await db.SaveChangesAsync();
+        var seededErrorJson = (await db.Set<MobileSyncBatchEntity>().SingleAsync()).ErrorJson;
+        var service = new MobileUsageIngestService(
+            db,
+            MobileTestHelpers.CurrentUser(),
+            new MobileSessionInterpreter(db),
+            MobileTestHelpers.Time(now));
+
+        var result = await service.IngestAsync(request, CancellationToken.None);
+
+        Assert.Equal("in-flight", result.ProcessingState);
+        Assert.Equal(600, result.RetryAfterSeconds);
+        Assert.Equal(leaseUntilUtc, result.LeaseUntilUtc);
+        Assert.Null(result.RetryAtUtc);
+        Assert.Equal(4, result.FailedCount);
+        Assert.Empty(result.ItemResults);
+
+        db.ChangeTracker.Clear();
+        var batch = await db.Set<MobileSyncBatchEntity>().SingleAsync();
+        Assert.Equal(MobileSyncBatchStatus.Pending, batch.Status);
+        Assert.Equal(seededErrorJson, batch.ErrorJson);
+        Assert.Equal(0, batch.FailedCount);
+        Assert.Null(batch.CompletedAtUtc);
+    }
+
+    [Fact]
+    public async Task IngestAsync_RetryCooldownIsReadOnlyAndReturnsRetryScheduledProtocol()
+    {
+        await using var db = MobileTestHelpers.CreateDb();
+        var now = DateTimeOffset.Parse("2026-07-06T12:00:00Z");
+        var request = UploadRequest("batch-retry-scheduled", "Messages");
+        var retryAtUtc = now.AddSeconds(90);
+        db.Set<MobileSyncBatchEntity>().Add(new MobileSyncBatchEntity
+        {
+            UserId = MobileTestHelpers.UserId,
+            DeviceId = request.DeviceId,
+            BatchId = request.BatchId,
+            WindowStartUtc = request.WindowStartUtc,
+            WindowEndUtc = request.WindowEndUtc,
+            Status = MobileSyncBatchStatus.Pending,
+            ErrorJson = MobileSyncBatchEnvelopeCodec.Serialize(
+                [],
+                [],
+                MobileUsageIngestService.ComputePayloadSha256(request),
+                leaseUntilUtc: null,
+                attemptCount: 1,
+                failureCode: "processing-timeout",
+                leaseId: Guid.NewGuid().ToString("N"),
+                retryAfterUtc: retryAtUtc),
+            CreatedAt = now.AddHours(-1)
+        });
+        await db.SaveChangesAsync();
+        var seededErrorJson = (await db.Set<MobileSyncBatchEntity>().SingleAsync()).ErrorJson;
+        var service = new MobileUsageIngestService(
+            db,
+            MobileTestHelpers.CurrentUser(),
+            new MobileSessionInterpreter(db),
+            MobileTestHelpers.Time(now));
+
+        var result = await service.IngestAsync(request, CancellationToken.None);
+
+        Assert.Equal("retry-scheduled", result.ProcessingState);
+        Assert.Equal(90, result.RetryAfterSeconds);
+        Assert.Equal(retryAtUtc, result.RetryAtUtc);
+        Assert.Null(result.LeaseUntilUtc);
+        Assert.Equal(4, result.FailedCount);
+        Assert.Empty(result.ItemResults);
+
+        db.ChangeTracker.Clear();
+        var batch = await db.Set<MobileSyncBatchEntity>().SingleAsync();
+        Assert.Equal(MobileSyncBatchStatus.Pending, batch.Status);
+        Assert.Equal(seededErrorJson, batch.ErrorJson);
+        Assert.Equal(0, batch.FailedCount);
+        Assert.Null(batch.CompletedAtUtc);
+    }
+
+    [Fact]
+    public async Task IngestAsync_ExpiredLeaseProcessesAndTerminalReplayOmitsProcessingFields()
+    {
+        await using var db = MobileTestHelpers.CreateDb();
+        var now = DateTimeOffset.Parse("2026-07-06T12:00:00Z");
+        var request = UploadRequest("batch-lease-expired", "Messages");
+        db.Set<MobileSyncBatchEntity>().Add(new MobileSyncBatchEntity
+        {
+            UserId = MobileTestHelpers.UserId,
+            DeviceId = request.DeviceId,
+            BatchId = request.BatchId,
+            WindowStartUtc = request.WindowStartUtc,
+            WindowEndUtc = request.WindowEndUtc,
+            Status = MobileSyncBatchStatus.Pending,
+            ErrorJson = MobileSyncBatchEnvelopeCodec.Serialize(
+                [],
+                [],
+                MobileUsageIngestService.ComputePayloadSha256(request),
+                now.AddMinutes(-10),
+                attemptCount: 1,
+                leaseId: Guid.NewGuid().ToString("N")),
+            CreatedAt = now.AddHours(-2)
+        });
+        await db.SaveChangesAsync();
+        var service = new MobileUsageIngestService(
+            db,
+            MobileTestHelpers.CurrentUser(),
+            new MobileSessionInterpreter(db),
+            MobileTestHelpers.Time(now));
+
+        var processed = await service.IngestAsync(request, CancellationToken.None);
+        var replay = await service.IngestAsync(request, CancellationToken.None);
+
+        Assert.Null(processed.ProcessingState);
+        Assert.Null(processed.LeaseUntilUtc);
+        Assert.Null(processed.RetryAtUtc);
+        Assert.Equal(4, processed.AcceptedCount);
+        Assert.Equal(JsonSerializer.Serialize(processed.ItemResults), JsonSerializer.Serialize(replay.ItemResults));
+        Assert.Null(replay.ProcessingState);
+        Assert.Null(replay.LeaseUntilUtc);
+        Assert.Null(replay.RetryAtUtc);
     }
 
     [Fact]
@@ -901,6 +1075,62 @@ public sealed class MobileUsageIngestServiceTests
                 await competingDb.SaveChangesAsync(cancellationToken);
 
                 throw new DbUpdateException("Simulated concurrent mobile batch insert.");
+            }
+
+            return await base.SaveChangesAsync(cancellationToken);
+        }
+    }
+
+    private sealed class PendingWinnerRacePimDbContext : PimDbContext
+    {
+        private readonly DbContextOptions<PimDbContext> _options;
+        private readonly MobileUsageEventsUploadRequest _request;
+        private readonly DateTimeOffset _leaseUntilUtc;
+        private bool _hasThrown;
+
+        public PendingWinnerRacePimDbContext(
+            DbContextOptions<PimDbContext> options,
+            MobileUsageEventsUploadRequest request,
+            DateTimeOffset leaseUntilUtc)
+            : base(options)
+        {
+            _options = options;
+            _request = request;
+            _leaseUntilUtc = leaseUntilUtc;
+        }
+
+        public override async Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
+        {
+            var pendingBatch = !_hasThrown
+                ? ChangeTracker.Entries<MobileSyncBatchEntity>()
+                    .SingleOrDefault(entry => entry.State == EntityState.Added)
+                    ?.Entity
+                : null;
+            if (!_hasThrown && pendingBatch is not null)
+            {
+                _hasThrown = true;
+                var attempted = pendingBatch;
+                await using var competingDb = new PimDbContext(_options);
+                competingDb.Set<MobileSyncBatchEntity>().Add(new MobileSyncBatchEntity
+                {
+                    UserId = attempted.UserId,
+                    DeviceId = attempted.DeviceId,
+                    BatchId = attempted.BatchId,
+                    WindowStartUtc = attempted.WindowStartUtc,
+                    WindowEndUtc = attempted.WindowEndUtc,
+                    Status = MobileSyncBatchStatus.Pending,
+                    ErrorJson = MobileSyncBatchEnvelopeCodec.Serialize(
+                        [],
+                        [],
+                        MobileUsageIngestService.ComputePayloadSha256(_request),
+                        _leaseUntilUtc,
+                        attemptCount: 1,
+                        leaseId: Guid.NewGuid().ToString("N")),
+                    CreatedAt = attempted.CreatedAt
+                });
+                await competingDb.SaveChangesAsync(cancellationToken);
+
+                throw new DbUpdateException("Simulated concurrent mobile batch insert with a pending winner.");
             }
 
             return await base.SaveChangesAsync(cancellationToken);
