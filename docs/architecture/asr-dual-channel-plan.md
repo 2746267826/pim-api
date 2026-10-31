@@ -1,6 +1,39 @@
 # ASR 双通道增量方案（#516 排期）
 
+状态（v0.43 当前覆盖）：#516 是逐 Phase 混合状态，不再用单一整体状态概括；#539 API 202 协议与 Android consumer 已交付到 exact CI，但设备/真实 E2E 与 production 仍 NOT-VERIFIED；#533 代码已集成但 issue 保持 OPEN。下方 v0.42 状态行及更早正文为历史快照。更新日期：2026-10-31。
+
 状态：**WEB/ANDROID/API GITHUB RELEASE VERIFIED / NOT PRODUCTION-VERIFIED；#516 PLANNED / NOT IMPLEMENTED；两项产品决策 CONFIRMED；MiMo Batch 仅需求/排期追加，NOT IMPLEMENTED / NOT-VERIFIED**。更新日期：2026-10-31。本文把 #516 的已提出需求整理为依赖明确、顺序合理的增量计划，不是工期承诺或功能完成报告；v0.42 MiMo Batch 增量与 v0.41 已确认决策覆盖见下方最新说明。
+
+<a id="v043-latest-status"></a>
+
+## v0.43 最新状态覆盖：按 Phase 记录 #516 当前证据（2026-10-31）
+
+本节只覆盖当前执行状态，不改写下方 v0.42、v0.41 及更早正文。45/32/32/13、AC1–19、五阶段原编号和至少 203 条历史事实保持；203 仅为既有 validator 的计数参照，本轮没有重跑旧 helper。
+
+### #539 与 Android consumer
+
+- API PR #546 exact head `da9ddf08ac8363bd84d4d12e7c09eaa7738e0acc` 的 CI `41183407442` SUCCESS；普通 merge `07a7d947aef217c5cbfea2439ffa1793649bd472` 后 master CI `41185634130` 全适用 job SUCCESS；Release `api-v26.10.1040` 的 target/tag 为该 merge，ledger SHA-256 `89ddfd74abf8e2663b09eeef9a8841098828333ebee008b1b3ae6052612ddea6`。
+- Android PR #57 head `1bdd5f25361d606fb2dd8c468139b626140a10da` 使用官方 `pim-api@07a7d947` contract；本地 app 2062、core 72 tests 均 0 fail/error/skip，exact CI `41187937904` SUCCESS/Gate，PR 仍 OPEN。JVM/CI 通过不等于 OPPO/OEM、真实服务端 202 或 production 验收；AC13 等长处理/质量闭环仍需独立证据。
+
+### #533 证据边界
+
+`8c474bf` 的四文件修复已由 `91c9b64` 集成进 #57 分支，117 个聚焦 Kotlin/Room tests 全部通过。该结果只证明有界导出与并发/低空间/取消等代码路径；OPPO PLG110、真实分享与 production 未复现/未验收，#533 不关闭。
+
+### #516 Phase 状态矩阵
+
+| 原始阶段 | 当前状态 |
+| --- | --- |
+| 阶段 1 路由/节点/claim/lease | `INTEGRATION WIP`。真实切片 digest、typed Batch multipart Swagger、可执行 renew/stop、ACK projection 自愈、ASR endpoint 50 MiB 预算与 material >4 MiB 回读、Batch endpoint 128 MiB admission 仍在修；最终 migration/Test OpenAPI/generated 未冻结。 |
+| 阶段 2 云端多模态/Batch | `SOURCE IMPLEMENTED + INTEGRATION WIP`。Provider `3898240f`/`e135df8b` 的 mock 78/78；Web 79 tests、build、lint 通过并修正真实 audit wrapper；Hume adaptive helper `eada9a8c` 21/21，但尚未接 Job/TaskStore。Batch safety slice 既有 22/22 synthetic PG；真实 CAS、failed-only retry 与 durable background poll 尚待执行/集成。真实音频 Batch、付费与质量 NOT-VERIFIED。 |
+| 阶段 3 Windows 模型管理 | `SOURCE IMPLEMENTED + INTEGRATION WIP`。Windows 是 .NET/native，不是 JVM。`c41dae1` 之前的 full 232/232 与 app 59/59 是历史，不冒充最新 R18 WIP；R18 当前负向测试未跑，R19 需消费唯一导出的路由/Batch contract。真实模型/硬件 NOT-VERIFIED。 |
+| 阶段 4 拉取/执行/退避/清退 | `SOURCE PARTIAL`。受控进程、资源门、账号/来源绑定和清退 helper 已存在；尚无真实模型执行与资源回落闭环，AC3–7 不得写 PASS。 |
+| 阶段 5 重跑/UI/AC1–19 | `NOT STARTED / NOT-VERIFIED`。重跑原因、不可变历史、三通道结果、退出/崩溃恢复与全链 AC 回执均未闭合。 |
+
+### 保留约束
+
+- local 不可用时保持排队，只有用户手动切 cloud，禁止自动付费 fallback；Windows 节点仅当前账号。两项为 confirmed product decisions。
+- MiMo Batch 保持 v0.42 的 provider/async scope：归入 `cloud-multimodal`，不新增对外 route enum，不自动追溯既有 attempt，不因 local offline 自动转 Batch；真实 Batch 音频仍 NOT-VERIFIED。
+- #516 保持 OPEN；不得因某个 helper、mock 或 CI 绿写成整体完成。当前优先级仍是 #539 processing/退避与 Android not-before 收口，然后进入阶段 1 最终契约与负向验收。
 
 <a id="v042-latest-status"></a>
 
