@@ -26,6 +26,158 @@ public sealed class NoteAsrRoutingConcurrencyTests
     private static string? ConnectionString => Environment.GetEnvironmentVariable("PIM_ASR516_PG");
 
     [SkippableFact]
+    public async Task Local_partial_retry_reissues_only_missing_segments_and_keeps_cross_fence_proof()
+    {
+        Skip.If(string.IsNullOrWhiteSpace(ConnectionString), "PIM_ASR516_PG is not configured");
+        var owner = Guid.NewGuid();
+        var nodeA = Guid.NewGuid();
+        var options = Options.Create(new NoteMaterialUploadOptions { StorageRoot = StorageRoot });
+        var materials = new NoteMaterialUploadStore(options);
+        var tasks = new NoteAsrTaskStore(options);
+        var material = NoteDerivedFixture.CreateMaterial(audioSamples: 1_000);
+        await NoteDerivedFixture.UploadAsync(materials, owner, material);
+        var taskId = Guid.NewGuid();
+        var attemptId = Guid.NewGuid();
+        var inputSha = NoteMaterialManifestValidator.Hash(material.Request.InputJson);
+        var now = DateTimeOffset.UtcNow;
+        await using (var db = NewDb(owner))
+        {
+            await db.Database.EnsureCreatedAsync();
+            await db.Users.AddAsync(NewUser(owner));
+            await db.NoteAsrNodes.AddAsync(Node(owner, nodeA, "node-a", now));
+            db.NoteAsrAttempts.Add(new NoteAsrAttemptEntity
+            {
+                Id = attemptId, OwnerId = owner, TaskId = taskId, NoteId = material.NoteId,
+                VersionId = material.Request.VersionId, InputSha256 = inputSha, Route = NoteAsrRoute.Local,
+                State = "Queued", Language = "zh", ExpectedSegments = 3, LocalModelId = "local-model",
+                LocalModelRevision = "r1", ConfigRevision = Guid.NewGuid(), ConsentVersion = "consent-local"
+            });
+            await db.SaveChangesAsync();
+        }
+        await WriteTaskStateAsync(new NoteAsrState
+        {
+            Owner = owner,
+            Request = new StartNoteAsrRequest(taskId, owner, material.Request.VersionId, null, "zh"),
+            Fingerprint = new string('b', 64), NoteId = material.NoteId, InputSha256 = inputSha,
+            ManifestSha256 = new string('c', 64), AttemptId = attemptId, Route = NoteAsrRoute.Local,
+            RouteConfigRevision = Guid.NewGuid(), RouteConsentVersion = "consent-local",
+            Steps = Enumerable.Range(0, 3).Select(i => new NoteAsrStep
+            {
+                Index = i, RecordingId = material.RecordingId, RecordingSegment = 1, ChunkIndex = i,
+                FileIndex = 5, Path = $"recordings/{material.RecordingId:D}/s0001-c{i:D6}.wav",
+                Sha256 = NoteDerivedFixture.Digest(material.Content[5]), SourceOffset = 0,
+                RecordingOffset = i, TimelineOffset = i, Samples = 1_000, Attempts = [new()]
+            }).ToList()
+        });
+        NoteAsrClaimDto first;
+        await using (var db = NewDb(owner))
+        {
+            first = await NewService(db, owner).ClaimAsync(new ClaimNoteAsrTaskRequest(nodeA, "partial-1"), CancellationToken.None);
+            Assert.Equal("claimed", first.Status);
+            Assert.Equal(new[] { 0, 1, 2 }, first.Execution!.Segments.Select(x => x.Index).ToArray());
+        }
+        await using (var db = NewDb(owner))
+        {
+            var service = NewService(db, owner);
+            var lease = first.Lease!;
+            await service.AcknowledgeAsync(attemptId, new NoteAsrAckRequest(lease.LeaseId, lease.LeaseToken,
+                lease.FencingToken, "segment", "Succeeded", 0, "local-handle-0", null, null, "第一段"),
+                CancellationToken.None);
+            await service.AcknowledgeAsync(attemptId, new NoteAsrAckRequest(lease.LeaseId, lease.LeaseToken,
+                lease.FencingToken, "fail", "Failed", 0, null, "engine_failed", "synthetic failure"),
+                CancellationToken.None);
+        }
+        NoteAsrTaskDto afterFailure;
+        Guid staleRevision;
+        await using (var db = NewDb(owner))
+        {
+            var service = NewNoteService(db, owner, materials, tasks);
+            afterFailure = await service.GetAsync(taskId, CancellationToken.None);
+            staleRevision = afterFailure.Revision;
+            Assert.True(afterFailure.StopRequested);
+            var failedView = await service.SegmentsAsync(taskId, 0, 20, CancellationToken.None);
+            Assert.Equal("第一段", failedView.Items[0].Transcript);
+            Assert.Equal("Succeeded", failedView.Items[0].Status);
+        }
+        // A repeated unchanged GET must not rotate Revision, otherwise Retry's ExpectedRevision is stale.
+        await using (var db = NewDb(owner))
+        {
+            var service = NewNoteService(db, owner, materials, tasks);
+            var again = await service.GetAsync(taskId, CancellationToken.None);
+            Assert.Equal(staleRevision, again.Revision);
+            // Illegal retries must not touch the task file or the attempt row.
+            var beforeReject = await tasks.ReadAsync(owner, taskId, CancellationToken.None);
+            var outOfRange = await Assert.ThrowsAsync<DomainException>(() => service.RetryAsync(taskId,
+                new RetryNoteAsrRequest(Guid.NewGuid(), owner, staleRevision, [9], null, false),
+                CancellationToken.None));
+            Assert.Equal(40901, outOfRange.ErrorCode);
+            var staleRev = await Assert.ThrowsAsync<DomainException>(() => service.RetryAsync(taskId,
+                new RetryNoteAsrRequest(Guid.NewGuid(), owner, Guid.NewGuid(), [1], null, false),
+                CancellationToken.None));
+            Assert.Equal(40901, staleRev.ErrorCode);
+            var afterReject = await tasks.ReadAsync(owner, taskId, CancellationToken.None);
+            Assert.Equal(beforeReject.Revision, afterReject.Revision);
+            Assert.Empty(afterReject.Retries);
+            var row = await db.NoteAsrAttempts.AsNoTracking().SingleAsync(x => x.Id == attemptId);
+            Assert.Equal("Failed", row.State);
+        }
+        NoteAsrClaimDto second;
+        await using (var db = NewDb(owner))
+        {
+            var service = NewNoteService(db, owner, materials, tasks);
+            await service.RetryAsync(taskId, new RetryNoteAsrRequest(Guid.NewGuid(), owner,
+                staleRevision, [1, 2], null, false), CancellationToken.None);
+        }
+        await using (var db = NewDb(owner))
+        {
+            second = await NewService(db, owner).ClaimAsync(new ClaimNoteAsrTaskRequest(nodeA, "partial-2"), CancellationToken.None);
+            Assert.Equal("claimed", second.Status);
+            Assert.Equal(new[] { 1, 2 }, second.Execution!.Segments.Select(x => x.Index).ToArray());
+            Assert.Equal(3, second.Execution.ExpectedSegments);
+        }
+        await using (var db = NewDb(owner))
+        {
+            var service = NewService(db, owner);
+            var stale = first.Lease!;
+            var error = await Assert.ThrowsAsync<DomainException>(() => service.AcknowledgeAsync(attemptId,
+                new NoteAsrAckRequest(stale.LeaseId, stale.LeaseToken, stale.FencingToken,
+                    "segment", "Succeeded", 0, "local-handle-0", null, null, "第一段"), CancellationToken.None));
+            Assert.Equal(40901, error.ErrorCode);
+            var lease = second.Lease!;
+            await service.AcknowledgeAsync(attemptId, new NoteAsrAckRequest(lease.LeaseId, lease.LeaseToken,
+                lease.FencingToken, "segment", "Succeeded", 1, "local-handle-1", null, null, "第二段"),
+                CancellationToken.None);
+            await service.AcknowledgeAsync(attemptId, new NoteAsrAckRequest(lease.LeaseId, lease.LeaseToken,
+                lease.FencingToken, "segment", "Succeeded", 2, "local-handle-2", null, null, "第三段"),
+                CancellationToken.None);
+            var completed = await service.AcknowledgeAsync(attemptId, new NoteAsrAckRequest(lease.LeaseId,
+                lease.LeaseToken, lease.FencingToken, "complete", "Succeeded", 0, null, null, null),
+                CancellationToken.None);
+            Assert.Equal("accepted", completed.Status);
+        }
+        await using (var db = NewDb(owner))
+        {
+            var service = NewNoteService(db, owner, materials, tasks);
+            var done = await service.GetAsync(taskId, CancellationToken.None);
+            Assert.Equal("Succeeded", done.Phase);
+            Assert.False(done.StopRequested);
+            var segments = await service.SegmentsAsync(taskId, 0, 20, CancellationToken.None);
+            Assert.Equal(new[] { "第一段", "第二段", "第三段" }, segments.Items.Select(x => x.Transcript).ToArray());
+            Assert.All(segments.Items, x => Assert.Equal("Succeeded", x.Status));
+            var again = await service.GetAsync(taskId, CancellationToken.None);
+            Assert.Equal("Succeeded", again.Phase);
+            Assert.Equal(done.Revision, again.Revision);
+        }
+        await using (var check = NewDb(owner))
+        {
+            var attempt = await check.NoteAsrAttempts.AsNoTracking().SingleAsync(x => x.Id == attemptId);
+            Assert.Equal("Succeeded", attempt.State);
+            Assert.Equal(2L, attempt.FencingToken);
+            Assert.Equal(3, await check.NoteAsrSegmentEvidence.CountAsync(x => x.OwnerId == owner && x.AttemptId == attemptId));
+        }
+        await CleanupAsync(owner);
+    }
+    [SkippableFact]
     public async Task Two_nodes_claiming_same_attempt_produce_exactly_one_active_lease()
     {
         Skip.If(string.IsNullOrWhiteSpace(ConnectionString), "PIM_ASR516_PG is not configured");
@@ -1259,6 +1411,12 @@ public sealed class NoteAsrRoutingConcurrencyTests
             new NoteAsrEvidenceService(db, tasks, new FixedUser(owner)),
             new PassthroughSecrets(), Options.Create(new NoteAsrRoutingOptions()));
     }
+
+    private static NoteAsrService NewNoteService(PimDbContext db, Guid owner,
+        NoteMaterialUploadStore materials, NoteAsrTaskStore tasks) =>
+        new(tasks, materials, db, new FixedUser(owner),
+            new AiAsrPresetRegistry(Array.Empty<IAiAsrPreset>()), new ConfigurationBuilder().Build(),
+            new PassthroughSecrets(), NewService(db, owner));
 
     private static async Task CleanupAsync(Guid owner)
     {

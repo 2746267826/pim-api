@@ -308,10 +308,16 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
         var evidence = await CurrentEvidenceAsync(owner, state, ct);
         if (evidence.Count > 0)
         {
+            // Only compare accepted proofs; a step with no proof at all is simply not yet transcribed,
+            // and must not force a Revision rotation on every GET.
+            var unrelated = evidence.Any(x => x.Key >= 0 && x.Key < state.Steps.Count &&
+                (state.Steps[x.Key].Current.EvidenceId != x.Value.Id ||
+                 state.Steps[x.Key].Current.Status != "Succeeded" ||
+                 state.Steps[x.Key].Current.ErrorMessage is not null));
             var observedAttempt = state.AttemptId;
             var observedVersion = state.Request.VersionId;
             var observedInput = state.InputSha256;
-            state = await tasks.UpdateAsync(owner, id, current =>
+            if (unrelated) state = await tasks.UpdateAsync(owner, id, current =>
             {
                 if (current.AttemptId != observedAttempt ||
                     current.Request.VersionId != observedVersion ||
@@ -352,12 +358,17 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
         var fence = await db.NoteAsrAttempts.AsNoTracking()
             .Where(x => x.Id == attemptId && x.OwnerId == owner).Select(x => (long?)x.FencingToken).SingleOrDefaultAsync(ct);
         if (fence is null) return [];
+        // Attempt-scoped evidence: a re-lease after a partial failure must not hide older fence proof.
         var rows = await db.NoteAsrSegmentEvidence.AsNoTracking().Where(x => x.OwnerId == owner &&
-                x.AttemptId == attemptId && x.FencingToken == fence.Value &&
+                x.AttemptId == attemptId && x.FencingToken <= fence.Value &&
                 x.TaskId == state.Request.TaskId && x.VersionId == state.Request.VersionId)
             .OrderBy(x => x.CreatedAt).ToListAsync(ct);
-        return rows.GroupBy(x => x.SegmentIndex).ToDictionary(x => x.Key, x => x.Last());
+        var steps = state.Steps.ToDictionary(x => x.Index);
+        return rows.Where(x => steps.TryGetValue(x.SegmentIndex, out var step) &&
+                NoteAsrRoutingService.EvidenceMatchesStep(x, step))
+            .GroupBy(x => x.SegmentIndex).ToDictionary(x => x.Key, x => x.Last());
     }
+
     private async Task<AiAsrPresetDto> ValidateDestinationAsync(AiAsrDestinationConsent? consent, string language, CancellationToken ct)
     {
         if (consent?.Confirmed != true) throw new DomainException(40001, "请明确同意将全部录音分片发送至所示ASR目标");
