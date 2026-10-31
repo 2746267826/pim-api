@@ -2,8 +2,10 @@ using Pim.Core.Ai;
 
 namespace Pim.Infrastructure.Ai.Asr;
 
-public sealed record AiAsrInput(string Name, string Format, byte[] Bytes, string Sha256)
+public sealed record AiAsrInput(string Name, string Format, byte[] Bytes, string Sha256,
+    string? RemoteUrl = null, string? RemoteOrigin = null)
 {
+    public bool IsRemote => RemoteUrl is not null;
     public string ContentType => Format switch
     {
         "wav" => "audio/wav",
@@ -13,7 +15,8 @@ public sealed record AiAsrInput(string Name, string Format, byte[] Bytes, string
         "ogg" => "audio/ogg",
         _ => "application/octet-stream"
     };
-    public override string ToString() => $"AiAsrInput {{ Name = {Name}, Format = {Format}, Bytes = {Bytes.Length} }}";
+    public override string ToString() =>
+        $"AiAsrInput {{ Name = {Name}, Format = {Format}, Bytes = {Bytes.Length}, Source = {(IsRemote ? "public-url" : "inline")} }}";
 }
 
 public sealed record AiAsrProviderResult(string Text, string? FinishReason, long? InputTokens, long? OutputTokens,

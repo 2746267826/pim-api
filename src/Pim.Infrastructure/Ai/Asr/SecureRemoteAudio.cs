@@ -62,9 +62,19 @@ public sealed record RemoteAudioFetchLimits
 /// redirects. DNS answers are validated once and the HTTPS connection is pinned to those
 /// approved addresses, preventing a later DNS rebinding from changing the destination.
 /// </summary>
-public sealed class SecureRemoteAudioFetcher
+public interface IRemoteAudioFetcher
+{
+    Task<RemoteAudioDownload> FetchAsync(Uri url, RemoteAudioExpectation expectation, CancellationToken ct);
+}
+
+public sealed class SecureRemoteAudioFetcher : IRemoteAudioFetcher
 {
     public const int MaxUrlChars = 8_192;
+    public static readonly TimeSpan DefaultOperationBudget =
+        RemoteAudioFetchLimits.Default.DnsTimeout +
+        RemoteAudioFetchLimits.Default.HeadTimeout +
+        RemoteAudioFetchLimits.Default.GetTimeout;
+
     private readonly IRemoteAudioDnsResolver _dns;
     private readonly IRemoteAudioHttpClientFactory _clients;
     private readonly RemoteAudioFetchLimits _limits;
@@ -90,6 +100,7 @@ public sealed class SecureRemoteAudioFetcher
         CancellationToken ct)
     {
         try { return await FetchCoreAsync(url, expectation, ct); }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch (Exception error) when (error is not DomainException)
         {
             // Never include the signed URL: Exception.ToString here only shows this safe message.

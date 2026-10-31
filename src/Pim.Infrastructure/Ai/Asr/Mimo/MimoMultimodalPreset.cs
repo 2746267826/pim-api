@@ -67,7 +67,11 @@ public sealed class MimoMultimodalPreset(Func<HttpMessageHandler?, HttpClient> i
         if (audioPart is null || textPart is null) throw Mismatch();
         var input = audioPart["input_audio"]!;
         var data = input["data"]?.GetValue<string>();
-        if (!MimoAudioFormats.MatchesDataUrl(audio.Format, data, audio.Bytes)) throw Mismatch();
+        if (audio.RemoteUrl is { } remoteUrl)
+        {
+            if (!string.Equals(data, remoteUrl, StringComparison.Ordinal)) throw Mismatch();
+        }
+        else if (!MimoAudioFormats.MatchesDataUrl(audio.Format, data, audio.Bytes)) throw Mismatch();
         if (input["format"] is not null && input["format"]!.GetValue<string>() != audio.Format) throw Mismatch();
         if (textPart["text"] is not JsonValue textValue ||
             !textValue.TryGetValue<string>(out var text) ||
@@ -82,8 +86,9 @@ public sealed class MimoMultimodalPreset(Func<HttpMessageHandler?, HttpClient> i
         string language, CancellationToken ct, AiAsrPromptSnapshot? prompt = null)
     {
         ValidateModel(connection.Model);
+        var maxBytes = audio.IsRemote ? RemoteAudioFetchLimits.HardMaxBytes : Descriptor.MaxAudioBytes;
         if (!Descriptor.Formats.Contains(audio.Format) || !Descriptor.Languages.Contains(language) ||
-            audio.Bytes.Length > Descriptor.MaxAudioBytes)
+            audio.Bytes.Length > maxBytes)
             throw new DomainException(40001, "音频格式、语言或大小不符合MiMo多模态预设");
 
         var endpoint = new Uri(new Uri(connection.Endpoint), Descriptor.OperationPath).AbsoluteUri;
@@ -120,7 +125,7 @@ public sealed class MimoMultimodalPreset(Func<HttpMessageHandler?, HttpClient> i
 
     private static string BuildRequest(string model, AiAsrInput audio, AiAsrPromptSnapshot prompt)
     {
-        var data = MimoAudioFormats.DataUrl(audio.Format, audio.Bytes);
+        var data = audio.RemoteUrl ?? MimoAudioFormats.DataUrl(audio.Format, audio.Bytes);
         return JsonSerializer.Serialize(new
         {
             model,

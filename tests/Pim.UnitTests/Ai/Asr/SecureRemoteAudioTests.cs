@@ -232,6 +232,18 @@ public sealed class SecureRemoteAudioTests
     }
 
     [Fact]
+    public async Task Fetch_PropagatesCallerCancellationInsteadOfWrappingItAsTransportFailure()
+    {
+        var fetcher = Create(new DelayedResolver(), new FakeClients(_ => Ok(Wav, "audio/wav")),
+            new RemoteAudioFetchLimits { DnsTimeout = TimeSpan.FromSeconds(30) });
+        using var cancelled = new CancellationTokenSource(TimeSpan.FromMilliseconds(20));
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            fetcher.FetchAsync(new Uri("https://audio.example.test/private/cancel.wav?sig=XZ"),
+                Expect(), cancelled.Token));
+    }
+
+    [Fact]
     public async Task Fetch_EnforcesDnsHeadAndGetTimeouts()
     {
         var dns = Create(new DelayedResolver(), new FakeClients(_ => Ok(Wav, "audio/wav")),
@@ -316,6 +328,7 @@ public sealed class SecureRemoteAudioTests
     [Fact]
     public void Limits_RejectMoreThan100MiB()
     {
+        Assert.Equal(100L * 1024 * 1024, RemoteAudioFetchLimits.HardMaxBytes);
         var error = Assert.Throws<DomainException>(() => Create(
             new FakeResolver([IPAddress.Parse("1.1.1.1")]),
             new FakeClients(_ => Ok(Wav, "audio/wav")),
