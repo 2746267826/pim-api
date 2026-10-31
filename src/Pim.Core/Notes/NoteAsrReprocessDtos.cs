@@ -29,6 +29,7 @@ public sealed record ReprocessNoteAsrRequest(
     Guid ExpectedRevision,
     NoteAsrReprocessReason Reason,
     NoteAsrReprocessRoute Route,
+    /// <summary>Required only for a cloud route; local-only reprocessing must omit it.</summary>
     AiAsrDestinationConsent? Consent = null);
 
 public sealed record NoteAsrReprocessResultDto(NoteAsrTaskDto Task, Guid ParentTaskId, string Reason);
