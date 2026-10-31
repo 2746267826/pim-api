@@ -74,6 +74,23 @@ it('offers only failed or queued segments for explicit recovery and preserves su
   expect(api.noteAsrRetry.mock.calls[0]?.[1]).toEqual(expect.objectContaining({ expectedUserId: owner, expectedRevision: task.revision, segmentIndexes: [1], consent: task.destination, acknowledgePossibleDuplicateCharge: true }))
 })
 
+it('retries a nullable local task with null consent and no cloud target', async () => {
+  const localTask: NoteAsrTask = { ...task, route: 'local', destination: null }
+  api.noteAsrTasks.mockResolvedValue([localTask])
+  api.noteAsrTask.mockResolvedValue(localTask)
+  page()
+  await userEvent.click(await screen.findByRole('button', { name: /1\/2 片/ }))
+  expect(await screen.findByText(/本任务发送目标：本机执行/)).toBeTruthy()
+  await userEvent.click(screen.getByRole('checkbox', { name: '恢复第2片' }))
+  await userEvent.click(screen.getByRole('checkbox', { name: '确认分片恢复和可能重复计费' }))
+  await userEvent.click(screen.getByRole('button', { name: '恢复所选分片' }))
+  await waitFor(() => expect(api.noteAsrRetry).toHaveBeenCalledOnce())
+  expect(api.noteAsrRetry.mock.calls[0]?.[1]).toEqual(expect.objectContaining({
+    expectedUserId: owner, expectedRevision: localTask.revision, segmentIndexes: [1], consent: null,
+    acknowledgePossibleDuplicateCharge: true,
+  }))
+})
+
 it('shows immutable history for the chosen version and opens old results without sending', async () => {
   api.noteAsrTasks.mockResolvedValue([task])
   page(); await choose()

@@ -130,10 +130,14 @@ export function TaskDetail({ id, userId, serverBinding, prefix, showDetail }: {
         </div>
       })}</div>
       {segments.data && segments.data.total > 10 && <div className="flex gap-2"><Button size="sm" disabled={offset === 0} onClick={() => setOffset((p) => p - 10)}>上一页分片</Button><Button size="sm" disabled={offset + 10 >= segments.data.total} onClick={() => setOffset((p) => p + 10)}>下一页分片</Button></div>}
-      {selected.length > 0 && task.data.destination && <div className="space-y-3 rounded-ctl border border-border p-3"><p className="break-all text-xs text-text-2">恢复 {selected.length} 片，仍发送至：{task.data.destination.endpoint} · {task.data.destination.presetId} v{task.data.destination.presetVersion}。原调用记录和成功转写保留。</p>
+      {selected.length > 0 && <div className="space-y-3 rounded-ctl border border-border p-3"><p className="break-all text-xs text-text-2">
+        {task.data.destination
+          ? `恢复 ${selected.length} 片，仍发送至：${task.data.destination.endpoint} · ${task.data.destination.presetId} v${task.data.destination.presetVersion}。原调用记录和成功转写保留。`
+          : `恢复 ${selected.length} 片，仍在本机执行；不需要云端凭据，本机不可用时只排队。原调用记录和成功转写保留。`}
+      </p>
         <label className="flex items-start gap-2 text-xs text-text-2"><input type="checkbox" aria-label="确认分片恢复和可能重复计费" checked={approved === approvalKey} onChange={(event) => setApproved(event.target.checked ? approvalKey : '')} /><span>已核对原目标和记录，确认恢复，理解未知结果的重试可能重复计费</span></label>
         <Button disabled={busy || approved !== approvalKey} onClick={() => void change((value) => aiApi.noteAsrRetry(id, { retryId: createAiRequestId(), expectedUserId: userId, expectedRevision: value.revision,
-          segmentIndexes: selected, consent: value.destination, acknowledgePossibleDuplicateCharge: true }))}>恢复所选分片</Button></div>}
+          segmentIndexes: selected, consent: value.destination ?? null, acknowledgePossibleDuplicateCharge: true }))}>恢复所选分片</Button></div>}
       <NoteAsrReprocessPanel task={task.data} userId={userId} serverBinding={serverBinding} />
       {message && <p role="alert" className="text-sm text-text-2">{message}</p>}
     </>}
