@@ -220,6 +220,36 @@ describe('AI文字调用完整页面', () => {
     expect(screen.getByText(/MiMo 多模态 v1/)).toBeTruthy()
   })
 
+  it('edits the shared ASR prompt and explicit MiMo Batch origin', async () => {
+    const multimodal = { ...preset, id: 'mimo-multimodal', name: 'MiMo 多模态', defaultModel: 'mimo-v2.6-flash',
+      models: ['mimo-v2.6-flash', 'mimo-v2.6-pro'], formats: ['wav', 'mp3', 'flac', 'm4a', 'ogg'],
+      maxAudioBytes: 50 * 1024 * 1024 }
+    fixture.api.asrPresets.mockResolvedValue([multimodal])
+    models = [...models, { id: asrId, revision, name: 'MiMo Flash 长音频', baseUrl: multimodal.defaultBaseUrl,
+      model: 'mimo-v2.6-flash', enabled: true, capabilities: ['Transcription'], hasApiKey: true,
+      timeoutSeconds: 600, maxOutputTokens: 8192, asrPresetId: multimodal.id,
+      asrPrompt: '旧的转写提示词', asrPromptRevision: 'prompt-rev-1',
+      createdAt: '2026-10-27T00:00:00Z', updatedAt: '2026-10-27T00:00:00Z' }]
+    settings = { ...settings, transcriptionModelId: asrId }
+    open('/settings/ai?tab=asr')
+
+    await userEvent.click(await screen.findByRole('button', { name: '编辑 ASR MiMo Flash 长音频' }))
+    const dialog = screen.getByRole('dialog')
+    expect((within(dialog).getByLabelText('转写提示词') as HTMLTextAreaElement).value).toBe('旧的转写提示词')
+    expect(within(dialog).getByText(/prompt-rev-1/)).toBeTruthy()
+    await userEvent.clear(within(dialog).getByLabelText('转写提示词'))
+    await userEvent.type(within(dialog).getByLabelText('转写提示词'), '逐字转写，不要分析或总结')
+    await userEvent.type(within(dialog).getByLabelText('MiMo Batch API 根地址（可选）'), 'https://batch-api-test.xiaomimimo.com/v1')
+    await userEvent.click(within(dialog).getByRole('button', { name: '保存模型' }))
+    await waitFor(() => expect(fixture.api.saveModel).toHaveBeenCalledOnce())
+    expect(fixture.api.saveModel).toHaveBeenCalledWith(asrId, expect.objectContaining({
+      asrPresetId: 'mimo-multimodal',
+      asrPrompt: '逐字转写，不要分析或总结',
+      asrBatchBaseUrl: 'https://batch-api-test.xiaomimimo.com/v1',
+      expectedRevision: revision,
+    }))
+  })
+
   it('legacy AI settings URL remains compatible and defaults to model settings', async () => {
     open()
     expect(await screen.findByRole('button', { name: '编辑 文字主模型' })).toBeTruthy()
