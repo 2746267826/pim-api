@@ -14,6 +14,8 @@ public sealed class AiAsrMaterialService(PimDbContext db, IFileAttachmentStore f
 {
     // Bounded single-call input, not the long-recording upload/segmentation pipeline.
     public const int MaxAudioBytes = 4 * 1024 * 1024;
+    // Decoded/persisted URL-audio byte budget, not a guarantee on transient process peak memory.
+    public const int MaxRemoteAudioBytes = 100 * 1024 * 1024;
     // Covers a 50 MiB decoded MiMo audio payload after base64 plus a finite JSON envelope.
     public const long MaxMimoRequestJsonBytes = 72L * 1024 * 1024;
     public static AiAsrInput Decode(AiAsrAudioRequest? audio, IReadOnlyCollection<string>? formats = null,
@@ -33,6 +35,24 @@ public sealed class AiAsrMaterialService(PimDbContext db, IFileAttachmentStore f
         var name = audio.Name.Replace('\\', '/').Split('/').Last();
         if (string.IsNullOrWhiteSpace(name)) throw Invalid("音频名称无效");
         return new(name, audio.Format, bytes, Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant());
+    }
+    public static AiAsrInput AcceptRemote(string? name, string? format, Uri source,
+        RemoteAudioDownload download, IReadOnlyCollection<string> formats)
+    {
+        if (name is null || string.IsNullOrWhiteSpace(name) || name.Length > 200 || name.Any(char.IsControl))
+            throw Invalid("URL音频名称无效");
+        if (format is null || !formats.Contains(format, StringComparer.Ordinal))
+            throw Invalid("URL音频格式不符合所选预设");
+        var bytes = download.Bytes;
+        if (bytes.Length < 1 || bytes.Length > MaxRemoteAudioBytes ||
+            download.Provenance.ByteCount != bytes.Length ||
+            !string.Equals(download.Provenance.Sha256,
+                Convert.ToHexString(SHA256.HashData(bytes.Span)).ToLowerInvariant(), StringComparison.Ordinal))
+            throw Invalid("URL音频大小或预检摘要无效");
+        var safeName = name.Replace('\\', '/').Split('/').Last();
+        if (string.IsNullOrWhiteSpace(safeName)) throw Invalid("URL音频名称无效");
+        return new(safeName, format, bytes.ToArray(), download.Provenance.Sha256,
+            source.OriginalString, download.Provenance.Origin);
     }
     public static AiCallAudioEntity Describe(Guid logId, AiAsrInput audio) => new()
     { LogId = logId, Name = audio.Name, Format = audio.Format, SizeBytes = audio.Bytes.Length, Sha256 = audio.Sha256 };
@@ -65,10 +85,10 @@ public sealed class AiAsrMaterialService(PimDbContext db, IFileAttachmentStore f
         var stored = await (from audio in db.AiCallAudio.AsNoTracking()
             join log in db.AiRequestLogs.AsNoTracking() on audio.LogId equals log.Id
             where audio.LogId == logId && log.UserId == owner
-            select new { Audio = audio, PresetId = log.Provider }).SingleOrDefaultAsync(ct);
+            select new { Audio = audio, PresetId = log.Provider, log.Purpose }).SingleOrDefaultAsync(ct);
         var row = stored?.Audio;
         if (row?.ObjectKey is null) throw Missing();
-        var maxBytes = ReadBudget(stored!.PresetId);
+        var maxBytes = ReadBudget(stored!.PresetId, stored.Purpose);
         var reference = new FileAttachmentRef(row.ObjectKey, row.ProviderKey!, row.ProviderId);
         await using var stream = files is IBoundedFileAttachmentStore bounded
             ? await bounded.OpenReadAsync(owner, reference, maxBytes, ct)
@@ -84,8 +104,9 @@ public sealed class AiAsrMaterialService(PimDbContext db, IFileAttachmentStore f
         if (bytes.Length != row.SizeBytes || Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant() != row.Sha256) throw Changed();
         return (bytes, Mime(row.Format));
     }
-    private int ReadBudget(string? presetId)
+    private int ReadBudget(string? presetId, string? purpose)
     {
+        if (purpose == "ai.asr-url-call") return MaxRemoteAudioBytes;
         if (presets is null || string.IsNullOrWhiteSpace(presetId)) return MaxAudioBytes;
         try
         {

@@ -32,4 +32,31 @@ public sealed record AiAsrCallRequest(Guid ClientRequestId, Guid ExpectedUserId,
     public override string ToString() => $"AiAsrCallRequest {{ ClientRequestId = {ClientRequestId}, ModelId = {ModelId}, Data = [audio] }}";
 }
 
+/// <summary>
+/// Public HTTPS audio source. Explicit confirmations acknowledge both the source read and that
+/// the provider will fetch that URL again; the preflight digest cannot attest the provider copy.
+/// </summary>
+public sealed record AiAsrUrlAudioRequest(string Name, string Format, string Url, string? ExpectedSha256,
+    bool SourceConfirmed, bool ProviderFetchConfirmed)
+{
+    public override string ToString() =>
+        $"AiAsrUrlAudioRequest {{ Name = {Name}, Format = {Format}, Url = [redacted], ExpectedSha256 = {ExpectedSha256} }}";
+}
+
+public sealed record AiAsrUrlCallRequest(Guid ClientRequestId, Guid ExpectedUserId, AiAsrUrlAudioRequest Audio,
+    AiAsrDestinationConsent Consent, string Language = "auto", Guid? ModelId = null,
+    AiAsrPromptSnapshot? Prompt = null)
+{
+    public override string ToString() =>
+        $"AiAsrUrlCallRequest {{ ClientRequestId = {ClientRequestId}, ModelId = {ModelId}, Source = [public-url] }}";
+}
+
+/// <summary>
+/// URL-mode result. Its 100 MiB source limit is a decoded-byte budget, not a process peak-memory
+/// guarantee; the preflight digest also cannot prove the provider fetched the same bytes later.
+/// </summary>
+public sealed record AiAsrUrlCallResultDto(Guid LogId, AiRequestStatus Status, string? ResponseText,
+    string? ErrorMessage, bool Replayed, string? SourceOrigin, string? PreflightSha256,
+    bool PreflightVerified, bool ProviderFetchVerified, string Warning);
+
 public sealed record AiCallAudioDto(Guid Id, string Name, string ContentType, long SizeBytes, string Sha256, bool Stored);

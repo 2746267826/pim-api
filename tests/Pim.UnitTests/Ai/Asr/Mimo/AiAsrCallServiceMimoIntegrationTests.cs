@@ -63,6 +63,43 @@ public sealed class AiAsrCallServiceMimoIntegrationTests
     }
 
     [Fact]
+    public void Mimo_url_request_audit_replaces_the_signed_url_with_an_audio_reference()
+    {
+        var preset = new MimoMultimodalPreset(_ => new HttpClient(new StubHandler(() => JsonResponse("{}"))));
+        var source = "https://audio.example.test/private/take.wav?sig=XZ&opaque=Q7";
+        var prompt = AiAsrPromptTemplate.Normalize().Snapshot("zh");
+        var body = JsonSerializer.Serialize(new
+        {
+            model = MimoMultimodalPreset.FlashModel,
+            messages = new[]
+            {
+                new
+                {
+                    role = "user",
+                    content = new object[]
+                    {
+                        new { type = "input_audio", input_audio = new { data = source, format = "wav" } },
+                        new { type = "text", text = prompt.Text }
+                    }
+                }
+            }
+        });
+        var audio = new AiAsrInput("take.wav", "wav", new byte[8], "synthetic-sha",
+            source, "https://audio.example.test");
+        var audioId = Guid.NewGuid();
+
+        var audited = preset.AuditRequest(Encoding.UTF8.GetBytes(body),
+            new AiModelConnection("https://api.synthetic.invalid/v1/",
+                MimoMultimodalPreset.FlashModel, "synthetic-key", 5),
+            audio, audioId, "zh", prompt);
+
+        Assert.DoesNotContain(source, audited, StringComparison.Ordinal);
+        Assert.DoesNotContain("sig=XZ", audited, StringComparison.Ordinal);
+        Assert.Contains($"pim-ai-audio:{audioId:D}", audited, StringComparison.Ordinal);
+        Assert.Equal(50 * 1024 * 1024, preset.Descriptor.MaxAudioBytes);
+    }
+
+    [Fact]
     public async Task Named_client_pipeline_captures_actual_wire_request_and_keeps_parser_wrapper()
     {
         var handler = new StubHandler(() => JsonResponse("""
