@@ -272,6 +272,66 @@ public sealed class NoteAsrRoutingService(PimDbContext db, ICurrentUserService u
             attempt.VersionId, lease.FencingToken, segmentIndex, step.FileIndex, step.SourceOffset, step.Samples);
     }
 
+    /// <summary>
+    /// GET repairs a projection that failed after the ACK transaction had already committed. It reads
+    /// only exact attempt/fence receipts and real evidence, so repair cannot replay an ACK or invent a result.
+    /// </summary>
+    internal async Task<NoteAsrState> RepairAcknowledgedTaskAsync(Guid owner, NoteAsrState state,
+        CancellationToken ct)
+    {
+        // A GET repair is bounded independently: the caller's request token may be None and a stuck
+        // checkpoint filesystem lock must not hold an already committed ACK hostage.
+        using var budget = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, budget.Token);
+        ct = linked.Token;
+        if (state.AttemptId is not { } attemptId) return state;
+        var attempt = await db.NoteAsrAttempts.AsNoTracking().SingleOrDefaultAsync(x => x.Id == attemptId &&
+            x.OwnerId == owner && x.TaskId == state.Request.TaskId, ct);
+        if (attempt is null) return state;
+        var receipts = await db.NoteAsrAckReceipts.AsNoTracking().Where(x => x.OwnerId == owner &&
+                x.AttemptId == attemptId && x.FencingToken == attempt.FencingToken)
+            .OrderBy(x => x.ReceivedAt).ToListAsync(ct);
+        if (receipts.Count == 0) return state;
+        var terminal = receipts.LastOrDefault(x => x.Kind is "complete" or "fail");
+        var segments = receipts.Where(x => x.Kind == "segment")
+            .GroupBy(x => x.SegmentIndex).ToDictionary(x => x.Key, x => x.Last());
+        var proof = (await db.NoteAsrSegmentEvidence.AsNoTracking().Where(x => x.OwnerId == owner &&
+                x.AttemptId == attemptId && x.FencingToken == attempt.FencingToken &&
+                x.TaskId == state.Request.TaskId && x.VersionId == state.Request.VersionId)
+            .OrderBy(x => x.CreatedAt).ToListAsync(ct))
+            .GroupBy(x => x.SegmentIndex).ToDictionary(x => x.Key, x => x.Last());
+        var successful = segments.Where(x => x.Value.Result == "Succeeded" &&
+                proof.TryGetValue(x.Key, out var row) && row.ResultText.Length > 0)
+            .Select(x => x.Key).ToHashSet();
+        var complete = terminal is { Kind: "complete", Result: "Succeeded" } &&
+            attempt.State == "Succeeded" && successful.Count == attempt.ExpectedSegments &&
+            Enumerable.Range(0, attempt.ExpectedSegments).All(successful.Contains);
+        var stopped = terminal?.Kind == "fail" || attempt.State is "Failed" or "Unknown";
+        if (state.Steps.All(x => x.Current.Status is "Succeeded" or "Failed") &&
+            state.CompletionAcknowledged == complete && state.StopRequested == (stopped && !complete)) return state;
+        return await legacyTasks.UpdateAsync(owner, state.Request.TaskId, current =>
+        {
+            if (current.AttemptId != attempt.Id) return;
+            foreach (var (index, receipt) in segments)
+            {
+                if (index < 0 || index >= current.Steps.Count) continue;
+                var step = current.Steps[index].Current;
+                // ACK text is a claim until its exact attempt/fence evidence exists. Never mark Succeeded
+                // from a receipt alone; a non-success terminal remains visible and is never overwritten.
+                step.Status = receipt.Result == "Succeeded" && !proof.ContainsKey(index)
+                    ? "Unknown" : receipt.Result;
+                step.ErrorMessage = receipt.ErrorMessage;
+                if (receipt.Result == "Succeeded" && proof.TryGetValue(index, out var row))
+                {
+                    step.ErrorMessage = null;
+                    step.EvidenceId = row.Id;
+                }
+            }
+            current.StopRequested = stopped && !complete;
+            current.CompletionAcknowledged = complete;
+        }, ct);
+    }
+
     /// <summary>Stops one executable attempt; a worker sees the flag on renew and must acknowledge the stop.</summary>
     public async Task<NoteAsrAttemptDetailDto> StopAttemptAsync(Guid attemptId, CancellationToken ct)
     {

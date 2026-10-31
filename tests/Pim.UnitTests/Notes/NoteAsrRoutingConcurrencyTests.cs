@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Options;
 using System.Text.Json;
 using Pim.Core.Ai;
@@ -556,7 +557,8 @@ public sealed class NoteAsrRoutingConcurrencyTests
                 {
                     Index = 0, RecordingId = material.RecordingId, RecordingSegment = 1, ChunkIndex = 1,
                     FileIndex = 5, Path = $"recordings/{material.RecordingId:D}/s0001-c000001.wav",
-                    Sha256 = sourceSha, SourceOffset = 0, RecordingOffset = 0, TimelineOffset = 0, Samples = 500
+                    Sha256 = sourceSha, SourceOffset = 0, RecordingOffset = 0, TimelineOffset = 0, Samples = 500,
+                    Attempts = [new()]
                 }
             ]
         });
@@ -645,6 +647,112 @@ public sealed class NoteAsrRoutingConcurrencyTests
             var persisted = await tasks.ReadAsync(owner, attempt.TaskId, CancellationToken.None);
             Assert.Equal("Succeeded", persisted.Steps[0].Current.Status);
             Assert.NotNull(persisted.Steps[0].Current.EvidenceId);
+        }
+        await CleanupAsync(owner);
+    }
+
+    [SkippableFact]
+    public async Task Get_repairs_committed_ack_after_projection_failure_without_replaying_ack()
+    {
+        Skip.If(string.IsNullOrWhiteSpace(ConnectionString), "PIM_ASR516_PG is not configured");
+        var owner = Guid.NewGuid();
+        var nodeId = Guid.NewGuid();
+        await CleanupAsync(owner);
+        var options = Options.Create(new NoteMaterialUploadOptions { StorageRoot = StorageRoot });
+        var materials = new NoteMaterialUploadStore(options);
+        var tasks = new NoteAsrTaskStore(options);
+        var material = NoteDerivedFixture.CreateMaterial(audioSamples: 1_000);
+        await NoteDerivedFixture.UploadAsync(materials, owner, material);
+        var taskId = Guid.NewGuid();
+        var inputSha = NoteMaterialManifestValidator.Hash(material.Request.InputJson);
+        var sourceSha = NoteDerivedFixture.Digest(material.Content[5]);
+        var attemptId = Guid.NewGuid();
+        var now = DateTimeOffset.UtcNow;
+        await using (var db = NewDb(owner))
+        {
+            await db.Database.EnsureCreatedAsync();
+            await db.Users.AddAsync(NewUser(owner));
+            await db.NoteAsrNodes.AddAsync(Node(owner, nodeId, "repair-node", now));
+            await db.NoteAsrAttempts.AddAsync(new NoteAsrAttemptEntity
+            {
+                Id = attemptId, OwnerId = owner, TaskId = taskId, NoteId = material.NoteId,
+                VersionId = material.Request.VersionId, InputSha256 = inputSha, Route = NoteAsrRoute.Local,
+                State = "Queued", Language = "zh", ExpectedSegments = 1, LocalModelId = "local-model",
+                LocalModelRevision = "r1", ConfigRevision = Guid.NewGuid(), ConsentVersion = "consent-1",
+                CreatedAt = now
+            });
+            await db.SaveChangesAsync();
+        }
+        await WriteTaskStateAsync(new NoteAsrState
+        {
+            Owner = owner,
+            Request = new StartNoteAsrRequest(taskId, owner, material.Request.VersionId,
+                new AiAsrDestinationConsent(Guid.NewGuid(), Guid.NewGuid(), "synthetic", "local", "1", true), "zh"),
+            Fingerprint = new string('f', 64), NoteId = material.NoteId, InputSha256 = inputSha,
+            ManifestSha256 = NoteMaterialManifestValidator.Hash(material.Request.ManifestJson),
+            AttemptId = attemptId, Route = NoteAsrRoute.Local, ExecutionMode = NoteAsrExecutionMode.Realtime,
+            Steps =
+            [
+                new NoteAsrStep
+                {
+                    Index = 0, RecordingId = material.RecordingId, RecordingSegment = 1, ChunkIndex = 1,
+                    FileIndex = 5, Path = $"recordings/{material.RecordingId:D}/s0001-c000001.wav",
+                    Sha256 = sourceSha, SourceOffset = 0, RecordingOffset = 0, TimelineOffset = 0, Samples = 500,
+                    Attempts = [new()]
+                }
+            ]
+        });
+        NoteAsrClaimDto claim;
+        await using (var db = NewDb(owner))
+            claim = await NewService(db, owner).ClaimAsync(
+                new ClaimNoteAsrTaskRequest(nodeId, "repair-claim"), CancellationToken.None);
+        var ack = SegmentAck(claim, 0, "Succeeded");
+        await using (var db = NewDb(owner))
+            await NewService(db, owner).AcknowledgeAsync(attemptId, ack, CancellationToken.None);
+
+        // Simulate the durable ACK succeeding and only the later writable JSON projection being lost.
+        WriteRawTask(taskId, new NoteAsrState
+        {
+            Owner = owner,
+            Request = new StartNoteAsrRequest(taskId, owner, material.Request.VersionId,
+                new AiAsrDestinationConsent(Guid.NewGuid(), Guid.NewGuid(), "synthetic", "local", "1", true), "zh"),
+            Fingerprint = new string('f', 64), NoteId = material.NoteId, InputSha256 = inputSha,
+            ManifestSha256 = NoteMaterialManifestValidator.Hash(material.Request.ManifestJson),
+            AttemptId = attemptId, Route = NoteAsrRoute.Local, ExecutionMode = NoteAsrExecutionMode.Realtime,
+            Steps =
+            [
+                new NoteAsrStep
+                {
+                    Index = 0, RecordingId = material.RecordingId, RecordingSegment = 1, ChunkIndex = 1,
+                    FileIndex = 5, Path = $"recordings/{material.RecordingId:D}/s0001-c000001.wav",
+                    Sha256 = sourceSha, SourceOffset = 0, RecordingOffset = 0, TimelineOffset = 0, Samples = 500,
+                    Attempts = [new()]
+                }
+            ]
+        });
+        await using (var db = NewDb(owner))
+        {
+            var service = new NoteAsrService(tasks, materials, db, new FixedUser(owner),
+                new AiAsrPresetRegistry(Array.Empty<IAiAsrPreset>()), new ConfigurationBuilder().Build(),
+                new PassthroughSecrets(), NewService(db, owner));
+            var repaired = await service.GetAsync(taskId, CancellationToken.None);
+            Assert.Equal(1, repaired.CompletedSegments);
+            await using var check = NewDb(owner);
+            var receipt = await check.NoteAsrAckReceipts.AsNoTracking()
+                .SingleAsync(x => x.OwnerId == owner && x.AttemptId == attemptId && x.Kind == "segment");
+            var evidence = await check.NoteAsrSegmentEvidence.AsNoTracking()
+                .SingleAsync(x => x.OwnerId == owner && x.AttemptId == attemptId);
+            var view = await service.SegmentsAsync(taskId, 0, 20, CancellationToken.None);
+            var segment = Assert.Single(view.Items);
+            Assert.Equal("Succeeded", segment.Status);
+            Assert.Equal("synthetic transcript 0", segment.Transcript);
+            Assert.Equal(receipt.ResultText, segment.Transcript);
+            Assert.Equal(evidence.Id, segment.EvidenceId);
+            Assert.Equal(1, await check.NoteAsrAckReceipts.CountAsync(x => x.OwnerId == owner &&
+                x.AttemptId == attemptId && x.Kind == "segment"));
+            Assert.Equal(1, await check.NoteAsrSegmentEvidence.CountAsync(x => x.OwnerId == owner &&
+                x.AttemptId == attemptId));
+            Assert.Equal(0, await check.AiRequestLogs.CountAsync(x => x.UserId == owner));
         }
         await CleanupAsync(owner);
     }
@@ -822,6 +930,14 @@ public sealed class NoteAsrRoutingConcurrencyTests
         var taskDir = Path.Combine(StorageRoot, "asr-tasks", owner.ToString("D"));
         Directory.CreateDirectory(taskDir);
         await File.WriteAllTextAsync(Path.Combine(taskDir, taskId.ToString("D") + ".json"),
+            JsonSerializer.Serialize(task, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+    }
+
+    private static void WriteRawTask(Guid taskId, NoteAsrState task)
+    {
+        var taskDir = Path.Combine(StorageRoot, "asr-tasks", task.Owner.ToString("D"));
+        Directory.CreateDirectory(taskDir);
+        File.WriteAllText(Path.Combine(taskDir, taskId.ToString("D") + ".json"),
             JsonSerializer.Serialize(task, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
     }
 
