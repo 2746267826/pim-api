@@ -351,6 +351,54 @@ public sealed class OpenApiContractShapeTests
         Assert.Contains("role", RequiredOf(schema));
     }
 
+    [Fact]
+    public void LocalOnlyAsrDestinationsAreOptionalAndNullableWithoutWeakeningOtherProperties()
+    {
+        var start = Schema("StartNoteAsrRequest");
+        Assert.DoesNotContain("consent", RequiredOf(start));
+        AssertNullableConsentWrapper(start.Properties["consent"], "Start.Consent");
+        Assert.Contains("taskId", RequiredOf(start));
+
+        var retry = Schema("RetryNoteAsrRequest");
+        Assert.DoesNotContain("consent", RequiredOf(retry));
+        AssertNullableConsentWrapper(retry.Properties["consent"], "Retry.Consent");
+        Assert.Contains("acknowledgePossibleDuplicateCharge", RequiredOf(retry));
+
+        var task = Schema("NoteAsrTaskDto");
+        Assert.DoesNotContain("destination", RequiredOf(task));
+        AssertNullableConsentWrapper(task.Properties["destination"], "Task.Destination");
+        Assert.Contains("taskId", RequiredOf(task));
+
+        var reprocess = Schema("ReprocessNoteAsrRequest");
+        Assert.DoesNotContain("consent", RequiredOf(reprocess));
+        AssertNullableConsentWrapper(reprocess.Properties["consent"], "ReprocessNoteAsrRequest.Consent");
+    }
+
+    [Fact]
+    public void OtherReferencesToAiAsrDestinationConsentStayNonNullable()
+    {
+        foreach (var (schemaName, schema) in Document.Components.Schemas)
+            foreach (var (propertyName, property) in schema.Properties ?? new Dictionary<string, OpenApiSchema>())
+            {
+                var target = property.Reference?.Id ?? (property.AllOf?.Count == 1
+                    ? property.AllOf[0].Reference?.Id : null);
+                if (target != "AiAsrDestinationConsent") continue;
+                if (schemaName == "StartNoteAsrRequest" && propertyName == "consent") continue;
+                if (schemaName == "RetryNoteAsrRequest" && propertyName == "consent") continue;
+                if (schemaName == "NoteAsrTaskDto" && propertyName == "destination") continue;
+                if (schemaName == "ReprocessNoteAsrRequest" && propertyName == "consent") continue;
+                Assert.False(property.Nullable,
+                    $"{schemaName}.{propertyName} 不在真实ASR可空范围，不能被全局放宽");
+            }
+    }
+
+    private static void AssertNullableConsentWrapper(OpenApiSchema property, string label)
+    {
+        var wrapped = Assert.Single(property.AllOf);
+        Assert.Equal("AiAsrDestinationConsent", wrapped.Reference?.Id);
+        Assert.True(property.Nullable, $"{label} 必须允许 null");
+    }
+
     // ===== B：REST 资源完整 =====
 
     [Fact]

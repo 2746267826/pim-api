@@ -20,7 +20,8 @@ namespace Pim.Infrastructure.Notes;
 /// </summary>
 public sealed class NoteAsrBatchService(PimDbContext db, ICurrentUserService user, NoteAsrTaskStore tasks,
     NoteMaterialUploadStore materials, INoteAsrEvidenceSink evidence, IMimoBatchHandleSink sink,
-    IMimoBatchClientFactory clients, ISecretProtector secrets, IOptions<NoteAsrBatchOptions> options)
+    IMimoBatchClientFactory clients, ISecretProtector secrets, IOptions<NoteAsrBatchOptions> options,
+    NoteAsrService? noteAsr = null, AiAsrPresetRegistry? presets = null)
 {
     private static readonly string[] SupportedModels = ["mimo-v2.6-pro", "mimo-v2.6-flash"];
     private static readonly TimeSpan PersistenceBudget = TimeSpan.FromSeconds(10);
@@ -32,8 +33,21 @@ public sealed class NoteAsrBatchService(PimDbContext db, ICurrentUserService use
         string filename, CancellationToken ct)
     {
         var owner = await RequireActiveOwnerAsync(ct);
-        if (!options.Value.AllowUnverifiedAudioBatch)
-            throw new DomainException(40901, "MiMo Batch 音频能力尚未验证；管理员显式开启后仍属 NOT-VERIFIED");
+        RequireAudioCapability();
+        if (request.AttemptId is not { } attemptId)
+            throw new DomainException(40001, "请从本账号的云端多模态 attempt 发起");
+        var attempt = await db.NoteAsrAttempts.AsNoTracking().SingleOrDefaultAsync(
+            x => x.Id == attemptId && x.OwnerId == owner, ct)
+            ?? throw new DomainException(40401, "Batch attempt 不存在");
+        return await StartCoreAsync(request, jsonl, length, filename,
+            ExpectedCustomIds(attempt.ExpectedSegments), ct);
+    }
+
+    private async Task<NoteAsrBatchJobDto> StartCoreAsync(StartNoteAsrBatchRequest request, Stream jsonl,
+        long length, string filename, string[] expectedCustomIds, CancellationToken ct)
+    {
+        var owner = await RequireActiveOwnerAsync(ct);
+        RequireAudioCapability();
         if (request.AttemptId is not { } attemptId || !request.BatchScopeConfirmed ||
             string.IsNullOrWhiteSpace(request.ConsentRef) || request.ConsentRef.Length > 128)
             throw new DomainException(40001, "请从本账号的云端多模态 attempt 发起，并对整批范围明确确认");
@@ -53,12 +67,20 @@ public sealed class NoteAsrBatchService(PimDbContext db, ICurrentUserService use
         var attempt = await db.NoteAsrAttempts.AsNoTracking().SingleOrDefaultAsync(
             x => x.Id == attemptId && x.OwnerId == owner, ct)
             ?? throw new DomainException(40401, "Batch attempt 不存在");
-        if (attempt.TaskId != request.TaskId || attempt.Route != NoteAsrRoute.CloudMultimodal ||
+        if (attempt.TaskId != request.TaskId)
+            throw new DomainException(40901, "Batch 任务与 attempt 绑定不一致，请重新核对原任务");
+        if (attempt.Route != NoteAsrRoute.CloudMultimodal ||
             attempt.ExecutionMode != NoteAsrExecutionMode.Batch ||
             attempt.ModelId != request.ModelId || attempt.ModelRevision is null ||
             attempt.PresetId != MimoMultimodalPreset.PresetId ||
-            attempt.ConsentVersion != request.ConsentRef || attempt.ExpectedSegments is < 1 or > 5_000 ||
-            attempt.StopRequested)
+            attempt.ConsentVersion != request.ConsentRef || attempt.StopRequested)
+            throw new DomainException(40901, "Batch attempt、模型、同意或执行状态不匹配");
+        var frozenState = await tasks.ReadAsync(owner, request.TaskId, ct);
+        if (frozenState.Request.TaskId != request.TaskId)
+            throw new DomainException(40901, "Batch 任务快照与请求不一致");
+        if (expectedCustomIds.Length is < 1 || expectedCustomIds.Length > attempt.ExpectedSegments)
+            throw new DomainException(40901, "Batch 提交范围与 attempt 快照不一致");
+        if (attempt.ExpectedSegments is < 1 or > 5_000)
             throw new DomainException(40901, "Batch attempt、模型、同意或执行状态不匹配");
         if (attempt.FencingToken is < 0 or > int.MaxValue)
             throw new DomainException(40901, "Batch attempt fencing token 超出当前 provider 契约范围");
@@ -66,8 +88,9 @@ public sealed class NoteAsrBatchService(PimDbContext db, ICurrentUserService use
 
         // A concurrent/replayed Start reads the durable intent before enforcing Queued.
         // The unique owner/task row makes this an idempotent return, not a second provider call.
-        var existingJob = await db.NoteAsrBatchJobs.AsNoTracking().SingleOrDefaultAsync(
-            x => x.OwnerId == owner && x.TaskId == attempt.TaskId && x.AttemptId == attempt.Id, ct);
+        var existingJob = await db.NoteAsrBatchJobs.AsNoTracking()
+            .Where(x => x.OwnerId == owner && x.TaskId == attempt.TaskId && x.AttemptId == attempt.Id)
+            .OrderByDescending(x => x.CreatedAt).ThenBy(x => x.Id).FirstOrDefaultAsync(ct);
         if (existingJob is not null)
             return Describe(existingJob);
         if (attempt.State != "Queued")
@@ -76,26 +99,349 @@ public sealed class NoteAsrBatchService(PimDbContext db, ICurrentUserService use
         var (profile, baseUri, apiKey) = await AuthorizedProfileAsync(request.ModelId, attempt.ModelRevision.Value, ct);
         var state = await tasks.ReadAsync(owner, attempt.TaskId, ct);
         var material = await materials.GetAsync(owner, attempt.VersionId, ct);
-        ValidateTrustedPlan(owner, attempt, state, material, profile, request.ConsentRef);
+        var inherited = expectedCustomIds.Length < state.Steps.Count;
+        ValidateTrustedPlan(owner, attempt, state, material, profile, request.ConsentRef, inherited);
 
         await using var input = await NoteAsrBatchJsonlReader.ReadAsync(jsonl, length, owner, attempt.VersionId,
-            state.Steps, state.Request.Language, profile.Model, frozenPrompt.Text, materials,
-            checked((int)maxBytes), ct);
-        if (input.CustomIds.Length != attempt.ExpectedSegments)
+            state.Steps, state.SamplesPerCall, state.Request.Language, profile.Model, frozenPrompt.Text, materials,
+            checked((int)maxBytes), expectedCustomIds, ct);
+        if (input.CustomIds.Length > attempt.ExpectedSegments)
             throw new DomainException(40901, "Batch 分片范围与 attempt 快照不一致");
         var intent = new MimoBatchIntent(owner, attempt.VersionId.ToString("D"), attempt.TaskId.ToString("D"),
             checked((int)attempt.FencingToken), "", profile.Id.ToString("D"),
             profile.Revision.ToString("D"),
             baseUri.AbsoluteUri, profile.Model, request.CompletionWindow, request.ConsentRef);
+        return await SubmitFrozenAsync(owner, attempt, state, material, profile, baseUri, apiKey, intent,
+            input, filename, request, job =>
+            {
+                job.TaskId = request.TaskId;
+                job.AttemptId = attempt.Id;
+            }, ct);
+    }
+
+    /// <summary>
+    /// Generates a complete immutable child task through the real Start pipeline, then submits the
+    /// exact trusted audio slices. No client-supplied JSONL/audio or guessed consent is accepted.
+    /// </summary>
+    public async Task<NoteAsrBatchSubmissionResultDto> StartFromTaskAsync(
+        StartNoteAsrBatchFromTaskRequest request, CancellationToken ct)
+    {
+        var owner = await RequireActiveOwnerAsync(ct);
+        RequireAudioCapability();
+        if (request is null || request.SourceTaskId == Guid.Empty || request.ClientTaskId == Guid.Empty ||
+            request.ExpectedUserId != owner)
+            throw new DomainException(40001, "Batch 子任务或账号标识无效");
+        ValidateSubmissionConsent(request.Route, request.Target, request.Reason);
+        var source = await tasks.ReadAsync(owner, request.SourceTaskId, ct);
+        if (source.Revision != request.ExpectedSourceRevision)
+            throw new DomainException(40901, "原任务已变化，请刷新后重新确认");
+        if (request.ClientTaskId == request.SourceTaskId)
+        {
+            // Initial submission: the caller already started this task in batch mode through the typed
+            // ASR pipeline, so submit that exact task/attempt instead of cloning a child and wasting slots.
+            var prepared = await PreparedExistingBatchTaskAsync(owner, source, request.Route, request.Target, ct);
+            return await SubmitGeneratedAsync(owner, prepared, request.Route.ExpectedConsentVersion,
+                request.Target.CompletionWindow, "initial", request.SourceTaskId,
+                Enumerable.Range(0, prepared.State.Steps.Count).ToArray(), request.Reason, ct);
+        }
+        if (!await ChildTaskExistsAsync(owner, request.ClientTaskId, ct))
+        {
+            // A distinct full reprocess may only copy a finished source. Running or queued work must
+            // never be duplicated into a second paid submission. An existing child replay is exempt.
+            var sourceView = NoteAsrTaskStore.Describe(source);
+            if (sourceView.Phase is not ("Succeeded" or "NeedsAttention" or "Stopped"))
+                throw new DomainException(40901,
+                    "只能从已完成、失败或已停止的源任务创建新的 Batch 子任务；排队或运行中的任务不能复制");
+        }
+        var child = await EnsureChildTaskAsync(owner, source, request.ClientTaskId, request.Route, request.Target,
+            request.Reason, preservePlan: false, ct);
+        // The attempt freezes the route-config consent revision. The provider destination reference is
+        // validated separately in EnsureChildTaskAsync and must not be conflated with it.
+        return await SubmitGeneratedAsync(owner, child, request.Route.ExpectedConsentVersion,
+            request.Target.CompletionWindow, "full", request.SourceTaskId,
+            Enumerable.Range(0, child.State.Steps.Count).ToArray(),
+            request.Reason, ct);
+    }
+
+    /// <summary>
+    /// Submits only failed/missing segments to a distinct child attempt. Successful original
+    /// evidence is provenanced into the child attempt and never uploaded again.
+    /// </summary>
+    public async Task<NoteAsrBatchSubmissionResultDto> RetryFailedItemsAsync(
+        RetryFailedNoteAsrBatchRequest request, CancellationToken ct)
+    {
+        var owner = await RequireActiveOwnerAsync(ct);
+        RequireAudioCapability();
+        if (request is null || request.SourceJobId == Guid.Empty || request.ClientTaskId == Guid.Empty ||
+            request.ExpectedUserId != owner)
+            throw new DomainException(40001, "Batch 重试任务或账号标识无效");
+        var sourceJob = await db.NoteAsrBatchJobs.AsNoTracking().SingleOrDefaultAsync(
+            x => x.Id == request.SourceJobId && x.OwnerId == owner, ct)
+            ?? throw new DomainException(40401, "原 Batch 任务不存在");
+        if (string.IsNullOrWhiteSpace(sourceJob.BatchId))
+            throw new DomainException(40901, "原 Batch 没有已核验的 provider id，禁止自动重试");
+        if (sourceJob.OutputImportedAt is null ||
+            sourceJob.Status is not ("Failed" or "Expired" or "Cancelled" or "Completed"))
+            throw new DomainException(40901, "原 Batch 尚未完成失败项导入，不能重试");
+        if (sourceJob.Status == "Completed" && sourceJob.FailedItems is 0 && sourceJob.LastErrorCode is null)
+            throw new DomainException(40901, "原 Batch 已完整成功，禁止重复付费提交");
+        var sourceAttempt = await db.NoteAsrAttempts.AsNoTracking().SingleOrDefaultAsync(
+            x => x.Id == sourceJob.AttemptId && x.OwnerId == owner && x.TaskId == sourceJob.TaskId, ct)
+            ?? throw new DomainException(40901, "原 Batch attempt 快照不存在");
+        if (sourceAttempt.Model != sourceJob.Model || sourceAttempt.ModelRevision != sourceJob.ProfileRevision ||
+            sourceAttempt.ConsentVersion != sourceJob.ConsentRef)
+            throw new DomainException(40901, "原 Batch attempt 与 provider 快照不一致");
+        var sourceTask = await tasks.ReadAsync(owner, sourceJob.TaskId, ct);
+        var expected = JsonSerializer.Deserialize<string[]>(sourceJob.ExpectedCustomIdsJson) ?? [];
+        if (expected.Length is < 1 || expected.Length > sourceAttempt.ExpectedSegments ||
+            expected.Distinct(StringComparer.Ordinal).Count() != expected.Length)
+            throw new DomainException(40901, "原 Batch 固定分片标识不完整");
+        var succeeded = await db.NoteAsrSegmentEvidence.AsNoTracking()
+            .Where(x => x.OwnerId == owner && x.AttemptId == sourceAttempt.Id &&
+                        x.FencingToken == sourceAttempt.FencingToken && x.ReceiptKind == "batch")
+            .Select(x => x.SegmentIndex).Distinct().ToListAsync(ct);
+        var retryIndexes = Enumerable.Range(0, sourceAttempt.ExpectedSegments)
+            .Where(x => !succeeded.Contains(x)).ToArray();
+        if (retryIndexes.Length == 0)
+            throw new DomainException(40901, "原 Batch 没有失败或缺失的分片，禁止重复付费提交");
+        var child = await EnsureChildTaskAsync(owner, sourceTask, request.ClientTaskId, request.Route,
+            request.Target, request.Reason, preservePlan: true, ct);
+        return await SubmitGeneratedAsync(owner, child, request.Route.ExpectedConsentVersion,
+            request.Target.CompletionWindow, "failed_missing", sourceJob.TaskId, retryIndexes,
+            request.Reason, ct);
+    }
+
+    private sealed record PreparedChild(NoteAsrState State, NoteAsrAttemptEntity Attempt);
+
+    private async Task<bool> ChildTaskExistsAsync(Guid owner, Guid clientTaskId, CancellationToken ct)
+    {
+        try
+        {
+            await tasks.ReadAsync(owner, clientTaskId, ct);
+            return true;
+        }
+        catch (DomainException error) when (error.ErrorCode == 40401)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Accepts only a task that the trusted ASR pipeline already froze as a queued batch attempt.
+    /// A ready task is never submitted twice, and a realtime or terminal source is not eligible.
+    /// </summary>
+    private async Task<PreparedChild> PreparedExistingBatchTaskAsync(Guid owner, NoteAsrState source,
+        NoteAsrReprocessRoute route, NoteAsrBatchTarget target, CancellationToken ct)
+    {
+        if (source.Route != NoteAsrRoute.CloudMultimodal || source.ExecutionMode != NoteAsrExecutionMode.Batch)
+            throw new DomainException(40901, "初次 Batch 提交要求源任务已按多模态 Batch 方式创建");
+        if (source.AttemptId is not { } attemptId)
+            throw new DomainException(40901, "初次 Batch 提交缺少已冻结的执行快照，请重新创建任务");
+        var attempt = await db.NoteAsrAttempts.AsNoTracking().SingleOrDefaultAsync(
+            x => x.Id == attemptId && x.OwnerId == owner && x.TaskId == source.Request.TaskId, ct)
+            ?? throw new DomainException(40901, "初次 Batch 提交缺少已冻结的执行快照，请重新创建任务");
+        // A durable job for this exact task/attempt is a replay: return it before any frozen-config
+        // comparison so drift after a lost response can never trigger a second submission.
+        var existingJob = await db.NoteAsrBatchJobs.AsNoTracking()
+            .Where(x => x.OwnerId == owner && x.TaskId == attempt.TaskId && x.AttemptId == attempt.Id)
+            .OrderByDescending(x => x.CreatedAt).ThenBy(x => x.Id).FirstOrDefaultAsync(ct);
+        if (existingJob is not null) return new(source, attempt);
+        if (attempt.Route != NoteAsrRoute.CloudMultimodal ||
+            attempt.ExecutionMode != NoteAsrExecutionMode.Batch ||
+            attempt.ConfigRevision != route.ExpectedConfigRevision ||
+            !string.Equals(attempt.ConsentVersion, route.ExpectedConsentVersion, StringComparison.Ordinal) ||
+            attempt.ModelId != target.ModelId || attempt.ModelRevision != target.ModelRevision)
+            throw new DomainException(40901, "确认的 Batch 目标与已冻结的执行快照不一致，请刷新后重新确认");
+        if (attempt.State != "Queued" || attempt.StopRequested)
+            throw new DomainException(40901, "初次 Batch 提交只接受尚未发送的待执行任务");
+        return new(source, attempt);
+    }
+
+    private static void ValidateSubmissionConsent(NoteAsrReprocessRoute? route, NoteAsrBatchTarget? target,
+        NoteAsrReprocessReason? reason)
+    {
+        if (route is null || target is null || reason is null || route.Route != NoteAsrRoute.CloudMultimodal ||
+            route.ExecutionMode != NoteAsrExecutionMode.Batch || !route.Confirmed ||
+            !route.BatchScopeConfirmed || !target.Confirmed || !target.BatchScopeConfirmed ||
+            string.IsNullOrWhiteSpace(route.ExpectedConsentVersion) || route.ExpectedConsentVersion.Length > 64 ||
+            string.IsNullOrWhiteSpace(target.ConsentRef) || target.ConsentRef.Length > 128 ||
+            target.ConsentRef.Any(char.IsControl) ||
+            !string.Equals(target.CompletionWindow, MimoBatchDefaults.CompletionWindow, StringComparison.Ordinal))
+            throw new DomainException(40001, "Batch 子任务必须显式确认多模态、整批范围和24小时窗口");
+    }
+
+    private async Task<PreparedChild> EnsureChildTaskAsync(Guid owner, NoteAsrState source, Guid clientTaskId,
+        NoteAsrReprocessRoute route, NoteAsrBatchTarget target, NoteAsrReprocessReason reason,
+        bool preservePlan, CancellationToken ct)
+    {
+        ValidateSubmissionConsent(route, target, reason);
+        var managedNoteAsr = noteAsr ?? throw new DomainException(40901, "Batch 服务未配置真实任务创建流水线");
+        var model = await db.AiModelProfiles.AsNoTracking().SingleOrDefaultAsync(
+            x => x.Id == target.ModelId, ct)
+            ?? throw new DomainException(40901, "Batch 模型不存在");
+        if (model.Revision != target.ModelRevision || model.AsrPresetId != MimoMultimodalPreset.PresetId ||
+            !model.Enabled || (model.Capabilities & AiModelCapabilityFlags.Transcription) == 0 ||
+            !SupportedModels.Contains(model.Model, StringComparer.Ordinal))
+            throw new DomainException(40901, "Batch 模型、配置修订或多模态能力不匹配，请刷新重新确认");
+        var managedPresets = presets ?? throw new DomainException(40901, "Batch 预设注册不可用");
+        var preset = managedPresets.Resolve(model.AsrPresetId);
+        var descriptor = preset.Descriptor;
+        var endpoint = AiAsrPresetRegistry.OperationEndpoint(preset.NormalizeEndpoint(model.BaseUrl), descriptor);
+        var configured = await db.AiModelProfiles.AsNoTracking().CountAsync(x => x.Id == model.Id &&
+            x.Revision == model.Revision && x.Enabled, ct);
+        if (configured != 1) throw new DomainException(40901, "Batch 模型配置在创建期间发生变化");
+        var consent = new AiAsrDestinationConsent(model.Id, model.Revision, endpoint, descriptor.Id,
+            descriptor.Version, true);
+        var start = new StartNoteAsrRequest(clientTaskId, owner, source.Request.VersionId, consent,
+            source.Request.Language, new NoteAsrRouteConsent(NoteAsrRoute.CloudMultimodal,
+                route.ExpectedConfigRevision, route.ExpectedConsentVersion, true, NoteAsrExecutionMode.Batch,
+                route.BatchScopeConfirmed), source.Request.TaskId, ReasonText(reason));
+        try
+        {
+            var existing = await tasks.ReadAsync(owner, clientTaskId, ct);
+            if (existing.Fingerprint != NoteMaterialManifestValidator.Hash(JsonSerializer.Serialize(start,
+                    new JsonSerializerOptions(JsonSerializerDefaults.Web))))
+                throw new DomainException(40901, "Batch 客户端任务标识已绑定另一输入");
+            await managedNoteAsr.StartAsync(start, ct);
+        }
+        catch (DomainException error) when (error.ErrorCode == 40401)
+        {
+            await managedNoteAsr.StartAsync(start, ct);
+        }
+        var state = await tasks.ReadAsync(owner, clientTaskId, ct);
+        if (state.ParentTaskId != source.Request.TaskId || state.Request.ParentTaskId != source.Request.TaskId ||
+            state.Route != NoteAsrRoute.CloudMultimodal || state.ExecutionMode != NoteAsrExecutionMode.Batch ||
+            state.Request.VersionId != source.Request.VersionId || state.InputSha256 != source.InputSha256 ||
+            state.ManifestSha256 != source.ManifestSha256 ||
+            preservePlan && state.Steps.Count != source.Steps.Count)
+            throw new DomainException(40901, "Batch 子任务未保留原任务固定材料、分片或父链");
+        if (preservePlan)
+            for (var index = 0; index < source.Steps.Count; index++)
+                if (!SameStep(source.Steps[index], state.Steps[index]))
+                    throw new DomainException(40901, "Batch 重试子任务固定分片与原任务不一致");
+        var attempt = await db.NoteAsrAttempts.AsNoTracking().SingleOrDefaultAsync(
+            x => x.OwnerId == owner && x.TaskId == clientTaskId && x.FencingToken == 0, ct)
+            ?? throw new DomainException(40901, "Batch 子任务 attempt 尚未冻结");
+        return new(state, attempt);
+    }
+
+    private async Task<NoteAsrBatchSubmissionResultDto> SubmitGeneratedAsync(Guid owner, PreparedChild child,
+        string consentRef, string completionWindow, string scope, Guid parentTaskId, int[] retryIndexes,
+        NoteAsrReprocessReason reason, CancellationToken ct)
+    {
+        var attempt = child.Attempt;
+        await ImportInheritedEvidenceAsync(owner, attempt, child.State.Steps.Count, retryIndexes, ct);
+        await using var generated = await NoteAsrBatchJsonlReader.GenerateFromPlanAsync(owner, attempt.VersionId,
+            child.State.Steps, child.State.SamplesPerCall, child.State.Request.Language, attempt.Model,
+            ValidateFrozenPrompt(attempt).Text, materials,
+            checked((int)Math.Min(options.Value.MaxJsonlBytes, MimoBatchDefaults.MaxJsonlBytes)),
+            ExpectedCustomIds(child.State.Steps.Count), retryIndexes, ct);
+        var request = new StartNoteAsrBatchRequest(child.State.Request.TaskId, attempt.Id, attempt.ModelId!.Value,
+            consentRef, true, completionWindow);
+        using var budget = new CancellationTokenSource(PersistenceBudget);
+        var job = await StartCoreAsync(request, generated.Content, generated.Length,
+            $"pim-{scope}.jsonl", generated.CustomIds, budget.Token);
+        var completed = await tasks.ReadAsync(owner, child.State.Request.TaskId, ct);
+        return new(job, NoteAsrTaskStore.Describe(completed), parentTaskId, scope);
+    }
+
+    private async Task ImportInheritedEvidenceAsync(Guid owner, NoteAsrAttemptEntity child, int totalSegments,
+        int[] retryIndexes,
+        CancellationToken ct)
+    {
+        if (retryIndexes.Length == totalSegments) return;
+        var childState = await tasks.ReadAsync(owner, child.TaskId, ct);
+        var parentId = childState.Request.ParentTaskId
+            ?? throw new DomainException(40901, "Batch 子任务缺少可信父链，不能继承成功证据");
+        var parent = await tasks.ReadAsync(owner, parentId, ct);
+        var parentAttempt = await db.NoteAsrAttempts.AsNoTracking().SingleOrDefaultAsync(
+            x => x.OwnerId == owner && x.TaskId == parentId && x.Id == parent.AttemptId, ct)
+            ?? throw new DomainException(40901, "原 Batch attempt 不存在");
+        if (parent.Request.VersionId != child.VersionId || parent.InputSha256 != child.InputSha256)
+            throw new DomainException(40901, "原任务与子任务材料不一致，不能继承证据");
+        if (parent.Steps.Count != totalSegments || retryIndexes.Any(x => x < 0 || x >= totalSegments))
+            throw new DomainException(40901, "原任务与子任务固定分片计划不一致");
+        var existing = await db.NoteAsrSegmentEvidence.AsNoTracking()
+            .Where(x => x.OwnerId == owner && x.AttemptId == child.Id && x.FencingToken == child.FencingToken)
+            .Select(x => x.SegmentIndex).Distinct().ToListAsync(ct);
+        var retry = retryIndexes.ToHashSet();
+        var rows = await db.NoteAsrSegmentEvidence.AsNoTracking()
+            .Where(x => x.OwnerId == owner && x.AttemptId == parentAttempt.Id &&
+                        x.FencingToken == parentAttempt.FencingToken && x.ReceiptKind == "batch")
+            .OrderBy(x => x.SegmentIndex).ToListAsync(ct);
+        foreach (var row in rows)
+        {
+            if (retry.Contains(row.SegmentIndex) || existing.Contains(row.SegmentIndex)) continue;
+            if (childState.Steps[row.SegmentIndex].Sha256 != row.SourceSha256 ||
+                childState.Steps[row.SegmentIndex].Samples != row.Samples)
+                throw new DomainException(40901, "原成功证据与子任务分片身份不一致");
+            var provenance = JsonSerializer.Serialize(new
+            {
+                schemaVersion = 1, inherited = true, parentTaskId = parentId,
+                parentAttemptId = parentAttempt.Id, parentEvidenceId = row.Id,
+                parentFencingToken = parentAttempt.FencingToken
+            });
+            await evidence.WriteForPersistedOwnerAsync(owner, child.Id, row.SegmentIndex, "batch",
+                $"inherit:{row.Id:D}", row.ResultText, provenance, true, ct);
+        }
+    }
+
+    private static void EnsureRetryJobHasInheritedPlan(List<NoteAsrBatchJobEntity> jobs, Guid owner,
+        NoteAsrAttemptEntity attempt, NoteAsrState state)
+    {
+        if (jobs.Count == 0) return;
+        var job = jobs.SingleOrDefault() ?? throw new DomainException(40901, "Batch attempt 已绑定多个任务");
+        var ids = JsonSerializer.Deserialize<string[]>(job.ExpectedCustomIdsJson) ?? [];
+        if (ids.Length == state.Steps.Count) return;
+        if (state.Request.ParentTaskId is null ||
+            jobs.Any(x => x.OwnerId != owner || x.AttemptId != attempt.Id))
+            throw new DomainException(40901, "Batch 子集任务缺少可信父链");
+    }
+
+    private static string[] ExpectedCustomIds(int count) =>
+        Enumerable.Range(0, count).Select(NoteAsrBatchJsonlReader.CustomId).ToArray();
+
+    /// <summary>
+    /// Audio Batch is NOT-VERIFIED upstream. The single capability gate runs before any submission
+    /// mutation so a disabled flag cannot leave an orphan child task/attempt or a paid provider call.
+    /// </summary>
+    private void RequireAudioCapability()
+    {
+        if (!options.Value.AllowUnverifiedAudioBatch)
+            throw new DomainException(40901, "MiMo Batch 音频能力尚未验证；管理员显式开启后仍属 NOT-VERIFIED");
+    }
+
+    private static string ReasonText(NoteAsrReprocessReason reason)
+    {
+        var kind = reason.Kind?.Trim().ToLowerInvariant();
+        if (!NoteAsrReprocessReasonKind.Known(kind) || reason.Text?.Length > 200)
+            throw new DomainException(40001, "Batch 重处理原因只能是 manual 或 quality，说明最多200字");
+        var text = $"batch-retry: {kind} {reason.Text}".Trim();
+        return text.Length <= 240 ? text : text[..240];
+    }
+
+    private static bool SameStep(NoteAsrStep left, NoteAsrStep right) =>
+        left.Index == right.Index && left.RecordingId == right.RecordingId &&
+        left.RecordingSegment == right.RecordingSegment && left.ChunkIndex == right.ChunkIndex &&
+        left.FileIndex == right.FileIndex && left.Path == right.Path && left.Sha256 == right.Sha256 &&
+        left.SourceOffset == right.SourceOffset && left.Samples == right.Samples;
+
+    private async Task<NoteAsrBatchJobDto> SubmitFrozenAsync(Guid owner, NoteAsrAttemptEntity attempt,
+        NoteAsrState state, NoteMaterialVersionDto material, AiModelProfileEntity profile, Uri baseUri,
+        string apiKey, MimoBatchIntent intent, NoteAsrBatchJsonl input, string filename,
+        StartNoteAsrBatchRequest request,
+        Action<NoteAsrBatchJobEntity> bind, CancellationToken ct)
+    {
         var job = new NoteAsrBatchJobEntity
         {
-            OwnerId = owner, TaskId = request.TaskId, AttemptId = attempt.Id,
+            OwnerId = owner,
             Model = profile.Model, BaseUrl = baseUri.AbsoluteUri, ProfileRevision = profile.Revision,
             CredentialSecret = secrets.Protect(apiKey), ConsentRef = request.ConsentRef,
             CompletionWindow = request.CompletionWindow,
             ExpectedCustomIdsJson = JsonSerializer.Serialize(input.CustomIds),
             TotalItems = input.CustomIds.Length
         };
+        bind(job);
         intent = intent with { ProviderHandle = job.Id.ToString("D") };
         job.IntentJson = JsonSerializer.Serialize(intent);
 
@@ -118,8 +464,9 @@ public sealed class NoteAsrBatchService(PimDbContext db, ICurrentUserService use
             if (won == 0)
             {
                 await tx.RollbackAsync(ct);
-                var winner = await db.NoteAsrBatchJobs.AsNoTracking().SingleOrDefaultAsync(
-                    x => x.OwnerId == owner && x.TaskId == attempt.TaskId && x.AttemptId == attempt.Id, ct);
+                var winner = await db.NoteAsrBatchJobs.AsNoTracking()
+                    .Where(x => x.OwnerId == owner && x.TaskId == attempt.TaskId && x.AttemptId == attempt.Id)
+                    .OrderByDescending(x => x.CreatedAt).ThenBy(x => x.Id).FirstOrDefaultAsync(ct);
                 if (winner is not null)
                     return Describe(winner);
                 throw new DomainException(40901, "Batch attempt 已被并发操作占用，请刷新原记录");
@@ -135,9 +482,9 @@ public sealed class NoteAsrBatchService(PimDbContext db, ICurrentUserService use
             {
                 await tx.RollbackAsync(CancellationToken.None);
                 db.Entry(job).State = EntityState.Detached;
-                var winner = await db.NoteAsrBatchJobs.AsNoTracking().SingleOrDefaultAsync(
-                    x => x.OwnerId == owner && x.TaskId == attempt.TaskId && x.AttemptId == attempt.Id,
-                    CancellationToken.None);
+                var winner = await db.NoteAsrBatchJobs.AsNoTracking()
+                    .Where(x => x.OwnerId == owner && x.TaskId == attempt.TaskId && x.AttemptId == attempt.Id)
+                    .OrderByDescending(x => x.CreatedAt).ThenBy(x => x.Id).FirstOrDefaultAsync(CancellationToken.None);
                 if (winner is not null)
                     return Describe(winner);
                 throw;
@@ -480,7 +827,7 @@ public sealed class NoteAsrBatchService(PimDbContext db, ICurrentUserService use
     }
 
     private static void ValidateTrustedPlan(Guid owner, NoteAsrAttemptEntity attempt, NoteAsrState state,
-        NoteMaterialVersionDto material, AiModelProfileEntity profile, string consentRef)
+        NoteMaterialVersionDto material, AiModelProfileEntity profile, string consentRef, bool inherited = false)
     {
         if (state.Owner != owner || state.Request.TaskId != attempt.TaskId ||
             state.Request.VersionId != attempt.VersionId || state.NoteId != attempt.NoteId ||
@@ -510,11 +857,13 @@ public sealed class NoteAsrBatchService(PimDbContext db, ICurrentUserService use
             state.Request.Consent.PresetVersion != "1" || !state.Request.Consent.Confirmed ||
             state.RouteConsentVersion != consentRef)
             throw new DomainException(40901, "Batch 模型、预设、版本或同意快照不匹配");
+        if (state.SamplesPerCall <= 0)
+            throw new DomainException(40901, "Batch 固定分片计划缺少可信的单片时长，请新建 attempt");
         for (var index = 0; index < state.Steps.Count; index++)
         {
             var step = state.Steps[index];
-            if (step.Index != index || step.Samples is <= 0 or > NoteAsrPlan.SamplesPerCall ||
-                step.Current.Status != "Queued")
+            if (step.Index != index || step.Samples <= 0 || step.Samples > state.SamplesPerCall ||
+                !(inherited && step.Current.Status == "Succeeded") && step.Current.Status != "Queued")
                 throw new DomainException(40901, "Batch 固定分片计划不是完整的待执行快照");
         }
     }

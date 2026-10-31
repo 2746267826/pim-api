@@ -6,6 +6,8 @@ import { useAuth } from '@/features/auth/auth-context'
 import { formatTime } from '@/lib/datetime'
 import { aiApi, type NoteAsrTask } from '../api'
 import { createAiRequestId } from '../request-id'
+import { NoteAsrStartPanel } from '../note-asr-start-panel'
+import { NoteAsrOwnerTasks } from '../note-asr-owner-tasks'
 import {
   noteDerivedApi,
   type NoteDerivedArtifact,
@@ -106,6 +108,7 @@ function Workspace({ ownerId, serverBinding, role }: { ownerId: string; serverBi
   const qc = useQueryClient()
   const [sourcePage, setSourcePage] = useState(0)
   const [sourceVersionId, setSourceVersionId] = useState('')
+  const [asrTaskId, setAsrTaskId] = useState('')
   const [taskId, setTaskId] = useState('')
   const [message, setMessage] = useState('')
   const sources = useQuery({ queryKey: ['note-derived', ownerId, serverBinding, 'sources', sourcePage], queryFn: ({ signal }) => noteDerivedApi.sources(sourcePage, signal) })
@@ -160,6 +163,7 @@ function Workspace({ ownerId, serverBinding, role }: { ownerId: string; serverBi
                     }))}
                     onValueChange={(value) => {
                       setSourceVersionId(value)
+                      setAsrTaskId('')
                       setTaskId('')
                       setMessage('')
                     }} /></div>
@@ -176,6 +180,14 @@ function Workspace({ ownerId, serverBinding, role }: { ownerId: string; serverBi
             setMessage('派生任务已创建，后续生成不会自动覆盖当前选用版本。')
             refresh()
           }} />}
+        {source && source.recordings > 0 && <NoteAsrStartPanel key={`asr-${source.versionId}`} userId={ownerId} serverBinding={serverBinding} versionId={source.versionId}
+          onCreated={(task) => {
+            setAsrTaskId(task.taskId)
+            setMessage(`录音转写任务已创建并保留在历史中：${task.taskId}`)
+            void qc.invalidateQueries({ queryKey: ['note-derived', ownerId, serverBinding, 'asr-tasks', source.versionId] })
+          }} />}
+        {source && source.recordings > 0 && <NoteAsrOwnerTasks userId={ownerId} serverBinding={serverBinding} versionId={source.versionId}
+          selectedTaskId={asrTaskId} onSelect={setAsrTaskId} />}
 
         <Card className="space-y-3 p-5">
           <div className="flex flex-wrap items-center justify-between gap-2"><div><h2 className="text-sm font-semibold text-text-1">派生任务</h2><p className="mt-1 text-xs text-text-3">任务、步骤与结果按固定材料版本保存，旧任务不会被新稿自动替换。</p></div><Button size="sm" variant="ghost" onClick={() => void tasks.refetch()}>刷新任务</Button></div>
