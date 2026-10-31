@@ -98,7 +98,97 @@ public sealed class NoteAsrEvidenceService(PimDbContext db, NoteAsrTaskStore tas
             return ExactOrConflict(exact, providerHandle, resultSha, coverageJson);
         }
 
-        var evidence = new NoteAsrSegmentEvidenceEntity
+        var relational = db.Database.IsRelational();
+        var ownsTransaction = relational && db.Database.CurrentTransaction is null;
+        NoteAsrEvidenceWriteResult written;
+        if (ownsTransaction)
+        {
+            // Production uses EnableRetryOnFailure(3). Only the DB-only evidence unit may be
+            // replayed; task-store writes happen after commit and are never part of this retry.
+            written = await db.Database.CreateExecutionStrategy().ExecuteAsync(async () =>
+            {
+                db.ChangeTracker.Clear();
+                await using var tx = await db.Database.BeginTransactionAsync(ct);
+                var replay = await ExactEvidenceAsync();
+                if (replay is not null)
+                {
+                    if (updateAttemptCounters) await SyncAttemptCounterCoreAsync(owner, attempt, ct);
+                    await tx.CommitAsync(ct);
+                    return ExactOrConflict(replay, providerHandle, resultSha, coverageJson);
+                }
+
+                var evidence = NewEvidence();
+                db.NoteAsrSegmentEvidence.Add(evidence);
+                try
+                {
+                    await db.SaveChangesAsync(ct);
+                }
+                catch (DbUpdateException error) when (IsUniqueViolation(error))
+                {
+                    await tx.RollbackAsync(CancellationToken.None);
+                    db.Entry(evidence).State = EntityState.Detached;
+                    var winner = await ExactEvidenceAsync();
+                    if (winner is null) throw;
+                    return ExactOrConflict(winner, providerHandle, resultSha, coverageJson);
+                }
+
+                if (updateAttemptCounters) await SyncAttemptCounterCoreAsync(owner, attempt, ct);
+                await tx.CommitAsync(ct);
+                return new NoteAsrEvidenceWriteResult(evidence.Id, false);
+            });
+        }
+        else if (relational)
+        {
+            // Routing already owns a retrying execution strategy/transaction. Never open a nested
+            // retry unit here; a savepoint keeps a unique-race recoverable inside that transaction.
+            const string savepoint = "note_asr_evidence_write";
+            await db.Database.ExecuteSqlRawAsync($"SAVEPOINT {savepoint}", ct);
+            var evidence = NewEvidence();
+            db.NoteAsrSegmentEvidence.Add(evidence);
+            try
+            {
+                await db.SaveChangesAsync(ct);
+                await db.Database.ExecuteSqlRawAsync($"RELEASE SAVEPOINT {savepoint}", ct);
+                if (updateAttemptCounters) await SyncAttemptCounterCoreAsync(owner, attempt, ct);
+                written = new(evidence.Id, false);
+            }
+            catch (DbUpdateException error) when (IsUniqueViolation(error))
+            {
+                await db.Database.ExecuteSqlRawAsync($"ROLLBACK TO SAVEPOINT {savepoint}", ct);
+                await db.Database.ExecuteSqlRawAsync($"RELEASE SAVEPOINT {savepoint}", ct);
+                db.Entry(evidence).State = EntityState.Detached;
+                exact = await ExactEvidenceAsync();
+                if (exact is null) throw;
+                written = ExactOrConflict(exact, providerHandle, resultSha, coverageJson);
+            }
+        }
+        else
+        {
+            // InMemory and other nonrelational test providers do not support SQL savepoints or
+            // ExecuteUpdate. Preserve the original single-context semantics without transaction APIs.
+            var evidence = NewEvidence();
+            db.NoteAsrSegmentEvidence.Add(evidence);
+            try
+            {
+                await db.SaveChangesAsync(ct);
+                if (updateAttemptCounters) await SyncAttemptCounterCoreAsync(owner, attempt, ct);
+                written = new(evidence.Id, false);
+            }
+            catch (DbUpdateException error) when (IsUniqueViolation(error))
+            {
+                db.ChangeTracker.Clear();
+                exact = await ExactEvidenceAsync();
+                if (exact is null) throw;
+                if (updateAttemptCounters) await SyncAttemptCounterCoreAsync(owner, attempt, ct);
+                written = ExactOrConflict(exact, providerHandle, resultSha, coverageJson);
+            }
+        }
+
+        if (updateAttemptCounters)
+            await RecoverTaskEvidenceAsync(owner, state, attempt, ct);
+        return written;
+
+        NoteAsrSegmentEvidenceEntity NewEvidence() => new()
         {
             OwnerId = owner, AttemptId = attempt.Id, TaskId = attempt.TaskId, VersionId = attempt.VersionId,
             Route = attempt.Route, FencingToken = attempt.FencingToken, SegmentIndex = segmentIndex,
@@ -107,37 +197,11 @@ public sealed class NoteAsrEvidenceService(PimDbContext db, NoteAsrTaskStore tas
             Samples = step.Samples, ReceiptKind = receiptKind, ProviderHandle = providerHandle.Trim(),
             ResultText = resultText, ResultSha256 = resultSha, CoverageJson = coverageJson
         };
-        var ownsTransaction = db.Database.IsRelational() && db.Database.CurrentTransaction is null;
-        await using var tx = ownsTransaction ? await db.Database.BeginTransactionAsync(ct) : null;
-        db.NoteAsrSegmentEvidence.Add(evidence);
-        try { await db.SaveChangesAsync(ct); }
-        catch (DbUpdateException error) when (IsUniqueViolation(error))
-        {
-            if (tx is not null) await tx.RollbackAsync(ct);
-            db.Entry(evidence).State = EntityState.Detached;
-            exact = await db.NoteAsrSegmentEvidence.AsNoTracking()
+        Task<NoteAsrSegmentEvidenceEntity?> ExactEvidenceAsync() =>
+            db.NoteAsrSegmentEvidence.AsNoTracking()
                 .SingleOrDefaultAsync(x => x.OwnerId == owner && x.AttemptId == attemptId &&
                     x.FencingToken == attempt.FencingToken && x.SegmentIndex == segmentIndex &&
                     x.ReceiptKind == receiptKind, ct);
-            if (exact is null) throw;
-            return ExactOrConflict(exact, providerHandle, resultSha, coverageJson);
-        }
-
-        if (updateAttemptCounters)
-        {
-            var count = await db.NoteAsrSegmentEvidence.AsNoTracking().Where(x => x.OwnerId == owner &&
-                x.AttemptId == attemptId && x.FencingToken == attempt.FencingToken).Select(x => x.SegmentIndex)
-                .Distinct().CountAsync(ct);
-            await db.NoteAsrAttempts.Where(x => x.Id == attemptId && x.OwnerId == owner &&
-                    x.FencingToken == attempt.FencingToken && x.State != "Succeeded")
-                .ExecuteUpdateAsync(setters => setters
-                    .SetProperty(x => x.CompletedSegments, count)
-                    .SetProperty(x => x.UpdatedAt, DateTimeOffset.UtcNow), ct);
-        }
-        if (tx is not null) await tx.CommitAsync(ct);
-        if (updateAttemptCounters)
-            await RecoverTaskEvidenceAsync(owner, state, attempt, ct);
-        return new(evidence.Id, false);
     }
 
     public async Task<NoteAsrEvidenceSummary> FinalizeBatchAsync(Guid ownerId, Guid attemptId,
@@ -218,14 +282,29 @@ public sealed class NoteAsrEvidenceService(PimDbContext db, NoteAsrTaskStore tas
     {
         using var budget = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, budget.Token);
+        await SyncAttemptCounterCoreAsync(owner, attempt, linked.Token);
+    }
+
+    private async Task SyncAttemptCounterCoreAsync(Guid owner, NoteAsrAttemptEntity attempt, CancellationToken ct)
+    {
         var count = await db.NoteAsrSegmentEvidence.AsNoTracking().Where(x => x.OwnerId == owner &&
                 x.AttemptId == attempt.Id && x.FencingToken == attempt.FencingToken)
-            .Select(x => x.SegmentIndex).Distinct().CountAsync(linked.Token);
+            .Select(x => x.SegmentIndex).Distinct().CountAsync(ct);
+        if (!db.Database.IsRelational())
+        {
+            var tracked = await db.NoteAsrAttempts.SingleOrDefaultAsync(x => x.Id == attempt.Id &&
+                x.OwnerId == owner && x.FencingToken == attempt.FencingToken && x.State != "Succeeded", ct);
+            if (tracked is null) return;
+            tracked.CompletedSegments = count;
+            tracked.UpdatedAt = DateTimeOffset.UtcNow;
+            await db.SaveChangesAsync(ct);
+            return;
+        }
         await db.NoteAsrAttempts.Where(x => x.Id == attempt.Id && x.OwnerId == owner &&
                 x.FencingToken == attempt.FencingToken && x.State != "Succeeded")
             .ExecuteUpdateAsync(setters => setters
                 .SetProperty(x => x.CompletedSegments, count)
-                .SetProperty(x => x.UpdatedAt, DateTimeOffset.UtcNow), linked.Token);
+                .SetProperty(x => x.UpdatedAt, DateTimeOffset.UtcNow), ct);
     }
 
     private async Task ApplyTaskEvidenceAsync(Guid owner, NoteAsrState state, NoteAsrAttemptEntity attempt,

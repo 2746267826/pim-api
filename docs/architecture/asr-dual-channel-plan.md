@@ -1,8 +1,60 @@
 # ASR 双通道增量方案（#516 排期）
 
+状态（v0.44 当前覆盖）：截至 2026-11-01，API `1040/1044` 与 Android `1145` 已发布，但 #549 仍为 Draft 且 CI 未完成；#533/#539 保持 OPEN；#516 继续按五个原始阶段记录混合状态；默认生产等价 `EnableRetryOnFailure(3)` 下真实 Kestrel route-config/claim 均复现 HTTP 500，是 claim/ACK 全链验收的当前发布阻断。下方 v0.43 状态行及更早正文为历史快照。
+
 状态（v0.43 当前覆盖）：#516 是逐 Phase 混合状态，不再用单一整体状态概括；#539 API 202 协议与 Android consumer 已交付到 exact CI，但设备/真实 E2E 与 production 仍 NOT-VERIFIED；#533 代码已集成但 issue 保持 OPEN。下方 v0.42 状态行及更早正文为历史快照。更新日期：2026-10-31。
 
 状态：**WEB/ANDROID/API GITHUB RELEASE VERIFIED / NOT PRODUCTION-VERIFIED；#516 PLANNED / NOT IMPLEMENTED；两项产品决策 CONFIRMED；MiMo Batch 仅需求/排期追加，NOT IMPLEMENTED / NOT-VERIFIED**。更新日期：2026-10-31。本文把 #516 的已提出需求整理为依赖明确、顺序合理的增量计划，不是工期承诺或功能完成报告；v0.42 MiMo Batch 增量与 v0.41 已确认决策覆盖见下方最新说明。
+
+<a id="v044-latest-status"></a>
+
+## v0.44 最新状态覆盖：跨仓发布、Draft 集成与真实 Kestrel 阻断（2026-11-01）
+
+本节只追加当前覆盖，不改写下方的 v0.43、v0.42、v0.41 及更早正文。45 个稳定 requirement ID、32 项 capability、32 行差距、13 个 MIG、AC1–19 原编号、五阶段原编号与既有 history 字节保持原样；本轮不新增稳定编号。
+
+### 发布与 Draft
+
+- API `api-v26.10.1040`、`api-v26.10.1044` 已发布；`1044` lightweight tag 指向 `33a2c42f8b1c0e571d38aec76897b009e515647d`，是 #539 test-only 回归/性能基线增量，不是根因或 production 验收。
+- Android `android-v26.10.1145` 已发布，exact merge `e9224448` 的 master CI 与 APK/version ledger 已核验；物理设备、OEM、真实 202 和 production 仍 `NOT-VERIFIED`。
+- API/Web 集成 PR #549 当前为 Draft，head `7de773fe1dc6a456091de3bcad7f3b8e1e7b9b63`，CI `41216451907` 未完成。`69fd1293` 的 `56/56` focused receipt 不替代最终 CI。
+
+### 当前真实 HTTP 阻断
+
+生产注册为：
+
+```csharp
+npgsql => npgsql.EnableRetryOnFailure(3)
+```
+
+该配置启用 `NpgsqlRetryingExecutionStrategy`。真实 Kestrel、isolated freshly migrated PostgreSQL 与真实 Windows transport smoke 已复现：
+
+- route config `PUT` 在 `UpdateConfigAsync` 进入用户事务后 HTTP 500，correlation `08d4ff116c3358bc8e57b4e5ef5e2864`；
+- claim `POST` 在 `OwnedNodeAsync` 的首个事务内查询即 HTTP 500，correlation `edd73c52661a29d48934d8e970ca8508`；
+- 两处异常均为 execution strategy 不支持 user-initiated transaction。
+
+route config 的隔离数据库 seed 只是 smoke 定位手段；关闭 retry、TestServer、mock transport 或 SQL seed 均不得写 AC PASS。修复必须由 routing implementation owner 使用 execution strategy 正确包裹事务，最终 smoke 必须保持默认生产等价 retry 全链通过。
+
+### 五阶段状态
+
+| 原始阶段 | 2026-11-01 当前状态 |
+| --- | --- |
+| 1 路由/节点/claim/lease | `INTEGRATION WIP / REAL HTTP BLOCKED`。routing、migration、实际 Test contract v3、official Web generated types 与 focused 回归存在；默认 retry 下 route-config/claim 500，stop/retry、URL 和最终契约仍 WIP。 |
+| 2 云端多模态/Batch | `SOURCE IMPLEMENTED / EXTERNAL NOT-VERIFIED`。mock、关系型 part-success/UNKNOWN/handles 路径有开发证据；上游音频、现金计费、8–10 分钟质量未验。 |
+| 3 Windows 模型管理 | `INTEGRATION WIP`。模型目录、安装校验、受控进程和 transport 源码/测试存在；Windows DI/final wire 接线未完成，真实模型/硬件未验。 |
+| 4 拉取/执行/退避/清退 | `SOURCE PARTIAL / REAL HTTP BLOCKED`。资源门和清退 helper 存在；claim/ACK 被 retry 事务问题阻断，真实模型资源回落不得写 PASS。 |
+| 5 重跑/UI/AC1–19 | `SOURCE PARTIAL / INTEGRATION WIP`。真实 PostgreSQL Reprocess `9/9` 为切片证据；三通道 UI、不可变历史、退出/崩溃恢复、真实 Derived 全文与全矩阵未闭合。 |
+
+### 当前下一证明顺序
+
+1. implementation owner 修复 routing/claim/ACK 所有显式事务的 execution-strategy 边界，并增加生产 retry 配置下的真实回归。
+2. 保持 retry 默认不变，重跑同一 Kestrel smoke：route config → claim → bounded content → ACK → `Succeeded`。
+3. 再推进停止/重试竞态、URL 转写、Windows DI/最终契约、受控 Derived 全文与最终 API contract。
+4. AC1–19 仍全部 `NOT-VERIFIED`；只有对应真实证据出现时逐项更新。
+
+### English parity
+
+At the 2026-11-01 snapshot, API releases `1040/1044` and Android `1145` are published, PR `#549` is still Draft with incomplete CI, and `#533/#539` remain open. The five #516 phases remain mixed. Production-equivalent `EnableRetryOnFailure(3)` causes real-Kestrel HTTP 500 responses for both route-config and claim because explicit transactions are outside the retrying execution strategy. Retry-off, SQL seeding, TestServer, and mocks are not acceptance. Stop/retry, URL transcription, Windows DI/wire integration, real models/hardware, Batch audio/billing/quality, full derived generation, OEM/device, AC1-19, and production remain unverified.
+
 
 <a id="v043-latest-status"></a>
 

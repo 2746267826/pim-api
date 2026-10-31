@@ -144,6 +144,15 @@ public sealed class NoteAsrBatchService(PimDbContext db, ICurrentUserService use
                 request.Target.CompletionWindow, "initial", request.SourceTaskId,
                 Enumerable.Range(0, prepared.State.Steps.Count).ToArray(), request.Reason, ct);
         }
+        if (!await ChildTaskExistsAsync(owner, request.ClientTaskId, ct))
+        {
+            // A distinct full reprocess may only copy a finished source. Running or queued work must
+            // never be duplicated into a second paid submission. An existing child replay is exempt.
+            var sourceView = NoteAsrTaskStore.Describe(source);
+            if (sourceView.Phase is not ("Succeeded" or "NeedsAttention" or "Stopped"))
+                throw new DomainException(40901,
+                    "只能从已完成、失败或已停止的源任务创建新的 Batch 子任务；排队或运行中的任务不能复制");
+        }
         var child = await EnsureChildTaskAsync(owner, source, request.ClientTaskId, request.Route, request.Target,
             request.Reason, preservePlan: false, ct);
         // The attempt freezes the route-config consent revision. The provider destination reference is
@@ -203,6 +212,19 @@ public sealed class NoteAsrBatchService(PimDbContext db, ICurrentUserService use
     }
 
     private sealed record PreparedChild(NoteAsrState State, NoteAsrAttemptEntity Attempt);
+
+    private async Task<bool> ChildTaskExistsAsync(Guid owner, Guid clientTaskId, CancellationToken ct)
+    {
+        try
+        {
+            await tasks.ReadAsync(owner, clientTaskId, ct);
+            return true;
+        }
+        catch (DomainException error) when (error.ErrorCode == 40401)
+        {
+            return false;
+        }
+    }
 
     /// <summary>
     /// Accepts only a task that the trusted ASR pipeline already froze as a queued batch attempt.
@@ -410,23 +432,33 @@ public sealed class NoteAsrBatchService(PimDbContext db, ICurrentUserService use
         StartNoteAsrBatchRequest request,
         Action<NoteAsrBatchJobEntity> bind, CancellationToken ct)
     {
-        var job = new NoteAsrBatchJobEntity
-        {
-            OwnerId = owner,
-            Model = profile.Model, BaseUrl = baseUri.AbsoluteUri, ProfileRevision = profile.Revision,
-            CredentialSecret = secrets.Protect(apiKey), ConsentRef = request.ConsentRef,
-            CompletionWindow = request.CompletionWindow,
-            ExpectedCustomIdsJson = JsonSerializer.Serialize(input.CustomIds),
-            TotalItems = input.CustomIds.Length
-        };
-        bind(job);
-        intent = intent with { ProviderHandle = job.Id.ToString("D") };
-        job.IntentJson = JsonSerializer.Serialize(intent);
+        if (db.Database.CurrentTransaction is not null)
+            throw new InvalidOperationException("Batch submit must own its durable placeholder transaction");
 
-        // Freeze the attempt and intent atomically. Only the Queued -> Creating winner may
-        // upload/create; a concurrent caller reads the committed job and never sends a request.
-        await using (var tx = await db.Database.BeginTransactionAsync(ct))
+        NoteAsrBatchJobEntity NewJob()
         {
+            var job = new NoteAsrBatchJobEntity
+            {
+                OwnerId = owner,
+                Model = profile.Model, BaseUrl = baseUri.AbsoluteUri, ProfileRevision = profile.Revision,
+                CredentialSecret = secrets.Protect(apiKey), ConsentRef = request.ConsentRef,
+                CompletionWindow = request.CompletionWindow,
+                ExpectedCustomIdsJson = JsonSerializer.Serialize(input.CustomIds),
+                TotalItems = input.CustomIds.Length
+            };
+            bind(job);
+            job.IntentJson = JsonSerializer.Serialize(intent with { ProviderHandle = job.Id.ToString("D") });
+            return job;
+        }
+
+        // The retrying execution strategy wraps only the DB-only freeze unit. It may replay this
+        // delegate after a transient/unknown commit, so every attempt rebuilds the tracked entity
+        // and relies on the owner/task unique key for exactly-once submission.
+        var frozen = await db.Database.CreateExecutionStrategy().ExecuteAsync(async () =>
+        {
+            db.ChangeTracker.Clear();
+            var candidate = NewJob();
+            await using var tx = await db.Database.BeginTransactionAsync(ct);
             var claimedAt = DateTimeOffset.UtcNow;
             var won = await db.NoteAsrAttempts
                 .Where(x => x.Id == attempt.Id && x.OwnerId == owner && x.TaskId == request.TaskId &&
@@ -446,28 +478,32 @@ public sealed class NoteAsrBatchService(PimDbContext db, ICurrentUserService use
                     .Where(x => x.OwnerId == owner && x.TaskId == attempt.TaskId && x.AttemptId == attempt.Id)
                     .OrderByDescending(x => x.CreatedAt).ThenBy(x => x.Id).FirstOrDefaultAsync(ct);
                 if (winner is not null)
-                    return Describe(winner);
+                    return new FrozenSubmission(winner, false);
                 throw new DomainException(40901, "Batch attempt 已被并发操作占用，请刷新原记录");
             }
 
-            db.NoteAsrBatchJobs.Add(job);
+            db.NoteAsrBatchJobs.Add(candidate);
             try
             {
                 await db.SaveChangesAsync(ct);
                 await tx.CommitAsync(ct);
+                return new FrozenSubmission(candidate, true);
             }
             catch (DbUpdateException)
             {
                 await tx.RollbackAsync(CancellationToken.None);
-                db.Entry(job).State = EntityState.Detached;
+                db.Entry(candidate).State = EntityState.Detached;
                 var winner = await db.NoteAsrBatchJobs.AsNoTracking()
                     .Where(x => x.OwnerId == owner && x.TaskId == attempt.TaskId && x.AttemptId == attempt.Id)
                     .OrderByDescending(x => x.CreatedAt).ThenBy(x => x.Id).FirstOrDefaultAsync(CancellationToken.None);
                 if (winner is not null)
-                    return Describe(winner);
+                    return new FrozenSubmission(winner, false);
                 throw;
             }
-        }
+        });
+
+        var job = frozen.Job;
+        if (!frozen.Created) return Describe(job);
 
         try
         {
@@ -538,6 +574,8 @@ public sealed class NoteAsrBatchService(PimDbContext db, ICurrentUserService use
             return Describe(job);
         }
     }
+
+    private sealed record FrozenSubmission(NoteAsrBatchJobEntity Job, bool Created);
 
     public async Task<IReadOnlyList<NoteAsrBatchJobDto>> ListAsync(CancellationToken ct)
     {

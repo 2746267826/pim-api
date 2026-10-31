@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Headers;
+using System.Text.Encodings.Web;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -19,6 +20,13 @@ public sealed class MimoMultimodalPreset(Func<HttpMessageHandler?, HttpClient> i
     public const string ProModel = "mimo-v2.6-pro";
     public const int MaxCompletionTokens = 8192;
     private const int MaxResponseBytes = 4 * 1024 * 1024;
+    // Base64 uses '+'. The default STJ encoder escapes it as \u002B, inflating large audio
+    // requests by five bytes per plus even though the JSON value is unchanged. Keep the wire
+    // representation at the finite Base64 budget while still emitting valid JSON.
+    private static readonly JsonSerializerOptions WireJson = new()
+    {
+        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+    };
     public AiAsrPresetDto Descriptor { get; } = new(PresetId, "1", "MiMo 多模态",
         "https://api.xiaomimimo.com/v1/", "chat/completions", FlashModel,
         Array.AsReadOnly(new[] { FlashModel, ProModel }),
@@ -59,7 +67,11 @@ public sealed class MimoMultimodalPreset(Func<HttpMessageHandler?, HttpClient> i
         if (audioPart is null || textPart is null) throw Mismatch();
         var input = audioPart["input_audio"]!;
         var data = input["data"]?.GetValue<string>();
-        if (!MimoAudioFormats.MatchesDataUrl(audio.Format, data, audio.Bytes)) throw Mismatch();
+        if (audio.RemoteUrl is { } remoteUrl)
+        {
+            if (!string.Equals(data, remoteUrl, StringComparison.Ordinal)) throw Mismatch();
+        }
+        else if (!MimoAudioFormats.MatchesDataUrl(audio.Format, data, audio.Bytes)) throw Mismatch();
         if (input["format"] is not null && input["format"]!.GetValue<string>() != audio.Format) throw Mismatch();
         if (textPart["text"] is not JsonValue textValue ||
             !textValue.TryGetValue<string>(out var text) ||
@@ -74,8 +86,9 @@ public sealed class MimoMultimodalPreset(Func<HttpMessageHandler?, HttpClient> i
         string language, CancellationToken ct, AiAsrPromptSnapshot? prompt = null)
     {
         ValidateModel(connection.Model);
+        var maxBytes = audio.IsRemote ? RemoteAudioFetchLimits.HardMaxBytes : Descriptor.MaxAudioBytes;
         if (!Descriptor.Formats.Contains(audio.Format) || !Descriptor.Languages.Contains(language) ||
-            audio.Bytes.Length > Descriptor.MaxAudioBytes)
+            audio.Bytes.Length > maxBytes)
             throw new DomainException(40001, "音频格式、语言或大小不符合MiMo多模态预设");
 
         var endpoint = new Uri(new Uri(connection.Endpoint), Descriptor.OperationPath).AbsoluteUri;
@@ -112,7 +125,7 @@ public sealed class MimoMultimodalPreset(Func<HttpMessageHandler?, HttpClient> i
 
     private static string BuildRequest(string model, AiAsrInput audio, AiAsrPromptSnapshot prompt)
     {
-        var data = MimoAudioFormats.DataUrl(audio.Format, audio.Bytes);
+        var data = audio.RemoteUrl ?? MimoAudioFormats.DataUrl(audio.Format, audio.Bytes);
         return JsonSerializer.Serialize(new
         {
             model,
@@ -130,7 +143,7 @@ public sealed class MimoMultimodalPreset(Func<HttpMessageHandler?, HttpClient> i
                 }
             },
             stream = false
-        });
+        }, WireJson);
     }
 
     private static async Task<string> ReadBoundedAsync(HttpResponseMessage response, CancellationToken ct)
