@@ -272,6 +272,86 @@ public sealed class NoteAsrRoutingService(PimDbContext db, ICurrentUserService u
             attempt.VersionId, lease.FencingToken, segmentIndex, step.FileIndex, step.SourceOffset, step.Samples);
     }
 
+    /// <summary>
+    /// GET repairs a projection that failed after the ACK transaction had already committed. It reads
+    /// only exact attempt/fence receipts and real evidence, so repair cannot replay an ACK or invent a result.
+    /// </summary>
+    internal async Task<NoteAsrState> RepairAcknowledgedTaskAsync(Guid owner, NoteAsrState state,
+        CancellationToken ct)
+    {
+        // A GET repair is bounded independently: the caller's request token may be None and a stuck
+        // checkpoint filesystem lock must not hold an already committed ACK hostage.
+        using var budget = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, budget.Token);
+        ct = linked.Token;
+        if (state.AttemptId is not { } attemptId) return state;
+        var attempt = await db.NoteAsrAttempts.AsNoTracking().SingleOrDefaultAsync(x => x.Id == attemptId &&
+            x.OwnerId == owner && x.TaskId == state.Request.TaskId, ct);
+        if (attempt is null) return state;
+        var receipts = await db.NoteAsrAckReceipts.AsNoTracking().Where(x => x.OwnerId == owner &&
+                x.AttemptId == attemptId && x.FencingToken == attempt.FencingToken)
+            .OrderBy(x => x.ReceivedAt).ToListAsync(ct);
+        if (receipts.Count == 0) return state;
+        var terminal = receipts.LastOrDefault(x => x.Kind is "complete" or "fail");
+        var segments = receipts.Where(x => x.Kind == "segment")
+            .GroupBy(x => x.SegmentIndex).ToDictionary(x => x.Key, x => x.Last());
+        var proof = (await db.NoteAsrSegmentEvidence.AsNoTracking().Where(x => x.OwnerId == owner &&
+                x.AttemptId == attemptId && x.FencingToken == attempt.FencingToken &&
+                x.TaskId == state.Request.TaskId && x.VersionId == state.Request.VersionId)
+            .OrderBy(x => x.CreatedAt).ToListAsync(ct))
+            .GroupBy(x => x.SegmentIndex).ToDictionary(x => x.Key, x => x.Last());
+        var successful = segments.Where(x => IsAcceptedSuccess(attempt, x.Key, x.Value,
+                proof.TryGetValue(x.Key, out var row) ? row : null))
+            .Select(x => x.Key).ToHashSet();
+        var complete = terminal is { Kind: "complete", Result: "Succeeded" } &&
+            attempt.State == "Succeeded" && successful.Count == attempt.ExpectedSegments &&
+            Enumerable.Range(0, attempt.ExpectedSegments).All(successful.Contains);
+        var stopped = terminal?.Kind == "fail" || attempt.State is "Failed" or "Unknown";
+        if (state.Steps.All(x => x.Current.Status is "Succeeded" or "Failed") &&
+            state.CompletionAcknowledged == complete && state.StopRequested == (stopped && !complete)) return state;
+        var observedVersion = state.Request.VersionId;
+        var observedInput = state.InputSha256;
+        var observedSteps = state.Steps.Select(x => (x.Index, x.FileIndex, x.Sha256, x.SourceOffset, x.Samples))
+            .ToArray();
+        return await legacyTasks.UpdateAsync(owner, state.Request.TaskId, current =>
+        {
+            if (current.AttemptId != attempt.Id ||
+                current.Request.VersionId != observedVersion ||
+                current.InputSha256 != observedInput ||
+                !current.Steps.Select(x => (x.Index, x.FileIndex, x.Sha256, x.SourceOffset, x.Samples))
+                    .SequenceEqual(observedSteps)) return;
+            foreach (var (index, receipt) in segments)
+            {
+                if (index < 0 || index >= current.Steps.Count) continue;
+                var step = current.Steps[index].Current;
+                // ACK text is a claim until its exact attempt/fence evidence exists. Never mark Succeeded
+                // from a receipt alone; a non-success terminal remains visible and is never overwritten.
+                var accepted = proof.TryGetValue(index, out var row) &&
+                    IsAcceptedSuccess(attempt, index, receipt, row);
+                step.Status = receipt.Result == "Succeeded" && !accepted ? "Unknown" : receipt.Result;
+                step.ErrorMessage = receipt.ErrorMessage;
+                if (accepted)
+                {
+                    step.ErrorMessage = null;
+                    step.EvidenceId = proof[index].Id;
+                }
+            }
+            current.StopRequested = stopped && !complete;
+            current.CompletionAcknowledged = complete;
+        }, ct);
+    }
+
+    private static bool IsAcceptedSuccess(NoteAsrAttemptEntity attempt, int index,
+        NoteAsrAckReceiptEntity receipt, NoteAsrSegmentEvidenceEntity? row) =>
+        receipt.Result == "Succeeded" && receipt.SegmentIndex == index &&
+        row is not null && row.OwnerId == attempt.OwnerId && row.AttemptId == attempt.Id &&
+        row.TaskId == attempt.TaskId && row.VersionId == attempt.VersionId &&
+        row.FencingToken == attempt.FencingToken && row.SegmentIndex == index &&
+        row.ReceiptKind == "local" && row.ProviderHandle == receipt.ProviderHandle?.Trim() &&
+        row.ResultText.Length > 0 &&
+        row.ResultSha256 == Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(
+            receipt.ResultText ?? ""))).ToLowerInvariant();
+
     /// <summary>Stops one executable attempt; a worker sees the flag on renew and must acknowledge the stop.</summary>
     public async Task<NoteAsrAttemptDetailDto> StopAttemptAsync(Guid attemptId, CancellationToken ct)
     {
@@ -582,7 +662,8 @@ public sealed class NoteAsrRoutingService(PimDbContext db, ICurrentUserService u
             ExecutionMode = executionMode, Language = language, ExpectedSegments = expectedSegments };
         if (route == NoteAsrRoute.Local)
         {
-            if (config?.LocalModelId is not { } localModelId || config.DefaultRoute != NoteAsrRoute.Local)
+            // An explicit per-task local route is valid even when the account default remains cloud.
+            if (config?.LocalModelId is not { } localModelId)
                 throw new DomainException(40901, "本机执行位置尚未配置模型");
             // The local model lives on registered Windows nodes; it is not a cloud profile and needs no key.
             attempt.LocalModelId = localModelId;
@@ -590,7 +671,12 @@ public sealed class NoteAsrRoutingService(PimDbContext db, ICurrentUserService u
         }
         else
         {
-            var modelId = config?.CloudModelId;
+            // Freeze the explicit destination carried by the trusted task request; only fall back to
+            // the global cloud default for legacy callers without a target.
+            if (task.Request.Consent?.Confirmed != true)
+                throw new DomainException(40001, "云端执行缺少明确外发确认");
+            var modelId = task.Request.Consent.ModelId != Guid.Empty
+                ? task.Request.Consent.ModelId : config?.CloudModelId;
             if (modelId is null && route == NoteAsrRoute.CloudAsr)
             {
                 var legacy = await db.AiModelProfiles.AsNoTracking().Where(x => x.Enabled &&
@@ -641,17 +727,62 @@ public sealed class NoteAsrRoutingService(PimDbContext db, ICurrentUserService u
         var busy = await db.NoteAsrLeases.AnyAsync(x => x.OwnerId == owner && x.Status == "Active" && x.ExpiresAt > now, ct);
         if (busy) return null;
         // Apply the node model/revision predicate in SQL before taking the oldest row. A poisoned
-        // first row must not permanently starve a later compatible task.
-        var legacy = await db.NoteAsrAttempts.AsNoTracking().Where(x => x.OwnerId == owner &&
+        // first row must not permanently starve a later compatible task: missing task bindings are
+        // quarantined in the same transaction instead of being returned as a claimable candidate.
+        var candidates = await db.NoteAsrAttempts.AsNoTracking().Where(x => x.OwnerId == owner &&
                 x.Route == NoteAsrRoute.Local && x.State == "Queued" && !x.StopRequested &&
                 (x.ExecutionMode == null || x.ExecutionMode == NoteAsrExecutionMode.Realtime) &&
                 (x.LocalModelId == null || x.LocalModelId == node.ModelId) &&
                 (x.LocalModelRevision == null || x.LocalModelRevision == node.ModelRevision))
-            .OrderBy(x => x.CreatedAt).FirstOrDefaultAsync(ct);
-        if (legacy is not null) return legacy;
+            .OrderBy(x => x.CreatedAt).Take(Options.NodeScanLimit).ToListAsync(ct);
+        foreach (var candidate in candidates)
+        {
+            var bound = await TryReadBoundTaskAsync(owner, candidate, ct);
+            if (bound) return candidate;
+        }
         // Legacy tasks without a persisted local attempt are historical dedicated cloud-ASR work. They are
         // deliberately not migrated by current config; only an explicit new reprocess may create a local attempt.
         return null;
+    }
+
+    /// <summary>
+    /// Quarantines an unexecutable attempt inside the claim transaction when its projected task is
+    /// missing or no longer matches the frozen material/steps/language snapshot.
+    /// </summary>
+    private async Task<bool> TryReadBoundTaskAsync(Guid owner, NoteAsrAttemptEntity attempt,
+        CancellationToken ct)
+    {
+        async Task QuarantineAsync(string code, string message)
+        {
+            await db.NoteAsrAttempts
+                .Where(x => x.Id == attempt.Id && x.OwnerId == owner && x.State == "Queued")
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(x => x.State, "Failed")
+                    .SetProperty(x => x.LastErrorCode, code)
+                    .SetProperty(x => x.LastErrorMessage, message)
+                    .SetProperty(x => x.UpdatedAt, DateTimeOffset.UtcNow), ct);
+        }
+
+        try
+        {
+            var state = await legacyTasks.ReadAsync(owner, attempt.TaskId, ct);
+            if (state.Request.VersionId != attempt.VersionId ||
+                state.InputSha256 != attempt.InputSha256 ||
+                state.Steps.Count != attempt.ExpectedSegments ||
+                !string.Equals(state.Request.Language, attempt.Language, StringComparison.Ordinal))
+            {
+                await QuarantineAsync("task_binding_mismatch",
+                    "任务快照与固定材料、分片或语言不一致，无法执行；需重新发起明确重跑");
+                return false;
+            }
+            return true;
+        }
+        catch (DomainException)
+        {
+            await QuarantineAsync("task_binding_missing",
+                "任务快照缺失，无法执行；需重新发起明确重跑");
+            return false;
+        }
     }
 
     /// <summary>

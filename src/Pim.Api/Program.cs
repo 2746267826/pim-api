@@ -98,6 +98,9 @@ builder.Services.AddSwaggerGen(c =>
     // R19: segment content returns binary audio plus immutable routing identity headers;
     // Swashbuckle cannot infer custom response headers, so the contract is documented here.
     c.OperationFilter<Pim.Api.Infrastructure.OpenApi.NoteAsrSegmentContentOperationFilter>();
+    // Batch upload binds a real [FromForm] StartNoteAsrBatchForm; flatten its typed fields and
+    // binary file into the multipart root rather than emitting one nested "form" part.
+    c.OperationFilter<Pim.Api.Infrastructure.OpenApi.NoteAsrBatchFormOperationFilter>();
     // issue #539：202 处理响应携带 Retry-After 头，minimal API 的 Produces 表达不了响应头。
     c.OperationFilter<Pim.Api.Infrastructure.OpenApi.MobileProcessingResponseOperationFilter>();
     c.DocumentFilter<Pim.Api.Infrastructure.OpenApi.SecuritySchemesDocumentFilter>();
@@ -124,6 +127,7 @@ builder.Services.AddSingleton<Pim.Infrastructure.Notes.NoteMaterialUploadStore>(
 builder.Services.AddSingleton<Pim.Infrastructure.Notes.NoteAsrTaskStore>();
 builder.Services.AddSingleton<Pim.Infrastructure.Notes.NoteDerivedStore>();
 builder.Services.AddScoped<Pim.Infrastructure.Notes.NoteAsrService>();
+builder.Services.AddScoped<Pim.Infrastructure.Notes.NoteAsrReprocessService>();
 builder.Services.Configure<Pim.Infrastructure.Notes.NoteAsrRoutingOptions>(builder.Configuration.GetSection("NativeNotes:Routing"));
 builder.Services.AddScoped<Pim.Infrastructure.Notes.NoteAsrRoutingService>();
 builder.Services.AddScoped<Pim.Infrastructure.Notes.INoteAsrEvidenceSink, Pim.Infrastructure.Notes.NoteAsrEvidenceService>();
@@ -442,6 +446,7 @@ app.MapTodayEndpoints();
 app.MapAiEndpoints();
 app.MapNoteMaterialEndpoints();
 app.MapNoteAsrEndpoints();
+app.MapNoteAsrReprocessEndpoints();
 app.MapNoteAsrRoutingEndpoints();
 app.MapNoteDerivedEndpoints();
 app.MapClientShell();

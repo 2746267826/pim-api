@@ -219,10 +219,20 @@ namespace Pim.Infrastructure.Data.Migrations
                         .HasColumnType("text")
                         .HasColumnName("api_key_secret");
 
+                    b.Property<string>("AsrBatchBaseUrl")
+                        .HasMaxLength(2048)
+                        .HasColumnType("character varying(2048)")
+                        .HasColumnName("asr_batch_base_url");
+
                     b.Property<string>("AsrPresetId")
                         .HasMaxLength(64)
                         .HasColumnType("character varying(64)")
                         .HasColumnName("asr_preset_id");
+
+                    b.Property<string>("AsrPrompt")
+                        .HasMaxLength(4000)
+                        .HasColumnType("character varying(4000)")
+                        .HasColumnName("asr_prompt");
 
                     b.Property<string>("BaseUrl")
                         .IsRequired()
@@ -893,6 +903,10 @@ namespace Pim.Infrastructure.Data.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("attempt_id");
 
+                    b.Property<string>("CoverageJson")
+                        .HasColumnType("text")
+                        .HasColumnName("coverage_json");
+
                     b.Property<string>("ErrorCode")
                         .HasMaxLength(64)
                         .HasColumnType("character varying(64)")
@@ -935,6 +949,10 @@ namespace Pim.Infrastructure.Data.Migrations
                         .HasMaxLength(32)
                         .HasColumnType("character varying(32)")
                         .HasColumnName("result");
+
+                    b.Property<string>("ResultText")
+                        .HasColumnType("text")
+                        .HasColumnName("result_text");
 
                     b.Property<int>("SegmentIndex")
                         .HasColumnType("integer")
@@ -1072,6 +1090,36 @@ namespace Pim.Infrastructure.Data.Migrations
                         .HasColumnType("character varying(64)")
                         .HasColumnName("preset_version");
 
+                    b.Property<string>("PromptRendered")
+                        .HasMaxLength(4200)
+                        .HasColumnType("character varying(4200)")
+                        .HasColumnName("prompt_rendered");
+
+                    b.Property<string>("PromptRevision")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("prompt_revision");
+
+                    b.Property<string>("PromptSha256")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("prompt_sha256");
+
+                    b.Property<string>("PromptTemplate")
+                        .HasMaxLength(4000)
+                        .HasColumnType("character varying(4000)")
+                        .HasColumnName("prompt_template");
+
+                    b.Property<string>("PromptTemplateRevision")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("prompt_template_revision");
+
+                    b.Property<string>("PromptTemplateSha256")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("prompt_template_sha256");
+
                     b.Property<string>("ProviderHandle")
                         .HasMaxLength(256)
                         .HasColumnType("character varying(256)")
@@ -1161,10 +1209,20 @@ namespace Pim.Infrastructure.Data.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at");
 
+                    b.Property<string>("CredentialSecret")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("credential_secret");
+
                     b.Property<string>("ErrorFileId")
                         .HasMaxLength(128)
                         .HasColumnType("character varying(128)")
                         .HasColumnName("error_file_id");
+
+                    b.Property<string>("ExpectedCustomIdsJson")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("expected_custom_ids_json");
 
                     b.Property<int?>("FailedItems")
                         .HasColumnType("integer")
@@ -1217,9 +1275,18 @@ namespace Pim.Infrastructure.Data.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("owner_id");
 
+                    b.Property<Guid>("ProfileRevision")
+                        .HasColumnType("uuid")
+                        .HasColumnName("profile_revision");
+
                     b.Property<string>("ResultJson")
                         .HasColumnType("text")
                         .HasColumnName("result_json");
+
+                    b.Property<Guid>("Revision")
+                        .IsConcurrencyToken()
+                        .HasColumnType("uuid")
+                        .HasColumnName("revision");
 
                     b.Property<string>("Status")
                         .IsRequired()
@@ -1370,6 +1437,25 @@ namespace Pim.Infrastructure.Data.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("owner_id");
 
+                    b.Property<string>("ResourceSnapshotJson")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("resource_snapshot_json");
+
+                    b.Property<string>("RuntimeId")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("runtime_id");
+
+                    b.Property<string>("RuntimeVersion")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("runtime_version");
+
+                    b.Property<DateTimeOffset?>("SampledAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("sampled_at");
+
                     b.Property<DateTimeOffset>("UpdatedAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at");
@@ -1429,6 +1515,116 @@ namespace Pim.Infrastructure.Data.Migrations
                     b.HasKey("OwnerId");
 
                     b.ToTable("note_asr_route_configs");
+                });
+
+            modelBuilder.Entity("Pim.Infrastructure.Data.Entities.NoteAsrSegmentEvidenceEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("AttemptId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("attempt_id");
+
+                    b.Property<int>("ChunkIndex")
+                        .HasColumnType("integer")
+                        .HasColumnName("chunk_index");
+
+                    b.Property<string>("CoverageJson")
+                        .HasColumnType("text")
+                        .HasColumnName("coverage_json");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<long>("FencingToken")
+                        .HasColumnType("bigint")
+                        .HasColumnName("fencing_token");
+
+                    b.Property<Guid>("OwnerId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("owner_id");
+
+                    b.Property<string>("ProviderHandle")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)")
+                        .HasColumnName("provider_handle");
+
+                    b.Property<string>("ReceiptKind")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("receipt_kind");
+
+                    b.Property<Guid>("RecordingId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("recording_id");
+
+                    b.Property<int>("RecordingSegment")
+                        .HasColumnType("integer")
+                        .HasColumnName("recording_segment");
+
+                    b.Property<string>("ResultSha256")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("result_sha256");
+
+                    b.Property<string>("ResultText")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("result_text");
+
+                    b.Property<string>("Route")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("route");
+
+                    b.Property<long>("Samples")
+                        .HasColumnType("bigint")
+                        .HasColumnName("samples");
+
+                    b.Property<int>("SegmentIndex")
+                        .HasColumnType("integer")
+                        .HasColumnName("segment_index");
+
+                    b.Property<int>("SourceFileIndex")
+                        .HasColumnType("integer")
+                        .HasColumnName("source_file_index");
+
+                    b.Property<long>("SourceOffsetSamples")
+                        .HasColumnType("bigint")
+                        .HasColumnName("source_offset_samples");
+
+                    b.Property<string>("SourceSha256")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("source_sha256");
+
+                    b.Property<Guid>("TaskId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("task_id");
+
+                    b.Property<Guid>("VersionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("version_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("AttemptId");
+
+                    b.HasIndex("OwnerId", "TaskId", "VersionId");
+
+                    b.HasIndex("OwnerId", "AttemptId", "FencingToken", "SegmentIndex", "ReceiptKind")
+                        .IsUnique();
+
+                    b.ToTable("note_asr_segment_evidence");
                 });
 
             modelBuilder.Entity("Pim.Infrastructure.Data.Entities.OperationConfirmationEntity", b =>
@@ -7834,6 +8030,15 @@ namespace Pim.Infrastructure.Data.Migrations
                 });
 
             modelBuilder.Entity("Pim.Infrastructure.Data.Entities.NoteAsrLeaseEntity", b =>
+                {
+                    b.HasOne("Pim.Infrastructure.Data.Entities.NoteAsrAttemptEntity", null)
+                        .WithMany()
+                        .HasForeignKey("AttemptId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Pim.Infrastructure.Data.Entities.NoteAsrSegmentEvidenceEntity", b =>
                 {
                     b.HasOne("Pim.Infrastructure.Data.Entities.NoteAsrAttemptEntity", null)
                         .WithMany()

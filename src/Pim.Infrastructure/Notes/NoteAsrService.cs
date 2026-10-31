@@ -108,17 +108,23 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
     {
         var owner = await RequireActiveOwnerAsync(ct);
         if (request.ExpectedUserId != owner) throw new DomainException(40301, "账号已改变，请重新核对");
-        if (request.RetryId == Guid.Empty || request.Consent?.Confirmed != true || !request.AcknowledgePossibleDuplicateCharge ||
-            request.SegmentIndexes is not { Count: > 0 and <= 5_000 } || request.SegmentIndexes.Distinct().Count() != request.SegmentIndexes.Count)
+        if (request.RetryId == Guid.Empty || request.SegmentIndexes is not { Count: > 0 and <= 5_000 } ||
+            request.SegmentIndexes.Distinct().Count() != request.SegmentIndexes.Count)
             throw new DomainException(40001, "请选择待恢复分片，核对原目标，并确认重试可能重复计费");
         var before = await ReconcileAsync(owner, id, ct);
+        if (before.Route == NoteAsrRoute.Local && request.Consent is not null)
+            throw new DomainException(40901, "本机重跑不涉及云端外发，不需要云端确认");
+        if (before.Route != NoteAsrRoute.Local &&
+            (request.Consent?.Confirmed != true || !request.AcknowledgePossibleDuplicateCharge))
+            throw new DomainException(40001, "云端重试需确认原目标与可能重复计费");
         var fingerprint = NoteMaterialManifestValidator.Hash(JsonSerializer.Serialize(request, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
         if (before.Retries.TryGetValue(request.RetryId, out var previous))
         {
             if (previous != fingerprint) throw new DomainException(40901, "恢复标识已绑定另一组分片，原恢复记录保留");
             return Describe(before);
         }
-        if (request.Consent != before.Request.Consent) throw new DomainException(40901, "重试目标与固定任务不一致，请新建任务");
+        // Null-vs-null means the local replay matches its task; cloud replays must re-confirm the exact consent.
+        if (!Equals(request.Consent, before.Request.Consent)) throw new DomainException(40901, "重试目标与固定任务不一致，请新建任务");
         if (before.Route != NoteAsrRoute.Local)
             await ValidateDestinationAsync(request.Consent, before.Request.Language, ct);
         _ = await materials.GetAsync(owner, before.Request.VersionId, ct);
@@ -205,8 +211,8 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
 
         if (!request.Consent.Confirmed || request.Route is { Confirmed: false })
             throw new DomainException(40001, "请明确确认云端音频外发、长等待与可能计费");
-        if (config.CloudModelId is null || config.CloudModelId != request.Consent.ModelId)
-            throw new DomainException(40901, "云端目标与固定路由配置不一致，请刷新后重新确认");
+        if (request.Consent.ModelId == Guid.Empty)
+            throw new DomainException(40901, "云端目标未选择，请刷新后重新确认");
         var descriptor = await ValidateDestinationAsync(request.Consent, request.Language, ct);
         if (route == NoteAsrRoute.CloudMultimodal && descriptor.Id != MimoMultimodalPreset.PresetId)
             throw new DomainException(40901, "多模态执行位置尚未配置 MiMo 多模态预设");
@@ -286,8 +292,14 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
         var evidence = await CurrentEvidenceAsync(owner, state, ct);
         if (evidence.Count > 0)
         {
+            var observedAttempt = state.AttemptId;
+            var observedVersion = state.Request.VersionId;
+            var observedInput = state.InputSha256;
             state = await tasks.UpdateAsync(owner, id, current =>
             {
+                if (current.AttemptId != observedAttempt ||
+                    current.Request.VersionId != observedVersion ||
+                    current.InputSha256 != observedInput) return;
                 foreach (var (segmentIndex, proof) in evidence)
                 {
                     if (segmentIndex < 0 || segmentIndex >= current.Steps.Count) continue;
@@ -297,6 +309,7 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
                 }
             }, ct);
         }
+        state = await routing.RepairAcknowledgedTaskAsync(owner, state, ct);
         var waiting = state.Steps.Where(x => x.Current.Status is "Unknown" or "Running").ToArray();
         if (waiting.Length == 0) return state;
         await AiCallRecovery.RecoverExpiredAsync(db, ct);
