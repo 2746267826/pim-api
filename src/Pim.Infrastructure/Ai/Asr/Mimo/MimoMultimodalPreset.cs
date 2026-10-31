@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Headers;
+using System.Text.Encodings.Web;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -19,6 +20,13 @@ public sealed class MimoMultimodalPreset(Func<HttpMessageHandler?, HttpClient> i
     public const string ProModel = "mimo-v2.6-pro";
     public const int MaxCompletionTokens = 8192;
     private const int MaxResponseBytes = 4 * 1024 * 1024;
+    // Base64 uses '+'. The default STJ encoder escapes it as \u002B, inflating large audio
+    // requests by five bytes per plus even though the JSON value is unchanged. Keep the wire
+    // representation at the finite Base64 budget while still emitting valid JSON.
+    private static readonly JsonSerializerOptions WireJson = new()
+    {
+        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+    };
     public AiAsrPresetDto Descriptor { get; } = new(PresetId, "1", "MiMo 多模态",
         "https://api.xiaomimimo.com/v1/", "chat/completions", FlashModel,
         Array.AsReadOnly(new[] { FlashModel, ProModel }),
@@ -130,7 +138,7 @@ public sealed class MimoMultimodalPreset(Func<HttpMessageHandler?, HttpClient> i
                 }
             },
             stream = false
-        });
+        }, WireJson);
     }
 
     private static async Task<string> ReadBoundedAsync(HttpResponseMessage response, CancellationToken ct)
