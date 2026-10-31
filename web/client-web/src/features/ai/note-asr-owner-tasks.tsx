@@ -3,6 +3,7 @@ import { Button, Card, Skeleton, StatusBadge } from '@/components/ui'
 import { formatTime } from '@/lib/datetime'
 import { aiApi, type NoteAsrTask } from './api'
 import { TaskDetail } from './note-asr-tasks'
+import { NoteAsrOwnerBatches } from './note-asr-owner-batches'
 
 const phaseNames: Record<string, string> = {
   Queued: '等待处理', Running: '转写中', Succeeded: '转写完成', NeedsAttention: '有分片需处理',
@@ -31,6 +32,7 @@ export function NoteAsrOwnerTasks({ userId, serverBinding, versionId, selectedTa
   })
   const versionTasks = (tasks.data ?? []).filter((task) => task.versionId === versionId)
   const selected = selectedTaskId || versionTasks[0]?.taskId || ''
+  const selectedTask = versionTasks.find((task) => task.taskId === selected) ?? versionTasks[0]
 
   return <Card className="min-w-0 space-y-3 p-4 sm:p-5">
     <div>
@@ -43,6 +45,8 @@ export function NoteAsrOwnerTasks({ userId, serverBinding, versionId, selectedTa
           : <div className="space-y-2">{versionTasks.map((task) => <TaskRow key={task.taskId} task={task} selected={task.taskId === selected} onSelect={onSelect} />)}</div>}
     {selected && <TaskDetail key={`${serverBinding}/${selected}`} id={selected} userId={userId} serverBinding={serverBinding}
       prefix={prefix} />}
+    {selectedTask && <NoteAsrOwnerBatches key={`batches/${serverBinding}/${selectedTask.taskId}`} task={selectedTask}
+      userId={userId} serverBinding={serverBinding} onCreated={(task) => onSelect(task.taskId)} />}
     {tasks.isError && <Button size="sm" onClick={() => void tasks.refetch()}>刷新任务</Button>}
   </Card>
 }
