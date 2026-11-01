@@ -9,6 +9,7 @@ import {
   resetRefreshState,
   setTokens,
 } from './client'
+import { getApiBase, setApiBase } from '@/lib/apiBase'
 import { STORAGE_KEYS, getString, setString } from '@/lib/storage'
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -18,8 +19,20 @@ function jsonResponse(body: unknown, status = 200): Response {
   })
 }
 
+function deferred<T>(): {
+  promise: Promise<T>
+  resolve: (value: T) => void
+} {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((done) => {
+    resolve = done
+  })
+  return { promise, resolve }
+}
+
 beforeEach(() => {
   resetRefreshState()
+  setApiBase('')
   clearTokens()
 })
 
@@ -290,5 +303,195 @@ describe('401 单飞刷新', () => {
       },
     })).rejects.toMatchObject({ name: 'AbortError' })
     expect(apiCalls).toBe(1)
+  })
+
+  it('旧账号晚到的刷新成功不能覆盖新账号凭据', async () => {
+    setApiBase('https://same.example')
+    setTokens('access-old', 'refresh-old')
+    const refreshResponse = deferred<Response>()
+    let refreshStarted!: () => void
+    const started = new Promise<void>((resolve) => {
+      refreshStarted = resolve
+    })
+    let apiCalls = 0
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes('/auth/refresh')) {
+        refreshStarted()
+        return refreshResponse.promise
+      }
+      apiCalls += 1
+      return new Response(null, { status: 401 })
+    }))
+
+    const request = apiFetch('/api/v1/notes')
+    await started
+    setTokens('access-new', 'refresh-new')
+    refreshResponse.resolve(jsonResponse({
+      code: 0,
+      message: 'ok',
+      data: { accessToken: 'access-stale', refreshToken: 'refresh-stale' },
+      timestamp: 't',
+    }))
+
+    await expect(request).rejects.toMatchObject({ code: 401 })
+    expect(getString(STORAGE_KEYS.accessToken)).toBe('access-new')
+    expect(getString(STORAGE_KEYS.refreshToken)).toBe('refresh-new')
+    expect(apiCalls).toBe(1)
+  })
+
+  it('切换服务器后的旧刷新不能写回空会话', async () => {
+    setApiBase('https://old.example')
+    setTokens('access-old', 'refresh-old')
+    const refreshResponse = deferred<Response>()
+    let refreshStarted!: () => void
+    const started = new Promise<void>((resolve) => {
+      refreshStarted = resolve
+    })
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes('/auth/refresh')) {
+        refreshStarted()
+        return refreshResponse.promise
+      }
+      return new Response(null, { status: 401 })
+    }))
+
+    const request = apiFetch('/api/v1/notes')
+    await started
+    setApiBase('https://new.example')
+    clearTokens()
+    refreshResponse.resolve(jsonResponse({
+      code: 0,
+      message: 'ok',
+      data: { accessToken: 'access-stale', refreshToken: 'refresh-stale' },
+      timestamp: 't',
+    }))
+
+    await expect(request).rejects.toMatchObject({ code: 401 })
+    expect(getApiBase()).toBe('https://new.example')
+    expect(getString(STORAGE_KEYS.accessToken)).toBeNull()
+    expect(getString(STORAGE_KEYS.refreshToken)).toBeNull()
+  })
+
+  it('退出登录后的旧刷新失败不能恢复会话', async () => {
+    setTokens('access-old', 'refresh-old')
+    const refreshResponse = deferred<Response>()
+    let refreshStarted!: () => void
+    const started = new Promise<void>((resolve) => {
+      refreshStarted = resolve
+    })
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes('/auth/refresh')) {
+        refreshStarted()
+        return refreshResponse.promise
+      }
+      return new Response(null, { status: 401 })
+    }))
+
+    const request = apiFetch('/api/v1/notes')
+    await started
+    clearTokens()
+    refreshResponse.resolve(new Response(null, { status: 500 }))
+
+    await expect(request).rejects.toMatchObject({ code: 401 })
+    expect(getString(STORAGE_KEYS.accessToken)).toBeNull()
+    expect(getString(STORAGE_KEYS.refreshToken)).toBeNull()
+  })
+
+  it('旧刷新失败不能清除已经切换的新账号凭据', async () => {
+    setTokens('access-old', 'refresh-old')
+    const refreshResponse = deferred<Response>()
+    let refreshStarted!: () => void
+    const started = new Promise<void>((resolve) => {
+      refreshStarted = resolve
+    })
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes('/auth/refresh')) {
+        refreshStarted()
+        return refreshResponse.promise
+      }
+      return new Response(null, { status: 401 })
+    }))
+
+    const request = apiFetch('/api/v1/notes')
+    await started
+    setTokens('access-new', 'refresh-new')
+    refreshResponse.resolve(new Response(null, { status: 500 }))
+
+    await expect(request).rejects.toMatchObject({ code: 401 })
+    expect(getString(STORAGE_KEYS.accessToken)).toBe('access-new')
+    expect(getString(STORAGE_KEYS.refreshToken)).toBe('refresh-new')
+  })
+
+  it('同账号自然刷新成功后按新 token 重放', async () => {
+    setTokens('access-old', 'refresh-old')
+    const refreshResponse = deferred<Response>()
+    let refreshStarted!: () => void
+    const started = new Promise<void>((resolve) => {
+      refreshStarted = resolve
+    })
+    let apiCalls = 0
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).includes('/auth/refresh')) {
+        refreshStarted()
+        return refreshResponse.promise
+      }
+      apiCalls += 1
+      const auth = new Headers(init?.headers).get('Authorization')
+      if (auth === 'Bearer access-new') {
+        return jsonResponse({ code: 0, message: 'ok', data: { ok: true }, timestamp: 't' })
+      }
+      return new Response(null, { status: 401 })
+    }))
+
+    const request = apiFetch('/api/v1/notes')
+    await started
+    refreshResponse.resolve(jsonResponse({
+      code: 0,
+      message: 'ok',
+      data: { accessToken: 'access-new', refreshToken: 'refresh-new' },
+      timestamp: 't',
+    }))
+
+    await expect(request).resolves.toEqual({ ok: true })
+    expect(getString(STORAGE_KEYS.accessToken)).toBe('access-new')
+    expect(getString(STORAGE_KEYS.refreshToken)).toBe('refresh-new')
+    expect(apiCalls).toBe(2)
+  })
+
+  it('并发请求共享同一个等待中的刷新结果', async () => {
+    setTokens('access-old', 'refresh-old')
+    const refreshResponse = deferred<Response>()
+    let refreshStarted!: () => void
+    const started = new Promise<void>((resolve) => {
+      refreshStarted = resolve
+    })
+    let refreshCount = 0
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).includes('/auth/refresh')) {
+        refreshCount += 1
+        refreshStarted()
+        return refreshResponse.promise
+      }
+      const auth = new Headers(init?.headers).get('Authorization')
+      if (auth === 'Bearer access-new') {
+        return jsonResponse({ code: 0, message: 'ok', data: { ok: true }, timestamp: 't' })
+      }
+      return new Response(null, { status: 401 })
+    }))
+
+    const first = apiFetch('/api/v1/notes/a')
+    const second = apiFetch('/api/v1/notes/b')
+    await started
+    expect(refreshCount).toBe(1)
+    refreshResponse.resolve(jsonResponse({
+      code: 0,
+      message: 'ok',
+      data: { accessToken: 'access-new', refreshToken: 'refresh-new' },
+      timestamp: 't',
+    }))
+
+    await expect(Promise.all([first, second])).resolves.toEqual([{ ok: true }, { ok: true }])
+    expect(refreshCount).toBe(1)
+    expect(getString(STORAGE_KEYS.accessToken)).toBe('access-new')
   })
 })

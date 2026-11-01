@@ -6,7 +6,8 @@
  * - HTML 响应识别（SPA fallback 兜底保护）
  * - allowStatuses：Outlook 写回 409/412 走正常解包
  */
-import { apiUrl } from '@/lib/apiBase'
+import { apiUrl, getApiBase } from '@/lib/apiBase'
+import { authSessionRevision, markAuthSessionChanged } from '@/lib/auth-session-revision'
 import { detectHostChannel } from '@/lib/host-channel'
 import { getHostSession } from '@/lib/host-session'
 import { STORAGE_KEYS, getString, remove, setString } from '@/lib/storage'
@@ -72,11 +73,13 @@ export function getRefreshToken(): string | undefined {
 export function setTokens(accessToken: string, refreshToken: string): void {
   setString(STORAGE_KEYS.accessToken, accessToken)
   setString(STORAGE_KEYS.refreshToken, refreshToken)
+  markAuthSessionChanged()
 }
 
 export function clearTokens(): void {
   remove(STORAGE_KEYS.accessToken)
   remove(STORAGE_KEYS.refreshToken)
+  markAuthSessionChanged()
 }
 
 /** 刷新失败/登出广播（AuthContext 监听后清用户态，路由守卫自动回登录页） */
@@ -152,14 +155,80 @@ function assertRequestActive(opts: Pick<FetchOptions, 'signal' | 'assertActive'>
 
 /* ── 401 共享单次刷新 ─────────────────────────────────────── */
 
-let refreshPromise: Promise<boolean> | null = null
+type RefreshStatus = 'ok' | 'failed' | 'session-changed'
+
+interface AuthSessionSnapshot {
+  revision: number
+  channel: 'browser' | 'host'
+  binding: string
+  accessToken?: string
+  refreshToken?: string
+}
+
+interface RefreshResult {
+  status: RefreshStatus
+  session: AuthSessionSnapshot
+}
+
+let refreshInFlight: { key: string; promise: Promise<RefreshResult> } | null = null
+let completedRefresh: { sourceKey: string; result: RefreshResult } | null = null
 
 /** 测试辅助：复位共享刷新 Promise */
 export function resetRefreshState(): void {
-  refreshPromise = null
+  refreshInFlight = null
+  completedRefresh = null
 }
 
-async function doRefresh(): Promise<boolean> {
+function authSessionBinding(): string {
+  if (detectHostChannel() === 'host') {
+    const origin = typeof window === 'undefined' ? 'no-origin' : window.location.origin
+    const handshake = getHostSession()?.handshake
+    return `host:${origin}:${handshake?.handshakeId ?? 'none'}:${handshake?.authenticated ?? false}`
+  }
+  return `browser:${getApiBase()}`
+}
+
+function captureAuthSession(): AuthSessionSnapshot {
+  const channel = detectHostChannel()
+  if (channel === 'host') {
+    // Host credentials stay outside page storage by contract.
+    return {
+      revision: authSessionRevision(),
+      channel,
+      binding: authSessionBinding(),
+    }
+  }
+  return {
+    revision: authSessionRevision(),
+    channel,
+    binding: authSessionBinding(),
+    // This opaque pair is the browser-side auth-session identity. It is held in
+    // memory only and is never included in errors or logs.
+    accessToken: getAccessToken(),
+    refreshToken: getRefreshToken(),
+  }
+}
+
+function sessionStillCurrent(snapshot: AuthSessionSnapshot): boolean {
+  if (detectHostChannel() !== snapshot.channel) return false
+  return authSessionRevision() === snapshot.revision
+    && authSessionBinding() === snapshot.binding
+    && (snapshot.channel === 'host'
+      || (getAccessToken() === snapshot.accessToken
+        && getRefreshToken() === snapshot.refreshToken))
+}
+
+function refreshResult(
+  status: RefreshStatus,
+  snapshot: AuthSessionSnapshot,
+): RefreshResult {
+  return {
+    status: sessionStillCurrent(snapshot) ? status : 'session-changed',
+    session: snapshot,
+  }
+}
+
+async function doRefresh(snapshot: AuthSessionSnapshot): Promise<RefreshResult> {
   /*
    * host 通道（规格 §6.2）：页面没有 refresh token，也不回退浏览器端点。
    * 发一条 `page.refresh`，等匹配 requestId 的 `host.refresh.result`，最长 8 秒。
@@ -168,35 +237,83 @@ async function doRefresh(): Promise<boolean> {
    */
   if (detectHostChannel() === 'host') {
     const session = getHostSession()
-    if (!session) return false
-    return (await session.refresh()) === 'ok'
+    if (!session) return refreshResult('failed', snapshot)
+    const outcome = await session.refresh()
+    if (!sessionStillCurrent(snapshot)) {
+      return { status: 'session-changed', session: snapshot }
+    }
+    return {
+      status: outcome === 'ok' ? 'ok' : 'failed',
+      session: captureAuthSession(),
+    }
   }
-  const refreshToken = getRefreshToken()
-  if (!refreshToken) return false
+  const refreshToken = snapshot.refreshToken
+  if (!refreshToken) return refreshResult('failed', snapshot)
   try {
     const res = await fetch(apiUrl('/api/v1/auth/refresh'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ refreshToken }),
     })
-    if (!res.ok) return false
+    if (!res.ok) return refreshResult('failed', snapshot)
     const body = (await res.json()) as ApiResponse<{ accessToken: string; refreshToken: string }>
-    if (body.code !== 0) return false
+    if (body.code !== 0) return refreshResult('failed', snapshot)
+    // The old refresh may finish after login, logout, or a server switch.
+    // Only the exact credential session that issued it may receive its tokens.
+    if (!sessionStillCurrent(snapshot)) {
+      return { status: 'session-changed', session: snapshot }
+    }
     setTokens(body.data.accessToken, body.data.refreshToken)
-    return true
+    return { status: 'ok', session: captureAuthSession() }
   } catch {
-    return false
+    return refreshResult('failed', snapshot)
   }
 }
 
-function refreshOnce(): Promise<boolean> {
-  refreshPromise ??= doRefresh().finally(() => {
-    // 让并发等待者都能拿到同一结果，下一个事件循环后复位
-    setTimeout(() => {
-      refreshPromise = null
-    }, 0)
-  })
-  return refreshPromise
+function refreshOnce(snapshot: AuthSessionSnapshot): Promise<RefreshResult> {
+  const key = `${snapshot.revision}\0${snapshot.channel}\0${snapshot.binding}`
+  if (refreshInFlight?.key === key) return refreshInFlight.promise
+  if (completedRefresh?.sourceKey === key
+    && completedRefresh.result.status === 'ok'
+    && sessionStillCurrent(completedRefresh.result.session)) {
+    return Promise.resolve(completedRefresh.result)
+  }
+  if (!sessionStillCurrent(snapshot)) {
+    return Promise.resolve({ status: 'session-changed', session: snapshot })
+  }
+
+  const promise = doRefresh(snapshot)
+  const flight = { key, promise }
+  refreshInFlight = flight
+  void promise.then(
+    (result) => {
+      if (result.status === 'ok') completedRefresh = { sourceKey: key, result }
+    },
+    () => undefined,
+  )
+  const clearFlight = (): void => {
+    if (refreshInFlight === flight) refreshInFlight = null
+  }
+  void promise.then(clearFlight, clearFlight)
+  return promise
+}
+
+function throwRefreshFailure(result: RefreshResult): never {
+  if (result.status === 'session-changed' || !sessionStillCurrent(result.session)) {
+    // The current credentials belong to a newer session; never clear or replay them.
+    throw new ApiError('登录会话已切换，请重新发起请求', 401, 401)
+  }
+  /*
+   * host 通道不得清令牌/广播浏览器登出（规格 §6.2）：页面上的令牌 storage 本来
+   * 就不该被碰；会话结束只由匹配当前 handshakeId 的 `host.session.ended` 表示。
+   * 请求本身失败，由调用方显示可重试错误或宿主未登录说明。
+   */
+  if (result.session.channel === 'host') {
+    throw new ApiError('宿主会话刷新失败，请重试或重新登录', 401, 401)
+  }
+  clearTokens()
+  broadcastUnauthorized()
+  throw new ApiError('登录已过期，请重新登录', 401, 401)
 }
 
 /* ── 核心请求 ─────────────────────────────────────────────── */
@@ -207,26 +324,18 @@ export async function apiFetch<T>(
   opts: FetchOptions = {},
 ): Promise<T> {
   const allow = new Set(opts.allowStatuses ?? [])
+  const requestSession = (opts.auth ?? true) ? captureAuthSession() : undefined
   let res = await rawFetch(path, init, opts)
   assertRequestActive(opts)
 
   if (res.status === 401 && (opts.auth ?? true) && !allow.has(401)) {
     assertRequestActive(opts)
-    const refreshed = await refreshOnce()
+    const refreshed = await refreshOnce(requestSession ?? captureAuthSession())
     assertRequestActive(opts)
-    if (!refreshed) {
-      /*
-       * host 通道不得清令牌/广播浏览器登出（规格 §6.2）：页面上的令牌 storage 本来
-       * 就不该被碰；会话结束只由匹配当前 handshakeId 的 `host.session.ended` 表示。
-       * 请求本身失败，由调用方显示可重试错误或宿主未登录说明。
-       */
-      if (detectHostChannel() === 'host') {
-        throw new ApiError('宿主会话刷新失败，请重试或重新登录', 401, 401)
-      }
-      clearTokens()
-      broadcastUnauthorized()
-      throw new ApiError('登录已过期，请重新登录', 401, 401)
-    }
+    if (refreshed.status !== 'ok') throwRefreshFailure(refreshed)
+    // A refresh can complete while another tab switches account or server.
+    // Never replay the old request against credentials it did not refresh.
+    if (!sessionStillCurrent(refreshed.session)) throwRefreshFailure(refreshed)
     res = await rawFetch(path, init, opts)
     assertRequestActive(opts)
   }
@@ -344,6 +453,7 @@ export async function fetchBlob(
   const requestOptions = { signal, assertActive: opts.assertActive }
   assertRequestActive(requestOptions)
   const host = detectHostChannel() === 'host'
+  const requestSession = (opts.refreshOn401 || host) ? captureAuthSession() : undefined
   const authHeaders = (): Record<string, string> => {
     const headers: Record<string, string> = {}
     // host 通道：页面不读令牌也不带 Authorization（Bearer 由宿主请求头过滤器加）
@@ -356,14 +466,10 @@ export async function fetchBlob(
   assertRequestActive(requestOptions)
   if (res.status === 401 && (opts.refreshOn401 || host)) {
     assertRequestActive(requestOptions)
-    const refreshed = await refreshOnce()
+    const refreshed = await refreshOnce(requestSession ?? captureAuthSession())
     assertRequestActive(requestOptions)
-    if (!refreshed) {
-      if (host) throw new ApiError('宿主会话刷新失败，请重试或重新登录', 401, 401)
-      clearTokens()
-      broadcastUnauthorized()
-      throw new ApiError('登录已过期，请重新登录', 401, 401)
-    }
+    if (refreshed.status !== 'ok') throwRefreshFailure(refreshed)
+    if (!sessionStillCurrent(refreshed.session)) throwRefreshFailure(refreshed)
     res = await fetch(apiUrl(path), { headers: authHeaders(), signal })
     assertRequestActive(requestOptions)
   }
