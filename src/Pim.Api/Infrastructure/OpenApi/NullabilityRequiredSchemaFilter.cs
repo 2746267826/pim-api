@@ -18,12 +18,27 @@ namespace Pim.Api.Infrastructure.OpenApi;
 public sealed class NullabilityRequiredSchemaFilter : ISchemaFilter
 {
     private static readonly NullabilityInfoContext Nullability = new();
+    // Only these real request/response properties accept null when a task runs locally. OpenAPI
+    // 3.0 cannot serialize "nullable" on a $ref sibling, so use allOf($ref) + nullable on the
+    // property and remove it from required. The shared consent component must stay non-null.
+    private static readonly HashSet<(Type Type, string Property)> NullableProperties = new()
+    {
+        (typeof(Pim.Core.Notes.StartNoteAsrRequest),
+            nameof(Pim.Core.Notes.StartNoteAsrRequest.Consent)),
+        (typeof(Pim.Core.Notes.RetryNoteAsrRequest),
+            nameof(Pim.Core.Notes.RetryNoteAsrRequest.Consent)),
+        (typeof(Pim.Core.Notes.NoteAsrTaskDto),
+            nameof(Pim.Core.Notes.NoteAsrTaskDto.Destination)),
+        (typeof(Pim.Core.Notes.ReprocessNoteAsrRequest),
+            nameof(Pim.Core.Notes.ReprocessNoteAsrRequest.Consent))
+    };
 
     public void Apply(OpenApiSchema schema, SchemaFilterContext context)
     {
         var type = context.Type;
         if (type.IsPrimitive || type.IsEnum || type == typeof(string))
             return;
+        ApplyNullableWrappers(schema, type, context.SchemaRepository);
         // 注意：不能整类排除泛型（issue #417）。信封 ApiResponse&lt;T&gt; / PagedResult&lt;T&gt;
         // 是泛型，早先被这里跳过，导致 194 个 *ApiResponse 信封一个 required 都没有；
         // 数组/字典/List&lt;T&gt; 的 schema 没有 properties，下面的判断已经能把它们排除掉。
@@ -43,6 +58,7 @@ public sealed class NullabilityRequiredSchemaFilter : ISchemaFilter
             var camel = ToCamelCase(prop.Name);
             if (!schema.Properties.TryGetValue(camel, out var propertySchema))
                 continue;
+            var nullability = Nullability.Create(prop);
 
             // readOnly 属性的 required 只对响应方向成立，而本项目同时用同一份 DTO 生成
             // 请求与响应契约，标 required 会让客户端以为必须传这个「服务端算出来的」字段。
@@ -50,7 +66,6 @@ public sealed class NullabilityRequiredSchemaFilter : ISchemaFilter
             if (propertySchema.ReadOnly || prop.SetMethod is null || !prop.SetMethod.IsPublic)
                 continue;
 
-            var nullability = Nullability.Create(prop);
             if (prop.PropertyType.IsValueType)
             {
                 if (Nullable.GetUnderlyingType(prop.PropertyType) is not null)
@@ -70,6 +85,43 @@ public sealed class NullabilityRequiredSchemaFilter : ISchemaFilter
             if (!schema.Required.Contains(camel))
                 schema.Required.Add(camel);
         }
+    }
+
+    private static void ApplyNullableWrappers(OpenApiSchema schema, Type type, SchemaRepository schemas)
+    {
+        foreach (var prop in type.GetProperties(BindingFlags.Public | BindingFlags.Instance))
+        {
+            if (!NullableProperties.Contains((type, prop.Name)) ||
+                Nullability.Create(prop).WriteState == NullabilityState.NotNull ||
+                schema.Properties is null ||
+                !schema.Properties.TryGetValue(ToCamelCase(prop.Name), out var property) ||
+                property.Reference is not { } reference)
+                continue;
+            if (!schemas.Schemas.TryGetValue(reference.Id, out var component))
+                throw new InvalidOperationException(
+                    $"Nullable ASR property '{type.Name}.{prop.Name}' references missing '{reference.Id}'.");
+
+            Wrap(property, reference.Id, true);
+            schema.Required?.Remove(ToCamelCase(prop.Name));
+        }
+    }
+
+    internal static void Wrap(OpenApiSchema property, string targetId, bool nullable)
+    {
+        property.Reference = null;
+        property.Type = "object";
+        property.Format = null;
+        property.Properties = null;
+        property.Required = null;
+        property.AdditionalProperties = null;
+        property.AdditionalPropertiesAllowed = true;
+        property.Items = null;
+        property.Enum = null;
+        property.AllOf = [new OpenApiSchema
+        {
+            Reference = new OpenApiReference { Type = ReferenceType.Schema, Id = targetId }
+        }];
+        property.Nullable = nullable;
     }
 
     private static string ToCamelCase(string name)

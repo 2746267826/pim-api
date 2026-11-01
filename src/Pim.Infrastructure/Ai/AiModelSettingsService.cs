@@ -21,6 +21,8 @@ public sealed class AiModelSettingsService(PimDbContext db, ISecretProtector sec
         var endpoint = Endpoint(request.BaseUrl);
         var capabilities = ToFlags(request.Capabilities);
         var presetId = string.IsNullOrWhiteSpace(request.AsrPresetId) ? null : request.AsrPresetId.Trim();
+        var batchBaseUrl = string.IsNullOrWhiteSpace(request.AsrBatchBaseUrl) ? null : Endpoint(request.AsrBatchBaseUrl);
+        var prompt = request.AsrPrompt is null ? null : AiAsrPromptTemplate.Normalize(request.AsrPrompt);
         if (request.TimeoutSeconds is < 1 or > 600 || request.MaxOutputTokens is < 1 or > 131072)
             throw Invalid("超时须为1–600秒，输出上限须为1–131072 token");
         var key = request.ApiKey?.Trim();
@@ -48,6 +50,18 @@ public sealed class AiModelSettingsService(PimDbContext db, ISecretProtector sec
             throw Invalid("ASR独立配置不可改为文本/视觉配置，请另建模型以隔离凭据");
         if (capabilities == 4 && presetId is null) presetId = row.AsrPresetId;
         if (capabilities == 4 && id is null && presetId is null) throw Invalid("新建ASR配置需要选择接入预设");
+        if (batchBaseUrl is not null)
+        {
+            if (capabilities != 4 || presetId != "mimo-multimodal")
+                throw Invalid("Batch 地址仅用于独立的 MiMo 多模态 ASR 配置");
+            if (!new Uri(batchBaseUrl).Host.Contains("batch-api-", StringComparison.OrdinalIgnoreCase))
+                throw Invalid("MiMo Batch 必须填写 batch-api-* 专用 origin，不能复用实时 ASR 地址");
+        }
+        if (request.AsrPrompt is not null && capabilities != 4)
+            throw Invalid("自定义转写提示词只能保存到独立ASR配置");
+        if (request.AsrPrompt is not null && prompt!.Text != AiAsrPromptTemplate.DefaultText &&
+            presetId != "mimo-multimodal")
+            throw Invalid("仅 MiMo 多模态预设支持可修改转写提示词；旧ASR保持固定协议");
         if (presetId is not null)
         {
             if (capabilities != 4) throw Invalid("ASR预设需使用独立语音转写配置，不可混用文本/视觉凭据");
@@ -69,6 +83,9 @@ public sealed class AiModelSettingsService(PimDbContext db, ISecretProtector sec
         row.Name = name; row.NormalizedName = normalized; row.BaseUrl = endpoint; row.Model = model;
         row.Enabled = request.Enabled; row.Capabilities = capabilities; row.TimeoutSeconds = request.TimeoutSeconds;
         row.AsrPresetId = presetId;
+        row.AsrBatchBaseUrl = batchBaseUrl;
+        if (request.AsrPrompt is not null)
+            row.AsrPrompt = prompt!.Text == AiAsrPromptTemplate.DefaultText ? null : prompt.Text;
         row.MaxOutputTokens = request.MaxOutputTokens; row.Revision = Guid.NewGuid(); row.UpdatedAt = DateTimeOffset.UtcNow;
         if (key is not null) row.ApiKeySecret = secrets.Protect(key);
         try { await db.SaveChangesAsync(ct); }
@@ -139,7 +156,9 @@ public sealed class AiModelSettingsService(PimDbContext db, ISecretProtector sec
     }
     public static AiModelDto Map(AiModelProfileEntity row) => new(row.Id, row.Revision, row.Name, row.BaseUrl,
         row.Model, row.Enabled, Enum.GetValues<AiModelCapability>().Where(v => (row.Capabilities & (1 << (int)v)) != 0).ToArray(),
-        row.ApiKeySecret.Length != 0, row.TimeoutSeconds, row.MaxOutputTokens, row.CreatedAt, row.UpdatedAt, row.AsrPresetId);
+        row.ApiKeySecret.Length != 0, row.TimeoutSeconds, row.MaxOutputTokens, row.CreatedAt, row.UpdatedAt,
+        row.AsrPresetId, row.AsrBatchBaseUrl, row.AsrPrompt,
+        row.Capabilities == 4 ? AiAsrPromptTemplate.Normalize(row.AsrPrompt).Revision : null);
     private static AiModelSettingsDto Map(AiModelRuntimeEntity row) => new(row.Revision, row.Enabled,
         row.TextModelId, row.VisionModelId, row.TranscriptionModelId);
     private static DomainException Invalid(string message) => new(40001, message);
