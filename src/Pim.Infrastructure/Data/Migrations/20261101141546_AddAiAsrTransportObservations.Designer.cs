@@ -12,7 +12,7 @@ using Pim.Infrastructure.Data;
 namespace Pim.Infrastructure.Data.Migrations
 {
     [DbContext(typeof(PimDbContext))]
-    [Migration("20261101125512_AddAiAsrTransportObservations")]
+    [Migration("20261101141546_AddAiAsrTransportObservations")]
     partial class AddAiAsrTransportObservations
     {
         /// <inheritdoc />
@@ -393,8 +393,8 @@ namespace Pim.Infrastructure.Data.Migrations
                     b.HasIndex("LogId");
 
                     b.HasIndex("OwnerId", "ClientRequestId", "TransportKind", "Source")
-                        .HasDatabaseName("IX_ai_asr_transport_observations_owner_kind_source")
-                        .IsUnique();
+                        .IsUnique()
+                        .HasDatabaseName("IX_ai_asr_transport_observations_owner_kind_source");
 
                     b.ToTable("ai_asr_transport_observations");
                 });
@@ -6401,6 +6401,284 @@ namespace Pim.Infrastructure.Data.Migrations
                     b.ToTable("mobile_usage_summaries");
                 });
 
+            modelBuilder.Entity("Pim.Module.NoteTaskSuggestions.Entities.NoteTaskSuggestionEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("ArtifactId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("artifact_id");
+
+                    b.Property<Guid>("ArtifactVersionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("artifact_version_id");
+
+                    b.Property<Guid?>("CalendarId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("calendar_id");
+
+                    b.Property<Guid?>("ConfirmRequestId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("confirm_request_id");
+
+                    b.Property<DateTimeOffset?>("ConfirmedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("confirmed_at");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("Description")
+                        .HasMaxLength(20000)
+                        .HasColumnType("character varying(20000)")
+                        .HasColumnName("description");
+
+                    b.Property<DateTimeOffset?>("DismissedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("dismissed_at");
+
+                    b.Property<DateTimeOffset?>("Due")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("due");
+
+                    b.Property<Guid>("ExtractionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("extraction_id");
+
+                    b.Property<Guid>("NoteId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("note_id");
+
+                    b.Property<int>("Ordinal")
+                        .HasColumnType("integer")
+                        .HasColumnName("ordinal");
+
+                    b.Property<int>("Priority")
+                        .HasColumnType("integer")
+                        .HasColumnName("priority");
+
+                    b.Property<Guid>("Revision")
+                        .IsConcurrencyToken()
+                        .HasColumnType("uuid")
+                        .HasColumnName("revision");
+
+                    b.Property<string>("SourceContentSha256")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("source_content_sha256");
+
+                    b.Property<Guid?>("SourceGenerationTaskId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("source_generation_task_id");
+
+                    b.Property<string>("SourceInputSha256")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("source_input_sha256");
+
+                    b.Property<string>("SourceManifestSha256")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("source_manifest_sha256");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("status");
+
+                    b.Property<Guid?>("TaskBookId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("task_book_id");
+
+                    b.Property<Guid?>("TaskId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("task_id");
+
+                    b.Property<string>("Title")
+                        .IsRequired()
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
+                        .HasColumnName("title");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ExtractionId");
+
+                    b.HasIndex("TaskId")
+                        .IsUnique()
+                        .HasFilter("\"task_id\" IS NOT NULL");
+
+                    b.HasIndex("UserId", "ConfirmRequestId")
+                        .IsUnique()
+                        .HasFilter("\"confirm_request_id\" IS NOT NULL");
+
+                    b.HasIndex("UserId", "ExtractionId", "Ordinal")
+                        .IsUnique();
+
+                    b.HasIndex("UserId", "NoteId", "Status", "UpdatedAt");
+
+                    b.ToTable("note_task_suggestions");
+                });
+
+            modelBuilder.Entity("Pim.Module.NoteTaskSuggestions.Entities.NoteTaskSuggestionExtractionEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid?>("AiCallLogId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("ai_call_log_id");
+
+                    b.Property<Guid>("ArtifactId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("artifact_id");
+
+                    b.Property<Guid>("ArtifactVersionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("artifact_version_id");
+
+                    b.Property<int>("AttemptCount")
+                        .HasColumnType("integer")
+                        .HasColumnName("attempt_count");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("ErrorCode")
+                        .HasMaxLength(80)
+                        .HasColumnType("character varying(80)")
+                        .HasColumnName("error_code");
+
+                    b.Property<string>("ErrorMessage")
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)")
+                        .HasColumnName("error_message");
+
+                    b.Property<DateTimeOffset?>("FinishedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("finished_at");
+
+                    b.Property<string>("ModelEndpoint")
+                        .IsRequired()
+                        .HasMaxLength(2048)
+                        .HasColumnType("character varying(2048)")
+                        .HasColumnName("model_endpoint");
+
+                    b.Property<Guid>("ModelProfileId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("model_profile_id");
+
+                    b.Property<Guid>("ModelRevision")
+                        .HasColumnType("uuid")
+                        .HasColumnName("model_revision");
+
+                    b.Property<Guid>("NoteId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("note_id");
+
+                    b.Property<string>("PromptVersion")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("prompt_version");
+
+                    b.Property<string>("RequestFingerprint")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("request_fingerprint");
+
+                    b.Property<Guid>("RequestId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("request_id");
+
+                    b.Property<Guid>("Revision")
+                        .IsConcurrencyToken()
+                        .HasColumnType("uuid")
+                        .HasColumnName("revision");
+
+                    b.Property<string>("SourceContentMarkdown")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("source_content_markdown");
+
+                    b.Property<string>("SourceContentSha256")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("source_content_sha256");
+
+                    b.Property<Guid?>("SourceGenerationTaskId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("source_generation_task_id");
+
+                    b.Property<string>("SourceInputSha256")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("source_input_sha256");
+
+                    b.Property<string>("SourceManifestSha256")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("source_manifest_sha256");
+
+                    b.Property<DateTimeOffset?>("StartedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("started_at");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("status");
+
+                    b.Property<int>("SuggestionCount")
+                        .HasColumnType("integer")
+                        .HasColumnName("suggestion_count");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("AiCallLogId");
+
+                    b.HasIndex("UserId", "RequestId")
+                        .IsUnique();
+
+                    b.HasIndex("UserId", "NoteId", "CreatedAt");
+
+                    b.HasIndex("UserId", "Status", "UpdatedAt");
+
+                    b.ToTable("note_task_suggestion_extractions");
+                });
+
             modelBuilder.Entity("Pim.Module.PcTracker.Entities.ActivityCategoryRuleEntity", b =>
                 {
                     b.Property<Guid>("Id")
@@ -8632,6 +8910,17 @@ namespace Pim.Infrastructure.Data.Migrations
                         .IsRequired();
 
                     b.Navigation("FileItem");
+                });
+
+            modelBuilder.Entity("Pim.Module.NoteTaskSuggestions.Entities.NoteTaskSuggestionEntity", b =>
+                {
+                    b.HasOne("Pim.Module.NoteTaskSuggestions.Entities.NoteTaskSuggestionExtractionEntity", "Extraction")
+                        .WithMany()
+                        .HasForeignKey("ExtractionId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Extraction");
                 });
 
             modelBuilder.Entity("Pim.Module.PcTracker.Entities.ActivityCategoryRuleEntity", b =>

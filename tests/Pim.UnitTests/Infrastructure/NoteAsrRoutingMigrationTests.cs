@@ -57,7 +57,11 @@ public sealed class NoteAsrRoutingMigrationTests
         await database.MigrateToAsync(PublishedHead);
         Assert.True(await database.HasMigrationAsync(PublishedHead));
         Assert.False(await database.HasMigrationLikeAsync(ReplacementSuffix));
-        Assert.Equal(await database.MigrationsOnDiskAsync() - 1, await database.AppliedMigrationCountAsync());
+        // This fixture migrates to a specific pre-feature point in the chain. Migrations added
+        // after that target remain unapplied regardless of how many are currently on disk.
+        Assert.Equal(
+            await MigrationsThroughAsync(PublishedHead),
+            await database.AppliedMigrationCountAsync());
 
         foreach (var table in NoteAsrTables)
         {
@@ -122,6 +126,16 @@ public sealed class NoteAsrRoutingMigrationTests
 
         Assert.Equal(1, await ForeignKeyCountAsync(database, "note_asr_leases"));
         Assert.Equal(1, await ForeignKeyCountAsync(database, "note_asr_segment_evidence"));
+    }
+
+    private static Task<long> MigrationsThroughAsync(string migrationId)
+    {
+        var migrations = typeof(Pim.Infrastructure.Data.PimDbContext).Assembly.GetTypes()
+            .Where(type => !type.IsAbstract && type.IsSubclassOf(typeof(Microsoft.EntityFrameworkCore.Migrations.Migration)))
+            .Select(type => type.GetCustomAttributes(typeof(Microsoft.EntityFrameworkCore.Migrations.MigrationAttribute), false)
+                .Cast<Microsoft.EntityFrameworkCore.Migrations.MigrationAttribute>().SingleOrDefault()?.Id)
+            .Where(id => id is not null && string.CompareOrdinal(id, migrationId) <= 0);
+        return Task.FromResult((long)migrations.Count());
     }
 
     private static async Task<int> ForeignKeyCountAsync(TempMigrationDatabase database, string table)

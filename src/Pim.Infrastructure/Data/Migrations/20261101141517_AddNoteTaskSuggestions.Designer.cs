@@ -12,7 +12,7 @@ using Pim.Infrastructure.Data;
 namespace Pim.Infrastructure.Data.Migrations
 {
     [DbContext(typeof(PimDbContext))]
-    [Migration("20261101120948_AddNoteTaskSuggestions")]
+    [Migration("20261101141517_AddNoteTaskSuggestions")]
     partial class AddNoteTaskSuggestions
     {
         /// <inheritdoc />
@@ -96,6 +96,238 @@ namespace Pim.Infrastructure.Data.Migrations
                     b.HasIndex("ObjectType", "ObjectId", "CreatedAt");
 
                     b.ToTable("audit_versions");
+                });
+
+            modelBuilder.Entity("Pim.Infrastructure.Data.Entities.AiAsrJobEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("AbortSource")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("abort_source");
+
+                    b.Property<int>("AttemptNumber")
+                        .HasColumnType("integer")
+                        .HasColumnName("attempt_number");
+
+                    b.Property<string>("AudioFormat")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("audio_format");
+
+                    b.Property<string>("AudioName")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("audio_name");
+
+                    b.Property<string>("AudioSha256")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("audio_sha256");
+
+                    b.Property<long>("AudioSizeBytes")
+                        .HasColumnType("bigint")
+                        .HasColumnName("audio_size_bytes");
+
+                    b.Property<DateTimeOffset?>("CancelRequestedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("cancel_requested_at");
+
+                    b.Property<Guid>("ClientRequestId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("client_request_id");
+
+                    b.Property<string>("ConsentJson")
+                        .IsRequired()
+                        .HasColumnType("jsonb")
+                        .HasColumnName("consent_json");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("Endpoint")
+                        .IsRequired()
+                        .HasMaxLength(2048)
+                        .HasColumnType("character varying(2048)")
+                        .HasColumnName("endpoint");
+
+                    b.Property<string>("ErrorCode")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("error_code");
+
+                    b.Property<string>("ErrorMessage")
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)")
+                        .HasColumnName("error_message");
+
+                    b.Property<double?>("EstimatedAudioSeconds")
+                        .HasColumnType("double precision")
+                        .HasColumnName("estimated_audio_seconds");
+
+                    b.Property<int?>("EstimatedCompletionTokens")
+                        .HasColumnType("integer")
+                        .HasColumnName("estimated_completion_tokens");
+
+                    b.Property<DateTimeOffset?>("ExecutionExpiresAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("execution_expires_at");
+
+                    b.Property<DateTimeOffset?>("FinishedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("finished_at");
+
+                    b.Property<int?>("GatewayStatus")
+                        .HasColumnType("integer")
+                        .HasColumnName("gateway_status");
+
+                    b.Property<string>("InputHash")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("input_hash");
+
+                    b.Property<string>("Language")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("language");
+
+                    b.Property<Guid>("LogId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("log_id");
+
+                    b.Property<int>("MaxAttempts")
+                        .HasColumnType("integer")
+                        .HasColumnName("max_attempts");
+
+                    b.Property<int>("MaxOutputTokens")
+                        .HasColumnType("integer")
+                        .HasColumnName("max_output_tokens");
+
+                    b.Property<string>("Model")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("model");
+
+                    b.Property<Guid>("ModelProfileId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("model_profile_id");
+
+                    b.Property<Guid>("ModelRevision")
+                        .HasColumnType("uuid")
+                        .HasColumnName("model_revision");
+
+                    b.Property<string>("NextAction")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("next_action");
+
+                    b.Property<bool>("OutcomeKnown")
+                        .HasColumnType("boolean")
+                        .HasColumnName("outcome_known");
+
+                    b.Property<bool>("OutputLimitExceeded")
+                        .HasColumnType("boolean")
+                        .HasColumnName("output_limit_exceeded");
+
+                    b.Property<Guid>("OwnerId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("owner_id");
+
+                    b.Property<string>("PresetId")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("preset_id");
+
+                    b.Property<string>("PresetVersion")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("preset_version");
+
+                    b.Property<string>("PromptLanguage")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("prompt_language");
+
+                    b.Property<string>("PromptRevision")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("prompt_revision");
+
+                    b.Property<string>("PromptSha256")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("prompt_sha256");
+
+                    b.Property<string>("PromptTemplateRevision")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("prompt_template_revision");
+
+                    b.Property<string>("PromptTemplateSha256")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("prompt_template_sha256");
+
+                    b.Property<string>("PromptText")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("prompt_text");
+
+                    b.Property<bool>("ProviderAttempted")
+                        .HasColumnType("boolean")
+                        .HasColumnName("provider_attempted");
+
+                    b.Property<bool>("ResponseBodyComplete")
+                        .HasColumnType("boolean")
+                        .HasColumnName("response_body_complete");
+
+                    b.Property<DateTimeOffset?>("StartedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("started_at");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("status");
+
+                    b.Property<int>("TimeoutSeconds")
+                        .HasColumnType("integer")
+                        .HasColumnName("timeout_seconds");
+
+                    b.Property<int?>("UpstreamStatus")
+                        .HasColumnType("integer")
+                        .HasColumnName("upstream_status");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("LogId");
+
+                    b.HasIndex("OwnerId", "ClientRequestId")
+                        .IsUnique();
+
+                    b.HasIndex("Status", "ExecutionExpiresAt");
+
+                    b.ToTable("ai_asr_jobs");
                 });
 
             modelBuilder.Entity("Pim.Infrastructure.Data.Entities.AiCallAudioEntity", b =>
@@ -8263,6 +8495,15 @@ namespace Pim.Infrastructure.Data.Migrations
                     b.HasIndex("UserId", "Status", "UpdatedAt");
 
                     b.ToTable("quick_notes");
+                });
+
+            modelBuilder.Entity("Pim.Infrastructure.Data.Entities.AiAsrJobEntity", b =>
+                {
+                    b.HasOne("Pim.Infrastructure.Data.Entities.AiRequestLogEntity", null)
+                        .WithMany()
+                        .HasForeignKey("LogId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("Pim.Infrastructure.Data.Entities.AiCallAudioEntity", b =>

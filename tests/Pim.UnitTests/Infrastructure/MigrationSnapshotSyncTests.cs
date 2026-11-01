@@ -106,7 +106,7 @@ public sealed class MigrationSnapshotSyncTests
         // 与 Pim.Api.csproj 的 ProjectReference 一一对应。少一个模块（例如 Mcp / Files 因构建
         // 或复制问题缺失）就意味着它的表不再参与快照比对，护栏会静默失效（review P3-2）。
         Assert.Equal(
-            new[] { "Calendar", "Files", "Mcp", "Mobile", "PcTracker", "QuickNotes" },
+            new[] { "Calendar", "Files", "Mcp", "Mobile", "NoteTaskSuggestions", "PcTracker", "QuickNotes" },
             ProductionModules);
 
         // 清单里的每个模块都必须真的能加载：deps.json 与输出目录不一致时在这里大声失败。

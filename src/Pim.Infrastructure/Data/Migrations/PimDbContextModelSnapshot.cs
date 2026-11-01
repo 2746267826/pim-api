@@ -390,8 +390,8 @@ namespace Pim.Infrastructure.Data.Migrations
                     b.HasIndex("LogId");
 
                     b.HasIndex("OwnerId", "ClientRequestId", "TransportKind", "Source")
-                        .HasDatabaseName("IX_ai_asr_transport_observations_owner_kind_source")
-                        .IsUnique();
+                        .IsUnique()
+                        .HasDatabaseName("IX_ai_asr_transport_observations_owner_kind_source");
 
                     b.ToTable("ai_asr_transport_observations");
                 });
