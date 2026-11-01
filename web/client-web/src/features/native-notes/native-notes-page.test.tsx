@@ -5,7 +5,8 @@ import userEvent from '@testing-library/user-event'
 import { createMemoryRouter, RouterProvider } from 'react-router'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { NativeNotesPage } from './native-notes-page'
-import type { NoteMaterialUpload, NoteMaterialVersion } from './material-model'
+import { buildMaterialBundle, type NoteMaterialUpload, type NoteMaterialVersion } from './material-model'
+import { exportAndroidNotePackage } from './material-package'
 
 const nativeApi = vi.hoisted(() => ({
   limits: vi.fn(),
@@ -389,6 +390,54 @@ describe('NativeNotesPage', () => {
     })
     expect(preview).toMatchObject({ kind: 'InkPreview', blockId: vector.id, sizeBytes: 5 })
     expect(nativeApi.uploadPart).toHaveBeenCalled()
+  })
+
+  it('imports an Android package into a local draft and still requires server-storage consent', async () => {
+    const packageBundle = await buildMaterialBundle({
+      versionId: '88888888-8888-4888-8888-888888888888',
+      noteId: '99999999-9999-4999-8999-999999999999',
+      baseVersionId: null,
+      revision: 4,
+      title: '从 Android 导入',
+      noteCreatedAtMillis: 10,
+      createdAtMillis: 20,
+      blocks: [
+        { id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', kind: 'markdown', text: '混排正文' },
+        {
+          id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+          kind: 'photo',
+          assetId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+          mimeType: 'image/png',
+          bytes: new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+        },
+        {
+          id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+          kind: 'ink',
+          ink: { width: 320, height: 240, strokes: [{ width: 2, points: [{ x: 12, y: 18, pressure: 0.7 }] }] },
+          bytes: new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+        },
+      ],
+    })
+    const archive = await exportAndroidNotePackage(packageBundle)
+    page()
+    const zipFile = new File([archive as BlobPart], 'android-note.zip', { type: 'application/zip' })
+    await userEvent.upload(screen.getByLabelText('选择 Android 笔记包'), zipFile)
+
+    expect(await screen.findByRole('heading', { name: '新建固定材料' })).toBeTruthy()
+    expect((screen.getByLabelText('笔记标题') as HTMLInputElement).value).toBe('从 Android 导入')
+    expect((screen.getByLabelText('正文块 1') as HTMLTextAreaElement).value).toBe('混排正文')
+    expect(screen.getByAltText('正文照片 2').getAttribute('src')).toBe('blob:synthetic-note-image')
+    expect(screen.getByAltText('手写卡片 3').getAttribute('src')).toBe('blob:synthetic-note-image')
+    expect(await screen.findByText(/尚未上传；保存时仍需明确确认服务器存储/)).toBeTruthy()
+    expect((screen.getByLabelText('确认保存到当前服务器') as HTMLInputElement).checked).toBe(false)
+    expect(nativeApi.begin).not.toHaveBeenCalled()
+
+    await consentToStorage()
+    await userEvent.click(screen.getByRole('button', { name: '保存新版本' }))
+    await waitFor(() => expect(nativeApi.complete).toHaveBeenCalledOnce())
+    const body = nativeApi.begin.mock.calls[0]![0]
+    expect(body.baseVersionId).toBeNull()
+    expect(JSON.parse(body.inputJson).note.blocks.map((block: { kind: string }) => block.kind)).toEqual(['markdown', 'photo', 'ink'])
   })
 
   it('keeps the dirty draft when a note switch is cancelled and warns before unload', async () => {

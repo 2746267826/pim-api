@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Camera, ImagePlus, PenLine, Plus, RotateCcw, Save, Trash2 } from 'lucide-react'
+import { Camera, Download, ImagePlus, PenLine, Plus, RotateCcw, Save, Trash2 } from 'lucide-react'
 import { Button, Card, InlineAlert, Input, Label, PageHeader, Skeleton, StatusBadge, Textarea } from '@/components/ui'
 import {
   buildMaterialBundle,
@@ -15,11 +15,13 @@ import {
 import type { NativeNotesClient, NoteLibrarySource } from './api'
 import { uploadMaterialBundle, type MaterialUploadProgress } from './upload-engine'
 import { InkCanvasEditor } from './ink-canvas-editor'
+import { exportAndroidNotePackage } from './material-package'
 
 export interface NoteEditorSeed {
   noteId: string
   title: string
   body: string
+  blocks?: MaterialDraftBlock[]
   legacyNotice?: string
 }
 
@@ -87,7 +89,7 @@ export function NoteEditorPane({
       key={`seed/${seed.noteId}`}
       noteId={seed.noteId}
       title={seed.title}
-      blocks={[{ id: createMaterialId(), kind: 'markdown', text: seed.body }]}
+      blocks={seed.blocks ?? [{ id: createMaterialId(), kind: 'markdown', text: seed.body }]}
       revision={0}
       noteCreatedAtMillis={Date.now()}
       baseVersionId={null}
@@ -163,6 +165,7 @@ function LoadedEditor({
   const [frozen, setFrozen] = useState<MaterialBundle | null>(null)
   const [progress, setProgress] = useState<MaterialUploadProgress | null>(null)
   const [busy, setBusy] = useState(false)
+  const [exporting, setExporting] = useState(false)
   const [promoting, setPromoting] = useState(false)
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
@@ -269,6 +272,45 @@ function LoadedEditor({
     }
   }
 
+  async function exportPackage() {
+    if (busy || exporting || recordings > 0) return
+    let session: EditorUploadSession
+    try {
+      session = requireUploadSession()
+    } catch {
+      return
+    }
+    setExporting(true)
+    setError('')
+    try {
+      const bundle = await buildMaterialBundle({
+        versionId,
+        noteId,
+        baseVersionId,
+        revision: revision + (dirty || !baseVersionId ? 1 : 0),
+        title,
+        noteCreatedAtMillis,
+        createdAtMillis: Date.now(),
+        blocks,
+        recordings: [],
+      })
+      assertUploadSessionActive(session)
+      const archive = await exportAndroidNotePackage(bundle)
+      assertUploadSessionActive(session)
+      const url = URL.createObjectURL(new Blob([archive as BlobPart], { type: 'application/zip' }))
+      const link = document.createElement('a')
+      link.href = url
+      link.download = `${safePackageName(title)}.zip`
+      link.click()
+      window.setTimeout(() => URL.revokeObjectURL(url), 1_000)
+      setMessage('已导出 Android schema-v1 笔记包，包含正文、原图、可编辑笔迹与 PNG 预览；不含录音。')
+    } catch (failure) {
+      if (isUploadSessionActive(session)) setError(`${errorText(failure)}。未导出不完整笔记包。`)
+    } finally {
+      if (isUploadSessionActive(session)) setExporting(false)
+    }
+  }
+
   async function promote() {
     if (!baseVersionId || busy || promoting) return
     let session: EditorUploadSession
@@ -303,8 +345,8 @@ function LoadedEditor({
     setError('')
     const accepted: MaterialDraftBlock[] = []
     for (const file of [...files]) {
-      if (file.type !== 'image/jpeg' && file.type !== 'image/png') {
-        setError('Web 材料当前只接受 JPEG/PNG 照片。')
+      if (file.type !== 'image/jpeg' && file.type !== 'image/png' && file.type !== 'image/webp') {
+        setError('Web 材料当前只接受 JPEG/PNG/WebP 照片。')
         continue
       }
       if (file.size > 32 * 1024 * 1024) {
@@ -348,6 +390,9 @@ function LoadedEditor({
       <PageHeader className="mb-0" title={baseVersionId ? '编辑固定材料' : '新建固定材料'} subtitle={baseVersionId ? `将基于版本 ${shortId(baseVersionId)} 创建第 ${revision + 1} 版；旧版本原样保留。` : '首次保存会创建新笔记和第一个固定材料版本。'} actions={
         <div className="flex flex-wrap items-center gap-2">
           {baseVersionId && !isCurrent && <Button size="sm" loading={promoting} onClick={() => void promote()}>设为当前版本</Button>}
+          <Button size="sm" variant="ghost" disabled={busy || exporting || recordings > 0} loading={exporting} onClick={() => void exportPackage()}>
+            <Download className="size-4" aria-hidden />导出 Android 笔记包
+          </Button>
           <Button size="sm" variant="primary" loading={busy} disabled={!canSubmit} onClick={() => void save()}>
             <Save className="size-4" aria-hidden />{frozen ? '重试同一冻结批次' : '保存新版本'}
           </Button>
@@ -414,12 +459,12 @@ function LoadedEditor({
         })}><PenLine className="size-4" aria-hidden />添加手写卡片</Button>
         <label className={fileLabelClass(editable)}>
           <ImagePlus className="size-4" aria-hidden />添加照片
-          <input className="hidden" type="file" aria-label="添加照片" accept="image/jpeg,image/png" multiple disabled={!editable}
+          <input className="hidden" type="file" aria-label="添加照片" accept="image/jpeg,image/png,image/webp" multiple disabled={!editable}
             onChange={(event) => { void addPhotos(event.target.files); event.currentTarget.value = '' }} />
         </label>
         <label className={fileLabelClass(editable)}>
           <Camera className="size-4" aria-hidden />拍照加入
-          <input className="hidden" type="file" aria-label="拍照加入笔记" accept="image/jpeg,image/png" capture="environment" disabled={!editable}
+          <input className="hidden" type="file" aria-label="拍照加入笔记" accept="image/jpeg,image/png,image/webp" capture="environment" disabled={!editable}
             onChange={(event) => { void addPhotos(event.target.files); event.currentTarget.value = '' }} />
         </label>
         {frozen && <Button size="sm" variant="ghost" disabled={busy} onClick={createBlankVersion}><RotateCcw className="size-4" aria-hidden />放弃冻结批次</Button>}
@@ -508,6 +553,11 @@ function PreviewImage({ bytes, mimeType, alt }: { bytes: Uint8Array; mimeType: s
 
 function shortId(value: string) {
   return value.length > 12 ? `${value.slice(0, 8)}…` : value
+}
+
+function safePackageName(value: string) {
+  const normalized = value.trim().replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_').replace(/[. ]+$/g, '').slice(0, 80)
+  return normalized || 'PIM-note'
 }
 
 function fileLabelClass(enabled: boolean) {

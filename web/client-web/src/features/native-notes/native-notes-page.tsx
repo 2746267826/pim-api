@@ -9,6 +9,7 @@ import {
   Mic,
   RefreshCw,
   Sparkles,
+  Upload,
 } from 'lucide-react'
 import { Button, Card, EmptyState, InlineAlert, Input, PageHeader, Skeleton, StatusBadge } from '@/components/ui'
 import { getApiBase } from '@/lib/apiBase'
@@ -19,6 +20,7 @@ import type { QuickNoteListItem } from '@/features/quick-notes/types'
 import { groupNoteLibrary, type NoteLibraryEntry } from './library-model'
 import { bindNativeNotesApi } from './api'
 import { createMaterialId } from './material-model'
+import { assertAndroidNotePackageSize, importAndroidNotePackage } from './material-package'
 import { NoteEditorPane, type NoteEditorSeed } from './note-material-editor'
 import {
   LEGACY_QUICK_NOTE_NOTICE,
@@ -52,10 +54,12 @@ function Workspace({ ownerId, serverBinding }: { ownerId: string; serverBinding:
   const [search, setSearch] = useState('')
   const [seed, setSeed] = useState<NoteEditorSeed | null>(null)
   const [legacyBusy, setLegacyBusy] = useState('')
+  const [packageBusy, setPackageBusy] = useState(false)
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
   const [editorDirty, setEditorDirty] = useState(false)
   const sessionRef = useRef<WorkspaceSession | null>(null)
+  const packageInputRef = useRef<HTMLInputElement>(null)
   const sessionGenerationRef = useRef(0)
   const allowInternalNavigationRef = useRef(false)
   const selectedVersionId = params.get('version') ?? ''
@@ -159,13 +163,41 @@ function Workspace({ ownerId, serverBinding }: { ownerId: string; serverBinding:
     })
   }
 
-  function beginNew(initial?: NoteEditorSeed) {
-    if (!confirmDiscardEditor('继续将切换到一份新的空白材料。')) return
+  function beginNew(initial?: NoteEditorSeed): boolean {
+    if (!confirmDiscardEditor(initial?.blocks ? '继续将用笔记包内容替换当前编辑器。' : '继续将切换到一份新的空白材料。')) return false
     setEditorDirty(false)
     setSeed(initial ?? { noteId: createMaterialId(), title: '', body: '' })
     setMessage('')
     setError('')
     changeInternalNavigation(() => setParams({}, { replace: true }))
+    return true
+  }
+
+  async function importPackage(file: File | undefined) {
+    if (!file || packageBusy) return
+    setError('')
+    setMessage('')
+    try {
+      assertAndroidNotePackageSize(file.size)
+    } catch (failure) {
+      setError(errorText(failure))
+      return
+    }
+    setPackageBusy(true)
+    try {
+      const bytes = new Uint8Array(await file.arrayBuffer())
+      assertSessionActive()
+      const imported = await importAndroidNotePackage(bytes)
+      assertSessionActive()
+      if (beginNew({ noteId: createMaterialId(), title: imported.title, body: '', blocks: imported.blocks })) {
+        setMessage(`已校验并打开 Android schema-v1 笔记包（${imported.blocks.length} 个有序正文块）。内容尚未上传；保存时仍需明确确认服务器存储。`)
+      }
+    } catch (failure) {
+      if (failure instanceof Error && failure.name === 'AbortError') return
+      setError(`笔记包导入失败：${errorText(failure)}`)
+    } finally {
+      setPackageBusy(false)
+    }
   }
 
   async function beginLegacyCopy(item: QuickNoteListItem) {
@@ -218,8 +250,13 @@ function Workspace({ ownerId, serverBinding }: { ownerId: string; serverBinding:
       title="笔记库"
       subtitle="固定正文、照片与手写预览；处理链始终读取同一条不可变材料版本"
       actions={<>
+        <Button size="sm" variant="secondary" loading={packageBusy} disabled={packageBusy} onClick={() => packageInputRef.current?.click()}>
+          <Upload className="size-4" aria-hidden />导入 Android 笔记包
+        </Button>
         <Button size="sm" variant="primary" onClick={() => beginNew()}><FilePlus2 className="size-4" aria-hidden />新建笔记</Button>
         <Button size="sm" variant="secondary" onClick={() => navigate('/native-notes/processing')}><Sparkles className="size-4" aria-hidden />处理与生成</Button>
+        <input ref={packageInputRef} className="hidden" type="file" accept=".zip,application/zip" aria-label="选择 Android 笔记包"
+          onChange={(event) => { void importPackage(event.currentTarget.files?.[0]); event.currentTarget.value = '' }} />
       </>}
     />
 

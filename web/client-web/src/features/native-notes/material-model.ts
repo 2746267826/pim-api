@@ -4,7 +4,7 @@ export type NoteMaterialVersion = components['schemas']['NoteMaterialVersionDto'
 export type NoteMaterialUpload = components['schemas']['NoteMaterialUploadDto']
 export type NoteMaterialUploadFile = components['schemas']['NoteMaterialUploadFileDto']
 
-export type SupportedPhotoMime = 'image/jpeg' | 'image/png'
+export type SupportedPhotoMime = 'image/jpeg' | 'image/png' | 'image/webp'
 
 export interface NewPhotoInput {
   id: string
@@ -115,6 +115,7 @@ const encoder = new TextEncoder()
 const photoExtensions: Record<SupportedPhotoMime, string> = {
   'image/jpeg': 'jpg',
   'image/png': 'png',
+  'image/webp': 'webp',
 }
 
 export function createMaterialId(): string {
@@ -155,7 +156,7 @@ export async function buildMaterialBundle(input: BuildMaterialInput): Promise<Ma
     }
     if (block.kind === 'photo') {
       const extension = photoExtensions[block.mimeType]
-      if (!extension) throw new Error('Web 目前只支持 JPEG/PNG 照片')
+      if (!extension) throw new Error('Web 目前只支持 JPEG/PNG/WebP 照片')
       if (!block.bytes.length) throw new Error('照片内容为空')
       if (block.bytes.length > 32 * 1024 * 1024) throw new Error('单张照片不能超过 32 MiB')
       const hash = await sha256Hex(block.bytes)
