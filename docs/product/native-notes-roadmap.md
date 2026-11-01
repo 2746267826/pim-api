@@ -1,5 +1,7 @@
 ﻿# PIM 原生客户端与笔记路线图
 
+版本：v0.48 记录三平台笔记路线图 M0–M5 的逐项开发状态、API/Android 新 issue 实施分工和后续开发包。API `master` 当前文档 head `88c11c6b58a496540c8a35ade4d38c5e490913b1`；产品 Release 源仍为 `84ef802e7c85a1b6c3017c0c274a108fea57f9d2`。本覆盖不改写 v0.47 和更早历史，不代表任何 M 阶段或 AC 完成。
+
 版本：v0.47 记录 API/Web `api-v26.11.1047`、Windows `windows-v26.11.1111` 与 Android `android-v26.11.1147` 的实际产品 CI/Release 事实；真实模型/provider质量、region/audio Batch、目标硬件、OEM/device UX 与完整 AC 仍 `NOT-VERIFIED`。API/Web 产品发布源/implementation merge 为 `84ef802e7c85a1b6c3017c0c274a108fea57f9d2`；后续 docs-only PR #550 只推进文档，不重建产品或改变该 Release。v0.46 及更早记录作为历史快照保留。
 
 版本：v0.46 记录 2026-11-01 API/Web `1047` 与 Windows `1111` 实际发布、Android 本地 source/test 完成但远端推送/PR/CI/Release 阻塞，以及外部 AC 未验边界。下方 v0.45 版本行及更早正文作为历史快照保留。
@@ -15,6 +17,117 @@
 本文位于 `pim-api/docs/product/native-notes-roadmap.md`，作为跨仓持续维护的唯一总路线图。Android、Windows 与 Web 按批次引用同一份需求，不复制另一套台账；首版范围和视觉规范分别通过文内链接细化。更新状态时标明平台、证据和仍未交付部分，不以聊天记录代替仓内记录。
 
 总跟踪：[pim-api#505](https://github.com/2746267826/pim-api/issues/505)。主题切片 [pim-android#31](https://github.com/2746267826/pim-android/issues/31) 已合并；录音切片：[pim-android#33](https://github.com/2746267826/pim-android/issues/33)；混合文档与基础手写：[pim-android#35](https://github.com/2746267826/pim-android/issues/35)；完整材料版本：[pim-android#37](https://github.com/2746267826/pim-android/issues/37)。总跟踪不能随主题切片或安卓首版完成而提前关闭。
+
+<a id="v048-current"></a>
+
+### v0.48 当前执行层：全笔记 M0–M5、已派开发包与真实验收边界（2026-11-01）
+
+本节是当前执行覆盖，不重写下方稳定需求、32 项 capability、32 行 gap、13 个 MIG、M0–M5 或旧历史。总账仍为 45 个稳定 ID；按行状态区分“代码/基础已存在”“仍需开发”和“独立验收未完成”。代码存在不等于验收完成，外部验收失败/未做也不自动等于该功能没有代码。
+
+#### 当前 issue 与实现分工
+
+| Issue | 当前事实 / 精确开发范围 | 当前执行归属 | 尚需的完成证据 |
+| --- | --- | --- | --- |
+| API #525 | 已由用户关闭；属于既有手机同步问题，不再列为 OPEN 或笔记开发阻塞。 | 已关闭；历史记录保留 | 不把旧 pending 数量/旧 WIP 继续报为当前开放状态。 |
+| Android #533 | 用户于 2026-11-01 completed 关闭：实体机 25 MB 日志与 66 MB core 导出成功且未闪退。 | 已关闭 | 后续拆分的 #61/#62 是新问题，不回写为 #533 未完成。 |
+| API #516 | 保持 OPEN；路线/路由/多模态/节点/处理和 AC1–19 不是一个全绿状态。 | Einstein 维护路线图；按下方 #539/#551–554 及五阶段分别实施 | AC1–19 全部缺正式逐条验收；Release/受控 HTTP 不能代替真实模型、硬件或部署证据。 |
+| API #539 | 长请求与 processing pending；保持 OPEN。 | Sagan：`wt/sync-convergence-api-20261101`；与 #551 同一收敛切片 | 长请求、pending/processing 终态与客户端可恢复进度按 issue 验收；真实服务端/客户端行为回执待回填。 |
+| API #551 | coverage gap window 不收敛，造成重复重采/重传。 | Sagan，与 #539 共用收敛/覆盖工作树 | 有缺口但已提交窗口能收敛；重复扫描/重传不无限增长，保留可恢复状态并验证边界。 |
+| API #552 | ASR 同步网关 60 秒截断；需持久异步任务，而非延长同步等待冒充修复。 | Meitner：`wt/asr-reliability-api-20261101`，并负责相应 Web consumer | 创建/查询/完成/失败可持久回读，超时和进程重启不丢任务；Web 使用真实契约。 |
+| API #553 | 输出 tokens 硬编码 8192 且 UI 隐藏。 | Meitner，同 #552 Web/配置切片 | 后端预算与 UI 可见/可配置语义一致，受限安全默认、兼容、审计和边界验证。 |
+| API #554 | 超时、断连、用户主动 cancel 当前需区别处理。 | Meitner，同 #552/#553 reliability 切片 | 持久状态和 UI 分辨 timeout/disconnect/cancel，终态/重试规则可回读，避免误报成功或误重发。 |
+| Android #59 | rejected usageSummary 可能永久残留，需定义终态生命周期。 | Dewey：`wt/android-diagnostics-lifecycle-20261101` | rejected 与其他终态的清理/保留规则明确，重启和再次提交不留下幽灵摘要。 |
+| Android #60 | duplicate fixes 丢弃台账。 | Euclid：`wt/android-location-stability-20261101` | 修复时保留可审计账本及幂等性，重复输入/重放不丢记录。 |
+| Android #61 | 诊断导出缺失整天日志、sync-history 为空、standbyBucket unknown。 | Dewey，与 #59/#62 同工作树；和 #60 Room/DAO 修改先协调 | 归档/导出范围、sync history 来源和 standbyBucket 获取失败状态分别可见；导出完整性可复核。 |
+| Android #62 | 缺少崩溃堆栈。 | Dewey，与 #59/#61 同工作树 | 崩溃栈能在隐私/容量边界内随诊断导出保全，缺失原因明确。 |
+| Android #63 | HighSpeed 抖动；高频运行约 2 小时不退。 | Euclid，与 #60 同工作树 | 频率/抖动控制有界，连续两小时生命周期可收敛并按策略退让；不得用短单测称为硬件续航验收。 |
+
+上表角色/工作树来自当前协调清单；它表示已派实际编码，不表示实现已提交或 issue 已完成。API #552–554 的匹配 Web consumer 由 Meitner 同步实现；跨 worker 的 Android Room/DAO 改动先协调，避免共享写冲突。#61/#62 不改变 #533 已完成事实。下一波尚未派发的全路线项目列在下方，不能伪装成已有 owner。
+
+#### M0–M5 当前交付与开发波次
+
+| 里程碑 | 当前代码/决定 | 仍需开发的包（不是纯验收项） | 独立验收缺口 / 依赖 |
+| --- | --- | --- | --- |
+| M0 产品定界与风险验证 | 产品范围、离线优先、材料版本、冲突保全和六条处理规则已明确；路线基线与 Android/API/Windows 发布均存在。 | 本地材料保留/删除/导出/恢复、容量和清理策略；长录音及编辑器故障矩阵；NOTE-03 旧快速记录兼容关系；所有者按平台核验现有存储边界。 | OPPO Find X9 Pro/Pad 4 Pro 长时录音、声学/笔触/掌触/后台和温度仍无新授权，保持 NOT-VERIFIED；M0 退出需真实设备证据。 |
+| M1 Android 本地可用 | Android 笔记库/本地编辑、相机/手写、录音/通知/波形、固定材料和上传队列已有代码。 | NOTE-02/05 长文、整篇撤销、叶块跨材料/模式/重建恢复和大量块性能；NOTE-03 旧记录互通/迁移；INK-03 手写交换/导入导出；REC-03 空间/权限/来电恢复。 | REC-01/02/06/07 真机 100/180 分钟、自动续段间隙、锁屏/OEM、真实声学与系统通知尚未验证。M0 风险结果反哺 M1。 |
+| M2 云端闭环与多端访问 | 服务端固定材料、上传、分段 ASR、逐片结果/恢复、双产物和版本保护；管理员 ASR UI 与 Android/Web 消费者基础已交付。 | API #539/#551 收敛、#552 持久异步、#553 token 设置、#554 终止原因；M2 全材料 coverage/公开 receipt；Android functional 处理/异常/编辑/重生成/冲突 UI；Windows/Web 新笔记读写和混合材料支持。 | 真正课堂的全录音/正文/照片/手写图完整性、provider 质量/Batch/长处理、后台重启和跨端冲突尚未验证；依赖稳定 API contract 与客户端回归。真实付费须另有明确授权。 |
+| M3 混合笔记多端扩展 | API/Web、Windows、Android 基础宿主与部分编辑/处理路径已发布。 | Windows 主动录音和笔记编辑；Windows/Web 手写预览/编辑往返、混合块身份/顺序/尺寸兼容、实际包导入导出；补齐 Windows 离线/同步状态展示。 | 跨端实录、冲突双方材料往返、文件格式兼容和目标平台真机/实机验收；依赖 M1/M2 的数据模型和 contract。 |
+| M4 智能整理 | 文本/视觉调用与完整记录/分析有 service/API/Web 受控基础。 | TASK-01 全新业务：提取任务建议、编辑/确认/放弃、幂等写入现有任务模块、结果回溯；分析来源/事实/推断 UI 与用户修改流程。 | 依赖完整 M2 输入来源、稳定派生版本和用户确认交互；真实事实保真度须基于授权材料审验。AI-01 实时转写和 AI-09 速览/导出不自动纳入 MVP。 |
+| M5 全面迁移与收尾 | 13 项迁移范围已盘点编号，Android/Windows 原生宿主继续保留，Web 保持正式访问方式。 | MIG-01–13 逐域盘点并实现，不是“补验收即可”：工作台/日历/确认与提醒/快速记录文件/电脑与手机采集/知识库/设备/账号安全/集成设置/系统诊断/旧入口/客户端生命周期。 | 每项需明确原生 vs 暂留 Web、数据兼容和实际操作证据；不要求一次性全迁完，但不得从总账删除。依赖按业务域拆波，不阻塞独立 M1/M2。 |
+
+#### 32 个 capability 当前代码/剩余工作索引
+
+下表稳定 ID 不变；“已有/部分”指文档记录的代码基础，“缺口”必须继续开发；真机/真实 provider/production 证据另行核验。
+
+| ID | 当前代码状态 | 下一开发包 / 主要缺口 |
+| --- | --- | --- |
+| NOTE-01 | Android 本机列表/新建/打开/标题与 Markdown 搜索已有。 | Windows/Web 新笔记访问编辑、全平台组织与结果 UI（M2/M3）。 |
+| NOTE-02 | Tiptap/ProseMirror 离线正文和输入/视图交接已有。 | NOTE-03 旧 HTML quick-note 兼容；整篇撤销、跨块/材料恢复、长文与大量块性能。 |
+| NOTE-03 | 旧快速记录被保留但未与新笔记建立兼容/迁移关系。 | 定义稳定身份映射、只读/编辑兼容、附件访问与可回滚迁移；先盘点旧数据，不删除/覆盖。 |
+| NOTE-04 | 相机/照片/手写材料和固定版本上传、受控派生已有。 | Android functional 网络闭环、全材料 coverage、逐图 receipt 和真实课堂检查。 |
+| NOTE-05 | 编辑优先、紧凑录音条、右上结束等基础交互已有。 | 结果/修订/冲突全页、长文/平板适配、Material/Adaptive 集成与 OPPO 验收。 |
+| INK-01 | 可编辑向量卡片、保存/重开基础已有。 | 扩展渲染/重建/旧稿兼容回归；目标设备验收另计。 |
+| INK-02 | 模拟器/触控基础已有。 | OPPO Pad 真笔/掌触与 Find X9 系统输入实际验收（M0/M1）。 |
+| INK-03 | 向量、块身份/尺寸和 PNG 导出已有基础。 | Windows/Web 可迁移交换、导入导出、包往返和损坏/旧格式处理。 |
+| INK-04 | 右下角自由尺寸拖拽、派生图片受控处理已有。 | 公开逐图 receipt、真实多模态材料使用与跨平台布局保真。 |
+| REC-01 | 多段、3 小时单段上限、续段/暂停逻辑已有。 | 实际时长、自动接续间隙、低空间/进程恢复与资源提示测试。 |
+| REC-02 | 前台服务/后台录音基础已有。 | OPPO 锁屏、Doze/OEM、切应用和真实来电/资源行为验收。 |
+| REC-03 | 本机音频与 manifest 恢复基础已有。 | 空间不足、权限撤销、音频抢占、温度/电量与故障 UI/恢复策略。 |
+| REC-04 | 长音频固定、分块上传及账号绑定队列已有。 | 真实长课堂网络/重启/续传和服务端配额清理验收。 |
+| REC-05 | Windows 主动录音尚未实现。 | Windows 采集、落盘、状态 UI、后台生命周期和上传/同步（M3；Euler 工作线）。 |
+| REC-06 | Android 通知状态基础已有。 | OPPO 通知权限、锁屏隐私、厂商后台和状态一致性验证。 |
+| REC-07 | 实际 PCM 波形逻辑已有。 | 真机声学/静音/异常采集验证；证明波形不冒充落盘或可懂度。 |
+| AI-01 | 未实现；明确为可选，非 MVP 门槛。 | 暂不排近期；若重开需独立本地模型/资源方案和许可评估。 |
+| AI-02 | MiMo 单片与固定版本分段 ASR、receipt/stop/retry 已有。 | Android functional E2E、真实后台恢复/长课堂质量；API #552 async 与 #539 处理可靠性。 |
+| AI-03 | 状态、逐片结果/失败恢复和派生服务基础已有。 | 客户端全阶段状态/异常/重试与结果回读；缺段不误报全篇成功。 |
+| AI-04 | 固定材料版本、不可变候选、CAS/人工 head 保护已有服务端基础。 | Android/Windows/Web 的修订、补录、来源选择、冲突双方恢复完整 UI 与 E2E。 |
+| AI-05 | 配置/凭据保护、文本/视觉/ASR 预设基础已有。 | #553 token 上限设置与 UI；#554 终止语义；流式/旧调用迁移、成本/保留/扫描和生产治理。 |
+| AI-06 | 全材料固定输入与受控文本/图片处理已有。 | 全材料覆盖拒绝规则、逐图/块 receipt、真实图片/长内容容量与遗漏可见性。 |
+| AI-07 | CompleteRecord/IndependentAnalysis 双产物服务与 Web 基础已有。 | Android 全链入口、人工编辑保护、真实完整课堂两产物和来源链验收。 |
+| AI-08 | 分析模板/来源区分和双产物逻辑基础已有。 | 主题质量、来源/引用真实性、事实与推断区分及长材料编辑验收。 |
+| AI-09 | 速览/HTML/图片导出未实现且规格未冻结。 | 先确认范围与数据模型；不是 M1/M2 发布阻塞。 |
+| TASK-01 | 任务建议到现有任务模块尚未实现。 | M4：提取→编辑→确认/放弃→幂等创建与来源回溯，API+Web 分拆后派 owner。 |
+| SYNC-01 | 本地保存/绑定上传队列与服务端任务基础已有。 | 长处理 pending 收敛、#551 gap 重复重采/重传、异步状态消费、跨平台后台恢复。 |
+| SYNC-02 | 服务端/ Web CAS、双方稿保留基础已有。 | Android/Windows 真实冲突 UX、混合材料往返、并发恢复和旧版本保护。 |
+| SAFE-01 | Owner/consent/凭据和固定输入保护已有基础。 | 安全存储清理、留存/删除、导出/恢复策略、审计与生产配额/日志核查；不能整体后移。 |
+| NATIVE-01 | Android 原生宿主、录音、笔记、上传基础已在。 | MIG-01–13 按批迁入原生动作；不等于全业务原生化。 |
+| NATIVE-02 | Windows .NET/WPF/托盘/采集/认证基础已在。 | Windows 记录、编辑器与混合材料、模型本机生命周期和迁移业务入口。 |
+| WEB-01 | 管理员 ASR 配置、笔记处理/双产物 Web 基础已发布。 | 新笔记访问编辑、功能态 live-backend E2E、三通道重跑/异常细节与跨端冲突 UX。 |
+
+#### 13 个 MIG 逐项原生化开发包
+
+当前总账只证明这些范围已被编号和盘点，不证明已实现；每项须继续做页面动作盘点、API/数据兼容、跨端去向和验收。优先复用现有 Web 行为，不机械搬壳。
+
+| ID | 范围 | 仍需的可开发包 |
+| --- | --- | --- |
+| MIG-01 | 今日、工作台 | 原生聚合、业务动作与详情跳转；不是只做 dashboard 展示。 |
+| MIG-02 | 日历、任务、样式/本 | 日历本/任务本规则、分类和修改动作；复用 M4 TASK-01 的确认语义。 |
+| MIG-03 | 确认中心、提醒、习惯、报告、数据中心 | 逐域迁移状态与操作权限；提醒/习惯状态变更和报告回溯。 |
+| MIG-04 | 快速记录、文件 | 与 NOTE-03 统一身份/兼容策略；旧记录、附件和文件操作可访问。 |
+| MIG-05 | 电脑记录、浏览器使用、电脑明细 | Windows 采集不停摆、查询/分类和本机记录能力（与 REC-05 分波实施）。 |
+| MIG-06 | 手机记录、历史位置 | 采集/地图轨迹/权限/后台状态共存；敏感权限与保留边界。 |
+| MIG-07 | 应用知识库、分类树 | 原生浏览、维护和分类操作，保留现有实体/关系。 |
+| MIG-08 | 设备列表、设备详情 | 设备身份、在线/状态与管理动作；不能只显示 endpoint。 |
+| MIG-09 | 登录、初始化、服务器/账号安全、用户管理 | 认证、凭据和权限隔离；管理员功能暂留 Web 的范围明确记录。 |
+| MIG-10 | Microsoft/Outlook、Drive、AI、MCP 设置 | 现有第三方接入和配置流逐项迁移；密钥安全与管理员权限保持。 |
+| MIG-11 | 系统状态、数据可靠性、日历管理、回收站、审计 | 诊断/修复/恢复/删除状态、可审计入口与数据保留策略。 |
+| MIG-12 | 端点/壳、嵌入页、旧别名、展览馆占位 | 标记兼容入口与未完成功能；只在替代功能可验证后退场。 |
+| MIG-13 | 安装更新、托盘/通知、采集启停、队列同步、设置 | 保障窗口关闭与后台生命周期分离；更新/队列/通知跨平台状态一致。 |
+
+#### 建议后续开发波次与依赖
+
+| 波次 | 包 | 推荐实现归属 | 真实前置 / 退出条件 |
+| --- | --- | --- | --- |
+| A 并行稳定性 | API #539/#551、API #552–554 + Web consumer、Android #59–63 | 已分别派给 Sagan、Meitner、Dewey、Euclid；以 coordination worktree 为准 | 先完成各自 issue 的代码与回归；未提交的任务标“进行中”，不把代码编写视为已验收。 |
+| B M0/M1 补缺 | NOTE-03 quick-note compat；NOTE-02 长文/撤销/恢复；REC-03 故障处理；INK-03 往返 | 建议拆 Android 编辑/数据兼容与 API 存储生命周期两支，owner 待父下一波分派 | 不等物理设备即可完成源码/合成回归；真实 OPPO 验收另行保留。不得与当前 Android #59–63 共写文件不协调。 |
+| C M2 全材料产品闭环 | Android functional E2E、coverage/receipt、跨端修订/重跑 UI；新 contract 消费 | 建议 API 先冻结真实 contract/异步任务语义，Web/Android 各由消费者 owner 接入 | 依赖 A 的 #539/#552/#554；若任何片段/材料缺失，不能发布完整成功。真实 provider 质量另授权。 |
+| D M3 Windows 与交换格式 | REC-05、Windows Notes/Editor、INK-03、Windows/Web bundle roundtrip、MIG-05 | Euler 已负责 Windows 主动记录/笔记/混合材料；共享 owner 后续按模块派发 | 依赖稳定 note/material identity 与唯一 API contract；需跨平台夹具，不代表 #516 本机 ASR 模型验收。 |
+| E M4/M5 增量迁移 | TASK-01 API+Web 确认流；MIG-01–13 按业务域拆批；SAFE-01 数据清理/导出/恢复 | 建议先拆 TASK-01 后端幂等/来源与 Web 确认，再逐域迁移；owner 待父安排 | 依赖任务/笔记版本语义与每域 API/权限盘点；各域各自验收，不能用迁移页面数量作为完成度。 |
+| F 外部验收槽（非当前编码权限） | OPPO/课堂/真实模型与音频 Batch/目标硬件/production | 无新增付费或物理设备授权，本轮不执行 | Release、CI、隔离 PG、mock 和模拟器均不能替代真实授权后的设备/provider/部署证据。 |
+
+**Issue 状态纠偏**：截至本覆盖，#525 与 #533 均已关闭；#533 的实体机导出验收已完成。v0.47“后续验收顺序”段和下方部分 v0.46 及更早记录中的“#533 OPEN/待物理复现”只作为历史快照，当前状态以本节为准。#61/#62 是新增诊断后续，不撤销 #533 完成。#516/#539 仍 OPEN；#551–554、Android #59–63 是已派开发包，证据回填前不得改成 completed。
+
+**MVP/验收门槛**：本轮 M0–M5 均未整体宣告完成。M1+M2 仍是 Android 首个完整真实闭环定义；真实模型/provider、Batch 费用/音频能力、production 部署、OPPO/OEM 长时、GPU/崩溃硬件恢复及完整 Android functional UX 未有新证据。#516 AC1–19 当前不能作为全套 PASS；每项仍需准确环境/产物/来源证据。#525/#533 关闭不降低 M0/M1/M2 或完整迁移范围。
 
 <a id="v047-current"></a>
 
@@ -1204,3 +1317,4 @@ Windows 记录、Web 编辑、TASK-01 和 MIG-01 至 MIG-13 继续保留原阶�
 | 2026-11-01 | v0.45 记录默认 retry 受控全链、契约一致性与剩余发布门槛 | 集成 `5015842a` 已并入验证 head `72ba5558`；build 0 errors/97 warnings，真实 PG migration `2/2`、snapshot `7/7`、guarded DDL `5/5`、OpenAPI shape `34/34`。实际 Kestrel + isolated PG + Windows typed transport 在默认 `EnableRetryOnFailure(3)` 下完成真实 PUT/GET route config、register/claim/binary/ACK、ASR `Succeeded`、显式 `NoteDerivedJob.RunAsync` 与两个实际 artifact/version；未用 SQL seed/retry-off/TestServer/MockHttpHandler。Swagger 经实际 jq 规范化与 v4 逐字一致：1,202,774 bytes、SHA`e5c555e2...d8d76`、351 paths/705 schemas。API 尚未取得真实 master merge SHA，Android refresh/PR/Gate/Release 待该 SHA；#533/#539 OPEN。Hangfire、真实模型/硬件/音频、OEM/device、UI、AC1–19 与 production 仍 NOT-VERIFIED。保留 45/32/32/13、AC1–19 与既有 history 字节。本条版本 v0.45 |
 | 2026-11-01 | v0.46 记录 API/Web 与 Windows 实际发布、Android 本地 source/test 完成与远端链路阻塞 | API/Web master `84ef802e`、CI `41272531071` 与 Release `api-v26.11.1047` 已核；Windows PR40 head `5a28b844` 普通 merge `1270bf6a`，master CI `41276828062` 的 15 jobs/Gate SUCCESS，Release `windows-v26.11.1111` 已发布；master raw counts Core `294/0/1/295`、App `93/0/0/93`，Core skip 与本地 `295 passed` 分开记账，tag target 以 immutable tag 解析 `1270bf6a` 而非 `target_commitish=master`。Android clean local commit `277236a8`，App `2068` 实跑 PASS、Core `72` XML UP-TO-DATE，但 NORMAL HTTPS/OpenSSL/HTTP1.1/Schannel push TLS 握手失败，SSH known-host 缺失拒认证且未写 known_hosts/未绕过验证；因此 NOTPUSHED、PR NOT CREATED、CI/merge/Release pending。外部模型/provider/device/hardware/OEM AC 与 production 仍 NOT-VERIFIED；本条版本 v0.46 |
 | 2026-11-01 | v0.47 记录三平台产品 CI/Release 已核，GitHub 发布不代表部署或外部模型/设备验收 | API/Web 产品发布源/implementation merge `84ef802e`、master CI `41272531071`、Release `api-v26.11.1047`；Windows merge `1270bf6a`、CI `41276828062`、Release `windows-v26.11.1111`（Core `294/0/1/295`、App `93/0/0/93`）；Android PR58 head `277236a8`/CI `41282476600` ordinary merge `4ddbbf43`，master CI `41283326434` 七 jobs/Gate/Release SUCCESS，Release `android-v26.11.1147` tag resolves to merge. v0.46 network blocker remains historical; model/provider quality, deployment, hardware, OEM/device UX and full AC `NOT-VERIFIED`. Docs PR [#550](https://github.com/2746267826/pim-api/pull/550) contains documentation-only changes and does not rebuild/change the API/Web product Release. |
+| 2026-11-01 | v0.48 将全笔记路线图明确为 M0–M5/32 capabilities/13 MIG 的当前开发执行层，并同步 API 与 Android 新 issue 分工 | #525/#533 已关闭；#516/#539 保持 OPEN；API #539/#551 由 Sagan、#552–554 与匹配 Web consumer 由 Meitner、Android #59/#61/#62 由 Dewey、#60/#63 由 Euclid 分线开发。所有包在证据回填前均为进行中，代码存在不等于 M0–M5 或 AC 完成；真实 provider/付费、物理设备/OEM、目标硬件与 production 仍 `NOT-VERIFIED`。AI-01 保持可选，AI-09 仍待范围决定，不新增付费实时安装门槛。45/32/32/13、AC1–19、五阶段与既有 history 字节保留。本条版本 v0.48 |
