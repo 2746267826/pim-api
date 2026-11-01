@@ -31,11 +31,11 @@
 | 范围 | 已有实际进展 | 当前交付 / 阻断 | 未完成验收 |
 | --- | --- | --- | --- |
 | API #539 / #551 | coverage 使用合并区间的精确补集；纯重复批次只对唯一开放会话做有界更新，实际统计变化仍失效并物化。 | PR #555 的适用检查与 CI Gate 已通过，正常合并为 `def642099aeb5d8057b2a5bc620b05b6f943d0ec`；master CI `41312005940` 全绿，已发布 `api-v26.11.1052`，标签及 Web 版本台账回读相符。 | 生产长请求分布、旧 pending 恢复、手机同步收敛未在本轮操作；issue 保持 OPEN。 |
-| API #552 | 持久 ASR job、先保存音频再 queued、CAS claim/取消/恢复/完成与 Web 原 ID 恢复已经提交并集成。 | Worker `4d03cf97` → 集成 `31c028c6`；新 async job 与 transport 的 14 个隔离 PostgreSQL 测试通过；跨 TASK/ASR 迁移一致性修复中。 | 后台实际部署、真实长音频/provider 和网关升级后体验未验；需最终 CI。 |
+| API #552 | 持久 ASR job、先保存音频再 queued、CAS claim/取消/恢复/完成与 Web 原 ID 恢复已经提交并集成。 | Worker `4d03cf97` → 集成 `31c028c6`；既有请求在 dispatcher 禁用时仍可回读；官方 EF 重建尚未发布的 TASK/ASR 两条迁移，原三项迁移失败已消除。 | 后台实际部署、真实长音频/provider 和网关升级后体验未验；最终聚合尚有一项撤路由后的旧测试待更新，需最终 CI。 |
 | API #553 | 实时与 Batch 按模型 `MaxOutputTokens` 传递；配置页显示 ASR 上限与估算；移除 connection 的隐式 8192。 | 与 #552 同一源码包；当前集成 Web 构建通过，等待统一 PR/CI。 | 真实 provider 的 token 消耗和长音频质量没有新证据。 |
 | API #554 | 区分 provider timeout、用户取消、旧同步断连、worker 中断和浏览器网络错误；网关状态只记录真实 HTTP 观察。 | 与 #552 同一源码包；独立 transport 观察不改写 provider 终态。 | 真实网关/部署环境复验尚未进行；网络失败不能伪造 504。 |
-| Android #59 / #61 / #62 | rejected 汇总逐页事务归档后有界删除；真实 sync history、standby 来源、崩溃证据和 full/head/tail 原始流预算已提交。 | PR #64 旧 head `f196f94` 的四项失败已由 `2ae0169` 修正，父集成 `cefe6ff` 已推送；四项聚焦均通过，新 exact-head CI 正在运行。 | 旧失败根因为末页计数代替整轮计数，以及严格导出文件集漏列两项正式文件；未删断言。最终完整 CI、设备/历史崩溃复验仍未完成。 |
-| Android #60 / #63 | Room v5 的可空 fix key、真实 retained 回执、监听代次、新鲜运动证据和滞回已提交。 | 同 PR #64；App Kotlin 编译已过，尚未获得完整最终检查成功。 | 旧原始台账未被伪装成历史去重；两小时 OEM 定位、电量与生命周期仍需独立实机证据。 |
+| Android #59 / #61 / #62 | rejected 汇总逐页事务归档后有界删除；真实 sync history、standby 来源、崩溃证据和 full/head/tail 原始流预算已提交。 | PR #64 的 exact-head `cefe6ff` 在 CI `41314887280` 全部必需检查与 CI Gate 成功，于 `2026-11-01T14:26:59Z` 正常合并为 `2e7867d7b85797c75e9d1f9cd25270e36bfb3279`；master 构建/Release 待核验。 | 旧四项失败已修且保留断言；实际设备升级、历史 rejected 回收、历史崩溃复验仍未完成。 |
+| Android #60 / #63 | Room v5 的可空 fix key、真实 retained 回执、监听代次、新鲜运动证据和滞回已提交。 | 同 PR #64，必需 PR 检查和 CI Gate 全绿并正常合并；尚不宣称新产品已发布。 | 旧原始台账未被伪装成历史去重；两小时 OEM 定位、电量与生命周期仍需独立实机证据。 |
 
 API #525/#533 继续保持用户已关闭状态。以上实现不能代替 #516 全部 AC，十项本轮 issue 均未在验收证据缺失时提前关闭。
 
@@ -44,16 +44,16 @@ API #525/#533 继续保持用户已关闭状态。以上实现不能代替 #516 
 | 阶段 | 本轮新增代码 / 集成事实 | 下一步与退出条件 |
 | --- | --- | --- |
 | M0 | 增加跨平台材料安全、恢复、容量与账号隔离审查；诊断失败已进入真实 CI 修复闭环。 | SAFE-01 的删除/导出/恢复继续开发；目标设备长时录音、笔触/掌触与 OEM 风险仍 NOT-VERIFIED。 |
-| M1 | Android 整篇 undo/redo、history journal、包导入及录音空间/权限监测进入第二集成树；不混入稳定性 PR #64。 | Euclid 修复 history revision/写锁、读取预算与 quarantine 规则并取得准确测试回执；真机 REC/INK 验收另计。 |
-| M2 | 持久异步 ASR、Web 笔记库/混合上传与 owner/server/dirty 保护已集成；逐材料 receipt 两提交 `9f8204fc/cceda7bf` 已集成，普通 GET 的 coverage 也核验实际 receipt。 | 跨包迁移、共享 token 刷新晚到围栏及跨 store 删除安全仍在修复；不安全的整篇删除不能发布，SAFE-01 导出/恢复继续开发；最终契约和 consumer 回归随后统一。 |
+| M1 | Android 整篇 undo/redo、history journal、包导入及录音空间/权限监测进入第二集成树；history revision/写锁、读取预算与 quarantine 修复已集成。 | Core Kotlin 编译通过；父 M1/M5 整合在 App 编译遇到 M5 错误，Dewey 持唯一 Gradle slot 修复，尚未执行本批 JUnit；真机 REC/INK 验收另计。 |
+| M2 | 持久异步 ASR、Web 笔记库/混合上传与 owner/server/dirty 保护已集成；逐材料 receipt 两提交 `9f8204fc/cceda7bf` 已集成，普通 GET 的 coverage 也核验实际 receipt。 | 迁移已修；共享 token 刷新晚到围栏继续修复。不安全的整篇 DELETE 已撤回，真实最终契约不暴露该 route；SAFE-01 删除 intent、导出/恢复仍开发，不能称完整交付。 |
 | M3 | Windows 本机笔记/主动录音/安全包基础与 typed 云端访问已进入父集成树。 | 真正 binary 下载/包导入、跨端笔迹/材料往返仍开发中；本机 recorder 实际录音体验未验。 |
 | M4 | API 持久任务建议、编辑/放弃/CAS/幂等确认写现有任务模块与 Web 控件均已集成。 | 最终迁移、交互安全与 CI 通过后交付；真实事实保真度与 Android/Windows 完整任务建议 UI 尚需验收/开发。 |
-| M5 | Android 原生工作台 `28fb64d` 已进入第二树，包含任务/日程动作、提醒、设备、知识分类和 quick-note compatibility；Windows 本机历史/设备 center 已集成，planner 继续开发。 | 逐域保留 partial：只读设备 center 不代表管理动作，工作台不代表全部 MIG；按 canonical MIG-01–13 映射，不另编编号。Android 新 M5 包尚未编译/运行测试。 |
+| M5 | Android 原生工作台 `28fb64d` 已进入第二树，包含任务/日程动作、提醒、设备、知识分类和 quick-note compatibility；Windows 本机历史/设备 center 和 planner 已集成。 | Android 实际 M5 App 编译失败正在修；Windows PR #41 原 head `5a5a93b1` 的 CI Gate 已绿，planner 旧 UI 跨账号意图隔离补丁交付后再转 ready。逐域保留 partial，按 canonical MIG-01–13 映射。 |
 
 #### 可复核证据与交付顺序
 
-- 父 API 合并回归：136 项中 133 PASS、3 FAIL、0 skipped；失败是最新 migration Designer 缺 TASK target model、模块清单缺 TASK module、旧 published-head 迁移数断言失效，已交 Meitner 修复。不能把此结果写成全绿。
-- 从实际运行的 `ASPNETCORE_ENVIRONMENT=Test` API、专用合成 PostgreSQL 导出 `/swagger/v1/swagger.json`，经 `jq -S` 规范化。契约提交 `9fc9d32c`，SHA-256 `a64182037e4569fb9cf5b058c09e6df57fa4bf254e35b27a2d44ed27f51dcf95`；官方 Web 生成/只读一致性校验通过。材料 receipt 改变形状后仍需重新真实导出。
+- 原父 API 合并回归 136 项中 133 PASS / 3 FAIL / 0 skipped；三项迁移问题已由官方 EF 修复包 `8fc6ec35` 消除。父新聚合在源 `7eeb238c` 实跑 158 项：157 PASS / 1 FAIL / 0 skipped；唯一失败为已撤整篇 DELETE route 的旧测试仍期待 409 而实际 404，已交 Sagan 改为撤路由及材料不变的回归，不恢复不安全接口。证据 `notes-final-integrated.trx`；尚不称全绿。
+- 从实际运行的 `ASPNETCORE_ENVIRONMENT=Test` API、专用合成 PostgreSQL 导出 `/swagger/v1/swagger.json`，经 `jq -S` 规范化。最终导出源 `7eeb238c553ca26fc8b2ccdc411702e3c977424c`，契约提交 `aa76c8af`，SHA-256 `9a2e8388783627c984d5b907cd4b5699377d421eeb3575047cbe8389eae2889e`；真实包含材料 receipt 且不暴露整篇 DELETE，官方 Web 生成/只读一致性校验通过。旧 `9fc9d32c/a64182…` 是前一检查点，不作为最终 consumer 来源；客户端正式刷新仍等待 API 合并。
 - 集成 Web `5e4cde6d` 的 64 files / 510 tests 全通过，lint exit 0（有 warnings）；实际契约后的 `npm run build` 已通过。先前 37/21 等为切片证据，不重复加总，也不冒充真实后端浏览器 E2E。
 - Windows 父集成 `5a5a93b1` 的 Core 332/332、实际 WPF/App 101/101 全通过，0 failed / error / skipped，输出包含 `Pim.Client.App.dll`；此前 33 项是旧检查点，不再代替新结果。官方生成物逐字节一致。该结果不证明实际 recorder/OEM 使用体验。
 - `api-v26.11.1052` 于 `2026-11-01T14:05:41Z` 发布，tag/source 为 `def642099aeb5d8057b2a5bc620b05b6f943d0ec`。下载的 `pim-web-version.json` 为 version/apiVersion `26.11.1052`、gitSha `def6420`，SHA-256 `964fe8930a195b2479304add9ded30d572c1e519a486b97142437002f2a7efac`。这是产品产物交付，不是生产部署声明。
