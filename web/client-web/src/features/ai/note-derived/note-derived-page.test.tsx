@@ -18,9 +18,14 @@ const assistant = vi.hoisted(() => ({
   noteAsrStart: vi.fn(), noteAsrTask: vi.fn(), noteAsrSegments: vi.fn(), asrReprocessHistory: vi.fn(),
   asrRoutingAttempts: vi.fn(), asrRoutingAttemptStop: vi.fn(), models: vi.fn(), asrPresets: vi.fn(),
 }))
+const taskSuggestions = vi.hoisted(() => ({
+  list: vi.fn(), get: vi.fn(), startExtraction: vi.fn(), extraction: vi.fn(),
+  update: vi.fn(), confirm: vi.fn(), dismiss: vi.fn(),
+}))
 vi.mock('@/features/auth/auth-context', () => ({ useAuth: () => auth }))
 vi.mock('./api', () => ({ noteDerivedApi: derived }))
 vi.mock('../api', () => ({ aiApi: assistant }))
+vi.mock('./note-task-suggestions/api', () => ({ noteTaskSuggestionsApi: taskSuggestions }))
 
 const owner = auth.user.id
 const noteId = '22222222-2222-4222-8222-222222222222'
@@ -122,6 +127,7 @@ beforeEach(() => {
   assistant.noteAsrSegments.mockResolvedValue({ total: 0, offset: 0, items: [] })
   assistant.asrReprocessHistory.mockResolvedValue({ parentTaskId: asrTask.taskId, total: 0, offset: 0, limit: 10, items: [] })
   assistant.asrRoutingAttempts.mockResolvedValue([])
+  taskSuggestions.list.mockResolvedValue({ total: 0, items: [] })
 })
 afterEach(() => { cleanup(); client.clear() })
 
@@ -211,6 +217,15 @@ it('shows generated candidates and requires an explicit head selection before ma
   await waitFor(() => expect(derived.version).toHaveBeenCalled())
   await userEvent.click(await screen.findByRole('button', { name: '明确设为当前版本' }))
   await waitFor(() => expect(derived.select).toHaveBeenCalledWith(artifactId, expect.objectContaining({ expectedHeadRevision: artifact.revision, versionId })))
+})
+
+it('mounts task suggestions only for the selected owned artifact version', async () => {
+  derived.artifacts.mockResolvedValue([artifact])
+  page(); await chooseSource()
+
+  expect(await screen.findByText('从笔记提取任务建议')).toBeTruthy()
+  await waitFor(() => expect(taskSuggestions.list).toHaveBeenCalledWith(noteId, expect.any(AbortSignal)))
+  expect(derived.version).toHaveBeenCalledWith(artifactId, versionId, expect.any(AbortSignal))
 })
 
 it('keeps a dirty local draft across selecting a new server version and reload', async () => {

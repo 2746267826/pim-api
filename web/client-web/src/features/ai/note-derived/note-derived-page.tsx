@@ -41,6 +41,7 @@ import {
   resolveManualSave,
   type ManualSaveSnapshot,
 } from './draft-protection'
+import { NoteTaskSuggestionsPanel } from './note-task-suggestions'
 
 const phaseNames: Record<string, string> = {
   Queued: '等待处理',
@@ -487,6 +488,10 @@ function ArtifactCard({ artifact, ownerId, serverBinding, onChanged }: { artifac
     <div className="flex flex-wrap gap-2"><Button size="sm" variant="secondary" disabled={busy || !selectedVersionId || selectedSummary?.isHead} onClick={() => void selectVersion()}>明确设为当前版本</Button><Button size="sm" variant="ghost" disabled={!selectedVersionId} onClick={() => void version.refetch()}><RefreshCw className="size-3.5" aria-hidden />刷新正文</Button></div>
     {version.isPending ? <Skeleton className="h-40" /> : version.isError ? <p role="alert" className="text-sm text-text-2">版本读取失败：{errorText(version.error)}</p>
       : version.data ? <ArtifactEditor key={`${artifact.revision}/${version.data.versionId}`} artifact={artifact} version={version.data} ownerId={ownerId} serverBinding={serverBinding} onChanged={onChanged} /> : null}
+    {version.data && <NoteTaskSuggestionsPanel
+      key={`task-suggestions-${artifact.artifactId}/${version.data.versionId}`}
+      userId={ownerId} serverBinding={serverBinding} noteId={artifact.noteId}
+      artifactId={artifact.artifactId} versionId={version.data.versionId} />}
     {message && <p role="alert" className="rounded-ctl bg-surface p-3 text-sm text-text-2">{message}</p>}
   </Card>
 }
