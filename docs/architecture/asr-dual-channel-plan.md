@@ -1,5 +1,7 @@
 # ASR 双通道增量方案（#516 排期）
 
+状态（v0.50 当前覆盖）：2026-11-02 完整 PR #556 CI 已回读为失败，四项 Notes 与 38 项 EF fixture 失败继续修复；不得用此前 189 项聚合 PASS 替代完整 CI。三仓已发布版本、下一批跨端材料及资源反馈进度见本文 v0.50 和总路线图 v0.50。下方状态行与全部既有正文保留历史。
+
 状态（v0.49 当前覆盖）：实际源码/契约、测试失败和后续交付以本文 v0.49 及总路线图 v0.49 为准。下方 v0.48 及更早状态行保留历史，不替代当前检查点。
 
 状态（v0.48 当前覆盖）：全笔记路线继续保持 M0–M5、45 个稳定 ID（32 capabilities + 13 MIG）、AC1–19 与 #516 五阶段完整范围。本轮起始文档基线为 `88c11c6b58a496540c8a35ade4d38c5e490913b1`；API/Web 产品 Release 源仍是 `84ef802e7c85a1b6c3017c0c274a108fea57f9d2`，docs-only 更新不重建产品。API #525/#533 已关闭；API #516/#539 及 Android #59–63 的开发包仍在进行。代码、合成测试、PR/CI/Release 均不等于真实模型、付费 provider、物理设备、目标硬件或 production 验收。下方 v0.47 及更早状态为历史快照。
@@ -15,6 +17,18 @@
 状态（v0.43 当前覆盖）：#516 是逐 Phase 混合状态，不再用单一整体状态概括；#539 API 202 协议与 Android consumer 已交付到 exact CI，但设备/真实 E2E 与 production 仍 NOT-VERIFIED；#533 代码已集成但 issue 保持 OPEN。下方 v0.42 状态行及更早正文为历史快照。更新日期：2026-10-31。
 
 状态：**WEB/ANDROID/API GITHUB RELEASE VERIFIED / NOT PRODUCTION-VERIFIED；#516 PLANNED / NOT IMPLEMENTED；两项产品决策 CONFIRMED；MiMo Batch 仅需求/排期追加，NOT IMPLEMENTED / NOT-VERIFIED**。更新日期：2026-10-31。本文把 #516 的已提出需求整理为依赖明确、顺序合理的增量计划，不是工期承诺或功能完成报告；v0.42 MiMo Batch 增量与 v0.41 已确认决策覆盖见下方最新说明。
+
+<a id="v050-latest-status"></a>
+
+## v0.50 当前执行覆盖：完整 CI 与下一批资源反馈（2026-11-02）
+
+PR #556 远端 head `81c30bb485f72730b77356866332a7e79dda7a68` 的完整 CI `41322796046` 为 `6440 PASS / 42 FAIL / 99 skipped / 6581 total`；Web、真实契约 freshness、Docker 冒烟通过，`CI Gate` 失败，尚未合并或发布。Sagan 负责四项 Notes TestHost/派生处理回归，Meitner 负责 38 项 EF fixture provider 复用失败；不得全局 suppress、删断言、增 skip 或改 workflow。
+
+#539/#551 已交付 `api-v26.11.1052`；Android #59–63 已交付 `android-v26.11.1150`；Windows 本机笔记/录音/上传/planner 首批已交付 `windows-v26.11.1114`。三者的 master CI、标签和实际版本台账均已核验，但不代表用户环境、物理设备或真实 provider 验收。
+
+#516 资源反馈下一包保留原需求：拒领原因、连续计数、手动入口与资源门的区别必须持久可见；旧幂等回执应先核 payload 再重放，不能因样本过期改变历史决策；冲突重试须有界，fenced 成功归零后旧拒领回执不能重复增计数。用户未给具体硬件阈值/退避间隔时，不擅设并冒充已确认策略。
+
+完整 M0–M5 进度及当前执行证据见[路线图 v0.50](../product/native-notes-roadmap.md#v050-current)；独立 [AC1–19 源码审计](asr516-ac-source-audit-20261101.md) 和所有五阶段继续有效。下一批 SAFE-01 ZIP/删除恢复、Web 笔迹/包交换及 Windows 多分片/混合块恢复不得混入首批未过 CI 的发布源；客户端正式 freshness 必须来自之后实际合并的 API SHA。
 
 <a id="v049-latest-status"></a>
 
