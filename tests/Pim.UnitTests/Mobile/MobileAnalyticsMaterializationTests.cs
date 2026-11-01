@@ -53,6 +53,110 @@ public sealed class MobileAnalyticsMaterializationTests
     }
 
     [Fact]
+    public async Task IngestAsync_WidenedDuplicateRefreshesMaterializedOpenSessionDuration()
+    {
+        await using var db = MobileTestHelpers.CreateDb();
+        var ingest = CreateIngest(db);
+        var start = DayStartUtc.AddHours(1);
+        var openRequest = new MobileUsageEventsUploadRequest(
+            DeviceId,
+            "batch-open-materialized-1",
+            start,
+            start.AddMinutes(15),
+            [],
+            [
+                new MobileUsageEventDto(
+                    "com.example.video",
+                    "MOVE_TO_FOREGROUND",
+                    start,
+                    "VideoActivity",
+                    start.AddMinutes(1),
+                    "{}",
+                    "open-video")
+            ],
+            []);
+
+        await ingest.IngestAsync(openRequest, CancellationToken.None);
+        db.ChangeTracker.Clear();
+        var beforeAggregates = await db.Set<MobileUsageAggregateEntity>()
+            .AsNoTracking()
+            .OrderBy(row => row.Id)
+            .ToListAsync();
+        var beforeBlocks = await db.Set<MobileTimelineBlockEntity>()
+            .AsNoTracking()
+            .OrderBy(row => row.Id)
+            .ToListAsync();
+        Assert.NotEmpty(beforeAggregates);
+        Assert.NotEmpty(beforeBlocks);
+        var beforeAggregateIds = beforeAggregates.Select(row => row.Id).ToArray();
+        var beforeBlockIds = beforeBlocks.Select(row => row.Id).ToArray();
+        var beforeSeconds = beforeAggregates.Sum(row => row.ForegroundSeconds);
+        var beforeBlockSeconds = beforeBlocks.Sum(row => row.ForegroundSeconds);
+        var beforeHeatmap = await CreateAggregation(db).GetHeatmapAsync(
+            new MobileAnalyticsQueryRequest(
+                DayStartUtc,
+                DayEndUtc,
+                DeviceId: DeviceId),
+            CancellationToken.None);
+        var beforeHeatmapSeconds = beforeHeatmap.Sum(row => row.ForegroundSeconds);
+
+        var duplicate = openRequest with { ClientBatchId = "batch-open-materialized-2" };
+        var duplicateResult = await ingest.IngestAsync(duplicate, CancellationToken.None);
+
+        Assert.Equal(0, duplicateResult.AcceptedCount);
+        db.ChangeTracker.Clear();
+        Assert.Equal(
+            beforeAggregateIds,
+            await db.Set<MobileUsageAggregateEntity>()
+                .AsNoTracking()
+                .OrderBy(row => row.Id)
+                .Select(row => row.Id)
+                .ToArrayAsync());
+        Assert.Equal(
+            beforeBlockIds,
+            await db.Set<MobileTimelineBlockEntity>()
+                .AsNoTracking()
+                .OrderBy(row => row.Id)
+                .Select(row => row.Id)
+                .ToArrayAsync());
+        Assert.Equal(
+            beforeHeatmapSeconds,
+            (await CreateAggregation(db).GetHeatmapAsync(
+                new MobileAnalyticsQueryRequest(
+                    DayStartUtc,
+                    DayEndUtc,
+                    DeviceId: DeviceId),
+                CancellationToken.None)).Sum(row => row.ForegroundSeconds));
+
+        var widened = openRequest with
+        {
+            ClientBatchId = "batch-open-materialized-3",
+            SourceWindowEndUtc = start.AddHours(4)
+        };
+        var widenedResult = await ingest.IngestAsync(widened, CancellationToken.None);
+
+        Assert.Equal(0, widenedResult.AcceptedCount);
+        db.ChangeTracker.Clear();
+        var session = Assert.Single(await db.Set<MobileUsageSessionEntity>().ToListAsync());
+        Assert.Equal(start.AddHours(4), session.EndUtc);
+        var afterAggregates = await db.Set<MobileUsageAggregateEntity>().ToListAsync();
+        var afterBlocks = await db.Set<MobileTimelineBlockEntity>().ToListAsync();
+        Assert.NotEmpty(afterAggregates);
+        Assert.NotEmpty(afterBlocks);
+        Assert.True(afterAggregates.Sum(row => row.ForegroundSeconds) > beforeSeconds);
+        Assert.True(afterBlocks.Sum(row => row.ForegroundSeconds) > beforeBlockSeconds);
+        Assert.True(
+            (await CreateAggregation(db).GetHeatmapAsync(
+                new MobileAnalyticsQueryRequest(
+                    DayStartUtc,
+                    DayEndUtc,
+                    DeviceId: DeviceId),
+                CancellationToken.None)).Sum(row => row.ForegroundSeconds) > beforeHeatmapSeconds);
+        Assert.All(afterAggregates, row => Assert.False(row.IsStale));
+        Assert.All(afterBlocks, row => Assert.False(row.IsStale));
+    }
+
+    [Fact]
     public async Task GetHeatmapAsync_ReadsMaterializedBucketsWithIdenticalResult()
     {
         await using var db = MobileTestHelpers.CreateDb();

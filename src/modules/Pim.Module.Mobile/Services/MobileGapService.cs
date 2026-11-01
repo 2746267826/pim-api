@@ -38,7 +38,8 @@ public sealed class MobileGapService
                 && e.DeviceId == request.DeviceId
                 && e.SourceWindowEndUtc > start
                 && e.SourceWindowStartUtc < end)
-            .Select(e => new CoverageWindow(e.SourceWindowStartUtc, e.SourceWindowEndUtc))
+            .Select(e => new { e.SourceWindowStartUtc, e.SourceWindowEndUtc })
+            .Distinct()
             .ToListAsync(ct);
 
         var summaries = await _db.Set<MobileUsageSummaryEntity>()
@@ -53,6 +54,7 @@ public sealed class MobileGapService
                 s.WindowEndUtc,
                 s.SourceKind
             })
+            .Distinct()
             .ToListAsync(ct);
 
         // 覆盖判据只看"这个批次到底有没有失败条目"，不看批次状态字符串（#242）：
@@ -66,20 +68,21 @@ public sealed class MobileGapService
                 && b.FailedCount == 0
                 && (b.Status == MobileSyncBatchStatus.Completed
                     || b.Status == MobileSyncBatchStatus.LegacyCompletedWithErrors))
-            .Select(b => new CoverageWindow(b.WindowStartUtc, b.WindowEndUtc))
+            .Select(b => new { b.WindowStartUtc, b.WindowEndUtc })
+            .Distinct()
             .ToListAsync(ct);
 
         var nonFallbackSummaryWindows = summaries
             .Where(summary => !IsFallbackSource(summary.SourceKind))
             .Select(summary => new CoverageWindow(summary.WindowStartUtc, summary.WindowEndUtc));
-        var coverageWindows = eventWindows
+        var coverageWindows = MergeCoverageWindows(eventWindows
+            .Select(window => new CoverageWindow(window.SourceWindowStartUtc, window.SourceWindowEndUtc))
             .Concat(nonFallbackSummaryWindows)
-            .Concat(completedBatchWindows)
-            .ToList();
+            .Concat(completedBatchWindows.Select(window => new CoverageWindow(window.WindowStartUtc, window.WindowEndUtc))));
         var fallbackWindows = summaries
             .Where(summary => IsFallbackSource(summary.SourceKind))
-            .Select(summary => new CoverageWindow(summary.WindowStartUtc, summary.WindowEndUtc))
-            .ToList();
+            .Select(summary => new CoverageWindow(summary.WindowStartUtc, summary.WindowEndUtc));
+        var mergedFallbackWindows = MergeCoverageWindows(fallbackWindows);
 
         var windows = new List<MobileGapWindowDto>();
         var cursor = start;
@@ -94,27 +97,34 @@ public sealed class MobileGapService
                 .Select(window => Clip(window, cursor, windowEnd))
                 .OrderBy(window => window.StartUtc)
                 .ToList();
-            var coveredUntil = ContinuousCoverageEnd(overlappingCoverage, cursor, windowEnd);
-            if (coveredUntil >= windowEnd)
+            var dayCursor = cursor;
+            foreach (var coverage in overlappingCoverage)
             {
-                cursor = windowEnd;
-                continue;
+                if (coverage.StartUtc > dayCursor)
+                    AddGapWindow(
+                        windows,
+                        request,
+                        dayCursor,
+                        coverage.StartUtc,
+                        cursor,
+                        windowEnd,
+                        end,
+                        HasFallback(mergedFallbackWindows, dayCursor, coverage.StartUtc));
+
+                if (coverage.EndUtc > dayCursor)
+                    dayCursor = coverage.EndUtc;
             }
 
-            var hasFallback = fallbackWindows.Any(window => window.EndUtc > cursor && window.StartUtc < windowEnd);
-            var gapStart = coveredUntil > cursor ? coveredUntil : cursor;
-            var gapDuration = windowEnd - gapStart;
-            if (gapDuration < MinGapThreshold)
-            {
-                cursor = windowEnd;
-                continue;
-            }
-            var reason = Reason(cursor, windowEnd, gapStart, end, hasFallback);
-            windows.Add(new MobileGapWindowDto(
-                gapStart,
-                windowEnd,
-                reason,
-                request.CapabilitiesJson));
+            if (dayCursor < windowEnd)
+                AddGapWindow(
+                    windows,
+                    request,
+                    dayCursor,
+                    windowEnd,
+                    cursor,
+                    windowEnd,
+                    end,
+                    HasFallback(mergedFallbackWindows, dayCursor, windowEnd));
 
             cursor = windowEnd;
         }
@@ -127,41 +137,67 @@ public sealed class MobileGapService
             window.StartUtc < start ? start : window.StartUtc,
             window.EndUtc > end ? end : window.EndUtc);
 
-    private static DateTimeOffset ContinuousCoverageEnd(
-        IReadOnlyCollection<CoverageWindow> windows,
-        DateTimeOffset start,
-        DateTimeOffset end)
+    private static List<CoverageWindow> MergeCoverageWindows(IEnumerable<CoverageWindow> windows)
     {
-        var coveredUntil = start;
-        foreach (var window in windows)
+        var merged = new List<CoverageWindow>();
+        foreach (var window in windows
+                     .Where(window => window.EndUtc > window.StartUtc)
+                     .OrderBy(window => window.StartUtc)
+                     .ThenByDescending(window => window.EndUtc))
         {
-            if (window.EndUtc <= coveredUntil)
+            if (merged.Count == 0)
+            {
+                merged.Add(window);
                 continue;
-            if (window.StartUtc > coveredUntil)
-                break;
+            }
 
-            coveredUntil = window.EndUtc;
-            if (coveredUntil >= end)
-                return end;
+            var last = merged[^1];
+            if (window.StartUtc <= last.EndUtc)
+            {
+                if (window.EndUtc > last.EndUtc)
+                    merged[^1] = new CoverageWindow(last.StartUtc, window.EndUtc);
+                continue;
+            }
+
+            merged.Add(window);
         }
 
-        return coveredUntil;
+        return merged;
     }
 
-    private static string Reason(
-        DateTimeOffset windowStart,
-        DateTimeOffset windowEnd,
+    private static void AddGapWindow(
+        ICollection<MobileGapWindowDto> windows,
+        MobileGapRequest request,
         DateTimeOffset gapStart,
+        DateTimeOffset gapEnd,
+        DateTimeOffset dayStart,
+        DateTimeOffset dayEnd,
         DateTimeOffset requestEnd,
         bool hasFallback)
     {
-        if (gapStart > windowStart && windowEnd == requestEnd)
-            return "missing-tail";
-        if (gapStart > windowStart)
-            return "partial-day";
+        if (gapEnd - gapStart < MinGapThreshold)
+            return;
 
-        return hasFallback ? "fallback-only" : "missing-day";
+        var reason = gapStart > dayStart && gapEnd == dayEnd && dayEnd == requestEnd
+            ? "missing-tail"
+            : gapStart > dayStart
+                ? "partial-day"
+                : hasFallback
+                    ? "fallback-only"
+                    : "missing-day";
+
+        windows.Add(new MobileGapWindowDto(
+            gapStart,
+            gapEnd,
+            reason,
+            request.CapabilitiesJson));
     }
+
+    private static bool HasFallback(
+        IReadOnlyCollection<CoverageWindow> fallbackWindows,
+        DateTimeOffset start,
+        DateTimeOffset end)
+        => fallbackWindows.Any(window => window.EndUtc > start && window.StartUtc < end);
 
     private static bool IsFallbackSource(string sourceKind)
         => sourceKind.Contains("fallback", StringComparison.OrdinalIgnoreCase)

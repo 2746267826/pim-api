@@ -178,4 +178,109 @@ public sealed class MobileGapServiceTests
 
         Assert.Empty(response.Windows);
     }
+
+    [Fact]
+    public async Task GetGapsAsync_ReturnsOnlyRealHolesWhenCoverageResumesAfterEachHole()
+    {
+        // Regression for #551: the old day scan emitted [first hole -> end of day]
+        // and never looked for coverage after that first hole. On a 14-day request
+        // this turned a few short holes into tens of hours of false backfill.
+        var rangeStart = DateTimeOffset.Parse("2026-07-04T00:00:00Z");
+        var rangeEnd = DateTimeOffset.Parse("2026-07-06T12:00:00Z");
+        var now = DateTimeOffset.Parse("2026-07-06T12:00:00Z");
+        await using var db = MobileTestHelpers.CreateDb();
+
+        AddCoverage(db, "covered-1", rangeStart, DateTimeOffset.Parse("2026-07-04T03:00:00Z"));
+        AddCoverage(db, "covered-2", DateTimeOffset.Parse("2026-07-04T03:12:00Z"), DateTimeOffset.Parse("2026-07-05T04:00:00Z"));
+        AddCoverage(db, "covered-3", DateTimeOffset.Parse("2026-07-05T04:20:00Z"), DateTimeOffset.Parse("2026-07-06T05:00:00Z"));
+        AddCoverage(db, "covered-4", DateTimeOffset.Parse("2026-07-06T05:30:00Z"), rangeEnd);
+        await db.SaveChangesAsync();
+
+        var service = new MobileGapService(db, MobileTestHelpers.CurrentUser(), MobileTestHelpers.Time(now));
+        var response = await service.GetGapsAsync(
+            new MobileGapRequest("android-main", rangeStart, rangeEnd, "{\"usageEvents\":true}"),
+            CancellationToken.None);
+
+        Assert.Equal(3, response.Windows.Count);
+        Assert.All(response.Windows, window => Assert.True(
+            window.WindowEndUtc - window.WindowStartUtc >= TimeSpan.FromMinutes(5)));
+        Assert.Equal(62, response.Windows.Sum(window => (window.WindowEndUtc - window.WindowStartUtc).TotalMinutes));
+        Assert.Equal(
+            [
+                DateTimeOffset.Parse("2026-07-04T03:00:00Z"),
+                DateTimeOffset.Parse("2026-07-05T04:00:00Z"),
+                DateTimeOffset.Parse("2026-07-06T05:00:00Z")
+            ],
+            response.Windows.Select(window => window.WindowStartUtc));
+    }
+
+    [Fact]
+    public async Task GetGapsAsync_MergesOverlappingCoverageWithoutExtendingPastResumedCoverage()
+    {
+        var rangeStart = DateTimeOffset.Parse("2026-07-05T00:00:00Z");
+        var rangeEnd = DateTimeOffset.Parse("2026-07-05T12:00:00Z");
+        var now = DateTimeOffset.Parse("2026-07-05T12:00:00Z");
+        await using var db = MobileTestHelpers.CreateDb();
+
+        AddCoverage(db, "overlap-a", rangeStart, rangeStart.AddHours(2));
+        AddCoverage(db, "overlap-b", rangeStart.AddHours(1), rangeStart.AddHours(4));
+        AddCoverage(db, "overlap-c", rangeStart.AddHours(4), rangeStart.AddHours(9));
+        AddCoverage(db, "overlap-d", rangeStart.AddHours(10), rangeEnd);
+        await db.SaveChangesAsync();
+
+        var service = new MobileGapService(db, MobileTestHelpers.CurrentUser(), MobileTestHelpers.Time(now));
+        var response = await service.GetGapsAsync(
+            new MobileGapRequest("android-main", rangeStart, rangeEnd, "{}"),
+            CancellationToken.None);
+
+        var gap = Assert.Single(response.Windows);
+        Assert.Equal(rangeStart.AddHours(9), gap.WindowStartUtc);
+        Assert.Equal(rangeStart.AddHours(10), gap.WindowEndUtc);
+        Assert.Equal("partial-day", gap.Reason);
+    }
+
+    [Fact]
+    public async Task GetGapsAsync_DoesNotLabelAnInternalHoleAsMissingTail()
+    {
+        var rangeStart = DateTimeOffset.Parse("2026-07-05T00:00:00Z");
+        var rangeEnd = DateTimeOffset.Parse("2026-07-05T20:00:00Z");
+        var now = rangeEnd;
+        await using var db = MobileTestHelpers.CreateDb();
+
+        AddCoverage(db, "head", rangeStart, rangeStart.AddHours(2));
+        AddCoverage(db, "tail", rangeStart.AddHours(4), rangeEnd);
+        await db.SaveChangesAsync();
+
+        var service = new MobileGapService(db, MobileTestHelpers.CurrentUser(), MobileTestHelpers.Time(now));
+        var response = await service.GetGapsAsync(
+            new MobileGapRequest("android-main", rangeStart, rangeEnd, "{}"),
+            CancellationToken.None);
+
+        var gap = Assert.Single(response.Windows);
+        Assert.Equal(rangeStart.AddHours(2), gap.WindowStartUtc);
+        Assert.Equal(rangeStart.AddHours(4), gap.WindowEndUtc);
+        Assert.Equal("partial-day", gap.Reason);
+    }
+
+    private static void AddCoverage(
+        Microsoft.EntityFrameworkCore.DbContext db,
+        string batchId,
+        DateTimeOffset start,
+        DateTimeOffset end)
+    {
+        db.Set<MobileSyncBatchEntity>().Add(new MobileSyncBatchEntity
+        {
+            UserId = MobileTestHelpers.UserId,
+            DeviceId = "android-main",
+            BatchId = batchId,
+            WindowStartUtc = start,
+            WindowEndUtc = end,
+            AcceptedCount = 1,
+            FailedCount = 0,
+            Status = MobileSyncBatchStatus.Completed,
+            ErrorJson = "{}",
+            CreatedAt = end,
+            CompletedAtUtc = end
+        });
+    }
 }

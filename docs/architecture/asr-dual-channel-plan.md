@@ -1,5 +1,7 @@
 # ASR 双通道增量方案（#516 排期）
 
+状态（v0.48 当前覆盖）：全笔记路线继续保持 M0–M5、45 个稳定 ID（32 capabilities + 13 MIG）、AC1–19 与 #516 五阶段完整范围。本轮起始文档基线为 `88c11c6b58a496540c8a35ade4d38c5e490913b1`；API/Web 产品 Release 源仍是 `84ef802e7c85a1b6c3017c0c274a108fea57f9d2`，docs-only 更新不重建产品。API #525/#533 已关闭；API #516/#539 及 Android #59–63 的开发包仍在进行。代码、合成测试、PR/CI/Release 均不等于真实模型、付费 provider、物理设备、目标硬件或 production 验收。下方 v0.47 及更早状态为历史快照。
+
 状态（v0.47 当前覆盖）：API/Web `api-v26.11.1047`、Windows `windows-v26.11.1111`、Android `android-v26.11.1147` 的产品 CI/Release 均已核；API/Web 产品发布源/implementation merge 是 `84ef802e7c85a1b6c3017c0c274a108fea57f9d2`，不是对后续 docs-only master HEAD 的声明。真实模型/provider质量、region/audio Batch、硬件、OEM/device UX 与完整 AC 仍 `NOT-VERIFIED`。文档跟踪：[pim-api#550](https://github.com/2746267826/pim-api/pull/550)。下方 v0.46 及更早状态为历史快照。
 
 状态（v0.46 当前覆盖）：截至 2026-11-01，API/Web `1047` 与 Windows `1111` 已实际发布；Android 本地 source/test 已完成于 clean commit `277236a8b8539684bdc0c56b88438bd2c30b216c`，App `2068` PASS、Core `72` XML UP-TO-DATE，但正常 HTTPS/OpenSSL/HTTP1.1/Schannel push TLS 握手失败、SSH known-host 缺失拒认证，因此未 push、无 PR/CI/merge/Release；外部模型/provider/device/hardware/OEM 与 production 仍 NOT-VERIFIED，#516 未完成。下方 v0.45 状态行及更早正文为历史快照。
@@ -11,6 +13,68 @@
 状态（v0.43 当前覆盖）：#516 是逐 Phase 混合状态，不再用单一整体状态概括；#539 API 202 协议与 Android consumer 已交付到 exact CI，但设备/真实 E2E 与 production 仍 NOT-VERIFIED；#533 代码已集成但 issue 保持 OPEN。下方 v0.42 状态行及更早正文为历史快照。更新日期：2026-10-31。
 
 状态：**WEB/ANDROID/API GITHUB RELEASE VERIFIED / NOT PRODUCTION-VERIFIED；#516 PLANNED / NOT IMPLEMENTED；两项产品决策 CONFIRMED；MiMo Batch 仅需求/排期追加，NOT IMPLEMENTED / NOT-VERIFIED**。更新日期：2026-10-31。本文把 #516 的已提出需求整理为依赖明确、顺序合理的增量计划，不是工期承诺或功能完成报告；v0.42 MiMo Batch 增量与 v0.41 已确认决策覆盖见下方最新说明。
+
+<a id="v048-latest-status"></a>
+
+## v0.48 当前执行覆盖：M0–M5 开发总账、issue 分工与验收边界（2026-11-01）
+
+本节只追加当前执行状态，不改写下方的 v0.47、v0.46、v0.45 及更早正文、历史矩阵或既有字节。稳定范围仍为 45 个 ID（32 capabilities + 13 MIG）、32 行差距、AC1–19 与五个 #516 阶段；本轮不新增、删除、重排或重编号。全量 M0–M5 仍是开发与验收总账，不缩减为一期只验收。
+
+### Issue 与开发归属
+
+| Issue | 当前事实 | 当前开发包 / 归属 | 完成前必须回填的证据 |
+| --- | --- | --- | --- |
+| API #525 | 已由用户关闭。 | 历史问题，不重开。 | 不把旧的积压/pending 快照继续报为当前 OPEN。 |
+| API #533 | 用户于 2026-11-01 以 completed 关闭：物理机 25 MB 日志、66 MB core 导出成功且未闪退。 | 已关闭；新拆出的 Android #61/#62 独立跟踪。 | #61/#62 不得回写成 #533 未完成；真机导出是 API #533 的关闭证据，不扩大为其它 device AC。 |
+| API #516 | 保持 OPEN；五阶段和 AC1–19 不是全绿。 | 按 #539/#551–554 及五个 Phase 分片推进。 | 每个 Phase 的真实闭环、逐条 AC、授权环境与产物来源；Release 本身不能替代。 |
+| API #539 / #551 | 长请求、processing pending 与 coverage gap window 收敛仍需完成，均保持开发中。 | Sagan，`wt/sync-convergence-api-20261101`。 | pending/processing 可恢复终态、缺口窗口收敛、重复扫描/重传有界及客户端回读。 |
+| API #552 / #553 / #554 | 同步网关 60 秒截断、输出 tokens 硬编码/UI 隐藏、timeout/disconnect/cancel 未区分。 | Meitner，`wt/asr-reliability-api-20261101`，并同步匹配 Web consumer。 | 持久异步任务、可见且安全的 token 预算、终止原因语义与实际 UI/API 回归；真实 provider 质量另验。 |
+| Android #59 / #61 / #62 | rejected usageSummary 生命周期、诊断导出完整度/sync-history/standbyBucket、崩溃堆栈。 | Dewey，`wt/android-diagnostics-lifecycle-20261101`；与 #60 的 Room/DAO 写集先协调。 | 终态清理、导出范围可核对、未知状态可见、崩溃栈隐私/容量边界与重放测试。 |
+| Android #60 / #63 | duplicate fixes 导致诊断台账重复入库/重复计数；HighSpeed 抖动及高频运行约 2 小时不退。 | Euclid，`wt/android-location-stability-20261101`。 | 重复输入/重放不产生重复台账记录或计数；频率/抖动有界、两小时生命周期收敛；短单测不能冒充硬件续航验收。 |
+
+已派表示实际编码工作已开始，不表示提交、CI、Release 或 issue 完成。协调来源为 `scratch/full-roadmap-20261101/coordination.md`。
+
+### M0–M5 当前执行边界
+
+| 里程碑 | 当前代码/决定基础 | 继续开发的主包 | 仍缺的独立验收 |
+| --- | --- | --- | --- |
+| M0 | 产品范围、离线优先、固定材料、冲突保全与处理规则已明确。 | 本地材料保留/删除/导出/恢复、容量与清理、长录音/编辑器故障矩阵、NOTE-03 兼容关系。 | OPPO 目标设备长时、声学/笔触/掌触、后台与温度；真实授权后另验。 |
+| M1 | Android 笔记库、本地编辑、相机/手写、录音/通知/波形、固定材料与上传队列已有代码。 | NOTE-02/05 长文与撤销恢复、跨材料和进程重建、NOTE-03 互通、INK-03 交换、REC-03 故障恢复。 | 100/180 分钟、自动续段、锁屏/OEM、真实声学与系统通知。 |
+| M2 | 固定材料、上传、分段 ASR、逐片结果/恢复、双产物、版本保护、管理员 ASR UI 与消费者基础已交付。 | #539/#551 收敛、#552 异步持久化、#553 token 配置、#554 终止原因、全材料 coverage/receipt、Android functional 与跨端冲突 UI。 | 真实课堂全材料闭环、provider/Batch/长处理质量、后台重启与部署；付费需另行授权。 |
+| M3 | API/Web、Windows、Android 基础宿主与部分编辑/处理路径已交付。 | Windows 主动录音/编辑器、Windows/Web 手写往返、混合块身份/顺序/尺寸、导入导出与离线/同步状态。 | 跨端实录、冲突双方材料往返、格式兼容目标实机；Euler 当前负责 Windows 工作线。 |
+| M4 | 文本/视觉调用、完整记录/分析 service/API/Web 受控基础存在。 | TASK-01：从笔记版本提取建议、编辑/确认/放弃、幂等写入现有任务模块、来源回溯；事实/推断来源 UI。 | 完整 M2 输入、稳定派生版本与用户确认 E2E；真实事实保真度须基于授权材料。 |
+| M5 | Android/Windows 原生宿主保留，Web 保持正式访问，13 个迁移域已编号。 | MIG-01–13 逐域盘点、API/数据兼容、原生动作与退场条件；按业务域拆波。 | 每域明确原生/暂留 Web、数据迁移和实际操作证据；不要求一次全迁完。 |
+
+M0–M5 均未整体完成。已发布的产品代码、CI、GitHub Release、隔离 PostgreSQL、mock、模拟器或文档合并只能证明各自范围，不能替代外部验收。
+
+### #516 五阶段当前工程/验收分账
+
+| 原始阶段 | 当前工程与产品事实 | 外部验收边界 |
+| --- | --- | --- |
+| Phase 1 路由/节点/claim/lease | 路由、节点与 claim/lease 契约，受控 HTTP/PostgreSQL 闭环及产品发布已交付。 | 只算受控工程交付；真实部署节点、完整生产负向矩阵与独立端到端仍 `NOT-VERIFIED`。 |
+| Phase 2 云端多模态/Batch | MiMo 多模态、Batch、URL 输入代码/contract/UI 已交付。 | 真实付费质量、region、audio Batch、TTL 与 provider 结果 `NOT-VERIFIED`；不能报为全套 AC PASS。 |
+| Phase 3 Windows 模型/runtime | Windows 模型/runtime 管理界面与受控 transport 基础已交付。 | 首发 model/revision、真实安装/卸载生命周期、目标硬件与 runtime 行为 `NOT-VERIFIED`。 |
+| Phase 4 拉取/资源门/执行/清退 | pull worker、资源门、控制路径与合成受控链已交付。 | 真实模型 GPU 清退、崩溃恢复、残留进程与硬件资源回落 `NOT-VERIFIED`。 |
+| Phase 5 重跑/UI/全链消费 | Web/Android 任务消费控制、不可变版本与部分重跑基础已交付。 | 三通道真实 UI、完整 rerun/history、OEM/device、真实全文质量与全矩阵 `NOT-VERIFIED`。 |
+
+阶段 1 的受控交付不表示 AC1–19 完成，也不表示五个 Phase 已全部关闭。阶段之间的依赖仍按第 8 节执行。
+
+### 已确认决策、可选范围与历史解释
+
+- 下方第 10 节标题为 `PENDING USER DECISION` 的内容属于 2026-10-30 历史快照。现行约束已由 v0.41 确认：本地不可用继续排队，禁止自动付费 fallback；只有用户显式操作才能切云端。
+- Windows 节点只处理当前登录账号任务；禁止跨账号或共享节点扩大音频/模型访问范围。
+- AI-01 实时转写继续是可选项、非 MVP 门槛；AI-09 速览/HTML/图片导出仍待范围决定。两者都不作为本轮付费实时模型安装或发布前置。
+- 未新增付费 provider、生产部署、物理设备或目标硬件验收授权；相关项没有证据时保持 `NOT-VERIFIED`。
+
+### AC 与后续执行
+
+AC1–19 当前全部保持 `NOT-VERIFIED`。后续按已派 issue 稳定性工作、M0/M1 本地可用、M2 全材料闭环、M3 Windows/交换格式、M4 TASK-01/M5 迁移逐波推进；真实外部验收槽不阻塞可在合成/隔离环境完成的源码开发，但也不得被源码完成替代。
+
+### History
+
+| Date | Record | State |
+| --- | --- | --- |
+| 2026-11-01 | v0.48 records the full M0–M5 development ledger, current API/Android issue ownership, five-phase engineering versus external-acceptance boundaries, and confirmed historical decision interpretation. | Development packages in progress; all AC and real external acceptance remain `NOT-VERIFIED`. |
 
 <a id="v047-latest-status"></a>
 

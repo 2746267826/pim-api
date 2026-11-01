@@ -6,11 +6,12 @@ using Pim.Module.Mobile.Entities;
 namespace Pim.Module.Mobile.Services;
 
 /// <summary>
-/// 会话重建结果。删除数与创建数可用于判断一次重建的规模（重复上传同一窗口时应为 0 次调用，见 #248）。
+/// 会话重建结果。删除数与创建数用于判断重建规模；<see cref="Changed"/>
+/// 同时覆盖同 ID 行的结束时间/时长/flags 更新（open-session 扩宽没有增删行，但派生数据已变化）。
 /// </summary>
-public sealed record MobileSessionRebuildResult(int DeletedCount, int CreatedCount)
+public sealed record MobileSessionRebuildResult(int DeletedCount, int CreatedCount, bool Changed)
 {
-    public static readonly MobileSessionRebuildResult None = new(0, 0);
+    public static readonly MobileSessionRebuildResult None = new(0, 0, false);
 }
 
 public sealed class MobileSessionInterpreter
@@ -59,6 +60,19 @@ public sealed class MobileSessionInterpreter
                 && (s.EndUtc == null || s.EndUtc >= rangeStartUtc))
             .ToListAsync(ct);
 
+        // 重复补偿批没有新增事件，但窗口变宽时仍要把唯一 open session 的末端
+        // 扩展到新窗口。能证明扩展安全时直接更新一行，避免按最早会话重读并重建
+        // 整段历史；这是 #551 放大窗口导致重复处理长尾的关键快路径。
+        if (eventsAppliedInThisCall is { Count: 0 })
+        {
+            var extended = await TryExtendUnchangedOpenSessionAsync(
+                existing,
+                rangeEndUtc,
+                ct);
+            if (extended is not null)
+                return extended;
+        }
+
         // A tail-only batch may continue the one open session at the exact window boundary.
         // Its start event can be many hours earlier; rebuilding from that event would reread
         // the full history for a few milliseconds of new input. The caller supplies changed
@@ -98,6 +112,53 @@ public sealed class MobileSessionInterpreter
         return await ReconcileSessionsAsync(existing, plans, ct);
     }
 
+    private async Task<MobileSessionRebuildResult?> TryExtendUnchangedOpenSessionAsync(
+        IReadOnlyList<MobileUsageSessionEntity> existing,
+        DateTimeOffset rangeEndUtc,
+        CancellationToken ct)
+    {
+        var openSessions = existing
+            .Where(session => session.EndUtc is not null
+                && HasFlag(session.QualityFlagsJson, "open-ended"))
+            .ToList();
+        if (openSessions.Count != 1)
+            return null;
+
+        var openSession = openSessions[0];
+        var oldEndUtc = openSession.EndUtc!.Value;
+        if (oldEndUtc >= rangeEndUtc)
+            return null;
+
+        // Only the final stored session may be extended. If any closed session
+        // overlaps or follows it, the flags are not a complete description and
+        // the normal full reconciliation must run.
+        if (existing.Any(session => session.Id != openSession.Id
+                && (session.StartUtc > openSession.StartUtc
+                    || session.EndUtc is null
+                    || session.EndUtc.Value > openSession.StartUtc)))
+        {
+            return null;
+        }
+
+        var hasUnmaterializedEvent = await _db.Set<MobileUsageEventEntity>()
+            .AsNoTracking()
+            .AnyAsync(e => e.UserId == openSession.UserId
+                && e.DeviceId == openSession.DeviceId
+                && e.EventTimestampUtc >= oldEndUtc
+                && e.EventTimestampUtc <= rangeEndUtc, ct);
+        if (hasUnmaterializedEvent)
+            return null;
+
+        ApplySessionEnd(
+            openSession,
+            rangeEndUtc,
+            preserveUnrelatedFlags: true,
+            existingFlagsJson: openSession.QualityFlagsJson,
+            flags: "open-ended");
+        await _db.SaveChangesAsync(ct);
+        return new MobileSessionRebuildResult(0, 0, true);
+    }
+
     private async Task AcquireDeviceLockAsync(Guid userId, string deviceId, CancellationToken ct)
     {
         if (!_db.Database.IsRelational()
@@ -128,6 +189,10 @@ public sealed class MobileSessionInterpreter
         DateTimeOffset rangeEndUtc,
         CancellationToken ct)
     {
+        var previousEndUtc = existing.EndUtc;
+        var previousDurationMs = existing.DurationMs;
+        var previousFlagsJson = existing.QualityFlagsJson;
+
         // Strictly greater than the boundary: the existing session was already materialized
         // through that instant. A newly applied boundary event is handled by the full path.
         var events = await _db.Set<MobileUsageEventEntity>()
@@ -174,7 +239,11 @@ public sealed class MobileSessionInterpreter
             ApplySessionEnd(openSession, rangeEndUtc, "open-ended");
 
         await _db.SaveChangesAsync(ct);
-        return new MobileSessionRebuildResult(0, created);
+        var changed = created > 0
+            || previousEndUtc != existing.EndUtc
+            || previousDurationMs != existing.DurationMs
+            || !string.Equals(previousFlagsJson, existing.QualityFlagsJson, StringComparison.Ordinal);
+        return new MobileSessionRebuildResult(0, created, changed);
     }
 
     private async Task<MobileSessionRebuildResult> ReconcileSessionsAsync(
@@ -182,6 +251,9 @@ public sealed class MobileSessionInterpreter
         IReadOnlyList<SessionPlan> plans,
         CancellationToken ct)
     {
+        var before = existing.ToDictionary(
+            session => session.Id,
+            session => (session.EndUtc, session.DurationMs, session.QualityFlagsJson));
         var existingByKey = existing
             .GroupBy(SessionKey.From)
             .ToDictionary(group => group.Key, group => group.ToList());
@@ -224,7 +296,17 @@ public sealed class MobileSessionInterpreter
             _db.Set<MobileUsageSessionEntity>().RemoveRange(removed);
 
         await _db.SaveChangesAsync(ct);
-        return new MobileSessionRebuildResult(removed.Count, created.Count);
+        var changed = removed.Count > 0
+            || created.Count > 0
+            || existing.Any(session =>
+                before.TryGetValue(session.Id, out var previous)
+                && (previous.EndUtc != session.EndUtc
+                    || previous.DurationMs != session.DurationMs
+                    || !string.Equals(
+                        previous.QualityFlagsJson,
+                        session.QualityFlagsJson,
+                        StringComparison.Ordinal)));
+        return new MobileSessionRebuildResult(removed.Count, created.Count, changed);
     }
 
     private static IReadOnlyList<SessionPlan> BuildSessionPlans(

@@ -234,28 +234,39 @@ public sealed class MobileUsageIngestService
             // 这里直接跳过"整窗口删除 + 重建"，避免把同一份派生数据反复重写上百万行。
             // 例外：窗口比上一批更宽时，上一批按"窗口末端封口"的开放会话会被重新封口 ——
             // 事件没变但会话结束时间会变，这种窗口扩展必须重建（评审 #1）。
-            if (HasNewUsageEvents(result) || await HasExtendableOpenSessionAsync(userId, request, ct))
+            var hasNewUsageEvents = HasNewUsageEvents(result);
+            var sessionChanged = false;
+            if (hasNewUsageEvents || await HasExtendableOpenSessionAsync(userId, request, ct))
             {
-                await _sessionInterpreter.RebuildSessionsAsync(
+                var rebuild = await _sessionInterpreter.RebuildSessionsAsync(
                     userId,
                     request.DeviceId,
                     request.WindowStartUtc,
                     request.WindowEndUtc,
                     ct,
-                    request.Events.Select(usageEvent => usageEvent.EventTimestampUtc).ToArray());
+                    hasNewUsageEvents
+                        ? request.Events.Select(usageEvent => usageEvent.EventTimestampUtc).ToArray()
+                        : Array.Empty<DateTimeOffset>());
+                sessionChanged = rebuild.Changed;
             }
 
             // 派生工作（会话重建 / 派生表标记 / 物化）先跑，成功之后才把批次推进到终态：
             // 中途失败时批次保持 pending（"上传中断"信号），而不是先宣告完成再回滚（#243）。
-            await MarkAffectedAnalyticsStaleAsync(
-                request,
-                request.WindowStartUtc,
-                request.WindowEndUtc,
-                ct);
+            // 重复上传不会改变事件、汇总或应用元数据；不要再次把同一窗口的派生
+            // 数据标成 stale，否则缺口放大形成的重复补偿批会让后续查询反复走重算路径（#551）。
+            var derivedDataChanged = result.AcceptedCount > 0 || sessionChanged;
+            if (derivedDataChanged)
+            {
+                await MarkAffectedAnalyticsStaleAsync(
+                    request,
+                    request.WindowStartUtc,
+                    request.WindowEndUtc,
+                    ct);
+            }
 
             // 把该窗口的派生分析数据落库（#247②）：块与聚合不再只存在于请求期间的在线计算里。
-            // 只有本批真的写入了条目（事件/汇总/元数据）时才重算 —— 重复补偿批仍然跳过。
-            if (_materializationService is not null && result.AcceptedCount > 0)
+            // 新条目或 open-session 窗口扩宽确实改变派生输入时才重算；纯重复批继续跳过。
+            if (_materializationService is not null && derivedDataChanged)
             {
                 await _materializationService.MaterializeAsync(
                     userId,
