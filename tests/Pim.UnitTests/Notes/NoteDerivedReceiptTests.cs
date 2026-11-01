@@ -209,6 +209,157 @@ public sealed class NoteDerivedReceiptTests
         Assert.Contains(tamperedSource.Issues, x => x.Code is "asr_evidence_mismatch" or "asr_output_mismatch");
     }
 
+    [Fact]
+    public void CloudAsrReceiptUsesTheActualProductionFingerprintShape()
+    {
+        var material = NoteDerivedFixture.CreateMaterial(withAudio: true);
+        var owner = Guid.NewGuid();
+        var taskId = Guid.NewGuid();
+        var asrTaskId = Guid.NewGuid();
+        var attemptId = Guid.NewGuid();
+        var requestId = Guid.NewGuid();
+        var logId = Guid.NewGuid();
+        var modelId = Guid.NewGuid();
+        var modelRevision = Guid.NewGuid();
+        const string endpoint = "https://synthetic.invalid/v1/chat/completions";
+        const string presetId = "mimo-asr";
+        const string presetVersion = "1";
+        const string transcriptText = "synthetic cloud ASR transcript";
+        const string sourceSha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        const string promptText = "synthetic ASR prompt";
+        var promptSha = Hash(promptText);
+        var promptRevision = Hash(promptText + ":revision");
+        var promptTemplateSha = Hash("synthetic ASR template");
+        var promptTemplateRevision = Hash("synthetic ASR template:revision");
+        var audioSha = Hash("synthetic segment wave bytes");
+        var audio = new AiCallAudioEntity
+        {
+            Id = Guid.NewGuid(),
+            LogId = logId,
+            Name = "segment-00001.wav",
+            Format = "wav",
+            SizeBytes = 44 + 160 * 2,
+            Sha256 = audioSha,
+            ObjectKey = "synthetic/cloud-asr/segment-00001.wav",
+            ProviderKey = "synthetic"
+        };
+        var consent = new AiAsrDestinationConsent(modelId, modelRevision, endpoint,
+            presetId, presetVersion, true);
+        var inputHash = AsrFingerprint(consent, "zh", promptRevision, promptSha, audio);
+        var log = Log(owner, taskId, requestId, "ai.asr-call", modelId, modelRevision,
+            endpoint, inputHash, transcriptText);
+        log.Id = logId;
+        log.SourceObjectType = "native-note-asr-task";
+        log.SourceObjectId = asrTaskId.ToString("D");
+        var transcript = new NoteDerivedTranscriptInput(0, 0, material.RecordingId, 1, 1, 5,
+            $"recordings/{material.RecordingId:D}/s0001-c000001.wav", sourceSha, 0, 160,
+            transcriptText, logId);
+        var snapshot = NoteDerivedFixture.Snapshot(material, [], [transcript]);
+        var plan = new NoteDerivedPlanner().Build(snapshot);
+        var state = new NoteDerivedTaskState
+        {
+            Owner = owner,
+            Request = new(taskId, owner, material.VersionId, asrTaskId,
+                new NoteDerivedGenerationConsent(modelId, modelRevision, endpoint, true)),
+            Fingerprint = "cloud-asr-receipt-test",
+            NoteId = material.NoteId,
+            InputSha256 = snapshot.InputSha256,
+            ManifestSha256 = snapshot.ManifestSha256,
+            Plan = plan,
+            Coverage = plan.InitialCoverage,
+            Issues = [],
+            CompleteRecordArtifactId = Guid.NewGuid(),
+            IndependentAnalysisArtifactId = Guid.NewGuid()
+        };
+        state.Steps = plan.Steps.Select(step => new NoteDerivedStepState
+        {
+            Key = step.Key,
+            Kind = step.Kind,
+            DependsOn = step.DependsOn,
+            Images = step.Images,
+            InputCharacters = step.InputCharacters,
+            Attempts = [new NoteDerivedAttemptState { Status = "Queued" }]
+        }).ToList();
+        var asr = new NoteAsrState
+        {
+            Owner = owner,
+            Request = new(asrTaskId, owner, material.VersionId, consent, "zh"),
+            Fingerprint = "cloud-asr-test",
+            NoteId = material.NoteId,
+            InputSha256 = snapshot.InputSha256,
+            ManifestSha256 = snapshot.ManifestSha256,
+            AttemptId = attemptId,
+            Steps =
+            [
+                new NoteAsrStep
+                {
+                    Index = 0,
+                    RecordingId = transcript.RecordingId,
+                    RecordingSegment = transcript.RecordingSegment,
+                    ChunkIndex = transcript.ChunkIndex,
+                    FileIndex = transcript.SourceFileIndex,
+                    Path = transcript.SourcePath,
+                    Sha256 = transcript.SourceSha256,
+                    SourceOffset = transcript.SourceOffsetSamples,
+                    Samples = transcript.Samples,
+                    Attempts =
+                    [
+                        new NoteAsrAttempt
+                        {
+                            RequestId = requestId,
+                            LogId = logId,
+                            Status = "Succeeded"
+                        }
+                    ]
+                }
+            ]
+        };
+        var attempt = new NoteAsrAttemptEntity
+        {
+            Id = attemptId,
+            OwnerId = owner,
+            TaskId = asrTaskId,
+            NoteId = material.NoteId,
+            VersionId = material.VersionId,
+            InputSha256 = snapshot.InputSha256,
+            Route = NoteAsrRoute.CloudMultimodal,
+            ModelId = modelId,
+            ModelRevision = modelRevision,
+            PresetId = presetId,
+            PresetVersion = presetVersion,
+            Endpoint = endpoint,
+            PromptRendered = promptText,
+            PromptSha256 = promptSha,
+            PromptRevision = promptRevision,
+            PromptTemplateSha256 = promptTemplateSha,
+            PromptTemplateRevision = promptTemplateRevision,
+            Language = "zh"
+        };
+        var context = new NoteDerivedReceiptContext(
+            new Dictionary<Guid, AiRequestLogEntity> { [log.Id] = log },
+            new Dictionary<Guid, IReadOnlyList<AiRequestLogEntity>> { [requestId] = [log] },
+            new Dictionary<string, NoteDerivedVersionDto>(),
+            new Dictionary<Guid, AiCallAudioEntity> { [log.Id] = audio },
+            asr,
+            attempt,
+            new Dictionary<int, NoteAsrSegmentEvidenceEntity>());
+
+        var receipt = NoteDerivedReceipts.Build(state, [], new HashSet<Guid>(), context, []);
+        var source = Assert.Single(receipt.Sources.Where(x =>
+            x.Kind == NoteDerivedSourceKind.TranscriptSegment));
+        var binding = Assert.Single(source.Bindings.Where(x => x.Stage == "AsrReceipt"));
+        Assert.True(binding.Verified);
+        Assert.Equal(inputHash, binding.InputSha256);
+        Assert.DoesNotContain(source.Issues, x => x.Code.StartsWith("asr_", StringComparison.Ordinal));
+
+        log.InputHash = Hash("wrong ASR fingerprint shape");
+        var tampered = NoteDerivedReceipts.Build(state, [], new HashSet<Guid>(), context, []);
+        var tamperedSource = Assert.Single(tampered.Sources.Where(x =>
+            x.Kind == NoteDerivedSourceKind.TranscriptSegment));
+        Assert.Contains(tamperedSource.Issues, x => x.Code == "asr_input_mismatch");
+        Assert.Contains(tamperedSource.Bindings, x => x.Stage == "AsrReceipt" && !x.Verified);
+    }
+
     private static Fixture CreateCompleteFixture()
     {
         var material = NoteDerivedFixture.CreateMaterial(withAudio: false);
@@ -409,6 +560,22 @@ public sealed class NoteDerivedReceiptTests
             consent
         }, Json));
     }
+
+    private static string AsrFingerprint(AiAsrDestinationConsent consent, string language,
+        string promptRevision, string promptSha256, AiCallAudioEntity audio) =>
+        Hash(JsonSerializer.Serialize(new
+        {
+            kind = "asr",
+            consent.ModelId,
+            language,
+            consent,
+            Revision = promptRevision,
+            promptSha256,
+            audio.Name,
+            audio.Format,
+            audio.Sha256,
+            size = audio.SizeBytes
+        }, Json));
 
     private static string Hash(string value) =>
         Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value))).ToLowerInvariant();

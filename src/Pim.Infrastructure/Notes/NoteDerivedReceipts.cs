@@ -572,14 +572,14 @@ internal static class NoteDerivedReceipts
         return Hash(JsonSerializer.Serialize(new
         {
             kind = "asr",
-            request = new { ModelId = (Guid?)modelId },
-            language = attempt.Language,
+            ModelId = (Guid?)modelId,
+            Language = attempt.Language,
             consent,
-            promptRevision = attempt.PromptRevision,
+            Revision = attempt.PromptRevision,
             promptSha256 = attempt.PromptSha256,
-            audioName = audio.Name,
-            audioFormat = audio.Format,
-            audioSha256 = audio.Sha256,
+            audio.Name,
+            audio.Format,
+            audio.Sha256,
             size = audio.SizeBytes
         }, Json));
     }
