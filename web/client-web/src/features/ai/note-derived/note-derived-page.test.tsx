@@ -133,7 +133,7 @@ afterEach(() => { cleanup(); client.clear() })
 
 it('loads ordinary sources including zero recordings and never calls admin model settings', async () => {
   const collection = NAV_GROUPS.find((group) => group.label === '收集')
-  expect(collection?.items).toContainEqual(expect.objectContaining({ to: '/native-notes', label: '笔记处理' }))
+  expect(collection?.items).toContainEqual(expect.objectContaining({ to: '/native-notes', label: '原生笔记' }))
   page()
   expect(await screen.findByRole('heading', { name: '笔记处理' })).toBeTruthy()
   await chooseSource()

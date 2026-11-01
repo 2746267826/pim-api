@@ -3,6 +3,7 @@ import {
   ApiError,
   apiDelete,
   apiFetch,
+  apiPutBinary,
   clearTokens,
   resetRefreshState,
   setTokens,
@@ -53,6 +54,22 @@ describe('apiFetch 基础行为', () => {
       vi.fn(async () => new Response(null, { status: 204 })),
     )
     await expect(apiDelete('/api/v1/x')).resolves.toBeUndefined()
+  })
+
+  it('二进制 PUT 保留原始 Blob，不经过 JSON.stringify', async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => jsonResponse({
+      code: 0,
+      message: 'ok',
+      data: '分块已保存',
+      timestamp: 't',
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    const blob = new Blob([new Uint8Array([1, 2, 3])], { type: 'application/octet-stream' })
+
+    await expect(apiPutBinary('/api/v1/native-notes/part', blob)).resolves.toBe('分块已保存')
+    const init = fetchMock.mock.calls[0]?.[1] as RequestInit
+    expect(init.body).toBe(blob)
+    expect(new Headers(init.headers).get('Content-Type')).toBe('application/octet-stream')
   })
 
   it('HTML 响应（SPA fallback 兜底）抛出可读错误', async () => {

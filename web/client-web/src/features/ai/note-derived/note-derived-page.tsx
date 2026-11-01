@@ -142,7 +142,10 @@ function Workspace({ ownerId, serverBinding, role }: { ownerId: string; serverBi
   }
 
   return <div className="space-y-5">
-    <PageHeader title="笔记处理" subtitle="固定材料版本，复用已完成 ASR，分别生成完整记录与独立分析" actions={<Button variant="secondary" size="sm" onClick={refresh}><RefreshCw className="size-4" aria-hidden />刷新</Button>} />
+    <PageHeader title="笔记处理" subtitle="固定材料版本，复用已完成 ASR，分别生成完整记录与独立分析" actions={<>
+      <Button variant="ghost" size="sm" onClick={() => { window.location.assign('/native-notes') }}>返回笔记库</Button>
+      <Button variant="secondary" size="sm" onClick={refresh}><RefreshCw className="size-4" aria-hidden />刷新</Button>
+    </>} />
     <div className="flex items-start gap-3 rounded-ctl border border-info-border bg-info-soft px-4 py-3 text-sm text-text-2">
       <ShieldCheck className="mt-0.5 size-4 shrink-0 text-info" aria-hidden />
       <div className="space-y-1"><p>页面不会因为上传或打开而自动调用模型。创建前必须核对固定材料、实际模型地址与同意范围；所有提交意图会先保存在本机。</p>

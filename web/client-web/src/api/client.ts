@@ -92,14 +92,20 @@ export interface FetchOptions {
 interface RawInit {
   method?: string
   body?: unknown
+  bodyKind?: 'json' | 'form' | 'binary'
+  contentType?: string
   headers?: Record<string, string>
 }
 
 async function rawFetch(path: string, init: RawInit, opts: FetchOptions): Promise<Response> {
   const headers = new Headers(init.headers)
-  const isForm = typeof FormData !== 'undefined' && init.body instanceof FormData
-  if (init.body !== undefined && !isForm) {
+  const isForm = init.bodyKind === 'form' ||
+    (init.bodyKind == null && typeof FormData !== 'undefined' && init.body instanceof FormData)
+  const isBinary = init.bodyKind === 'binary'
+  if (init.body !== undefined && !isForm && !isBinary) {
     headers.set('Content-Type', 'application/json')
+  } else if (isBinary) {
+    headers.set('Content-Type', init.contentType ?? 'application/octet-stream')
   }
   /*
    * host 通道（规格 §6.1）：令牌不在页面里，页面**不读 storage、也不加 Authorization**。
@@ -116,7 +122,9 @@ async function rawFetch(path: string, init: RawInit, opts: FetchOptions): Promis
     method: init.method ?? (init.body !== undefined ? 'POST' : 'GET'),
     headers,
     body: isForm
-      ? (init.body as FormData)
+      ? (init.body as BodyInit)
+      : isBinary
+        ? (init.body as BodyInit)
       : init.body !== undefined
         ? JSON.stringify(init.body)
         : undefined,
@@ -270,7 +278,17 @@ export function apiDelete<T>(path: string, opts?: FetchOptions): Promise<T> {
 
 /** multipart 上传 */
 export function apiUpload<T>(path: string, form: FormData, opts?: FetchOptions): Promise<T> {
-  return apiFetch<T>(path, { method: 'POST', body: form }, opts)
+  return apiFetch<T>(path, { method: 'POST', body: form, bodyKind: 'form' }, opts)
+}
+
+/** 受认证的二进制 PUT（笔记材料分块等，不能走 JSON.stringify）。 */
+export function apiPutBinary<T>(
+  path: string,
+  body: Blob,
+  contentType = 'application/octet-stream',
+  opts?: FetchOptions,
+): Promise<T> {
+  return apiFetch<T>(path, { method: 'PUT', body, bodyKind: 'binary', contentType }, opts)
 }
 
 export interface BlobFetchOptions {
