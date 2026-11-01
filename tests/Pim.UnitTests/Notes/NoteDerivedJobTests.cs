@@ -127,7 +127,7 @@ public sealed class NoteDerivedJobTests : IAsyncLifetime
         await Run(task.TaskId);
         task = await Data<NoteDerivedTaskDto>(await _client.GetAsync($"{DerivedRoute}/{task.TaskId}"));
         Assert.Equal("Succeeded", task.Phase);
-        Assert.True(task.Coverage.Complete);
+        Assert.True(task.Coverage.Complete, JsonSerializer.Serialize(task.Coverage));
         Assert.Equal(1, task.Coverage.TranscriptSegments);
         Assert.Equal(1, task.Coverage.CompletedTranscriptSegments);
         Assert.Equal(1, task.Coverage.Photos);
