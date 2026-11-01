@@ -864,6 +864,73 @@ public sealed class MobileUsageIngestServiceTests
     }
 
     [Fact]
+    public async Task IngestAsync_DuplicateOnlyBatchDoesNotMarkAnalyticsStale()
+    {
+        await using var db = MobileTestHelpers.CreateDb();
+        var now = DateTimeOffset.Parse("2026-07-06T12:00:00Z");
+        var staleService = new MobileAppCatalogOverrideService(
+            db,
+            MobileTestHelpers.CurrentUser(),
+            MobileTestHelpers.Time(now));
+        var service = new MobileUsageIngestService(
+            db,
+            MobileTestHelpers.CurrentUser(),
+            new MobileSessionInterpreter(db),
+            MobileTestHelpers.Time(now),
+            staleService);
+        db.Set<MobileUsageAggregateEntity>().Add(new MobileUsageAggregateEntity
+        {
+            UserId = MobileTestHelpers.UserId,
+            DeviceId = "android-main",
+            Granularity = "hour",
+            BucketStartUtc = DateTimeOffset.Parse("2026-07-06T08:00:00Z"),
+            BucketEndUtc = DateTimeOffset.Parse("2026-07-06T09:00:00Z"),
+            PackageName = "com.example.messages",
+            DisplayName = "Messages",
+            LifeCategory = MobileLifeCategories.Chat,
+            ForegroundSeconds = 60,
+            CreatedAt = now,
+            UpdatedAt = now
+        });
+        db.Set<MobileTimelineBlockEntity>().Add(new MobileTimelineBlockEntity
+        {
+            UserId = MobileTestHelpers.UserId,
+            DeviceId = "android-main",
+            StartUtc = DateTimeOffset.Parse("2026-07-06T08:00:00Z"),
+            EndUtc = DateTimeOffset.Parse("2026-07-06T09:00:00Z"),
+            LocalDate = "2026-07-06",
+            LifeCategory = MobileLifeCategories.Chat,
+            ForegroundSeconds = 60,
+            SessionCount = 1,
+            AppCount = 1,
+            TopAppsJson = "[]",
+            CreatedAt = now,
+            UpdatedAt = now
+        });
+        await db.SaveChangesAsync();
+
+        await service.IngestAsync(
+            UploadRequest("batch-first-stale", "Messages") with { Apps = [], FallbackSummaries = [] },
+            CancellationToken.None);
+        db.ChangeTracker.Clear();
+        foreach (var aggregate in await db.Set<MobileUsageAggregateEntity>().ToListAsync())
+            aggregate.IsStale = false;
+        foreach (var block in await db.Set<MobileTimelineBlockEntity>().ToListAsync())
+            block.IsStale = false;
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+
+        var duplicate = await service.IngestAsync(
+            UploadRequest("batch-duplicate-stale", "Messages") with { Apps = [], FallbackSummaries = [] },
+            CancellationToken.None);
+
+        Assert.Equal(0, duplicate.AcceptedCount);
+        db.ChangeTracker.Clear();
+        Assert.All(await db.Set<MobileUsageAggregateEntity>().ToListAsync(), row => Assert.False(row.IsStale));
+        Assert.All(await db.Set<MobileTimelineBlockEntity>().ToListAsync(), row => Assert.False(row.IsStale));
+    }
+
+    [Fact]
     public async Task IngestAsync_KeepsEarlierSessionWhenALaterWindowOverlapsOnlyItsTail()
     {
         // #248：起点在上一批窗口内的会话，遇到下一批"只重叠尾部"的窗口时不能被删掉后丢失。
@@ -918,6 +985,159 @@ public sealed class MobileUsageIngestServiceTests
         Assert.Contains("closed-by-app-switch", sessions[0].QualityFlagsJson);
         Assert.Equal("com.example.chat", sessions[1].PackageName);
         Assert.Equal(start.AddMinutes(20), sessions[1].StartUtc);
+    }
+
+    [Fact]
+    public async Task IngestAsync_WidenedDuplicateBatchExtendsOpenSessionWithoutReplacingEarlierSession()
+    {
+        await using var db = MobileTestHelpers.CreateDb();
+        var reconcileCount = 0;
+        var service = new MobileUsageIngestService(
+            db,
+            MobileTestHelpers.CurrentUser(),
+            new MobileSessionInterpreter(db)
+            {
+                BeforeReconcileAsync = _ =>
+                {
+                    reconcileCount++;
+                    return Task.CompletedTask;
+                }
+            },
+            MobileTestHelpers.Time(DateTimeOffset.Parse("2026-07-06T12:00:00Z")));
+        var start = DateTimeOffset.Parse("2026-07-06T08:00:00Z");
+        var events = new[]
+        {
+            new MobileUsageEventDto(
+                "com.example.messages",
+                "MOVE_TO_FOREGROUND",
+                start.AddMinutes(5),
+                "MainActivity",
+                start.AddMinutes(6),
+                "{}",
+                "item-messages"),
+            new MobileUsageEventDto(
+                "com.example.chat",
+                "MOVE_TO_FOREGROUND",
+                start.AddMinutes(10),
+                "ChatActivity",
+                start.AddMinutes(11),
+                "{}",
+                "item-chat")
+        };
+        var first = new MobileUsageEventsUploadRequest(
+            "android-main",
+            "batch-open-fast-1",
+            start,
+            start.AddMinutes(15),
+            [],
+            events,
+            []);
+        await service.IngestAsync(first, CancellationToken.None);
+        reconcileCount = 0;
+        db.ChangeTracker.Clear();
+        var before = await db.Set<MobileUsageSessionEntity>()
+            .AsNoTracking()
+            .OrderBy(session => session.StartUtc)
+            .ToListAsync();
+        Assert.Equal(2, before.Count);
+        Assert.Contains("closed-by-app-switch", before[0].QualityFlagsJson);
+        Assert.Contains("open-ended", before[1].QualityFlagsJson);
+
+        var widened = first with
+        {
+            ClientBatchId = "batch-open-fast-2",
+            SourceWindowEndUtc = start.AddHours(4)
+        };
+        var result = await service.IngestAsync(widened, CancellationToken.None);
+
+        Assert.Equal(0, result.AcceptedCount);
+        Assert.Equal(0, reconcileCount);
+        db.ChangeTracker.Clear();
+        var after = await db.Set<MobileUsageSessionEntity>()
+            .AsNoTracking()
+            .OrderBy(session => session.StartUtc)
+            .ToListAsync();
+        Assert.Equal(2, after.Count);
+        Assert.Equal(before[0].Id, after[0].Id);
+        Assert.Equal(before[1].Id, after[1].Id);
+        Assert.Equal(start.AddMinutes(10), after[0].EndUtc);
+        Assert.Equal(start.AddHours(4), after[1].EndUtc);
+    }
+
+    [Fact]
+    public async Task IngestAsync_WidenedDuplicateThatChangesSessionMarksAnalyticsStale()
+    {
+        await using var db = MobileTestHelpers.CreateDb();
+        var now = DateTimeOffset.Parse("2026-07-06T12:00:00Z");
+        var staleService = new MobileAppCatalogOverrideService(
+            db,
+            MobileTestHelpers.CurrentUser(),
+            MobileTestHelpers.Time(now));
+        var reconcileCount = 0;
+        var service = new MobileUsageIngestService(
+            db,
+            MobileTestHelpers.CurrentUser(),
+            new MobileSessionInterpreter(db)
+            {
+                BeforeReconcileAsync = _ =>
+                {
+                    reconcileCount++;
+                    return Task.CompletedTask;
+                }
+            },
+            MobileTestHelpers.Time(now),
+            staleService);
+        var start = DateTimeOffset.Parse("2026-07-06T08:00:00Z");
+        var openEvent = new MobileUsageEventDto(
+            "com.example.messages",
+            "MOVE_TO_FOREGROUND",
+            start.AddMinutes(5),
+            "MainActivity",
+            start.AddMinutes(6),
+            "{}",
+            "item-open-stale");
+        var first = new MobileUsageEventsUploadRequest(
+            "android-main",
+            "batch-open-stale-1",
+            start,
+            start.AddMinutes(15),
+            [],
+            [openEvent],
+            []);
+
+        await service.IngestAsync(first, CancellationToken.None);
+        db.ChangeTracker.Clear();
+        db.Set<MobileUsageAggregateEntity>().Add(new MobileUsageAggregateEntity
+        {
+            UserId = MobileTestHelpers.UserId,
+            DeviceId = first.DeviceId,
+            Granularity = "hour",
+            BucketStartUtc = start,
+            BucketEndUtc = start.AddHours(1),
+            PackageName = "com.example.messages",
+            DisplayName = "Messages",
+            LifeCategory = MobileLifeCategories.Chat,
+            ForegroundSeconds = 600,
+            CreatedAt = now,
+            UpdatedAt = now
+        });
+        await db.SaveChangesAsync();
+        reconcileCount = 0;
+
+        var widened = first with
+        {
+            ClientBatchId = "batch-open-stale-2",
+            SourceWindowEndUtc = start.AddHours(4)
+        };
+        var result = await service.IngestAsync(widened, CancellationToken.None);
+
+        Assert.Equal(0, result.AcceptedCount);
+        Assert.Equal(0, reconcileCount);
+        db.ChangeTracker.Clear();
+        var session = Assert.Single(await db.Set<MobileUsageSessionEntity>().ToListAsync());
+        Assert.Equal(start.AddHours(4), session.EndUtc);
+        var aggregate = Assert.Single(await db.Set<MobileUsageAggregateEntity>().ToListAsync());
+        Assert.True(aggregate.IsStale);
     }
 
     [Fact]
