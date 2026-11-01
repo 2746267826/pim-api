@@ -20,7 +20,7 @@
 
 ## v0.49 当前执行覆盖：源码集成与交付阻断（2026-11-01）
 
-#539/#551 源码已随 PR #555 正常合并，master CI/新 Release 尚待核验；#552–554 持久异步 ASR、token 配置与独立传输观察已集成，真实 Test Swagger 和官方 Web 生成校验通过。跨 TASK/ASR 集成测试 133 PASS / 3 FAIL，迁移一致性正在修复，不能称全绿。Android PR #64 的契约与 shell 已过、App 单测四项失败待修；M1/M5 在独立第二树继续。
+#539/#551 已随 PR #555 正常合并，master CI `41312005940` 与 CI Gate 全绿，`api-v26.11.1052` 的标签/来源和 Web 台账已实际回读；生产升级与同步收敛仍未验。#552–554 持久异步 ASR、token 配置与独立传输观察已集成，真实 Test Swagger 和官方 Web 生成校验通过。跨 TASK/ASR 集成测试 133 PASS / 3 FAIL，迁移一致性正在修复，不能称全绿。Android PR #64 的旧四项失败已修并通过四项聚焦，新 head `cefe6ff` 的 CI 正在运行；M1/M5 在独立第二树继续。Windows 新集成 Core 332/332、WPF/App 101/101 通过。开发 PR #556 为 Draft，完整 issue 评论已回填，M0–M5 与外部验收未整体完成。
 
 完整逐阶段/issue 状态见[路线图 v0.49](../product/native-notes-roadmap.md#v049-current)。45 个稳定 ID、AC1–19、五个 #516 阶段与外部验收边界保持不变；下方状态行及正文均作为历史保留。
 
