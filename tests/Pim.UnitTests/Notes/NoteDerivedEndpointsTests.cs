@@ -393,7 +393,7 @@ public sealed class NoteDerivedEndpointsTests : IDisposable
     }
 
     [Fact]
-    public async Task DeletingNoteRejectsRunningDerivedTaskAndRemovesOnlyOwnerState()
+    public async Task WholeNoteDeletionIsNotPublishedAndLeavesOwnerMaterialsAndTasksUnchanged()
     {
         var owner = await AuthRegistrationTestHost.SeedAndLoginAsync(_factory,
             "derived-delete-owner-" + Guid.NewGuid().ToString("N"));
@@ -416,24 +416,24 @@ public sealed class NoteDerivedEndpointsTests : IDisposable
         Assert.NotNull(held);
         using (held)
         {
-            var conflict = await client.DeleteAsync($"/api/v1/native-notes/{material.NoteId}");
-            Assert.Equal(HttpStatusCode.Conflict, conflict.StatusCode);
-            Assert.Equal(40901, (await AuthRegistrationTestHost.ReadErrorAsync(conflict)).Code);
+            var unavailable = await client.DeleteAsync($"/api/v1/native-notes/{material.NoteId}");
+            Assert.Equal(HttpStatusCode.NotFound, unavailable.StatusCode);
+            Assert.Equal(404, (await AuthRegistrationTestHost.ReadErrorAsync(unavailable)).Code);
         }
 
-        var otherDelete = await otherClient.DeleteAsync($"/api/v1/native-notes/{material.NoteId}");
-        Assert.Equal(HttpStatusCode.OK, otherDelete.StatusCode);
+        var otherUnavailable = await otherClient.DeleteAsync($"/api/v1/native-notes/{material.NoteId}");
+        Assert.Equal(HttpStatusCode.NotFound, otherUnavailable.StatusCode);
+        Assert.Equal(404, (await AuthRegistrationTestHost.ReadErrorAsync(otherUnavailable)).Code);
         Assert.Equal(taskId, (await store.ReadTaskAsync(owner.UserId, taskId, default)).Request.TaskId);
         Assert.Equal(material.VersionId, Assert.Single(
             await materials.ListAsync(owner.UserId, material.NoteId, default)).VersionId);
-
-        var deleted = await client.DeleteAsync($"/api/v1/native-notes/{material.NoteId}");
-        Assert.Equal(HttpStatusCode.OK, deleted.StatusCode);
-        Assert.Contains("派生版本", (await deleted.Content.ReadAsStringAsync()), StringComparison.Ordinal);
-        Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync($"{Tasks}/{taskId}")).StatusCode);
+        var artifacts = await store.ListArtifactsAsync(owner.UserId, material.NoteId, default);
+        Assert.Equal(2, artifacts.Count);
+        Assert.Contains(artifacts, artifact => artifact.ArtifactId == state.CompleteRecordArtifactId);
+        Assert.Contains(artifacts, artifact => artifact.ArtifactId == state.IndependentAnalysisArtifactId);
+        Assert.Equal(HttpStatusCode.OK, (await client.GetAsync($"{Tasks}/{taskId}")).StatusCode);
         Assert.Equal(HttpStatusCode.NotFound,
-            (await client.GetAsync($"{Artifacts}/{state.CompleteRecordArtifactId}")).StatusCode);
-        Assert.Empty(await materials.ListAsync(owner.UserId, material.NoteId, default));
+            (await otherClient.GetAsync($"{Tasks}/{taskId}")).StatusCode);
     }
 
     private static NoteDerivedPlan Plan(Guid owner, Guid noteId, Guid sourceVersionId, int stepCount)
