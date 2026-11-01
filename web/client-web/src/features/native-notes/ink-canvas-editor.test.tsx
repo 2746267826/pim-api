@@ -30,7 +30,9 @@ describe('InkCanvasEditor', () => {
   it('records schema-v1 coordinates and pressure and creates a PNG preview', async () => {
     stubPngCanvas()
     const onSave = vi.fn()
-    render(<InkCanvasEditor onCancel={vi.fn()} onSave={onSave} />)
+    const onPendingChange = vi.fn()
+    const onDirty = vi.fn()
+    render(<InkCanvasEditor onCancel={vi.fn()} onSave={onSave} onPendingChange={onPendingChange} onDirty={onDirty} />)
     const canvas = screen.getByTestId('ink-canvas')
 
     fireEvent.pointerDown(canvas, {
@@ -50,6 +52,8 @@ describe('InkCanvasEditor', () => {
       pressure: 0.75,
     })
     fireEvent.pointerUp(canvas, { pointerId: 3, pointerType: 'pen', isPrimary: true })
+    expect(onPendingChange.mock.calls).toEqual([[true], [false]])
+    expect(onDirty).toHaveBeenCalledOnce()
     await userEvent.click(screen.getByRole('button', { name: '保存手写' }))
 
     await waitFor(() => expect(onSave).toHaveBeenCalledOnce())
@@ -104,6 +108,52 @@ describe('InkCanvasEditor', () => {
 
     expect(screen.getByText('笔迹坐标或压力超出 schema-v1 范围')).toBeTruthy()
     expect((screen.getByRole('button', { name: '保存手写' }) as HTMLButtonElement).disabled).toBe(true)
+    expect(onSave).not.toHaveBeenCalled()
+  })
+
+  it('does not accept pointer changes or save while its edit session is disabled', async () => {
+    const onSave = vi.fn()
+    const onDirty = vi.fn()
+    const onCancel = vi.fn()
+    const initialInk = { width: 320, height: 240, strokes: [{ width: 2, points: [{ x: 10, y: 10 }] }] }
+    const { rerender } = render(<InkCanvasEditor initialInk={initialInk} disabled onCancel={onCancel} onSave={onSave} onDirty={onDirty} />)
+    const canvas = screen.getByTestId('ink-canvas')
+    fireEvent.pointerDown(canvas, { pointerId: 9, isPrimary: true, clientX: 20, clientY: 20 })
+    expect(onDirty).not.toHaveBeenCalled()
+    expect((screen.getByRole('button', { name: '保存手写' }) as HTMLButtonElement).disabled).toBe(true)
+    expect((screen.getByRole('button', { name: '撤销最近一笔' }) as HTMLButtonElement).disabled).toBe(true)
+    expect((screen.getByRole('button', { name: '清空手写卡片' }) as HTMLButtonElement).disabled).toBe(true)
+    expect((screen.getByRole('button', { name: '取消' }) as HTMLButtonElement).disabled).toBe(true)
+
+    rerender(<InkCanvasEditor onCancel={onCancel} onSave={onSave} onDirty={onDirty} />)
+    const activeCanvas = screen.getByTestId('ink-canvas')
+    fireEvent.pointerDown(activeCanvas, { pointerId: 10, isPrimary: true, clientX: 20, clientY: 20 })
+    fireEvent.pointerUp(activeCanvas, { pointerId: 10, isPrimary: true })
+    rerender(<InkCanvasEditor disabled onCancel={onCancel} onSave={onSave} onDirty={onDirty} />)
+    expect((screen.getByRole('button', { name: '撤销最近一笔' }) as HTMLButtonElement).disabled).toBe(true)
+    expect((screen.getByRole('button', { name: '清空手写卡片' }) as HTMLButtonElement).disabled).toBe(true)
+    expect((screen.getByRole('button', { name: '取消' }) as HTMLButtonElement).disabled).toBe(true)
+    expect(onSave).not.toHaveBeenCalled()
+    expect(onDirty).toHaveBeenCalledOnce()
+    expect(onCancel).not.toHaveBeenCalled()
+  })
+
+  it('drops an asynchronous preview result after the editor session closes', async () => {
+    let finishPreview!: (blob: Blob | null) => void
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(context as unknown as CanvasRenderingContext2D)
+    const toBlob = vi.spyOn(HTMLCanvasElement.prototype, 'toBlob').mockImplementation((callback) => {
+      finishPreview = callback
+    })
+    let active = true
+    const onSave = vi.fn()
+    const { rerender } = render(<InkCanvasEditor isSessionActive={() => active} onCancel={vi.fn()} onSave={onSave} />)
+
+    await userEvent.click(screen.getByRole('button', { name: '保存手写' }))
+    await waitFor(() => expect(toBlob).toHaveBeenCalledOnce())
+    active = false
+    rerender(<InkCanvasEditor isSessionActive={() => active} disabled onCancel={vi.fn()} onSave={onSave} />)
+    finishPreview(new Blob([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], { type: 'image/png' }))
+    await new Promise((resolve) => setTimeout(resolve, 0))
     expect(onSave).not.toHaveBeenCalled()
   })
 })

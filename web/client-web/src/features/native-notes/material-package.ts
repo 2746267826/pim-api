@@ -1,4 +1,4 @@
-import { unzipSync, zipSync } from 'fflate'
+import { Inflate, zipSync } from 'fflate'
 import { sha256Hex, type MaterialBundle, type MaterialDraftBlock, type SupportedPhotoMime } from './material-model'
 
 export interface ImportedAndroidNotePackage {
@@ -13,6 +13,9 @@ const MAX_METADATA_BYTES = 8 * 1024 * 1024
 const MAX_DOCUMENT_BYTES = 16 * 1024 * 1024
 const MAX_PHOTO_BYTES = 32 * 1024 * 1024
 const MAX_INK_PREVIEW_BYTES = 40 * 1024 * 1024
+const MAX_INFLATE_CHUNK_BYTES = 64 * 1024
+const MAX_INFLATE_OVERRUN_BYTES = 64 * 1024
+const MAX_DEFLATE_EXPANSION_PER_INPUT_BYTE = 2_048
 const HASH_PATTERN = /^[0-9a-f]{64}$/i
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 const textDecoder = new TextDecoder('utf-8', { fatal: true })
@@ -64,16 +67,18 @@ export function assertAndroidNotePackageSize(sizeBytes: number): void {
 
 export async function importAndroidNotePackage(archive: Uint8Array): Promise<ImportedAndroidNotePackage> {
   const entries = inspectZip(archive)
-  const extracted = unzipSync(archive)
-  if (Object.keys(extracted).length !== entries.length) throw new Error('笔记包 ZIP 文件表不一致')
+  const entryMap = new Map<string, Uint8Array>()
+  let totalInflatedBytes = 0
   for (const entry of entries) {
-    const bytes = extracted[entry.path]
-    if (!bytes || bytes.length !== entry.size || crc32(bytes) !== entry.crc) {
+    const bytes = inflateEntry(archive, entry)
+    totalInflatedBytes += bytes.length
+    if (totalInflatedBytes > MAX_UNCOMPRESSED_BYTES) throw new Error('ZIP 实际解压总量超过 128 MiB')
+    if (bytes.length !== entry.size || crc32(bytes) !== entry.crc) {
       throw new Error(`笔记包文件损坏或 CRC 不匹配：${entry.path}`)
     }
+    entryMap.set(entry.path, bytes)
   }
 
-  const entryMap = new Map(entries.map((entry) => [entry.path, extracted[entry.path]!]))
   const noteBytes = requireEntry(entryMap, 'note.json')
   const documentBytes = requireEntry(entryMap, 'document.md')
   if (noteBytes.length > MAX_METADATA_BYTES || documentBytes.length > MAX_DOCUMENT_BYTES) {
@@ -262,6 +267,35 @@ function inspectZip(bytes: Uint8Array): ZipEntryInfo[] {
     if (ranges[index]![0] !== ranges[index - 1]![1]) throw new Error('ZIP 文件数据区域重叠或存在间隙')
   }
   return entries
+}
+
+function inflateEntry(archive: Uint8Array, entry: ZipEntryInfo): Uint8Array {
+  if (entry.method === 0) return archive.subarray(entry.dataStart, entry.dataStart + entry.compressedSize)
+
+  const output = new Uint8Array(entry.size)
+  let written = 0
+  let finished = false
+  const inflater = new Inflate((chunk, final) => {
+    if (written + chunk.length > entry.size) {
+      throw new Error(`ZIP 实际解压字节超过目录声明：${entry.path}`)
+    }
+    output.set(chunk, written)
+    written += chunk.length
+    finished = final
+  })
+  const compressedEnd = entry.dataStart + entry.compressedSize
+  for (let offset = entry.dataStart; offset < compressedEnd;) {
+    const remainingOutputBudget = entry.size - written + MAX_INFLATE_OVERRUN_BYTES
+    const boundedInputBytes = Math.max(1, Math.floor(remainingOutputBudget / MAX_DEFLATE_EXPANSION_PER_INPUT_BYTE))
+    const next = Math.min(offset + Math.min(MAX_INFLATE_CHUNK_BYTES, boundedInputBytes), compressedEnd)
+    inflater.push(archive.subarray(offset, next), next === compressedEnd)
+    offset = next
+  }
+  if (entry.compressedSize === 0) inflater.push(new Uint8Array(0), true)
+  if (!finished || written !== entry.size) {
+    throw new Error(`ZIP 实际解压长度与目录声明不一致：${entry.path}`)
+  }
+  return output
 }
 
 function parseJsonObject(bytes: Uint8Array, label: string): Record<string, unknown> {

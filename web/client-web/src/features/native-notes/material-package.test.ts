@@ -69,6 +69,28 @@ function streamingZip(files: Array<{ path: string; bytes: Uint8Array }>) {
   return result
 }
 
+function underdeclareEntrySize(archive: Uint8Array, path: string, declaredSize: number) {
+  const view = new DataView(archive.buffer, archive.byteOffset, archive.byteLength)
+  const end = archive.length - 22
+  const directoryOffset = view.getUint32(end + 16, true)
+  const entryCount = view.getUint16(end + 10, true)
+  let cursor = directoryOffset
+  for (let index = 0; index < entryCount; index++) {
+    const nameLength = view.getUint16(cursor + 28, true)
+    const extraLength = view.getUint16(cursor + 30, true)
+    const commentLength = view.getUint16(cursor + 32, true)
+    const name = new TextDecoder().decode(archive.subarray(cursor + 46, cursor + 46 + nameLength))
+    if (name === path) {
+      const localStart = view.getUint32(cursor + 42, true)
+      view.setUint32(cursor + 24, declaredSize, true)
+      view.setUint32(localStart + 22, declaredSize, true)
+      return
+    }
+    cursor += 46 + nameLength + extraLength + commentLength
+  }
+  throw new Error(`ZIP entry not found: ${path}`)
+}
+
 describe('Android schema-v1 note package', () => {
   it('round-trips ordered Markdown, WebP bytes, editable ink, and PNG preview', async () => {
     const { bundle, archive } = await mixedArchive()
@@ -93,6 +115,18 @@ describe('Android schema-v1 note package', () => {
     const imported = await importAndroidNotePackage(archive)
     expect(imported.blocks.map((block) => block.kind)).toEqual(['markdown', 'photo', 'ink', 'markdown'])
   })
+
+  it('rejects DEFLATE output beyond the declared entry size before retaining it', async () => {
+    const expanded = new TextEncoder().encode('A'.repeat(4 * 1024 * 1024))
+    const archive = zipSync({
+      'note.json': new TextEncoder().encode('{}'),
+      'document.md': expanded,
+    }, { level: 6, mtime: new Date('1980-01-01T00:00:00Z') })
+    underdeclareEntrySize(archive, 'document.md', 1_024)
+
+    await expect(importAndroidNotePackage(archive)).rejects.toThrow('实际解压字节超过目录声明')
+  })
+
 
   it('imports Kotlin-style float JSON without rewriting its content-addressed ink path', async () => {
     const noteId = '88888888-8888-4888-8888-888888888888'

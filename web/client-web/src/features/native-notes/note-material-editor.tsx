@@ -171,10 +171,17 @@ function LoadedEditor({
   const [message, setMessage] = useState('')
   const [storageConsent, setStorageConsent] = useState(false)
   const [dirty, setDirty] = useState(false)
-  const [inkEditor, setInkEditor] = useState<{ id: string; ink: Record<string, unknown> } | null>(null)
+  const [inkPending, setInkPending] = useState(false)
+  const [inkEditor, setInkEditor] = useState<{ id: string; ink: Record<string, unknown>; sessionId: string } | null>(null)
+  const inkEditorRef = useRef<{ id: string; ink: Record<string, unknown>; sessionId: string } | null>(null)
+  const inkSessionIdRef = useRef<string | null>(null)
   const uploadSessionRef = useRef<EditorUploadSession | null>(null)
-  const editable = !busy && !promoting && !frozen && isCurrent
-  const canSubmit = !busy && !promoting && isCurrent && recordings === 0 && blocks.length > 0 && storageConsent
+  const editable = !busy && !exporting && !promoting && !frozen && isCurrent
+  const editableRef = useRef(editable)
+  useEffect(() => {
+    editableRef.current = editable
+  }, [editable])
+  const canSubmit = editable && recordings === 0 && blocks.length > 0 && storageConsent && !inkEditor && !inkPending
 
   const requireUploadSession = useCallback(() => {
     const session = uploadSessionRef.current
@@ -198,18 +205,43 @@ function LoadedEditor({
   const isUploadSessionActive = (session: EditorUploadSession) =>
     uploadSessionRef.current === session && !session.controller.signal.aborted
 
+  function isInkSessionActive(sessionId: string) {
+    const session = uploadSessionRef.current
+    return inkSessionIdRef.current === sessionId && inkEditorRef.current?.sessionId === sessionId &&
+      editableRef.current && session !== null && !session.controller.signal.aborted &&
+      session.noteId === noteId && session.baseVersionId === baseVersionId
+  }
+
+  function openInkEditor(id: string, ink: Record<string, unknown>) {
+    const sessionId = createMaterialId()
+    inkSessionIdRef.current = sessionId
+    const next = { id, ink, sessionId }
+    inkEditorRef.current = next
+    setInkEditor(next)
+    setInkPending(false)
+  }
+
+  function closeInkEditor(sessionId: string) {
+    if (inkSessionIdRef.current !== sessionId) return
+    inkSessionIdRef.current = null
+    inkEditorRef.current = null
+    setInkEditor(null)
+    setInkPending(false)
+  }
+
   useEffect(() => {
     const controller = new AbortController()
     uploadSessionRef.current = { noteId, baseVersionId, controller }
     return () => {
+      inkSessionIdRef.current = null
       if (uploadSessionRef.current?.controller === controller) uploadSessionRef.current = null
       controller.abort()
     }
   }, [baseVersionId, noteId])
 
   useEffect(() => {
-    onDirtyChange?.(dirty)
-  }, [dirty, onDirtyChange])
+    onDirtyChange?.(dirty || inkPending)
+  }, [dirty, inkPending, onDirtyChange])
 
   const lockedReason = recordings > 0
     ? '此版本包含录音。Web 端不能在没有服务端克隆协议的情况下重建并丢失音频，因此只允许查看；请使用手机或 Windows 在保留全部录音的前提下创建新版本。'
@@ -220,7 +252,7 @@ function LoadedEditor({
         : ''
 
   async function save() {
-    if (busy || !isCurrent || recordings > 0 || !blocks.length || !storageConsent) return
+    if (busy || inkEditor || inkPending || !isCurrent || recordings > 0 || !blocks.length || !storageConsent) return
     let session: EditorUploadSession
     try {
       session = requireUploadSession()
@@ -273,7 +305,7 @@ function LoadedEditor({
   }
 
   async function exportPackage() {
-    if (busy || exporting || recordings > 0) return
+    if (busy || exporting || inkEditor || inkPending || recordings > 0) return
     let session: EditorUploadSession
     try {
       session = requireUploadSession()
@@ -390,7 +422,7 @@ function LoadedEditor({
       <PageHeader className="mb-0" title={baseVersionId ? '编辑固定材料' : '新建固定材料'} subtitle={baseVersionId ? `将基于版本 ${shortId(baseVersionId)} 创建第 ${revision + 1} 版；旧版本原样保留。` : '首次保存会创建新笔记和第一个固定材料版本。'} actions={
         <div className="flex flex-wrap items-center gap-2">
           {baseVersionId && !isCurrent && <Button size="sm" loading={promoting} onClick={() => void promote()}>设为当前版本</Button>}
-          <Button size="sm" variant="ghost" disabled={busy || exporting || recordings > 0} loading={exporting} onClick={() => void exportPackage()}>
+          <Button size="sm" variant="ghost" disabled={busy || exporting || recordings > 0 || Boolean(inkEditor) || inkPending} loading={exporting} onClick={() => void exportPackage()}>
             <Download className="size-4" aria-hidden />导出 Android 笔记包
           </Button>
           <Button size="sm" variant="primary" loading={busy} disabled={!canSubmit} onClick={() => void save()}>
@@ -414,15 +446,25 @@ function LoadedEditor({
 
       <div className="space-y-3">
         {inkEditor && <InkCanvasEditor
-          key={inkEditor.id}
+          key={inkEditor.sessionId}
           initialInk={inkEditor.ink}
-          onCancel={() => setInkEditor(null)}
+          disabled={!editable}
+          isSessionActive={() => isInkSessionActive(inkEditor.sessionId)}
+          onPendingChange={(pending) => {
+            if (inkSessionIdRef.current === inkEditor.sessionId) setInkPending(pending)
+          }}
+          onDirty={() => {
+            if (isInkSessionActive(inkEditor.sessionId)) setDirty(true)
+          }}
+          onCancel={() => closeInkEditor(inkEditor.sessionId)}
           onSave={(ink, bytes) => {
-            const next = { id: inkEditor.id, kind: 'ink' as const, ink, bytes }
-            setBlocks((current) => current.some((block) => block.kind === 'ink' && block.id === inkEditor.id)
-              ? current.map((block) => block.kind === 'ink' && block.id === inkEditor.id ? next : block)
+            if (!isInkSessionActive(inkEditor.sessionId)) return
+            const inkBlockId = inkEditor.id
+            const next = { id: inkBlockId, kind: 'ink' as const, ink, bytes }
+            setBlocks((current) => current.some((block) => block.kind === 'ink' && block.id === inkBlockId)
+              ? current.map((block) => block.kind === 'ink' && block.id === inkBlockId ? next : block)
               : [...current, next])
-            setInkEditor(null)
+            closeInkEditor(inkEditor.sessionId)
             setDirty(true)
           }}
         />}
@@ -436,7 +478,7 @@ function LoadedEditor({
               value={block.text} disabled={!editable} onChange={(event) => editMarkdown(block.id, event.target.value)} />
           </div>
           : <MaterialImageBlock key={block.id} block={block} index={index} editable={editable}
-            onEdit={block.kind === 'ink' ? () => setInkEditor({ id: block.id, ink: block.ink }) : undefined}
+            onEdit={block.kind === 'ink' ? () => openInkEditor(block.id, block.ink) : undefined}
             onRemove={block.kind === 'photo'
               ? () => {
                 setBlocks((current) => current.filter((item) => item.id !== block.id))
@@ -453,10 +495,10 @@ function LoadedEditor({
           ])
           setDirty(true)
         }}><Plus className="size-4" aria-hidden />添加正文段</Button>
-        <Button size="sm" disabled={!editable} onClick={() => setInkEditor({
-          id: createMaterialId(),
-          ink: { width: 320, height: 240, strokes: [] },
-        })}><PenLine className="size-4" aria-hidden />添加手写卡片</Button>
+        <Button size="sm" disabled={!editable || Boolean(inkEditor)} onClick={() => openInkEditor(
+          createMaterialId(),
+          { width: 320, height: 240, strokes: [] },
+        )}><PenLine className="size-4" aria-hidden />添加手写卡片</Button>
         <label className={fileLabelClass(editable)}>
           <ImagePlus className="size-4" aria-hidden />添加照片
           <input className="hidden" type="file" aria-label="添加照片" accept="image/jpeg,image/png,image/webp" multiple disabled={!editable}

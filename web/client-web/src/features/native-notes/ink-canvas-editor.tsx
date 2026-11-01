@@ -1,4 +1,4 @@
-import { type PointerEvent as ReactPointerEvent, useMemo, useRef, useState } from 'react'
+import { type PointerEvent as ReactPointerEvent, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Check, Eraser, Undo2, X } from 'lucide-react'
 import { Button, Card, InlineAlert } from '@/components/ui'
 
@@ -23,6 +23,10 @@ export interface InkDocument extends Record<string, unknown> {
 
 interface InkCanvasEditorProps {
   initialInk?: Record<string, unknown>
+  disabled?: boolean
+  isSessionActive?: () => boolean
+  onPendingChange?: (pending: boolean) => void
+  onDirty?: () => void
   onCancel: () => void
   onSave: (ink: InkDocument, previewBytes: Uint8Array) => void
 }
@@ -32,13 +36,46 @@ const MAX_STROKES = 10_000
 const MAX_POINTS = 50_000
 const MAX_PREVIEW_BYTES = 40 * 1024 * 1024
 
-export function InkCanvasEditor({ initialInk, onCancel, onSave }: InkCanvasEditorProps) {
+export function InkCanvasEditor({
+  initialInk,
+  disabled = false,
+  isSessionActive = () => true,
+  onPendingChange,
+  onDirty,
+  onCancel,
+  onSave,
+}: InkCanvasEditorProps) {
   const parsed = useMemo(() => parseInk(initialInk), [initialInk])
   const [ink, setInk] = useState(parsed.ink)
   const [activePoints, setActivePoints] = useState<InkPoint[]>([])
   const activePointsRef = useRef<InkPoint[] | null>(null)
   const [error, setError] = useState(parsed.error)
   const [saving, setSaving] = useState(false)
+  const mountedRef = useRef(true)
+  const disabledRef = useRef(disabled)
+  const sessionActiveRef = useRef(isSessionActive)
+  const pendingChangeRef = useRef(onPendingChange)
+  useLayoutEffect(() => {
+    disabledRef.current = disabled
+    sessionActiveRef.current = isSessionActive
+    pendingChangeRef.current = onPendingChange
+  }, [disabled, isSessionActive, onPendingChange])
+
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      pendingChangeRef.current?.(false)
+    }
+  }, [])
+
+  function sessionIsActive() {
+    return mountedRef.current && !disabledRef.current && sessionActiveRef.current()
+  }
+
+  function canEdit() {
+    return sessionIsActive() && !saving && !parsed.error
+  }
 
   function pointerPoint(event: ReactPointerEvent<SVGSVGElement>): InkPoint {
     const bounds = event.currentTarget.getBoundingClientRect()
@@ -55,17 +92,18 @@ export function InkCanvasEditor({ initialInk, onCancel, onSave }: InkCanvasEdito
   }
 
   function beginStroke(event: ReactPointerEvent<SVGSVGElement>) {
-    if (saving || parsed.error || !event.isPrimary) return
+    if (!canEdit() || !event.isPrimary) return
     event.preventDefault()
     event.currentTarget.setPointerCapture?.(event.pointerId)
     const points = [pointerPoint(event)]
     activePointsRef.current = points
     setActivePoints(points)
+    onPendingChange?.(true)
   }
 
   function continueStroke(event: ReactPointerEvent<SVGSVGElement>) {
     const points = activePointsRef.current
-    if (!points || saving) return
+    if (!points || !canEdit()) return
     event.preventDefault()
     const next = [...points, pointerPoint(event)]
     activePointsRef.current = next
@@ -77,45 +115,51 @@ export function InkCanvasEditor({ initialInk, onCancel, onSave }: InkCanvasEdito
     if (!points) return
     activePointsRef.current = null
     setActivePoints([])
-    if (!points.length) return
-    setInk((current) => ({
-      ...current,
-      strokes: [...current.strokes, { points, width: 2.5 }],
-    }))
+    onPendingChange?.(false)
+    if (!points.length || !sessionIsActive()) return
+    setInk((current) => ({ ...current, strokes: [...current.strokes, { points, width: 2.5 }] }))
+    onDirty?.()
   }
 
   function cancelStroke() {
     activePointsRef.current = null
     setActivePoints([])
+    onPendingChange?.(false)
   }
 
   async function save() {
-    if (saving || parsed.error) return
+    if (!canEdit() || activePointsRef.current !== null) return
     setSaving(true)
     setError('')
     try {
       const validated = validateInk(ink)
       const preview = await renderInkPreview(validated)
+      if (!sessionIsActive()) return
       onSave(validated, preview)
     } catch (failure) {
-      setError(failure instanceof Error ? failure.message : '手写预览生成失败')
+      if (sessionIsActive()) setError(failure instanceof Error ? failure.message : '手写预览生成失败')
     } finally {
-      setSaving(false)
+      if (mountedRef.current) setSaving(false)
     }
   }
 
   const lastStroke = ink.strokes.at(-1)
-  return <Card className="space-y-3 border-primary/30 p-4" data-testid="ink-canvas-editor">
+  const activeSession = !disabled && isSessionActive()
+  return <Card className="space-y-3 border-primary/30 p-4" data-testid="ink-canvas-editor" aria-disabled={disabled}>
     <div className="flex flex-wrap items-center gap-2">
       <div className="mr-auto">
         <h3 className="text-sm font-semibold text-text-1">手写卡片</h3>
         <p className="text-xs text-text-3">笔迹按 Android schema-v1 保存坐标、压力和画布尺寸。</p>
       </div>
-      <Button size="sm" variant="ghost" disabled={!lastStroke || saving} onClick={() => {
+      <Button size="sm" variant="ghost" disabled={!lastStroke || !activeSession || saving || activePoints.length > 0} onClick={() => {
+        if (!canEdit() || !ink.strokes.length) return
         setInk((current) => ({ ...current, strokes: current.strokes.slice(0, -1) }))
+        onDirty?.()
       }} aria-label="撤销最近一笔"><Undo2 className="size-4" aria-hidden />撤销</Button>
-      <Button size="sm" variant="ghost" disabled={!ink.strokes.length || saving} onClick={() => {
+      <Button size="sm" variant="ghost" disabled={!ink.strokes.length || !activeSession || saving || activePoints.length > 0} onClick={() => {
+        if (!canEdit() || !ink.strokes.length) return
         setInk((current) => ({ ...current, strokes: [] }))
+        onDirty?.()
       }} aria-label="清空手写卡片"><Eraser className="size-4" aria-hidden />清空</Button>
     </div>
 
@@ -124,7 +168,9 @@ export function InkCanvasEditor({ initialInk, onCancel, onSave }: InkCanvasEdito
       data-testid="ink-canvas"
       role="img"
       aria-label="手写画布"
+      aria-disabled={disabled}
       viewBox={`0 0 ${ink.width} ${ink.height}`}
+      style={{ pointerEvents: disabled ? 'none' : undefined }}
       onPointerDown={beginStroke}
       onPointerMove={continueStroke}
       onPointerUp={finishStroke}
@@ -139,8 +185,10 @@ export function InkCanvasEditor({ initialInk, onCancel, onSave }: InkCanvasEdito
     {parsed.error && <InlineAlert tone="crit" title="手写数据无法安全编辑">{parsed.error}</InlineAlert>}
     {error && !parsed.error && <InlineAlert tone="crit" title="未保存">{error}</InlineAlert>}
     <div className="flex flex-wrap justify-end gap-2">
-      <Button size="sm" variant="ghost" disabled={saving} onClick={onCancel}><X className="size-4" aria-hidden />取消</Button>
-      <Button size="sm" variant="primary" loading={saving} disabled={Boolean(parsed.error)} onClick={() => void save()}>
+      <Button size="sm" variant="ghost" disabled={!activeSession} onClick={() => {
+        if (sessionIsActive()) onCancel()
+      }}><X className="size-4" aria-hidden />取消</Button>
+      <Button size="sm" variant="primary" loading={saving} disabled={Boolean(parsed.error) || !activeSession || activePoints.length > 0} onClick={() => void save()}>
         <Check className="size-4" aria-hidden />保存手写
       </Button>
     </div>
