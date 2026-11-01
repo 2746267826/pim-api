@@ -1,5 +1,7 @@
 # ASR 双通道增量方案（#516 排期）
 
+状态（v0.47 当前覆盖）：API/Web `api-v26.11.1047`、Windows `windows-v26.11.1111`、Android `android-v26.11.1147` 的产品 CI/Release 均已核；API/Web 产品发布源/implementation merge 是 `84ef802e7c85a1b6c3017c0c274a108fea57f9d2`，不是对后续 docs-only master HEAD 的声明。真实模型/provider质量、region/audio Batch、硬件、OEM/device UX 与完整 AC 仍 `NOT-VERIFIED`。文档跟踪：[pim-api#550](https://github.com/2746267826/pim-api/pull/550)。下方 v0.46 及更早状态为历史快照。
+
 状态（v0.46 当前覆盖）：截至 2026-11-01，API/Web `1047` 与 Windows `1111` 已实际发布；Android 本地 source/test 已完成于 clean commit `277236a8b8539684bdc0c56b88438bd2c30b216c`，App `2068` PASS、Core `72` XML UP-TO-DATE，但正常 HTTPS/OpenSSL/HTTP1.1/Schannel push TLS 握手失败、SSH known-host 缺失拒认证，因此未 push、无 PR/CI/merge/Release；外部模型/provider/device/hardware/OEM 与 production 仍 NOT-VERIFIED，#516 未完成。下方 v0.45 状态行及更早正文为历史快照。
 
 状态（v0.45 当前覆盖）：截至 2026-11-01，集成验证树已在实际 Kestrel、隔离 PostgreSQL、默认 `EnableRetryOnFailure(3)` 与 Windows typed transport 下完成 route config → register/claim → binary content → ACK → ASR `Succeeded` → 显式 Derived job → 两个 artifact 的受控闭环；实际 Swagger 与 v4 契约逐字一致。该证据不替代 API 最终 master、Hangfire、真实模型/硬件、OEM/device、AC1–19 或 production。下方 v0.44 状态行及更早正文为历史快照。
@@ -9,6 +11,71 @@
 状态（v0.43 当前覆盖）：#516 是逐 Phase 混合状态，不再用单一整体状态概括；#539 API 202 协议与 Android consumer 已交付到 exact CI，但设备/真实 E2E 与 production 仍 NOT-VERIFIED；#533 代码已集成但 issue 保持 OPEN。下方 v0.42 状态行及更早正文为历史快照。更新日期：2026-10-31。
 
 状态：**WEB/ANDROID/API GITHUB RELEASE VERIFIED / NOT PRODUCTION-VERIFIED；#516 PLANNED / NOT IMPLEMENTED；两项产品决策 CONFIRMED；MiMo Batch 仅需求/排期追加，NOT IMPLEMENTED / NOT-VERIFIED**。更新日期：2026-10-31。本文把 #516 的已提出需求整理为依赖明确、顺序合理的增量计划，不是工期承诺或功能完成报告；v0.42 MiMo Batch 增量与 v0.41 已确认决策覆盖见下方最新说明。
+
+<a id="v047-latest-status"></a>
+
+## v0.47 最新状态覆盖：三平台产品 Release 已核，外部验收仍未完成（2026-11-01）
+
+本节只追加当前产品交付与验收边界；v0.46 当时的 Android 网络阻塞记录及更早正文、history 字节均保持原样。保留 45 个稳定 ID（32 capabilities + 13 MIG）、32 行差距、AC1–19 与五阶段编号，不新增稳定编号。文档 PR：[pim-api#550](https://github.com/2746267826/pim-api/pull/550)。
+
+### 产品 CI 与 Release 事实
+
+- **API/Web**：[PR #549](https://github.com/2746267826/pim-api/pull/549) 普通合并后的产品发布源/implementation merge 为 [`84ef802e7c85a1b6c3017c0c274a108fea57f9d2`](https://github.com/2746267826/pim-api/commit/84ef802e7c85a1b6c3017c0c274a108fea57f9d2)，CI [41272531071](https://github.com/2746267826/pim-api/actions/runs/41272531071) 成功，Release [`api-v26.11.1047`](https://github.com/2746267826/pim-api/releases/tag/api-v26.11.1047) 已发布。该 SHA 标识产品 Release 的源/implementation merge，不表示后续 docs-only 更新后的 master HEAD；PR #550 不重建产品或改变 Release/tag。
+- **Windows**：PR [#40](https://github.com/2746267826/pim-windows/pull/40) head `5a28b84403494ce02bf06ab0850072bfe906787f` 普通 merge 为 [`1270bf6a093b1777646b2710d01a4432795adc32`](https://github.com/2746267826/pim-windows/commit/1270bf6a093b1777646b2710d01a4432795adc32)；master CI [41276828062](https://github.com/2746267826/pim-windows/actions/runs/41276828062) 15 jobs/Gate SUCCESS；Release [`windows-v26.11.1111`](https://github.com/2746267826/pim-windows/releases/tag/windows-v26.11.1111) 已发布，immutable tag 指向 merge。Raw counts：Core `294/0/1/295`、App `93/0/0/93`（passed/failed/skipped/total）；Core 的 Windows-only DPAPI skip 保留，不能写成 295 passed。
+- **Android**：PR [#58](https://github.com/2746267826/pim-android/pull/58) exact head `277236a8b8539684bdc0c56b88438bd2c30b216c` 的 CI [41282476600](https://github.com/2746267826/pim-android/actions/runs/41282476600) 与 Gate SUCCESS；普通 matched-head merge 为 [`4ddbbf43a9b80049734a0dbb9f730812ad1906ec`](https://github.com/2746267826/pim-android/commit/4ddbbf43a9b80049734a0dbb9f730812ad1906ec) @ `2026-11-01T07:04:47Z`。master CI [41283326434](https://github.com/2746267826/pim-android/actions/runs/41283326434) 七个 jobs 全 SUCCESS，含 Gate/release。Release [`android-v26.11.1147`](https://github.com/2746267826/pim-android/releases/tag/android-v26.11.1147) 于 `2026-11-01T07:14:23Z` 发布，非 draft/prerelease；tag 解析到上述 merge（Release `target_commitish` 字面值 `master`）。版本 `26.11.1147` / code `101147`。
+- Android master run 执行 `app:testDebugUnitTest` 且 `BUILD SUCCESS`，但日志没有输出数值测试计数；master Core 数值计数也未输出。因此此处不把历史本地 App `2068` / Core XML `72 UP-TO-DATE` 当作 master counts。
+
+Android Release asset readback：
+
+| Asset | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `pim-android-v26.11.1147.apk` | 14,515,136 | `1a66c730c28e88bcc5c657d460837e874410072d169d6cf7bbe3fca72bb5f265` |
+| `pim-shell-android-v26.11.1147.apk` | 2,550,426 | `16e257ae8472a411d08146eaece9779ead813276c2a57c29559ace713c9078ce` |
+| `version.json` | 480 | `fca1f167c2b700cd904cace61202455a8d1def5d1618bc0dbf53bbf241b09a75` |
+
+表中 name/size/SHA-256 为 GitHub Release asset metadata 核对结果；本地 `version.json` 与 shell APK 的完整文件 hash 匹配。主 APK 本地下载为 partial（`9,720,482 / 14,515,136` bytes），不声明本地完整文件 hash 已匹配。CI/Release/tag/assets 证明仓库发布事实，不证明线上部署、真实模型效果或真实设备验收。
+
+The Android master run reports `app:testDebugUnitTest` as `BUILD SUCCESS` but
+does not emit a numeric test count; it also does not report a Core count. The
+v0.46 local App/Core figures are historical and are not represented as master
+counts. GitHub Release asset name/size/digest metadata was checked; complete
+local hashes match for `version.json` and the shell APK. The local main-APK
+download is partial (`9,720,482 / 14,515,136` bytes), so no full local hash is
+claimed for that APK.
+
+### 五阶段当前交付与外部验收
+
+| 原始阶段 | 当前工程/交付事实 | 外部验收边界 |
+| --- | --- | --- |
+| 1 路由/节点/claim/lease | 路由与 claim 契约及受控 HTTP/PG 闭环已交付 | 真实部署节点、完整生产负向矩阵、独立端到端 `NOT-VERIFIED` |
+| 2 云端多模态/Batch | MiMo 多模态、Batch、URL 输入的代码/contract/UI 已交付 | 真实付费质量、region、audio Batch、TTL、provider 结果 `NOT-VERIFIED` |
+| 3 Windows 模型/runtime 管理 | Windows 模型与 runtime 管理界面已交付 | 首发 model/revision、真实安装生命周期、目标硬件 `NOT-VERIFIED` |
+| 4 拉取/资源门/执行与清退 | pull worker、资源门、控制路径与合成受控链已交付 | GPU 清退、崩溃恢复、真实硬件资源回落 `NOT-VERIFIED` |
+| 5 重跑/UI/全链消费 | Web/Android 任务消费控制已交付 | 端到端 UX、OEM/device、全矩阵验收 `NOT-VERIFIED` |
+
+这些阶段交付不把 AC1–19 整体改记为 PASS。
+
+### Web 管理员 ASR 配置与 MiMo Batch
+
+- 管理员入口：`设置 → AI 与 ASR → ASR 配置`，`/settings/ai?tab=asr`；普通账号无管理员配置入口。
+- 配置：`添加ASR配置` → ASR 接入预设 `MiMo 多模态 · v1` → API 根地址、模型标识、APIKey、可选 MiMo Batch API 根地址。
+- 笔记材料任务执行方式在支持时选择 `Batch`。
+- 提交前独立确认整批范围、现金计费及 `completion_window=24h`。
+- GitHub Release 不等于线上部署；真实付费质量、region 与音频 Batch 结果仍须单独核验。
+
+### 后续验收顺序
+
+1. 核对部署版本/Revision 与实际 Release artifact。
+2. 在既有授权与计费边界内进行真实 model/provider 验收；无授权不发送付费请求。
+3. 继续 `#533` 真实 OPPO 复现与 `#539` 长处理 profiling；两项 issue 保持 OPEN，未获各自真实证据不关闭。
+
+真实模型/provider质量、production、GPU/硬件清退、OEM/device UX 与完整 AC 仍 `NOT-VERIFIED`。
+
+### History
+
+| Date | Record | State |
+| --- | --- | --- |
+| 2026-11-01 | v0.47 records verified API/Web, Windows, and Android product CI/Release facts; the former Android transport blocker is historical, while external model/device acceptance remains open. | Product Releases verified; deployment and external acceptance `NOT-VERIFIED`. |
 
 <a id="v046-latest-status"></a>
 
