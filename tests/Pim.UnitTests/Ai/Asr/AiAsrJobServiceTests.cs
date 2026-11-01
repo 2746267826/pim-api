@@ -1,6 +1,7 @@
 using System.Text;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.DependencyInjection;
@@ -201,6 +202,122 @@ public sealed class AiAsrJobServiceTests
         Assert.Equal(accepted.LogId, replay.LogId);
         Assert.Equal(AiAsrJobStatus.Queued, replay.Status);
         Assert.Single(fixture.Dispatcher.Enqueued);
+    }
+
+    [Fact]
+    public async Task Dispatcher_outage_allows_existing_replay_but_rejects_new_job()
+    {
+        await using var fixture = await InMemoryFixture.CreateAsync();
+        var service = fixture.Service(fixture.Owner);
+        var request = fixture.Request();
+        var accepted = await service.SubmitAsync(request, CancellationToken.None);
+
+        fixture.Dispatcher.IsAvailable = false;
+
+        var replay = await service.SubmitAsync(request, CancellationToken.None);
+        Assert.True(replay.Replayed);
+        Assert.Equal(accepted.ClientRequestId, replay.ClientRequestId);
+        Assert.Equal(accepted.LogId, replay.LogId);
+        Assert.Single(fixture.Db.AiAsrJobs);
+
+        var rejected = await Assert.ThrowsAsync<DomainException>(() =>
+            service.SubmitAsync(fixture.Request(), CancellationToken.None));
+        Assert.Equal(50302, rejected.ErrorCode);
+        Assert.Single(fixture.Db.AiAsrJobs);
+    }
+
+    [Fact]
+    public async Task Late_cancel_after_provider_success_preserves_result_with_explicit_evidence()
+    {
+        await using var fixture = await InMemoryFixture.CreateAsync();
+        var preset = new ScriptedPreset
+        {
+            Entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously),
+            Release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously),
+            IgnoreCancellation = true
+        };
+        var service = fixture.Service(fixture.Owner, preset);
+        var accepted = await service.SubmitAsync(fixture.Request(), CancellationToken.None);
+        var running = service.ProcessAsync(fixture.Owner.UserId!.Value, accepted.ClientRequestId,
+            CancellationToken.None);
+        await preset.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        var cancelling = await fixture.Service(fixture.Owner, preset)
+            .CancelAsync(accepted.ClientRequestId, CancellationToken.None);
+        Assert.Equal(AiAsrJobStatus.Cancelling, cancelling.Status);
+
+        preset.Release.SetResult();
+        await running.WaitAsync(TimeSpan.FromSeconds(10));
+
+        var result = await service.GetAsync(accepted.ClientRequestId, CancellationToken.None);
+        Assert.Equal(AiAsrJobStatus.Succeeded, result.Status);
+        Assert.Equal("完整后台转写", result.ResponseText);
+        Assert.Equal("user_cancel_late", result.Diagnostics.AbortSource);
+        Assert.True(result.Diagnostics.OutcomeKnown);
+        var log = await fixture.Db.AiRequestLogs.AsNoTracking().SingleAsync();
+        Assert.Equal("succeeded", log.Status);
+        Assert.Equal("完整后台转写", log.ResponseText);
+    }
+
+    [SkippableFact]
+    [Trait("DataSource", "RealDb")]
+    public async Task Postgres_late_provider_success_after_cancel_keeps_job_and_log_consistent()
+    {
+        await using var database = await TempMigrationDatabase.CreateAsync(
+            "test_ai_asr_job_cancel_complete");
+        await database.MigrateAsync();
+        var owner = new Owner();
+        ISecretProtector secrets =
+            new DataProtectionSecretProtector(new EphemeralDataProtectionProvider());
+        var profile = await SeedPostgresAsync(database.Db, owner, secrets);
+        var preset = new ScriptedPreset
+        {
+            Entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously),
+            Release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously),
+            IgnoreCancellation = true
+        };
+        var dispatcher = new RecordingDispatcher();
+        var files = new MemoryFiles();
+        var registry = new AiAsrPresetRegistry([preset]);
+        using var scopes = BuildPostgresScopes(database.ConnectionString);
+
+        AiAsrJobResultDto accepted;
+        await using (var submitScope = scopes.CreateAsyncScope())
+        {
+            accepted = await Service(submitScope.ServiceProvider.GetRequiredService<PimDbContext>(),
+                    owner, files, secrets, registry, dispatcher,
+                    scopes.GetRequiredService<IServiceScopeFactory>())
+                .SubmitAsync(Request(owner, profile), CancellationToken.None);
+        }
+
+        await using var workerScope = scopes.CreateAsyncScope();
+        var worker = Service(workerScope.ServiceProvider.GetRequiredService<PimDbContext>(), owner,
+            files, secrets, registry, dispatcher,
+            scopes.GetRequiredService<IServiceScopeFactory>());
+        var running = worker.ProcessAsync(owner.UserId!.Value, accepted.ClientRequestId,
+            CancellationToken.None);
+        await preset.Entered!.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        await using (var cancelScope = scopes.CreateAsyncScope())
+        {
+            var cancelling = await Service(
+                    cancelScope.ServiceProvider.GetRequiredService<PimDbContext>(), owner,
+                    files, secrets, registry, dispatcher,
+                    scopes.GetRequiredService<IServiceScopeFactory>())
+                .CancelAsync(accepted.ClientRequestId, CancellationToken.None);
+            Assert.Equal(AiAsrJobStatus.Cancelling, cancelling.Status);
+        }
+
+        preset.Release.SetResult();
+        await running.WaitAsync(TimeSpan.FromSeconds(20));
+
+        await using var check = new PimDbContext(PostgresOptions(database.ConnectionString));
+        var job = await check.AiAsrJobs.AsNoTracking().SingleAsync();
+        var log = await check.AiRequestLogs.AsNoTracking().SingleAsync();
+        Assert.Equal("succeeded", job.Status);
+        Assert.Equal("user_cancel_late", job.AbortSource);
+        Assert.Equal("完整后台转写", log.ResponseText);
+        Assert.Equal(job.Status, log.Status);
     }
 
     [SkippableFact]
@@ -662,7 +779,10 @@ public sealed class AiAsrJobServiceTests
             var name = "asr-job-" + Guid.NewGuid().ToString("N");
             var root = new InMemoryDatabaseRoot();
             var options = new DbContextOptionsBuilder<PimDbContext>()
-                .UseInMemoryDatabase(name, root).Options;
+                .UseInMemoryDatabase(name, root)
+                .ConfigureWarnings(warnings => warnings.Ignore(
+                    CoreEventId.ManyServiceProvidersCreatedWarning))
+                .Options;
             var db = new PimDbContext(options);
             var owner = new Owner();
             var files = new MemoryFiles();
@@ -682,7 +802,9 @@ public sealed class AiAsrJobServiceTests
 
             var services = new ServiceCollection();
             services.AddDbContext<PimDbContext>(builder =>
-                builder.UseInMemoryDatabase(name, root));
+                builder.UseInMemoryDatabase(name, root)
+                    .ConfigureWarnings(warnings => warnings.Ignore(
+                        CoreEventId.ManyServiceProvidersCreatedWarning)));
             return new InMemoryFixture(db, services.BuildServiceProvider(), owner, files, secrets,
                 profile, new RecordingDispatcher(), options);
         }
@@ -739,6 +861,7 @@ public sealed class AiAsrJobServiceTests
         public Exception? Failure { get; init; }
         public TaskCompletionSource? Entered { get; init; }
         public TaskCompletionSource? Release { get; init; }
+        public bool IgnoreCancellation { get; init; }
         public bool BlockUntilCancelled { get; init; }
 
         public string NormalizeEndpoint(string value) =>
@@ -760,7 +883,11 @@ public sealed class AiAsrJobServiceTests
             LastConnection = connection;
             AiTextWireCapture.Current?.Attempt();
             Entered?.TrySetResult();
-            if (Release is not null) await Release.Task.WaitAsync(ct);
+            if (Release is not null)
+            {
+                if (IgnoreCancellation) await Release.Task;
+                else await Release.Task.WaitAsync(ct);
+            }
             if (BlockUntilCancelled) await Task.Delay(Timeout.InfiniteTimeSpan, ct);
             if (Failure is not null) throw Failure;
             const string raw = """
@@ -773,7 +900,7 @@ public sealed class AiAsrJobServiceTests
 
     private sealed class RecordingDispatcher : IAsrJobDispatcher
     {
-        public bool IsAvailable => true;
+        public bool IsAvailable { get; set; } = true;
         public List<(Guid Owner, Guid ClientRequestId)> Enqueued { get; } = [];
 
         public string Enqueue(Guid owner, Guid clientRequestId)

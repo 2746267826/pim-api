@@ -144,8 +144,25 @@ export function AsrCall({ userId, models, settings, changed, showDetail, renderS
   const abort = useRef<AbortController | null>(null); const pollAbort = useRef<AbortController | null>(null)
   const inFlight = useRef(false); const input = useRef<HTMLInputElement | null>(null)
   const pollFailures = useRef(0)
+  const activeOwner = useRef(userId); const ownerEpoch = useRef(0)
   const resumeId = resumeReceipt?.owner === userId ? resumeReceipt.clientRequestId : null
   useEffect(() => () => { abort.current?.abort(); pollAbort.current?.abort() }, [])
+  useEffect(() => {
+    if (activeOwner.current === userId) return
+    activeOwner.current = userId
+    ownerEpoch.current += 1
+    abort.current?.abort(); pollAbort.current?.abort()
+    inFlight.current = false; pollFailures.current = 0
+    const receipt = getJSON<{ owner?: string; clientRequestId?: string } | null>(
+      STORAGE_KEYS.asrJobReceipt, null)
+    setResumeReceipt(receipt?.owner === userId && receipt.clientRequestId
+      ? { owner: receipt.owner, clientRequestId: receipt.clientRequestId } : null)
+    setSelected(''); setSourceKind('file'); setFile(null); setSelection(''); setConsentedTo('')
+    setAudioUrl(''); setUrlName(''); setUrlFormat('')
+    setUrlSourceConfirmed(false); setUrlProviderFetchConfirmed(false)
+    setSubmitted(null); setUrlSubmitted(null); setUrlLookupMissing(false)
+    setPending(false); setResult(null); setUrlResult(null); setMessage(null)
+  }, [userId])
   const current = models.find((m) => m.id === (selected || settings.transcriptionModelId))
   const currentPreset = presets.data?.find((p) => p.id === current?.asrPresetId)
   const target = submitted?.model ?? urlSubmitted?.model ?? current
@@ -257,6 +274,8 @@ export function AsrCall({ userId, models, settings, changed, showDetail, renderS
 
   async function send() {
     if (inFlight.current || !file || !target || !preset || !ready || submitted || urlSubmitted || !fileConsent || sourceKind !== 'file') return
+    const epoch = ownerEpoch.current
+    const stillCurrent = () => ownerEpoch.current === epoch && activeOwner.current === userId
     inFlight.current = true; const controller = new AbortController(); abort.current = controller
     const id = createAiRequestId(); setSubmitted({ id, model: target, preset })
     setResumeReceipt({ owner: userId, clientRequestId: id })
@@ -266,17 +285,23 @@ export function AsrCall({ userId, models, settings, changed, showDetail, renderS
       const body: AsrRequest = { clientRequestId: id, expectedUserId: userId, modelId: selected || null, language,
         audio: { name: file.name, format, base64: await readMediaFile(file, controller.signal) },
         consent: { modelId: target.id, modelRevision: target.revision, endpoint, presetId: preset.id, presetVersion: preset.version, confirmed: true } }
-      setResult(await aiApi.asrJobSubmit(body, controller.signal))
+      const next = await aiApi.asrJobSubmit(body, controller.signal)
+      if (stillCurrent()) setResult(next)
     } catch (error) {
+      if (!stillCurrent()) return
       const evidence = await reportTransport(id, 'AsyncSubmit', error)
-      setMessage(controller.signal.aborted
+      if (stillCurrent()) setMessage(controller.signal.aborted
         ? '浏览器提交连接已停止；这不等于用户取消服务端任务。请按原标识查询，不要重新提交。'
         : evidence ?? errorText(error) + '；已保留原标识，页面不会自动重发。')
-    } finally { inFlight.current = false; setPending(false) }
+    } finally {
+      if (stillCurrent()) { inFlight.current = false; setPending(false) }
+    }
   }
 
   async function sendUrl() {
     if (inFlight.current || !urlReady || !urlValid || !target || !preset || !ready || urlSubmitted || submitted || !urlConsent) return
+    const epoch = ownerEpoch.current
+    const stillCurrent = () => ownerEpoch.current === epoch && activeOwner.current === userId
     const sourceUrl = audioUrl.trim()
     inFlight.current = true; const controller = new AbortController(); abort.current = controller
     const id = createAiRequestId()
@@ -296,41 +321,56 @@ export function AsrCall({ userId, models, settings, changed, showDetail, renderS
     }
     setUrlSubmitted({ id, body, model: target, preset }); setPending(true); setUrlResult(null); setUrlLookupMissing(false); setMessage(null)
     try {
-      setUrlResult(await aiApi.asrUrlCall(body, controller.signal))
+      const next = await aiApi.asrUrlCall(body, controller.signal)
+      if (stillCurrent()) setUrlResult(next)
     } catch (error) {
+      if (!stillCurrent()) return
       const evidence = await reportTransport(id, 'SyncUrlCall', error)
-      setMessage(controller.signal.aborted
+      if (stillCurrent()) setMessage(controller.signal.aborted
         ? '已请求取消，请核对URL ASR记录，上游结果以实际记录为准。'
         : evidence ?? redactSourceUrl(errorText(error), sourceUrl) + '；请先核对记录，页面不会自动重发。')
-    } finally { inFlight.current = false; setPending(false); changed() }
+    } finally {
+      if (stillCurrent()) { inFlight.current = false; setPending(false); changed() }
+    }
   }
 
   async function lookupUrl() {
     if (!urlSubmitted || pending) return
+    const epoch = ownerEpoch.current
     setPending(true); setMessage(null)
     try {
-      setUrlResult(await aiApi.asrUrlLookup(urlSubmitted.id)); setUrlLookupMissing(false)
+      const next = await aiApi.asrUrlLookup(urlSubmitted.id)
+      if (ownerEpoch.current === epoch) {
+        setUrlResult(next); setUrlLookupMissing(false)
+      }
     } catch (error) {
+      if (ownerEpoch.current !== epoch) return
       if (error instanceof ApiError && error.status === 404) {
         setUrlLookupMissing(true)
         setMessage('服务端尚未找到该URL请求标识；保留原ID，未自动重发。如确认重试，请使用“按原标识重发URL”。')
       } else {
         setMessage(redactSourceUrl(errorText(error), urlSubmitted.body.audio.url) + '；请保留原标识并核对记录。')
       }
-    } finally { setPending(false) }
+    } finally { if (ownerEpoch.current === epoch) setPending(false) }
   }
 
   async function resendUrl() {
     if (!urlSubmitted || !urlLookupMissing || pending) return
+    const epoch = ownerEpoch.current
+    const stillCurrent = () => ownerEpoch.current === epoch && activeOwner.current === userId
     inFlight.current = true; const controller = new AbortController(); abort.current = controller
     setPending(true); setMessage(null); setUrlLookupMissing(false)
     try {
-      setUrlResult(await aiApi.asrUrlCall(urlSubmitted.body, controller.signal))
+      const next = await aiApi.asrUrlCall(urlSubmitted.body, controller.signal)
+      if (stillCurrent()) setUrlResult(next)
     } catch (error) {
+      if (!stillCurrent()) return
       setMessage(controller.signal.aborted
         ? '已请求取消，请核对URL ASR记录，上游结果以实际记录为准。'
         : redactSourceUrl(errorText(error), urlSubmitted.body.audio.url) + '；保留原标识，页面不会自动重发。')
-    } finally { inFlight.current = false; setPending(false); changed() }
+    } finally {
+      if (stillCurrent()) { inFlight.current = false; setPending(false); changed() }
+    }
   }
 
   function newCall() {
@@ -343,24 +383,46 @@ export function AsrCall({ userId, models, settings, changed, showDetail, renderS
 
   async function cancelJob() {
     if (!submitted || !result || isJobTerminal(result.status) || pending) return
+    const epoch = ownerEpoch.current
     setPending(true)
-    try { setResult(await aiApi.asrJobCancel(submitted.id)); setMessage(null) }
-    catch (error) { setMessage(errorText(error) + '；后台任务可能仍在运行，请查询原标识。') }
-    finally { setPending(false) }
+    try {
+      const next = await aiApi.asrJobCancel(submitted.id)
+      if (ownerEpoch.current === epoch) { setResult(next); setMessage(null) }
+    } catch (error) {
+      if (ownerEpoch.current === epoch)
+        setMessage(errorText(error) + '；后台任务可能仍在运行，请查询原标识。')
+    } finally { if (ownerEpoch.current === epoch) setPending(false) }
+  }
+
+  async function lookupJob() {
+    if (!submitted) return
+    const epoch = ownerEpoch.current
+    try {
+      const value = await aiApi.asrJobLookup(submitted.id)
+      if (ownerEpoch.current === epoch) { setResult(value); setMessage(null); changed() }
+    } catch (error) {
+      if (ownerEpoch.current !== epoch) return
+      setMessage(errorText(error))
+      const evidence = await reportTransport(submitted.id, 'AsyncPoll', error)
+      if (evidence && ownerEpoch.current === epoch) setMessage(evidence)
+    }
   }
 
   async function resumeJob() {
     if (!resumeId || pending) return
+    const epoch = ownerEpoch.current
     setPending(true); setMessage(null)
     try {
       const value = await aiApi.asrJobLookup(resumeId)
+      if (ownerEpoch.current !== epoch) return
       if (target && preset) setSubmitted({ id: resumeId, model: target, preset })
       setResult(value); setResumeReceipt(null); pollFailures.current = 0; changed()
     } catch (error) {
+      if (ownerEpoch.current !== epoch) return
       setMessage(error instanceof ApiError && error.status === 404
         ? '原标识尚无已接受任务；为防止重复扣费未自动重发。'
         : '恢复查询暂不可用；原标识仍保留，可稍后再次恢复。')
-    } finally { setPending(false) }
+    } finally { if (ownerEpoch.current === epoch) setPending(false) }
   }
 
   return <Card className="min-w-0 space-y-4 p-4 sm:p-5"><div><h2 className="text-sm font-semibold text-text-1">ASR音频转写</h2><p className="mt-1 text-xs text-text-3">通过所选预设发送单条音频，保存实际请求与转写。本入口用于单片调用；课堂长音频仍走分段任务。公开URL模式不会把完整地址写入本地存储或日志。</p></div>
@@ -422,7 +484,7 @@ export function AsrCall({ userId, models, settings, changed, showDetail, renderS
     <div className="flex flex-wrap gap-2"><Button variant="primary" loading={pending && result === null} disabled={locked || !ready || !canSend} onClick={() => void (sourceKind === 'file' ? send() : sendUrl())}>{sourceKind === 'file' ? '提交后台转写' : '确认发送URL并转写'}</Button>
       {pending && submitted && result === null && <Button variant="secondary" onClick={() => abort.current?.abort()}>停止等待提交</Button>}
       {submitted && result && !isJobTerminal(result.status) && <Button variant="secondary" loading={pending} disabled={pending} onClick={() => void cancelJob()}>取消任务</Button>}
-      {submitted && !pending && <><Button variant="secondary" onClick={() => { void aiApi.asrJobLookup(submitted.id).then((value) => { setResult(value); setMessage(null); changed() }).catch((error: unknown) => { setMessage(errorText(error)); void reportTransport(submitted.id, 'AsyncPoll', error).then((evidence) => { if (evidence) setMessage(evidence) }) }) }}>核对ASR任务</Button>
+      {submitted && !pending && <><Button variant="secondary" onClick={() => void lookupJob()}>核对ASR任务</Button>
         <Button variant="ghost" onClick={newCall}>新建一次ASR调用</Button></>}
       {resumeId && !submitted && <Button variant="secondary" loading={pending} disabled={pending} onClick={() => void resumeJob()}>恢复原ASR任务</Button>}
       {urlSubmitted && !pending && <><Button variant="secondary" onClick={() => void lookupUrl()}>核对URL ASR状态</Button>

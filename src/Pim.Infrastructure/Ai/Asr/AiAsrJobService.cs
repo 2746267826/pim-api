@@ -40,9 +40,6 @@ public sealed class AiAsrJobService(
     public async Task<AiAsrJobResultDto> SubmitAsync(AiAsrCallRequest request, CancellationToken ct)
     {
         var owner = currentUser.UserId ?? throw new DomainException(1002, "请先登录");
-        if (!dispatcher.IsAvailable)
-            throw new DomainException(50302, "异步ASR后台任务未配置，未保存本次请求");
-
         var descriptor = ResolveRequestDescriptor(request);
         var requestFingerprint = RequestFingerprint(request, descriptor);
         var old = await FindAsync(owner, request.ClientRequestId, ct);
@@ -52,6 +49,11 @@ public sealed class AiAsrJobService(
                 throw new DomainException(40901, "clientRequestId 已用于不同的 ASR 请求");
             return await DescribeAsync(old, true, ct);
         }
+
+        // Replays remain readable while background dispatch is unavailable. Only a new durable
+        // intent requires a worker and may be rejected with a retryable 503.
+        if (!dispatcher.IsAvailable)
+            throw new DomainException(50302, "异步ASR后台任务未配置，未保存本次请求");
 
         var prepared = await PrepareAsync(owner, request, descriptor, requestFingerprint, ct);
         await AiAsrJobRecovery.RecoverExpiredAsync(db, ct);
@@ -847,48 +849,62 @@ public sealed class AiAsrJobService(
         CancellationToken ct, int? upstreamStatus = null)
     {
         var now = DateTimeOffset.UtcNow;
-        var currentJob = await db.AiAsrJobs.AsNoTracking().SingleOrDefaultAsync(x => x.Id == job.Id, ct);
-        if (currentJob is null || Terminal(currentJob.Status)) return;
-        job.GatewayStatus = currentJob.GatewayStatus ?? job.GatewayStatus;
-        job.GatewayName = currentJob.GatewayName ?? job.GatewayName;
-        job.GatewayEvidenceSource = currentJob.GatewayEvidenceSource ?? job.GatewayEvidenceSource;
-        job.GatewayObservedAt = currentJob.GatewayObservedAt ?? job.GatewayObservedAt;
-        var cancelArrivedLate = currentJob.Status == "cancelling" && status == "succeeded";
-        job.Status = status;
-        job.AbortSource = cancelArrivedLate ? "user_cancel_late" : abortSource;
-        job.OutcomeKnown = outcomeKnown;
-        job.ProviderAttempted = providerAttempted;
-        job.ResponseBodyComplete = responseBodyComplete && !responseTooLarge;
-        job.UpstreamStatus = upstreamStatus;
-        job.ErrorCode = errorCode;
-        job.ErrorMessage = Clip(errorMessage, 2000);
-        job.NextAction = cancelArrivedLate
-            ? "取消请求到达时服务商已完成；结果已保留，请核对后使用"
-            : nextAction;
-        job.FinishedAt = now;
-        job.ExecutionExpiresAt = null;
-        log.Status = status;
-        log.ErrorCode = errorCode;
-        log.ErrorMessage = job.ErrorMessage;
-        log.FinishedAt = now;
-        log.DurationMs = (long)(now - log.StartedAt).TotalMilliseconds;
-        log.OutputChars = log.ResponseText?.Length ?? 0;
-        log.OutputHash = Hash(log.ResponseText ?? log.ResponseRawJson);
-        if (responseBody is not null)
+        void Prepare(AiAsrJobEntity current)
         {
-            var wireJson = SafeJson(ValidJson(responseBody), null, out _);
-            log.ResponseRawJson = AiAsrCallService.ComposeResponseAudit(
-                log.ResponseText is null ? null : log.ResponseRawJson, wireJson);
+            job.GatewayStatus = current.GatewayStatus ?? job.GatewayStatus;
+            job.GatewayName = current.GatewayName ?? job.GatewayName;
+            job.GatewayEvidenceSource = current.GatewayEvidenceSource ?? job.GatewayEvidenceSource;
+            job.GatewayObservedAt = current.GatewayObservedAt ?? job.GatewayObservedAt;
+            var cancelArrivedLate = current.Status == "cancelling" && status == "succeeded";
+            job.Status = status;
+            job.AbortSource = cancelArrivedLate ? "user_cancel_late" : abortSource;
+            job.OutcomeKnown = outcomeKnown;
+            job.ProviderAttempted = providerAttempted;
+            job.ResponseBodyComplete = responseBodyComplete && !responseTooLarge;
+            job.UpstreamStatus = upstreamStatus;
+            job.ErrorCode = errorCode;
+            job.ErrorMessage = Clip(errorMessage, 2000);
+            job.NextAction = cancelArrivedLate
+                ? "取消请求到达时服务商已完成；结果已保留，请核对后使用"
+                : nextAction;
+            job.FinishedAt = now;
+            job.ExecutionExpiresAt = null;
+            log.Status = status;
+            log.ErrorCode = errorCode;
+            log.ErrorMessage = job.ErrorMessage;
+            log.FinishedAt = now;
+            log.DurationMs = (long)(now - log.StartedAt).TotalMilliseconds;
+            log.OutputChars = log.ResponseText?.Length ?? 0;
+            log.OutputHash = Hash(log.ResponseText ?? log.ResponseRawJson);
+            if (responseBody is not null)
+            {
+                var wireJson = SafeJson(ValidJson(responseBody), null, out _);
+                log.ResponseRawJson = AiAsrCallService.ComposeResponseAudit(
+                    log.ResponseText is null ? null : log.ResponseRawJson, wireJson);
+            }
+            log.MetadataJson = JobMetadata(job, providerAttempted, log.ResponseRawJson is not "{}",
+                log.RequestPayloadJson is not "{}", responseTooLarge, reportedSeconds);
         }
-        log.MetadataJson = JobMetadata(job, providerAttempted, log.ResponseRawJson is not "{}",
-            log.RequestPayloadJson is not "{}", responseTooLarge, reportedSeconds);
-        if (db.Database.IsRelational())
+
+        if (db.Database.IsNpgsql())
         {
             await ExecuteAtomicAsync(async () =>
             {
+                // Lock the queue row before deciding the terminal audit state. This closes the
+                // read-then-update window with CancelAsync/RecoverExpiredAsync and makes a late
+                // successful provider response retain its result with user_cancel_late evidence.
+                var currentJob = await db.AiAsrJobs.FromSqlInterpolated($"""
+                    SELECT * FROM ai_asr_jobs
+                    WHERE id = {job.Id} AND owner_id = {job.OwnerId}
+                    FOR UPDATE
+                    """).AsNoTracking().SingleOrDefaultAsync(ct);
+                if (currentJob is null || Terminal(currentJob.Status) ||
+                    currentJob.Status is not ("running" or "cancelling"))
+                    return;
+                Prepare(currentJob);
                 var updated = await db.AiAsrJobs.Where(x => x.Id == job.Id &&
                         x.OwnerId == job.OwnerId &&
-                        (x.Status == "running" || x.Status == "cancelling"))
+                        x.Status == currentJob.Status)
                     .ExecuteUpdateAsync(update => update
                         .SetProperty(x => x.Status, job.Status)
                         .SetProperty(x => x.AbortSource, job.AbortSource)
@@ -904,7 +920,7 @@ public sealed class AiAsrJobService(
                 if (updated == 0) return;
                 var logUpdated = await db.AiRequestLogs.Where(x => x.Id == log.Id &&
                         x.UserId == job.OwnerId &&
-                        (x.Status == "running" || x.Status == "cancelling"))
+                        x.Status == currentJob.Status)
                     .ExecuteUpdateAsync(update => update
                         .SetProperty(x => x.Status, log.Status)
                         .SetProperty(x => x.ResponseText, log.ResponseText)
@@ -927,6 +943,12 @@ public sealed class AiAsrJobService(
             }, ct);
             return;
         }
+        var currentJob = await db.AiAsrJobs.AsNoTracking()
+            .SingleOrDefaultAsync(x => x.Id == job.Id, ct);
+        if (currentJob is null || Terminal(currentJob.Status) ||
+            currentJob.Status is not ("running" or "cancelling"))
+            return;
+        Prepare(currentJob);
         var trackedJob = db.AiAsrJobs.Local.FirstOrDefault(x => x.Id == job.Id) ?? job;
         var trackedLog = db.AiRequestLogs.Local.FirstOrDefault(x => x.Id == log.Id) ?? log;
         if (!ReferenceEquals(trackedJob, job))

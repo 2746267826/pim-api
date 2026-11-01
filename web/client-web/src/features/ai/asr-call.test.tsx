@@ -12,7 +12,7 @@ import { STORAGE_KEYS } from '@/lib/storage'
 const api = vi.hoisted(() => ({ asrPresets: vi.fn(), asrJobSubmit: vi.fn(), asrJobLookup: vi.fn(), asrJobCancel: vi.fn(), asrTransportObserve: vi.fn(), asrUrlCall: vi.fn(), asrUrlLookup: vi.fn(), detail: vi.fn(), audio: vi.fn(), audioContent: vi.fn() }))
 vi.mock('./api', () => ({ aiApi: api }))
 vi.mock('@/lib/notify', () => ({ notifyError: vi.fn() }))
-const owner = '11111111-1111-4111-8111-111111111111', logId = '22222222-2222-4222-8222-222222222222'
+const owner = '11111111-1111-4111-8111-111111111111', otherOwner = '99999999-9999-4999-8999-999999999999', logId = '22222222-2222-4222-8222-222222222222'
 let model: Model, settings: ModelSettings, preset: AsrPreset, qc: QueryClient
 const wave = new Uint8Array(364)
 wave.set(new TextEncoder().encode('RIFF'), 0); new DataView(wave.buffer).setUint32(4, 356, true); wave.set(new TextEncoder().encode('WAVEfmt '), 8)
@@ -20,7 +20,7 @@ new DataView(wave.buffer).setUint32(16, 16, true); new DataView(wave.buffer).set
 new DataView(wave.buffer).setUint32(24, 16000, true); new DataView(wave.buffer).setUint32(28, 32000, true); new DataView(wave.buffer).setUint16(32, 2, true); new DataView(wave.buffer).setUint16(34, 16, true)
 wave.set(new TextEncoder().encode('data'), 36); new DataView(wave.buffer).setUint32(40, 320, true)
 const wrap = (content: React.ReactNode) => <QueryClientProvider client={qc}>{content}</QueryClientProvider>
-const page = () => <AsrCall userId={owner} models={[model]} settings={settings} changed={() => undefined} showDetail={() => undefined} renderStatus={(state) => <span>{state}</span>} />
+const page = (userId = owner) => <AsrCall userId={userId} models={[model]} settings={settings} changed={() => undefined} showDetail={() => undefined} renderStatus={(state) => <span>{state}</span>} />
 async function chooseAudio() {
   await screen.findByText(/预设：MiMo/)
   await userEvent.upload(screen.getByLabelText('本次音频'), new File([wave], '示例.wav', { type: 'audio/wav' }))
@@ -199,6 +199,25 @@ describe('ASR预设和调用', () => {
     expect(await screen.findByLabelText('实际ASR转写', {}, { timeout: 6000 })).toBeTruthy()
     expect(api.asrJobLookup).toHaveBeenCalledWith(id, expect.any(AbortSignal))
     expect(api.asrJobSubmit).not.toHaveBeenCalled()
+  }, 10000)
+
+  it('切换到其他账号会中止旧提交并清除旧账号音频与结果状态', async () => {
+    let releaseSubmit: ((value: unknown) => void) | undefined
+    api.asrJobSubmit.mockImplementationOnce(() => new Promise((resolve) => { releaseSubmit = resolve }))
+    const view = render(wrap(page(owner))); await chooseAudio(); await userEvent.click(screen.getByRole('checkbox'))
+    await userEvent.click(screen.getByRole('button', { name: '提交后台转写' }))
+    await waitFor(() => expect(api.asrJobSubmit).toHaveBeenCalledOnce())
+
+    view.rerender(wrap(page(otherOwner)))
+    await waitFor(() => expect(screen.queryByText('示例.wav')).toBeNull())
+    releaseSubmit?.(jobResult('Succeeded'))
+    await new Promise((resolve) => setTimeout(resolve, 900))
+
+    expect(screen.queryByLabelText('实际ASR转写')).toBeNull()
+    expect(screen.queryByText('完整转写')).toBeNull()
+    expect(api.asrJobLookup).not.toHaveBeenCalled()
+    expect(api.detail).not.toHaveBeenCalled()
+    expect((screen.getByRole('button', { name: '提交后台转写' }) as HTMLButtonElement).disabled).toBe(true)
   }, 10000)
 
   it.each([
