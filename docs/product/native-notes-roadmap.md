@@ -44,11 +44,11 @@ API #525/#533 继续保持用户已关闭状态；本轮没有重新打开。202
 | 阶段 | 已交付或已集成 | 仍需开发与核验 |
 | --- | --- | --- |
 | M0 | 材料隔离、固定版本、容量与恢复基础保留；SAFE-01 ZIP 导出包 `3a68f1f` 已审查并集成为 `79652d26`；下一批真实 Swagger 导出及官方 Web 生成校验已完成。 | 跨 store 删除 intent/tombstone、活动任务围栏和幂等恢复仍由 Sagan 开发；真实导出契约尚未合并，不能作为客户端正式 freshness。长录音、笔触/掌触和目标设备风险不能由源码代替。 |
-| M1 | Android 整篇 undo/redo、history、包导入/quarantine、容量预算和录音空间/权限监测进入第二集成树；历史导入写锁和超大文档修复已集成。 | 父树 `3d693b8` 的完整 App 验证由 Dewey 独占 Gradle 执行；过夜日志停在 daemon setup，不计为测试通过。完整 XML 必须先稳定归档，禁止后续 focused 覆盖证据。 |
+| M1 | Android 整篇 undo/redo、history、包导入/quarantine、容量预算和录音空间/权限监测进入第二集成树；历史导入写锁和超大文档修复已集成。父树 `3d693b8` 完整 App `2188/2188` 与重点 `80/80` 通过，full XML 已先独立归档。 | 派生刷新作用域补丁 `9cd6b55` 仍在审查，等待补齐旧 generation 与跨 scope 版本继承保护后集成验证；该新增补丁不能沿用 `3d693b8` 的全套结果。 |
 | M2 | PR #556 包含持久 ASR、公开材料 receipt、Web 混合上传/账号会话/dirty/同意保护；Android 处理、异常重试与人工稿 CAS 修复已集成第二树。 | 先消除首批完整 CI 失败，再正常合并/Release，Android/Windows 按已合并 API SHA 正式刷新。资源反馈持久化包仍需 stale replay、有界冲突及计数回放修复。 |
 | M3 | Windows 首批本机笔记、主动录音、材料上传与云版本访问已发布。Web editable ink 与 Android ZIP 交换原提交 `e8b25275/6fe41328` 保留在下一批树；`9acde62c` 已补齐固定编辑会话、dirty/冻结协调及实际流式解压预算。 | Web 原始材料包主动下载入口继续开发，含音频包下载不等同可编辑重建；Windows 多 segment、混合块身份/顺序与只读 source 保全继续开发，不能打平后声称完整往返。 |
 | M4 | API 持久任务建议、编辑/放弃/CAS/幂等写现有任务模块及 Web 确认 UI 在 PR #556。 | 修复相关 TestHost 与完整回归后交付；Android/Windows 的完整建议操作、结果来源和事实/推断交互仍保留开发及验收范围。 |
-| M5 | Android 工作台、任务日程、确认/提醒/习惯等动作与 session/dirty 保护进入第二树；Windows planner 与本机历史首批已发布。 | Android 完整回归、逐域业务动作和兼容状态继续收敛；MIG-01–13 不因工作台或只读入口出现而整体完成，未原生实现能力必须保留明确入口与范围。 |
+| M5 | Android 工作台、任务日程、确认/提醒/习惯等动作与 session/dirty 保护进入第二树，完整 App 回归已在 `3d693b8` 通过；Windows planner 与本机历史首批已发布。 | Android 后续作用域补丁、逐域业务动作与兼容状态继续收敛；MIG-01–13 不因工作台或只读入口出现而整体完成，未原生实现能力必须保留明确入口与范围。 |
 
 #### 完整回归与可复核证据
 
@@ -56,6 +56,7 @@ API #525/#533 继续保持用户已关闭状态；本轮没有重新打开。202
 - 42 项失败由四项 Notes 与 38 项 Mobile fixture 失败组成：Notes 的一个 TestHost `/data` 权限错误及三个派生处理/receipt 回归；Mobile 的 EF `ManyServiceProvidersCreatedWarning` 涉及 DeviceMergeScope、DeviceManagement 和 relational model。修复不得全局忽略警告、删断言、增加 skip 或改 workflow。
 - 原父 API `189/189` 与 Web `517/517` 仍是各自实际执行的聚焦/集成证据，不代替上述完整 CI；原失败、后续修复和新结果分别保留。
 - Android 已核验发布台账：`26.11.1150 / versionCode 101150`，480 B，SHA-256 `f82a87a9c8087dc1104127b5cab182b0f42bd8f1316e04ff6dd2ff8aadf20984`。第二树旧 Core `74/74` XML 已归档，App 仍以当前源码新验证为准。
+- Android 第二树 source `3d693b82532cd362999bc9536b01f688c3785a90` 的完整 App `2188/2188 PASS`，182 个 XML，0 fail/error/skip，日志 SHA-256 `c373019e113169b018bc00a3b11c4272136c8f7421084746275d2fcce7122c07`；先归档 full 再跑 13 类 focused `80/80 PASS`，日志 SHA-256 `2f128f655dcc80660649dc8885accb7390be19f528c77f5422acf7974a72afd1`。实际 JBR 21.0.9 / Gradle 8.14，使用工作区隔离 home 与短路径 temp；此前未执行完的 daemon 日志保留为旧失败尝试，不计为本次结果。
 - Windows 已核验发布台账：`26.11.1114`，633 B，SHA-256 `ed0f58c33691107e94ed44afa9fee9a06d093b3c52fd6b144911a23ffbd03052`。首批最终 App `105/105`、0 fail/error/skip，TRX SHA-256 `22a78ecafa20ed71ac891dd59dd214e99651657570aaf5abb198a23928902c13`；未变的 Core 既有 `332/332` 单独记录。
 - SAFE ZIP worker focused `2/2` 是 TestHost/EF InMemory 证据，不是 PostgreSQL、真实设备或跨端全材料往返验收。新 API 形状必须重新从实际运行的 Test API 导出，经 `jq -S` 与官方生成/只读一致性检查。
 - 首批 Notes 修复的 worker `76f93109` 实跑四项原 CI 失败用例与 receipt 校验，共 `9/9 PASS / 0 skipped`，日志 SHA-256 `c03d6ad15818005f17dd26b6de4cc781a6ffbf6dbedf0fa65123419feceb55b0`；父审查确认音频查询仍从 owner-scoped 日志集合关联，模型、revision、endpoint、请求与来源指纹继续严格校验，集成为 `2d348c9d`。此结果不代替后续完整 CI。
