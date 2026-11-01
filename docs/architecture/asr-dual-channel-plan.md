@@ -24,6 +24,8 @@
 
 PR #556 远端 head `81c30bb485f72730b77356866332a7e79dda7a68` 的完整 CI `41322796046` 为 `6440 PASS / 42 FAIL / 99 skipped / 6581 total`；Web、真实契约 freshness、Docker 冒烟通过，`CI Gate` 失败，尚未合并或发布。Sagan 负责四项 Notes TestHost/派生处理回归，Meitner 负责 38 项 EF fixture provider 复用失败；不得全局 suppress、删断言、增 skip 或改 workflow。
 
+07:58 检查点：四项 Notes 回归及 receipt 校验在 worker `76f93109` 实跑 9/9 通过，父审查后集成为 `2d348c9d`，仍需与 EF fixture 根因修复一起重跑完整 CI。下一批 Web `9acde62c` 已修复笔迹固定会话/dirty/冻结保护和流式解压预算，完整 537 项通过；真实 ZIP Swagger 导出提交 `28eb0fe8`、SHA-256 `e7741cf3a69a30eb178d3a77fa329c71bc657dd2ede186c125816e63b6d2bfb2`，材料 HTTP/store/shape 56/56 通过。下一批开发契约不代替客户端按实际 API merge SHA 的正式刷新，原始包下载入口、安全删除及多分片跨端恢复继续开发。
+
 #539/#551 已交付 `api-v26.11.1052`；Android #59–63 已交付 `android-v26.11.1150`；Windows 本机笔记/录音/上传/planner 首批已交付 `windows-v26.11.1114`。三者的 master CI、标签和实际版本台账均已核验，但不代表用户环境、物理设备或真实 provider 验收。
 
 #516 资源反馈下一包保留原需求：拒领原因、连续计数、手动入口与资源门的区别必须持久可见；旧幂等回执应先核 payload 再重放，不能因样本过期改变历史决策；冲突重试须有界，fenced 成功归零后旧拒领回执不能重复增计数。用户未给具体硬件阈值/退避间隔时，不擅设并冒充已确认策略。
