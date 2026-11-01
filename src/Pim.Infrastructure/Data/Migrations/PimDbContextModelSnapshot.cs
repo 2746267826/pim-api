@@ -1700,6 +1700,10 @@ namespace Pim.Infrastructure.Data.Migrations
                         .HasColumnType("text")
                         .HasColumnName("capabilities_json");
 
+                    b.Property<int>("ConsecutiveAutomaticResourceFailures")
+                        .HasColumnType("integer")
+                        .HasColumnName("consecutive_automatic_resource_failures");
+
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at");
@@ -1738,6 +1742,19 @@ namespace Pim.Infrastructure.Data.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("owner_id");
 
+                    b.Property<DateTimeOffset?>("ResourceDecisionAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("resource_decision_at");
+
+                    b.Property<string>("ResourceGateFailureReasonsJson")
+                        .HasColumnType("text")
+                        .HasColumnName("resource_gate_failure_reasons_json");
+
+                    b.Property<string>("ResourceGateStatus")
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("resource_gate_status");
+
                     b.Property<string>("ResourceSnapshotJson")
                         .IsRequired()
                         .HasColumnType("text")
@@ -1769,6 +1786,70 @@ namespace Pim.Infrastructure.Data.Migrations
                         .IsUnique();
 
                     b.ToTable("note_asr_nodes");
+                });
+
+            modelBuilder.Entity("Pim.Infrastructure.Data.Entities.NoteAsrResourceDecisionEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("ClaimKey")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("claim_key");
+
+                    b.Property<int>("ConsecutiveFailuresAfter")
+                        .HasColumnType("integer")
+                        .HasColumnName("consecutive_failures_after");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<bool>("GatePassed")
+                        .HasColumnType("boolean")
+                        .HasColumnName("gate_passed");
+
+                    b.Property<bool>("IsAutomatic")
+                        .HasColumnType("boolean")
+                        .HasColumnName("is_automatic");
+
+                    b.Property<Guid>("NodeId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("node_id");
+
+                    b.Property<string>("Outcome")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("outcome");
+
+                    b.Property<Guid>("OwnerId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("owner_id");
+
+                    b.Property<string>("ReasonsJson")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("reasons_json");
+
+                    b.Property<DateTimeOffset>("SampledAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("sampled_at");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("NodeId");
+
+                    b.HasIndex("OwnerId", "NodeId", "ClaimKey")
+                        .IsUnique();
+
+                    b.HasIndex("OwnerId", "NodeId", "CreatedAt");
+
+                    b.ToTable("note_asr_resource_decisions");
                 });
 
             modelBuilder.Entity("Pim.Infrastructure.Data.Entities.NoteAsrRouteConfigEntity", b =>
@@ -8631,6 +8712,15 @@ namespace Pim.Infrastructure.Data.Migrations
                     b.HasOne("Pim.Infrastructure.Data.Entities.NoteAsrAttemptEntity", null)
                         .WithMany()
                         .HasForeignKey("AttemptId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Pim.Infrastructure.Data.Entities.NoteAsrResourceDecisionEntity", b =>
+                {
+                    b.HasOne("Pim.Infrastructure.Data.Entities.NoteAsrNodeEntity", null)
+                        .WithMany()
+                        .HasForeignKey("NodeId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
                 });

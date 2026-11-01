@@ -75,6 +75,7 @@ public class PimDbContext : DbContext
     public DbSet<AiModelRuntimeEntity> AiModelRuntime => Set<AiModelRuntimeEntity>();
     public DbSet<NoteAsrRouteConfigEntity> NoteAsrRouteConfigs => Set<NoteAsrRouteConfigEntity>();
     public DbSet<NoteAsrNodeEntity> NoteAsrNodes => Set<NoteAsrNodeEntity>();
+    public DbSet<NoteAsrResourceDecisionEntity> NoteAsrResourceDecisions => Set<NoteAsrResourceDecisionEntity>();
     public DbSet<NoteAsrAttemptEntity> NoteAsrAttempts => Set<NoteAsrAttemptEntity>();
     public DbSet<NoteAsrLeaseEntity> NoteAsrLeases => Set<NoteAsrLeaseEntity>();
     public DbSet<NoteAsrAckReceiptEntity> NoteAsrAckReceipts => Set<NoteAsrAckReceiptEntity>();
@@ -266,6 +267,12 @@ public class PimDbContext : DbContext
         {
             e.HasIndex(x => new { x.OwnerId, x.NodeId }).IsUnique();
             e.HasIndex(x => new { x.OwnerId, x.LastHeartbeatAt });
+        });
+        modelBuilder.Entity<NoteAsrResourceDecisionEntity>(e =>
+        {
+            e.HasIndex(x => new { x.OwnerId, x.NodeId, x.ClaimKey }).IsUnique();
+            e.HasIndex(x => new { x.OwnerId, x.NodeId, x.CreatedAt });
+            e.HasOne<NoteAsrNodeEntity>().WithMany().HasForeignKey(x => x.NodeId).OnDelete(DeleteBehavior.Cascade);
         });
         modelBuilder.Entity<NoteAsrAttemptEntity>(e =>
         {
