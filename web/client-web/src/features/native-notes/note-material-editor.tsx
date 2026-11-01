@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Camera, ImagePlus, Plus, RotateCcw, Save, Trash2 } from 'lucide-react'
+import { Camera, ImagePlus, PenLine, Plus, RotateCcw, Save, Trash2 } from 'lucide-react'
 import { Button, Card, InlineAlert, Input, Label, PageHeader, Skeleton, StatusBadge, Textarea } from '@/components/ui'
 import {
   buildMaterialBundle,
@@ -14,6 +14,7 @@ import {
 } from './material-model'
 import type { NativeNotesClient, NoteLibrarySource } from './api'
 import { uploadMaterialBundle, type MaterialUploadProgress } from './upload-engine'
+import { InkCanvasEditor } from './ink-canvas-editor'
 
 export interface NoteEditorSeed {
   noteId: string
@@ -135,7 +136,7 @@ function EmptyEditor() {
     <div className="mx-auto flex max-w-sm flex-col items-center justify-center py-20 text-center">
       <span className="grid size-14 place-items-center rounded-full bg-surface-2 text-primary"><ImagePlus className="size-6" aria-hidden /></span>
       <h2 className="mt-4 text-lg font-semibold text-text-1">选择一篇笔记，或新建空白稿</h2>
-      <p className="mt-2 text-sm leading-6 text-text-3">每篇新笔记由固定材料版本发布。正文、照片和手写预览会一起冻结；保存失败时不会自动换版本标识。</p>
+      <p className="mt-2 text-sm leading-6 text-text-3">每篇新笔记由固定材料版本发布。正文、照片、可编辑笔迹和手写预览会一起冻结；保存失败时不会自动换版本标识。</p>
     </div>
   </Card>
 }
@@ -167,6 +168,7 @@ function LoadedEditor({
   const [message, setMessage] = useState('')
   const [storageConsent, setStorageConsent] = useState(false)
   const [dirty, setDirty] = useState(false)
+  const [inkEditor, setInkEditor] = useState<{ id: string; ink: Record<string, unknown> } | null>(null)
   const uploadSessionRef = useRef<EditorUploadSession | null>(null)
   const editable = !busy && !promoting && !frozen && isCurrent
   const canSubmit = !busy && !promoting && isCurrent && recordings === 0 && blocks.length > 0 && storageConsent
@@ -366,6 +368,19 @@ function LoadedEditor({
       </div>
 
       <div className="space-y-3">
+        {inkEditor && <InkCanvasEditor
+          key={inkEditor.id}
+          initialInk={inkEditor.ink}
+          onCancel={() => setInkEditor(null)}
+          onSave={(ink, bytes) => {
+            const next = { id: inkEditor.id, kind: 'ink' as const, ink, bytes }
+            setBlocks((current) => current.some((block) => block.kind === 'ink' && block.id === inkEditor.id)
+              ? current.map((block) => block.kind === 'ink' && block.id === inkEditor.id ? next : block)
+              : [...current, next])
+            setInkEditor(null)
+            setDirty(true)
+          }}
+        />}
         {blocks.map((block, index) => block.kind === 'markdown'
           ? <div key={block.id} className="rounded-ctl border border-border bg-bg p-3">
             <div className="mb-2 flex items-center justify-between gap-2">
@@ -376,6 +391,7 @@ function LoadedEditor({
               value={block.text} disabled={!editable} onChange={(event) => editMarkdown(block.id, event.target.value)} />
           </div>
           : <MaterialImageBlock key={block.id} block={block} index={index} editable={editable}
+            onEdit={block.kind === 'ink' ? () => setInkEditor({ id: block.id, ink: block.ink }) : undefined}
             onRemove={block.kind === 'photo'
               ? () => {
                 setBlocks((current) => current.filter((item) => item.id !== block.id))
@@ -392,6 +408,10 @@ function LoadedEditor({
           ])
           setDirty(true)
         }}><Plus className="size-4" aria-hidden />添加正文段</Button>
+        <Button size="sm" disabled={!editable} onClick={() => setInkEditor({
+          id: createMaterialId(),
+          ink: { width: 320, height: 240, strokes: [] },
+        })}><PenLine className="size-4" aria-hidden />添加手写卡片</Button>
         <label className={fileLabelClass(editable)}>
           <ImagePlus className="size-4" aria-hidden />添加照片
           <input className="hidden" type="file" aria-label="添加照片" accept="image/jpeg,image/png" multiple disabled={!editable}
@@ -416,7 +436,7 @@ function LoadedEditor({
         />
         <span>
           <span className="block font-medium text-text-1">确认保存到当前服务器</span>
-          我确认将本次正文、照片与手写预览作为新的不可变材料版本保存到 {serverBinding}。
+          我确认将本次正文、照片、可编辑笔迹与手写预览作为新的不可变材料版本保存到 {serverBinding}。
           当前账号及该服务器管理员可读取；这不是仅保存在浏览器中的草稿。
         </span>
       </label>
@@ -433,7 +453,7 @@ function LoadedEditor({
           <p className="break-all">笔记 ID：{noteId}</p>
           <p className="break-all">新版本 ID：{versionId}</p>
           <p className="break-all">基础版本：{baseVersionId ?? '首次发布'}</p>
-          <p>正文/图片/手写预览会作为一个不可变版本一起提交。</p>
+          <p>正文、原图、手写向量和 PNG 预览会作为一个不可变版本一起提交。</p>
         </div>
       </details>
     </div>
@@ -444,11 +464,13 @@ function MaterialImageBlock({
   block,
   index,
   editable,
+  onEdit,
   onRemove,
 }: {
   block: Extract<MaterialDraftBlock, { kind: 'photo' | 'ink' }>
   index: number
   editable: boolean
+  onEdit?: () => void
   onRemove?: () => void
 }) {
   return <div className="overflow-hidden rounded-ctl border border-border bg-bg">
@@ -460,8 +482,11 @@ function MaterialImageBlock({
         <p className="break-all text-[11px] text-text-4">{block.kind === 'photo' ? block.assetId : '原始向量、尺寸与身份随 note.json 保留'}</p>
       </div>
       <StatusBadge className="ml-auto" tone={block.kind === 'photo' ? 'info' : 'neutral'} dot={false}>
-        {block.kind === 'photo' ? '照片原字节' : 'Web 只读手写'}
+        {block.kind === 'photo' ? '照片原字节' : '可编辑向量'}
       </StatusBadge>
+      {onEdit && <Button size="sm" variant="ghost" disabled={!editable} onClick={onEdit} aria-label={`编辑手写卡片 ${index + 1}`}>
+        <PenLine className="size-3.5" aria-hidden />编辑
+      </Button>}
       {onRemove && <Button size="sm" variant="danger-soft" disabled={!editable} onClick={onRemove} aria-label={`移除照片 ${index + 1}`}>
         <Trash2 className="size-3.5" aria-hidden />
       </Button>}

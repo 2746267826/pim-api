@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { createMemoryRouter, RouterProvider } from 'react-router'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -354,6 +354,41 @@ describe('NativeNotesPage', () => {
       assetId: expect.any(String),
       sha256: photoFile?.sha256,
     }))
+  })
+
+  it('publishes authored handwriting vectors and a matching preview in one fixed version', async () => {
+    const context = {
+      arc: vi.fn(), beginPath: vi.fn(), fill: vi.fn(), fillRect: vi.fn(),
+      lineTo: vi.fn(), moveTo: vi.fn(), stroke: vi.fn(),
+    }
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(context as unknown as CanvasRenderingContext2D)
+    vi.spyOn(HTMLCanvasElement.prototype, 'toBlob').mockImplementation((callback) => {
+      callback(new Blob([new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1])], { type: 'image/png' }))
+    })
+    page()
+    await userEvent.click(screen.getByRole('button', { name: /新建笔记/ }))
+    await userEvent.type(screen.getByLabelText('笔记标题'), '笔迹往返')
+    await consentToStorage()
+    await userEvent.click(screen.getByRole('button', { name: '添加手写卡片' }))
+
+    const canvas = screen.getByTestId('ink-canvas')
+    fireEvent.pointerDown(canvas, { pointerId: 1, pointerType: 'pen', isPrimary: true, clientX: 20, clientY: 30, pressure: 0.5 })
+    fireEvent.pointerMove(canvas, { pointerId: 1, pointerType: 'pen', isPrimary: true, clientX: 80, clientY: 90, pressure: 0.8 })
+    fireEvent.pointerUp(canvas, { pointerId: 1, pointerType: 'pen', isPrimary: true })
+    await userEvent.click(screen.getByRole('button', { name: '保存手写' }))
+    await userEvent.click(screen.getByRole('button', { name: '保存新版本' }))
+
+    await waitFor(() => expect(nativeApi.complete).toHaveBeenCalledOnce())
+    const body = nativeApi.begin.mock.calls[0]![0]
+    const vector = JSON.parse(body.inputJson).note.blocks.find((block: { kind: string }) => block.kind === 'ink')
+    const preview = JSON.parse(body.manifestJson).files.find((file: { kind: string }) => file.kind === 'InkPreview')
+    expect(vector.ink).toMatchObject({
+      width: 320,
+      height: 240,
+      strokes: [{ points: [{ x: 20, y: 30 }, { x: 80, y: 90 }] }],
+    })
+    expect(preview).toMatchObject({ kind: 'InkPreview', blockId: vector.id, sizeBytes: 5 })
+    expect(nativeApi.uploadPart).toHaveBeenCalled()
   })
 
   it('keeps the dirty draft when a note switch is cancelled and warns before unload', async () => {
