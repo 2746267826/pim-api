@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Mvc;
 using Pim.Core.Common;
 using Pim.Core.Exceptions;
@@ -24,6 +25,26 @@ public static class NoteMaterialEndpoints
             ICurrentUserService user, CancellationToken ct) =>
             Results.Ok(ApiResponse<NoteMaterialVersionDto>.Ok(await store.GetAsync(UserId(user), versionId, ct))))
             .Produces<ApiResponse<NoteMaterialVersionDto>>().Produces(401).Produces<ApiResponse<string>>(404);
+        group.MapGet("/versions/{versionId:guid}/bundle", (Guid versionId, HttpContext context,
+            NoteMaterialUploadStore store, ICurrentUserService user) =>
+            Results.Stream(async output =>
+            {
+                // ZipArchive writes its central directory synchronously when disposed.
+                var bodyControl = context.Features.Get<IHttpBodyControlFeature>()
+                    ?? throw new InvalidOperationException("ZIP export requires an HTTP body control feature");
+                var allowSynchronousIo = bodyControl.AllowSynchronousIO;
+                bodyControl.AllowSynchronousIO = true;
+                try
+                {
+                    await store.WriteBundleAsync(UserId(user), versionId, output, context.RequestAborted);
+                }
+                finally
+                {
+                    bodyControl.AllowSynchronousIO = allowSynchronousIo;
+                }
+            }, "application/zip", $"{versionId:D}.pimnote.zip"))
+            .Produces<Stream>(200, "application/zip").Produces(401).Produces<ApiResponse<string>>(404)
+            .Produces<ApiResponse<string>>(409);
         group.MapGet("/{noteId:guid}/versions", async (Guid noteId, NoteMaterialUploadStore store,
             ICurrentUserService user, CancellationToken ct) =>
             Results.Ok(ApiResponse<IReadOnlyList<NoteMaterialUploadDto>>.Ok(await store.ListAsync(UserId(user), noteId, ct))))

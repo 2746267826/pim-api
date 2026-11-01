@@ -3,6 +3,7 @@ using System.Buffers.Binary;
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text;
+using System.IO.Compression;
 using Microsoft.Extensions.Options;
 using Pim.Core.Exceptions;
 using Pim.Core.Notes;
@@ -75,6 +76,33 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
         var request = await RequestAsync(userId, versionId, ct);
         var files = NoteMaterialManifestValidator.Validate(request, ReadLimits);
         return new(await DescribeAsync(userId, versionId, entry, ledger, files, ct), request.InputJson, request.ManifestJson);
+    }
+
+    public async Task WriteBundleAsync(Guid userId, Guid versionId, Stream output, CancellationToken ct = default)
+    {
+        var version = await GetAsync(userId, versionId, ct);
+        if (version.Upload.Phase is not ("Uploaded" or "Conflict"))
+            throw Conflict("未完成的材料版本不能导出");
+
+        using var archive = new ZipArchive(output, ZipArchiveMode.Create, leaveOpen: true, Encoding.UTF8);
+        await WriteMetadataAsync(archive, "material-version.json", version.InputJson, ct);
+        await WriteMetadataAsync(archive, "materials.json", version.ManifestJson, ct);
+        foreach (var file in version.Upload.Files)
+        {
+            ct.ThrowIfCancellationRequested();
+            var entry = archive.CreateEntry(file.Path, CompressionLevel.Optimal);
+            await using var entryStream = entry.Open();
+            await ReadFileAsync(userId, versionId, file.Index, entryStream, ct);
+        }
+    }
+
+    private static async Task WriteMetadataAsync(ZipArchive archive, string path, string value,
+        CancellationToken ct)
+    {
+        var entry = archive.CreateEntry(path, CompressionLevel.Optimal);
+        await using var stream = entry.Open();
+        var bytes = Encoding.UTF8.GetBytes(value);
+        await stream.WriteAsync(bytes, ct);
     }
 
     public async Task<IReadOnlyList<NoteMaterialUploadDto>> ListAsync(Guid userId, Guid noteId, CancellationToken ct = default)
