@@ -63,6 +63,7 @@ public static class NoteMaterialEndpoints
             if (version.Upload.Phase == "Uploading") throw new DomainException(40901, "材料尚未提交完整");
             if (fileIndex < 0 || fileIndex >= version.Upload.Files.Count) throw new DomainException(40401, "材料文件不存在");
             var file = version.Upload.Files[fileIndex];
+            context.Response.Headers.CacheControl = "private, no-store";
             context.Response.Headers["X-Content-SHA256"] = file.Sha256;
             context.Response.Headers["X-Content-Type-Options"] = "nosniff";
             return Results.Stream(output => store.ReadFileAsync(userId, versionId, fileIndex, output, ct),

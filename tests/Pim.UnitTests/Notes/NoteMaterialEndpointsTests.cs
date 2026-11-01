@@ -31,6 +31,9 @@ public sealed class NoteMaterialEndpointsTests : IDisposable
     {
         var session = await AuthRegistrationTestHost.SeedAndLoginAsync(_factory, "notes-owner");
         using var client = AuthRegistrationTestHost.Authed(_factory, session.AccessToken);
+        var other = await AuthRegistrationTestHost.SeedAndLoginAsync(_factory, "notes-download-other");
+        using var otherClient = AuthRegistrationTestHost.Authed(_factory, other.AccessToken);
+        using var anonymous = _factory.CreateClient();
         var fixture = NoteMaterialUploadStoreTests.Fixture.Create(audioSamples: 16_000 * 180);
         var response = await client.PostAsJsonAsync(Root + "/versions", fixture.Request);
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
@@ -53,6 +56,8 @@ public sealed class NoteMaterialEndpointsTests : IDisposable
         response = await client.GetAsync($"{Root}/versions/{fixture.Request.VersionId}");
         var resumed = (await response.Content.ReadFromJsonAsync<ApiResponse<NoteMaterialVersionDto>>())!.Data!;
         Assert.All(resumed.Upload.Files, file => Assert.Equal(file.PartCount, file.UploadedParts.Count));
+        Assert.Equal(HttpStatusCode.Conflict,
+            (await client.GetAsync($"{Root}/versions/{fixture.Request.VersionId}/files/0")).StatusCode);
         response = await client.PostAsync($"{Root}/versions/{fixture.Request.VersionId}/complete", null);
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var complete = (await response.Content.ReadFromJsonAsync<ApiResponse<NoteMaterialUploadDto>>())!.Data!;
@@ -63,7 +68,17 @@ public sealed class NoteMaterialEndpointsTests : IDisposable
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.Equal("application/octet-stream", response.Content.Headers.ContentType!.MediaType);
         Assert.Equal(complete.Files[audioIndex].Sha256, response.Headers.GetValues("X-Content-SHA256").Single());
+        Assert.Equal("nosniff", response.Headers.GetValues("X-Content-Type-Options").Single());
+        Assert.Equal("no-store, private", response.Headers.GetValues("Cache-Control").Single());
+        Assert.Contains(Path.GetFileName(complete.Files[audioIndex].Path),
+            response.Content.Headers.ContentDisposition!.ToString(), StringComparison.Ordinal);
         Assert.Equal(fixture.Content[audioIndex], await response.Content.ReadAsByteArrayAsync());
+        Assert.Equal(HttpStatusCode.NotFound,
+            (await client.GetAsync($"{Root}/versions/{fixture.Request.VersionId}/files/{fixture.Content.Count}")).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized,
+            (await anonymous.GetAsync($"{Root}/versions/{fixture.Request.VersionId}/files/0")).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound,
+            (await otherClient.GetAsync($"{Root}/versions/{fixture.Request.VersionId}/files/0")).StatusCode);
     }
 
     [Fact]
@@ -119,6 +134,17 @@ public sealed class NoteMaterialEndpointsTests : IDisposable
         Assert.True(upload.GetProperty("requestBody").GetProperty("content").TryGetProperty("application/octet-stream", out var binary));
         Assert.Equal("string", binary.GetProperty("schema").GetProperty("type").GetString());
         Assert.Equal("binary", binary.GetProperty("schema").GetProperty("format").GetString());
+        var download = paths.GetProperty(Root + "/versions/{versionId}/files/{fileIndex}").GetProperty("get");
+        Assert.True(download.TryGetProperty("security", out var downloadSecurity) && downloadSecurity.GetArrayLength() > 0);
+        var downloadResponse = download.GetProperty("responses").GetProperty("200");
+        Assert.True(downloadResponse.GetProperty("content").TryGetProperty("application/octet-stream", out var fileContent));
+        Assert.Equal("string", fileContent.GetProperty("schema").GetProperty("type").GetString());
+        Assert.Equal("binary", fileContent.GetProperty("schema").GetProperty("format").GetString());
+        var headers = downloadResponse.GetProperty("headers");
+        Assert.Equal("string", headers.GetProperty("X-Content-SHA256").GetProperty("schema").GetProperty("type").GetString());
+        Assert.Equal("^[0-9a-f]{64}$",
+            headers.GetProperty("X-Content-SHA256").GetProperty("schema").GetProperty("pattern").GetString());
+        Assert.True(headers.TryGetProperty("X-Content-Type-Options", out _));
         Assert.True(paths.TryGetProperty(Root + "/versions/{versionId}/complete", out _));
         Assert.True(paths.TryGetProperty(Root + "/versions/{versionId}/promote", out _));
         Assert.True(document.RootElement.GetProperty("components").GetProperty("schemas").TryGetProperty("BeginNoteMaterialUploadRequest", out _));

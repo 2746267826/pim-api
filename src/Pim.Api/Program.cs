@@ -98,6 +98,9 @@ builder.Services.AddSwaggerGen(c =>
     // R19: segment content returns binary audio plus immutable routing identity headers;
     // Swashbuckle cannot infer custom response headers, so the contract is documented here.
     c.OperationFilter<Pim.Api.Infrastructure.OpenApi.NoteAsrSegmentContentOperationFilter>();
+    // Native-note material download streams immutable source bytes with an integrity header.
+    // Document the actual binary schema and headers so generated Windows clients can consume it.
+    c.OperationFilter<Pim.Api.Infrastructure.OpenApi.NoteMaterialFileContentOperationFilter>();
     // Batch upload binds a real [FromForm] StartNoteAsrBatchForm; flatten its typed fields and
     // binary file into the multipart root rather than emitting one nested "form" part.
     c.OperationFilter<Pim.Api.Infrastructure.OpenApi.NoteAsrBatchFormOperationFilter>();

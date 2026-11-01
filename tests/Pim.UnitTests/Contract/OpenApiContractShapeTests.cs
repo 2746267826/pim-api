@@ -122,6 +122,26 @@ public sealed class OpenApiContractShapeTests
     }
 
     [Fact]
+    public void NoteMaterialFileContentIsBinaryWithIntegrityAndSafeDownloadHeaders()
+    {
+        var operation = Document.Paths[
+            "/api/v1/native-notes/versions/{versionId}/files/{fileIndex}"]
+            .Operations[OperationType.Get];
+        Assert.NotEmpty(operation.Security);
+        var response = operation.Responses["200"];
+        var content = Assert.Single(response.Content);
+        Assert.Equal("application/octet-stream", content.Key);
+        Assert.Equal("string", content.Value.Schema.Type);
+        Assert.Equal("binary", content.Value.Schema.Format);
+        Assert.Null(content.Value.Schema.Reference);
+        Assert.Equal("string", response.Headers["X-Content-SHA256"].Schema.Type);
+        Assert.Equal("^[0-9a-f]{64}$", response.Headers["X-Content-SHA256"].Schema.Pattern);
+        Assert.Equal("string", response.Headers["X-Content-Type-Options"].Schema.Type);
+        Assert.Equal("string", response.Headers["Cache-Control"].Schema.Type);
+        Assert.Equal("string", response.Headers["Content-Disposition"].Schema.Type);
+    }
+
+    [Fact]
     public void UrlTranscriptionEndpointsExposeTypedCreateReadAndReplayShapes()
     {
         var create = Document.Paths["/api/v1/ai/asr-url-calls"].Operations[OperationType.Post];
