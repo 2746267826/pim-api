@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using Hangfire;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -67,6 +68,37 @@ public sealed class NoteTaskSuggestionTests
                 default));
         Assert.Equal(40901, conflict.ErrorCode);
         Assert.Equal(1, harness.Source.ReadCount);
+    }
+
+    [SkippableFact]
+    public async Task StartFailsClosedWithoutCreatingAnExtractionWhenDispatcherIsUnavailable()
+    {
+        await using var harness = await Harness.CreateAsync(
+            "test_note_task_suggestion_no_dispatcher", dispatchAvailable: false);
+
+        var error = await Assert.ThrowsAsync<DomainException>(
+            () => harness.Service.StartExtractionAsync(harness.Request(), default));
+
+        Assert.Equal(50301, error.ErrorCode);
+        Assert.Equal(0, harness.Source.ReadCount);
+        Assert.Empty(await harness.AdminDb.Set<NoteTaskSuggestionExtractionEntity>().ToListAsync());
+    }
+
+    [SkippableFact]
+    public async Task ExistingExtractionCanBeReadAndReplayedWithoutDispatcher()
+    {
+        await using var harness = await Harness.CreateAsync("test_note_task_suggestion_readback");
+        var request = harness.Request();
+        var first = await harness.Service.StartExtractionAsync(request, default);
+        var unavailable = harness.NewService(harness.Db, dispatchAvailable: false);
+
+        var replay = await unavailable.StartExtractionAsync(request, default);
+        var readback = await unavailable.GetExtractionAsync(first.Id, default);
+
+        Assert.Equal(first.Id, replay.Id);
+        Assert.Equal(first.Id, readback.Id);
+        Assert.Equal(NoteTaskSuggestionExtractionStatusDto.Queued, readback.Status);
+        Assert.Equal(1, await harness.AdminDb.Set<NoteTaskSuggestionExtractionEntity>().CountAsync());
     }
 
     [SkippableFact]
@@ -205,6 +237,85 @@ public sealed class NoteTaskSuggestionTests
         Assert.Equal(NoteTaskSuggestionExtractionStatuses.Succeeded, completed.Status);
         Assert.Equal(1, completed.AttemptCount);
         Assert.Equal(1, harness.Wire.Calls);
+    }
+
+    [SkippableFact]
+    public async Task StaleExtractionRechecksAnExistingRunningAiCallWithoutPayingAgain()
+    {
+        await using var harness = await Harness.CreateAsync("test_note_task_suggestion_running_receipt");
+        var extraction = await harness.Service.StartExtractionAsync(harness.Request(), default);
+        harness.Wire.Reply = "not-json";
+        await harness.Job.RunAsync(harness.Owner, extraction.Id, default);
+        harness.Db.ChangeTracker.Clear();
+
+        var log = await harness.AdminDb.AiRequestLogs.SingleAsync();
+        var stale = await harness.AdminDb.Set<NoteTaskSuggestionExtractionEntity>()
+            .SingleAsync(x => x.Id == extraction.Id);
+        log.Status = "running";
+        log.ErrorCode = null;
+        log.ErrorMessage = null;
+        log.FinishedAt = null;
+        log.ExecutionExpiresAt = DateTimeOffset.UtcNow.AddMinutes(5);
+        stale.Status = NoteTaskSuggestionExtractionStatuses.Running;
+        stale.ErrorCode = null;
+        stale.ErrorMessage = null;
+        stale.FinishedAt = null;
+        stale.UpdatedAt = DateTimeOffset.UtcNow.AddMinutes(-6);
+        await harness.AdminDb.SaveChangesAsync();
+        var callsBeforeRetry = harness.Wire.Calls;
+
+        await harness.Job.RunAsync(harness.Owner, extraction.Id, default);
+
+        harness.Db.ChangeTracker.Clear();
+        var stored = await harness.AdminDb.Set<NoteTaskSuggestionExtractionEntity>()
+            .AsNoTracking().SingleAsync(x => x.Id == extraction.Id);
+        var storedLog = await harness.AdminDb.AiRequestLogs.AsNoTracking().SingleAsync();
+        Assert.Equal(extraction.Id, storedLog.ClientRequestId);
+        Assert.Equal(log.Id, stored.AiCallLogId);
+        Assert.Equal(NoteTaskSuggestionExtractionStatuses.Running, stored.Status);
+        Assert.Equal("running", storedLog.Status);
+        Assert.Equal(2, stored.AttemptCount);
+        Assert.Equal(callsBeforeRetry, harness.Wire.Calls);
+        Assert.Equal(1, await harness.AdminDb.AiRequestLogs.CountAsync());
+    }
+
+    [SkippableFact]
+    public async Task StaleExtractionReplaysExistingTimedOutAiCallWithoutPayingAgain()
+    {
+        await using var harness = await Harness.CreateAsync("test_note_task_suggestion_timeout_receipt");
+        var extraction = await harness.Service.StartExtractionAsync(harness.Request(), default);
+        harness.Wire.Reply = "not-json";
+        await harness.Job.RunAsync(harness.Owner, extraction.Id, default);
+        harness.Db.ChangeTracker.Clear();
+
+        var log = await harness.AdminDb.AiRequestLogs.SingleAsync();
+        var stale = await harness.AdminDb.Set<NoteTaskSuggestionExtractionEntity>()
+            .SingleAsync(x => x.Id == extraction.Id);
+        log.Status = "timed_out";
+        log.ErrorCode = "timed_out";
+        log.ErrorMessage = "synthetic timed out receipt";
+        log.FinishedAt = DateTimeOffset.UtcNow;
+        stale.Status = NoteTaskSuggestionExtractionStatuses.Running;
+        stale.ErrorCode = null;
+        stale.ErrorMessage = null;
+        stale.FinishedAt = null;
+        stale.UpdatedAt = DateTimeOffset.UtcNow.AddMinutes(-6);
+        await harness.AdminDb.SaveChangesAsync();
+        var callsBeforeRetry = harness.Wire.Calls;
+
+        await harness.Job.RunAsync(harness.Owner, extraction.Id, default);
+
+        harness.Db.ChangeTracker.Clear();
+        var stored = await harness.AdminDb.Set<NoteTaskSuggestionExtractionEntity>()
+            .AsNoTracking().SingleAsync(x => x.Id == extraction.Id);
+        var storedLog = await harness.AdminDb.AiRequestLogs.AsNoTracking().SingleAsync();
+        Assert.Equal(extraction.Id, storedLog.ClientRequestId);
+        Assert.Equal(log.Id, stored.AiCallLogId);
+        Assert.Equal(NoteTaskSuggestionExtractionStatuses.Failed, stored.Status);
+        Assert.Equal("ai_timedout", stored.ErrorCode);
+        Assert.Equal("timed_out", storedLog.Status);
+        Assert.Equal(callsBeforeRetry, harness.Wire.Calls);
+        Assert.Equal(1, await harness.AdminDb.AiRequestLogs.CountAsync());
     }
 
     [SkippableFact]
@@ -438,7 +549,8 @@ public sealed class NoteTaskSuggestionTests
             PimDbContext db,
             FakeSourceReader source,
             Wire wire,
-            AiModelProfileEntity profile)
+            AiModelProfileEntity profile,
+            IBackgroundJobClient? jobs)
         {
             _database = database;
             Owner = owner;
@@ -453,7 +565,7 @@ public sealed class NoteTaskSuggestionTests
             var calls = new AiTextCallService(db, secrets, new AiProfileChatClientFactory(wire),
                 currentUser, new AiTextCallGate());
             Service = new NoteTaskSuggestionService(db, currentUser, source, calendar,
-                TimeProvider.System, NullLogger<NoteTaskSuggestionService>.Instance);
+                TimeProvider.System, NullLogger<NoteTaskSuggestionService>.Instance, jobs);
             Job = new NoteTaskSuggestionExtractionJob(db,
                 new AiTextNoteTaskSuggestionModelClient(calls),
                 TimeProvider.System,
@@ -472,7 +584,8 @@ public sealed class NoteTaskSuggestionTests
         public NoteTaskSuggestionService Service { get; }
         public NoteTaskSuggestionExtractionJob Job { get; }
 
-        public static async Task<Harness> CreateAsync(string prefix)
+        public static async Task<Harness> CreateAsync(
+            string prefix, bool dispatchAvailable = true)
         {
             PimDbContext.RegisterModuleAssembly(typeof(NoteTaskSuggestionsModule).Assembly);
             PimDbContext.RegisterModuleAssembly(typeof(TaskEntity).Assembly);
@@ -530,7 +643,8 @@ public sealed class NoteTaskSuggestionTests
             };
             source.ContentSha256 = NoteTaskSuggestionService.Hash(source.ContentMarkdown);
             var wire = new Wire();
-            return new Harness(database, owner, options, currentUser, secrets, db, source, wire, profile);
+            return new Harness(database, owner, options, currentUser, secrets, db, source, wire, profile,
+                dispatchAvailable ? new RecordingJobs() : null);
         }
 
         public StartNoteTaskSuggestionExtractionRequest Request() => new(
@@ -545,13 +659,15 @@ public sealed class NoteTaskSuggestionTests
 
         public PimDbContext NewContext() => new(_options, _currentUser);
 
-        public NoteTaskSuggestionService NewService(PimDbContext db) => new(
+        public NoteTaskSuggestionService NewService(
+            PimDbContext db, bool dispatchAvailable = true) => new(
             db,
             _currentUser,
             Source,
             Calendar(db),
             TimeProvider.System,
-            NullLogger<NoteTaskSuggestionService>.Instance);
+            NullLogger<NoteTaskSuggestionService>.Instance,
+            dispatchAvailable ? new RecordingJobs() : null);
 
         public async Task<NoteTaskSuggestionDto> CreateSuggestionAsync(string title = "先写测试")
         {
@@ -598,6 +714,15 @@ public sealed class NoteTaskSuggestionTests
             await Db.DisposeAsync();
             await _database.DisposeAsync();
         }
+    }
+
+    private sealed class RecordingJobs : IBackgroundJobClient
+    {
+        public string Create(Hangfire.Common.Job job, Hangfire.States.IState state) =>
+            Guid.NewGuid().ToString("N");
+
+        public bool ChangeState(
+            string jobId, Hangfire.States.IState state, string expectedState) => true;
     }
 
     private sealed class FakeUser(Guid id) : ICurrentUserService

@@ -45,6 +45,19 @@ public sealed class NoteTaskSuggestionEndpointsTests
         Assert.Equal(40001, error.Code);
         Assert.Contains("可能产生费用", error.Message);
 
+        var unavailable = await client.PostAsJsonAsync(
+            NoteTaskSuggestionEndpointPaths.Root + "/extractions", request with
+            {
+                RequestId = Guid.NewGuid(),
+                Consent = new NoteDerivedGenerationConsent(
+                    Guid.NewGuid(), Guid.NewGuid(), "https://text.invalid/v1", true),
+                AcknowledgePossibleCharge = true
+            });
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, unavailable.StatusCode);
+        var unavailableError = await AuthRegistrationTestHost.ReadErrorAsync(unavailable);
+        Assert.Equal(50301, unavailableError.Code);
+        Assert.Contains("后台处理未配置", unavailableError.Message);
+
         var swagger = await client.GetAsync("/swagger/v1/swagger.json");
         Assert.Equal(HttpStatusCode.OK, swagger.StatusCode);
         using var document = JsonDocument.Parse(await swagger.Content.ReadAsStringAsync());
@@ -55,6 +68,7 @@ public sealed class NoteTaskSuggestionEndpointsTests
         Assert.True(paths.GetProperty(NoteTaskSuggestionEndpointPaths.Root + "/extractions")
             .TryGetProperty("post", out var create));
         Assert.True(create.TryGetProperty("requestBody", out _));
+        Assert.True(create.GetProperty("responses").TryGetProperty("503", out _));
         Assert.True(paths.TryGetProperty(NoteTaskSuggestionEndpointPaths.Root + "/{id}/confirm", out _));
         Assert.True(paths.TryGetProperty(NoteTaskSuggestionEndpointPaths.Root + "/{id}/dismiss", out _));
 

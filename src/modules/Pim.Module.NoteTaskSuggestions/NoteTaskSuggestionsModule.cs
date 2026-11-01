@@ -53,6 +53,7 @@ public sealed class NoteTaskSuggestionsModule : IModule
         .Produces<ApiResponse<string>>(403)
         .Produces<ApiResponse<string>>(409)
         .Produces<ApiResponse<string>>(413)
+        .Produces<ApiResponse<string>>(503)
         .Produces<ApiResponse<string>>(500);
 
         group.MapGet("/extractions/{id:guid}", async (

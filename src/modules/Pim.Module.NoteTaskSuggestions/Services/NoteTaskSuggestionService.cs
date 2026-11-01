@@ -39,6 +39,9 @@ internal sealed class NoteTaskSuggestionService(
         var existing = await FindExtractionByRequestAsync(owner, request.RequestId, ct);
         if (existing is not null)
             return ReplayExtraction(existing, fingerprint);
+        if (jobs is null)
+            throw new DomainException(50301,
+                "任务建议后台处理未配置；本次未创建提取记录，请稍后重试");
 
         var source = await sourceReader.ReadAsync(request.ArtifactId, request.VersionId, ct);
         if (source.NoteId != request.NoteId || source.ArtifactId != request.ArtifactId ||
@@ -98,7 +101,7 @@ internal sealed class NoteTaskSuggestionService(
             created = false;
         }
 
-        if (created && jobs is not null)
+        if (created)
         {
             try
             {
