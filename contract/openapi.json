@@ -16886,6 +16886,49 @@
         ],
         "type": "object"
       },
+      "NoteDerivedBatchReceiptDto": {
+        "additionalProperties": false,
+        "properties": {
+          "actualImages": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "binding": {
+            "$ref": "#/components/schemas/NoteDerivedReceiptBindingDto"
+          },
+          "issues": {
+            "items": {
+              "$ref": "#/components/schemas/NoteDerivedIssueDto"
+            },
+            "type": "array"
+          },
+          "plannedImages": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "sourceIds": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "status": {
+            "type": "string"
+          },
+          "stepKey": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "actualImages",
+          "issues",
+          "plannedImages",
+          "sourceIds",
+          "status",
+          "stepKey"
+        ],
+        "type": "object"
+      },
       "NoteDerivedCoverageDto": {
         "additionalProperties": false,
         "properties": {
@@ -17218,6 +17261,156 @@
         ],
         "type": "object"
       },
+      "NoteDerivedReceiptBindingDto": {
+        "additionalProperties": false,
+        "properties": {
+          "aiCallLogId": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          },
+          "evidenceId": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          },
+          "expectedInputSha256": {
+            "nullable": true,
+            "type": "string"
+          },
+          "expectedOutputSha256": {
+            "nullable": true,
+            "type": "string"
+          },
+          "expectedSourceObjectId": {
+            "nullable": true,
+            "type": "string"
+          },
+          "expectedSourceObjectType": {
+            "nullable": true,
+            "type": "string"
+          },
+          "inputSha256": {
+            "nullable": true,
+            "type": "string"
+          },
+          "observedSourceObjectId": {
+            "nullable": true,
+            "type": "string"
+          },
+          "observedSourceObjectType": {
+            "nullable": true,
+            "type": "string"
+          },
+          "outputSha256": {
+            "nullable": true,
+            "type": "string"
+          },
+          "requestId": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          },
+          "stage": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "stepKey": {
+            "nullable": true,
+            "type": "string"
+          },
+          "verified": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "stage",
+          "status",
+          "verified"
+        ],
+        "type": "object"
+      },
+      "NoteDerivedSourceKind": {
+        "enum": [
+          "TextBlock",
+          "TranscriptSegment",
+          "Photo",
+          "InkPreview"
+        ],
+        "type": "string"
+      },
+      "NoteDerivedSourceReceiptDto": {
+        "additionalProperties": false,
+        "properties": {
+          "asrReceiptKind": {
+            "nullable": true,
+            "type": "string"
+          },
+          "bindings": {
+            "items": {
+              "$ref": "#/components/schemas/NoteDerivedReceiptBindingDto"
+            },
+            "type": "array"
+          },
+          "blockId": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          },
+          "issues": {
+            "items": {
+              "$ref": "#/components/schemas/NoteDerivedIssueDto"
+            },
+            "type": "array"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/NoteDerivedSourceKind"
+          },
+          "ordinal": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "sizeBytes": {
+            "format": "int64",
+            "nullable": true,
+            "type": "integer"
+          },
+          "sourceId": {
+            "type": "string"
+          },
+          "sourcePath": {
+            "nullable": true,
+            "type": "string"
+          },
+          "sourceSha256": {
+            "nullable": true,
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "textCharacters": {
+            "format": "int32",
+            "nullable": true,
+            "type": "integer"
+          },
+          "textSha256": {
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "required": [
+          "bindings",
+          "issues",
+          "kind",
+          "ordinal",
+          "sourceId",
+          "status"
+        ],
+        "type": "object"
+      },
       "NoteDerivedStepDto": {
         "additionalProperties": false,
         "properties": {
@@ -17252,6 +17445,51 @@
           "AnalysisSynthesis"
         ],
         "type": "string"
+      },
+      "NoteDerivedStepReceiptDto": {
+        "additionalProperties": false,
+        "properties": {
+          "aiCallLogId": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          },
+          "binding": {
+            "$ref": "#/components/schemas/NoteDerivedReceiptBindingDto"
+          },
+          "evidenceId": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          },
+          "issues": {
+            "items": {
+              "$ref": "#/components/schemas/NoteDerivedIssueDto"
+            },
+            "type": "array"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/NoteDerivedStepKind"
+          },
+          "requestId": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "stepKey": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "issues",
+          "kind",
+          "status",
+          "stepKey"
+        ],
+        "type": "object"
       },
       "NoteDerivedStepsDto": {
         "additionalProperties": false,
@@ -17441,6 +17679,103 @@
             },
             "nullable": true,
             "type": "array"
+          },
+          "message": {
+            "type": "string"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
+        "type": "object"
+      },
+      "NoteDerivedTaskReceiptDto": {
+        "additionalProperties": false,
+        "properties": {
+          "asrTaskId": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          },
+          "batches": {
+            "items": {
+              "$ref": "#/components/schemas/NoteDerivedBatchReceiptDto"
+            },
+            "type": "array"
+          },
+          "complete": {
+            "type": "boolean"
+          },
+          "inputSha256": {
+            "type": "string"
+          },
+          "issues": {
+            "items": {
+              "$ref": "#/components/schemas/NoteDerivedIssueDto"
+            },
+            "type": "array"
+          },
+          "manifestSha256": {
+            "type": "string"
+          },
+          "noteId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "phase": {
+            "type": "string"
+          },
+          "sourceVersionId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/NoteDerivedSourceReceiptDto"
+            },
+            "type": "array"
+          },
+          "steps": {
+            "items": {
+              "$ref": "#/components/schemas/NoteDerivedStepReceiptDto"
+            },
+            "type": "array"
+          },
+          "taskId": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "batches",
+          "complete",
+          "inputSha256",
+          "issues",
+          "manifestSha256",
+          "noteId",
+          "phase",
+          "sources",
+          "sourceVersionId",
+          "steps",
+          "taskId"
+        ],
+        "type": "object"
+      },
+      "NoteDerivedTaskReceiptDtoApiResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "data": {
+            "$ref": "#/components/schemas/NoteDerivedTaskReceiptDto"
           },
           "message": {
             "type": "string"
@@ -42799,6 +43134,50 @@
         ]
       }
     },
+    "/api/v1/native-notes/derived-tasks/{taskId}/receipt": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "taskId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NoteDerivedTaskReceiptDtoApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "404": {
+            "description": "Not Found"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Native note derived artifacts"
+        ]
+      }
+    },
     "/api/v1/native-notes/derived-tasks/{taskId}/retry": {
       "post": {
         "parameters": [
@@ -44116,44 +44495,6 @@
               }
             },
             "description": "Conflict"
-          }
-        },
-        "security": [
-          {
-            "bearerAuth": []
-          }
-        ],
-        "tags": [
-          "Native notes"
-        ]
-      }
-    },
-    "/api/v1/native-notes/{noteId}": {
-      "delete": {
-        "parameters": [
-          {
-            "in": "path",
-            "name": "noteId",
-            "required": true,
-            "schema": {
-              "format": "uuid",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/StringApiResponse"
-                }
-              }
-            },
-            "description": "OK"
-          },
-          "401": {
-            "description": "Unauthorized"
           }
         },
         "security": [
