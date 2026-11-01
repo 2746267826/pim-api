@@ -1,5 +1,7 @@
 # ASR 双通道增量方案（#516 排期）
 
+状态（v0.46 当前覆盖）：截至 2026-11-01，API/Web `1047` 与 Windows `1111` 已实际发布；Android 本地 source/test 已完成于 clean commit `277236a8b8539684bdc0c56b88438bd2c30b216c`，App `2068` PASS、Core `72` XML UP-TO-DATE，但正常 HTTPS/OpenSSL/HTTP1.1/Schannel push TLS 握手失败、SSH known-host 缺失拒认证，因此未 push、无 PR/CI/merge/Release；外部模型/provider/device/hardware/OEM 与 production 仍 NOT-VERIFIED，#516 未完成。下方 v0.45 状态行及更早正文为历史快照。
+
 状态（v0.45 当前覆盖）：截至 2026-11-01，集成验证树已在实际 Kestrel、隔离 PostgreSQL、默认 `EnableRetryOnFailure(3)` 与 Windows typed transport 下完成 route config → register/claim → binary content → ACK → ASR `Succeeded` → 显式 Derived job → 两个 artifact 的受控闭环；实际 Swagger 与 v4 契约逐字一致。该证据不替代 API 最终 master、Hangfire、真实模型/硬件、OEM/device、AC1–19 或 production。下方 v0.44 状态行及更早正文为历史快照。
 
 状态（v0.44 当前覆盖）：截至 2026-11-01，API `1040/1044` 与 Android `1145` 已发布，但 #549 仍为 Draft 且 CI 未完成；#533/#539 保持 OPEN；#516 继续按五个原始阶段记录混合状态；默认生产等价 `EnableRetryOnFailure(3)` 下真实 Kestrel route-config/claim 均复现 HTTP 500，是 claim/ACK 全链验收的当前发布阻断。下方 v0.43 状态行及更早正文为历史快照。
@@ -7,6 +9,45 @@
 状态（v0.43 当前覆盖）：#516 是逐 Phase 混合状态，不再用单一整体状态概括；#539 API 202 协议与 Android consumer 已交付到 exact CI，但设备/真实 E2E 与 production 仍 NOT-VERIFIED；#533 代码已集成但 issue 保持 OPEN。下方 v0.42 状态行及更早正文为历史快照。更新日期：2026-10-31。
 
 状态：**WEB/ANDROID/API GITHUB RELEASE VERIFIED / NOT PRODUCTION-VERIFIED；#516 PLANNED / NOT IMPLEMENTED；两项产品决策 CONFIRMED；MiMo Batch 仅需求/排期追加，NOT IMPLEMENTED / NOT-VERIFIED**。更新日期：2026-10-31。本文把 #516 的已提出需求整理为依赖明确、顺序合理的增量计划，不是工期承诺或功能完成报告；v0.42 MiMo Batch 增量与 v0.41 已确认决策覆盖见下方最新说明。
+
+<a id="v046-latest-status"></a>
+
+## v0.46 最新状态覆盖：已发布事实、Android 本地阻塞与恢复顺序（2026-11-01）
+
+本节只追加当前覆盖，不改写下方的 v0.45、v0.44、v0.43、v0.42、v0.41 及更早正文。45 个稳定 requirement ID、32 项 capability、32 行差距、13 个 MIG、AC1–19 原编号、五阶段原编号与既有 history 字节保持原样；本轮不新增稳定编号。本层只记录可回读的发布事实、Android 本地状态、明确外部阻塞与恢复顺序，不把本地 commit、CI job 或网络失败写成产品闭环。
+
+### 已发布与本地事实
+
+- API/Web immutable master 为 `84ef802e7c85a1b6c3017c0c274a108fea57f9d2`；master CI `41272531071` 的适用 jobs 与 CI Gate 成功；同仓 Release `api-v26.11.1047` 已发布，非 draft、非 prerelease，tag 解析到该 master SHA。`pim-web-version` ledger 为 120 bytes、SHA-256 `6AE8F17A6B5B62666793BE37832E316888DE7380970A696ABD514A05B563E8AB`。
+- Windows PR `pim-windows#40` final head 为 `5a28b84403494ce02bf06ab0850072bfe906787f`，于 `2026-11-01T05:24:27Z` 普通 merge 为 `1270bf6a093b1777646b2710d01a4432795adc32`；master CI `41276828062` 以该 merge 为 head，15 个 jobs 全部 SUCCESS，CI Gate job `124761390727` 与 release job `124761437102` 均 SUCCESS。Release `windows-v26.11.1111` 于 `2026-11-01T05:29:19Z` 发布，非 draft、非 prerelease。
+- Windows Release API 的 `target_commitish` 字面为 `master`，不能写成 SHA；immutable tag 实际解析到 merge `1270bf6a093b1777646b2710d01a4432795adc32`。四个 asset 的 size、SHA-256 与 `version.json` 均已由 receipt 回读核验；`version.json` 为 633 bytes、SHA-256 `9ae123c0e76efe379a203569284dfdce57f8b404f2a5a8874b6a0c1d746fc7e6`。
+- Windows master raw test counts 单独记账：Core `294 passed / 0 failed / 1 skipped / 295 total`，App `93 passed / 0 failed / 0 skipped / 93 total`。Core 的 `1 skipped` 是实际 Windows-only DPAPI skip；此前本地 Core `295 passed` 不得替代 master 结果，也不得把 job/Gate SUCCESS 解释为 `295 passed`。
+- Android 已有 clean 本地 source commit `277236a8b8539684bdc0c56b88438bd2c30b216c`；App `2068` 实跑 PASS，Core `72` XML 为 UP-TO-DATE（不是 master CI 新跑回执）。尚无 Android Release 事实。
+
+### 外部阻塞
+
+- Android code 尚未 push：正常 HTTPS、OpenSSL、HTTP/1.1 与 Schannel push 均出现 TLS 握手失败；API 可达，因此不是 API 不可用或产品运行失败。
+- 既有 SSH known-host 配置缺失导致认证被拒；本轮没有写 `known_hosts`，也没有关闭或绕过证书/主机验证。
+- Android 当前只能是 `NOTPUSHED / PR NOT CREATED / CI-MERGE-RELEASE PENDING`。本地 commit、App 2068、Core XML UP-TO-DATE 均不能写成 PR、Gate、merge、Release 或完整工程完成。
+
+### 下一步恢复顺序
+
+1. 网络恢复后，先用正常 HTTPS 方式恢复 Android git push；不绕过 TLS、known-host 或凭据校验。
+2. 从本地 clean commit 创建正常 Android PR，完成 exact-head CI/Gate，再普通 merge 并按既有流程发布。
+3. Release 回执实际可读后，再推进真实模型/provider、硬件/device、OEM、真实音频质量与外部 AC；缺证据项保持 `NOT-VERIFIED`。
+4. 同一 docs 分支在网络恢复后走正常 docs-only PR/CI/Gate/matched-head merge；本文件不等于已进入 master，也不产生产品 Release。
+
+### English parity
+
+API/Web `api-v26.11.1047` and Windows `windows-v26.11.1111` are actual published Releases. Windows merged `1270bf6a...` from PR head `5a28b844...`; master run `41276828062` has all 15 jobs and CI Gate successful, and the immutable tag resolves to the merge SHA while Release API `target_commitish` remains the literal `master`. Windows master raw counts are Core `294 passed / 0 failed / 1 skipped / 295 total` and App `93 passed / 0 failed / 0 skipped / 93 total`; the earlier local Core `295 passed` cannot replace master evidence.
+
+Android has clean local commit `277236a8...`, App `2068` passed, and Core `72` XML is up to date, but it is not pushed and has no PR, CI, merge, or Release. Normal HTTPS/OpenSSL/HTTP1.1/Schannel pushes failed TLS handshake; SSH authentication failed because known-host state is absent, without writing `known_hosts` or disabling verification. Recovery order is normal Android push, PR/CI/Gate, ordinary merge and Release, then real model/provider/device acceptance. External AC remains `NOT-VERIFIED`; this v0.46 document is local docs state, not master or a product Release.
+
+### History
+
+| Date | Record | State |
+| --- | --- | --- |
+| 2026-11-01 | v0.46 records actual API/Web `1047` and Windows `1111` Releases, Android local App/Core evidence, and the external push/PR/CI/Release block. | Local docs state; Android not pushed; external AC `NOT-VERIFIED`. |
 
 <a id="v045-latest-status"></a>
 
