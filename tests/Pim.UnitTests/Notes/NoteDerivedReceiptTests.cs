@@ -190,6 +190,7 @@ public sealed class NoteDerivedReceiptTests
                 Id = attemptId, OwnerId = owner, TaskId = asrTaskId, NoteId = material.NoteId,
                 VersionId = material.VersionId, InputSha256 = snapshot.InputSha256, Route = "local"
             },
+            null,
             new Dictionary<int, NoteAsrSegmentEvidenceEntity> { [0] = proof });
 
         var valid = NoteDerivedReceipts.Build(state, [], new HashSet<Guid>(), context, []);
@@ -342,6 +343,7 @@ public sealed class NoteDerivedReceiptTests
             new Dictionary<Guid, AiCallAudioEntity> { [log.Id] = audio },
             asr,
             attempt,
+            null,
             new Dictionary<int, NoteAsrSegmentEvidenceEntity>());
 
         var receipt = NoteDerivedReceipts.Build(state, [], new HashSet<Guid>(), context, []);
@@ -479,7 +481,7 @@ public sealed class NoteDerivedReceiptTests
         };
         return new(state, actual, visionLog,
             new NoteDerivedReceiptContext(logsById, logsByRequest, versions,
-                new Dictionary<Guid, AiCallAudioEntity>(), null, null,
+                new Dictionary<Guid, AiCallAudioEntity>(), null, null, null,
                 new Dictionary<int, NoteAsrSegmentEvidenceEntity>()),
             material.Markdown, visionResponse);
     }
@@ -524,12 +526,9 @@ public sealed class NoteDerivedReceiptTests
             sourceObjectType = NoteDerivedPrompts.SourceObjectType,
             sourceObjectId = state.Request.TaskId.ToString("D"),
             purpose = NoteDerivedPrompts.VisionPurpose,
-            request = new
-            {
-                ModelId = (Guid?)state.Request.Consent.ModelId,
-                SystemPrompt = (string?)null,
-                Prompt = prompt
-            },
+            ModelId = (Guid?)state.Request.Consent.ModelId,
+            SystemPrompt = (string?)null,
+            Prompt = prompt,
             consent,
             images = step.Images.OrderBy(x => x.Ordinal).Select(x => new
             {
@@ -551,12 +550,9 @@ public sealed class NoteDerivedReceiptTests
             sourceObjectType = NoteDerivedPrompts.SourceObjectType,
             sourceObjectId = state.Request.TaskId.ToString("D"),
             purpose,
-            request = new
-            {
-                ModelId = (Guid?)state.Request.Consent.ModelId,
-                SystemPrompt = (string?)null,
-                Prompt = prompt
-            },
+            ModelId = (Guid?)state.Request.Consent.ModelId,
+            SystemPrompt = (string?)null,
+            Prompt = prompt,
             consent
         }, Json));
     }

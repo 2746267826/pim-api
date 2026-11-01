@@ -11,14 +11,26 @@ using Xunit;
 
 namespace Pim.UnitTests.Notes;
 
-public sealed class NoteTaskSuggestionEndpointsTests
+public sealed class NoteTaskSuggestionEndpointsTests : IAsyncLifetime
 {
+    private readonly string _root = Path.Combine(Path.GetTempPath(), "pim-note-task-suggestion-http",
+        Guid.NewGuid().ToString("N"));
+
+    public Task InitializeAsync() => Task.CompletedTask;
+
+    public Task DisposeAsync()
+    {
+        if (Directory.Exists(_root)) Directory.Delete(_root, recursive: true);
+        return Task.CompletedTask;
+    }
+
     [Fact]
     public async Task TestHostDiscoversAuthorizedRoutesAndExportsTypedContract()
     {
         using var factory = AuthRegistrationTestHost.Create(
                 AuthRegistrationTestHost.NewDbName("note-task-suggestion-http"))
-            .WithWebHostBuilder(builder => builder.UseEnvironment("Test"));
+            .WithWebHostBuilder(builder => builder.UseEnvironment("Test")
+                .UseSetting("DataProtection:KeysPath", Path.Combine(_root, "keys")));
 
         using var anonymous = factory.CreateClient();
         var unauthorized = await anonymous.PostAsJsonAsync(

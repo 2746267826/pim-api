@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using Pim.Core.Ai;
 using Pim.Core.Notes;
+using Pim.Infrastructure.Ai.Asr;
 using Pim.Infrastructure.Data.Entities;
 
 namespace Pim.Infrastructure.Notes;
@@ -14,6 +15,7 @@ internal sealed record NoteDerivedReceiptContext(
     IReadOnlyDictionary<Guid, AiCallAudioEntity> AudioByLogId,
     NoteAsrState? Asr,
     NoteAsrAttemptEntity? Attempt,
+    AiModelProfileEntity? AsrModel,
     IReadOnlyDictionary<int, NoteAsrSegmentEvidenceEntity> AcceptedEvidence);
 
 internal static class NoteDerivedReceipts
@@ -462,7 +464,8 @@ internal static class NoteDerivedReceipts
                 missing, local, false);
         }
 
-        var expectedInput = AsrFingerprint(context.Attempt, context.AudioByLogId.GetValueOrDefault(log.Id));
+        var expectedInput = AsrFingerprint(state, context.Asr, context.Attempt, context.AsrModel,
+            context.AudioByLogId.GetValueOrDefault(log.Id), log);
         var expectedOutput = Digest(transcript.Text);
         CheckAsrLog(local, log, state, transcript, asrStep, stepKey);
         var audio = context.AudioByLogId.GetValueOrDefault(log.Id);
@@ -554,29 +557,54 @@ internal static class NoteDerivedReceipts
             AddIssue(issues, "asr_source_mismatch", "ASR 回执来源不是当前固定 ASR 任务", stepKey);
     }
 
-    private static string? AsrFingerprint(NoteAsrAttemptEntity? attempt, AiCallAudioEntity? audio)
+    private static string? AsrFingerprint(NoteDerivedTaskState state, NoteAsrState? asr,
+        NoteAsrAttemptEntity? attempt, AiModelProfileEntity? model, AiCallAudioEntity? audio,
+        AiRequestLogEntity log)
     {
-        if (attempt?.ModelId is not { } modelId || attempt.ModelRevision is not { } revision ||
-            string.IsNullOrWhiteSpace(attempt.Endpoint) || string.IsNullOrWhiteSpace(attempt.PresetId) ||
-            string.IsNullOrWhiteSpace(attempt.PresetVersion) ||
-            string.IsNullOrWhiteSpace(attempt.PromptRendered) ||
-            string.IsNullOrWhiteSpace(attempt.PromptSha256) ||
-            string.IsNullOrWhiteSpace(attempt.PromptRevision) ||
-            string.IsNullOrWhiteSpace(attempt.PromptTemplateSha256) ||
-            string.IsNullOrWhiteSpace(attempt.PromptTemplateRevision) ||
-            audio is null || string.IsNullOrWhiteSpace(audio.Name) ||
-            string.IsNullOrWhiteSpace(audio.Format) || string.IsNullOrWhiteSpace(audio.Sha256))
+        if (asr is null || audio is null || string.IsNullOrWhiteSpace(audio.Name) ||
+            string.IsNullOrWhiteSpace(audio.Format) || string.IsNullOrWhiteSpace(audio.Sha256) ||
+            asr.Request.Consent is not { } consent ||
+            consent.ModelId == Guid.Empty || string.IsNullOrWhiteSpace(consent.Endpoint) ||
+            string.IsNullOrWhiteSpace(consent.PresetId) || string.IsNullOrWhiteSpace(consent.PresetVersion))
             return null;
-        var consent = new AiAsrDestinationConsent(modelId, revision, attempt.Endpoint,
-            attempt.PresetId, attempt.PresetVersion, true);
+
+        string? promptRevision;
+        string? promptSha256;
+        if (log.ModelProfileId != consent.ModelId || log.ModelRevision != consent.ModelRevision ||
+            log.ModelEndpoint != consent.Endpoint)
+            return null;
+        if (attempt is not null)
+        {
+            if (attempt.OwnerId != state.Owner || attempt.TaskId != asr.Request.TaskId ||
+                attempt.VersionId != state.Request.VersionId || attempt.ModelId != consent.ModelId ||
+                attempt.ModelRevision != consent.ModelRevision || attempt.Endpoint != consent.Endpoint ||
+                attempt.PresetId != consent.PresetId || attempt.PresetVersion != consent.PresetVersion ||
+                attempt.Language != asr.Request.Language)
+                return null;
+            promptRevision = attempt.PromptRevision;
+            promptSha256 = attempt.PromptSha256;
+        }
+        else
+        {
+            // Legacy calls have no routing-attempt snapshot. A matching immutable profile
+            // revision pins the prompt configuration; the reconstructed fingerprint must match.
+            if (model is null || model.Id != consent.ModelId || model.Revision != consent.ModelRevision)
+                return null;
+            var prompt = AiAsrPromptTemplate.Normalize(model.AsrPrompt).Snapshot(asr.Request.Language);
+            promptRevision = prompt.Revision;
+            promptSha256 = prompt.Sha256;
+        }
+        if (string.IsNullOrWhiteSpace(promptRevision) || string.IsNullOrWhiteSpace(promptSha256))
+            return null;
+
         return Hash(JsonSerializer.Serialize(new
         {
             kind = "asr",
-            ModelId = (Guid?)modelId,
-            Language = attempt.Language,
+            ModelId = (Guid?)consent.ModelId,
+            Language = asr.Request.Language,
             consent,
-            Revision = attempt.PromptRevision,
-            promptSha256 = attempt.PromptSha256,
+            Revision = promptRevision,
+            promptSha256,
             audio.Name,
             audio.Format,
             audio.Sha256,
@@ -596,12 +624,9 @@ internal static class NoteDerivedReceipts
             sourceObjectType = NoteDerivedPrompts.SourceObjectType,
             sourceObjectId = state.Request.TaskId.ToString("D"),
             purpose = NoteDerivedPrompts.VisionPurpose,
-            request = new
-            {
-                ModelId = (Guid?)state.Request.Consent.ModelId,
-                SystemPrompt = (string?)null,
-                Prompt = prompt
-            },
+            ModelId = (Guid?)state.Request.Consent.ModelId,
+            SystemPrompt = (string?)null,
+            Prompt = prompt,
             consent,
             images = step.Images.OrderBy(x => x.Ordinal).Select(x => new
             {
@@ -623,12 +648,9 @@ internal static class NoteDerivedReceipts
             sourceObjectType = NoteDerivedPrompts.SourceObjectType,
             sourceObjectId = state.Request.TaskId.ToString("D"),
             purpose,
-            request = new
-            {
-                ModelId = (Guid?)state.Request.Consent.ModelId,
-                SystemPrompt = (string?)null,
-                Prompt = prompt
-            },
+            ModelId = (Guid?)state.Request.Consent.ModelId,
+            SystemPrompt = (string?)null,
+            Prompt = prompt,
             consent
         }, Json));
     }

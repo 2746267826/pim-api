@@ -253,10 +253,11 @@ public sealed class NoteDerivedJob(
             .ToDictionary(x => x.Key, x => (IReadOnlyList<AiRequestLogEntity>)x
                 .OrderBy(row => row.Id).ToArray());
 
-        var audioByLogId = distinctLogs.Length == 0
+        var allLogIds = distinctLogs.Select(x => x.Id).ToArray();
+        var audioByLogId = allLogIds.Length == 0
             ? new Dictionary<Guid, AiCallAudioEntity>()
             : (await db.AiCallAudio.AsNoTracking()
-                .Where(x => logIds.Contains(x.LogId))
+                .Where(x => allLogIds.Contains(x.LogId))
                 .ToListAsync(ct))
                 .GroupBy(x => x.LogId)
                 .ToDictionary(x => x.Key, x => x.OrderBy(row => row.Id).First());
@@ -286,10 +287,15 @@ public sealed class NoteDerivedJob(
             ? await db.NoteAsrAttempts.AsNoTracking()
                 .SingleOrDefaultAsync(x => x.Id == attemptId && x.OwnerId == state.Owner, ct)
             : null;
+        var asrModel = asr?.Request.Consent is { } consent
+            ? await db.AiModelProfiles.AsNoTracking()
+                .SingleOrDefaultAsync(x => x.Id == consent.ModelId, ct)
+            : null;
         var accepted = attempt is null || asr is null
             ? new Dictionary<int, NoteAsrSegmentEvidenceEntity>()
             : await NoteAsrAcceptedEvidence.LoadAsync(db, state.Owner, attempt, asr, ct);
-        return new(logsById, logsByRequestId, versionsByStep, audioByLogId, asr, attempt, accepted);
+        return new(logsById, logsByRequestId, versionsByStep, audioByLogId, asr, attempt,
+            asrModel, accepted);
     }
 
     private static NoteDerivedStepState? ReadyStep(NoteDerivedTaskState state)

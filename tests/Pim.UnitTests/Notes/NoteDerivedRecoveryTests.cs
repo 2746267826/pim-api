@@ -192,7 +192,7 @@ public sealed class NoteDerivedRecoveryTests : IAsyncLifetime
         await RunDerivedAsync(task.TaskId);
         var completed = await GetDerivedAsync(task.TaskId);
         Assert.Equal("Succeeded", completed.Phase);
-        Assert.True(completed.Coverage.Complete);
+        Assert.True(completed.Coverage.Complete, JsonSerializer.Serialize(completed.Coverage));
         Assert.All(completed.Steps, step => Assert.Equal("Succeeded", step.Status));
         Assert.Equal(1, _visionCalls);
         Assert.Equal(1, _recordCalls);
@@ -464,7 +464,7 @@ public sealed class NoteDerivedRecoveryTests : IAsyncLifetime
         await RunDerivedAsync(task.TaskId);
         var completed = await GetDerivedAsync(task.TaskId);
         Assert.Equal("Succeeded", completed.Phase);
-        Assert.True(completed.Coverage.Complete);
+        Assert.True(completed.Coverage.Complete, JsonSerializer.Serialize(completed.Coverage));
         Assert.Equal(3, completed.Coverage.TranscriptSegments);
         Assert.Equal(3, completed.Coverage.CompletedTranscriptSegments);
         Assert.Equal(completed.Steps.Count, completed.Steps.Select(x => x.Key).Distinct().Count());
