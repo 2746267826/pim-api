@@ -1094,12 +1094,29 @@ public class CalendarService
     }
 
     public Task<TaskResponse> CreateTaskAsync(CreateTaskRequest request, CancellationToken ct)
+    {
+        if (request.CalendarId is not { } calendarId)
+            return CreateTaskCoreAsync(request, ct);
+
+        // A caller that already owns a durable transaction (for example note-task confirmation)
+        // must not nest another BeginTransaction: the production retry strategy rejects it.
+        // The calendar advisory lock still composes with whole-calendar deletion.
+        if (_db.Database.CurrentTransaction is not null)
+            return CreateTaskInExistingTransactionAsync(calendarId, request, ct);
+
         // 复审第 4 轮 I1：建任务时若指定了任务簿，必须与「整本删除」互斥 ——
         // 否则删除方物化任务集合之后新建的任务会逃过整本删除，留下「已删簿 + 活任务 + 在跑的计时」。
         // 锁内重查父簿仍然走软删过滤器，删除已提交时这里会 404（日历不存在）。
-        => request.CalendarId is { } calendarId
-            ? TaskRowLock.WithCalendarLockAsync(_db, calendarId, () => CreateTaskCoreAsync(request, ct), ct)
-            : CreateTaskCoreAsync(request, ct);
+        return TaskRowLock.WithCalendarLockAsync(
+            _db, calendarId, () => CreateTaskCoreAsync(request, ct), ct);
+    }
+
+    private async Task<TaskResponse> CreateTaskInExistingTransactionAsync(
+        Guid calendarId, CreateTaskRequest request, CancellationToken ct)
+    {
+        await TaskRowLock.AcquireCalendarLockAsync(_db, calendarId, ct);
+        return await CreateTaskCoreAsync(request, ct);
+    }
 
     private async Task<TaskResponse> CreateTaskCoreAsync(CreateTaskRequest request, CancellationToken ct)
     {

@@ -13,6 +13,7 @@
     <ProjectReference Include="..\modules\Pim.Module.Files\Pim.Module.Files.csproj" />
     <ProjectReference Include="..\modules\Pim.Module.Mobile\Pim.Module.Mobile.csproj" />
     <ProjectReference Include="..\modules\Pim.Module.Mcp\Pim.Module.Mcp.csproj" />
+    <ProjectReference Include="..\modules\Pim.Module.NoteTaskSuggestions\Pim.Module.NoteTaskSuggestions.csproj" />
   </ItemGroup>
 
   <ItemGroup>
