@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Pim.Core.Ai;
+using Pim.Infrastructure.Ai.Asr;
 using Pim.Infrastructure.Data.Entities;
 
 namespace Pim.Infrastructure.Ai;
@@ -9,12 +10,15 @@ namespace Pim.Infrastructure.Ai;
 internal static class AiCallAudit
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
-    internal static AiTextCallResultDto Result(AiRequestLogEntity row, bool replayed) => new(row.Id, row.Status switch
+    internal static AiTextCallResultDto Result(AiRequestLogEntity row, bool replayed,
+        AiAsrTransportObservationEntity? transportObservation = null) => new(row.Id, row.Status switch
     {
-        "succeeded" => AiRequestStatus.Succeeded, "running" => AiRequestStatus.Running, "blocked" => AiRequestStatus.Blocked,
+        "succeeded" => AiRequestStatus.Succeeded, "queued" or "running" or "cancelling" => AiRequestStatus.Running,
+        "blocked" => AiRequestStatus.Blocked,
         "timed_out" => AiRequestStatus.TimedOut, "cancelled" => AiRequestStatus.Cancelled,
         "incomplete" => AiRequestStatus.Incomplete, _ => AiRequestStatus.Failed
-    }, row.ResponseText, row.ErrorMessage, replayed);
+    }, row.ResponseText, row.ErrorMessage, replayed,
+        AiAsrTransportObservationService.Diagnostics(row, transportObservation));
     internal static int? Count(long? value) => value is null or < 0 or > int.MaxValue ? null : (int)value.Value;
     internal static string Hash(string value) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value))).ToLowerInvariant();
     internal static string Safe(string? value, string? key, out bool redacted)

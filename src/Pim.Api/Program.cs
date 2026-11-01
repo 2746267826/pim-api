@@ -489,6 +489,8 @@ else
             "native-note-asr-dispatch", job => job.RunAsync(CancellationToken.None), Cron.Minutely);
         RecurringJob.AddOrUpdate<Pim.Infrastructure.Notes.NoteAsrBatchPollJob>(
             "native-note-asr-batch-poll", job => job.RunAsync(CancellationToken.None), Cron.Minutely);
+        RecurringJob.AddOrUpdate<Pim.Infrastructure.Ai.Asr.AiAsrJobDispatchJob>(
+            "ai-asr-job-dispatch", job => job.RunAsync(CancellationToken.None), Cron.Minutely);
         RecurringJob.AddOrUpdate<Pim.Infrastructure.Notes.NoteDerivedDispatchJob>(
             "native-note-derived-dispatch", job => job.RunAsync(CancellationToken.None), Cron.Minutely);
 

@@ -2,13 +2,15 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Button, Card, EmptyState, Input, Label, Select, Skeleton } from '@/components/ui'
 import { ApiError } from '@/api/client'
+import { STORAGE_KEYS, getJSON, setJSON } from '@/lib/storage'
 import {
   aiApi,
+  type AsrJobResult,
+  type AsrJobStatus,
   type AsrPreset,
   type AsrRequest,
   type AsrUrlRequest,
   type AsrUrlResult,
-  type CallResult,
   type Model,
   type ModelSettings,
 } from './api'
@@ -21,6 +23,62 @@ import { MAX_PUBLIC_AUDIO_URL_CHARS, redactSourceUrl, validatePublicAudioUrl } f
 const errorText = (error: unknown) => error instanceof Error ? error.message : '请求失败'
 const languageNames: Record<string, string> = { auto: '自动识别', zh: '中文', en: '英语' }
 type SourceKind = 'file' | 'url'
+const terminalJobStatuses: AsrJobStatus[] = ['Succeeded', 'Incomplete', 'Failed', 'Cancelled', 'Blocked', 'TimedOut']
+const GATEWAY_STATUSES = new Set([502, 503, 504, 524])
+const POLL_RETRY_DELAYS = [1500, 3000, 6000, 12000, 20000]
+
+function isJobTerminal(status: AsrJobStatus) {
+  return terminalJobStatuses.includes(status)
+}
+
+function jobGuidance(result: AsrJobResult) {
+  const d = result.diagnostics
+  if (result.status === 'Queued') return '任务已持久化排队。关闭页面或停止轮询不会取消服务端任务。'
+  if (result.status === 'Succeeded') return '后台转写已完成，结果已从持久记录读取。'
+  if (result.status === 'Running') return '后台正在调用ASR服务商。浏览器连接已不再承担等待，离开页面不会切断模型调用。'
+  if (result.status === 'Cancelling') return '已发出显式取消。服务商可能已开始处理，完成前结果仍不能视为已知。'
+  if (d.outputLimitExceeded) return '估算输出超过当前 token 上限，本次在发送服务商前已阻止。请提高上限、改用 Batch 或缩短音频。'
+  if (d.abortSource === 'user_cancel_late') return '取消到达时服务商已完成；结果已保留，请核对后使用。'
+  if (d.abortSource.startsWith('user_cancel')) return d.outcomeKnown
+    ? '用户已明确取消；任务在发送服务商前停止。'
+    : '用户已请求取消，但服务商结果未知，可能已处理或计费；请核对调用记录，不要自动重发。'
+  if (d.abortSource === 'provider_timeout') return 'ASR服务商超时，结果未知。可核对模型超时、改用 Batch 或缩短音频；不要自动重发。'
+  if (d.abortSource === 'worker_timeout') return '后台执行超时，服务商结果未知。请核对调用记录后再决定是否新建请求。'
+  if (d.abortSource === 'worker_lost') return '后台执行租约中断，服务商结果未知。任务不会自动重发。'
+  if (d.gatewayEvidenceSource === 'client_http_response') return `浏览器真实收到 HTTP ${d.gatewayStatus ?? '网关错误'}${d.gatewayName ? `（${d.gatewayName}）` : ''}；这是传输层证据，不覆盖已保存的服务商结果。`
+  if (d.gatewayEvidenceSource === 'client_network_failure') return '浏览器未收到 HTTP 响应；只能确认网络传输失败，不能推断网关或服务商状态。'
+  if (d.abortSource === 'caller_disconnect') return '旧同步调用的浏览器连接已断开且没有网关响应证据；服务商结果未知，请核对记录。'
+  if (d.abortSource === 'upstream_http') return `ASR服务商返回 HTTP ${d.upstreamStatus ?? '未知'}；本次未自动重试。`
+  if (result.status === 'Blocked') return '任务未发送服务商，请按下一步说明修正后明确新建请求。'
+  if (result.status === 'Incomplete') return '转写未完整确认，请核对结束原因与实际回复。'
+  if (result.status === 'TimedOut') return '任务超时且结果未知，请核对服务商记录。'
+  if (result.status === 'Cancelled') return d.outcomeKnown ? '任务已取消。' : '任务已停止，但上游结果未知。'
+  return result.errorMessage ?? '任务未成功，请核对调用记录。'
+}
+
+function transportGuidance(diagnostics: NonNullable<AsrUrlResult['diagnostics']>) {
+  if (diagnostics.gatewayEvidenceSource === 'client_http_response') {
+    return `浏览器确实收到网关 HTTP ${diagnostics.gatewayStatus ?? '错误'}${diagnostics.gatewayName ? `（${diagnostics.gatewayName}）` : ''}；这是传输层证据，不改变已保存的服务商结果。`
+  }
+  if (diagnostics.gatewayEvidenceSource === 'client_network_failure') {
+    return '浏览器未收到 HTTP 响应；只能确认网络传输失败，不能推断网关或服务商状态。'
+  }
+  if (diagnostics.abortSource === 'caller_disconnect') {
+    return '服务端等待连接已中断，但当前没有浏览器实际收到网关响应的证据；服务商结果未知，请核对记录。'
+  }
+  if (diagnostics.abortSource === 'provider_timeout') {
+    return 'ASR服务商请求超时，结果未知。请核对模型超时和调用记录，不要自动重发。'
+  }
+  if (diagnostics.abortSource.startsWith('user_cancel')) {
+    return diagnostics.outcomeKnown
+      ? '用户已明确取消；本次在发送服务商前停止。'
+      : '用户已请求取消，但服务商结果未知；请核对调用记录，不要自动重发。'
+  }
+  if (diagnostics.abortSource === 'upstream_http') {
+    return `ASR服务商返回 HTTP ${diagnostics.upstreamStatus ?? '未知'}；本次未自动重试。`
+  }
+  return diagnostics.nextAction
+}
 
 function operation(model: Model | undefined, preset: AsrPreset | undefined) {
   if (!model || !preset) return ''
@@ -74,11 +132,20 @@ export function AsrCall({ userId, models, settings, changed, showDetail, renderS
   const [urlSourceConfirmed, setUrlSourceConfirmed] = useState(false); const [urlProviderFetchConfirmed, setUrlProviderFetchConfirmed] = useState(false)
   const [submitted, setSubmitted] = useState<{ id: string; model: Model; preset: AsrPreset } | null>(null)
   const [urlSubmitted, setUrlSubmitted] = useState<{ id: string; body: AsrUrlRequest; model: Model; preset: AsrPreset } | null>(null)
+  const [resumeReceipt, setResumeReceipt] = useState<{ owner: string; clientRequestId: string } | null>(() => {
+    const receipt = getJSON<{ owner?: string; clientRequestId?: string } | null>(
+      STORAGE_KEYS.asrJobReceipt, null)
+    return receipt?.owner && receipt.clientRequestId
+      ? { owner: receipt.owner, clientRequestId: receipt.clientRequestId } : null
+  })
   const [urlLookupMissing, setUrlLookupMissing] = useState(false)
-  const [pending, setPending] = useState(false); const [result, setResult] = useState<CallResult | null>(null)
+  const [pending, setPending] = useState(false); const [result, setResult] = useState<AsrJobResult | null>(null)
   const [urlResult, setUrlResult] = useState<AsrUrlResult | null>(null); const [message, setMessage] = useState<string | null>(null)
-  const abort = useRef<AbortController | null>(null); const inFlight = useRef(false); const input = useRef<HTMLInputElement | null>(null)
-  useEffect(() => () => abort.current?.abort(), [])
+  const abort = useRef<AbortController | null>(null); const pollAbort = useRef<AbortController | null>(null)
+  const inFlight = useRef(false); const input = useRef<HTMLInputElement | null>(null)
+  const pollFailures = useRef(0)
+  const resumeId = resumeReceipt?.owner === userId ? resumeReceipt.clientRequestId : null
+  useEffect(() => () => { abort.current?.abort(); pollAbort.current?.abort() }, [])
   const current = models.find((m) => m.id === (selected || settings.transcriptionModelId))
   const currentPreset = presets.data?.find((p) => p.id === current?.asrPresetId)
   const target = submitted?.model ?? urlSubmitted?.model ?? current
@@ -99,6 +166,79 @@ export function AsrCall({ userId, models, settings, changed, showDetail, renderS
   const fileConsent = Boolean(file && approvalKey && consentedTo === approvalKey)
   const urlConsent = Boolean(urlReady && approvalKey && consentedTo === approvalKey && urlSourceConfirmed && urlProviderFetchConfirmed)
   const canSend = sourceKind === 'file' ? Boolean(ready && fileConsent) : Boolean(ready && urlConsent)
+  const reportTransport = useCallback(async (id: string,
+    transportKind: 'AsyncSubmit' | 'AsyncPoll' | 'SyncUrlCall',
+    error: unknown): Promise<string | null> => {
+    if (error instanceof DOMException && error.name === 'AbortError') return null
+    const isHttpResponse = error instanceof ApiError && GATEWAY_STATUSES.has(error.status)
+    const isNetworkFailure = error instanceof TypeError
+    if (!isHttpResponse && !isNetworkFailure) return null
+    try {
+      const observation = await aiApi.asrTransportObserve({
+        clientRequestId: id,
+        expectedUserId: userId,
+        transportKind,
+        source: isHttpResponse ? 'ClientHttpResponse' : 'ClientNetworkFailure',
+        gatewayStatus: isHttpResponse ? (error as ApiError).status : null,
+        gatewayName: isHttpResponse ? (error as ApiError).gatewayName : null,
+      })
+      if (observation.gatewayStatus != null) {
+        return `已记录浏览器真实收到 HTTP ${observation.gatewayStatus}${observation.gatewayName ? `（${observation.gatewayName}）` : ''}；服务端 ASR 结果未被改写。`
+      }
+      return '已记录浏览器网络连接失败；无法据此确认是浏览器、网关还是服务端断开。'
+    } catch {
+      return isHttpResponse
+        ? `浏览器真实收到 HTTP ${(error as ApiError).status}，但证据回传失败；中断位置仍不能由套接字断开推断。`
+        : '浏览器网络连接失败，证据回传未确认；中断位置未知。'
+    }
+  }, [userId])
+  useEffect(() => {
+    if (!submitted || (result && isJobTerminal(result.status))) return
+    let disposed = false
+    let timer = 0
+    const schedule = () => {
+      const delay = POLL_RETRY_DELAYS[Math.min(pollFailures.current,
+        POLL_RETRY_DELAYS.length - 1)]
+      timer = window.setTimeout(() => { void poll() }, delay)
+    }
+    const poll = async () => {
+      if (disposed) return
+      const controller = new AbortController()
+      pollAbort.current = controller
+      try {
+        const next = await aiApi.asrJobLookup(submitted.id, controller.signal)
+        if (disposed) return
+        pollFailures.current = 0
+        setResult(next)
+        if (isJobTerminal(next.status)) { changed(); return }
+      } catch (error) {
+        if (disposed || (error instanceof DOMException && error.name === 'AbortError')) return
+        pollFailures.current += 1
+        const evidence = await reportTransport(submitted.id, 'AsyncPoll', error)
+        if (disposed) return
+        setMessage(evidence ?? '轮询连接暂时失败；已按有限退避继续查询，后台任务不会因此取消。')
+      }
+      if (!disposed) schedule()
+    }
+    schedule()
+    return () => {
+      disposed = true
+      window.clearTimeout(timer)
+      pollAbort.current?.abort()
+    }
+  }, [submitted, result, changed, reportTransport])
+
+  useEffect(() => {
+    if (!resumeId || submitted || !presets.data) return
+    const model = models.find((item) => item.id === settings.transcriptionModelId) ?? models[0]
+    const restoredPreset = presets.data.find((item) => item.id === model?.asrPresetId)
+    if (!model || !restoredPreset) return
+    const timer = window.setTimeout(() => {
+      setSubmitted({ id: resumeId, model, preset: restoredPreset })
+      setResult(null)
+    }, 0)
+    return () => window.clearTimeout(timer)
+  }, [resumeId, submitted, presets.data, models, settings.transcriptionModelId])
 
   const chooseFile = (next: File | null) => {
     setConsentedTo(''); setSelection(createAiRequestId()); setResult(null); setUrlResult(null); setUrlLookupMissing(false)
@@ -118,15 +258,21 @@ export function AsrCall({ userId, models, settings, changed, showDetail, renderS
   async function send() {
     if (inFlight.current || !file || !target || !preset || !ready || submitted || urlSubmitted || !fileConsent || sourceKind !== 'file') return
     inFlight.current = true; const controller = new AbortController(); abort.current = controller
-    const id = createAiRequestId(); setSubmitted({ id, model: target, preset }); setPending(true); setResult(null); setMessage(null)
+    const id = createAiRequestId(); setSubmitted({ id, model: target, preset })
+    setResumeReceipt({ owner: userId, clientRequestId: id })
+    setJSON(STORAGE_KEYS.asrJobReceipt, { owner: userId, clientRequestId: id })
+    pollFailures.current = 0; setPending(true); setResult(null); setMessage(null)
     try {
       const body: AsrRequest = { clientRequestId: id, expectedUserId: userId, modelId: selected || null, language,
         audio: { name: file.name, format, base64: await readMediaFile(file, controller.signal) },
         consent: { modelId: target.id, modelRevision: target.revision, endpoint, presetId: preset.id, presetVersion: preset.version, confirmed: true } }
-      setResult(await aiApi.asrCall(body, controller.signal))
+      setResult(await aiApi.asrJobSubmit(body, controller.signal))
     } catch (error) {
-      setMessage(controller.signal.aborted ? '已请求取消，请核对ASR记录，上游结果以实际记录为准。' : errorText(error) + '；请先核对记录，页面不会自动重发。')
-    } finally { inFlight.current = false; setPending(false); changed() }
+      const evidence = await reportTransport(id, 'AsyncSubmit', error)
+      setMessage(controller.signal.aborted
+        ? '浏览器提交连接已停止；这不等于用户取消服务端任务。请按原标识查询，不要重新提交。'
+        : evidence ?? errorText(error) + '；已保留原标识，页面不会自动重发。')
+    } finally { inFlight.current = false; setPending(false) }
   }
 
   async function sendUrl() {
@@ -152,9 +298,10 @@ export function AsrCall({ userId, models, settings, changed, showDetail, renderS
     try {
       setUrlResult(await aiApi.asrUrlCall(body, controller.signal))
     } catch (error) {
+      const evidence = await reportTransport(id, 'SyncUrlCall', error)
       setMessage(controller.signal.aborted
         ? '已请求取消，请核对URL ASR记录，上游结果以实际记录为准。'
-        : redactSourceUrl(errorText(error), sourceUrl) + '；请先核对记录，页面不会自动重发。')
+        : evidence ?? redactSourceUrl(errorText(error), sourceUrl) + '；请先核对记录，页面不会自动重发。')
     } finally { inFlight.current = false; setPending(false); changed() }
   }
 
@@ -187,10 +334,33 @@ export function AsrCall({ userId, models, settings, changed, showDetail, renderS
   }
 
   function newCall() {
-    setSubmitted(null); setUrlSubmitted(null); setConsentedTo('')
+    setSubmitted(null); setUrlSubmitted(null); setResumeReceipt(null); setConsentedTo('')
+    setJSON(STORAGE_KEYS.asrJobReceipt, null)
     setUrlSourceConfirmed(false); setUrlProviderFetchConfirmed(false); setUrlLookupMissing(false)
     setResult(null); setUrlResult(null); setMessage(null)
     setAudioUrl(''); setUrlName(''); setUrlFormat('')
+  }
+
+  async function cancelJob() {
+    if (!submitted || !result || isJobTerminal(result.status) || pending) return
+    setPending(true)
+    try { setResult(await aiApi.asrJobCancel(submitted.id)); setMessage(null) }
+    catch (error) { setMessage(errorText(error) + '；后台任务可能仍在运行，请查询原标识。') }
+    finally { setPending(false) }
+  }
+
+  async function resumeJob() {
+    if (!resumeId || pending) return
+    setPending(true); setMessage(null)
+    try {
+      const value = await aiApi.asrJobLookup(resumeId)
+      if (target && preset) setSubmitted({ id: resumeId, model: target, preset })
+      setResult(value); setResumeReceipt(null); pollFailures.current = 0; changed()
+    } catch (error) {
+      setMessage(error instanceof ApiError && error.status === 404
+        ? '原标识尚无已接受任务；为防止重复扣费未自动重发。'
+        : '恢复查询暂不可用；原标识仍保留，可稍后再次恢复。')
+    } finally { setPending(false) }
   }
 
   return <Card className="min-w-0 space-y-4 p-4 sm:p-5"><div><h2 className="text-sm font-semibold text-text-1">ASR音频转写</h2><p className="mt-1 text-xs text-text-3">通过所选预设发送单条音频，保存实际请求与转写。本入口用于单片调用；课堂长音频仍走分段任务。公开URL模式不会把完整地址写入本地存储或日志。</p></div>
@@ -249,30 +419,53 @@ export function AsrCall({ userId, models, settings, changed, showDetail, renderS
       </> : <label className="flex items-start gap-2"><input type="checkbox" aria-label="确认将本次音频发送到上述ASR模型" className="mt-0.5 size-4 shrink-0 accent-primary" checked={approvalKey !== '' && consentedTo === approvalKey} disabled={locked || !ready || !file}
         onChange={(event) => setConsentedTo(event.target.checked ? approvalKey : '')} /><span>确认将本次音频发送到上述ASR模型</span></label>}
     </div>}
-    <div className="flex flex-wrap gap-2"><Button variant="primary" loading={pending} disabled={locked || !ready || !canSend} onClick={() => void (sourceKind === 'file' ? send() : sendUrl())}>{sourceKind === 'file' ? '开始转写并记录' : '确认发送URL并转写'}</Button>
-      {pending && <Button variant="secondary" onClick={() => abort.current?.abort()}>取消ASR等待</Button>}
-      {submitted && !pending && <><Button variant="secondary" onClick={() => { void aiApi.asrLookup(submitted.id).then((value) => { setResult(value); setMessage(null); changed() }).catch((error: unknown) => setMessage(errorText(error))) }}>核对ASR状态</Button>
+    <div className="flex flex-wrap gap-2"><Button variant="primary" loading={pending && result === null} disabled={locked || !ready || !canSend} onClick={() => void (sourceKind === 'file' ? send() : sendUrl())}>{sourceKind === 'file' ? '提交后台转写' : '确认发送URL并转写'}</Button>
+      {pending && submitted && result === null && <Button variant="secondary" onClick={() => abort.current?.abort()}>停止等待提交</Button>}
+      {submitted && result && !isJobTerminal(result.status) && <Button variant="secondary" loading={pending} disabled={pending} onClick={() => void cancelJob()}>取消任务</Button>}
+      {submitted && !pending && <><Button variant="secondary" onClick={() => { void aiApi.asrJobLookup(submitted.id).then((value) => { setResult(value); setMessage(null); changed() }).catch((error: unknown) => { setMessage(errorText(error)); void reportTransport(submitted.id, 'AsyncPoll', error).then((evidence) => { if (evidence) setMessage(evidence) }) }) }}>核对ASR任务</Button>
         <Button variant="ghost" onClick={newCall}>新建一次ASR调用</Button></>}
+      {resumeId && !submitted && <Button variant="secondary" loading={pending} disabled={pending} onClick={() => void resumeJob()}>恢复原ASR任务</Button>}
       {urlSubmitted && !pending && <><Button variant="secondary" onClick={() => void lookupUrl()}>核对URL ASR状态</Button>
         {urlLookupMissing && <Button variant="secondary" onClick={() => void resendUrl()}>按原标识重发URL</Button>}
         <Button variant="ghost" onClick={newCall}>新建一次ASR调用</Button></>}
     </div>
     {message && <p role="alert" className="rounded-ctl bg-surface p-3 text-sm text-text-2">{message}</p>}
     {result && <div className="space-y-3 rounded-ctl border border-border p-4"><div className="flex flex-wrap items-center justify-between gap-2">{renderStatus(result.status)}<Button variant="ghost" size="sm" onClick={() => showDetail(result.logId)}>查看ASR完整记录</Button></div>
+      <p role="status" className="rounded-ctl border border-border bg-surface p-3 text-xs leading-5 text-text-2">{jobGuidance(result)}</p>
       {result.errorMessage && <p role="alert" className="text-sm text-text-2">{result.errorMessage}</p>}
+      <div className="grid gap-1 text-xs text-text-3 sm:grid-cols-2">
+        <span>中断来源：{result.diagnostics.abortSource}</span>
+        <span>结果已知：{result.diagnostics.outcomeKnown ? '是' : '否'}</span>
+        <span>网关状态：{result.diagnostics.gatewayStatus ?? '未观察到网关HTTP响应'}</span>
+        <span>网关名称：{result.diagnostics.gatewayName ?? '未提供'}</span>
+        <span>传输证据：{result.diagnostics.gatewayEvidenceSource ?? '未记录'}</span>
+        <span>观察环节：{result.diagnostics.transportObservationKind ?? '未记录'}</span>
+        <span>服务商状态：{result.diagnostics.upstreamStatus ?? '未提供'}</span>
+        <span>输出上限：{result.diagnostics.maxOutputTokens} token</span>
+        <span>估算音频：{result.diagnostics.estimatedAudioSeconds == null ? '未估算' : `${Math.round(result.diagnostics.estimatedAudioSeconds)} 秒`}</span>
+      </div>
+      {result.diagnostics.gatewayEvidenceSource === 'client_network_failure' &&
+        <p className="text-xs leading-5 text-warn">浏览器轮询未收到 HTTP 响应；该现象不能证明是网关、浏览器还是服务端断开。</p>}
+      {result.diagnostics.gatewayEvidenceSource === 'client_http_response' &&
+        <p className="text-xs leading-5 text-warn">浏览器确实收到网关 HTTP {result.diagnostics.gatewayStatus ?? '错误'}{result.diagnostics.gatewayName ? `（${result.diagnostics.gatewayName}）` : ''}；该证据不改变服务商调用状态。</p>}
+      {result.diagnostics.nextAction && <p className="text-xs leading-5 text-warn">下一步：{result.diagnostics.nextAction}</p>}
       {result.responseText !== null && <pre aria-label="实际ASR转写" className="max-h-80 overflow-auto whitespace-pre-wrap break-words text-sm text-text-1">{result.responseText || '本次返回空转写，请试听原音频核对。'}</pre>}
       {result.replayed && <p className="text-xs text-text-3">返回已有记录，本次没有重新发送音频。</p>}
       <AsrResultInsights rawJson={detail.data?.responseRawJson} presetId={preset?.id ?? target?.asrPresetId}
         loading={detail.isLoading} loadError={detail.isError ? errorText(detail.error) : null} />
     </div>}
     {urlResult && <div className="space-y-3 rounded-ctl border border-border p-4"><div className="flex flex-wrap items-center justify-between gap-2">{renderStatus(urlResult.status)}<Button variant="ghost" size="sm" onClick={() => showDetail(urlResult.logId)}>查看URL ASR完整记录</Button></div>
-      {urlResult.status !== 'Succeeded' && <p role="status" className="rounded-ctl border border-warn-border bg-warn-soft p-3 text-xs leading-5 text-warn">状态 {urlResult.status} 未确认为成功；保留原请求标识，页面不会自动重发。</p>}
+      {urlResult.status !== 'Succeeded' && <p role="status" className="rounded-ctl border border-warn-border bg-warn-soft p-3 text-xs leading-5 text-warn">{urlResult.diagnostics ? transportGuidance(urlResult.diagnostics) : `状态 ${urlResult.status} 未确认为成功`}；保留原请求标识，页面不会自动重发。</p>}
       {urlResult.errorMessage && <p role="alert" className="text-sm text-text-2">{urlResult.errorMessage}</p>}
       {urlResult.responseText !== null && <pre aria-label="实际URL ASR转写" className="max-h-80 overflow-auto whitespace-pre-wrap break-words text-sm text-text-1">{urlResult.responseText || '本次返回空转写，请人工核对来源与记录。'}</pre>}
       <div className="grid gap-2 rounded-ctl border border-border bg-surface p-3 text-xs text-text-2">
         <p>来源主机（已脱敏）：{urlResult.sourceOrigin ?? '未提供'}</p>
         <p>本地URL预检：{urlResult.preflightVerified ? '已核验' : '未核验或未完成'}{urlResult.preflightSha256 ? <> · <span className="break-all font-mono">SHA256 {urlResult.preflightSha256}</span></> : null}</p>
         <p className={urlResult.providerFetchVerified ? '' : 'text-warn'}>Provider再次读取：{urlResult.providerFetchVerified ? '已核验' : '未核验；不得假定与本地预检字节相同'}</p>
+        {urlResult.diagnostics && <>
+          <p>中断来源：{urlResult.diagnostics.abortSource} · 结果已知：{urlResult.diagnostics.outcomeKnown ? '是' : '否'}</p>
+          <p>网关证据：{urlResult.diagnostics.gatewayStatus == null ? '未观察到HTTP响应' : `HTTP ${urlResult.diagnostics.gatewayStatus}${urlResult.diagnostics.gatewayName ? `（${urlResult.diagnostics.gatewayName}）` : ''}`}</p>
+        </>}
       </div>
       {urlResult.warning && <p role="status" className="rounded-ctl border border-warn-border bg-warn-soft p-3 text-xs leading-5 text-warn">{urlResult.warning}</p>}
       {urlResult.replayed && <p className="text-xs text-text-3">返回已有记录，本次没有重新读取URL或调用服务商。</p>}

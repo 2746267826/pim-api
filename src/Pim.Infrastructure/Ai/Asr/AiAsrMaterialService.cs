@@ -82,6 +82,11 @@ public sealed class AiAsrMaterialService(PimDbContext db, IFileAttachmentStore f
     public async Task<(byte[] Bytes, string ContentType)> ReadAsync(Guid logId, CancellationToken ct)
     {
         var owner = await RequireOwnerAsync(logId, ct);
+        return await ReadForOwnerAsync(owner, logId, ct);
+    }
+    internal async Task<(byte[] Bytes, string ContentType)> ReadForOwnerAsync(Guid owner, Guid logId,
+        CancellationToken ct)
+    {
         var stored = await (from audio in db.AiCallAudio.AsNoTracking()
             join log in db.AiRequestLogs.AsNoTracking() on audio.LogId equals log.Id
             where audio.LogId == logId && log.UserId == owner

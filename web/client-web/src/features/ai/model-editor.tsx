@@ -23,6 +23,7 @@ export function ModelEditor({ model, save, close, initialAsr = false }: { model:
   const [saving, setSaving] = useState(false)
   const asr = caps.includes('Transcription')
   const multimodal = asr && presetId === 'mimo-multimodal'
+  const estimatedAsrMinutes = tokens > 0 ? Math.floor(tokens / (2318 / 507.924) / 60) : 0
   const editedPrompt = prompt.trim() || null
   const endpointChanged = Boolean(model && baseUrl.trim().replace(/\/+$/, '') !== model.baseUrl.trim().replace(/\/+$/, ''))
   const keyRequired = !model || endpointChanged || !model.hasApiKey
@@ -94,8 +95,10 @@ export function ModelEditor({ model, save, close, initialAsr = false }: { model:
               else { setPresetId(''); setCaps((old) => e.target.checked ? [...old.filter((c) => c !== 'Transcription'), cap] : old.filter((c) => c !== cap)) }
             }} />{capabilityNames[cap]}</label>)}
           </div><p className="mt-2 text-xs text-text-3">文本与视觉可共用模型；ASR通过预设接入并隔离凭据。</p></fieldset>
-          <div className="grid grid-cols-2 gap-3"><div><Label htmlFor="ai-model-timeout">超时（秒）</Label><Input id="ai-model-timeout" type="number" required min={1} max={600} value={timeout} onChange={(e) => setTimeoutValue(Number(e.target.value))} /></div>
-            {!asr && <div><Label htmlFor="ai-model-output">输出 token 上限</Label><Input id="ai-model-output" type="number" required min={1} max={131072} value={tokens} onChange={(e) => setTokens(Number(e.target.value))} /></div>}</div>
+          <div className="grid grid-cols-2 gap-3"><div><Label htmlFor="ai-model-timeout">超时（秒）</Label><Input id="ai-model-timeout" type="number" required min={1} max={600} value={timeout} onChange={(e) => setTimeoutValue(Number(e.target.value))} />
+            {asr && <p className="mt-1 text-xs text-text-3">这是服务商请求预算；实时单条转写由后台任务执行，不再受浏览器网关 60 秒等待限制。</p>}</div>
+            <div><Label htmlFor="ai-model-output">输出 token 上限</Label><Input id="ai-model-output" type="number" required min={1} max={131072} value={tokens} onChange={(e) => setTokens(Number(e.target.value))} />
+              {asr && <p className="mt-1 text-xs leading-5 text-text-3">实时与 Batch 共用此值。按已记录的长音频样本（约 0.22 token/秒音频）估算，可覆盖约 {estimatedAsrMinutes} 分钟；超过时任务会在发送前提示调整，而不是静默截断。</p>}</div></div>
           <label className="flex items-center gap-2 text-sm text-text-2"><input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />启用此模型配置</label>
         </DialogBody>
         <DialogFooter><Button type="button" variant="secondary" disabled={saving} onClick={close}>取消</Button><Button type="submit" variant="primary" loading={saving}>保存模型</Button></DialogFooter>

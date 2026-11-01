@@ -62,7 +62,8 @@ public sealed class AiAsrPresetTests : IDisposable
         var bytes = format == "wav" ? Wave() : "ID3synthetic-mp3-fixture"u8.ToArray();
         var decoded = AiAsrMaterialService.Decode(new("test." + format, format, Convert.ToBase64String(bytes)));
         Assert.Equal(bytes, decoded.Bytes);
-        var result = await preset.TranscribeAsync(new("http://synthetic-asr.invalid/v1/", "mimo-v2.5-asr", "synthetic-asr-key", 30),
+        var result = await preset.TranscribeAsync(new("http://synthetic-asr.invalid/v1/",
+                "mimo-v2.5-asr", "synthetic-asr-key", 30, 1024),
             decoded, language, default);
         Assert.Equal("识别结果", result.Text); Assert.Equal(5, result.ReportedSeconds);
         using var json = JsonDocument.Parse(_wire.Bodies.Single()); var root = json.RootElement;
@@ -182,9 +183,24 @@ public sealed class AiAsrPresetTests : IDisposable
         using (var intent = JsonDocument.Parse((await _db.AiRequestLogs.AsNoTracking().SingleAsync()).MetadataJson))
             Assert.Equal(JsonValueKind.Null, intent.RootElement.GetProperty("providerAttempted").ValueKind);
         cancel.Cancel(); var result = await running;
-        Assert.Equal(AiRequestStatus.Cancelled, result.Status); Assert.Equal(1, _wire.Calls);
+        Assert.Equal(AiRequestStatus.Incomplete, result.Status); Assert.Equal(1, _wire.Calls);
+        Assert.Equal("caller_disconnect", result.Diagnostics?.AbortSource);
+        Assert.False(result.Diagnostics?.OutcomeKnown);
         Assert.Equal(Wave(), (await Materials.ReadAsync(result.LogId, default)).Bytes);
         Assert.True((await Caller.GetAsync(request.ClientRequestId, default)).Replayed);
+    }
+
+    [Fact]
+    public async Task ExplicitCancelRemainsDistinctFromCallerDisconnect()
+    {
+        var (request, _) = await Setup(); _wire.Block = true; using var cancel = new CancellationTokenSource();
+        var running = Caller.CallAsync(request with { ExplicitCancel = true }, cancel.Token);
+        await _wire.Started.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        cancel.Cancel(); var result = await running;
+        Assert.Equal(AiRequestStatus.Incomplete, result.Status);
+        Assert.Equal("user_cancelled", result.Diagnostics?.AbortSource);
+        Assert.False(result.Diagnostics?.OutcomeKnown);
+        Assert.Equal(1, _wire.Calls);
     }
     [Fact]
     public async Task TimeoutIsRecordedWithoutRepeatedTransport()

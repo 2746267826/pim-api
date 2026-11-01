@@ -12,10 +12,63 @@ export type CallResult = components['schemas']['AiTextCallResultDto']
 export type VisionRequest = components['schemas']['AiVisionCallRequest']
 export type CallImage = components['schemas']['AiCallImageDto']
 export type AsrPreset = components['schemas']['AiAsrPresetDto']
-export type AsrRequest = components['schemas']['AiAsrCallRequest']
+export type AsrRequest = components['schemas']['AiAsrCallRequest'] & { explicitCancel?: boolean }
+export type AsrJobStatus = 'Queued' | 'Running' | 'Cancelling' | 'Succeeded' | 'Incomplete' | 'Failed' | 'Cancelled' | 'Blocked' | 'TimedOut'
+export type AsrJobDiagnostics = {
+  abortSource: string
+  outcomeKnown: boolean
+  gatewayStatus: number | null
+  gatewayName: string | null
+  gatewayEvidenceSource?: string | null
+  transportObservationKind?: string | null
+  gatewayObservedAt?: string | null
+  upstreamStatus: number | null
+  providerAttempted: boolean
+  responseBodyComplete: boolean
+  maxOutputTokens: number
+  estimatedAudioSeconds: number | null
+  estimatedCompletionTokens: number | null
+  outputLimitExceeded: boolean
+  nextAction: string | null
+}
+export type AsrJobResult = {
+  clientRequestId: string
+  logId: string
+  status: AsrJobStatus
+  responseText: string | null
+  errorCode: string | null
+  errorMessage: string | null
+  acceptedAt: string
+  startedAt: string | null
+  cancelRequestedAt: string | null
+  finishedAt: string | null
+  replayed: boolean
+  diagnostics: AsrJobDiagnostics
+}
+export type AsrTransportKind = 'AsyncSubmit' | 'AsyncPoll' | 'SyncFileCall' | 'SyncUrlCall'
+export type AsrTransportObservationSource = 'ClientHttpResponse' | 'ClientNetworkFailure'
+export type AsrTransportObservationRequest = {
+  clientRequestId: string
+  expectedUserId: string
+  transportKind: AsrTransportKind
+  source: AsrTransportObservationSource
+  gatewayStatus?: number | null
+  gatewayName?: string | null
+}
+export type AsrTransportObservation = {
+  clientRequestId: string
+  logId: string
+  transportKind: AsrTransportKind
+  source: AsrTransportObservationSource
+  gatewayStatus: number | null
+  gatewayName: string | null
+  observedAt: string
+}
 export type CallAudio = components['schemas']['AiCallAudioDto']
 export type AsrUrlRequest = components['schemas']['AiAsrUrlCallRequest']
-export type AsrUrlResult = components['schemas']['AiAsrUrlCallResultDto']
+export type AsrUrlResult = components['schemas']['AiAsrUrlCallResultDto'] & {
+  diagnostics?: AsrJobDiagnostics
+}
 export type NoteAsrTask = components['schemas']['NoteAsrTaskDto']
 export type NoteAsrStart = components['schemas']['StartNoteAsrRequest']
 export type NoteAsrRetry = components['schemas']['RetryNoteAsrRequest']
@@ -78,6 +131,11 @@ export const aiApi = {
   asrBatchRetryFailed: (sourceJobId: string, body: NoteAsrBatchRetryFailedRequest) =>
     apiPost<NoteAsrBatchSubmission>(`/api/v1/native-notes/asr-tasks/${encodeURIComponent(sourceJobId)}/batch-retry-failed`, body),
   asrPresets: (signal?: AbortSignal) => apiGet<AsrPreset[]>('/api/v1/ai/asr-presets', { signal }),
+  asrJobSubmit: (body: AsrRequest, signal: AbortSignal) => apiPost<AsrJobResult>('/api/v1/ai/asr-jobs', body, { signal }),
+  asrJobLookup: (id: string, signal?: AbortSignal) => apiGet<AsrJobResult>(`/api/v1/ai/asr-jobs/${encodeURIComponent(id)}`, { signal }),
+  asrJobCancel: (id: string) => apiDelete<AsrJobResult>(`/api/v1/ai/asr-jobs/${encodeURIComponent(id)}`),
+  asrTransportObserve: (body: AsrTransportObservationRequest) =>
+    apiPost<AsrTransportObservation>('/api/v1/ai/asr-transport-observations', body),
   asrCall: (body: AsrRequest, signal: AbortSignal) => apiPost<CallResult>('/api/v1/ai/asr-calls', body, { signal }),
   asrLookup: (id: string) => apiGet<CallResult>(`/api/v1/ai/asr-calls/${encodeURIComponent(id)}`),
   asrUrlCall: (body: AsrUrlRequest, signal: AbortSignal) => apiPost<AsrUrlResult>('/api/v1/ai/asr-url-calls', body, { signal }),

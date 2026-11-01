@@ -58,6 +58,8 @@ public static class ServiceCollectionExtensions
         services.AddScoped<AiVisionMaterialService>();
         services.AddScoped<AiAsrMaterialService>();
         services.AddScoped<AiAsrCallService>();
+        services.AddScoped<AiAsrJobService>();
+        services.AddScoped<AiAsrTransportObservationService>();
         services.AddSingleton<IRemoteAudioFetcher, SecureRemoteAudioFetcher>();
         services.AddSingleton<AiTextCallGate>();
         services.AddSingleton<IAiProfileChatClientFactory, AiProfileChatClientFactory>();
@@ -75,6 +77,7 @@ public static class ServiceCollectionExtensions
             var logger = lf.CreateLogger("Hangfire");
             logger.LogWarning("Hangfire disabled explicitly via DisableHangfire=true");
             services.AddScoped<IHangfireMonitoringClient, NoopHangfireMonitoringClient>();
+            services.AddScoped<IAsrJobDispatcher, UnavailableAsrJobDispatcher>();
         }
         else if (string.IsNullOrWhiteSpace(conn))
         {
@@ -82,6 +85,7 @@ public static class ServiceCollectionExtensions
             var logger = lf.CreateLogger("Hangfire");
             logger.LogWarning("Hangfire disabled: connection string not configured or empty");
             services.AddScoped<IHangfireMonitoringClient, NoopHangfireMonitoringClient>();
+            services.AddScoped<IAsrJobDispatcher, UnavailableAsrJobDispatcher>();
         }
         else
         {
@@ -90,6 +94,9 @@ public static class ServiceCollectionExtensions
                     options.UseNpgsqlConnection(conn)));
             services.AddHangfireServer();
             services.AddScoped<Pim.Infrastructure.Notes.NoteAsrDispatchJob>();
+            services.AddScoped<AiAsrJob>();
+            services.AddScoped<AiAsrJobDispatchJob>();
+            services.AddScoped<IAsrJobDispatcher, HangfireAsrJobDispatcher>();
             services.AddScoped<IHangfireMonitoringClient, HangfireMonitoringClient>();
         }
         services.AddScoped<IBackgroundJobStatusService, HangfireJobStatusService>();

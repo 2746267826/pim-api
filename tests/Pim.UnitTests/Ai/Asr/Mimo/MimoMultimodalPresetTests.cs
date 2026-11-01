@@ -13,7 +13,7 @@ namespace Pim.UnitTests.Ai.Asr.Mimo;
 public sealed class MimoMultimodalPresetTests
 {
     private static readonly AiModelConnection Connection =
-        new("https://api.xiaomimimo.com/v1/", "mimo-v2.6-pro", "synthetic-key", 5);
+        new("https://api.xiaomimimo.com/v1/", "mimo-v2.6-pro", "synthetic-key", 5, 1024);
 
     [Fact]
     public async Task Transcribe_SendsAudioAndLanguage_AndParsesResult()
@@ -36,7 +36,7 @@ public sealed class MimoMultimodalPresetTests
         Assert.Equal("Bearer synthetic-key", request.Authorization);
         using var body = JsonDocument.Parse(request.Body);
         Assert.Equal("mimo-v2.6-pro", body.RootElement.GetProperty("model").GetString());
-        Assert.Equal(MimoMultimodalPreset.MaxCompletionTokens,
+        Assert.Equal(1024,
             body.RootElement.GetProperty("max_completion_tokens").GetInt32());
         Assert.False(body.RootElement.GetProperty("stream").GetBoolean());
         var parts = body.RootElement.GetProperty("messages")[0].GetProperty("content");
@@ -78,9 +78,9 @@ public sealed class MimoMultimodalPresetTests
     public async Task Transcribe_NonSuccessStatus_IsNotRetried()
     {
         var (preset, _) = Create((_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.BadGateway)));
-        var error = await Assert.ThrowsAsync<MimoBatchException>(() =>
+        var error = await Assert.ThrowsAsync<AiAsrProviderHttpException>(() =>
             preset.TranscribeAsync(Connection, Wave(), "zh", default));
-        Assert.Equal(50201, error.ErrorCode);
+        Assert.Equal(502, error.StatusCode);
     }
 
     [Fact]
@@ -115,6 +115,7 @@ public sealed class MimoMultimodalPresetTests
         var body = JsonSerializer.Serialize(new
         {
             model = "mimo-v2.6-pro",
+            max_completion_tokens = 1024,
             messages = new[]
             {
                 new

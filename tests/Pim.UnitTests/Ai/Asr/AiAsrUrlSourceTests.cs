@@ -265,12 +265,15 @@ public sealed class AiAsrUrlSourceTests
 
         fixture.Db.ChangeTracker.Clear();
         var row = await fixture.Db.AiRequestLogs.AsNoTracking().SingleAsync();
-        Assert.Equal("cancelled", row.Status);
-        Assert.Equal("url_preflight_cancelled", row.ErrorCode);
+        Assert.Equal("failed", row.Status);
+        Assert.Equal("caller_disconnect_before_send", row.ErrorCode);
+        using var metadata = JsonDocument.Parse(row.MetadataJson);
+        Assert.Equal("caller_disconnect", metadata.RootElement.GetProperty("abortSource").GetString());
+        Assert.True(metadata.RootElement.GetProperty("outcomeKnown").GetBoolean());
 
         var replay = await service.CallUrlAsync(request, CancellationToken.None);
         Assert.True(replay.Replayed);
-        Assert.Equal(AiRequestStatus.Cancelled, replay.Status);
+        Assert.Equal(AiRequestStatus.Failed, replay.Status);
         Assert.Equal(1, fetcher.Calls);
     }
 
@@ -300,11 +303,80 @@ public sealed class AiAsrUrlSourceTests
         fixture.Db.ChangeTracker.Clear();
         var row = await fixture.Db.AiRequestLogs.AsNoTracking().SingleAsync();
         Assert.Equal("provider_timeout_unknown", row.ErrorCode);
+        using var metadata = JsonDocument.Parse(row.MetadataJson);
+        Assert.Equal("provider_timeout", metadata.RootElement.GetProperty("abortSource").GetString());
+        Assert.False(metadata.RootElement.GetProperty("outcomeKnown").GetBoolean());
+        Assert.Equal(504, metadata.RootElement.GetProperty("upstreamStatus").GetInt32());
 
         var replay = await service.CallUrlAsync(request, CancellationToken.None);
         Assert.True(replay.Replayed);
         Assert.Equal(AiRequestStatus.TimedOut, replay.Status);
         Assert.Equal(1, handler.Calls);
+    }
+
+    [Fact]
+    public async Task Provider_http_status_and_browser_disconnect_have_distinct_durable_diagnostics()
+    {
+        var fixture = await FixtureAsync("https://api.synthetic.invalid/v1/");
+        var http = new CountingHandler((_, _) => Task.FromResult(
+            new HttpResponseMessage(HttpStatusCode.TooManyRequests)));
+        var (httpPreset, httpRegistry) = Registry(() => new HttpClient(http)
+        {
+            Timeout = Timeout.InfiniteTimeSpan
+        });
+        var sourceUrl = "https://audio.example.test/private/provider-rate-limit.wav?sig=L1";
+        var httpService = Service(fixture, httpRegistry,
+            new StaticFetcher(Download(sourceUrl, BuildWave(8_000))));
+
+        var httpResult = await httpService.CallUrlAsync(
+            Request(fixture, httpPreset.Descriptor), CancellationToken.None);
+
+        Assert.Equal(AiRequestStatus.Failed, httpResult.Status);
+        fixture.Db.ChangeTracker.Clear();
+        var httpRow = await fixture.Db.AiRequestLogs.AsNoTracking().SingleAsync();
+        Assert.Equal("upstream_http_429", httpRow.ErrorCode);
+        using (var metadata = JsonDocument.Parse(httpRow.MetadataJson))
+        {
+            Assert.Equal("upstream_http",
+                metadata.RootElement.GetProperty("abortSource").GetString());
+            Assert.False(metadata.RootElement.GetProperty("outcomeKnown").GetBoolean());
+            Assert.Equal(429,
+                metadata.RootElement.GetProperty("upstreamStatus").GetInt32());
+        }
+
+        var disconnectedFixture = await FixtureAsync("https://api.synthetic.invalid/v1/");
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var blocking = new CountingHandler(async (_, ct) =>
+        {
+            entered.TrySetResult();
+            await Task.Delay(Timeout.InfiniteTimeSpan, ct);
+            throw new InvalidOperationException("unreachable");
+        });
+        var (blockingPreset, blockingRegistry) = Registry(() => new HttpClient(blocking)
+        {
+            Timeout = Timeout.InfiniteTimeSpan
+        });
+        var disconnectUrl =
+            "https://audio.example.test/private/browser-disconnect.wav?sig=D1";
+        var disconnectService = Service(disconnectedFixture, blockingRegistry,
+            new StaticFetcher(Download(disconnectUrl, BuildWave(8_000))));
+        using var browser = new CancellationTokenSource();
+        var running = disconnectService.CallUrlAsync(
+            Request(disconnectedFixture, blockingPreset.Descriptor), browser.Token);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        browser.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            running.WaitAsync(TimeSpan.FromSeconds(10)));
+
+        disconnectedFixture.Db.ChangeTracker.Clear();
+        var disconnectRow =
+            await disconnectedFixture.Db.AiRequestLogs.AsNoTracking().SingleAsync();
+        Assert.Equal("incomplete", disconnectRow.Status);
+        Assert.Equal("caller_disconnect_outcome_unknown", disconnectRow.ErrorCode);
+        using var disconnectMetadata = JsonDocument.Parse(disconnectRow.MetadataJson);
+        Assert.Equal("caller_disconnect",
+            disconnectMetadata.RootElement.GetProperty("abortSource").GetString());
+        Assert.False(disconnectMetadata.RootElement.GetProperty("outcomeKnown").GetBoolean());
     }
 
     [Fact]

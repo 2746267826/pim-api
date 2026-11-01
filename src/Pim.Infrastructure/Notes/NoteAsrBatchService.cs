@@ -104,7 +104,7 @@ public sealed class NoteAsrBatchService(PimDbContext db, ICurrentUserService use
 
         await using var input = await NoteAsrBatchJsonlReader.ReadAsync(jsonl, length, owner, attempt.VersionId,
             state.Steps, state.SamplesPerCall, state.Request.Language, profile.Model, frozenPrompt.Text, materials,
-            checked((int)maxBytes), expectedCustomIds, ct);
+            checked((int)maxBytes), expectedCustomIds, profile.MaxOutputTokens, ct);
         if (input.CustomIds.Length > attempt.ExpectedSegments)
             throw new DomainException(40901, "Batch 分片范围与 attempt 快照不一致");
         var intent = new MimoBatchIntent(owner, attempt.VersionId.ToString("D"), attempt.TaskId.ToString("D"),
@@ -330,12 +330,15 @@ public sealed class NoteAsrBatchService(PimDbContext db, ICurrentUserService use
         NoteAsrReprocessReason reason, CancellationToken ct)
     {
         var attempt = child.Attempt;
+        if (attempt.ModelId is not { } modelId || attempt.ModelRevision is not { } modelRevision)
+            throw new DomainException(40901, "Batch attempt 缺少固定模型修订");
+        var (profile, _, _) = await AuthorizedProfileAsync(modelId, modelRevision, ct);
         await ImportInheritedEvidenceAsync(owner, attempt, child.State.Steps.Count, retryIndexes, ct);
         await using var generated = await NoteAsrBatchJsonlReader.GenerateFromPlanAsync(owner, attempt.VersionId,
             child.State.Steps, child.State.SamplesPerCall, child.State.Request.Language, attempt.Model,
             ValidateFrozenPrompt(attempt).Text, materials,
             checked((int)Math.Min(options.Value.MaxJsonlBytes, MimoBatchDefaults.MaxJsonlBytes)),
-            ExpectedCustomIds(child.State.Steps.Count), retryIndexes, ct);
+            ExpectedCustomIds(child.State.Steps.Count), retryIndexes, profile.MaxOutputTokens, ct);
         var request = new StartNoteAsrBatchRequest(child.State.Request.TaskId, attempt.Id, attempt.ModelId!.Value,
             consentRef, true, completionWindow);
         using var budget = new CancellationTokenSource(PersistenceBudget);

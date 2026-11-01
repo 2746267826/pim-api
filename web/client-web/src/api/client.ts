@@ -24,12 +24,17 @@ export class ApiError extends Error {
    */
   readonly retryAfterMs: number | null
 
-  constructor(message: string, code = -1, status = 0, retryAfterMs: number | null = null) {
+  /** 已真实收到的网关响应头标识；仅用于传输证据，不推断 provider 结果。 */
+  readonly gatewayName: string | null
+
+  constructor(message: string, code = -1, status = 0, retryAfterMs: number | null = null,
+    gatewayName: string | null = null) {
     super(message)
     this.name = 'ApiError'
     this.code = code
     this.status = status
     this.retryAfterMs = retryAfterMs
+    this.gatewayName = gatewayName
   }
 }
 
@@ -218,6 +223,8 @@ export async function apiFetch<T>(
    */
   const retryAfterMs =
     res.status === 429 && !allow.has(429) ? parseRetryAfter(res.headers.get('retry-after')) : null
+  const gatewayName = (res.headers.get('x-gateway-name') ??
+    res.headers.get('via') ?? res.headers.get('server'))?.trim().slice(0, 200) || null
   const withWait = (message: string): string =>
     retryAfterMs === null ? message : `${message}（服务端要求等待约 ${formatRetryAfter(retryAfterMs)}）`
 
@@ -226,7 +233,8 @@ export async function apiFetch<T>(
   const contentType = res.headers.get('content-type') ?? ''
   const text = await res.text()
   if (contentType.includes('text/html') || (!contentType.includes('json') && text.trimStart().startsWith('<'))) {
-    throw new ApiError('接口返回了 HTML 而非 JSON：服务器地址可能不正确，或后端未启动', -1, res.status)
+    throw new ApiError('接口返回了 HTML 而非 JSON：服务器地址可能不正确，或后端未启动', -1,
+      res.status, retryAfterMs, gatewayName)
   }
 
   let body: unknown = undefined
@@ -234,7 +242,7 @@ export async function apiFetch<T>(
     try {
       body = JSON.parse(text)
     } catch {
-      throw new ApiError('响应不是合法 JSON', -1, res.status)
+      throw new ApiError('响应不是合法 JSON', -1, res.status, retryAfterMs, gatewayName)
     }
   }
 
@@ -248,6 +256,7 @@ export async function apiFetch<T>(
         envelope.code,
         res.status,
         retryAfterMs,
+        gatewayName,
       )
     }
     return envelope.data as T
@@ -255,7 +264,8 @@ export async function apiFetch<T>(
 
   // 裸对象端点（/api/version、/api/client/shell/latest 等，非 ApiResponse 封装）
   if (!statusOk) {
-    throw new ApiError(withWait(`请求失败（HTTP ${res.status}）`), -1, res.status, retryAfterMs)
+    throw new ApiError(withWait(`请求失败（HTTP ${res.status}）`), -1, res.status, retryAfterMs,
+      gatewayName)
   }
   return body as T
 }

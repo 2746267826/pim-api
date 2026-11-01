@@ -109,7 +109,7 @@ public sealed class AiAsrCallService(PimDbContext db, ISecretProtector secrets, 
 
         await AiCallRecovery.RecoverExpiredAsync(db, ct);
         var old = await FindAsync(owner, request.ClientRequestId, ct);
-        if (old is not null) return UrlReplay(old, fingerprint);
+        if (old is not null) return await UrlReplayAsync(owner, old, fingerprint, ct);
 
         string? key = null;
         string? configurationError = null;
@@ -196,7 +196,7 @@ public sealed class AiAsrCallService(PimDbContext db, ISecretProtector secrets, 
             db.Entry(row).State = EntityState.Detached;
             var winner = await FindAsync(owner, request.ClientRequestId, ct);
             if (winner is null) throw;
-            return UrlReplay(winner, fingerprint);
+            return await UrlReplayAsync(owner, winner, fingerprint, ct);
         }
 
         if (configurationError is not null) return UrlResult(row, false);
@@ -212,6 +212,9 @@ public sealed class AiAsrCallService(PimDbContext db, ISecretProtector secrets, 
         AiCallAudioEntity? storedAudio = null;
         var providerPhase = false;
         var callerCancelled = false;
+        var abortSource = "none";
+        var outcomeKnown = false;
+        int? upstreamStatus = null;
         using var total = new CancellationTokenSource(operationBudget);
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(total.Token, ct);
         using var wire = new AiTextWireCapture();
@@ -242,7 +245,8 @@ public sealed class AiAsrCallService(PimDbContext db, ISecretProtector secrets, 
             await db.SaveChangesAsync(linked.Token);
             await materials.StoreForOwnerAsync(owner, storedAudio, fetched, linked.Token);
 
-            var connection = new AiModelConnection(endpoint, profile.Model, key!, profile.TimeoutSeconds);
+            var connection = new AiModelConnection(endpoint, profile.Model, key!, profile.TimeoutSeconds,
+                profile.MaxOutputTokens);
             wire.SetAsrAudit(bytes => preset.AuditRequest(bytes, connection, fetched, storedAudio.Id,
                     request.Language, prompt), fetched.IsRemote ? 512 * 1024 : RequestBudgetBytes(description.MaxAudioBytes));
             providerPhase = true;
@@ -256,22 +260,40 @@ public sealed class AiAsrCallService(PimDbContext db, ISecretProtector secrets, 
             row.TotalTokens = Count(response.TotalTokens);
             reportedSeconds = response.ReportedSeconds;
             if (row.FinishReason == "stop" && response.HasTranscript)
+            {
                 row.Status = "succeeded";
+                outcomeKnown = true;
+            }
             else
             {
                 row.Status = "incomplete";
-                row.ErrorCode = "incomplete_output";
-                row.ErrorMessage = "ASR未正常完成或缺少转写字段，请核对回复与结束原因";
+                row.ErrorCode = row.FinishReason is "length" or "max_tokens"
+                    ? "output_limit_reached" : "incomplete_output";
+                row.ErrorMessage = row.ErrorCode == "output_limit_reached"
+                    ? "ASR输出达到配置上限，转写可能被截断"
+                    : "ASR未正常完成或缺少转写字段，请核对回复与结束原因";
+                abortSource = row.ErrorCode == "output_limit_reached" ? "output_limit" : "provider_incomplete";
+                outcomeKnown = true;
             }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
             callerCancelled = true;
-            row.Status = "cancelled";
-            row.ErrorCode = providerPhase ? "provider_cancelled_unknown" : "url_preflight_cancelled";
-            row.ErrorMessage = providerPhase
-                ? "URL ASR调用方已取消，上游结果UNKNOWN，未自动重试"
-                : "URL音频预检已取消，本次未调用provider";
+            row.Status = request.ExplicitCancel
+                ? providerPhase ? "incomplete" : "cancelled"
+                : providerPhase ? "incomplete" : "failed";
+            row.ErrorCode = request.ExplicitCancel
+                ? providerPhase ? "user_cancelled_outcome_unknown" : "user_cancelled_before_send"
+                : providerPhase ? "caller_disconnect_outcome_unknown" : "caller_disconnect_before_send";
+            row.ErrorMessage = request.ExplicitCancel
+                ? providerPhase
+                    ? "用户已明确取消，但服务商可能已开始处理，结果UNKNOWN；请核对调用记录"
+                    : "用户已在发送服务商前取消，本次未调用provider"
+                : providerPhase
+                    ? "URL ASR调用连接已断开，但服务商可能已开始处理，结果UNKNOWN；改用异步ASR任务可避免网关等待"
+                    : "URL音频预检连接已断开，本次未调用provider";
+            abortSource = request.ExplicitCancel ? "user_cancelled" : "caller_disconnect";
+            outcomeKnown = !providerPhase;
         }
         catch (OperationCanceledException)
         {
@@ -280,12 +302,37 @@ public sealed class AiAsrCallService(PimDbContext db, ISecretProtector secrets, 
             row.ErrorMessage = providerPhase
                 ? "URL ASR上游超时，结果UNKNOWN，未自动重试"
                 : "URL音频预检超时，本次未调用provider";
+            abortSource = providerPhase ? "provider_timeout" : "worker_timeout";
+            outcomeKnown = !providerPhase;
+            if (providerPhase) upstreamStatus = 504;
+        }
+        catch (AiAsrProviderHttpException error)
+        {
+            var timedOut = providerPhase && IsTimeoutStatus(error.StatusCode);
+            row.Status = timedOut ? "timed_out" : "failed";
+            row.ErrorCode = timedOut
+                ? "provider_timeout_unknown"
+                : "upstream_http_" + error.StatusCode;
+            row.ErrorMessage = timedOut
+                ? "URL ASR上游请求超时，结果UNKNOWN，未自动重试"
+                : "ASR服务返回HTTP " + error.StatusCode + "，本次未自动重试";
+            abortSource = timedOut ? "provider_timeout" : "upstream_http";
+            outcomeKnown = !timedOut && IsDefinitiveClientStatus(error.StatusCode);
+            upstreamStatus = error.StatusCode;
         }
         catch (ClientResultException error)
         {
-            row.Status = "failed";
-            row.ErrorCode = "upstream_http_" + error.Status;
-            row.ErrorMessage = "ASR服务返回HTTP " + error.Status + "，本次未自动重试";
+            var timedOut = providerPhase && IsTimeoutStatus(error.Status);
+            row.Status = timedOut ? "timed_out" : "failed";
+            row.ErrorCode = timedOut
+                ? "provider_timeout_unknown"
+                : "upstream_http_" + error.Status;
+            row.ErrorMessage = timedOut
+                ? "URL ASR上游请求超时，结果UNKNOWN，未自动重试"
+                : "ASR服务返回HTTP " + error.Status + "，本次未自动重试";
+            abortSource = timedOut ? "provider_timeout" : "upstream_http";
+            outcomeKnown = !timedOut && IsDefinitiveClientStatus(error.Status);
+            upstreamStatus = error.Status;
         }
         catch (DomainException error)
         {
@@ -297,6 +344,9 @@ public sealed class AiAsrCallService(PimDbContext db, ISecretProtector secrets, 
             row.ErrorMessage = providerPhase
                 ? "URL ASR上游请求或响应失败，结果UNKNOWN，本次未自动重试"
                 : Clip(error.Message, 2000);
+            abortSource = providerTimedOut ? "provider_timeout" : providerPhase ? "provider_error" : "url_preflight";
+            outcomeKnown = !providerPhase;
+            if (providerTimedOut) upstreamStatus = 504;
         }
         catch (Exception)
         {
@@ -305,6 +355,8 @@ public sealed class AiAsrCallService(PimDbContext db, ISecretProtector secrets, 
             row.ErrorMessage = providerPhase
                 ? "URL ASR连接或响应异常，结果UNKNOWN，本次未自动重试"
                 : "URL音频预检失败，本次未调用provider";
+            abortSource = providerPhase ? "provider_error" : "url_preflight";
+            outcomeKnown = !providerPhase;
         }
         finally
         {
@@ -317,18 +369,23 @@ public sealed class AiAsrCallService(PimDbContext db, ISecretProtector secrets, 
                     row.Status = "failed";
                     row.ErrorCode = "asr_request_mismatch";
                     row.ErrorMessage = "SDK请求与固定URL音频/模型/语言不一致，本次未发送";
+                    abortSource = "request_rejected";
+                    outcomeKnown = true;
                 }
                 if (wire.ResponseTooLarge)
                 {
                     row.Status = "failed";
                     row.ErrorCode = "response_too_large";
                     row.ErrorMessage = "ASR响应超过4MiB，未保存为完整结果";
+                    abortSource = "response_too_large";
+                    outcomeKnown = false;
                 }
                 row.ErrorMessage = SanitizeRemoteText(row.ErrorMessage, audio, out _);
                 row.ResponseRawJson = UrlResponseAudit(row);
                 row.MetadataJson = UrlMetadata(audio, storedAudio?.ObjectKey is not null,
                     wire.ProviderAttempted || providerPhase, wire.RequestBody is not null,
-                    wire.ResponseBody is not null, reportedSeconds, wire.ResponseTooLarge);
+                    wire.ResponseBody is not null, reportedSeconds, wire.ResponseTooLarge,
+                    abortSource, outcomeKnown, upstreamStatus);
             }
             finally
             {
@@ -340,7 +397,9 @@ public sealed class AiAsrCallService(PimDbContext db, ISecretProtector secrets, 
         return result;
 
         string UrlMetadata(AiAsrInput? fetched, bool audioStored, bool? attempted,
-            bool requestCaptured, bool responseComplete, double? seconds, bool tooLarge) =>
+            bool requestCaptured, bool responseComplete, double? seconds, bool tooLarge,
+            string currentAbortSource = "none", bool currentOutcomeKnown = false,
+            int? currentUpstreamStatus = null) =>
             JsonSerializer.Serialize(new
             {
                 recordFormat = "sdk-asr-url-v1",
@@ -363,6 +422,10 @@ public sealed class AiAsrCallService(PimDbContext db, ISecretProtector secrets, 
                 responseBodyComplete = responseComplete,
                 reportedAudioSeconds = seconds,
                 responseTooLarge = tooLarge,
+                abortSource = currentAbortSource,
+                outcomeKnown = currentOutcomeKnown,
+                gatewayStatus = (int?)null,
+                upstreamStatus = currentUpstreamStatus,
                 transportRetries = 0,
                 sourceConfirmed = request.Audio.SourceConfirmed,
                 providerFetchConfirmed = request.Audio.ProviderFetchConfirmed,
@@ -377,7 +440,8 @@ public sealed class AiAsrCallService(PimDbContext db, ISecretProtector secrets, 
         var row = await FindAsync(owner, requestId, ct);
         if (row is null || row.Purpose != "ai.asr-url-call")
             throw new DomainException(40401, "尚未找到本次URL ASR记录");
-        return UrlResult(row, true);
+        var observation = await PreferredObservationAsync(owner, row.Id, ct);
+        return UrlResult(row, true, observation);
     }
 
     // Only the durable task runner supplies this identity, read from its persisted owner-bound intent.
@@ -415,7 +479,7 @@ public sealed class AiAsrCallService(PimDbContext db, ISecretProtector secrets, 
             size = audio.Bytes.Length }, Json));
         await AiCallRecovery.RecoverExpiredAsync(db, ct);
         var old = await FindAsync(owner, request.ClientRequestId, ct);
-        if (old is not null) return Replay(old, fingerprint);
+        if (old is not null) return await ReplayAsync(owner, old, fingerprint, ct);
         string? key = null; string? configurationError = null;
         if (runtime?.Enabled != true || !profile.Enabled ||
             (profile.Capabilities & AiModelCapabilityFlags.Transcription) == 0)
@@ -460,7 +524,7 @@ public sealed class AiAsrCallService(PimDbContext db, ISecretProtector secrets, 
             {
                 db.Entry(row).State = EntityState.Detached; db.Entry(storedAudio).State = EntityState.Detached;
                 var winner = await FindAsync(owner, request.ClientRequestId, ct); if (winner is null) throw;
-                return Replay(winner, fingerprint);
+                return await ReplayAsync(owner, winner, fingerprint, ct);
             }
             if (configurationError is not null) return Result(row, false);
             if (!gateEntered && !gate.TryEnter(asr: true))
@@ -470,12 +534,16 @@ public sealed class AiAsrCallService(PimDbContext db, ISecretProtector secrets, 
             using var linked = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token, ct);
             using var wire = new AiTextWireCapture();
             var prepared = false;
+            var abortSource = "none";
+            var outcomeKnown = false;
+            int? upstreamStatus = null;
             double? reportedSeconds = null;
             string? parsedResponse = null;
             try
             {
                 await materials.StoreForOwnerAsync(owner, storedAudio, audio, linked.Token); prepared = true;
-                var connection = new AiModelConnection(endpoint, profile.Model, key!, profile.TimeoutSeconds);
+                var connection = new AiModelConnection(endpoint, profile.Model, key!, profile.TimeoutSeconds,
+                    profile.MaxOutputTokens);
                 wire.SetAsrAudit(bytes => preset.AuditRequest(bytes, connection, audio, storedAudio.Id,
                         request.Language, prompt),
                     RequestBudgetBytes(description.MaxAudioBytes));
@@ -486,19 +554,96 @@ public sealed class AiAsrCallService(PimDbContext db, ISecretProtector secrets, 
                 row.ContentRedacted = redacted || rawRedacted; row.FinishReason = response.FinishReason;
                 row.PromptTokens = Count(response.InputTokens); row.CompletionTokens = Count(response.OutputTokens); row.TotalTokens = Count(response.TotalTokens);
                 reportedSeconds = response.ReportedSeconds;
-                if (response.FinishReason == "stop" && response.HasTranscript) row.Status = "succeeded";
-                else { row.Status = "incomplete"; row.ErrorCode = "incomplete_output"; row.ErrorMessage = "ASR未正常完成或缺少转写字段，请核对回复与结束原因"; }
+                if (response.FinishReason == "stop" && response.HasTranscript)
+                {
+                    row.Status = "succeeded";
+                    outcomeKnown = true;
+                }
+                else
+                {
+                    row.Status = "incomplete";
+                    row.ErrorCode = response.FinishReason is "length" or "max_tokens"
+                        ? "output_limit_reached" : "incomplete_output";
+                    row.ErrorMessage = row.ErrorCode == "output_limit_reached"
+                        ? "ASR输出达到配置上限，转写可能被截断"
+                        : "ASR未正常完成或缺少转写字段，请核对回复与结束原因";
+                    abortSource = row.ErrorCode == "output_limit_reached" ? "output_limit" : "provider_incomplete";
+                    outcomeKnown = true;
+                }
             }
             catch (OperationCanceledException)
-            { row.Status = ct.IsCancellationRequested ? "cancelled" : "timed_out"; row.ErrorCode = row.Status;
-                row.ErrorMessage = prepared ? "ASR已取消或超时，上游结果未确认，请先核对记录" : "音频保存已取消或超时，本次未发送模型"; }
+            {
+                if (ct.IsCancellationRequested)
+                {
+                    row.Status = request.ExplicitCancel
+                        ? prepared ? "incomplete" : "cancelled"
+                        : prepared ? "incomplete" : "failed";
+                    row.ErrorCode = request.ExplicitCancel
+                        ? prepared ? "user_cancelled_outcome_unknown" : "user_cancelled_before_send"
+                        : prepared ? "caller_disconnect_outcome_unknown" : "caller_disconnect_before_send";
+                    row.ErrorMessage = request.ExplicitCancel
+                        ? prepared
+                            ? "用户已明确取消，但服务商可能已开始处理，结果UNKNOWN；请核对调用记录"
+                            : "用户已在发送服务商前取消，本次未调用模型"
+                        : prepared
+                            ? "调用连接已断开，但服务商可能已开始处理，结果UNKNOWN；改用异步ASR任务可避免网关等待"
+                            : "调用连接在发送服务商前断开，本次未调用模型";
+                    abortSource = request.ExplicitCancel ? "user_cancelled" : "caller_disconnect";
+                    outcomeKnown = !prepared;
+                }
+                else
+                {
+                    row.Status = "timed_out";
+                    row.ErrorCode = prepared ? "provider_timeout_outcome_unknown" : "worker_timeout_before_send";
+                    row.ErrorMessage = prepared
+                        ? "ASR上游请求超时，结果UNKNOWN，未自动重试"
+                        : "音频保存超过执行时限，本次未调用模型";
+                    abortSource = prepared ? "provider_timeout" : "worker_timeout";
+                    outcomeKnown = !prepared;
+                    if (prepared) upstreamStatus = 504;
+                }
+            }
+            catch (AiAsrProviderHttpException error)
+            {
+                var timedOut = prepared && IsTimeoutStatus(error.StatusCode);
+                row.Status = timedOut ? "timed_out" : "failed";
+                row.ErrorCode = timedOut
+                    ? "provider_timeout_outcome_unknown"
+                    : "upstream_http_" + error.StatusCode;
+                row.ErrorMessage = timedOut
+                    ? "ASR上游请求超时，结果UNKNOWN，未自动重试"
+                    : "ASR服务返回HTTP " + error.StatusCode + "，本次未自动重试";
+                abortSource = timedOut ? "provider_timeout" : "upstream_http";
+                outcomeKnown = !timedOut && IsDefinitiveClientStatus(error.StatusCode);
+                upstreamStatus = error.StatusCode;
+            }
             catch (ClientResultException error)
-            { row.Status = "failed"; row.ErrorCode = "upstream_http_" + error.Status; row.ErrorMessage = "ASR服务返回HTTP " + error.Status + "，本次未自动重试"; }
+            {
+                var timedOut = prepared && IsTimeoutStatus(error.Status);
+                row.Status = timedOut ? "timed_out" : "failed";
+                row.ErrorCode = timedOut
+                    ? "provider_timeout_outcome_unknown"
+                    : "upstream_http_" + error.Status;
+                row.ErrorMessage = timedOut
+                    ? "ASR上游请求超时，结果UNKNOWN，未自动重试"
+                    : "ASR服务返回HTTP " + error.Status + "，本次未自动重试";
+                abortSource = timedOut ? "provider_timeout" : "upstream_http";
+                outcomeKnown = !timedOut && IsDefinitiveClientStatus(error.Status);
+                upstreamStatus = error.Status;
+            }
             catch (DomainException error)
             {
-                row.Status = "failed";
-                row.ErrorCode = prepared ? $"provider_{error.ErrorCode}" : "audio_prepare_failed";
-                row.ErrorMessage = prepared ? Clip(error.Message, 2000) : "音频未能保存，本次未发送模型，请检查文件来源";
+                var providerTimedOut = prepared && error.ErrorCode == 50401;
+                row.Status = providerTimedOut ? "timed_out" : "failed";
+                row.ErrorCode = providerTimedOut
+                    ? "provider_timeout_outcome_unknown"
+                    : prepared ? $"provider_{error.ErrorCode}" : "audio_prepare_failed";
+                row.ErrorMessage = providerTimedOut
+                    ? "ASR上游请求超时，结果UNKNOWN，未自动重试"
+                    : prepared ? Clip(error.Message, 2000) : "音频未能保存，本次未发送模型，请检查文件来源";
+                abortSource = providerTimedOut ? "provider_timeout" : prepared ? "provider_error" : "audio_storage";
+                outcomeKnown = !prepared;
+                if (providerTimedOut) upstreamStatus = 504;
             }
             catch (Exception error)
             {
@@ -507,6 +652,8 @@ public sealed class AiAsrCallService(PimDbContext db, ISecretProtector secrets, 
                 row.ErrorMessage = prepared
                     ? Clip("ASR连接或响应异常，请核对记录；本次未自动重试：" + error.Message, 2000)
                     : "音频未能保存，本次未发送模型，请检查文件来源";
+                abortSource = prepared ? "provider_error" : "audio_storage";
+                outcomeKnown = !prepared;
             }
             finally
             {
@@ -529,10 +676,25 @@ public sealed class AiAsrCallService(PimDbContext db, ISecretProtector secrets, 
                         }
                         row.ResponseRawJson = ComposeResponseAudit(parsedResponse, wireJson);
                     }
-                    if (wire.RequestRejected) { row.Status = "failed"; row.ErrorCode = "asr_request_mismatch"; row.ErrorMessage = "SDK请求与固定音频/模型/语言不一致，本次未发送"; }
-                    if (wire.ResponseTooLarge) { row.Status = "failed"; row.ErrorCode = "response_too_large"; row.ErrorMessage = "ASR响应超过4MiB，未保存为完整结果"; }
+                    if (wire.RequestRejected)
+                    {
+                        row.Status = "failed";
+                        row.ErrorCode = "asr_request_mismatch";
+                        row.ErrorMessage = "SDK请求与固定音频/模型/语言不一致，本次未发送";
+                        abortSource = "request_rejected";
+                        outcomeKnown = true;
+                    }
+                    if (wire.ResponseTooLarge)
+                    {
+                        row.Status = "failed";
+                        row.ErrorCode = "response_too_large";
+                        row.ErrorMessage = "ASR响应超过4MiB，未保存为完整结果";
+                        abortSource = "response_too_large";
+                        outcomeKnown = false;
+                    }
                     row.MetadataJson = Metadata(storedAudio.ObjectKey is not null, wire.ProviderAttempted, wire.RequestBody is not null,
-                        wire.ResponseBody is not null, reportedSeconds, wire.ResponseTooLarge);
+                        wire.ResponseBody is not null, reportedSeconds, wire.ResponseTooLarge,
+                        abortSource, outcomeKnown, upstreamStatus);
                 }
                 finally { gate.Exit(asr: true); gateEntered = false; }
             }
@@ -540,19 +702,28 @@ public sealed class AiAsrCallService(PimDbContext db, ISecretProtector secrets, 
         }
         finally { if (gateEntered) gate.Exit(asr: true); }
 
-        string Metadata(bool audioStored, bool? attempted, bool requestCaptured, bool responseComplete, double? seconds, bool tooLarge) => JsonSerializer.Serialize(new {
+        string Metadata(bool audioStored, bool? attempted, bool requestCaptured, bool responseComplete, double? seconds,
+            bool tooLarge, string currentAbortSource = "none", bool currentOutcomeKnown = false,
+            int? currentUpstreamStatus = null) => JsonSerializer.Serialize(new {
             recordFormat = "sdk-asr-v1", asrPresetId = description.Id, asrPresetVersion = description.Version, language = request.Language,
             promptRevision = prompt.Revision, promptSha256 = prompt.Sha256,
             promptTemplateRevision = prompt.TemplateRevision, promptTemplateSha256 = prompt.TemplateSha256,
             audioEncoding = "sha256-reference", audioStored, providerAttempted = attempted,
             requestBodyCaptured = requestCaptured, responseBodyComplete = responseComplete, reportedAudioSeconds = seconds,
-            responseTooLarge = tooLarge, transportRetries = 0, destinationConsent = request.Consent }, Json);
+            responseTooLarge = tooLarge, transportRetries = 0, destinationConsent = request.Consent,
+            abortSource = currentAbortSource, outcomeKnown = currentOutcomeKnown,
+            gatewayStatus = (int?)null, upstreamStatus = currentUpstreamStatus }, Json);
     }
 
     private static long RequestBudgetBytes(int maxDecodedBytes) =>
         checked(4L * ((maxDecodedBytes + 2L) / 3L) + 1024L * 1024);
 
-    private static string ComposeResponseAudit(string? parsedJson, string? wireJson)
+    private static bool IsTimeoutStatus(int status) => status is 408 or 504 or 524;
+
+    private static bool IsDefinitiveClientStatus(int status) =>
+        status is >= 400 and < 500 && !IsTimeoutStatus(status) && status != 429;
+
+    internal static string ComposeResponseAudit(string? parsedJson, string? wireJson)
     {
         JsonNode? parsed = null;
         JsonNode? wire = null;
@@ -586,21 +757,34 @@ public sealed class AiAsrCallService(PimDbContext db, ISecretProtector secrets, 
         var owner = currentUser.UserId ?? throw new DomainException(1002, "请先登录"); await AiCallRecovery.RecoverExpiredAsync(db, ct);
         var row = await FindAsync(owner, requestId, ct);
         if (row is null || row.Purpose != "ai.asr-call") throw new DomainException(40401, "尚未找到本次ASR记录");
-        return Result(row, true);
+        return Result(row, true, await PreferredObservationAsync(owner, row.Id, ct));
     }
+    private Task<AiAsrTransportObservationEntity?> PreferredObservationAsync(Guid owner, Guid logId,
+        CancellationToken ct) => db.AiAsrTransportObservations.AsNoTracking()
+        .Where(x => x.OwnerId == owner && x.LogId == logId)
+        .OrderByDescending(x => x.Source == "client_http_response")
+        .ThenByDescending(x => x.ObservedAt)
+        .FirstOrDefaultAsync(ct);
     private Task<AiRequestLogEntity?> FindAsync(Guid owner, Guid id, CancellationToken ct) => db.AiRequestLogs.AsNoTracking()
         .SingleOrDefaultAsync(x => x.UserId == owner && x.ClientRequestId == id, ct);
-    private static AiTextCallResultDto Replay(AiRequestLogEntity row, string fingerprint)
-    { if (row.InputHash != fingerprint || row.Purpose != "ai.asr-call") throw new DomainException(40901, "请求标识已绑定另一份输入，原记录保留"); return Result(row, true); }
-    private static AiAsrUrlCallResultDto UrlReplay(AiRequestLogEntity row, string fingerprint)
+    private async Task<AiTextCallResultDto> ReplayAsync(Guid owner, AiRequestLogEntity row,
+        string fingerprint, CancellationToken ct)
+    {
+        if (row.InputHash != fingerprint || row.Purpose != "ai.asr-call")
+            throw new DomainException(40901, "请求标识已绑定另一份输入，原记录保留");
+        return Result(row, true, await PreferredObservationAsync(owner, row.Id, ct));
+    }
+    private async Task<AiAsrUrlCallResultDto> UrlReplayAsync(Guid owner, AiRequestLogEntity row,
+        string fingerprint, CancellationToken ct)
     {
         if (row.InputHash != fingerprint || row.Purpose != "ai.asr-url-call")
             throw new DomainException(40901, "请求标识已绑定另一份输入，原记录保留");
-        return UrlResult(row, true);
+        return UrlResult(row, true, await PreferredObservationAsync(owner, row.Id, ct));
     }
-    private static AiAsrUrlCallResultDto UrlResult(AiRequestLogEntity row, bool replayed)
+    private static AiAsrUrlCallResultDto UrlResult(AiRequestLogEntity row, bool replayed,
+        AiAsrTransportObservationEntity? observation = null)
     {
-        var result = Result(row, replayed);
+        var result = Result(row, replayed, observation);
         string? origin = null;
         string? sha256 = null;
         var warning = "url-preflight-not-provider-verified";
@@ -620,7 +804,8 @@ public sealed class AiAsrCallService(PimDbContext db, ISecretProtector secrets, 
         }
         catch (JsonException) { }
         return new(result.LogId, result.Status, result.ResponseText, result.ErrorMessage,
-            result.Replayed, origin, sha256, sha256 is not null, false, warning);
+            result.Replayed, origin, sha256, sha256 is not null, false, warning,
+            result.Diagnostics);
     }
     private async Task<AiAsrUrlCallResultDto> FinishUrlAsync(AiRequestLogEntity row)
     {
