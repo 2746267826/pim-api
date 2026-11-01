@@ -92,6 +92,8 @@ export interface FetchOptions {
   /** 视为"可正常解包业务体"的 HTTP 状态（如 Outlook 写回的 409/412） */
   allowStatuses?: number[]
   signal?: AbortSignal
+  /** Additional session fence for long-lived flows that must not cross owner/server changes. */
+  assertActive?: () => void
 }
 
 interface RawInit {
@@ -103,6 +105,7 @@ interface RawInit {
 }
 
 async function rawFetch(path: string, init: RawInit, opts: FetchOptions): Promise<Response> {
+  assertRequestActive(opts)
   const headers = new Headers(init.headers)
   const isForm = init.bodyKind === 'form' ||
     (init.bodyKind == null && typeof FormData !== 'undefined' && init.body instanceof FormData)
@@ -123,6 +126,7 @@ async function rawFetch(path: string, init: RawInit, opts: FetchOptions): Promis
     const token = getAccessToken()
     if (token) headers.set('Authorization', `Bearer ${token}`)
   }
+  assertRequestActive(opts)
   return fetch(apiUrl(path), {
     method: init.method ?? (init.body !== undefined ? 'POST' : 'GET'),
     headers,
@@ -135,6 +139,15 @@ async function rawFetch(path: string, init: RawInit, opts: FetchOptions): Promis
         : undefined,
     signal: opts.signal,
   })
+}
+
+function assertRequestActive(opts: Pick<FetchOptions, 'signal' | 'assertActive'>): void {
+  if (opts.signal?.aborted) {
+    const error = new Error('请求所属会话已结束')
+    error.name = 'AbortError'
+    throw error
+  }
+  opts.assertActive?.()
 }
 
 /* ── 401 共享单次刷新 ─────────────────────────────────────── */
@@ -195,9 +208,12 @@ export async function apiFetch<T>(
 ): Promise<T> {
   const allow = new Set(opts.allowStatuses ?? [])
   let res = await rawFetch(path, init, opts)
+  assertRequestActive(opts)
 
   if (res.status === 401 && (opts.auth ?? true) && !allow.has(401)) {
+    assertRequestActive(opts)
     const refreshed = await refreshOnce()
+    assertRequestActive(opts)
     if (!refreshed) {
       /*
        * host 通道不得清令牌/广播浏览器登出（规格 §6.2）：页面上的令牌 storage 本来
@@ -212,6 +228,7 @@ export async function apiFetch<T>(
       throw new ApiError('登录已过期，请重新登录', 401, 401)
     }
     res = await rawFetch(path, init, opts)
+    assertRequestActive(opts)
   }
 
   /*
@@ -232,6 +249,7 @@ export async function apiFetch<T>(
 
   const contentType = res.headers.get('content-type') ?? ''
   const text = await res.text()
+  assertRequestActive(opts)
   if (contentType.includes('text/html') || (!contentType.includes('json') && text.trimStart().startsWith('<'))) {
     throw new ApiError('接口返回了 HTML 而非 JSON：服务器地址可能不正确，或后端未启动', -1,
       res.status, retryAfterMs, gatewayName)
@@ -309,6 +327,8 @@ export interface BlobFetchOptions {
    * host 通道忽略本开关：页面没有 refresh token，401 一律走同一套宿主刷新（规格 §6.2）。
    */
   refreshOn401?: boolean
+  /** Guard the download and any 401 replay against the initiating workspace session. */
+  assertActive?: () => void
 }
 
 /**
@@ -321,6 +341,8 @@ export async function fetchBlob(
   signal?: AbortSignal,
   opts: BlobFetchOptions = {},
 ): Promise<Blob> {
+  const requestOptions = { signal, assertActive: opts.assertActive }
+  assertRequestActive(requestOptions)
   const host = detectHostChannel() === 'host'
   const authHeaders = (): Record<string, string> => {
     const headers: Record<string, string> = {}
@@ -331,8 +353,11 @@ export async function fetchBlob(
     return headers
   }
   let res = await fetch(apiUrl(path), { headers: authHeaders(), signal })
+  assertRequestActive(requestOptions)
   if (res.status === 401 && (opts.refreshOn401 || host)) {
+    assertRequestActive(requestOptions)
     const refreshed = await refreshOnce()
+    assertRequestActive(requestOptions)
     if (!refreshed) {
       if (host) throw new ApiError('宿主会话刷新失败，请重试或重新登录', 401, 401)
       clearTokens()
@@ -340,9 +365,12 @@ export async function fetchBlob(
       throw new ApiError('登录已过期，请重新登录', 401, 401)
     }
     res = await fetch(apiUrl(path), { headers: authHeaders(), signal })
+    assertRequestActive(requestOptions)
   }
   if (!res.ok) {
     throw new ApiError(`下载失败（HTTP ${res.status}）`, -1, res.status)
   }
-  return res.blob()
+  const blob = await res.blob()
+  assertRequestActive(requestOptions)
+  return blob
 }

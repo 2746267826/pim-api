@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Camera, ImagePlus, Plus, RotateCcw, Save, Trash2 } from 'lucide-react'
 import { Button, Card, InlineAlert, Input, Label, PageHeader, Skeleton, StatusBadge, Textarea } from '@/components/ui'
@@ -12,7 +12,7 @@ import {
   type NoteMaterialUpload,
   type SupportedPhotoMime,
 } from './material-model'
-import { nativeNotesApi, type NoteLibrarySource } from './api'
+import type { NativeNotesClient, NoteLibrarySource } from './api'
 import { uploadMaterialBundle, type MaterialUploadProgress } from './upload-engine'
 
 export interface NoteEditorSeed {
@@ -23,9 +23,13 @@ export interface NoteEditorSeed {
 }
 
 export interface NoteEditorPaneProps {
+  ownerId: string
+  serverBinding: string
+  api: NativeNotesClient
   versionId?: string
   seed?: NoteEditorSeed
   source?: NoteLibrarySource
+  onDirtyChange?: (dirty: boolean) => void
   onSaved: (upload: NoteMaterialUpload) => void
 }
 
@@ -40,24 +44,36 @@ interface LoadedEditorProps {
   isCurrent: boolean
   currentVersionId: string | null
   legacyNotice?: string
+  serverBinding: string
+  api: NativeNotesClient
+  onDirtyChange?: (dirty: boolean) => void
   onSaved: (upload: NoteMaterialUpload) => void
 }
 
-export function NoteEditorPane({ versionId, seed, source, onSaved }: NoteEditorPaneProps) {
+export function NoteEditorPane({
+  ownerId,
+  serverBinding,
+  api,
+  versionId,
+  seed,
+  source,
+  onDirtyChange,
+  onSaved,
+}: NoteEditorPaneProps) {
   const material = useQuery({
-    queryKey: ['native-note-material', versionId],
-    queryFn: ({ signal }) => nativeNotesApi.version(versionId!, signal),
+    queryKey: ['native-note-material', ownerId, serverBinding, versionId],
+    queryFn: ({ signal }) => api.version(versionId!, signal),
     enabled: Boolean(versionId),
   })
   const hydrated = useQuery({
-    queryKey: ['native-note-material-hydrated', versionId],
-    queryFn: async () => {
+    queryKey: ['native-note-material-hydrated', ownerId, serverBinding, versionId],
+    queryFn: async ({ signal }) => {
       if (!material.data) throw new Error('材料版本尚未载入')
       const parsed = parseMaterialVersion(material.data)
       const blocks = await hydrateParsedPhotos(
         parsed,
         material.data,
-        (id, fileIndex) => nativeNotesApi.fileBytes(id, fileIndex),
+        (id, fileIndex) => api.fileBytes(id, fileIndex, signal),
       )
       return { parsed, blocks }
     },
@@ -78,6 +94,9 @@ export function NoteEditorPane({ versionId, seed, source, onSaved }: NoteEditorP
       isCurrent
       currentVersionId={null}
       legacyNotice={seed.legacyNotice}
+      serverBinding={serverBinding}
+      api={api}
+      onDirtyChange={onDirtyChange}
       onSaved={onSaved}
     />
   }
@@ -104,6 +123,9 @@ export function NoteEditorPane({ versionId, seed, source, onSaved }: NoteEditorP
     recordings={source?.recordings ?? parsed.recordings}
     isCurrent={source?.isCurrent ?? material.data?.upload.isCurrent ?? false}
     currentVersionId={material.data?.upload.currentVersionId ?? null}
+    serverBinding={serverBinding}
+    api={api}
+    onDirtyChange={onDirtyChange}
     onSaved={onSaved}
   />
 }
@@ -129,6 +151,9 @@ function LoadedEditor({
   isCurrent,
   currentVersionId,
   legacyNotice,
+  serverBinding,
+  api,
+  onDirtyChange,
   onSaved,
 }: LoadedEditorProps) {
   const [title, setTitle] = useState(initialTitle)
@@ -140,8 +165,46 @@ function LoadedEditor({
   const [promoting, setPromoting] = useState(false)
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
+  const [storageConsent, setStorageConsent] = useState(false)
+  const [dirty, setDirty] = useState(false)
+  const uploadSessionRef = useRef<EditorUploadSession | null>(null)
   const editable = !busy && !promoting && !frozen && isCurrent
-  const canSubmit = !busy && !promoting && isCurrent && recordings === 0 && blocks.length > 0
+  const canSubmit = !busy && !promoting && isCurrent && recordings === 0 && blocks.length > 0 && storageConsent
+
+  const requireUploadSession = useCallback(() => {
+    const session = uploadSessionRef.current
+    if (!session || session.noteId !== noteId || session.baseVersionId !== baseVersionId ||
+        session.controller.signal.aborted) {
+      const failure = new Error('当前笔记编辑会话已结束，已停止旧材料上传')
+      failure.name = 'AbortError'
+      throw failure
+    }
+    return session
+  }, [baseVersionId, noteId])
+
+  const assertUploadSessionActive = useCallback((session: EditorUploadSession) => {
+    if (uploadSessionRef.current !== session || session.controller.signal.aborted) {
+      const failure = new Error('当前笔记编辑会话已结束，已停止旧材料上传')
+      failure.name = 'AbortError'
+      throw failure
+    }
+  }, [])
+
+  const isUploadSessionActive = (session: EditorUploadSession) =>
+    uploadSessionRef.current === session && !session.controller.signal.aborted
+
+  useEffect(() => {
+    const controller = new AbortController()
+    uploadSessionRef.current = { noteId, baseVersionId, controller }
+    return () => {
+      if (uploadSessionRef.current?.controller === controller) uploadSessionRef.current = null
+      controller.abort()
+    }
+  }, [baseVersionId, noteId])
+
+  useEffect(() => {
+    onDirtyChange?.(dirty)
+  }, [dirty, onDirtyChange])
 
   const lockedReason = recordings > 0
     ? '此版本包含录音。Web 端不能在没有服务端克隆协议的情况下重建并丢失音频，因此只允许查看；请使用手机或 Windows 在保留全部录音的前提下创建新版本。'
@@ -152,7 +215,13 @@ function LoadedEditor({
         : ''
 
   async function save() {
-    if (busy || !isCurrent || recordings > 0 || !blocks.length) return
+    if (busy || !isCurrent || recordings > 0 || !blocks.length || !storageConsent) return
+    let session: EditorUploadSession
+    try {
+      session = requireUploadSession()
+    } catch {
+      return
+    }
     setBusy(true)
     setError('')
     setMessage('')
@@ -170,37 +239,65 @@ function LoadedEditor({
           blocks,
           recordings: [],
         })
+        if (!isUploadSessionActive(session)) return
         setFrozen(batch)
+        setDirty(true)
       }
-      const upload = await uploadMaterialBundle(batch, nativeNotesApi, setProgress)
+      const upload = await uploadMaterialBundle(
+        batch,
+        api,
+        {
+          storageConsent,
+          signal: session.controller.signal,
+          assertActive: () => assertUploadSessionActive(session),
+        },
+        setProgress,
+      )
+      assertUploadSessionActive(session)
       setMessage(upload.hasConflict
         ? '新版本已完整保存，但另一端同时更新了当前版本；两份材料均保留，请明确选择当前版本。'
         : '新版本已完整保存，并成为当前材料版本。')
+      setDirty(false)
       onSaved(upload)
     } catch (failure) {
+      if (!isUploadSessionActive(session)) return
       setError(`${errorText(failure)}。材料和版本标识已保留，可在本页重试。`)
     } finally {
-      setBusy(false)
+      if (isUploadSessionActive(session)) setBusy(false)
     }
   }
 
   async function promote() {
     if (!baseVersionId || busy || promoting) return
+    let session: EditorUploadSession
+    try {
+      session = requireUploadSession()
+    } catch {
+      return
+    }
     setPromoting(true)
     setError('')
     try {
-      const upload = await nativeNotesApi.promote(baseVersionId, currentVersionId)
+      const upload = await api.promote(baseVersionId, currentVersionId, session.controller.signal)
+      assertUploadSessionActive(session)
       setMessage('已明确将此版本设为当前版本。')
       onSaved(upload)
     } catch (failure) {
+      if (!isUploadSessionActive(session)) return
       setError(`${errorText(failure)}。当前选用版本没有改变。`)
     } finally {
-      setPromoting(false)
+      if (isUploadSessionActive(session)) setPromoting(false)
     }
   }
 
   async function addPhotos(files: FileList | null) {
     if (!files?.length || !editable) return
+    let session: EditorUploadSession
+    try {
+      session = requireUploadSession()
+    } catch {
+      return
+    }
     setError('')
     const accepted: MaterialDraftBlock[] = []
     for (const file of [...files]) {
@@ -220,7 +317,11 @@ function LoadedEditor({
         bytes: new Uint8Array(await file.arrayBuffer()),
       })
     }
-    if (accepted.length) setBlocks((current) => [...current, ...accepted])
+    if (!isUploadSessionActive(session)) return
+    if (accepted.length) {
+      setBlocks((current) => [...current, ...accepted])
+      setDirty(true)
+    }
   }
 
   function editMarkdown(id: string, text: string) {
@@ -228,6 +329,7 @@ function LoadedEditor({
     setBlocks((current) => current.map((block) => block.id === id && block.kind === 'markdown'
       ? { ...block, text }
       : block))
+    setDirty(true)
   }
 
   function createBlankVersion() {
@@ -257,7 +359,10 @@ function LoadedEditor({
       <div>
         <Label htmlFor="native-note-title">笔记标题</Label>
         <Input id="native-note-title" aria-label="笔记标题" className="mt-1" maxLength={500} value={title}
-          disabled={!editable} onChange={(event) => setTitle(event.target.value)} />
+          disabled={!editable} onChange={(event) => {
+            setTitle(event.target.value)
+            setDirty(true)
+          }} />
       </div>
 
       <div className="space-y-3">
@@ -272,15 +377,21 @@ function LoadedEditor({
           </div>
           : <MaterialImageBlock key={block.id} block={block} index={index} editable={editable}
             onRemove={block.kind === 'photo'
-              ? () => setBlocks((current) => current.filter((item) => item.id !== block.id))
+              ? () => {
+                setBlocks((current) => current.filter((item) => item.id !== block.id))
+                setDirty(true)
+              }
               : undefined} />)}
       </div>
 
       <div className="flex flex-wrap items-center gap-2 rounded-ctl bg-surface p-3">
-        <Button size="sm" disabled={!editable} onClick={() => setBlocks((current) => [
-          ...current,
-          { id: createMaterialId(), kind: 'markdown', text: '' },
-        ])}><Plus className="size-4" aria-hidden />添加正文段</Button>
+        <Button size="sm" disabled={!editable} onClick={() => {
+          setBlocks((current) => [
+            ...current,
+            { id: createMaterialId(), kind: 'markdown', text: '' },
+          ])
+          setDirty(true)
+        }}><Plus className="size-4" aria-hidden />添加正文段</Button>
         <label className={fileLabelClass(editable)}>
           <ImagePlus className="size-4" aria-hidden />添加照片
           <input className="hidden" type="file" aria-label="添加照片" accept="image/jpeg,image/png" multiple disabled={!editable}
@@ -293,6 +404,22 @@ function LoadedEditor({
         </label>
         {frozen && <Button size="sm" variant="ghost" disabled={busy} onClick={createBlankVersion}><RotateCcw className="size-4" aria-hidden />放弃冻结批次</Button>}
       </div>
+
+      <label className="flex items-start gap-2 rounded-ctl border border-border bg-surface p-3 text-xs leading-5 text-text-2">
+        <input
+          type="checkbox"
+          className="mt-0.5 size-4 shrink-0"
+          aria-label="确认保存到当前服务器"
+          checked={storageConsent}
+          disabled={!editable || !isCurrent || recordings > 0}
+          onChange={(event) => setStorageConsent(event.target.checked)}
+        />
+        <span>
+          <span className="block font-medium text-text-1">确认保存到当前服务器</span>
+          我确认将本次正文、照片与手写预览作为新的不可变材料版本保存到 {serverBinding}。
+          当前账号及该服务器管理员可读取；这不是仅保存在浏览器中的草稿。
+        </span>
+      </label>
 
       {progress && <div className="rounded-ctl border border-info-border bg-info-soft p-3 text-xs text-text-2">
         <p className="font-medium text-text-1">正在提交固定材料</p>
@@ -364,4 +491,10 @@ function fileLabelClass(enabled: boolean) {
 
 function errorText(error: unknown) {
   return error instanceof Error ? error.message : '请求失败，请刷新核对'
+}
+
+interface EditorUploadSession {
+  noteId: string
+  baseVersionId: string | null
+  controller: AbortController
 }

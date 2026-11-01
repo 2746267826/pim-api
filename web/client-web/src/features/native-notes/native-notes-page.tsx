@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useNavigate, useSearchParams } from 'react-router'
+import { useBlocker, useNavigate, useSearchParams } from 'react-router'
 import {
   ArrowRight,
   BookOpenText,
@@ -17,7 +17,7 @@ import { useAuth } from '@/features/auth/auth-context'
 import { quickNotesApi } from '@/features/quick-notes/api'
 import type { QuickNoteListItem } from '@/features/quick-notes/types'
 import { groupNoteLibrary, type NoteLibraryEntry } from './library-model'
-import { nativeNotesApi } from './api'
+import { bindNativeNotesApi } from './api'
 import { createMaterialId } from './material-model'
 import { NoteEditorPane, type NoteEditorSeed } from './note-material-editor'
 import {
@@ -54,11 +54,73 @@ function Workspace({ ownerId, serverBinding }: { ownerId: string; serverBinding:
   const [legacyBusy, setLegacyBusy] = useState('')
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
+  const [editorDirty, setEditorDirty] = useState(false)
+  const sessionRef = useRef<WorkspaceSession | null>(null)
+  const sessionGenerationRef = useRef(0)
+  const allowInternalNavigationRef = useRef(false)
   const selectedVersionId = params.get('version') ?? ''
+
+  const assertSessionActive = useCallback(() => {
+    const session = sessionRef.current
+    if (!session || session.ownerId !== ownerId || session.serverBinding !== serverBinding ||
+        session.controller.signal.aborted) {
+      const error = new Error('笔记工作区会话已切换，已停止旧请求')
+      error.name = 'AbortError'
+      throw error
+    }
+  }, [ownerId, serverBinding])
+
+  useEffect(() => {
+    const controller = new AbortController()
+    sessionGenerationRef.current += 1
+    sessionRef.current = {
+      generation: sessionGenerationRef.current,
+      ownerId,
+      serverBinding,
+      controller,
+    }
+    return () => {
+      if (sessionRef.current?.controller === controller) sessionRef.current = null
+      controller.abort()
+    }
+  }, [ownerId, serverBinding])
+
+  const getSessionSignal = useCallback(
+    () => sessionRef.current?.controller.signal,
+    [],
+  )
+
+  const requestApi = useMemo(() => bindNativeNotesApi({
+    getSignal: getSessionSignal,
+    assertActive: assertSessionActive,
+  }), [assertSessionActive, getSessionSignal])
+
+  const blocker = useBlocker(({ currentLocation, nextLocation }) =>
+    editorDirty &&
+    !allowInternalNavigationRef.current &&
+    (currentLocation.pathname !== nextLocation.pathname ||
+      currentLocation.search !== nextLocation.search ||
+      currentLocation.hash !== nextLocation.hash))
+
+  useEffect(() => {
+    if (blocker.state !== 'blocked') return
+    if (window.confirm(DIRTY_DRAFT_NOTICE)) blocker.proceed()
+    else blocker.reset()
+  }, [blocker])
+
+  useEffect(() => {
+    if (!editorDirty) return
+    const beforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault()
+      event.returnValue = ''
+    }
+    window.addEventListener('beforeunload', beforeUnload)
+    return () => window.removeEventListener('beforeunload', beforeUnload)
+  }, [editorDirty])
 
   const sources = useInfiniteQuery({
     queryKey: ['native-notes', ownerId, serverBinding, 'sources'],
-    queryFn: ({ pageParam, signal }) => nativeNotesApi.sources(pageParam, 50, signal),
+    queryFn: ({ pageParam, signal }) => requestApi.sources(pageParam, 50, signal),
     initialPageParam: 0,
     getNextPageParam: (last) =>
       last.offset + last.items.length < last.total ? last.offset + last.items.length : undefined,
@@ -84,15 +146,30 @@ function Workspace({ ownerId, serverBinding }: { ownerId: string; serverBinding:
   const recordingCount = library.filter((item) => item.recordings > 0).length
   const legacyCount = quickNotes.data?.totalCount ?? 0
 
+  function confirmDiscardEditor(reason: string) {
+    if (!editorDirty) return true
+    return window.confirm(`${DIRTY_DRAFT_NOTICE}\n\n${reason}`)
+  }
+
+  function changeInternalNavigation(change: () => void) {
+    allowInternalNavigationRef.current = true
+    change()
+    queueMicrotask(() => {
+      allowInternalNavigationRef.current = false
+    })
+  }
+
   function beginNew(initial?: NoteEditorSeed) {
+    if (!confirmDiscardEditor('继续将切换到一份新的空白材料。')) return
+    setEditorDirty(false)
     setSeed(initial ?? { noteId: createMaterialId(), title: '', body: '' })
     setMessage('')
     setError('')
-    setParams({}, { replace: true })
+    changeInternalNavigation(() => setParams({}, { replace: true }))
   }
 
   async function beginLegacyCopy(item: QuickNoteListItem) {
-    if (legacyBusy) return
+    if (legacyBusy || !confirmDiscardEditor('继续将读取旧闪念并替换当前编辑内容。')) return
     setLegacyBusy(item.id)
     setError('')
     try {
@@ -112,20 +189,28 @@ function Workspace({ ownerId, serverBinding }: { ownerId: string; serverBinding:
   }
 
   function openVersion(item: NoteLibraryEntry) {
+    openVersionId(item.versionId)
+  }
+
+  function openVersionId(versionId: string) {
+    if (versionId === selectedVersionId && !seed) return
+    if (!confirmDiscardEditor('继续将打开另一条固定材料版本。')) return
+    setEditorDirty(false)
     setSeed(null)
     setMessage('')
     setError('')
-    setParams({ version: item.versionId })
+    changeInternalNavigation(() => setParams({ version: versionId }))
   }
 
   async function saved(upload: { versionId: string }) {
+    setEditorDirty(false)
     setSeed(null)
     setMessage('固定材料版本已保存。页面正在回读实际服务端版本与当前选用状态。')
     await Promise.all([
       qc.invalidateQueries({ queryKey: ['native-notes', ownerId, serverBinding] }),
       qc.invalidateQueries({ queryKey: ['native-note-material'] }),
     ])
-    setParams({ version: upload.versionId })
+    changeInternalNavigation(() => setParams({ version: upload.versionId }))
   }
 
   return <div className="space-y-5">
@@ -232,7 +317,7 @@ function Workspace({ ownerId, serverBinding }: { ownerId: string; serverBinding:
               type="button"
               aria-pressed={version.versionId === selectedVersionId}
               aria-label={`打开版本 ${formatTime(version.createdAt)}${version.isCurrent ? ' 当前版' : ' 历史版'}${version.hasConflict ? ' 冲突候选' : ''}`}
-              onClick={() => setParams({ version: version.versionId })}
+              onClick={() => openVersionId(version.versionId)}
               className={`rounded-ctl border px-3 py-2 text-left text-xs ${version.versionId === selectedVersionId ? 'border-primary bg-primary/5 text-text-1' : 'border-border bg-bg text-text-2 hover:border-border-strong'}`}
             >
               <span className="block">{formatTime(version.createdAt)}</span>
@@ -243,7 +328,16 @@ function Workspace({ ownerId, serverBinding }: { ownerId: string; serverBinding:
             </button>)}
           </div>
         </Card>}
-        <NoteEditorPane versionId={selectedVersionId || undefined} seed={seed ?? undefined} source={selectedSource} onSaved={(upload) => void saved(upload)} />
+        <NoteEditorPane
+          ownerId={ownerId}
+          serverBinding={serverBinding}
+          api={requestApi}
+          versionId={selectedVersionId || undefined}
+          seed={seed ?? undefined}
+          source={selectedSource}
+          onDirtyChange={setEditorDirty}
+          onSaved={(upload) => void saved(upload)}
+        />
       </div>
     </div>
   </div>
@@ -259,3 +353,12 @@ function Metric({ label, value, icon: Icon }: { label: string; value: string; ic
 function errorText(error: unknown) {
   return error instanceof Error ? error.message : '请求失败，请刷新核对'
 }
+
+interface WorkspaceSession {
+  generation: number
+  ownerId: string
+  serverBinding: string
+  controller: AbortController
+}
+
+const DIRTY_DRAFT_NOTICE = '当前编辑内容尚未保存，离开后会丢失。确定继续吗？'

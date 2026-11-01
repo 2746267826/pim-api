@@ -5,6 +5,7 @@ import {
   apiFetch,
   apiPutBinary,
   clearTokens,
+  fetchBlob,
   resetRefreshState,
   setTokens,
 } from './client'
@@ -227,5 +228,67 @@ describe('401 单飞刷新', () => {
     vi.stubGlobal('fetch', fetchMock)
     await expect(apiFetch('/api/v1/a')).rejects.toMatchObject({ code: 401 })
     expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('刷新完成后、重放前重新检查会话围栏', async () => {
+    setTokens('tok1', 'rt1')
+    let active = true
+    let apiCalls = 0
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes('/auth/refresh')) {
+        active = false
+        return jsonResponse({
+          code: 0,
+          message: 'ok',
+          data: { accessToken: 'tok2', refreshToken: 'rt2' },
+          timestamp: 't',
+        })
+      }
+      apiCalls += 1
+      return new Response(null, { status: 401 })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(apiFetch('/api/v1/a', {}, {
+      assertActive: () => {
+        if (!active) {
+          const error = new Error('workspace changed')
+          error.name = 'AbortError'
+          throw error
+        }
+      },
+    })).rejects.toMatchObject({ name: 'AbortError' })
+    expect(apiCalls).toBe(1)
+  })
+
+  it('Blob 下载同样在 401 刷新后、重放前检查围栏', async () => {
+    setTokens('tok1', 'rt1')
+    let active = true
+    let apiCalls = 0
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes('/auth/refresh')) {
+        active = false
+        return jsonResponse({
+          code: 0,
+          message: 'ok',
+          data: { accessToken: 'tok2', refreshToken: 'rt2' },
+          timestamp: 't',
+        })
+      }
+      apiCalls += 1
+      return new Response(null, { status: 401 })
+    }))
+
+    await expect(fetchBlob('/api/v1/blob', undefined, {
+      refreshOn401: true,
+      assertActive: () => {
+        if (!active) {
+          const error = new Error('workspace changed')
+          error.name = 'AbortError'
+          throw error
+        }
+      },
+    })).rejects.toMatchObject({ name: 'AbortError' })
+    expect(apiCalls).toBe(1)
   })
 })

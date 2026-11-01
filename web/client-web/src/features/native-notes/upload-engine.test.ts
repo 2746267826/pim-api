@@ -67,13 +67,18 @@ describe('native note upload engine', () => {
     } satisfies NoteMaterialUploadApi
     const progress: number[] = []
 
-    const result = await uploadMaterialBundle(bundle, api, (value) => {
-      progress.push(value.completedParts)
-    })
+    const result = await uploadMaterialBundle(
+      bundle,
+      api,
+      { storageConsent: true },
+      (value) => {
+        progress.push(value.completedParts)
+      },
+    )
 
     expect(result.phase).toBe('Uploaded')
     expect(api.begin).toHaveBeenCalledOnce()
-    expect(api.complete).toHaveBeenCalledWith(versionId)
+    expect(api.complete).toHaveBeenCalledWith(versionId, undefined)
     expect(api.uploadPart).not.toHaveBeenCalledWith(versionId, 0, 0, expect.anything(), expect.anything())
     expect(api.uploadPart).toHaveBeenCalled()
     const first = api.uploadPart.mock.calls[0]!
@@ -101,7 +106,8 @@ describe('native note upload engine', () => {
       complete: vi.fn(async () => changed),
     } satisfies NoteMaterialUploadApi
 
-    await expect(uploadMaterialBundle(bundle, api)).rejects.toThrow('服务器材料清单与本地固定文件不一致')
+    await expect(uploadMaterialBundle(bundle, api, { storageConsent: true }))
+      .rejects.toThrow('服务器材料清单与本地固定文件不一致')
     expect(api.uploadPart).not.toHaveBeenCalled()
     expect(api.complete).not.toHaveBeenCalled()
   })
@@ -128,7 +134,8 @@ describe('native note upload engine', () => {
       uploadPart: vi.fn(async () => 'ok'),
       complete: vi.fn(async () => withExtraFile),
     } satisfies NoteMaterialUploadApi
-    await expect(uploadMaterialBundle(bundle, extraApi)).rejects.toThrow('服务器返回的材料文件数量与本地固定清单不一致')
+    await expect(uploadMaterialBundle(bundle, extraApi, { storageConsent: true }))
+      .rejects.toThrow('服务器返回的材料文件数量与本地固定清单不一致')
     expect(extraApi.uploadPart).not.toHaveBeenCalled()
 
     const changedParts = remoteFrom(bundle, 8)
@@ -138,7 +145,111 @@ describe('native note upload engine', () => {
       uploadPart: vi.fn(async () => 'ok'),
       complete: vi.fn(async () => changedParts),
     } satisfies NoteMaterialUploadApi
-    await expect(uploadMaterialBundle(bundle, partsApi)).rejects.toThrow('服务器返回的分块数与本地固定文件不一致')
+    await expect(uploadMaterialBundle(bundle, partsApi, { storageConsent: true }))
+      .rejects.toThrow('服务器返回的分块数与本地固定文件不一致')
     expect(partsApi.uploadPart).not.toHaveBeenCalled()
   })
+
+  it('requires explicit server-storage consent before the first request', async () => {
+    const bundle = await testBundle()
+    const api = {
+      begin: vi.fn(async () => remoteFrom(bundle, 8)),
+      uploadPart: vi.fn(async () => 'ok'),
+      complete: vi.fn(async () => remoteFrom(bundle, 8)),
+    } satisfies NoteMaterialUploadApi
+
+    await expect(uploadMaterialBundle(bundle, api, { storageConsent: false }))
+      .rejects.toThrow('请先确认将材料保存到当前服务器')
+    expect(api.begin).not.toHaveBeenCalled()
+  })
+
+  it.each([0, -1, 1.5, 64 * 1024 * 1024 + 1])(
+    'rejects an invalid server part size: %s',
+    async (partSize) => {
+      const bundle = await testBundle()
+      const api = {
+        begin: vi.fn(async () => remoteFrom(bundle, partSize)),
+        uploadPart: vi.fn(async () => 'ok'),
+        complete: vi.fn(async () => remoteFrom(bundle, partSize)),
+      } satisfies NoteMaterialUploadApi
+
+      await expect(uploadMaterialBundle(bundle, api, { storageConsent: true }))
+        .rejects.toThrow('服务器返回的材料分块大小无效')
+      expect(api.uploadPart).not.toHaveBeenCalled()
+      expect(api.complete).not.toHaveBeenCalled()
+    },
+  )
+
+  it.each([
+    ['duplicate', [0, 0]],
+    ['negative', [-1]],
+    ['out-of-range', [99]],
+  ])('rejects %s uploaded part receipts before sending material', async (_name, uploaded) => {
+    const bundle = await testBundle()
+    const began = remoteFrom(bundle, 8, uploaded)
+    const api = {
+      begin: vi.fn(async () => began),
+      uploadPart: vi.fn(async () => 'ok'),
+      complete: vi.fn(async () => ({ ...began, phase: 'Uploaded' })),
+    } satisfies NoteMaterialUploadApi
+
+    await expect(uploadMaterialBundle(bundle, api, { storageConsent: true }))
+      .rejects.toThrow('服务器返回的已上传分块无效')
+    expect(api.uploadPart).not.toHaveBeenCalled()
+    expect(api.complete).not.toHaveBeenCalled()
+  })
+
+  it('does not report success while Complete still says Uploading', async () => {
+    const bundle = await testBundle()
+    const began = remoteFrom(bundle, 1024 * 1024)
+    const api = {
+      begin: vi.fn(async () => began),
+      uploadPart: vi.fn(async () => 'ok'),
+      complete: vi.fn(async () => began),
+    } satisfies NoteMaterialUploadApi
+
+    await expect(uploadMaterialBundle(bundle, api, { storageConsent: true }))
+      .rejects.toThrow('服务器尚未确认全部材料分块完整')
+    expect(api.complete).toHaveBeenCalledOnce()
+  })
+
+  it('stops before the next request when the workspace fence changes', async () => {
+    const bundle = await testBundle()
+    let active = true
+    const uploading = remoteFrom(bundle, 8)
+    const api = {
+      begin: vi.fn(async () => {
+        active = false
+        return uploading
+      }),
+      uploadPart: vi.fn(async () => 'ok'),
+      complete: vi.fn(async () => ({ ...uploading, phase: 'Uploaded' })),
+    } satisfies NoteMaterialUploadApi
+
+    await expect(uploadMaterialBundle(bundle, api, {
+      storageConsent: true,
+      assertActive: () => {
+        if (!active) {
+          const error = new Error('workspace changed')
+          error.name = 'AbortError'
+          throw error
+        }
+      },
+    })).rejects.toMatchObject({ name: 'AbortError' })
+    expect(api.uploadPart).not.toHaveBeenCalled()
+    expect(api.complete).not.toHaveBeenCalled()
+  })
 })
+
+async function testBundle() {
+  return buildMaterialBundle({
+    versionId,
+    noteId,
+    baseVersionId: null,
+    revision: 0,
+    title: '围栏测试',
+    noteCreatedAtMillis: 1,
+    createdAtMillis: 2,
+    blocks: [{ id: '33333333-3333-4333-8333-333333333333', kind: 'markdown', text: '正文'.repeat(20) }],
+  })
+}
