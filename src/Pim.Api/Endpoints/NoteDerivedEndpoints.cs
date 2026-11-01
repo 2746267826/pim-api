@@ -33,6 +33,11 @@ public static class NoteDerivedEndpoints
         tasks.MapGet("/{taskId:guid}", async (Guid taskId, NoteDerivedService service, CancellationToken ct) =>
             Results.Ok(ApiResponse<NoteDerivedTaskDto>.Ok(await service.GetAsync(taskId, ct))))
             .Produces<ApiResponse<NoteDerivedTaskDto>>().Produces(401).Produces(403).Produces(404);
+        tasks.MapGet("/{taskId:guid}/receipt", async (Guid taskId, NoteDerivedService service,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<NoteDerivedTaskReceiptDto>.Ok(
+                await service.ReceiptAsync(taskId, ct))))
+            .Produces<ApiResponse<NoteDerivedTaskReceiptDto>>().Produces(401).Produces(403).Produces(404);
         tasks.MapGet("/{taskId:guid}/steps", async (Guid taskId, NoteDerivedService service,
             CancellationToken ct, int offset = 0, int limit = 10) =>
             Results.Ok(ApiResponse<NoteDerivedStepsDto>.Ok(await service.StepsAsync(taskId, offset, limit, ct))))

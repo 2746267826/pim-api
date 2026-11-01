@@ -76,12 +76,16 @@ public static class NoteMaterialEndpoints
             await store.CancelAsync(UserId(user), versionId, ct);
             return Results.Ok(ApiResponse<string>.Ok("未完成上传已取消，本机原材料不受影响"));
         }).Produces<ApiResponse<string>>().Produces(401).Produces<ApiResponse<string>>(409);
-        group.MapDelete("/{noteId:guid}", async (Guid noteId, NoteMaterialUploadStore store,
+        group.MapDelete("/{noteId:guid}", async (Guid noteId, NoteDerivedStore derivedStore,
+            NoteMaterialUploadStore store,
             ICurrentUserService user, CancellationToken ct) =>
         {
-            await store.DeleteNoteAsync(UserId(user), noteId, ct);
-            return Results.Ok(ApiResponse<string>.Ok("本篇笔记的服务器材料已删除，本机原材料不受影响"));
-        }).Produces<ApiResponse<string>>().Produces(401);
+            var owner = UserId(user);
+            await derivedStore.DeleteNoteAsync(owner, noteId, ct);
+            await store.DeleteNoteAsync(owner, noteId, ct);
+            return Results.Ok(ApiResponse<string>.Ok(
+                "本篇笔记的服务器材料与派生版本已删除；计费/审计调用记录按保留策略保留，本机原材料不受影响"));
+        }).Produces<ApiResponse<string>>().Produces(401).Produces<ApiResponse<string>>(409);
         return endpoints;
     }
 
