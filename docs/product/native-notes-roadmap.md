@@ -1,5 +1,7 @@
 ﻿# PIM 原生客户端与笔记路线图
 
+版本：v0.49 为当前执行覆盖，记录实际源码集成、真实 Test Swagger 契约、跨包回归与交付阻断；下方 v0.48 及更早版本行均为保留历史。详见 v0.49 当前执行层。M0–M5、45 个稳定 ID 与 AC1–19 未整体完成。
+
 版本：v0.48 记录三平台笔记路线图 M0–M5 的逐项开发状态、API/Android 新 issue 实施分工和后续开发包。本轮起始文档基线为 `88c11c6b58a496540c8a35ade4d38c5e490913b1`；产品 Release 源仍为 `84ef802e7c85a1b6c3017c0c274a108fea57f9d2`。本覆盖不改写 v0.47 和更早历史，不代表任何 M 阶段或 AC 完成。
 
 版本：v0.47 记录 API/Web `api-v26.11.1047`、Windows `windows-v26.11.1111` 与 Android `android-v26.11.1147` 的实际产品 CI/Release 事实；真实模型/provider质量、region/audio Batch、目标硬件、OEM/device UX 与完整 AC 仍 `NOT-VERIFIED`。API/Web 产品发布源/implementation merge 为 `84ef802e7c85a1b6c3017c0c274a108fea57f9d2`；后续 docs-only PR #550 只推进文档，不重建产品或改变该 Release。v0.46 及更早记录作为历史快照保留。
@@ -17,6 +19,46 @@
 本文位于 `pim-api/docs/product/native-notes-roadmap.md`，作为跨仓持续维护的唯一总路线图。Android、Windows 与 Web 按批次引用同一份需求，不复制另一套台账；首版范围和视觉规范分别通过文内链接细化。更新状态时标明平台、证据和仍未交付部分，不以聊天记录代替仓内记录。
 
 总跟踪：[pim-api#505](https://github.com/2746267826/pim-api/issues/505)。主题切片 [pim-android#31](https://github.com/2746267826/pim-android/issues/31) 已合并；录音切片：[pim-android#33](https://github.com/2746267826/pim-android/issues/33)；混合文档与基础手写：[pim-android#35](https://github.com/2746267826/pim-android/issues/35)；完整材料版本：[pim-android#37](https://github.com/2746267826/pim-android/issues/37)。总跟踪不能随主题切片或安卓首版完成而提前关闭。
+
+<a id="v049-current"></a>
+
+### v0.49 当前执行层：实际开发与交付核验（2026-11-01）
+
+本节覆盖 v0.48 的执行状态，需求和稳定编号仍以原始 32 capabilities、32 行 gap、13 个 MIG、AC1–19 和 #516 五阶段为准。以下为本轮集成检查点；没有新增生产部署、真实付费 provider 或物理设备验收证据。源码、验证和产品发布分别记录。
+
+#### Issue 实施与交付状态
+
+| 范围 | 已有实际进展 | 当前交付 / 阻断 | 未完成验收 |
+| --- | --- | --- | --- |
+| API #539 / #551 | coverage 使用合并区间的精确补集；纯重复批次只对唯一开放会话做有界更新，实际统计变化仍失效并物化。 | PR #555 的适用检查与 CI Gate 已通过，正常合并为 `def642099aeb5d8057b2a5bc620b05b6f943d0ec`；master CI `41312005940` 的 API 测试仍运行，暂未核到本批新 Release。 | 生产长请求分布、旧 pending 恢复、手机同步收敛未在本轮操作；issue 保持 OPEN。 |
+| API #552 | 持久 ASR job、先保存音频再 queued、CAS claim/取消/恢复/完成与 Web 原 ID 恢复已经提交并集成。 | Worker `4d03cf97` → 集成 `31c028c6`；新 async job 与 transport 的 14 个隔离 PostgreSQL 测试通过；跨 TASK/ASR 迁移一致性修复中。 | 后台实际部署、真实长音频/provider 和网关升级后体验未验；需最终 CI。 |
+| API #553 | 实时与 Batch 按模型 `MaxOutputTokens` 传递；配置页显示 ASR 上限与估算；移除 connection 的隐式 8192。 | 与 #552 同一源码包；当前集成 Web 构建通过，等待统一 PR/CI。 | 真实 provider 的 token 消耗和长音频质量没有新证据。 |
+| API #554 | 区分 provider timeout、用户取消、旧同步断连、worker 中断和浏览器网络错误；网关状态只记录真实 HTTP 观察。 | 与 #552 同一源码包；独立 transport 观察不改写 provider 终态。 | 真实网关/部署环境复验尚未进行；网络失败不能伪造 504。 |
+| Android #59 / #61 / #62 | rejected 汇总逐页事务归档后有界删除；真实 sync history、standby 来源、崩溃证据和 full/head/tail 原始流预算已提交。 | PR #64 head `f196f94`：契约、生成物和 shell 构建通过；App 单测 4 项失败，CI Gate 未过，Dewey 正修复。 | 失败涉及 CoreStreaming 一项和终态回收三项；不得用先前 127/13 个局部测试覆盖此失败。设备/历史崩溃复验仍未做。 |
+| Android #60 / #63 | Room v5 的可空 fix key、真实 retained 回执、监听代次、新鲜运动证据和滞回已提交。 | 同 PR #64；App Kotlin 编译已过，尚未获得完整最终检查成功。 | 旧原始台账未被伪装成历史去重；两小时 OEM 定位、电量与生命周期仍需独立实机证据。 |
+
+API #525/#533 继续保持用户已关闭状态。以上实现不能代替 #516 全部 AC，十项本轮 issue 均未在验收证据缺失时提前关闭。
+
+#### M0–M5 实际推进与下一批
+
+| 阶段 | 本轮新增代码 / 集成事实 | 下一步与退出条件 |
+| --- | --- | --- |
+| M0 | 增加跨平台材料安全、恢复、容量与账号隔离审查；诊断失败已进入真实 CI 修复闭环。 | SAFE-01 的删除/导出/恢复继续开发；目标设备长时录音、笔触/掌触与 OEM 风险仍 NOT-VERIFIED。 |
+| M1 | Android 整篇 undo/redo、history journal、包导入及录音空间/权限监测进入第二集成树；不混入稳定性 PR #64。 | Euclid 修复 history revision/写锁、读取预算与 quarantine 规则并取得准确测试回执；真机 REC/INK 验收另计。 |
+| M2 | 持久异步 ASR 与真实契约已集成；Web 新笔记库/混合材料上传，Windows 云材料上传/版本/人工结果均有源码；逐材料 receipt 与安全生命周期继续开发。 | 先解决跨包迁移、Web owner/server fence 与同意/dirty 保护，完成公开 receipt 后统一最终契约和 consumer 回归。 |
+| M3 | Windows 本机笔记/主动录音/安全包基础与 typed 云端访问已进入父集成树。 | 真正 binary 下载/包导入、跨端笔迹/材料往返仍开发中；本机 recorder 实际录音体验未验。 |
+| M4 | API 持久任务建议、编辑/放弃/CAS/幂等确认写现有任务模块与 Web 控件均已集成。 | 最终迁移、交互安全与 CI 通过后交付；真实事实保真度与 Android/Windows 完整任务建议 UI 尚需验收/开发。 |
+| M5 | Android 原生工作台 `28fb64d` 已进入第二树，包含任务/日程动作、提醒、设备、知识分类和 quick-note compatibility；Windows 本机历史/设备 center 已集成，planner 继续开发。 | 逐域保留 partial：只读设备 center 不代表管理动作，工作台不代表全部 MIG；按 canonical MIG-01–13 映射，不另编编号。Android 新 M5 包尚未编译/运行测试。 |
+
+#### 可复核证据与交付顺序
+
+- 父 API 合并回归：136 项中 133 PASS、3 FAIL、0 skipped；失败是最新 migration Designer 缺 TASK target model、模块清单缺 TASK module、旧 published-head 迁移数断言失效，已交 Meitner 修复。不能把此结果写成全绿。
+- 从实际运行的 `ASPNETCORE_ENVIRONMENT=Test` API、专用合成 PostgreSQL 导出 `/swagger/v1/swagger.json`，经 `jq -S` 规范化。契约提交 `9fc9d32c`，SHA-256 `a64182037e4569fb9cf5b058c09e6df57fa4bf254e35b27a2d44ed27f51dcf95`；官方 Web 生成/只读一致性校验通过。材料 receipt 改变形状后仍需重新真实导出。
+- 当前集成 Web `npm run build` 通过；先前 7 files / 37 tests 与 ASR 21 tests 为对应切片验证，不冒充真实后端浏览器 E2E。
+- Windows 父集成 `07f52993` 的云材料、契约边界、本机历史、设备、本机笔记 33 项聚焦测试通过，0 failed / 0 skipped；官方生成物逐字节一致。该结果不证明 WPF 全流程或 recorder 实际采集。
+- 交付顺序：先修 PR #64 与 API 迁移阻断；收安全/receipt 小包；最终真实契约 → Web 正式生成 → API PR/CI/master Release；客户端按已合并 API SHA 正式 refresh/生成，再各自 PR/CI/Release 与回读；据实际交付回填 issue。禁止以本地测试来源旁路冒充发布契约 freshness。
+
+六个现有 `group/group` 子代理继续承担实现，父代理负责派发、审查、集成与交付。此检查点没有把待开发内容改名为纯验收。
 
 <a id="v048-current"></a>
 
