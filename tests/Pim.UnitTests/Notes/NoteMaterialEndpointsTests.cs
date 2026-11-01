@@ -147,6 +147,7 @@ public sealed class NoteMaterialEndpointsTests : IDisposable
         Assert.True(headers.TryGetProperty("X-Content-Type-Options", out _));
         Assert.True(paths.TryGetProperty(Root + "/versions/{versionId}/complete", out _));
         Assert.True(paths.TryGetProperty(Root + "/versions/{versionId}/promote", out _));
+        Assert.False(paths.TryGetProperty(Root + "/{noteId}", out _));
         Assert.True(document.RootElement.GetProperty("components").GetProperty("schemas").TryGetProperty("BeginNoteMaterialUploadRequest", out _));
         _ = _factory.Services.GetRequiredService<ISwaggerProvider>();
     }
