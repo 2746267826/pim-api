@@ -20,7 +20,7 @@
 
 ## v0.49 当前执行覆盖：源码集成与交付阻断（2026-11-01）
 
-#539/#551 已随 PR #555 正常合并，master CI `41312005940` 与 CI Gate 全绿，`api-v26.11.1052` 的标签/来源和 Web 台账已实际回读；生产升级与同步收敛仍未验。#552–554 持久异步 ASR、token 配置与独立传输观察已集成，官方 EF 跨 TASK/ASR 迁移修复后原三项失败消除。父新聚合为 157 PASS / 1 FAIL / 0 skipped：唯一失败为撤整篇 DELETE 后旧测试仍期待 409 而实际 404，正在改为材料保全回归。真实最终 Test Swagger 的 SHA-256 为 `9a2e8388783627c984d5b907cd4b5699377d421eeb3575047cbe8389eae2889e`，官方 Web 生成校验通过。Android PR #64 exact head `cefe6ff` 的全部必需检查与 CI Gate 成功，正常合并为 `2e7867d7`；master/Release 待核验。M1/M5 独立第二树实际 App 编译遇到 M5 错误，Dewey 正在修复。Windows Core 332/332、WPF/App 101/101 与 PR #41 原 head 的 CI Gate 通过，planner 跨账号意图隔离补丁仍待集成。开发 PR #556 为 Draft，M0–M5 与外部验收未整体完成。
+#539/#551 已随 PR #555 正常合并并发布 `api-v26.11.1052`，生产升级与同步收敛未验。#552–554 持久异步 ASR、token 配置、独立传输观察、材料 receipt 与任务建议已集成；官方 EF 迁移和撤路由回归修复后，父最终源 `c142a639` 实跑 189/189 PASS、0 fail/error/skip。共享 token 刷新围栏已修，父 Web 64 files / 517 tests、lint、TypeScript/Vite build 通过。最终真实 Swagger SHA-256 `9a2e8388783627c984d5b907cd4b5699377d421eeb3575047cbe8389eae2889e`，官方 Web 生成校验通过。Android PR #64 合并 `2e7867d7`，master CI `41316247538` 全绿并发布 `android-v26.11.1150`，tag/version 台账实际回读。独立 M1/M5 父树已编译，Core 74/74、App 2174 中 2172 PASS / 2 FAIL / 0 skip；两项 M1 历史问题由 Euclid 优先修，M5/session 26 项通过。Windows Core 332/332，planner 隔离修复后完整 App 105/105 通过，PR #41 新提交 CI 待核。PR #556 等待最终 CI，M0–M5 与外部验收未整体完成。逐条差距见 [AC 源码审计](asr516-ac-source-audit-20261101.md)，源码存在不代表 AC PASS。
 
 完整逐阶段/issue 状态见[路线图 v0.49](../product/native-notes-roadmap.md#v049-current)。45 个稳定 ID、AC1–19、五个 #516 阶段与外部验收边界保持不变；下方状态行及正文均作为历史保留。
 
