@@ -33,7 +33,7 @@
 | 范围 | 当前实际状态 | 本轮继续处理 |
 | --- | --- | --- |
 | API #539 / #551 | 已随 PR #555 合并为 `def642099aeb5d8057b2a5bc620b05b6f943d0ec`；master CI `41312005940` 成功，Release `api-v26.11.1052` 的标签和实际台账均已核验。 | 生产长请求、旧 pending 恢复与用户手机同步收敛未在本轮复验；两项保持 OPEN。 |
-| API #552 / #553 / #554 | 持久异步 ASR、模型输出预算与 Web 配置、独立传输观察均在 PR #556，远端 head `81c30bb485f72730b77356866332a7e79dda7a68`。完整 CI `41322796046` 失败，尚未合并或发布。 | Sagan 修复四项笔记回归；Meitner 消除测试 fixture 的 EF provider 重复创建根因。新修复必须重新通过完整 CI Gate。 |
+| API #552 / #553 / #554 | 持久异步 ASR、模型输出预算与 Web 配置、独立传输观察均在 PR #556，远端 head `81c30bb485f72730b77356866332a7e79dda7a68`。完整 CI `41322796046` 失败，尚未合并或发布。 | 四项笔记回归与 receipt 校验在 worker `76f93109` 实跑 9/9 通过，父审查后集成为 `2d348c9d`；EF provider fixture 修复仍在验证。两类修复齐备后重新通过完整 CI Gate。 |
 | Android #59 / #60 / #61 / #62 / #63 | PR #64 正常合并为 `2e7867d7b85797c75e9d1f9cd25270e36bfb3279`；master CI `41316247538` 成功，Release `android-v26.11.1150` 标签及实际台账已核验。 | 五项均已更新既有 issue 评论；升级后的历史诊断数据、崩溃与 OEM 两小时定位等实机验收仍缺，保持 OPEN。 |
 | Windows 跨端笔记首批 | PR #41 正常合并为 `7ce774b0f6e64dc0b7cfbbc797175a5315df7a4c`；master CI `41319049639` 成功，Release `windows-v26.11.1114` 标签及实际台账已核验。 | 下一批云端材料恢复继续补齐多分片录音、混合块身份和顺序；正式契约刷新等待 API 合并。 |
 
@@ -43,10 +43,10 @@ API #525/#533 继续保持用户已关闭状态；本轮没有重新打开。202
 
 | 阶段 | 已交付或已集成 | 仍需开发与核验 |
 | --- | --- | --- |
-| M0 | 材料隔离、固定版本、容量与恢复基础保留；SAFE-01 ZIP 导出包 `3a68f1f` 已审查并集成为 `79652d26`。 | 新导出契约需真实 Test Swagger；跨 store 删除 intent/tombstone、活动任务围栏和幂等恢复仍需完成。长录音、笔触/掌触和目标设备风险不能由源码代替。 |
+| M0 | 材料隔离、固定版本、容量与恢复基础保留；SAFE-01 ZIP 导出包 `3a68f1f` 已审查并集成为 `79652d26`；下一批真实 Swagger 导出及官方 Web 生成校验已完成。 | 跨 store 删除 intent/tombstone、活动任务围栏和幂等恢复仍由 Sagan 开发；真实导出契约尚未合并，不能作为客户端正式 freshness。长录音、笔触/掌触和目标设备风险不能由源码代替。 |
 | M1 | Android 整篇 undo/redo、history、包导入/quarantine、容量预算和录音空间/权限监测进入第二集成树；历史导入写锁和超大文档修复已集成。 | 父树 `3d693b8` 的完整 App 验证由 Dewey 独占 Gradle 执行；过夜日志停在 daemon setup，不计为测试通过。完整 XML 必须先稳定归档，禁止后续 focused 覆盖证据。 |
 | M2 | PR #556 包含持久 ASR、公开材料 receipt、Web 混合上传/账号会话/dirty/同意保护；Android 处理、异常重试与人工稿 CAS 修复已集成第二树。 | 先消除首批完整 CI 失败，再正常合并/Release，Android/Windows 按已合并 API SHA 正式刷新。资源反馈持久化包仍需 stale replay、有界冲突及计数回放修复。 |
-| M3 | Windows 首批本机笔记、主动录音、材料上传与云版本访问已发布。Web editable ink 与 Android ZIP 交换原提交 `e8b25275/6fe41328` 保留在下一批树。 | Web 未保存笔迹必须进入父 dirty/导航/冻结状态；ZIP 必须约束实际解压字节。Windows 必须保全多 segment 与 markdown/photo/ink 交错顺序，不能打平后声称完整往返。 |
+| M3 | Windows 首批本机笔记、主动录音、材料上传与云版本访问已发布。Web editable ink 与 Android ZIP 交换原提交 `e8b25275/6fe41328` 保留在下一批树；`9acde62c` 已补齐固定编辑会话、dirty/冻结协调及实际流式解压预算。 | Web 原始材料包主动下载入口继续开发，含音频包下载不等同可编辑重建；Windows 多 segment、混合块身份/顺序与只读 source 保全继续开发，不能打平后声称完整往返。 |
 | M4 | API 持久任务建议、编辑/放弃/CAS/幂等写现有任务模块及 Web 确认 UI 在 PR #556。 | 修复相关 TestHost 与完整回归后交付；Android/Windows 的完整建议操作、结果来源和事实/推断交互仍保留开发及验收范围。 |
 | M5 | Android 工作台、任务日程、确认/提醒/习惯等动作与 session/dirty 保护进入第二树；Windows planner 与本机历史首批已发布。 | Android 完整回归、逐域业务动作和兼容状态继续收敛；MIG-01–13 不因工作台或只读入口出现而整体完成，未原生实现能力必须保留明确入口与范围。 |
 
@@ -58,6 +58,9 @@ API #525/#533 继续保持用户已关闭状态；本轮没有重新打开。202
 - Android 已核验发布台账：`26.11.1150 / versionCode 101150`，480 B，SHA-256 `f82a87a9c8087dc1104127b5cab182b0f42bd8f1316e04ff6dd2ff8aadf20984`。第二树旧 Core `74/74` XML 已归档，App 仍以当前源码新验证为准。
 - Windows 已核验发布台账：`26.11.1114`，633 B，SHA-256 `ed0f58c33691107e94ed44afa9fee9a06d093b3c52fd6b144911a23ffbd03052`。首批最终 App `105/105`、0 fail/error/skip，TRX SHA-256 `22a78ecafa20ed71ac891dd59dd214e99651657570aaf5abb198a23928902c13`；未变的 Core 既有 `332/332` 单独记录。
 - SAFE ZIP worker focused `2/2` 是 TestHost/EF InMemory 证据，不是 PostgreSQL、真实设备或跨端全材料往返验收。新 API 形状必须重新从实际运行的 Test API 导出，经 `jq -S` 与官方生成/只读一致性检查。
+- 首批 Notes 修复的 worker `76f93109` 实跑四项原 CI 失败用例与 receipt 校验，共 `9/9 PASS / 0 skipped`，日志 SHA-256 `c03d6ad15818005f17dd26b6de4cc781a6ffbf6dbedf0fa65123419feceb55b0`；父审查确认音频查询仍从 owner-scoped 日志集合关联，模型、revision、endpoint、请求与来源指纹继续严格校验，集成为 `2d348c9d`。此结果不代替后续完整 CI。
+- 下一批 API 从实际 Test API source `9acde62c08c5b15841e73937810afc0b3fee7ff2`、新建专用合成数据库导出并 `jq -S`；契约提交 `28eb0fe8`，1,251,056 B，SHA-256 `e7741cf3a69a30eb178d3a77fa329c71bc657dd2ede186c125816e63b6d2bfb2`。相对首批仅新增 binary ZIP 路径 `GET /api/v1/native-notes/versions/{versionId}/bundle`，没有恢复 unsafe DELETE。官方 Web update/check 通过；该开发契约尚非 merged-master consumer freshness。
+- 下一批材料 HTTP/store/OpenAPI shape 父集成实跑 `56/56 PASS / 0 skipped`，TRX SHA-256 `6ee4435aa62d8137c5881853d850c2589ac9d596abcc88d6b920a3fd5e619395`。Web source `9acde62c` 定向 `28/28`、完整 `66 files / 537 tests` 通过，build 通过，lint 0 errors / 78 warnings；完整套使用 `--maxWorkers=4`，默认并发首次一项 5 秒超时的旧回执保留，未修改断言或超时配置。后续下载入口新改动另作验证。
 - 交付次序：首批 CI 根因修复 → exact-head CI Gate → 正常 matched-head merge → master CI/Release/tag/实际台账 → 客户端正式刷新/生成与各自 PR/CI/Release；后续 M3/SAFE/资源反馈保持独立批次。
 
 完整 #516 AC1–19 与五阶段差距继续见 [源码审计](../architecture/asr516-ac-source-audit-20261101.md)。本检查点没有实际付费调用、真实模型下载、物理设备/OEM 操作或 production 复验，不将其缺失改名为开发已完成。
