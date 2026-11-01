@@ -1,6 +1,6 @@
 ﻿# PIM 原生客户端与笔记路线图
 
-版本：v0.48 记录三平台笔记路线图 M0–M5 的逐项开发状态、API/Android 新 issue 实施分工和后续开发包。API `master` 当前文档 head `88c11c6b58a496540c8a35ade4d38c5e490913b1`；产品 Release 源仍为 `84ef802e7c85a1b6c3017c0c274a108fea57f9d2`。本覆盖不改写 v0.47 和更早历史，不代表任何 M 阶段或 AC 完成。
+版本：v0.48 记录三平台笔记路线图 M0–M5 的逐项开发状态、API/Android 新 issue 实施分工和后续开发包。本轮起始文档基线为 `88c11c6b58a496540c8a35ade4d38c5e490913b1`；产品 Release 源仍为 `84ef802e7c85a1b6c3017c0c274a108fea57f9d2`。本覆盖不改写 v0.47 和更早历史，不代表任何 M 阶段或 AC 完成。
 
 版本：v0.47 记录 API/Web `api-v26.11.1047`、Windows `windows-v26.11.1111` 与 Android `android-v26.11.1147` 的实际产品 CI/Release 事实；真实模型/provider质量、region/audio Batch、目标硬件、OEM/device UX 与完整 AC 仍 `NOT-VERIFIED`。API/Web 产品发布源/implementation merge 为 `84ef802e7c85a1b6c3017c0c274a108fea57f9d2`；后续 docs-only PR #550 只推进文档，不重建产品或改变该 Release。v0.46 及更早记录作为历史快照保留。
 
@@ -29,7 +29,7 @@
 | Issue | 当前事实 / 精确开发范围 | 当前执行归属 | 尚需的完成证据 |
 | --- | --- | --- | --- |
 | API #525 | 已由用户关闭；属于既有手机同步问题，不再列为 OPEN 或笔记开发阻塞。 | 已关闭；历史记录保留 | 不把旧 pending 数量/旧 WIP 继续报为当前开放状态。 |
-| Android #533 | 用户于 2026-11-01 completed 关闭：实体机 25 MB 日志与 66 MB core 导出成功且未闪退。 | 已关闭 | 后续拆分的 #61/#62 是新问题，不回写为 #533 未完成。 |
+| API #533 | 用户于 2026-11-01 completed 关闭：实体机 25 MB 日志与 66 MB core 导出成功且未闪退。 | 已关闭 | 后续拆分的 Android #61/#62 是新问题，不回写为 #533 未完成。 |
 | API #516 | 保持 OPEN；路线/路由/多模态/节点/处理和 AC1–19 不是一个全绿状态。 | Einstein 维护路线图；按下方 #539/#551–554 及五阶段分别实施 | AC1–19 全部缺正式逐条验收；Release/受控 HTTP 不能代替真实模型、硬件或部署证据。 |
 | API #539 | 长请求与 processing pending；保持 OPEN。 | Sagan：`wt/sync-convergence-api-20261101`；与 #551 同一收敛切片 | 长请求、pending/processing 终态与客户端可恢复进度按 issue 验收；真实服务端/客户端行为回执待回填。 |
 | API #551 | coverage gap window 不收敛，造成重复重采/重传。 | Sagan，与 #539 共用收敛/覆盖工作树 | 有缺口但已提交窗口能收敛；重复扫描/重传不无限增长，保留可恢复状态并验证边界。 |
@@ -37,12 +37,12 @@
 | API #553 | 输出 tokens 硬编码 8192 且 UI 隐藏。 | Meitner，同 #552 Web/配置切片 | 后端预算与 UI 可见/可配置语义一致，受限安全默认、兼容、审计和边界验证。 |
 | API #554 | 超时、断连、用户主动 cancel 当前需区别处理。 | Meitner，同 #552/#553 reliability 切片 | 持久状态和 UI 分辨 timeout/disconnect/cancel，终态/重试规则可回读，避免误报成功或误重发。 |
 | Android #59 | rejected usageSummary 可能永久残留，需定义终态生命周期。 | Dewey：`wt/android-diagnostics-lifecycle-20261101` | rejected 与其他终态的清理/保留规则明确，重启和再次提交不留下幽灵摘要。 |
-| Android #60 | duplicate fixes 丢弃台账。 | Euclid：`wt/android-location-stability-20261101` | 修复时保留可审计账本及幂等性，重复输入/重放不丢记录。 |
+| Android #60 | duplicate fixes 导致诊断台账重复入库/重复计数。 | Euclid：`wt/android-location-stability-20261101` | 修复重复输入/重放导致的台账重复记录与计数，保持幂等且可审计。 |
 | Android #61 | 诊断导出缺失整天日志、sync-history 为空、standbyBucket unknown。 | Dewey，与 #59/#62 同工作树；和 #60 Room/DAO 修改先协调 | 归档/导出范围、sync history 来源和 standbyBucket 获取失败状态分别可见；导出完整性可复核。 |
 | Android #62 | 缺少崩溃堆栈。 | Dewey，与 #59/#61 同工作树 | 崩溃栈能在隐私/容量边界内随诊断导出保全，缺失原因明确。 |
 | Android #63 | HighSpeed 抖动；高频运行约 2 小时不退。 | Euclid，与 #60 同工作树 | 频率/抖动控制有界，连续两小时生命周期可收敛并按策略退让；不得用短单测称为硬件续航验收。 |
 
-上表角色/工作树来自当前协调清单；它表示已派实际编码，不表示实现已提交或 issue 已完成。API #552–554 的匹配 Web consumer 由 Meitner 同步实现；跨 worker 的 Android Room/DAO 改动先协调，避免共享写冲突。#61/#62 不改变 #533 已完成事实。下一波尚未派发的全路线项目列在下方，不能伪装成已有 owner。
+上表角色/工作树来自当前协调清单；它表示已派实际编码，不表示实现已提交或 issue 已完成。API #552–554 的匹配 Web consumer 由 Meitner 同步实现；跨 worker 的 Android Room/DAO 改动先协调，避免共享写冲突。Android #61/#62 不改变 API #533 已完成事实。下一波尚未派发的全路线项目列在下方，不能伪装成已有 owner。
 
 #### M0–M5 当前交付与开发波次
 
@@ -1317,4 +1317,4 @@ Windows 记录、Web 编辑、TASK-01 和 MIG-01 至 MIG-13 继续保留原阶�
 | 2026-11-01 | v0.45 记录默认 retry 受控全链、契约一致性与剩余发布门槛 | 集成 `5015842a` 已并入验证 head `72ba5558`；build 0 errors/97 warnings，真实 PG migration `2/2`、snapshot `7/7`、guarded DDL `5/5`、OpenAPI shape `34/34`。实际 Kestrel + isolated PG + Windows typed transport 在默认 `EnableRetryOnFailure(3)` 下完成真实 PUT/GET route config、register/claim/binary/ACK、ASR `Succeeded`、显式 `NoteDerivedJob.RunAsync` 与两个实际 artifact/version；未用 SQL seed/retry-off/TestServer/MockHttpHandler。Swagger 经实际 jq 规范化与 v4 逐字一致：1,202,774 bytes、SHA`e5c555e2...d8d76`、351 paths/705 schemas。API 尚未取得真实 master merge SHA，Android refresh/PR/Gate/Release 待该 SHA；#533/#539 OPEN。Hangfire、真实模型/硬件/音频、OEM/device、UI、AC1–19 与 production 仍 NOT-VERIFIED。保留 45/32/32/13、AC1–19 与既有 history 字节。本条版本 v0.45 |
 | 2026-11-01 | v0.46 记录 API/Web 与 Windows 实际发布、Android 本地 source/test 完成与远端链路阻塞 | API/Web master `84ef802e`、CI `41272531071` 与 Release `api-v26.11.1047` 已核；Windows PR40 head `5a28b844` 普通 merge `1270bf6a`，master CI `41276828062` 的 15 jobs/Gate SUCCESS，Release `windows-v26.11.1111` 已发布；master raw counts Core `294/0/1/295`、App `93/0/0/93`，Core skip 与本地 `295 passed` 分开记账，tag target 以 immutable tag 解析 `1270bf6a` 而非 `target_commitish=master`。Android clean local commit `277236a8`，App `2068` 实跑 PASS、Core `72` XML UP-TO-DATE，但 NORMAL HTTPS/OpenSSL/HTTP1.1/Schannel push TLS 握手失败，SSH known-host 缺失拒认证且未写 known_hosts/未绕过验证；因此 NOTPUSHED、PR NOT CREATED、CI/merge/Release pending。外部模型/provider/device/hardware/OEM AC 与 production 仍 NOT-VERIFIED；本条版本 v0.46 |
 | 2026-11-01 | v0.47 记录三平台产品 CI/Release 已核，GitHub 发布不代表部署或外部模型/设备验收 | API/Web 产品发布源/implementation merge `84ef802e`、master CI `41272531071`、Release `api-v26.11.1047`；Windows merge `1270bf6a`、CI `41276828062`、Release `windows-v26.11.1111`（Core `294/0/1/295`、App `93/0/0/93`）；Android PR58 head `277236a8`/CI `41282476600` ordinary merge `4ddbbf43`，master CI `41283326434` 七 jobs/Gate/Release SUCCESS，Release `android-v26.11.1147` tag resolves to merge. v0.46 network blocker remains historical; model/provider quality, deployment, hardware, OEM/device UX and full AC `NOT-VERIFIED`. Docs PR [#550](https://github.com/2746267826/pim-api/pull/550) contains documentation-only changes and does not rebuild/change the API/Web product Release. |
-| 2026-11-01 | v0.48 将全笔记路线图明确为 M0–M5/32 capabilities/13 MIG 的当前开发执行层，并同步 API 与 Android 新 issue 分工 | #525/#533 已关闭；#516/#539 保持 OPEN；API #539/#551 由 Sagan、#552–554 与匹配 Web consumer 由 Meitner、Android #59/#61/#62 由 Dewey、#60/#63 由 Euclid 分线开发。所有包在证据回填前均为进行中，代码存在不等于 M0–M5 或 AC 完成；真实 provider/付费、物理设备/OEM、目标硬件与 production 仍 `NOT-VERIFIED`。AI-01 保持可选，AI-09 仍待范围决定，不新增付费实时安装门槛。45/32/32/13、AC1–19、五阶段与既有 history 字节保留。本条版本 v0.48 |
+| 2026-11-01 | v0.48 将全笔记路线图明确为 M0–M5/32 capabilities/13 MIG 的当前开发执行层，并同步 API 与 Android 新 issue 分工 | API #525/#533 已关闭；#516/#539 保持 OPEN；API #539/#551 由 Sagan、#552–554 与匹配 Web consumer 由 Meitner、Android #59/#61/#62 由 Dewey、#60/#63 由 Euclid 分线开发。所有包在证据回填前均为进行中，代码存在不等于 M0–M5 或 AC 完成；真实 provider/付费、物理设备/OEM、目标硬件与 production 仍 `NOT-VERIFIED`。AI-01 保持可选，AI-09 仍待范围决定，不新增付费实时安装门槛。45/32/32/13、AC1–19、五阶段与既有 history 字节保留。本条版本 v0.48 |

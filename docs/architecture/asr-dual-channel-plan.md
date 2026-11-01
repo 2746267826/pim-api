@@ -1,6 +1,6 @@
 # ASR 双通道增量方案（#516 排期）
 
-状态（v0.48 当前覆盖）：全笔记路线继续保持 M0–M5、45 个稳定 ID（32 capabilities + 13 MIG）、AC1–19 与 #516 五阶段完整范围。API `master` 的文档基线为 `88c11c6b58a496540c8a35ade4d38c5e490913b1`；API/Web 产品 Release 源仍是 `84ef802e7c85a1b6c3017c0c274a108fea57f9d2`，docs-only 更新不重建产品。API #525 与 Android #533 已关闭；API #516/#539 及 Android #59–63 的开发包仍在进行。代码、合成测试、PR/CI/Release 均不等于真实模型、付费 provider、物理设备、目标硬件或 production 验收。下方 v0.47 及更早状态为历史快照。
+状态（v0.48 当前覆盖）：全笔记路线继续保持 M0–M5、45 个稳定 ID（32 capabilities + 13 MIG）、AC1–19 与 #516 五阶段完整范围。本轮起始文档基线为 `88c11c6b58a496540c8a35ade4d38c5e490913b1`；API/Web 产品 Release 源仍是 `84ef802e7c85a1b6c3017c0c274a108fea57f9d2`，docs-only 更新不重建产品。API #525/#533 已关闭；API #516/#539 及 Android #59–63 的开发包仍在进行。代码、合成测试、PR/CI/Release 均不等于真实模型、付费 provider、物理设备、目标硬件或 production 验收。下方 v0.47 及更早状态为历史快照。
 
 状态（v0.47 当前覆盖）：API/Web `api-v26.11.1047`、Windows `windows-v26.11.1111`、Android `android-v26.11.1147` 的产品 CI/Release 均已核；API/Web 产品发布源/implementation merge 是 `84ef802e7c85a1b6c3017c0c274a108fea57f9d2`，不是对后续 docs-only master HEAD 的声明。真实模型/provider质量、region/audio Batch、硬件、OEM/device UX 与完整 AC 仍 `NOT-VERIFIED`。文档跟踪：[pim-api#550](https://github.com/2746267826/pim-api/pull/550)。下方 v0.46 及更早状态为历史快照。
 
@@ -25,12 +25,12 @@
 | Issue | 当前事实 | 当前开发包 / 归属 | 完成前必须回填的证据 |
 | --- | --- | --- | --- |
 | API #525 | 已由用户关闭。 | 历史问题，不重开。 | 不把旧的积压/pending 快照继续报为当前 OPEN。 |
-| Android #533 | 用户于 2026-11-01 以 completed 关闭：物理机 25 MB 日志、66 MB core 导出成功且未闪退。 | 已关闭；新拆出的 Android #61/#62 独立跟踪。 | #61/#62 不得回写成 #533 未完成；真机导出是 #533 的关闭证据，不扩大为其它 device AC。 |
+| API #533 | 用户于 2026-11-01 以 completed 关闭：物理机 25 MB 日志、66 MB core 导出成功且未闪退。 | 已关闭；新拆出的 Android #61/#62 独立跟踪。 | #61/#62 不得回写成 #533 未完成；真机导出是 API #533 的关闭证据，不扩大为其它 device AC。 |
 | API #516 | 保持 OPEN；五阶段和 AC1–19 不是全绿。 | 按 #539/#551–554 及五个 Phase 分片推进。 | 每个 Phase 的真实闭环、逐条 AC、授权环境与产物来源；Release 本身不能替代。 |
 | API #539 / #551 | 长请求、processing pending 与 coverage gap window 收敛仍需完成，均保持开发中。 | Sagan，`wt/sync-convergence-api-20261101`。 | pending/processing 可恢复终态、缺口窗口收敛、重复扫描/重传有界及客户端回读。 |
 | API #552 / #553 / #554 | 同步网关 60 秒截断、输出 tokens 硬编码/UI 隐藏、timeout/disconnect/cancel 未区分。 | Meitner，`wt/asr-reliability-api-20261101`，并同步匹配 Web consumer。 | 持久异步任务、可见且安全的 token 预算、终止原因语义与实际 UI/API 回归；真实 provider 质量另验。 |
 | Android #59 / #61 / #62 | rejected usageSummary 生命周期、诊断导出完整度/sync-history/standbyBucket、崩溃堆栈。 | Dewey，`wt/android-diagnostics-lifecycle-20261101`；与 #60 的 Room/DAO 写集先协调。 | 终态清理、导出范围可核对、未知状态可见、崩溃栈隐私/容量边界与重放测试。 |
-| Android #60 / #63 | duplicate fixes 台账丢失、HighSpeed 抖动及高频运行约 2 小时不退。 | Euclid，`wt/android-location-stability-20261101`。 | 幂等台账保留、频率/抖动有界、两小时生命周期收敛；短单测不能冒充硬件续航验收。 |
+| Android #60 / #63 | duplicate fixes 导致诊断台账重复入库/重复计数；HighSpeed 抖动及高频运行约 2 小时不退。 | Euclid，`wt/android-location-stability-20261101`。 | 重复输入/重放不产生重复台账记录或计数；频率/抖动有界、两小时生命周期收敛；短单测不能冒充硬件续航验收。 |
 
 已派表示实际编码工作已开始，不表示提交、CI、Release 或 issue 完成。协调来源为 `scratch/full-roadmap-20261101/coordination.md`。
 
