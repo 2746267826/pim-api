@@ -67,6 +67,46 @@ public sealed class NoteAsrBatchPersistenceTests
     }
 
     [SkippableFact]
+    public async Task Batch_jsonl_uses_the_frozen_profile_output_limit()
+    {
+        Skip.If(string.IsNullOrWhiteSpace(ConnectionString), "PIM_ASR516_PG is not configured");
+        const int configuredMaxOutputTokens = 4096;
+        var seed = await SeedAsync(configuredMaxOutputTokens);
+        var factory = new SyntheticFactory((request, _) =>
+        {
+            if (request.Method == HttpMethod.Post && request.Path.EndsWith("/v1/files", StringComparison.Ordinal))
+                return Task.FromResult(UploadOk());
+            if (request.Method == HttpMethod.Post && request.Path.EndsWith("/v1/batches", StringComparison.Ordinal))
+                return Task.FromResult(BatchOk("batch-profile-tokens"));
+            throw new InvalidOperationException("unexpected synthetic request " + request.Path);
+        });
+        var mismatched = Encoding.UTF8.GetBytes(
+            string.Join('\n', Enumerable.Range(0, seed.ExpectedSegments)
+                .Select(index => BatchLine($"seg-{index}", seed, maxCompletionTokens: 8192))) + "\n");
+
+        await using (var db = NewDb(seed.Owner))
+        {
+            var error = await Assert.ThrowsAsync<DomainException>(() =>
+                StartAsync(NewService(db, seed.Owner, factory), seed, mismatched));
+            Assert.Equal(40001, error.ErrorCode);
+        }
+        Assert.Empty(factory.Requests);
+        await using (var db = NewDb(seed.Owner))
+            Assert.Equal(0, await db.NoteAsrBatchJobs.CountAsync(x => x.OwnerId == seed.Owner));
+
+        await using (var db = NewDb(seed.Owner))
+        {
+            var job = await StartAsync(NewService(db, seed.Owner, factory), seed);
+            Assert.Equal("Validating", job.Status);
+            Assert.Equal("file-in-1", job.InputFileId);
+        }
+        Assert.Equal(configuredMaxOutputTokens, seed.MaxOutputTokens);
+        Assert.Equal(1, factory.UploadCalls);
+        Assert.Equal(1, factory.CreateCalls);
+        await CleanupAsync(seed.Owner);
+    }
+
+    [SkippableFact]
     public async Task Jsonl_audio_must_match_the_immutable_material_plan_and_frozen_prompt()
     {
         Skip.If(string.IsNullOrWhiteSpace(ConnectionString), "PIM_ASR516_PG is not configured");
@@ -1993,30 +2033,38 @@ public sealed class NoteAsrBatchPersistenceTests
 
     private sealed record Seeded(Guid Owner, Guid ProfileId, Guid ProfileRevision, Guid TaskId,
         Guid AttemptId, Guid VersionId, int ExpectedSegments, string PromptRendered,
-        IReadOnlyList<byte[]> AudioSlices);
+        IReadOnlyList<byte[]> AudioSlices, int MaxOutputTokens);
 
     private static byte[] JsonlBytes(Seeded seed, params string[] customIds) => Encoding.UTF8.GetBytes(
         string.Join('\n', customIds.Select(id => BatchLine(id, seed))) + "\n");
 
     private static string BatchLine(string id, Seeded seed, string model = "mimo-v2.6-pro",
         bool includeAudio = true, byte[]? audioOverride = null, string? promptOverride = null,
-        string? formatOverride = null, string? dataUrlOverride = null)
+        string? formatOverride = null, string? dataUrlOverride = null, int? maxCompletionTokens = null)
     {
         var segment = int.TryParse(id.AsSpan("seg-".Length), out var parsed) && parsed >= 0 &&
                       parsed < seed.AudioSlices.Count ? parsed : 0;
         var audioBytes = audioOverride ?? seed.AudioSlices[segment];
         var audioFormat = formatOverride ?? "wav";
         var dataUrl = dataUrlOverride ?? MimoAudioFormats.DataUrl("wav", audioBytes);
-        var audio = includeAudio
-            ? $"{{\"type\":\"input_audio\",\"input_audio\":{{\"data\":{JsonSerializer.Serialize(dataUrl)}," +
-              $"\"format\":{JsonSerializer.Serialize(audioFormat)}}}}},"
-            : "";
         var prompt = promptOverride ?? seed.PromptRendered;
-        return $"{{\"custom_id\":{JsonSerializer.Serialize(id)},\"method\":\"POST\"," +
-               "\"url\":\"/v1/chat/completions\",\"body\":{\"model\":" + JsonSerializer.Serialize(model) +
-               ",\"messages\":[{\"role\":\"user\",\"content\":[" + audio +
-               $"{{\"type\":\"text\",\"text\":{JsonSerializer.Serialize(prompt)}}}]}}]," +
-               "\"max_completion_tokens\":8192,\"stream\":false}}";
+        object[] content = includeAudio
+            ? [new { type = "input_audio", input_audio = new { data = dataUrl, format = audioFormat } },
+                new { type = "text", text = prompt }]
+            : [new { type = "text", text = prompt }];
+        return JsonSerializer.Serialize(new
+        {
+            custom_id = id,
+            method = "POST",
+            url = "/v1/chat/completions",
+            body = new
+            {
+                model,
+                messages = new[] { new { role = "user", content } },
+                max_completion_tokens = maxCompletionTokens ?? seed.MaxOutputTokens,
+                stream = false
+            }
+        });
     }
 
     private static async Task<NoteAsrBatchJobDto> StartAsync(NoteAsrBatchService service, Seeded seed,
@@ -2030,7 +2078,7 @@ public sealed class NoteAsrBatchPersistenceTests
             declaredLength ?? input.Length, "input.jsonl", ct);
     }
 
-    private static async Task<Seeded> SeedAsync()
+    private static async Task<Seeded> SeedAsync(int maxOutputTokens = 8192)
     {
         var owner = Guid.NewGuid();
         await CleanupAsync(owner);
@@ -2055,7 +2103,8 @@ public sealed class NoteAsrBatchPersistenceTests
             NormalizedName = "batch-" + suffix, BaseUrl = "https://api.example.invalid/v1/",
             Model = "mimo-v2.6-pro", Enabled = true,
             Capabilities = AiModelCapabilityFlags.Transcription, AsrPresetId = MimoMultimodalPreset.PresetId,
-            AsrBatchBaseUrl = Origin.AbsoluteUri, ApiKeySecret = "synthetic-key", CreatedAt = now, UpdatedAt = now
+            AsrBatchBaseUrl = Origin.AbsoluteUri, ApiKeySecret = "synthetic-key", CreatedAt = now, UpdatedAt = now,
+            MaxOutputTokens = maxOutputTokens
         };
         await db.AiModelProfiles.AddAsync(profile);
         var runtime = await db.AiModelRuntime.SingleOrDefaultAsync(x => x.Id == AiModelRuntimeEntity.SingletonId);
@@ -2115,7 +2164,7 @@ public sealed class NoteAsrBatchPersistenceTests
                 step.FileIndex, step.SourceOffset, step.Samples, CancellationToken.None));
         }
         return new Seeded(owner, profile.Id, profile.Revision, taskId, attempt.Id, attempt.VersionId,
-            attempt.ExpectedSegments, prompt.Text, audioSlices);
+            attempt.ExpectedSegments, prompt.Text, audioSlices, profile.MaxOutputTokens);
     }
 
     private static async Task<(NoteMaterialVersionDto Version, List<byte[]> Content)> SeedMaterialAsync(
