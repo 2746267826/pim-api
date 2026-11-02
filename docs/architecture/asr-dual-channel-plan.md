@@ -1,5 +1,30 @@
 # ASR 双通道增量方案（#516 排期）
 
+状态（v0.53 当前覆盖）：三平台 Release/源码事实与 #516 实施、验收边界以本文本层及[原生笔记路线图 v0.53](../product/native-notes-roadmap.md#v053-current)为准；下方 v0.52 及更早行文保留为历史快照。
+
+## v0.53 当前覆盖：API 1060、Windows 1121 与 Android 1154（2026-11-02）
+
+本层只追加，不重写 v0.52 及更早架构历史、稳定 ID 或 Phase 定义。工程合并/Release 不等于 production、provider、模型、硬件或设备验收。
+
+| 领域 | 已交付实现与证据 | 仍缺 / NOT-VERIFIED |
+| --- | --- | --- |
+| API/Web可靠性 | #539/#551 随 `api-v26.11.1052`；#552–554 随 `api-v26.11.1056` 发布；API/Web PR #558 resource feedback source `6f6d1c11` 合并为 `7922f6e2` 并发布 `api-v26.11.1060`。Master CI `41404982876`: 6488 PASS / 100 skipped / 0 failed / 6588 total。Full Notes real-PG 是另一受限验证：402 PASS / 2 URL opt-in skipped / 0 failed / 404，绑定 6f6d1c11。 | API issue OPEN 不能当作代码未实现；生产部署、真实provider/gateway、付费质量、音频Batch/region/TTL未核。两个URL skip不计PASS。 |
+| Windows 资源回执 | [PR #43](https://github.com/2746267826/pim-windows/pull/43) exact head `774ce1d8f65bbdc632dbc020e0e60ef573041418` 普通 merge `b0d0b28e14e58f96d45fd23b2b2d585f21fc791c` @ `2026-11-02T08:27:28Z`；[master CI 41413209690](https://github.com/2746267826/pim-windows/actions/runs/41413209690) 15 jobs含 Gate/release全SUCCESS；[`windows-v26.11.1121`](https://github.com/2746267826/pim-windows/releases/tag/windows-v26.11.1121) 于08:31:17Z发布。633 B version ledger SHA-256 `8797f419a1eb777c944c3e311ebd9281e8fefb26049b9fc29b754066854122ce` 与release digest MATCH（回执：`scratch/full-roadmap-20261101/windows-resource-delivery-20261102/verified-release-receipt.json`）。 | 持久化冻结resource decision并typed上报已交付；不代表真实GPU/VRAM观测、设备模型/阈值、生产硬件运行或安装验收。只下载/核验version ledger，不声称整个asset bytes已验证。 |
+| Android消费者 | `android-v26.11.1154` 源为merge `c5614fc80af045b16790fc45ca119b072b504482`；#516的Web/Android任务消费控制基础已交付。 | #516 Phase 5的真实端到端体验、OEM/device及AC1–19全项验收未证明；Android PR #66是MIG-05/06活动查询切片，不属于ASR consumer依赖。 |
+| M0–M5 | 固定材料、owner/consent、分段任务、派生版本、Web管理与部分原生工作流已交付；M5必须依MIG-01–13逐域记账。 | 不将部分界面或迁移动作汇总成M0–M5完成；SAFE未知provider/副本清理、NOTE-03可逆映射、格式互操作、真实端到端等具体项继续跟踪。 |
+
+### #516 五阶段执行/验收分账
+
+| Phase | 已实现的工程路径 | 未证明的外部条件 |
+| --- | --- | --- |
+| 1 路由/claim | 契约、默认retry受控HTTP/PostgreSQL闭环、Windows typed claim已交付。 | Production负载、真实节点与生产配置。 |
+| 2 多模态/Batch | MiMo preset、Batch与URL代码契约及UI。 | 真实付费质量、region、audio Batch能力与TTL行为。 |
+| 3 Windows model/runtime | 模型/runtime管理界面。 | 首发模型/revision实际下载、安装和设备兼容。 |
+| 4 pull worker/resource | pull worker、资源门、受控合成链；Windows PR #43已发布持久typed feedback。 | GPU/VRAM实测、显存清退、崩溃/重启与硬件阈值。 |
+| 5 Web/Android consumer | Web/Android任务消费控制基础。 | 真实端到端用户体验、OEM/device及AC1–19全项验收。 |
+
+Issue状态与代码状态分开：#539/#551的后端修复已在1052，#552–554已在1056；其issue保持OPEN并不反证代码未交付。生产、付费provider、真实模型或设备验收需在单独授权环境取得，不从CI、合成PG或Release推断。
+
 状态（v0.52 当前覆盖）：PR #557 exact head `f7da2fe48e546052fccc05c4a44f530962bbd77d` 的最终 CI 41371199869 API 为 6484 PASS / 99 skipped / 0 FAIL / 6583 total（30m11s，日志 SHA-256 `e7b552a839801e77502defaa6145f275011f9bf10494917257beeb17c22b7702`），CI Gate SUCCESS；于 2026-11-02T04:18:53Z 普通 matched-head merge 为 `d4a958822635518c7d147061eaf8c5c07057b2ad`。master CI 41387760422 attempt 1 的 API 测试为 6484 PASS / 99 skipped / 0 failed / 6583 total（29m10s），唯一 Docker `/health` smoke 失败、CI Gate 首次失败；failed-jobs-only attempt 2 成功，CI Gate 与 release job SUCCESS，API 测试 job 复用 attempt 1。正式 Release [`api-v26.11.1058`](https://github.com/2746267826/pim-api/releases/tag/api-v26.11.1058) 于 2026-11-02T05:09:47Z 发布，tag/source 解析为 `d4a958822635518c7d147061eaf8c5c07057b2ad`；120 B ledger SHA-256 `5b5b1d7199a63c89bb84b0663755cdea4e9c79970492cefb6102596a746e9e13`。Android PR #65 head `d5eee44b4b09b169783bc4cdcd9c239fd70077c3` 合并为 `c5614fc80af045b16790fc45ca119b072b504482`（tree `c0297db73074ac5fdddc613237419a88b7f22152`）；master CI 41396446174 的适用 jobs/Gate/release 均成功。正式 Release [`android-v26.11.1154`](https://github.com/2746267826/pim-android/releases/tag/android-v26.11.1154) 于 2026-11-02T06:05:57Z 发布，480 B ledger SHA-256 `936a39fd6e93360e3b40242e755d0b724449cd16b19b088726eff9d2ef620362`。Windows source `6cf4c141` Core 366 PASS / 0 skipped，WPF 仍在验证；组合验证、各自真实端到端验收仍 pending。#516、AC1–19 与 M0–M5 保持未完成。GitHub Release 不表示生产部署、真实 provider 或设备验收。
 
 ## v0.52 当前执行覆盖：PR #557 合并与资源反馈交付前边界（2026-11-02）
