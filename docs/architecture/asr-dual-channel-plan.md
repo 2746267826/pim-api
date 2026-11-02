@@ -1,6 +1,6 @@
 # ASR 双通道增量方案（#516 排期）
 
-状态（v0.50 当前覆盖）：2026-11-02 完整 PR #556 CI 已回读为失败，四项 Notes 与 38 项 EF fixture 失败继续修复；不得用此前 189 项聚合 PASS 替代完整 CI。三仓已发布版本、下一批跨端材料及资源反馈进度见本文 v0.50 和总路线图 v0.50。下方状态行与全部既有正文保留历史。
+状态（v0.50 当前覆盖）：2026-11-02 首轮完整 PR #556 CI 已回读为失败；Notes 与 EF fixture 根因修复均已集成，聚焦回归分别 9 PASS 及 58 PASS / 6 条件跳过，等待新完整 CI。不得用聚焦结果替代完整 CI。三仓已发布版本、下一批跨端材料及资源反馈进度见本文 v0.50 和总路线图 v0.50。下方状态行与全部既有正文保留历史。
 
 状态（v0.49 当前覆盖）：实际源码/契约、测试失败和后续交付以本文 v0.49 及总路线图 v0.49 为准。下方 v0.48 及更早状态行保留历史，不替代当前检查点。
 
@@ -24,7 +24,7 @@
 
 PR #556 远端 head `81c30bb485f72730b77356866332a7e79dda7a68` 的完整 CI `41322796046` 为 `6440 PASS / 42 FAIL / 99 skipped / 6581 total`；Web、真实契约 freshness、Docker 冒烟通过，`CI Gate` 失败，尚未合并或发布。Sagan 负责四项 Notes TestHost/派生处理回归，Meitner 负责 38 项 EF fixture provider 复用失败；不得全局 suppress、删断言、增 skip 或改 workflow。
 
-07:58 检查点：四项 Notes 回归及 receipt 校验在 worker `76f93109` 实跑 9/9 通过，父审查后集成为 `2d348c9d`，仍需与 EF fixture 根因修复一起重跑完整 CI。下一批 Web `9acde62c` 已修复笔迹固定会话/dirty/冻结保护和流式解压预算，完整 537 项通过；真实 ZIP Swagger 导出提交 `28eb0fe8`、SHA-256 `e7741cf3a69a30eb178d3a77fa329c71bc657dd2ede186c125816e63b6d2bfb2`，材料 HTTP/store/shape 56/56 通过。下一批开发契约不代替客户端按实际 API merge SHA 的正式刷新，原始包下载入口、安全删除及多分片跨端恢复继续开发。
+修复集成检查点：四项 Notes 回归及 receipt 校验在 worker `76f93109` 实跑 9/9 通过，父审查后集成为 `2d348c9d`；EF fixture worker `a569dce2` 集成为 `a84b2fb7`，相关回归 58 PASS / 6 专用 PostgreSQL 条件跳过 / 0 FAIL，等待两包合并后的完整 CI。下一批 Web `9acde62c` 已修复笔迹固定会话/dirty/冻结保护和流式解压预算，完整 537 项通过；真实 ZIP Swagger 导出提交 `28eb0fe8`、SHA-256 `e7741cf3a69a30eb178d3a77fa329c71bc657dd2ede186c125816e63b6d2bfb2`，材料 HTTP/store/shape 56/56 通过。下一批开发契约不代替客户端按实际 API merge SHA 的正式刷新，原始包下载入口、安全删除及多分片跨端恢复继续开发。
 
 #539/#551 已交付 `api-v26.11.1052`；Android #59–63 已交付 `android-v26.11.1150`；Windows 本机笔记/录音/上传/planner 首批已交付 `windows-v26.11.1114`。三者的 master CI、标签和实际版本台账均已核验，但不代表用户环境、物理设备或真实 provider 验收。
 
