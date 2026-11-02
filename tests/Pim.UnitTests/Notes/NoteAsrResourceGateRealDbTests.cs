@@ -247,6 +247,18 @@ public sealed class NoteAsrResourceGateRealDbTests
             CancellationToken.None);
         Assert.Equal("claimed", legacy.Status);
         Assert.NotNull(legacy.Lease);
+        database.Db.NoteAsrNodes.Single(x => x.Id == nodeId).LastHeartbeatAt = now.AddMinutes(-1);
+        await database.Db.SaveChangesAsync();
+        await Task.Delay(TimeSpan.FromMilliseconds(1100));
+        var staleNodeService = Service(database.Db, owner, tasks, maxAutomaticFailures: null,
+            heartbeatTimeoutSeconds: 1);
+        var legacyReplay = await staleNodeService.ClaimAsync(
+            new ClaimNoteAsrTaskRequest(nodeId, "legacy-client"), CancellationToken.None);
+        Assert.Equal("claimed", legacyReplay.Status);
+        Assert.NotNull(legacyReplay.Lease);
+        Assert.Equal(legacy.Lease!.LeaseId, legacyReplay.Lease!.LeaseId);
+        Assert.Equal(legacy.Lease.FencingToken, legacyReplay.Lease.FencingToken);
+
         var addedDecision = await Assert.ThrowsAsync<DomainException>(() => service.ClaimAsync(
             Claim(nodeId, "legacy-client", automatic: true, passed: false,
                 ["resource-memory-insufficient"]), CancellationToken.None));

@@ -268,11 +268,6 @@ public sealed class NoteAsrRoutingService(PimDbContext db, ICurrentUserService u
         {
             if (prior is not null)
                 throw new DomainException(40901, "同一领取幂等标识不能移除已提交的资源门决策");
-
-            var existingClaim = await db.NoteAsrAckReceipts.AsNoTracking().AnyAsync(x =>
-                x.OwnerId == owner && x.Kind == "claim" && x.ProviderHandle == request.IdempotencyKey, ct);
-            if (existingClaim)
-                throw new DomainException(40901, "已提交的旧版领取不能补加资源门决策");
             return null; // A genuinely new legacy key keeps the prior claim contract.
         }
         if (prior is null && await db.NoteAsrAckReceipts.AsNoTracking().AnyAsync(x =>

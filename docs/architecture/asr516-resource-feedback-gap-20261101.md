@@ -62,7 +62,21 @@ separate reporting endpoint is added.
 
 - `dotnet build tests/Pim.UnitTests/Pim.UnitTests.csproj --no-restore -m:1`
   succeeds with zero errors.
-- `NoteAsrResourceGateRealDbTests` passes 2/2 against isolated PostgreSQL 18.
+- Earlier limited routing-related run: 62 tests total, 31 passed, 31 skipped,
+  0 failed. The four resource-gate PostgreSQL cases passed, including the
+  legacy same-key replay regression; the remaining PostgreSQL cases skipped
+  because `PIM_ASR516_PG` was not set. Log and TRX:
+  `scratch/full-roadmap-20261101/asr-resource-integrated-validation-20261102/`
+  (`routing-related-realdb.log` and `trx/asr-routing-related-20261102.trx`).
+- A separate run against a pre-existing database failed 26/35 with PostgreSQL
+  `42703` because that database lacked the current
+  `consecutive_automatic_resource_failures` column (9 passed). This is stale
+  schema evidence, not a passing current-schema routing verification.
+- A new focused run was started against the previously nonexistent synthetic
+  database `test_asr516_resource_20261102_0858` on the owned PostgreSQL 18
+  instance at `127.0.0.1:35439`, with `Maximum Pool Size=5`. Its final result
+  is pending; do not count it as verified until its TRX is available at
+  `scratch/full-roadmap-20261101/asr-resource-final-20261102-0858/trx/`.
 - Isolated PostgreSQL migration creates durable gate records and node state.
 - Identical claim replay is idempotent; a distinct automatic failure increments
   once; owner isolation prevents cross-account reads/writes.
