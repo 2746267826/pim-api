@@ -98,6 +98,60 @@ describe('native note material model', () => {
     expect(new TextDecoder().decode(markdownFile?.bytes)).toBe(`# 第一节\n\n![照片](assets/${assetId}.png)`)
   })
 
+  it('publishes editable schema-v1 ink vectors with a bounded PNG preview file', async () => {
+    const ink = {
+      width: 320,
+      height: 240,
+      strokes: [{
+        width: 2.5,
+        points: [{ x: 12, y: 18, pressure: 0.4 }, { x: 50, y: 60, pressure: 0.9 }],
+      }],
+    }
+    const previewBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1])
+    const inkId = '66666666-6666-4666-8666-666666666666'
+    const bundle = await buildMaterialBundle({
+      versionId,
+      noteId,
+      baseVersionId: null,
+      revision: 0,
+      title: '手写草图',
+      noteCreatedAtMillis: 100,
+      createdAtMillis: 200,
+      blocks: [
+        { id: '44444444-4444-4444-8444-444444444444', kind: 'markdown', text: '图示' },
+        { id: inkId, kind: 'ink', ink, bytes: previewBytes },
+      ],
+    })
+    const input = JSON.parse(bundle.inputJson)
+    const manifest = JSON.parse(bundle.manifestJson)
+    const inkHash = await sha256Hex(encoder.encode(JSON.stringify(ink)))
+    const previewHash = await sha256Hex(previewBytes)
+
+    expect(input.note.blocks[1]).toEqual({ id: inkId, kind: 'ink', ink })
+    expect(manifest.files).toContainEqual(expect.objectContaining({
+      path: `assets/${inkId}-${inkHash}.png`,
+      kind: 'InkPreview',
+      blockId: inkId,
+      sha256: previewHash,
+      sizeBytes: previewBytes.length,
+    }))
+    expect(bundle.files.find((file) => file.kind === 'InkPreview')?.bytes).toEqual(previewBytes)
+  })
+
+  it('rejects ink coordinates outside the shared native schema', async () => {
+    await expect(buildMaterialBundle({
+      versionId,
+      noteId,
+      baseVersionId: null,
+      revision: 0,
+      title: '无效笔迹',
+      noteCreatedAtMillis: 1,
+      createdAtMillis: 2,
+      blocks: [{ id: '44444444-4444-4444-8444-444444444444', kind: 'ink',
+        ink: { width: 320, height: 240, strokes: [{ points: [{ x: 321, y: 2 }] }] }, bytes: new Uint8Array([1]) }],
+    })).rejects.toThrow('手写卡片坐标或压力超出 schema-v1 范围')
+  })
+
   it('parses the exact fixed note.json hash and remote file indexes', async () => {
     const bundle = await buildMaterialBundle({
       versionId,

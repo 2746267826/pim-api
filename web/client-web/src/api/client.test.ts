@@ -5,6 +5,7 @@ import {
   apiFetch,
   apiPutBinary,
   clearTokens,
+  fetchBoundedDownload,
   fetchBlob,
   resetRefreshState,
   setTokens,
@@ -28,6 +29,22 @@ function deferred<T>(): {
     resolve = done
   })
   return { promise, resolve }
+}
+
+function responseWithCancelSpy(status: number, headers: HeadersInit = {}): {
+  response: Response
+  cancel: ReturnType<typeof vi.fn>
+} {
+  const cancel = vi.fn(() => Promise.resolve())
+  return {
+    response: {
+      ok: status >= 200 && status < 300,
+      status,
+      headers: new Headers(headers),
+      body: { cancel },
+    } as unknown as Response,
+    cancel,
+  }
 }
 
 beforeEach(() => {
@@ -186,6 +203,144 @@ describe('apiFetch 基础行为', () => {
     await expect(apiFetch('/api/v1/x', {}, { allowStatuses: [429] })).resolves.toEqual({
       limited: true,
     })
+  })
+})
+
+describe('有界原始材料下载', () => {
+  const headers = {
+    'content-type': 'application/zip',
+    'content-disposition': 'attachment; filename="22222222-2222-4222-8222-222222222222.pimnote.zip"',
+  }
+  const options = {
+    expectedFilename: '22222222-2222-4222-8222-222222222222.pimnote.zip',
+    maxBytes: 4,
+    refreshOn401: true,
+  }
+
+  it('无 Content-Length 时逐块累计并在预算外拒绝', async () => {
+    const fetchMock = vi.fn(async () => new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array([1, 2, 3]))
+        controller.enqueue(new Uint8Array([4, 5]))
+        controller.close()
+      },
+    }), { headers }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(fetchBoundedDownload('/api/v1/native-notes/versions/x/bundle', undefined, options))
+      .rejects.toThrow('字节预算')
+  })
+
+  it('Content-Length 超预算时不读取响应体', async () => {
+    const getReader = vi.fn()
+    const cancel = vi.fn(async () => undefined)
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      headers: new Headers({ ...headers, 'content-length': '5' }),
+      body: { getReader, cancel },
+    } as unknown as Response)))
+
+    await expect(fetchBoundedDownload('/api/v1/native-notes/versions/x/bundle', undefined, options))
+      .rejects.toThrow('字节预算')
+    expect(getReader).not.toHaveBeenCalled()
+    expect(cancel).toHaveBeenCalledOnce()
+  })
+
+  it.each([
+    ['无效预算', { maxBytes: 0 }, headers],
+    ['无效 Content-Length', {}, { ...headers, 'content-length': '1.5' }],
+  ])('%s 时取消尚未读取的响应体', async (_label, override, responseHeaders) => {
+    const { response, cancel } = responseWithCancelSpy(200, responseHeaders)
+    vi.stubGlobal('fetch', vi.fn(async () => response))
+
+    await expect(fetchBoundedDownload('/bundle', undefined, {
+      ...options,
+      ...override,
+    })).rejects.toThrow()
+    expect(cancel).toHaveBeenCalledOnce()
+  })
+
+  it('401 刷新替换原响应前取消未消费的响应体', async () => {
+    setTokens('old-access', 'refresh-token')
+    const unauthorized = responseWithCancelSpy(401)
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).includes('/auth/refresh')) {
+        return jsonResponse({
+          code: 0,
+          message: 'ok',
+          data: { accessToken: 'new-access', refreshToken: 'new-refresh' },
+          timestamp: 't',
+        })
+      }
+      if (new Headers(init?.headers).get('Authorization') === 'Bearer new-access') {
+        return new Response(new Uint8Array([1]), {
+          headers: { ...headers, 'content-length': '1' },
+        })
+      }
+      return unauthorized.response
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(fetchBoundedDownload('/bundle', undefined, options)).resolves.toMatchObject({
+      filename: options.expectedFilename,
+    })
+    expect(unauthorized.cancel).toHaveBeenCalledOnce()
+  })
+
+  it('非成功 HTTP 响应抛错前取消未消费的响应体', async () => {
+    const failure = responseWithCancelSpy(503)
+    vi.stubGlobal('fetch', vi.fn(async () => failure.response))
+
+    await expect(fetchBoundedDownload('/bundle', undefined, options))
+      .rejects.toThrow('HTTP 503')
+    expect(failure.cancel).toHaveBeenCalledOnce()
+  })
+
+  it('拒绝错误 MIME、错误文件名和声明长度不匹配', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(new Uint8Array([1]), {
+      headers: { ...headers, 'content-type': 'text/html' },
+    })))
+    await expect(fetchBoundedDownload('/bundle', undefined, options)).rejects.toThrow('内容类型')
+
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(new Uint8Array([1]), {
+      headers: { ...headers, 'content-disposition': 'attachment; filename="other.zip"' },
+    })))
+    await expect(fetchBoundedDownload('/bundle', undefined, options)).rejects.toThrow('文件名')
+
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(new Uint8Array([1, 2]), {
+      headers: { ...headers, 'content-length': '1' },
+    })))
+    await expect(fetchBoundedDownload('/bundle', undefined, options)).rejects.toThrow('长度')
+  })
+
+  it('流读取期间会话切换后丢弃旧响应', async () => {
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    let active = true
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        controller.enqueue(new Uint8Array([1]))
+        await gate
+        controller.enqueue(new Uint8Array([2]))
+        controller.close()
+      },
+    }), { headers })))
+
+    const download = fetchBoundedDownload('/bundle', undefined, {
+      ...options,
+      assertActive: () => {
+        if (!active) {
+          const error = new Error('workspace changed')
+          error.name = 'AbortError'
+          throw error
+        }
+      },
+    })
+    await Promise.resolve()
+    active = false
+    release()
+    await expect(download).rejects.toMatchObject({ name: 'AbortError' })
   })
 })
 

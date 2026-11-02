@@ -48,6 +48,7 @@
     "clsx": "^2.1.1",
     "date-fns": "^4.4.0",
     "echarts": "^6.1.0",
+    "fflate": "^0.8.3",
     "leaflet": "^1.9.4",
     "lucide-react": "^1.48.0",
     "motion": "^13.4.6",

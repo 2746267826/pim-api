@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.IO.Compression;
 using System.Text.Json;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -122,6 +123,67 @@ public sealed class NoteMaterialEndpointsTests : IDisposable
     }
 
     [Fact]
+    public async Task OwnerCanExportCompletedMaterialInNativeAndroidBundleLayout()
+    {
+        var owner = await AuthRegistrationTestHost.SeedAndLoginAsync(_factory,
+            "notes-bundle-owner-" + Guid.NewGuid().ToString("N"));
+        var other = await AuthRegistrationTestHost.SeedAndLoginAsync(_factory,
+            "notes-bundle-other-" + Guid.NewGuid().ToString("N"));
+        using var client = AuthRegistrationTestHost.Authed(_factory, owner.AccessToken);
+        using var otherClient = AuthRegistrationTestHost.Authed(_factory, other.AccessToken);
+        using var anonymous = _factory.CreateClient();
+        var fixture = NoteMaterialUploadStoreTests.Fixture.Create();
+        var store = _factory.Services.GetRequiredService<NoteMaterialUploadStore>();
+        await store.BeginAsync(owner.UserId, fixture.Request);
+        for (var file = 0; file < fixture.Content.Count; file++)
+        {
+            var bytes = fixture.Content[file];
+            for (var offset = 0; offset < bytes.Length; offset += NoteMaterialUploadOptions.PartSizeBytes)
+            {
+                var chunk = bytes.AsSpan(offset,
+                    Math.Min(NoteMaterialUploadOptions.PartSizeBytes, bytes.Length - offset)).ToArray();
+                var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(chunk)).ToLowerInvariant();
+                await store.UploadPartAsync(owner.UserId, fixture.Request.VersionId, file,
+                    offset / NoteMaterialUploadOptions.PartSizeBytes, hash, new MemoryStream(chunk));
+            }
+        }
+        await store.CompleteAsync(owner.UserId, fixture.Request.VersionId);
+
+        var path = $"{Root}/versions/{fixture.Request.VersionId}/bundle";
+        Assert.Equal(HttpStatusCode.Unauthorized, (await anonymous.GetAsync(path)).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await otherClient.GetAsync(path)).StatusCode);
+
+        var incomplete = NoteMaterialUploadStoreTests.Fixture.Create();
+        await store.BeginAsync(owner.UserId, incomplete.Request);
+        using (var incompleteResponse = await client.GetAsync(
+                   $"{Root}/versions/{incomplete.Request.VersionId}/bundle"))
+        {
+            Assert.Equal(HttpStatusCode.Conflict, incompleteResponse.StatusCode);
+            Assert.Equal(40901, (await incompleteResponse.Content.ReadFromJsonAsync<ApiResponse<string>>())!.Code);
+        }
+
+        using var response = await client.GetAsync(path);
+        var responseBody = await response.Content.ReadAsStringAsync();
+        Assert.True(response.StatusCode == HttpStatusCode.OK,
+            $"Bundle endpoint returned {(int)response.StatusCode}: {responseBody}");
+        Assert.Equal("application/zip", response.Content.Headers.ContentType!.MediaType);
+        using var archive = new ZipArchive(await response.Content.ReadAsStreamAsync(), ZipArchiveMode.Read);
+        Assert.Equal(fixture.Content.Count + 2, archive.Entries.Count);
+        Assert.Equal("material-version.json", archive.Entries[0].FullName);
+        Assert.Equal("materials.json", archive.Entries[1].FullName);
+        Assert.Equal(fixture.Request.InputJson, await ReadEntryAsync(archive.Entries[0]));
+        Assert.Equal(fixture.Request.ManifestJson, await ReadEntryAsync(archive.Entries[1]));
+        using var manifest = JsonDocument.Parse(fixture.Request.ManifestJson);
+        var files = manifest.RootElement.GetProperty("files").EnumerateArray().ToArray();
+        for (var index = 0; index < fixture.Content.Count; index++)
+        {
+            var expectedPath = files[index].GetProperty("path").GetString();
+            var entry = Assert.Single(archive.Entries.Skip(2).Where(item => item.FullName == expectedPath));
+            Assert.Equal(fixture.Content[index], await ReadEntryBytesAsync(entry));
+        }
+    }
+
+    [Fact]
     public async Task RunningTestApiPublishesTheActualAuthenticatedBinaryUploadContract()
     {
         using var client = _factory.CreateClient();
@@ -147,6 +209,13 @@ public sealed class NoteMaterialEndpointsTests : IDisposable
         Assert.True(headers.TryGetProperty("X-Content-Type-Options", out _));
         Assert.True(paths.TryGetProperty(Root + "/versions/{versionId}/complete", out _));
         Assert.True(paths.TryGetProperty(Root + "/versions/{versionId}/promote", out _));
+        Assert.True(paths.TryGetProperty(Root + "/versions/{versionId}/bundle", out var bundle));
+        Assert.True(bundle.TryGetProperty("get", out var bundleGet));
+        var bundleResponse = bundleGet.GetProperty("responses").GetProperty("200");
+        Assert.True(bundleResponse.TryGetProperty("content", out var bundleContent), bundleResponse.GetRawText());
+        Assert.True(bundleContent.TryGetProperty("application/zip", out var zipContent), bundleResponse.GetRawText());
+        Assert.Equal("string", zipContent.GetProperty("schema").GetProperty("type").GetString());
+        Assert.Equal("binary", zipContent.GetProperty("schema").GetProperty("format").GetString());
         Assert.False(paths.TryGetProperty(Root + "/{noteId}", out _));
         Assert.True(document.RootElement.GetProperty("components").GetProperty("schemas").TryGetProperty("BeginNoteMaterialUploadRequest", out _));
         _ = _factory.Services.GetRequiredService<ISwaggerProvider>();
@@ -156,5 +225,20 @@ public sealed class NoteMaterialEndpointsTests : IDisposable
     {
         _factory.Dispose();
         if (Directory.Exists(_storage)) Directory.Delete(_storage, recursive: true);
+    }
+
+    private static async Task<string> ReadEntryAsync(ZipArchiveEntry entry)
+    {
+        await using var stream = entry.Open();
+        using var reader = new StreamReader(stream);
+        return await reader.ReadToEndAsync();
+    }
+
+    private static async Task<byte[]> ReadEntryBytesAsync(ZipArchiveEntry entry)
+    {
+        await using var stream = entry.Open();
+        using var output = new MemoryStream();
+        await stream.CopyToAsync(output);
+        return output.ToArray();
     }
 }

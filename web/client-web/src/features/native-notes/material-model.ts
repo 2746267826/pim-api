@@ -4,7 +4,7 @@ export type NoteMaterialVersion = components['schemas']['NoteMaterialVersionDto'
 export type NoteMaterialUpload = components['schemas']['NoteMaterialUploadDto']
 export type NoteMaterialUploadFile = components['schemas']['NoteMaterialUploadFileDto']
 
-export type SupportedPhotoMime = 'image/jpeg' | 'image/png'
+export type SupportedPhotoMime = 'image/jpeg' | 'image/png' | 'image/webp'
 
 export interface NewPhotoInput {
   id: string
@@ -30,10 +30,16 @@ export interface ExistingInkInput {
   bytes: Uint8Array
 }
 
+export interface NewInkInput {
+  id: string
+  ink: Record<string, unknown>
+  bytes: Uint8Array
+}
+
 export type MaterialDraftBlock =
   | { kind: 'markdown'; id: string; text: string }
   | ({ kind: 'photo' } & (NewPhotoInput | ExistingPhotoInput))
-  | ({ kind: 'ink' } & ExistingInkInput)
+  | ({ kind: 'ink' } & (ExistingInkInput | NewInkInput))
 
 export interface ParsedPhotoBlock {
   id: string
@@ -109,6 +115,7 @@ const encoder = new TextEncoder()
 const photoExtensions: Record<SupportedPhotoMime, string> = {
   'image/jpeg': 'jpg',
   'image/png': 'png',
+  'image/webp': 'webp',
 }
 
 export function createMaterialId(): string {
@@ -149,7 +156,7 @@ export async function buildMaterialBundle(input: BuildMaterialInput): Promise<Ma
     }
     if (block.kind === 'photo') {
       const extension = photoExtensions[block.mimeType]
-      if (!extension) throw new Error('Web 目前只支持 JPEG/PNG 照片')
+      if (!extension) throw new Error('Web 目前只支持 JPEG/PNG/WebP 照片')
       if (!block.bytes.length) throw new Error('照片内容为空')
       if (block.bytes.length > 32 * 1024 * 1024) throw new Error('单张照片不能超过 32 MiB')
       const hash = await sha256Hex(block.bytes)
@@ -176,9 +183,10 @@ export async function buildMaterialBundle(input: BuildMaterialInput): Promise<Ma
       continue
     }
 
+    validateInkDocument(block.ink)
     const inkJson = JSON.stringify(block.ink)
     const hash = await sha256Hex(encoder.encode(inkJson))
-    if (hash !== block.sha256) throw new Error('已保存手写卡片的摘要发生变化，未创建新版本')
+    if ('sha256' in block && hash !== block.sha256) throw new Error('已保存手写卡片的摘要发生变化，未创建新版本')
     if (block.bytes.length > 40 * 1024 * 1024) throw new Error('单张手写预览不能超过 40 MiB')
     const path = `assets/${block.id}-${hash}.png`
     noteBlocks.push({ id: block.id, kind: 'ink', ink: block.ink })
@@ -255,6 +263,46 @@ export async function buildMaterialBundle(input: BuildMaterialInput): Promise<Ma
     manifestJson: JSON.stringify(manifest),
     files,
     recordedAudio: input.recordings?.length ?? 0,
+  }
+}
+
+function validateInkDocument(ink: Record<string, unknown>) {
+  const width = ink.width
+  const height = ink.height
+  const strokes = ink.strokes
+  if (typeof width !== 'number' || !Number.isFinite(width) || width < 80 || width > 2048 ||
+      typeof height !== 'number' || !Number.isFinite(height) || height < 80 || height > 4096 ||
+      !Array.isArray(strokes) || strokes.length > 10_000) {
+    throw new Error('手写卡片尺寸或笔画结构超出 schema-v1 范围')
+  }
+  let pointCount = 0
+  for (const stroke of strokes) {
+    if (!stroke || typeof stroke !== 'object' || Array.isArray(stroke)) {
+      throw new Error('手写卡片包含无效笔画')
+    }
+    const strokeRecord = stroke as Record<string, unknown>
+    const strokeWidth = strokeRecord.width === undefined ? 2.5 : strokeRecord.width
+    const points = strokeRecord.points
+    if (typeof strokeWidth !== 'number' || !Number.isFinite(strokeWidth) || strokeWidth < 0.5 || strokeWidth > 24 ||
+        !Array.isArray(points) || points.length === 0) {
+      throw new Error('手写卡片包含无效笔画')
+    }
+    pointCount += points.length
+    if (pointCount > 50_000) throw new Error('手写卡片超过 Web 笔迹点数上限')
+    for (const point of points) {
+      if (!point || typeof point !== 'object' || Array.isArray(point)) {
+        throw new Error('手写卡片包含无效坐标点')
+      }
+      const value = point as Record<string, unknown>
+      const x = value.x
+      const y = value.y
+      const pressure = value.pressure === undefined ? 1 : value.pressure
+      if (typeof x !== 'number' || !Number.isFinite(x) || x < 0 || x > width ||
+          typeof y !== 'number' || !Number.isFinite(y) || y < 0 || y > height ||
+          typeof pressure !== 'number' || !Number.isFinite(pressure) || pressure < 0 || pressure > 1) {
+        throw new Error('手写卡片坐标或压力超出 schema-v1 范围')
+      }
+    }
   }
 }
 

@@ -1,10 +1,12 @@
-import { apiGet, apiPost, apiPutBinary, fetchBlob } from '@/api/client'
-import type { components } from '@/api/generated'
+import { apiGet, apiPost, apiPutBinary, fetchBlob, fetchBoundedDownload, MAX_BOUNDED_DOWNLOAD_BYTES } from '@/api/client'
+import type { components, paths } from '@/api/generated'
 import type { NoteMaterialUpload, NoteMaterialVersion } from './material-model'
 
 export type NoteLibrarySource = components['schemas']['NoteAsrSourceDto']
 export type NoteLibrarySources = components['schemas']['NoteAsrSourcesDto']
 export type NoteMaterialLimits = components['schemas']['NoteMaterialUploadLimitsDto']
+type BundlePath = paths['/api/v1/native-notes/versions/{versionId}/bundle']['get']['parameters']['path']
+type BundleContentType = keyof paths['/api/v1/native-notes/versions/{versionId}/bundle']['get']['responses'][200]['content']
 
 export interface NativeNotesRequestContext {
   /** Aborted when the workspace closes or its owner/server identity changes. */
@@ -89,6 +91,24 @@ function createNativeNotesApi(context: NativeNotesRequestContext) {
         )
         context.assertActive()
         return new Uint8Array(await blob.arrayBuffer())
+      }),
+
+    downloadBundle: (versionId: string, signal?: AbortSignal) =>
+      scoped(signal, (options) => {
+        const pathParams: BundlePath = { versionId }
+        const contentType: BundleContentType = 'application/zip'
+        const filename = `${pathParams.versionId.toLowerCase()}.pimnote.zip`
+        return fetchBoundedDownload(
+          `/api/v1/native-notes/versions/${encodeURIComponent(pathParams.versionId)}/bundle`,
+          options.signal,
+          {
+            refreshOn401: true,
+            assertActive: options.assertActive,
+            expectedFilename: filename,
+            expectedContentType: contentType,
+            maxBytes: MAX_BOUNDED_DOWNLOAD_BYTES,
+          },
+        )
       }),
   }
 }
