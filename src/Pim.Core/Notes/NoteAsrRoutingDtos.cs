@@ -34,7 +34,9 @@ public sealed record NoteAsrNodeDto(Guid NodeId, string NodeIdExternal, bool Ena
     string ModelRevision, bool ModelVerified, IReadOnlyList<string> Capabilities,
     DateTimeOffset LastHeartbeatAt, bool Claimable, DateTimeOffset CreatedAt,
     string? RuntimeId = null, string? RuntimeVersion = null, string? ResourceSnapshotJson = null,
-    DateTimeOffset? SampledAt = null);
+    DateTimeOffset? SampledAt = null, int ConsecutiveAutomaticResourceFailures = 0,
+    bool AutomaticProcessingManualRequired = false, string? ResourceGateStatus = null,
+    IReadOnlyList<string>? ResourceGateFailureReasons = null, DateTimeOffset? ResourceDecisionAt = null);
 
 public sealed record RegisterNoteAsrNodeRequest(Guid NodeId, string NodeIdExternal, bool Enabled,
     string ModelId, string ModelRevision, bool ModelVerified, IReadOnlyList<string> Capabilities,
@@ -45,14 +47,19 @@ public sealed record NoteAsrNodeHeartbeatRequest(Guid NodeId, string ModelId, st
     bool ModelVerified, IReadOnlyList<string> Capabilities, string? RuntimeId = null,
     string? RuntimeVersion = null, string? ResourceSnapshotJson = null, DateTimeOffset? SampledAt = null);
 
-public sealed record ClaimNoteAsrTaskRequest(Guid NodeId, string IdempotencyKey, int LeaseSeconds = 120);
+public sealed record NoteAsrResourceGateDecision(bool IsAutomatic, bool Passed,
+    IReadOnlyList<string> Reasons, DateTimeOffset SampledAt);
+
+public sealed record ClaimNoteAsrTaskRequest(Guid NodeId, string IdempotencyKey, int LeaseSeconds = 120,
+    NoteAsrResourceGateDecision? ResourceGate = null);
 
 public sealed record NoteAsrLeaseDto(Guid LeaseId, Guid LeaseToken, Guid AttemptId, long FencingToken,
     DateTimeOffset ExpiresAt, string Route, Guid OwnerId = default, DateTimeOffset ServerNow = default,
     string ServerOrigin = "", bool StopRequested = false);
 
 public sealed record NoteAsrClaimDto(Guid? LeaseId, string Status, NoteAsrLeaseDto? Lease,
-    NoteAsrExecutionDto? Execution = null);
+    NoteAsrExecutionDto? Execution = null, int? ConsecutiveAutomaticResourceFailures = null,
+    bool? ManualTriggerRequired = null, IReadOnlyList<string>? ResourceFailureReasons = null);
 
 public sealed record NoteAsrExecutionDto(Guid AttemptId, Guid OwnerId, Guid TaskId, Guid VersionId, Guid NoteId,
     string InputSha256, string Route, string Language, string ServerOrigin, Guid ConfigRevision, string ConsentVersion,

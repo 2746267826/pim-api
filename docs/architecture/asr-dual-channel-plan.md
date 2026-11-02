@@ -1,5 +1,17 @@
 # ASR 双通道增量方案（#516 排期）
 
+状态（v0.52 当前覆盖）：PR #557 exact head `f7da2fe48e546052fccc05c4a44f530962bbd77d` 的最终 CI 41371199869 API 为 6484 PASS / 99 skipped / 0 FAIL / 6583 total（30m11s，日志 SHA-256 `e7b552a839801e77502defaa6145f275011f9bf10494917257beeb17c22b7702`），CI Gate SUCCESS；于 2026-11-02T04:18:53Z 普通 matched-head merge 为 `d4a958822635518c7d147061eaf8c5c07057b2ad`。master CI 41387760422 attempt 1 的 API 测试为 6484 PASS / 99 skipped / 0 failed / 6583 total（29m10s），唯一 Docker `/health` smoke 失败、CI Gate 首次失败；failed-jobs-only attempt 2 成功，CI Gate 与 release job SUCCESS，API 测试 job 复用 attempt 1。正式 Release [`api-v26.11.1058`](https://github.com/2746267826/pim-api/releases/tag/api-v26.11.1058) 于 2026-11-02T05:09:47Z 发布，tag/source 解析为 `d4a958822635518c7d147061eaf8c5c07057b2ad`；120 B ledger SHA-256 `5b5b1d7199a63c89bb84b0663755cdea4e9c79970492cefb6102596a746e9e13`。Android PR #65 head `d5eee44b4b09b169783bc4cdcd9c239fd70077c3` 合并为 `c5614fc80af045b16790fc45ca119b072b504482`（tree `c0297db73074ac5fdddc613237419a88b7f22152`）；master CI 41396446174 的适用 jobs/Gate/release 均成功。正式 Release [`android-v26.11.1154`](https://github.com/2746267826/pim-android/releases/tag/android-v26.11.1154) 于 2026-11-02T06:05:57Z 发布，480 B ledger SHA-256 `936a39fd6e93360e3b40242e755d0b724449cd16b19b088726eff9d2ef620362`。Windows source `6cf4c141` Core 366 PASS / 0 skipped，WPF 仍在验证；组合验证、各自真实端到端验收仍 pending。#516、AC1–19 与 M0–M5 保持未完成。GitHub Release 不表示生产部署、真实 provider 或设备验收。
+
+## v0.52 当前执行覆盖：PR #557 合并与资源反馈交付前边界（2026-11-02）
+
+| 切片 | 当前源/验证事实 | 仍需完成 |
+| --- | --- | --- |
+| API/Web M3 | PR #557 `f7da2fe48e546052fccc05c4a44f530962bbd77d`；最终 CI 41371199869 API `6484 PASS / 99 skipped / 0 FAIL / 6583 total`，30m11s；CI Gate 成功，merge `d4a958822635518c7d147061eaf8c5c07057b2ad`。master CI 41387760422 attempt 1 API `6484/99/0/6583`，唯一 Docker `/health` smoke 失败；attempt 2 成功通过 CI Gate/release job 并复用 API 测试 job。正式 Release [`api-v26.11.1058`](https://github.com/2746267826/pim-api/releases/tag/api-v26.11.1058)，published `2026-11-02T05:09:47Z`，tag/source `d4a958822635518c7d147061eaf8c5c07057b2ad`；120 B ledger SHA-256 `5b5b1d7199a63c89bb84b0663755cdea4e9c79970492cefb6102596a746e9e13`。 | attempt 1 Docker 失败历史保留；Release 不代表 production/provider/device 验收。 |
+| Resource feedback | source `d618acc6f752f1f6a2f5205c8299c97ff421cb9c`（base d4）从真实源重建后 PG 87 PASS / 0 FAIL / 0 SKIP，2m7s；TRX SHA-256 `356b24ba1bcae0fabf54c8bc938da23747da0faffb7bc2766dadb23bf88dafca`。Swagger source `a6b4cca326321ebbacf63ab7acf5d942291b262a`，契约 1,252,896 B、SHA-256 `a6ac67bfcebad14e3c5d5e67e09f26883dc54e869786524a31b7bd1422287247`，官方 update/check 通过。Web source `34c67e8abcf130650787ee4e45ddac26ad115006` 展示状态、最近原因、连续失败次数与人工触发标记；聚焦 12/12、完整 551/551、build 通过。Follow-up commit `3a61a2deb0580b6f37d7f407d1ed15dcbcf6b8ef` 保留关系型原子更新，并为非关系 provider 加 tracked 更新；LocalRoute HTTP 1/1，资源门真实 PG 4/4。 | Web/API follow-up 尚未 push/PR/CI；未知/空值安全显示，未新增阈值或付费触发。受控回归不表示生产、真实 provider、设备或 Resource 整项完成。 |
+| 客户端/全量范围 | Android PR #65 已按上述事实发布 `android-v26.11.1154`；Windows source `6cf4c141` Core 366 PASS / 0 skip，WPF 仍在验证。 | Android/Windows 新合同组合验证、生产/provider/device 端到端验收仍 `NOT-VERIFIED`；#516、AC1–19、M0–M5 未整体完成。 |
+
+本层不新增或重编号需求；45 个稳定 ID、32 capabilities、32 gaps、13 MIG 及五阶段历史继续保留。
+
 状态（v0.51 当前入口）：当前执行事实见下方 v0.51；以下 v0.50 及更早状态行和正文均保留为当时的历史记录。
 
 状态（v0.50 当前覆盖）：2026-11-02 首轮完整 PR #556 CI 已回读为失败；Notes 与 EF fixture 根因修复均已集成，聚焦回归分别 9 PASS 及 58 PASS / 6 条件跳过，等待新完整 CI。不得用聚焦结果替代完整 CI。三仓已发布版本、下一批跨端材料及资源反馈进度见本文 v0.50 和总路线图 v0.50。下方状态行与全部既有正文保留历史。

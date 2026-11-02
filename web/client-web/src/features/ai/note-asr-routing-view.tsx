@@ -153,13 +153,65 @@ function NodeList({ nodes }: { nodes: UseQueryResult<NoteAsrNode[]> }) {
   if (nodes.isError) return <InlineAlert tone="crit" title="节点状态读取失败">请刷新核对；不会自动注册或修改任何节点。</InlineAlert>
   if (!nodes.data?.length) return <p className="text-sm text-text-3">还没有注册的本机转写节点。</p>
   return <div className="space-y-2">{nodes.data.map((node) => <div key={node.nodeId}
-    className="flex min-w-0 flex-wrap items-center justify-between gap-2 rounded-ctl border border-border p-3 text-xs">
-    <span className="min-w-0 break-all font-mono">{node.nodeIdExternal || node.nodeId}</span>
-    <span className="flex flex-wrap items-center gap-2">
-      <StatusBadge size="xs" dot={false} tone={node.enabled && node.claimable ? 'ok' : 'warn'}>
-        {node.enabled && node.claimable ? '可认领' : '不可认领'}
-      </StatusBadge>
-      <span className="text-text-3">心跳 {dateTime(node.lastHeartbeatAt)} · 已验证模型 {node.modelVerified ? '是' : '否'}</span>
-    </span>
+    className="min-w-0 rounded-ctl border border-border p-3 text-xs">
+    <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
+      <span className="min-w-0 break-all font-mono">{node.nodeIdExternal || node.nodeId}</span>
+      <span className="flex flex-wrap items-center gap-2">
+        <StatusBadge size="xs" dot={false} tone={node.enabled && node.claimable ? 'ok' : 'warn'}>
+          {node.enabled && node.claimable ? '可认领' : '不可认领'}
+        </StatusBadge>
+        <span className="text-text-3">心跳 {dateTime(node.lastHeartbeatAt)} · 已验证模型 {node.modelVerified ? '是' : '否'}</span>
+      </span>
+    </div>
+    <ResourceFeedback node={node} />
   </div>)}</div>
+}
+
+function ResourceFeedback({ node }: { node: NoteAsrNode }) {
+  const status = resourceGateStatus(node.resourceGateStatus)
+  const reasons = (Array.isArray(node.resourceGateFailureReasons)
+    ? node.resourceGateFailureReasons
+    : [])
+    .filter((reason): reason is string => typeof reason === 'string' && reason.trim().length > 0)
+  const failures = typeof node.consecutiveAutomaticResourceFailures === 'number' &&
+    Number.isFinite(node.consecutiveAutomaticResourceFailures)
+    ? node.consecutiveAutomaticResourceFailures
+    : null
+  const manual = node.automaticProcessingManualRequired === true
+    ? '需要'
+    : node.automaticProcessingManualRequired === false ? '否' : '未知'
+
+  return <div className="mt-3 grid gap-2 border-t border-border-subtle pt-3 sm:grid-cols-[auto_auto_minmax(0,1fr)] sm:items-start"
+    data-testid="node-resource-feedback">
+    <div className="flex flex-wrap items-center gap-2">
+      <span className="text-text-3">资源门</span>
+      <StatusBadge size="xs" dot={false} tone={status.tone}>{status.label}</StatusBadge>
+    </div>
+    <div className="flex flex-wrap gap-x-3 gap-y-1 text-text-3">
+      <span>连续自动失败：{failures === null ? '未知' : `${failures} 次`}</span>
+      <span>人工触发：{manual}</span>
+    </div>
+    <div className="min-w-0 text-text-3">
+      <span>最近失败原因：</span>
+      {reasons.length > 0
+        ? <span className="break-words text-text-2">{reasons.join('、')}</span>
+        : <span>{status.known ? '无可用记录' : '未知'}</span>}
+    </div>
+  </div>
+}
+
+function resourceGateStatus(value: string | null | undefined): {
+  label: string
+  tone: 'ok' | 'warn' | 'crit' | 'neutral'
+  known: boolean
+} {
+  switch (value?.trim().toLowerCase()) {
+    case 'passed': return { label: '已通过', tone: 'ok', known: true }
+    case 'recovered': return { label: '已恢复', tone: 'ok', known: true }
+    case 'blocked': return { label: '受阻', tone: 'crit', known: true }
+    case 'manual_required': return { label: '需人工触发', tone: 'warn', known: true }
+    case undefined:
+    case '': return { label: '未知', tone: 'neutral', known: false }
+    default: return { label: `未知（${value}）`, tone: 'neutral', known: false }
+  }
 }

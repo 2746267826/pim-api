@@ -31,9 +31,29 @@ public sealed class NoteAsrNodeEntity
     [Column("runtime_version"), MaxLength(128)] public string? RuntimeVersion { get; set; }
     [Column("resource_snapshot_json")] public string ResourceSnapshotJson { get; set; } = "{}";
     [Column("sampled_at")] public DateTimeOffset? SampledAt { get; set; }
+    [Column("consecutive_automatic_resource_failures")] public int ConsecutiveAutomaticResourceFailures { get; set; }
+    [Column("resource_gate_status"), MaxLength(32)] public string? ResourceGateStatus { get; set; }
+    [Column("resource_gate_failure_reasons_json")] public string? ResourceGateFailureReasonsJson { get; set; }
+    [Column("resource_decision_at")] public DateTimeOffset? ResourceDecisionAt { get; set; }
     [Column("last_heartbeat_at")] public DateTimeOffset LastHeartbeatAt { get; set; }
     [Column("created_at")] public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
     [Column("updated_at")] public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
+}
+
+[Table("note_asr_resource_decisions")]
+public sealed class NoteAsrResourceDecisionEntity
+{
+    [Key, Column("id")] public Guid Id { get; set; } = Guid.NewGuid();
+    [Column("owner_id")] public Guid OwnerId { get; set; }
+    [Column("node_id")] public Guid NodeId { get; set; }
+    [Column("claim_key"), MaxLength(128)] public string ClaimKey { get; set; } = "";
+    [Column("is_automatic")] public bool IsAutomatic { get; set; }
+    [Column("gate_passed")] public bool GatePassed { get; set; }
+    [Column("reasons_json")] public string ReasonsJson { get; set; } = "[]";
+    [Column("sampled_at")] public DateTimeOffset SampledAt { get; set; }
+    [Column("consecutive_failures_after")] public int ConsecutiveFailuresAfter { get; set; }
+    [Column("outcome"), MaxLength(32)] public string Outcome { get; set; } = "";
+    [Column("created_at")] public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
 }
 
 [Table("note_asr_attempts")]

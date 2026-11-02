@@ -45,6 +45,8 @@ const node = {
   enabled: true, modelId: config.localModelId, modelRevision: 'local-rev-1', modelVerified: true,
   capabilities: ['Transcription'], lastHeartbeatAt: config.updatedAt, claimable: true, createdAt: config.updatedAt,
   runtimeId: null, runtimeVersion: null, resourceSnapshotJson: null, sampledAt: config.updatedAt,
+  consecutiveAutomaticResourceFailures: 2, automaticProcessingManualRequired: false,
+  resourceGateStatus: 'passed', resourceGateFailureReasons: [], resourceDecisionAt: config.updatedAt,
 }
 const batch = {
   id: '00000000-0000-4000-8000-00000000d001', taskId: '00000000-0000-4000-8000-00000000e001',
@@ -194,5 +196,43 @@ describe('NoteAsrRoutingView actual generated consumers', () => {
     expect(await screen.findAllByText('部分成功')).toHaveLength(2)
     expect(screen.getAllByText('部分成功').some((element) => element.tagName === 'SPAN')).toBe(true)
     expect(screen.queryByText('已完成')).toBeNull()
+  })
+
+  it('节点资源反馈展示最新原因、连续失败次数和人工触发标记', async () => {
+    api.asrRoutingNodes.mockResolvedValue([{
+      ...node,
+      resourceGateStatus: 'blocked',
+      consecutiveAutomaticResourceFailures: 3,
+      automaticProcessingManualRequired: true,
+      resourceGateFailureReasons: ['gpu_busy', 'memory_pressure'],
+    }])
+
+    page()
+
+    const feedback = await screen.findByTestId('node-resource-feedback')
+    expect(within(feedback).getByText('受阻')).toBeTruthy()
+    expect(within(feedback).getByText('连续自动失败：3 次')).toBeTruthy()
+    expect(within(feedback).getByText('人工触发：需要')).toBeTruthy()
+    expect(within(feedback).getByText('gpu_busy、memory_pressure')).toBeTruthy()
+  })
+
+  it('旧节点缺少或返回空资源字段时安全显示未知，不把空值当作通过', async () => {
+    api.asrRoutingNodes.mockResolvedValue([{
+      ...node,
+      automaticProcessingManualRequired: undefined,
+      consecutiveAutomaticResourceFailures: undefined,
+      resourceGateStatus: null,
+      resourceGateFailureReasons: null,
+      resourceDecisionAt: null,
+    }])
+
+    page()
+
+    const feedback = await screen.findByTestId('node-resource-feedback')
+    expect(within(feedback).getAllByText('未知')).toHaveLength(2)
+    expect(within(feedback).getByText('连续自动失败：未知')).toBeTruthy()
+    expect(within(feedback).getByText('人工触发：未知')).toBeTruthy()
+    expect(feedback.textContent).toContain('最近失败原因：未知')
+    expect(within(feedback).queryByText('已通过')).toBeNull()
   })
 })

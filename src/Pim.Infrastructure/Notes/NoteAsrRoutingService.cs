@@ -19,6 +19,7 @@ public sealed class NoteAsrRoutingOptions
     public int NodeHeartbeatTimeoutSeconds { get; set; } = 90;
     public int MaxLeaseSeconds { get; set; } = 600;
     public int NodeScanLimit { get; set; } = 50;
+    public int? MaxAutomaticResourceFailures { get; set; }
 }
 
 public sealed record NoteAsrSegmentContent(byte[] Bytes, string Sha256, string SourceSha256, Guid OwnerId,
@@ -165,7 +166,11 @@ public sealed class NoteAsrRoutingService(PimDbContext db, ICurrentUserService u
         }, ct);
     }
 
-    public async Task<NoteAsrClaimDto> ClaimAsync(ClaimNoteAsrTaskRequest request, CancellationToken ct)
+    public Task<NoteAsrClaimDto> ClaimAsync(ClaimNoteAsrTaskRequest request, CancellationToken ct) =>
+        ClaimAsync(request, ct, resourceDecisionConflictRetries: 0);
+
+    private async Task<NoteAsrClaimDto> ClaimAsync(ClaimNoteAsrTaskRequest request, CancellationToken ct,
+        int resourceDecisionConflictRetries)
     {
         var owner = await RequireActiveOwnerAsync(ct);
         if (string.IsNullOrWhiteSpace(request.IdempotencyKey) || request.IdempotencyKey.Length > 128 ||
@@ -177,12 +182,18 @@ public sealed class NoteAsrRoutingService(PimDbContext db, ICurrentUserService u
             {
                 var node = await OwnedNodeAsync(owner, request.NodeId, token);
                 var now = DateTimeOffset.UtcNow;
-                // An existing receipt is authoritative even if the node's current heartbeat is stale.
-                // A lost response must not strand a still-live lease merely because this retry arrived
-                // after the claimability window. Only requests that could mint new work require liveness.
+                var resourceGateResult = await ApplyResourceGateAsync(owner, node, request, now, token);
+                if (resourceGateResult is not null)
+                    return (Result: resourceGateResult, Lease: (NoteAsrLeaseEntity?)null);
+                // Validate any stored resource-decision payload before replaying a claim lease.
+                // The claim receipt remains authoritative even if the node heartbeat is stale.
                 var replay = await TryReplayClaimAsync(owner, node.Id, request.IdempotencyKey, now, token);
                 if (replay is not null) return (Result: replay, Lease: (NoteAsrLeaseEntity?)null);
-                if (!NodeClaimable(node, now)) return (Result: new NoteAsrClaimDto(null, "unavailable", null), Lease: (NoteAsrLeaseEntity?)null);
+                if (!NodeClaimable(node, now))
+                {
+                    await PersistResourceGateClaimOutcomeAsync(owner, node.Id, request, "unavailable", token);
+                    return (Result: new NoteAsrClaimDto(null, "unavailable", null), Lease: (NoteAsrLeaseEntity?)null);
+                }
                 var expired = await ExpireStaleNodeLeasesAsync(owner, node.Id, now, token);
                 await RecoverFileCommittedRetriesAsync(owner, now, token);
                 var leaseSeconds = Math.Min(request.LeaseSeconds, Options.MaxLeaseSeconds);
@@ -193,8 +204,10 @@ public sealed class NoteAsrRoutingService(PimDbContext db, ICurrentUserService u
                     if (replayAfter is not null) return (Result: replayAfter, Lease: (NoteAsrLeaseEntity?)null);
                     var activeLease = await db.NoteAsrLeases.AsNoTracking().AnyAsync(x =>
                         x.OwnerId == owner && x.Status == "Active" && x.ExpiresAt > now, token);
-                    return (Result: new NoteAsrClaimDto(null, activeLease || outcome == "contended" ? "contended"
-                        : expired > 0 ? "lease_expired" : "empty", null), Lease: (NoteAsrLeaseEntity?)null);
+                    var status = activeLease || outcome == "contended" ? "contended"
+                        : expired > 0 ? "lease_expired" : "empty";
+                    await PersistResourceGateClaimOutcomeAsync(owner, node.Id, request, status, token);
+                    return (Result: new NoteAsrClaimDto(null, status, null), Lease: (NoteAsrLeaseEntity?)null);
                 }
                 db.NoteAsrAckReceipts.Add(new NoteAsrAckReceiptEntity { OwnerId = owner, AttemptId = attempt.Id,
                     LeaseId = newLease.Id, FencingToken = newLease.FencingToken, Kind = "claim", Result = "claimed",
@@ -206,6 +219,7 @@ public sealed class NoteAsrRoutingService(PimDbContext db, ICurrentUserService u
                     // rolled back by disposal, then the exact idempotency key is replayed outside.
                     throw new ClaimLeaseConflictException(error);
                 }
+                await PersistResourceGateClaimOutcomeAsync(owner, node.Id, request, "claimed", token);
                 return (Result: (NoteAsrClaimDto?)null, Lease: (NoteAsrLeaseEntity?)newLease);
             }, ct);
             return claimed.Lease is { } lease
@@ -219,7 +233,139 @@ public sealed class NoteAsrRoutingService(PimDbContext db, ICurrentUserService u
                     DateTimeOffset.UtcNow, ct)
                 ?? throw new DomainException(40901, "领取已被并发请求占用，请按同一幂等标识重试");
         }
+        catch (ResourceDecisionConflictException)
+            when (resourceDecisionConflictRetries == 0)
+        {
+            db.ChangeTracker.Clear();
+            return await ClaimAsync(request, ct, resourceDecisionConflictRetries + 1);
+        }
+        catch (ResourceDecisionConflictException)
+        {
+            db.ChangeTracker.Clear();
+            throw new DomainException(40901, "资源门决策发生并发冲突，请使用同一幂等标识重试");
+        }
     }
+
+    private async Task<NoteAsrClaimDto?> ApplyResourceGateAsync(Guid owner, NoteAsrNodeEntity node,
+        ClaimNoteAsrTaskRequest request, DateTimeOffset now, CancellationToken ct)
+    {
+        var decision = request.ResourceGate;
+        if (db.Database.IsRelational())
+        {
+            var current = await db.NoteAsrNodes.FromSqlInterpolated($"""
+                SELECT * FROM note_asr_nodes
+                WHERE id = {node.Id} AND owner_id = {owner}
+                FOR UPDATE
+                """).AsNoTracking().SingleAsync(ct);
+            node.ConsecutiveAutomaticResourceFailures = current.ConsecutiveAutomaticResourceFailures;
+            node.ResourceGateStatus = current.ResourceGateStatus;
+            node.ResourceGateFailureReasonsJson = current.ResourceGateFailureReasonsJson;
+            node.ResourceDecisionAt = current.ResourceDecisionAt;
+        }
+        var prior = await db.NoteAsrResourceDecisions.AsNoTracking().SingleOrDefaultAsync(x =>
+            x.OwnerId == owner && x.NodeId == node.Id && x.ClaimKey == request.IdempotencyKey, ct);
+        if (decision is null)
+        {
+            if (prior is not null)
+                throw new DomainException(40901, "同一领取幂等标识不能移除已提交的资源门决策");
+            return null; // A genuinely new legacy key keeps the prior claim contract.
+        }
+        if (prior is null && await db.NoteAsrAckReceipts.AsNoTracking().AnyAsync(x =>
+                x.OwnerId == owner && x.Kind == "claim" && x.ProviderHandle == request.IdempotencyKey, ct))
+            throw new DomainException(40901, "已提交的旧版领取不能补加资源门决策");
+
+        var reasonsJson = decision.Reasons is null
+            ? null
+            : JsonSerializer.Serialize(decision.Reasons.Order(StringComparer.Ordinal));
+        var sampledAt = TruncateToPostgresPrecision(decision.SampledAt);
+        if (prior is not null)
+        {
+            if (prior.IsAutomatic != decision.IsAutomatic || prior.GatePassed != decision.Passed ||
+                reasonsJson is null || prior.ReasonsJson != reasonsJson || prior.SampledAt != sampledAt)
+                throw new DomainException(40901, "同一领取幂等标识不能改写资源门决策");
+            if (!prior.GatePassed)
+                return ResourceGateClaim(prior.Outcome, prior.ConsecutiveFailuresAfter,
+                    DeserializeReasons(prior.ReasonsJson));
+            if (prior.Outcome is "claimed" or "passed") return null;
+            return ResourceGateClaim(prior.Outcome, prior.ConsecutiveFailuresAfter,
+                DeserializeReasons(prior.ReasonsJson));
+        }
+
+        ValidateResourceGateDecision(decision, now);
+        reasonsJson ??= "[]";
+        var failures = node.ConsecutiveAutomaticResourceFailures;
+        if (!decision.Passed && decision.IsAutomatic)
+            failures = checked(failures + 1);
+        var cap = Options.MaxAutomaticResourceFailures;
+        var manualRequired = decision.IsAutomatic && cap is { } maximum && failures >= maximum;
+        var outcome = !decision.Passed
+            ? manualRequired ? "manual_required" : "resource_blocked"
+            : manualRequired ? "manual_required" : "passed";
+
+        node.ConsecutiveAutomaticResourceFailures = failures;
+        node.ResourceGateStatus = decision.Passed ? "passed" : "blocked";
+        node.ResourceGateFailureReasonsJson = reasonsJson;
+        node.ResourceDecisionAt = sampledAt;
+        node.UpdatedAt = now;
+
+        var receipt = new NoteAsrResourceDecisionEntity
+        {
+            OwnerId = owner,
+            NodeId = node.Id,
+            ClaimKey = request.IdempotencyKey,
+            IsAutomatic = decision.IsAutomatic,
+            GatePassed = decision.Passed,
+            ReasonsJson = reasonsJson,
+            SampledAt = sampledAt,
+            ConsecutiveFailuresAfter = failures,
+            Outcome = outcome,
+            CreatedAt = now
+        };
+        db.NoteAsrResourceDecisions.Add(receipt);
+        try { await db.SaveChangesAsync(ct); }
+        catch (DbUpdateException error) when (IsUniqueViolation(error))
+        {
+            throw new ResourceDecisionConflictException(error);
+        }
+
+        return outcome == "passed" ? null : ResourceGateClaim(outcome, failures, decision.Reasons ?? []);
+    }
+
+    private async Task PersistResourceGateClaimOutcomeAsync(Guid owner, Guid nodeId,
+        ClaimNoteAsrTaskRequest request, string outcome, CancellationToken ct)
+    {
+        if (request.ResourceGate is null) return;
+        var receipt = await db.NoteAsrResourceDecisions.SingleAsync(x => x.OwnerId == owner &&
+            x.NodeId == nodeId && x.ClaimKey == request.IdempotencyKey, ct);
+        if (!receipt.GatePassed) return;
+        receipt.Outcome = outcome;
+        await db.SaveChangesAsync(ct);
+    }
+
+    private void ValidateResourceGateDecision(NoteAsrResourceGateDecision decision, DateTimeOffset now)
+    {
+        if (Options.MaxAutomaticResourceFailures is <= 0)
+            throw new InvalidOperationException("MaxAutomaticResourceFailures must be positive when configured");
+        if (decision.SampledAt > now || decision.SampledAt < now.AddSeconds(-Options.NodeHeartbeatTimeoutSeconds) ||
+            decision.Reasons is null || decision.Reasons.Count > 8 ||
+            decision.Reasons.Any(x => string.IsNullOrWhiteSpace(x) || x.Length > 64 || x.Any(char.IsControl)) ||
+            decision.Reasons.Distinct(StringComparer.Ordinal).Count() != decision.Reasons.Count ||
+            decision.Passed && decision.Reasons.Count != 0 || !decision.Passed && decision.Reasons.Count == 0)
+            throw new DomainException(40001, "ASR 资源门决策无效或已过期");
+    }
+
+    private static NoteAsrClaimDto ResourceGateClaim(string status, int failures, IReadOnlyList<string> reasons) =>
+        new(null, status, null, ConsecutiveAutomaticResourceFailures: failures,
+            ManualTriggerRequired: status == "manual_required", ResourceFailureReasons: reasons);
+
+    private static IReadOnlyList<string> DeserializeReasons(string json)
+    {
+        try { return JsonSerializer.Deserialize<string[]>(json) ?? []; }
+        catch (JsonException) { return []; }
+    }
+
+    private static DateTimeOffset TruncateToPostgresPrecision(DateTimeOffset value) =>
+        new(value.UtcDateTime.Ticks / 10 * 10, TimeSpan.Zero);
 
     /// <summary>
     /// Claims while holding the task-store owner lock, so a stop committed to the task file cannot
@@ -709,6 +855,32 @@ public sealed class NoteAsrRoutingService(PimDbContext db, ICurrentUserService u
                     }
                     if (leaseAffected == 0)
                         throw new DomainException(40901, "租约已被并发终结，回执未重复完成");
+                    if (request.Kind == "complete" && request.Result == "Succeeded")
+                    {
+                        if (db.Database.IsRelational())
+                        {
+                            await db.NoteAsrNodes
+                                .Where(x => x.Id == lease.NodeId && x.OwnerId == owner)
+                                .ExecuteUpdateAsync(setters => setters
+                                    .SetProperty(x => x.ConsecutiveAutomaticResourceFailures, 0)
+                                    .SetProperty(x => x.ResourceGateStatus, "recovered")
+                                    .SetProperty(x => x.ResourceGateFailureReasonsJson, "[]")
+                                    .SetProperty(x => x.UpdatedAt, now), token);
+                        }
+                        else
+                        {
+                            var node = await db.NoteAsrNodes.SingleOrDefaultAsync(
+                                x => x.Id == lease.NodeId && x.OwnerId == owner, token);
+                            if (node is not null)
+                            {
+                                node.ConsecutiveAutomaticResourceFailures = 0;
+                                node.ResourceGateStatus = "recovered";
+                                node.ResourceGateFailureReasonsJson = "[]";
+                                node.UpdatedAt = now;
+                                await db.SaveChangesAsync(token);
+                            }
+                        }
+                    }
                 }
                 return new AckOutcome(new(lease.Id, "accepted", false, lease.FencingToken), attempt);
             }, ct);
@@ -1065,6 +1237,7 @@ public sealed class NoteAsrRoutingService(PimDbContext db, ICurrentUserService u
 
     private sealed record AckOutcome(NoteAsrAckDto Dto, NoteAsrAttemptEntity Attempt);
     private sealed class ClaimLeaseConflictException(Exception inner) : Exception("claim conflict", inner);
+    private sealed class ResourceDecisionConflictException(Exception inner) : Exception("resource decision conflict", inner);
     private sealed class AckConflictException(Exception inner) : Exception("ack conflict", inner);
 
     private static bool ValidCapabilities(IReadOnlyList<string>? values) =>
@@ -1101,9 +1274,13 @@ public sealed class NoteAsrRoutingService(PimDbContext db, ICurrentUserService u
         IReadOnlyList<string> capabilities;
         try { capabilities = JsonSerializer.Deserialize<string[]>(x.CapabilitiesJson) ?? []; }
         catch (JsonException) { capabilities = []; }
+        var reasons = DeserializeReasons(x.ResourceGateFailureReasonsJson ?? "[]");
+        var manualRequired = Options.MaxAutomaticResourceFailures is { } maximum &&
+            x.ConsecutiveAutomaticResourceFailures >= maximum;
         return new(x.Id, x.NodeId, x.Enabled, x.ModelId, x.ModelRevision, x.ModelVerified, capabilities,
             x.LastHeartbeatAt, NodeClaimable(x, now), x.CreatedAt, x.RuntimeId, x.RuntimeVersion,
-            x.ResourceSnapshotJson, x.SampledAt);
+            x.ResourceSnapshotJson, x.SampledAt, x.ConsecutiveAutomaticResourceFailures, manualRequired,
+            x.ResourceGateStatus, reasons, x.ResourceDecisionAt);
     }
 
     private static async Task<NoteAsrLeaseDto> Describe(PimDbContext db, Guid owner, NoteAsrLeaseEntity x, CancellationToken ct)
