@@ -52,8 +52,13 @@ or treat client measurements as proof of real GPU capability.
 4. Existing Windows `RuntimeBackoffPolicy` continues to own retry delay; this
    server slice does not invent a retry interval or add `nextEligibleAt`.
 5. The request/response DTOs and node DTO gained optional/observable fields.
-   Generated contract artifacts remain untouched in this branch; integration
-   must export Test Swagger and regenerate consumers from the merged source.
+   The initial worker slice left generated contract artifacts untouched.
+   Integration exported actual Test Swagger from source `a6b4cca3`, normalized
+   the 1,252,896-byte snapshot with `jq -S`, and ran the official Web
+   generation and consistency check successfully. The snapshot SHA-256 is
+   `a6ac67bfcebad14e3c5d5e67e09f26883dc54e869786524a31b7bd1422287247`.
+   Separate native consumers must still refresh from an actually merged API
+   revision before claiming contract freshness.
 
 The endpoint remains `POST /api/v1/native-notes/asr-routing/leases/claim`; no
 separate reporting endpoint is added.
@@ -72,11 +77,45 @@ separate reporting endpoint is added.
   `42703` because that database lacked the current
   `consecutive_automatic_resource_failures` column (9 passed). This is stale
   schema evidence, not a passing current-schema routing verification.
-- A new focused run was started against the previously nonexistent synthetic
-  database `test_asr516_resource_20261102_0858` on the owned PostgreSQL 18
-  instance at `127.0.0.1:35439`, with `Maximum Pool Size=5`. Its final result
-  is pending; do not count it as verified until its TRX is available at
-  `scratch/full-roadmap-20261101/asr-resource-final-20261102-0858/trx/`.
+- Final current-schema verification passed 55/55 tests (0 failed, 0 skipped)
+  against the previously nonexistent synthetic database
+  `test_asr516_resource_20261102_0858` on the owned PostgreSQL 18 instance at
+  `127.0.0.1:35439`, with `Maximum Pool Size=5`. That database contains 97
+  tables from the current model, including `note_asr_resource_decisions` and
+  `consecutive_automatic_resource_failures`. The test binary ran the same
+  routing/resource/reprocess filter without weakening any skip or catch. TRX:
+  `scratch/full-roadmap-20261101/asr-resource-final-20261102-0858/trx/
+  asr-resource-vstest-20261102-0945.trx`
+  (SHA-256 `C4DFEA8AD1CDA5B60E9E43EFE05065E218FA15BCAAAEC1B1AA2985D66BD44311`).
+  Binary provenance is **unproven / version-source-unverified**: the captured
+  `tests/Pim.UnitTests.dll` SHA-256 is
+  `308FE0A0FADDAB7A221CCAB3FBC59B6683DC09EFF2AC838E89EA153037A97003` and its
+  filesystem timestamp is 2026-11-02 08:21 local, but those facts do not prove
+  that the binary was compiled from the later source at HEAD
+  `6e5a2710a126acdd8ab284a8cfe0ecd5cf3052df`. The current test source blob
+  `98e634afcea80f89e342aa0c73de50d4c6c26881` is recorded separately only as
+  source-state evidence. A fresh source-linked build and broader integration
+  filter are owned by the delivery tree; do not infer their result from this
+  run. An earlier retry run at the same path
+  (`asr-resource-final-20261102-0858-retry.trx`, 55 total, 34 passed, 21 failed
+  with `3D000` because the synthetic database did not yet exist) is retained as
+  failure evidence, not superseded silently.
+- The delivery-tree verification supersedes the old binary-provenance gap: its
+  receipt `scratch/full-roadmap-20261101/resource-feedback-integrated-20261102/verified-receipt.json`
+  records source `d618acc6f752f1f6a2f5205c8299c97ff421cb9c` based on `d4a95882`,
+  a fresh source build, and the combined routing/resource/reprocess, material
+  endpoint, and task-suggestion filter against synthetic owner-isolated
+  PostgreSQL: 87 passed, 0 failed, 0 skipped in 2m7s. The rebuilt test DLL
+  SHA-256 is
+  `3bd35999660ea72480c693447e22480f8cba012f96031871fbccc9961a299935`; its
+  TRX SHA-256 is
+  `356b24ba1bcae0fabf54c8bc938da23747da0faffb7bc2766dadb23bf88dafca`. This
+  receipt is the source-linked verification for the integrated resource
+  feedback slice. The earlier local 55/55 run remains recorded as observed
+  execution only; its DLL provenance remains unverified and it is not used as
+  source-linked acceptance evidence. The receipt also records the actual
+  Swagger source `a6b4cca326321ebbacf63ab7acf5d942291b262a` and contract hash
+  `a6ac67bfcebad14e3c5d5e67e09f26883dc54e869786524a31b7bd1422287247`.
 - Isolated PostgreSQL migration creates durable gate records and node state.
 - Identical claim replay is idempotent; a distinct automatic failure increments
   once; owner isolation prevents cross-account reads/writes.
