@@ -1,5 +1,17 @@
 # ASR 双通道增量方案（#516 排期）
 
+状态（v0.52 当前覆盖）：PR #557 exact head `f7da2fe48e546052fccc05c4a44f530962bbd77d` 的最终 CI 41371199869 API 为 6484 PASS / 99 skipped / 0 FAIL / 6583 total（30m11s，日志 SHA-256 `e7b552a839801e77502defaa6145f275011f9bf10494917257beeb17c22b7702`），CI Gate SUCCESS；于 2026-11-02T04:18:53Z 普通 matched-head merge 为 `d4a958822635518c7d147061eaf8c5c07057b2ad`。合并后的 master CI 41387760422 的 Docker smoke 失败且 API test 仍进行，没有新 API Release/资产/台账可记为已发布。Android `ade6db05357598206162f5a83f9935f07729d09a` 与 Windows `b69ac854878ae6292ba49616a47c6c0c23192c01` 已本地完成 d4 合同刷新，但组合验证、各自 CI/Release 与真实端到端验收仍 pending；#516、AC1–19 与 M0–M5 保持未完成。
+
+## v0.52 当前执行覆盖：PR #557 合并与资源反馈交付前边界（2026-11-02）
+
+| 切片 | 当前源/验证事实 | 仍需完成 |
+| --- | --- | --- |
+| API/Web M3 | PR #557 `f7da2fe48e546052fccc05c4a44f530962bbd77d`；最终 CI 41371199869 API `6484 PASS / 99 skipped / 0 FAIL / 6583 total`，30m11s，日志 SHA-256 `e7b552a839801e77502defaa6145f275011f9bf10494917257beeb17c22b7702`；CI Gate 成功，merge `d4a958822635518c7d147061eaf8c5c07057b2ad`。 | master CI 41387760422 未成功：镜像标签/labels `26.11.1058` / `d4a9588` 已通过，但 `/health` 约 3 分钟无响应且容器仍 Up，Docker smoke 失败；API test 仍进行。没有新 Release/台账，PR CI 或 merge 也不等于生产、provider 或设备验收。 |
+| Resource feedback | source `d618acc6f752f1f6a2f5205c8299c97ff421cb9c`（base d4）从真实源重建后 PG 87 PASS / 0 FAIL / 0 SKIP，2m7s；TRX SHA-256 `356b24ba1bcae0fabf54c8bc938da23747da0faffb7bc2766dadb23bf88dafca`。Swagger source `a6b4cca326321ebbacf63ab7acf5d942291b262a`，契约 1,252,896 B、SHA-256 `a6ac67bfcebad14e3c5d5e67e09f26883dc54e869786524a31b7bd1422287247`，官方 update/check 通过。Web source `34c67e8abcf130650787ee4e45ddac26ad115006` 展示状态、最近原因、连续失败次数与人工触发标记；聚焦 12/12、完整 551/551、build 通过。 | Web 尚未 push/PR/CI；未知/空值安全显示，未新增阈值或付费触发。当前 PG/Web 结果是受控证据，不表示生产、真实 provider、设备或 Resource 整项完成。 |
+| 客户端/全量范围 | Android `ade6db05357598206162f5a83f9935f07729d09a` 与 Windows `b69ac854878ae6292ba49616a47c6c0c23192c01` 已本地完成 d4 合同刷新；Android compile 通过但 focused tests 仍有 `FakeApiService` 新 dismiss API 未实现问题。 | 两客户端均未 push/PR/CI/Release，组合验证和交付仍 pending。真实生产/provider/device 端到端验收仍 `NOT-VERIFIED`；#516、AC1–19、M0–M5 未整体完成。 |
+
+本层不新增或重编号需求；45 个稳定 ID、32 capabilities、32 gaps、13 MIG 及五阶段历史继续保留。
+
 状态（v0.51 当前入口）：当前执行事实见下方 v0.51；以下 v0.50 及更早状态行和正文均保留为当时的历史记录。
 
 状态（v0.50 当前覆盖）：2026-11-02 首轮完整 PR #556 CI 已回读为失败；Notes 与 EF fixture 根因修复均已集成，聚焦回归分别 9 PASS 及 58 PASS / 6 条件跳过，等待新完整 CI。不得用聚焦结果替代完整 CI。三仓已发布版本、下一批跨端材料及资源反馈进度见本文 v0.50 和总路线图 v0.50。下方状态行与全部既有正文保留历史。

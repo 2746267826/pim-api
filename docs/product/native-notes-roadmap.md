@@ -1,5 +1,21 @@
 ﻿# PIM 原生客户端与笔记路线图
 
+版本：v0.52 为 2026-11-02 的当前执行覆盖：PR #557 exact head `f7da2fe48e546052fccc05c4a44f530962bbd77d` 的最终 CI 41371199869 API 为 6484 PASS / 99 skipped / 0 FAIL / 6583 total（30m11s，日志 SHA-256 `e7b552a839801e77502defaa6145f275011f9bf10494917257beeb17c22b7702`），CI Gate 成功；于 2026-11-02T04:18:53Z 正常 matched-head merge 为 `d4a958822635518c7d147061eaf8c5c07057b2ad`。合并后的 master CI 41387760422 尚未成功：Docker smoke 失败，API test 同 run 仍进行；没有产生新 API Release，构建标签 `26.11.1058` 不能写成已发布。Android `ade6db05357598206162f5a83f9935f07729d09a` 与 Windows `b69ac854878ae6292ba49616a47c6c0c23192c01` 已本地完成 d4 合同刷新，但组合验证、各自 PR/CI/Release 与真实端到端验收仍 pending；既有客户端 source-specific 证据和旧历史不合并计数。M0–M5、45 个稳定 ID、32 capability、32 gap、13 MIG、AC1–19 与 #516 五阶段范围不变。
+
+<a id="v052-current"></a>
+
+### v0.52 当前执行层：PR #557 合并与资源反馈交付前检查点（2026-11-02）
+
+本层只追加当前事实，不改写 v0.51 及更早历史；源码、聚焦测试、完整 CI、Release、客户端刷新和真实 provider/设备验收分别记账。
+
+| 范围 | 当前事实 | 未完成 / 边界 |
+| --- | --- | --- |
+| API/Web PR #557（M3 材料交付） | Exact head `f7da2fe48e546052fccc05c4a44f530962bbd77d`；最终 CI [41371199869](https://github.com/2746267826/pim-api/actions/runs/41371199869) API 为 6484 PASS / 99 skipped / 0 FAIL / 6583 total，耗时 30m11s，日志位于 `scratch/full-roadmap-20261101/pr557-full-ci-41371199869-api.log`，SHA-256 `e7b552a839801e77502defaa6145f275011f9bf10494917257beeb17c22b7702`；CI Gate 成功，普通 matched-head merge 为 `d4a958822635518c7d147061eaf8c5c07057b2ad`，时间为 2026-11-02T04:18:53Z。 | 合并后 master CI [41387760422](https://github.com/2746267826/pim-api/actions/runs/41387760422) 未成功：镜像标签/labels 已核为 `26.11.1058` / `d4a9588`，但 `/health` 约 3 分钟无 healthy 响应且容器仍 Up，Docker smoke 失败；API test 在同 run 仍进行。没有新 Release/资产/版本台账可记为已发布。 |
+| 资源反馈交付树 | 父从 source `d618acc6f752f1f6a2f5205c8299c97ff421cb9c`（base d4）重建后，真实 PG 定向回归为 87 PASS / 0 FAIL / 0 SKIP，耗时 2m7s；回执 `scratch/full-roadmap-20261101/resource-feedback-integrated-20261102/verified-receipt.json`，TRX SHA-256 `356b24ba1bcae0fabf54c8bc938da23747da0faffb7bc2766dadb23bf88dafca`。真实 Swagger source `a6b4cca326321ebbacf63ab7acf5d942291b262a`，契约 1,252,896 B、SHA-256 `a6ac67bfcebad14e3c5d5e67e09f26883dc54e869786524a31b7bd1422287247`，官方 Web update/check 通过。Web 独占 source commit `34c67e8abcf130650787ee4e45ddac26ad115006` 展示资源门状态、最近原因、连续失败次数与人工触发标记；聚焦 12/12、完整 66 files / 551 tests、build 均通过。 | Web commit 尚未 push/PR/CI；未知/空值按未知显示，但没有新增硬件阈值、自动触发或付费动作。API 87/87 与 Web 测试都是受控证据，不表示生产、真实 provider、物理设备/OEM 或整个 Resource 项完成。 |
+| 客户端与外部验收 | Android `ade6db05357598206162f5a83f9935f07729d09a` 与 Windows `b69ac854878ae6292ba49616a47c6c0c23192c01` 已本地完成 d4 合同刷新；不把旧客户端计数移植到 d4。Android 该刷新 source 的组合 compile 已通过，但 focused tests 仍暴露 `FakeApiService` 未实现新 dismiss API，后续组合验证待收口。 | 两客户端均未 push/PR/CI/Release；Windows 当前组合验证未回填。生产部署、真实 provider、模型质量、物理设备/OEM 与端到端验收仍 pending / `NOT-VERIFIED`。 |
+
+M0–M5、45 个稳定需求 ID（32 capability + 13 MIG）、32 行 gap、13 个迁移项、AC1–19 与 #516 五阶段范围均保留；本层不宣称资源反馈、任一 M 阶段或完整 AC 已完成。
+
 版本：v0.51 为当前执行覆盖，详见下方 v0.51 当前执行层。以下 v0.50 及更早版本行和正文均保留为当时的历史记录。
 
 版本：v0.50 为 2026-11-02 的当前执行覆盖，记录完整 PR CI 的实际失败、已验证的三仓发布与下一批开发。下方 v0.49 及更早正文保持为历史；M0–M5、45 个稳定 ID、AC1–19 与 #516 五阶段范围不变。
