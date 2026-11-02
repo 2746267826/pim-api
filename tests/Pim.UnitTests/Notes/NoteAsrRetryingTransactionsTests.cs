@@ -193,7 +193,7 @@ public sealed class NoteAsrRetryingTransactionsTests
         await using var input = await NoteAsrBatchJsonlReader.GenerateFromPlanAsync(seed.Owner, seed.VersionId,
             seed.Steps, NoteAsrPlan.SamplesPerCall, "zh", seed.Model, seed.Prompt, Materials(seed.Owner),
             checked((int)MimoBatchDefaults.MaxJsonlBytes), expectedIds, Enumerable.Range(0, seed.Steps.Count).ToArray(),
-            CancellationToken.None);
+            1024, CancellationToken.None);
         return await service.StartAsync(new StartNoteAsrBatchRequest(seed.TaskId, seed.AttemptId,
             seed.ProfileId, "consent-1", true), input.Content, input.Length, "input.jsonl",
             CancellationToken.None);

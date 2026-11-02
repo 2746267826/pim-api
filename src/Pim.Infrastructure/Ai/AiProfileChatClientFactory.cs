@@ -7,7 +7,8 @@ using System.Text.Json.Nodes;
 
 namespace Pim.Infrastructure.Ai;
 
-public sealed record AiModelConnection(string Endpoint, string Model, string ApiKey, int TimeoutSeconds)
+public sealed record AiModelConnection(string Endpoint, string Model, string ApiKey, int TimeoutSeconds,
+    int MaxOutputTokens)
 {
     public override string ToString() => $"AiModelConnection {{ Endpoint = {Endpoint}, Model = {Model}, ApiKey = [protected] }}";
 }

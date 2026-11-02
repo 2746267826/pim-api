@@ -18,7 +18,7 @@ public sealed class MimoMultimodalPreset(Func<HttpMessageHandler?, HttpClient> i
     public const string PresetId = "mimo-multimodal";
     public const string FlashModel = "mimo-v2.6-flash";
     public const string ProModel = "mimo-v2.6-pro";
-    public const int MaxCompletionTokens = 8192;
+    public const int DefaultMaxCompletionTokens = 8192;
     private const int MaxResponseBytes = 4 * 1024 * 1024;
     // Base64 uses '+'. The default STJ encoder escapes it as \u002B, inflating large audio
     // requests by five bytes per plus even though the JSON value is unchanged. Keep the wire
@@ -56,7 +56,7 @@ public sealed class MimoMultimodalPreset(Func<HttpMessageHandler?, HttpClient> i
     public string AuditRequest(byte[] sdkBody, AiModelConnection connection, AiAsrInput audio, Guid audioId,
         string language, AiAsrPromptSnapshot? prompt = null)
     {
-        var root = JsonNode.Parse(sdkBody)!;
+        var root = JsonNode.Parse(sdkBody)!.AsObject();
         var messages = root["messages"]?.AsArray();
         if (root["model"]?.GetValue<string>() != connection.Model || messages?.Count != 1 ||
             messages[0]?["role"]?.GetValue<string>() != "user")
@@ -73,6 +73,8 @@ public sealed class MimoMultimodalPreset(Func<HttpMessageHandler?, HttpClient> i
         }
         else if (!MimoAudioFormats.MatchesDataUrl(audio.Format, data, audio.Bytes)) throw Mismatch();
         if (input["format"] is not null && input["format"]!.GetValue<string>() != audio.Format) throw Mismatch();
+        if (!root.TryGetPropertyValue("max_completion_tokens", out var maxTokens) ||
+            maxTokens?.GetValue<int>() != connection.MaxOutputTokens) throw Mismatch();
         if (textPart["text"] is not JsonValue textValue ||
             !textValue.TryGetValue<string>(out var text) ||
             prompt is not null && text != prompt.Text ||
@@ -92,7 +94,8 @@ public sealed class MimoMultimodalPreset(Func<HttpMessageHandler?, HttpClient> i
             throw new DomainException(40001, "音频格式、语言或大小不符合MiMo多模态预设");
 
         var endpoint = new Uri(new Uri(connection.Endpoint), Descriptor.OperationPath).AbsoluteUri;
-        var payload = BuildRequest(connection.Model, audio, prompt ?? AiAsrPromptTemplate.Normalize().Snapshot(language));
+        var payload = BuildRequest(connection.Model, connection.MaxOutputTokens, audio,
+            prompt ?? AiAsrPromptTemplate.Normalize().Snapshot(language));
         using var ownedHandler = new SocketsHttpHandler { AllowAutoRedirect = false };
         using var http = invoker(ownedHandler);
         using var request = new HttpRequestMessage(HttpMethod.Post, endpoint)
@@ -108,7 +111,7 @@ public sealed class MimoMultimodalPreset(Func<HttpMessageHandler?, HttpClient> i
             if ((int)response.StatusCode is >= 300 and <= 399)
                 throw new MimoBatchException(50204, "MiMo多模态服务返回重定向，已拒绝跟随，避免凭据泄漏");
             if (!response.IsSuccessStatusCode)
-                throw new MimoBatchException(50201,
+                throw new AiAsrProviderHttpException((int)response.StatusCode,
                     $"MiMo多模态返回HTTP {(int)response.StatusCode}，本次未自动重试");
             var raw = await ReadBoundedAsync(response, timeout.Token);
             return MimoMultimodalResponseParser.Parse(raw, audio, connection.Model);
@@ -123,13 +126,13 @@ public sealed class MimoMultimodalPreset(Func<HttpMessageHandler?, HttpClient> i
         }
     }
 
-    private static string BuildRequest(string model, AiAsrInput audio, AiAsrPromptSnapshot prompt)
+    private static string BuildRequest(string model, int maxOutputTokens, AiAsrInput audio, AiAsrPromptSnapshot prompt)
     {
         var data = audio.RemoteUrl ?? MimoAudioFormats.DataUrl(audio.Format, audio.Bytes);
         return JsonSerializer.Serialize(new
         {
             model,
-            max_completion_tokens = MaxCompletionTokens,
+            max_completion_tokens = Math.Clamp(maxOutputTokens, 1, 131072),
             messages = new[]
             {
                 new

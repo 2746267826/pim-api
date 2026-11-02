@@ -5,6 +5,7 @@
  * - 壳（Capacitor/Tauri）无同源概念：未配置地址时强制进入 /setup
  */
 import { detectHostChannel } from './host-channel'
+import { markAuthSessionChanged } from './auth-session-revision'
 import { STORAGE_KEYS, getJSON, getString, setJSON, setString } from './storage'
 
 const HISTORY_LIMIT = 5
@@ -55,6 +56,7 @@ export function setApiBase(raw: string): void {
   // host 通道不允许保存服务器地址（规格 §6.1）：不写 storage，也不广播变更
   if (hostChannel()) return
   const value = normalizeApiBaseInput(raw)
+  const changed = value !== getApiBase()
   if (value) {
     try {
       // 仅接受带协议的绝对地址（同源场景请留空）
@@ -64,6 +66,7 @@ export function setApiBase(raw: string): void {
     }
   }
   setString(STORAGE_KEYS.apiBase, value)
+  if (changed) markAuthSessionChanged()
   if (value) {
     const rest = getApiBaseHistory().filter((x) => x !== value)
     setJSON(STORAGE_KEYS.apiBaseHistory, [value, ...rest].slice(0, HISTORY_LIMIT))

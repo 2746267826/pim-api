@@ -77,6 +77,80 @@ public sealed record NoteDerivedCoverageDto(
     bool Complete,
     IReadOnlyList<NoteDerivedIssueDto> Issues);
 
+[JsonConverter(typeof(JsonStringEnumConverter))]
+public enum NoteDerivedSourceKind
+{
+    TextBlock,
+    TranscriptSegment,
+    Photo,
+    InkPreview
+}
+
+public sealed record NoteDerivedReceiptBindingDto(
+    string Stage,
+    string? StepKey,
+    Guid? RequestId,
+    Guid? AiCallLogId,
+    Guid? EvidenceId,
+    string Status,
+    string? ExpectedSourceObjectType,
+    string? ExpectedSourceObjectId,
+    string? ObservedSourceObjectType,
+    string? ObservedSourceObjectId,
+    string? ExpectedInputSha256,
+    string? InputSha256,
+    string? ExpectedOutputSha256,
+    string? OutputSha256,
+    bool Verified);
+
+public sealed record NoteDerivedStepReceiptDto(
+    string StepKey,
+    NoteDerivedStepKind Kind,
+    string Status,
+    Guid? RequestId,
+    Guid? AiCallLogId,
+    Guid? EvidenceId,
+    NoteDerivedReceiptBindingDto? Binding,
+    IReadOnlyList<NoteDerivedIssueDto> Issues);
+
+public sealed record NoteDerivedSourceReceiptDto(
+    string SourceId,
+    NoteDerivedSourceKind Kind,
+    int Ordinal,
+    Guid? BlockId,
+    string? SourcePath,
+    string? SourceSha256,
+    string? TextSha256,
+    long? SizeBytes,
+    int? TextCharacters,
+    string? AsrReceiptKind,
+    string Status,
+    IReadOnlyList<NoteDerivedReceiptBindingDto> Bindings,
+    IReadOnlyList<NoteDerivedIssueDto> Issues);
+
+public sealed record NoteDerivedBatchReceiptDto(
+    string StepKey,
+    string Status,
+    IReadOnlyList<string> SourceIds,
+    int PlannedImages,
+    int ActualImages,
+    NoteDerivedReceiptBindingDto? Binding,
+    IReadOnlyList<NoteDerivedIssueDto> Issues);
+
+public sealed record NoteDerivedTaskReceiptDto(
+    Guid TaskId,
+    Guid NoteId,
+    Guid SourceVersionId,
+    Guid? AsrTaskId,
+    string InputSha256,
+    string ManifestSha256,
+    string Phase,
+    bool Complete,
+    IReadOnlyList<NoteDerivedStepReceiptDto> Steps,
+    IReadOnlyList<NoteDerivedSourceReceiptDto> Sources,
+    IReadOnlyList<NoteDerivedBatchReceiptDto> Batches,
+    IReadOnlyList<NoteDerivedIssueDto> Issues);
+
 public sealed record NoteDerivedArtifactRefDto(
     Guid ArtifactId,
     NoteDerivedArtifactKind Kind,

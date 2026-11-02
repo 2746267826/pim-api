@@ -24,7 +24,6 @@ internal static class NoteAsrBatchJsonlReader
 {
     private const int MaxLineBytes = 72 * 1024 * 1024;
     private const int MaxPromptChars = 64 * 1024;
-    private const int MaxCompletionTokens = 8192;
     private static readonly UTF8Encoding StrictUtf8 = new(false, true);
     private static readonly HashSet<string> Languages = new(["auto", "zh", "en"], StringComparer.Ordinal);
 
@@ -44,7 +43,7 @@ internal static class NoteAsrBatchJsonlReader
     internal static async Task<NoteAsrBatchJsonl> GenerateFromPlanAsync(Guid owner,
         Guid versionId, IReadOnlyList<NoteAsrStep> steps, int maxSamplesPerCall, string language,
         string model, string prompt, NoteMaterialUploadStore materials, int maxBytes, string[] expectedIds,
-        int[] indexes, CancellationToken ct)
+        int[] indexes, int maxCompletionTokens, CancellationToken ct)
     {
         if (steps.Count < 1 || indexes.Length < 1 || expectedIds.Length != steps.Count)
             throw new DomainException(40001, "Batch 服务端生成范围无效");
@@ -70,7 +69,7 @@ internal static class NoteAsrBatchJsonlReader
                         step.SourceOffset, step.Samples, ct);
                     if (audio.Length < 45 || audio.Length > MimoAudioFormats.MaxDecodedBytes)
                         throw new DomainException(41301, "Batch 服务端音频分片超过50MiB");
-                    var body = CanonicalLine(expectedIds[step.Index], audio, model, prompt);
+                    var body = CanonicalLine(expectedIds[step.Index], audio, model, prompt, maxCompletionTokens);
                     await writer.WriteAsync(body.AsMemory(), ct);
                     await writer.WriteAsync('\n');
                     total = checked(total + StrictUtf8.GetByteCount(body) + 1);
@@ -93,6 +92,7 @@ internal static class NoteAsrBatchJsonlReader
     internal static async Task<NoteAsrBatchJsonl> ReadAsync(Stream source, long declaredLength,
         Guid owner, Guid versionId, IReadOnlyList<NoteAsrStep> steps, int maxSamplesPerCall, string language, string expectedModel,
         string expectedPrompt, NoteMaterialUploadStore materials, int maxBytes, string[] expectedIds,
+        int maxCompletionTokens,
         CancellationToken ct)
     {
         if (steps.Count is < 1 or > 5_000 || maxBytes <= 0 || maxSamplesPerCall <= 0 ||
@@ -156,7 +156,8 @@ internal static class NoteAsrBatchJsonlReader
                 try
                 {
                     using var document = JsonDocument.Parse(json, new JsonDocumentOptions { MaxDepth = 64 });
-                    if (!TryParseEnvelope(document.RootElement, expectedModel, expectedPrompt, out parsed))
+                    if (!TryParseEnvelope(document.RootElement, expectedModel, expectedPrompt,
+                            maxCompletionTokens, out parsed))
                         throw InvalidLine(lineNumber);
                 }
                 catch (JsonException)
@@ -197,6 +198,7 @@ internal static class NoteAsrBatchJsonlReader
     }
 
     private static bool TryParseEnvelope(JsonElement root, string expectedModel, string expectedPrompt,
+        int maxCompletionTokens,
         out ParsedLine parsed)
     {
         parsed = default;
@@ -211,23 +213,24 @@ internal static class NoteAsrBatchJsonlReader
             !root.TryGetProperty("url", out var url) || url.ValueKind != JsonValueKind.String ||
             url.GetString() != MimoBatchDefaults.ChatCompletionsEndpoint ||
             !root.TryGetProperty("body", out var body) ||
-            !TryParseBody(body, expectedModel, expectedPrompt, out var dataUrl, out var format))
+            !TryParseBody(body, expectedModel, expectedPrompt, maxCompletionTokens, out var dataUrl, out var format))
             return false;
         parsed = new ParsedLine(customId, dataUrl, format);
         return true;
     }
 
     /// <summary>One canonical provider request shared by server generation and the upload validator.</summary>
-    private static string CanonicalLine(string customId, byte[] audio, string model, string prompt) =>
+    private static string CanonicalLine(string customId, byte[] audio, string model, string prompt,
+        int maxCompletionTokens) =>
         JsonSerializer.Serialize(new
         {
             custom_id = customId,
             method = "POST",
             url = MimoBatchDefaults.ChatCompletionsEndpoint,
-            body = CanonicalBody(audio, model, prompt)
+            body = CanonicalBody(audio, model, prompt, maxCompletionTokens)
         });
 
-    private static object CanonicalBody(byte[] audio, string model, string prompt) => new
+    private static object CanonicalBody(byte[] audio, string model, string prompt, int maxCompletionTokens) => new
     {
         model,
         messages = new object[]
@@ -243,11 +246,12 @@ internal static class NoteAsrBatchJsonlReader
                 }
             }
         },
-        max_completion_tokens = MaxCompletionTokens,
+        max_completion_tokens = maxCompletionTokens,
         stream = false
     };
 
     private static bool TryParseBody(JsonElement body, string expectedModel, string expectedPrompt,
+        int maxCompletionTokens,
         out string dataUrl, out string format)
     {
         dataUrl = "";
@@ -256,9 +260,9 @@ internal static class NoteAsrBatchJsonlReader
             !OnlyProperties(body, "model", "messages", "max_completion_tokens", "stream") ||
             !body.TryGetProperty("model", out var model) || model.ValueKind != JsonValueKind.String ||
             !string.Equals(model.GetString(), expectedModel, StringComparison.Ordinal) ||
-            body.TryGetProperty("max_completion_tokens", out var maxTokens) &&
-            (maxTokens.ValueKind != JsonValueKind.Number || !maxTokens.TryGetInt32(out var tokenLimit) ||
-             tokenLimit != MaxCompletionTokens) ||
+            !body.TryGetProperty("max_completion_tokens", out var maxTokens) ||
+            maxTokens.ValueKind != JsonValueKind.Number || !maxTokens.TryGetInt32(out var tokenLimit) ||
+            tokenLimit != maxCompletionTokens ||
             !body.TryGetProperty("stream", out var stream) || stream.ValueKind != JsonValueKind.False ||
             !body.TryGetProperty("messages", out var messages) ||
             messages.ValueKind != JsonValueKind.Array || messages.GetArrayLength() != 1)

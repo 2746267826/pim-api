@@ -41,6 +41,7 @@ import {
   resolveManualSave,
   type ManualSaveSnapshot,
 } from './draft-protection'
+import { NoteTaskSuggestionsPanel } from './note-task-suggestions'
 
 const phaseNames: Record<string, string> = {
   Queued: '等待处理',
@@ -141,7 +142,10 @@ function Workspace({ ownerId, serverBinding, role }: { ownerId: string; serverBi
   }
 
   return <div className="space-y-5">
-    <PageHeader title="笔记处理" subtitle="固定材料版本，复用已完成 ASR，分别生成完整记录与独立分析" actions={<Button variant="secondary" size="sm" onClick={refresh}><RefreshCw className="size-4" aria-hidden />刷新</Button>} />
+    <PageHeader title="笔记处理" subtitle="固定材料版本，复用已完成 ASR，分别生成完整记录与独立分析" actions={<>
+      <Button variant="ghost" size="sm" onClick={() => { window.location.assign('/native-notes') }}>返回笔记库</Button>
+      <Button variant="secondary" size="sm" onClick={refresh}><RefreshCw className="size-4" aria-hidden />刷新</Button>
+    </>} />
     <div className="flex items-start gap-3 rounded-ctl border border-info-border bg-info-soft px-4 py-3 text-sm text-text-2">
       <ShieldCheck className="mt-0.5 size-4 shrink-0 text-info" aria-hidden />
       <div className="space-y-1"><p>页面不会因为上传或打开而自动调用模型。创建前必须核对固定材料、实际模型地址与同意范围；所有提交意图会先保存在本机。</p>
@@ -487,6 +491,10 @@ function ArtifactCard({ artifact, ownerId, serverBinding, onChanged }: { artifac
     <div className="flex flex-wrap gap-2"><Button size="sm" variant="secondary" disabled={busy || !selectedVersionId || selectedSummary?.isHead} onClick={() => void selectVersion()}>明确设为当前版本</Button><Button size="sm" variant="ghost" disabled={!selectedVersionId} onClick={() => void version.refetch()}><RefreshCw className="size-3.5" aria-hidden />刷新正文</Button></div>
     {version.isPending ? <Skeleton className="h-40" /> : version.isError ? <p role="alert" className="text-sm text-text-2">版本读取失败：{errorText(version.error)}</p>
       : version.data ? <ArtifactEditor key={`${artifact.revision}/${version.data.versionId}`} artifact={artifact} version={version.data} ownerId={ownerId} serverBinding={serverBinding} onChanged={onChanged} /> : null}
+    {version.data && <NoteTaskSuggestionsPanel
+      key={`task-suggestions-${artifact.artifactId}/${version.data.versionId}`}
+      userId={ownerId} serverBinding={serverBinding} noteId={artifact.noteId}
+      artifactId={artifact.artifactId} versionId={version.data.versionId} />}
     {message && <p role="alert" className="rounded-ctl bg-surface p-3 text-sm text-text-2">{message}</p>}
   </Card>
 }

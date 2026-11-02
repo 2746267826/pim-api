@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import type { ButtonHTMLAttributes } from 'react'
 import { cn } from '@/lib/utils'
 import { Button } from './button'
+import type { ButtonSize, ButtonVariant } from './button'
 
 export interface TwoStepButtonProps extends Omit<
   ButtonHTMLAttributes<HTMLButtonElement>,
@@ -12,6 +13,9 @@ export interface TwoStepButtonProps extends Omit<
   armLabel?: string
   /** 武装保持时长，超时自动解除 */
   timeoutMs?: number
+  variant?: ButtonVariant
+  size?: ButtonSize
+  loading?: boolean
   className?: string
 }
 
@@ -23,6 +27,9 @@ export function TwoStepButton({
   onConfirm,
   armLabel = '再次点击执行',
   timeoutMs = 10_000,
+  variant = 'primary',
+  size,
+  loading,
   className,
   children,
   disabled,
@@ -38,7 +45,9 @@ export function TwoStepButton({
 
   return (
     <Button
-      variant={armed ? 'danger' : 'primary'}
+      variant={armed ? 'danger' : variant}
+      size={size}
+      loading={loading}
       className={cn(armed && 'animate-[pim-fade-in_120ms_ease-out]', className)}
       disabled={disabled}
       {...props}

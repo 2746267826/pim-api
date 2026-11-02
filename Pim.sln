@@ -29,6 +29,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Pim.Module.PcTracker", "src
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Pim.Module.Mcp", "src\modules\Pim.Module.Mcp\Pim.Module.Mcp.csproj", "{C75631E8-1561-468E-AD91-7D4865F8C687}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Pim.Module.NoteTaskSuggestions", "src\modules\Pim.Module.NoteTaskSuggestions\Pim.Module.NoteTaskSuggestions.csproj", "{A7FAA463-6BE0-44CF-A271-B90932F52FC7}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -159,6 +161,18 @@ Global
 		{C75631E8-1561-468E-AD91-7D4865F8C687}.Release|x64.Build.0 = Release|Any CPU
 		{C75631E8-1561-468E-AD91-7D4865F8C687}.Release|x86.ActiveCfg = Release|Any CPU
 		{C75631E8-1561-468E-AD91-7D4865F8C687}.Release|x86.Build.0 = Release|Any CPU
+		{A7FAA463-6BE0-44CF-A271-B90932F52FC7}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A7FAA463-6BE0-44CF-A271-B90932F52FC7}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A7FAA463-6BE0-44CF-A271-B90932F52FC7}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{A7FAA463-6BE0-44CF-A271-B90932F52FC7}.Debug|x64.Build.0 = Debug|Any CPU
+		{A7FAA463-6BE0-44CF-A271-B90932F52FC7}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{A7FAA463-6BE0-44CF-A271-B90932F52FC7}.Debug|x86.Build.0 = Debug|Any CPU
+		{A7FAA463-6BE0-44CF-A271-B90932F52FC7}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A7FAA463-6BE0-44CF-A271-B90932F52FC7}.Release|Any CPU.Build.0 = Release|Any CPU
+		{A7FAA463-6BE0-44CF-A271-B90932F52FC7}.Release|x64.ActiveCfg = Release|Any CPU
+		{A7FAA463-6BE0-44CF-A271-B90932F52FC7}.Release|x64.Build.0 = Release|Any CPU
+		{A7FAA463-6BE0-44CF-A271-B90932F52FC7}.Release|x86.ActiveCfg = Release|Any CPU
+		{A7FAA463-6BE0-44CF-A271-B90932F52FC7}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -175,5 +189,6 @@ Global
 		{D9EAB66E-821B-46C5-8429-80821ACC728B} = {EC447DCF-ABFA-6E24-52A5-D7FD48A5C558}
 		{3587D481-E50F-43D3-8865-757E6641FCC7} = {EC447DCF-ABFA-6E24-52A5-D7FD48A5C558}
 		{C75631E8-1561-468E-AD91-7D4865F8C687} = {EC447DCF-ABFA-6E24-52A5-D7FD48A5C558}
+		{A7FAA463-6BE0-44CF-A271-B90932F52FC7} = {EC447DCF-ABFA-6E24-52A5-D7FD48A5C558}
 	EndGlobalSection
 EndGlobal

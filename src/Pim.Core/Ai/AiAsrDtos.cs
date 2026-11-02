@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace Pim.Core.Ai;
 
 public sealed record AiAsrPresetDto(string Id, string Version, string Name, string DefaultBaseUrl,
@@ -27,10 +29,97 @@ public sealed record AiAsrPromptSnapshot(
 
 public sealed record AiAsrCallRequest(Guid ClientRequestId, Guid ExpectedUserId, AiAsrAudioRequest Audio,
     AiAsrDestinationConsent Consent, string Language = "auto", Guid? ModelId = null,
-    AiAsrPromptSnapshot? Prompt = null)
+    AiAsrPromptSnapshot? Prompt = null, bool ExplicitCancel = false)
 {
-    public override string ToString() => $"AiAsrCallRequest {{ ClientRequestId = {ClientRequestId}, ModelId = {ModelId}, Data = [audio] }}";
+    public override string ToString() => $"AiAsrCallRequest {{ ClientRequestId = {ClientRequestId}, ModelId = {ModelId}, Data = [audio], ExplicitCancel = {ExplicitCancel} }}";
 }
+
+[JsonConverter(typeof(JsonStringEnumConverter))]
+public enum AiAsrJobStatus
+{
+    Queued,
+    Running,
+    Cancelling,
+    Succeeded,
+    Incomplete,
+    Failed,
+    Cancelled,
+    Blocked,
+    TimedOut
+}
+
+public sealed record AiAsrJobDiagnosticsDto(
+    string AbortSource,
+    bool OutcomeKnown,
+    int? GatewayStatus,
+    string? GatewayName,
+    string? GatewayEvidenceSource,
+    string? TransportObservationKind,
+    DateTimeOffset? GatewayObservedAt,
+    int? UpstreamStatus,
+    bool ProviderAttempted,
+    bool ResponseBodyComplete,
+    int MaxOutputTokens,
+    double? EstimatedAudioSeconds,
+    int? EstimatedCompletionTokens,
+    bool OutputLimitExceeded,
+    string? NextAction);
+
+/// <summary>
+/// Durable asynchronous ASR facade. ClientRequestId is both the owner-scoped idempotency key and
+/// the polling key; LogId points to the provider audit record consumed by the existing detail UI.
+/// </summary>
+public sealed record AiAsrJobResultDto(
+    Guid ClientRequestId,
+    Guid LogId,
+    AiAsrJobStatus Status,
+    string? ResponseText,
+    string? ErrorCode,
+    string? ErrorMessage,
+    DateTimeOffset AcceptedAt,
+    DateTimeOffset? StartedAt,
+    DateTimeOffset? CancelRequestedAt,
+    DateTimeOffset? FinishedAt,
+    bool Replayed,
+    AiAsrJobDiagnosticsDto Diagnostics);
+
+[JsonConverter(typeof(JsonStringEnumConverter))]
+public enum AiAsrTransportKind
+{
+    AsyncSubmit,
+    AsyncPoll,
+    SyncFileCall,
+    SyncUrlCall
+}
+
+[JsonConverter(typeof(JsonStringEnumConverter))]
+public enum AiAsrTransportObservationSource
+{
+    ClientHttpResponse,
+    ClientNetworkFailure
+}
+
+/// <summary>
+/// Browser-observed transport evidence. HTTP response observations require a gateway-class
+/// status and may include the response's gateway/server header. Socket/network failures carry no
+/// HTTP status, so they cannot be presented as proof of a gateway response.
+/// </summary>
+public sealed record AiAsrTransportObservationRequest(
+    Guid ClientRequestId,
+    Guid ExpectedUserId,
+    AiAsrTransportKind TransportKind,
+    AiAsrTransportObservationSource Source,
+    int? GatewayStatus = null,
+    string? GatewayName = null);
+
+public sealed record AiAsrTransportObservationDto(
+    Guid ClientRequestId,
+    Guid LogId,
+    AiAsrTransportKind TransportKind,
+    AiAsrTransportObservationSource Source,
+    int? GatewayStatus,
+    string? GatewayName,
+    DateTimeOffset ObservedAt);
 
 /// <summary>
 /// Public HTTPS audio source. Explicit confirmations acknowledge both the source read and that
@@ -57,10 +146,10 @@ public sealed record AiAsrUrlAudioRequest(string Name, string Format, string Url
 
 public sealed record AiAsrUrlCallRequest(Guid ClientRequestId, Guid ExpectedUserId, AiAsrUrlAudioRequest Audio,
     AiAsrDestinationConsent Consent, string Language = "auto", Guid? ModelId = null,
-    AiAsrPromptSnapshot? Prompt = null)
+    AiAsrPromptSnapshot? Prompt = null, bool ExplicitCancel = false)
 {
     public override string ToString() =>
-        $"AiAsrUrlCallRequest {{ ClientRequestId = {ClientRequestId}, ModelId = {ModelId}, Source = [public-url] }}";
+        $"AiAsrUrlCallRequest {{ ClientRequestId = {ClientRequestId}, ModelId = {ModelId}, Source = [public-url], ExplicitCancel = {ExplicitCancel} }}";
 }
 
 /// <summary>
@@ -69,6 +158,7 @@ public sealed record AiAsrUrlCallRequest(Guid ClientRequestId, Guid ExpectedUser
 /// </summary>
 public sealed record AiAsrUrlCallResultDto(Guid LogId, AiRequestStatus Status, string? ResponseText,
     string? ErrorMessage, bool Replayed, string? SourceOrigin, string? PreflightSha256,
-    bool PreflightVerified, bool ProviderFetchVerified, string Warning);
+    bool PreflightVerified, bool ProviderFetchVerified, string Warning,
+    AiAsrJobDiagnosticsDto? Diagnostics = null);
 
 public sealed record AiCallAudioDto(Guid Id, string Name, string ContentType, long SizeBytes, string Sha256, bool Stored);

@@ -25,6 +25,57 @@ public sealed class NoteMaterialUploadStoreTests : IDisposable
     };
 
     [Fact]
+    public async Task Batch_jsonl_uses_and_validates_the_profile_output_token_limit()
+    {
+        var fixture = Fixture.Create();
+        var store = Store();
+        await store.BeginAsync(_user, fixture.Request);
+        await UploadAll(store, fixture);
+        await store.CompleteAsync(_user, fixture.Request.VersionId);
+        var version = await store.GetAsync(_user, fixture.Request.VersionId);
+        var steps = NoteAsrPlan.Build(version, NoteAsrPlan.SamplesPerCall);
+        var ids = new[] { NoteAsrBatchJsonlReader.CustomId(0) };
+        const string prompt = "逐字转写，保留时间轴。";
+        const int maxBytes = 4 * 1024 * 1024;
+
+        await using (var generated = await NoteAsrBatchJsonlReader.GenerateFromPlanAsync(
+            _user, fixture.Request.VersionId, steps, NoteAsrPlan.SamplesPerCall, "zh",
+            "mimo-v2.6-flash", prompt, store, maxBytes, ids, [0], 4096,
+            CancellationToken.None))
+        {
+            using var reader = new StreamReader(generated.Content, Encoding.UTF8, leaveOpen: true);
+            using var line = JsonDocument.Parse(await reader.ReadLineAsync() ?? "{}");
+            Assert.Equal(4096, line.RootElement.GetProperty("body")
+                .GetProperty("max_completion_tokens").GetInt32());
+        }
+
+        await using (var generated = await NoteAsrBatchJsonlReader.GenerateFromPlanAsync(
+            _user, fixture.Request.VersionId, steps, NoteAsrPlan.SamplesPerCall, "zh",
+            "mimo-v2.6-flash", prompt, store, maxBytes, ids, [0], 4096,
+            CancellationToken.None))
+        {
+            var wrong = await Assert.ThrowsAsync<DomainException>(() =>
+                NoteAsrBatchJsonlReader.ReadAsync(generated.Content, generated.Length,
+                    _user, fixture.Request.VersionId, steps, NoteAsrPlan.SamplesPerCall, "zh",
+                    "mimo-v2.6-flash", prompt, store, maxBytes, ids, 8192,
+                    CancellationToken.None));
+            Assert.Equal(40001, wrong.ErrorCode);
+        }
+
+        await using (var generated = await NoteAsrBatchJsonlReader.GenerateFromPlanAsync(
+            _user, fixture.Request.VersionId, steps, NoteAsrPlan.SamplesPerCall, "zh",
+            "mimo-v2.6-flash", prompt, store, maxBytes, ids, [0], 4096,
+            CancellationToken.None))
+        {
+            await using var parsed = await NoteAsrBatchJsonlReader.ReadAsync(
+                generated.Content, generated.Length, _user, fixture.Request.VersionId, steps,
+                NoteAsrPlan.SamplesPerCall, "zh", "mimo-v2.6-flash", prompt, store,
+                maxBytes, ids, 4096, CancellationToken.None);
+            Assert.Equal(ids, parsed.CustomIds);
+        }
+    }
+
+    [Fact]
     public async Task MixedVersionResumesAfterReopeningAndRoundTripsAudioLargerThanFourMb()
     {
         var fixture = Fixture.Create(audioSamples: 16_000 * 180);

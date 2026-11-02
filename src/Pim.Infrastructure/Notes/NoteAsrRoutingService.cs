@@ -177,10 +177,12 @@ public sealed class NoteAsrRoutingService(PimDbContext db, ICurrentUserService u
             {
                 var node = await OwnedNodeAsync(owner, request.NodeId, token);
                 var now = DateTimeOffset.UtcNow;
-                if (!NodeClaimable(node, now)) return (Result: new NoteAsrClaimDto(null, "unavailable", null), Lease: (NoteAsrLeaseEntity?)null);
-                // Replays must return the same live lease and fencing token, not mint a second lease.
+                // An existing receipt is authoritative even if the node's current heartbeat is stale.
+                // A lost response must not strand a still-live lease merely because this retry arrived
+                // after the claimability window. Only requests that could mint new work require liveness.
                 var replay = await TryReplayClaimAsync(owner, node.Id, request.IdempotencyKey, now, token);
                 if (replay is not null) return (Result: replay, Lease: (NoteAsrLeaseEntity?)null);
+                if (!NodeClaimable(node, now)) return (Result: new NoteAsrClaimDto(null, "unavailable", null), Lease: (NoteAsrLeaseEntity?)null);
                 var expired = await ExpireStaleNodeLeasesAsync(owner, node.Id, now, token);
                 await RecoverFileCommittedRetriesAsync(owner, now, token);
                 var leaseSeconds = Math.Min(request.LeaseSeconds, Options.MaxLeaseSeconds);

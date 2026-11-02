@@ -39,4 +39,4 @@ public sealed record AiTextCallRequest(Guid ClientRequestId, Guid ExpectedUserId
 }
 
 public sealed record AiTextCallResultDto(Guid LogId, AiRequestStatus Status, string? ResponseText,
-    string? ErrorMessage, bool Replayed);
+    string? ErrorMessage, bool Replayed, AiAsrJobDiagnosticsDto? Diagnostics = null);

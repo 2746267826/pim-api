@@ -10,6 +10,7 @@
        （例如 DataReliabilityQualityInspector.BuildExportOptions 的逐字段复刻断言）。 -->
   <ItemGroup>
     <InternalsVisibleTo Include="Pim.UnitTests" />
+    <InternalsVisibleTo Include="Pim.Module.NoteTaskSuggestions" />
   </ItemGroup>
 
   <ItemGroup>

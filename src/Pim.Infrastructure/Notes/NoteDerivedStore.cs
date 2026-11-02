@@ -139,6 +139,72 @@ public sealed class NoteDerivedStore(IOptions<NoteMaterialUploadOptions> options
         }
     }
 
+    public async Task DeleteNoteAsync(Guid owner, Guid noteId, CancellationToken ct = default)
+    {
+        if (noteId == Guid.Empty) throw Invalid("笔记标识无效");
+        await using var ownerLease = await LockAsync(owner, ct);
+        var taskFolder = TasksFolder(owner);
+        var matching = new List<NoteDerivedTaskState>();
+        if (Directory.Exists(taskFolder))
+        {
+            foreach (var path in Directory.EnumerateFiles(taskFolder, "*.json"))
+            {
+                if (!Guid.TryParseExact(Path.GetFileNameWithoutExtension(path), "D", out var taskId))
+                    continue;
+                var state = await ReadTaskFileAsync(path, owner, taskId, ct);
+                if (state.NoteId == noteId) matching.Add(state);
+            }
+        }
+
+        var runLeases = new List<FileStream>();
+        try
+        {
+            foreach (var state in matching)
+            {
+                var lease = TryRunLease(owner, state.Request.TaskId);
+                if (lease is null)
+                    throw Conflict("派生任务正在执行，当前不能删除材料；请等待任务结束或停止后重试");
+                runLeases.Add(lease);
+            }
+
+            var artifactIds = matching.SelectMany(state => new[]
+                {
+                    state.CompleteRecordArtifactId,
+                    state.IndependentAnalysisArtifactId
+                })
+                .Where(id => id != Guid.Empty)
+                .ToHashSet();
+            foreach (var kind in Enum.GetValues<NoteDerivedArtifactKind>())
+            {
+                var artifactPath = ArtifactPath(owner, noteId, kind);
+                if (!File.Exists(artifactPath)) continue;
+                try
+                {
+                    var artifact = await ReadArtifactFileAsync(artifactPath, owner, noteId, kind, ct);
+                    artifactIds.Add(artifact.ArtifactId);
+                }
+                catch (Exception error) when (error is IOException or JsonException or InvalidDataException)
+                {
+                    // Delete the note-scoped tree even if its locator metadata is damaged.
+                }
+            }
+
+            foreach (var state in matching)
+                File.Delete(TaskPath(owner, state.Request.TaskId));
+            var artifactFolder = Path.Combine(ArtifactsFolder(owner), Id(noteId));
+            if (Directory.Exists(artifactFolder)) Directory.Delete(artifactFolder, recursive: true);
+            foreach (var artifactId in artifactIds)
+            {
+                var locator = LocatorPath(owner, artifactId);
+                if (File.Exists(locator)) File.Delete(locator);
+            }
+        }
+        finally
+        {
+            foreach (var lease in runLeases) await lease.DisposeAsync();
+        }
+    }
+
     internal FileStream? TryRunLease(Guid owner, Guid taskId)
     {
         if (taskId == Guid.Empty) return null;

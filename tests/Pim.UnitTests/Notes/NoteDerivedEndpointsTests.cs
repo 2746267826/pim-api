@@ -37,6 +37,8 @@ public sealed class NoteDerivedEndpointsTests : IDisposable
         using var anonymous = _factory.CreateClient();
         Assert.Equal(HttpStatusCode.Unauthorized, (await anonymous.GetAsync(Tasks + "/limits")).StatusCode);
         Assert.Equal(HttpStatusCode.Unauthorized, (await anonymous.GetAsync(Tasks + "/sources")).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized,
+            (await anonymous.GetAsync(Tasks + "/" + Guid.NewGuid() + "/receipt")).StatusCode);
         Assert.Equal(HttpStatusCode.Unauthorized, (await anonymous.GetAsync(Artifacts + "?noteId=" + Guid.NewGuid())).StatusCode);
 
         var owner = await AuthRegistrationTestHost.SeedAndLoginAsync(_factory, "derived-owner-" + Guid.NewGuid().ToString("N"));
@@ -46,6 +48,90 @@ public sealed class NoteDerivedEndpointsTests : IDisposable
         Assert.Equal(200_000, limits.MaxSynthesisInputChars);
         var sources = await Data<NoteAsrSourcesDto>(await client.GetAsync(Tasks + "/sources"));
         Assert.Equal(0, sources.Total);
+    }
+
+    [Fact]
+    public async Task ReceiptIsOwnerScopedAndDoesNotEchoSourceText()
+    {
+        var owner = await AuthRegistrationTestHost.SeedAndLoginAsync(_factory,
+            "derived-receipt-owner-" + Guid.NewGuid().ToString("N"));
+        var other = await AuthRegistrationTestHost.SeedAndLoginAsync(_factory,
+            "derived-receipt-other-" + Guid.NewGuid().ToString("N"));
+        using var client = AuthRegistrationTestHost.Authed(_factory, owner.AccessToken);
+        using var otherClient = AuthRegistrationTestHost.Authed(_factory, other.AccessToken);
+        var noteId = Guid.NewGuid();
+        var taskId = Guid.NewGuid();
+        var sourceVersionId = Guid.NewGuid();
+        const string privateText = "仅用于 receipt 的合成私密正文";
+        var input = new NoteDerivedInputSnapshot(owner.UserId, noteId, sourceVersionId, null, null,
+            "input-sha", "manifest-sha", "合成笔记", privateText,
+            [new(0, Guid.NewGuid(), privateText)], [], [], []);
+        var plan = new NoteDerivedPlan(NoteDerivedLimits.PlanVersion, input,
+            [new(NoteDerivedPrompts.RecordKey, NoteDerivedStepKind.RecordSynthesis,
+                [], [], privateText.Length)],
+            new NoteDerivedCoverageDto(1, 0, 0, 0, 0, 0, 0, 0, 0, false, []));
+        var store = _factory.Services.GetRequiredService<NoteDerivedStore>();
+        await store.CreateTaskAsync(owner.UserId,
+            new(taskId, owner.UserId, sourceVersionId, null,
+                new(Guid.NewGuid(), Guid.NewGuid(), "https://synthetic.invalid/v1/", true)),
+            plan, "receipt-owner-task", default);
+
+        var response = await client.GetAsync($"{Tasks}/{taskId}/receipt");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var json = await response.Content.ReadAsStringAsync();
+        Assert.DoesNotContain(privateText, json, StringComparison.Ordinal);
+        var receipt = JsonSerializer.Deserialize<ApiResponse<NoteDerivedTaskReceiptDto>>(json,
+            new JsonSerializerOptions(JsonSerializerDefaults.Web))!.Data!;
+        Assert.False(receipt.Complete);
+        Assert.Equal(taskId, receipt.TaskId);
+        var source = Assert.Single(receipt.Sources);
+        Assert.Equal(NoteDerivedSourceKind.TextBlock, source.Kind);
+        Assert.Equal(64, source.TextSha256!.Length);
+        Assert.Equal(privateText.Length, source.TextCharacters);
+
+        Assert.Equal(HttpStatusCode.NotFound,
+            (await otherClient.GetAsync($"{Tasks}/{taskId}/receipt")).StatusCode);
+    }
+
+    [Fact]
+    public async Task CompletedHistoryWithUnverifiableCallsReadsBackAsGapWithoutRecharging()
+    {
+        var admin = await AuthRegistrationTestHost.SeedAndLoginAsync(_factory,
+            "derived-history-admin-" + Guid.NewGuid().ToString("N"), "admin");
+        var owner = await AuthRegistrationTestHost.SeedAndLoginAsync(_factory,
+            "derived-history-owner-" + Guid.NewGuid().ToString("N"));
+        using var client = AuthRegistrationTestHost.Authed(_factory, owner.AccessToken);
+        var model = await CreateModelAsync(admin.AccessToken);
+        var material = NoteDerivedFixture.CreateMaterial(withAudio: false);
+        var materials = _factory.Services.GetRequiredService<NoteMaterialUploadStore>();
+        await NoteDerivedFixture.UploadAsync(materials, owner.UserId, material);
+        var store = _factory.Services.GetRequiredService<NoteDerivedStore>();
+        var plan = new NoteDerivedPlanner().Build(NoteDerivedFixture.Snapshot(material));
+        var taskId = Guid.NewGuid();
+        await store.CreateTaskAsync(owner.UserId,
+            new(taskId, owner.UserId, material.VersionId, null,
+                new(model.Id, model.Revision, model.BaseUrl, true)),
+            plan, "history-gap-task", default);
+        await store.UpdateTaskAsync(owner.UserId, taskId, state =>
+        {
+            foreach (var step in state.Steps)
+            {
+                step.Current.Status = "Succeeded";
+                step.Current.LogId = Guid.NewGuid();
+                step.Current.ResultSha256 = new string('a', 64);
+            }
+            state.Coverage = state.Coverage with { Complete = true };
+        }, default);
+
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
+        var callsBefore = await db.AiRequestLogs.CountAsync(x => x.UserId == owner.UserId);
+        var task = await Data<NoteDerivedTaskDto>(await client.GetAsync($"{Tasks}/{taskId}"));
+        var callsAfter = await db.AiRequestLogs.CountAsync(x => x.UserId == owner.UserId);
+
+        Assert.False(task.Coverage.Complete);
+        Assert.Contains(task.Issues, x => x.Code == "receipt_incomplete");
+        Assert.Equal(callsBefore, callsAfter);
     }
 
     [Fact]
@@ -304,6 +390,50 @@ public sealed class NoteDerivedEndpointsTests : IDisposable
         Assert.Equal(HttpStatusCode.Forbidden, (await client.GetAsync($"{Tasks}/{taskId}")).StatusCode);
         Assert.Equal(HttpStatusCode.Forbidden,
             (await client.GetAsync($"{Artifacts}?noteId={noteId}")).StatusCode);
+    }
+
+    [Fact]
+    public async Task WholeNoteDeletionIsNotPublishedAndLeavesOwnerMaterialsAndTasksUnchanged()
+    {
+        var owner = await AuthRegistrationTestHost.SeedAndLoginAsync(_factory,
+            "derived-delete-owner-" + Guid.NewGuid().ToString("N"));
+        var other = await AuthRegistrationTestHost.SeedAndLoginAsync(_factory,
+            "derived-delete-other-" + Guid.NewGuid().ToString("N"));
+        using var client = AuthRegistrationTestHost.Authed(_factory, owner.AccessToken);
+        using var otherClient = AuthRegistrationTestHost.Authed(_factory, other.AccessToken);
+        var material = NoteDerivedFixture.CreateMaterial(withAudio: false);
+        var materials = _factory.Services.GetRequiredService<NoteMaterialUploadStore>();
+        await NoteDerivedFixture.UploadAsync(materials, owner.UserId, material);
+        var store = _factory.Services.GetRequiredService<NoteDerivedStore>();
+        var plan = new NoteDerivedPlanner().Build(NoteDerivedFixture.Snapshot(material));
+        var taskId = Guid.NewGuid();
+        var state = await store.CreateTaskAsync(owner.UserId,
+            new(taskId, owner.UserId, material.VersionId, null,
+                new(Guid.NewGuid(), Guid.NewGuid(), "https://synthetic.invalid/v1/", true)),
+            plan, "delete-owner-task", default);
+
+        var held = store.TryRunLease(owner.UserId, taskId);
+        Assert.NotNull(held);
+        using (held)
+        {
+            var unavailable = await client.DeleteAsync($"/api/v1/native-notes/{material.NoteId}");
+            Assert.Equal(HttpStatusCode.NotFound, unavailable.StatusCode);
+            Assert.Equal(404, (await AuthRegistrationTestHost.ReadErrorAsync(unavailable)).Code);
+        }
+
+        var otherUnavailable = await otherClient.DeleteAsync($"/api/v1/native-notes/{material.NoteId}");
+        Assert.Equal(HttpStatusCode.NotFound, otherUnavailable.StatusCode);
+        Assert.Equal(404, (await AuthRegistrationTestHost.ReadErrorAsync(otherUnavailable)).Code);
+        Assert.Equal(taskId, (await store.ReadTaskAsync(owner.UserId, taskId, default)).Request.TaskId);
+        Assert.Equal(material.VersionId, Assert.Single(
+            await materials.ListAsync(owner.UserId, material.NoteId, default)).VersionId);
+        var artifacts = await store.ListArtifactsAsync(owner.UserId, material.NoteId, default);
+        Assert.Equal(2, artifacts.Count);
+        Assert.Contains(artifacts, artifact => artifact.ArtifactId == state.CompleteRecordArtifactId);
+        Assert.Contains(artifacts, artifact => artifact.ArtifactId == state.IndependentAnalysisArtifactId);
+        Assert.Equal(HttpStatusCode.OK, (await client.GetAsync($"{Tasks}/{taskId}")).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound,
+            (await otherClient.GetAsync($"{Tasks}/{taskId}")).StatusCode);
     }
 
     private static NoteDerivedPlan Plan(Guid owner, Guid noteId, Guid sourceVersionId, int stepCount)

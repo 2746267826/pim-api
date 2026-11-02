@@ -16,14 +16,14 @@ import { isMimoPro } from './asr-model-guidance'
 import { AsrResultInsights } from './asr-result-insights'
 import { NoteAsrRoutingView } from './note-asr-routing-view'
 
-const states = { Succeeded: '成功', Failed: '失败', Blocked: '未执行', TimedOut: '超时', FailedValidation: '结构不符', Running: '进行中', Cancelled: '已取消', Incomplete: '未完整/未确认' }
+const states = { Queued: '排队中', Cancelling: '取消中', Succeeded: '成功', Failed: '失败', Blocked: '未执行', TimedOut: '超时', FailedValidation: '结构不符', Running: '进行中', Cancelled: '已取消', Incomplete: '未完整/未确认' }
 const pageTabs = ['models', 'asr', 'history', 'usage'] as const
 type PageTab = typeof pageTabs[number]
 function pageTab(value: string | null): PageTab {
   return pageTabs.includes(value as PageTab) ? value as PageTab : 'models'
 }
 function State({ value }: { value: string }) {
-  return <StatusBadge dot={false} tone={value === 'Succeeded' ? 'ok' : value === 'Running' ? 'info' : ['Blocked', 'Cancelled', 'Incomplete'].includes(value) ? 'warn' : 'crit'}>{states[value as keyof typeof states] ?? value}</StatusBadge>
+  return <StatusBadge dot={false} tone={value === 'Succeeded' ? 'ok' : ['Running', 'Queued', 'Cancelling'].includes(value) ? 'info' : ['Blocked', 'Cancelled', 'Incomplete', 'TimedOut'].includes(value) ? 'warn' : 'crit'}>{states[value as keyof typeof states] ?? value}</StatusBadge>
 }
 const errorText = (error: unknown) => error instanceof Error ? error.message : '请求失败，请稍后重试'
 
@@ -240,7 +240,7 @@ function History({ prefix, showDetail }: { prefix: string[]; showDetail: (id: st
       <form className="flex min-w-0 flex-1 gap-2" onSubmit={(e) => { e.preventDefault(); setFilter(model); setPage(1) }}><Input aria-label="按模型标识筛选" value={model} onChange={(e) => setModel(e.target.value)} placeholder="模型标识（精确匹配）" /><Button type="submit" variant="secondary">筛选</Button></form></div>
     {rows.isLoading ? <Skeleton className="h-40" /> : rows.isError ? <EmptyState title="记录读取失败" description={errorText(rows.error)} action={<Button onClick={() => void rows.refetch()}>重试</Button>} /> : !rows.data?.items.length ? <EmptyState title="暂无调用记录" description="完成一次文字调用后，会在这里显示实际请求与回复。" />
       : <div className="space-y-2">{rows.data.items.map((row) => <button key={row.id} type="button" className="flex w-full flex-wrap items-center justify-between gap-3 rounded-ctl border border-border p-3 text-left hover:bg-surface" onClick={() => showDetail(row.id)}>
-        <div className="min-w-0"><p className="truncate text-sm font-medium text-text-1">{row.modelProfileName ?? row.model}</p><p className="mt-1 text-xs text-text-3">{formatTime(row.startedAt)} · {row.purpose === 'ai.asr-call' ? 'ASR 转写' : row.purpose === 'ai.vision-call' ? 'SDK 视觉' : row.purpose === 'ai.text-call' ? 'SDK 直连' : row.module + ' / ' + row.purpose}</p></div>
+        <div className="min-w-0"><p className="truncate text-sm font-medium text-text-1">{row.modelProfileName ?? row.model}</p><p className="mt-1 text-xs text-text-3">{formatTime(row.startedAt)} · {row.purpose === 'ai.asr-call' || row.purpose === 'ai.asr-job' ? 'ASR 转写' : row.purpose === 'ai.vision-call' ? 'SDK 视觉' : row.purpose === 'ai.text-call' ? 'SDK 直连' : row.module + ' / ' + row.purpose}</p></div>
         <div className="flex flex-wrap items-center gap-3 text-xs text-text-3"><State value={row.status} /><span>{row.totalTokens == null ? 'Token 未上报' : `${row.totalTokens} token`}</span><span>{row.durationMs == null ? '—' : `${row.durationMs}ms`}</span></div>
       </button>)}</div>}
     <div className="flex items-center justify-between gap-3 text-xs text-text-3"><span>{rows.data?.totalCount ?? 0} 条记录</span><div className="flex items-center gap-2"><Button size="sm" variant="secondary" disabled={page <= 1} onClick={() => setPage((v) => v - 1)}>上一页</Button><span>{page} / {Math.max(1, rows.data?.totalPages ?? 1)}</span><Button size="sm" variant="secondary" disabled={page >= (rows.data?.totalPages ?? 1)} onClick={() => setPage((v) => v + 1)}>下一页</Button></div></div>
@@ -265,14 +265,14 @@ function Detail({ id, prefix, close }: { id: string; prefix: string[]; close: ()
   const row = data.data
   return <Dialog open onOpenChange={(open) => { if (!open) close() }}><DialogContent className="max-w-[760px]"><DialogHeader title="调用详情" description={row ? `${row.modelProfileName ?? row.model} · ${formatTime(row.startedAt)}` : '正在读取记录'} />
     <DialogBody className="space-y-4">{data.isLoading ? <Skeleton className="h-40" /> : data.isError || !row ? <EmptyState title="详情读取失败" description={errorText(data.error)} action={<Button onClick={() => void data.refetch()}>重试</Button>} /> : <>
-      <div className="flex flex-wrap items-center gap-3"><State value={row.status} /><Chip>{row.purpose === 'ai.asr-call' ? 'ASR 调用记录' : row.purpose === 'ai.vision-call' ? 'SDK 视觉调用' : row.purpose === 'ai.text-call' ? 'SDK 调用记录' : '旧链路记录'}</Chip><span className="text-xs text-text-3">结束原因：{row.finishReason ?? '未提供'} · Token：{row.usage?.totalTokens ?? '未上报'}</span></div>
+      <div className="flex flex-wrap items-center gap-3"><State value={row.status} /><Chip>{row.purpose === 'ai.asr-call' || row.purpose === 'ai.asr-job' ? 'ASR 调用记录' : row.purpose === 'ai.vision-call' ? 'SDK 视觉调用' : row.purpose === 'ai.text-call' ? 'SDK 调用记录' : '旧链路记录'}</Chip><span className="text-xs text-text-3">结束原因：{row.finishReason ?? '未提供'} · Token：{row.usage?.totalTokens ?? '未上报'}</span></div>
       <p className="text-xs text-text-3">输入 Token {row.usage?.promptTokens ?? '未上报'} · 输出 Token {row.usage?.completionTokens ?? '未上报'} · 耗时 {row.durationMs == null ? '未记录' : `${row.durationMs}ms`} · 费用 {row.usage?.estimatedCost == null ? '未知' : `${row.usage.estimatedCost} ${row.usage.currency ?? '（币种未提供）'}（估算）`}</p>
       {row.errorMessage && <p role="alert" className="rounded-ctl bg-surface p-3 text-sm text-text-2">{row.errorMessage}</p>}
       {row.contentRedacted && <p className="text-xs text-text-3">本条内容中出现的认证凭据已遮盖，并作此标记。</p>}
       <div><Label htmlFor="ai-record-messages">实际请求消息／上下文</Label><Textarea id="ai-record-messages" className="font-mono text-xs" readOnly rows={8} value={pretty(row.requestMessagesJson)} /></div>
       <div><Label htmlFor="ai-record-reply">实际回复</Label><Textarea id="ai-record-reply" readOnly rows={8} value={row.responseText ?? '未收到普通文本回复；可查看下方SDK/错误快照。'} /></div>
       {row.purpose === 'ai.vision-call' && <><p className="text-xs text-text-3">SDK消息中的图片按指纹引用到下方材料，正文和回复按原内容保留；未执行或准备失败的记录不代表图片已发送。</p><CallImages logId={id} owner={row.userId} viewer={prefix[1]!} running={row.status === 'Running'} /></>}
-      {row.purpose === 'ai.asr-call' && <><AsrInfo metadata={row.metadataJson} /><AsrResultInsights rawJson={row.responseRawJson} metadataJson={row.metadataJson} /><CallAudio key={`${id}/${row.status === 'Running'}`} logId={id} owner={row.userId} viewer={prefix[1]!} running={row.status === 'Running'} /></>}
+      {(row.purpose === 'ai.asr-call' || row.purpose === 'ai.asr-job') && <><AsrInfo metadata={row.metadataJson} /><AsrResultInsights rawJson={row.responseRawJson} metadataJson={row.metadataJson} /><CallAudio key={`${id}/${row.status === 'Running'}`} logId={id} owner={row.userId} viewer={prefix[1]!} running={row.status === 'Running'} /></>}
       <details className="text-xs text-text-3"><summary className="cursor-pointer">配置与 SDK／错误结果快照</summary><div className="mt-3 space-y-2"><p className="break-all">{row.modelEndpoint ?? '旧链路未记录地址'} · 模型 {row.model}</p><pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words">{pretty(row.requestPayloadJson)}</pre><pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words">{pretty(row.responseRawJson)}</pre><p>请求标识：{row.clientRequestId ?? '旧记录未提供'}</p></div></details>
     </>}</DialogBody><DialogFooter><Button variant="secondary" onClick={close}>关闭</Button></DialogFooter>
   </DialogContent></Dialog>
@@ -281,7 +281,8 @@ function pretty(value: string) { try { return JSON.stringify(JSON.parse(value), 
 function AsrInfo({ metadata }: { metadata: string }) {
   let value: Record<string, unknown>
   try { const parsed: unknown = JSON.parse(metadata); if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null; value = parsed as Record<string, unknown> } catch { return null }
-  return <p className="text-xs text-text-3">ASR预设 {String(value.asrPresetId ?? '未提供')} · v{String(value.asrPresetVersion ?? '—')} · 语言 {String(value.language ?? '—')} · 服务商报告音频 {typeof value.reportedAudioSeconds === 'number' ? `${value.reportedAudioSeconds}秒` : '时长未知'}；音频按指纹引用保存。</p>
+  return <div className="space-y-1 text-xs text-text-3"><p>ASR预设 {String(value.asrPresetId ?? '未提供')} · v{String(value.asrPresetVersion ?? '—')} · 语言 {String(value.language ?? '—')} · 服务商报告音频 {typeof value.reportedAudioSeconds === 'number' ? `${value.reportedAudioSeconds}秒` : '时长未知'}；音频按指纹引用保存。</p>
+    <p>中断来源 {String(value.abortSource ?? '未提供')} · 结果已知 {value.outcomeKnown === true ? '是' : '否'} · 网关状态 {String(value.gatewayStatus ?? '未提供')} · 服务商状态 {String(value.upstreamStatus ?? '未提供')} · 输出上限 {String(value.maxOutputTokens ?? '未提供')} token</p></div>
 }
 
 function LegacyInfo({ prefix }: { prefix: string[] }) {

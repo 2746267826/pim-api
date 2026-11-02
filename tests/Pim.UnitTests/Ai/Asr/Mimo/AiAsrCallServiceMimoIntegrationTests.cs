@@ -55,7 +55,7 @@ public sealed class AiAsrCallServiceMimoIntegrationTests
         var audioBytes = Enumerable.Repeat((byte)0xFB, 1024 * 1024).ToArray();
         var audio = new AiAsrInput("fixture.wav", "wav", audioBytes, "sha256");
         var prompt = AiAsrPromptTemplate.Normalize().Snapshot("auto");
-        var json = (string)method!.Invoke(null, [MimoMultimodalPreset.FlashModel, audio, prompt])!;
+        var json = (string)method!.Invoke(null, [MimoMultimodalPreset.FlashModel, 1024, audio, prompt])!;
         var base64 = Convert.ToBase64String(audioBytes);
         Assert.Contains('+', base64);
         Assert.DoesNotContain("\\u002B", json);
@@ -71,6 +71,7 @@ public sealed class AiAsrCallServiceMimoIntegrationTests
         var body = JsonSerializer.Serialize(new
         {
             model = MimoMultimodalPreset.FlashModel,
+            max_completion_tokens = 8192,
             messages = new[]
             {
                 new
@@ -90,7 +91,8 @@ public sealed class AiAsrCallServiceMimoIntegrationTests
 
         var audited = preset.AuditRequest(Encoding.UTF8.GetBytes(body),
             new AiModelConnection("https://api.synthetic.invalid/v1/",
-                MimoMultimodalPreset.FlashModel, "synthetic-key", 5),
+                MimoMultimodalPreset.FlashModel, "synthetic-key", 5,
+                MimoMultimodalPreset.DefaultMaxCompletionTokens),
             audio, audioId, "zh", prompt);
 
         Assert.DoesNotContain(source, audited, StringComparison.Ordinal);
@@ -119,7 +121,7 @@ public sealed class AiAsrCallServiceMimoIntegrationTests
         var row = await _db.AiRequestLogs.AsNoTracking().SingleAsync();
         using var request = JsonDocument.Parse(row.RequestPayloadJson);
         var requestRoot = request.RootElement;
-        Assert.Equal(MimoMultimodalPreset.MaxCompletionTokens,
+        Assert.Equal(1024,
             requestRoot.GetProperty("max_completion_tokens").GetInt32());
         var content = requestRoot.GetProperty("messages")[0].GetProperty("content");
         Assert.Contains("逐字转写", content[1].GetProperty("text").GetString());
@@ -195,6 +197,64 @@ public sealed class AiAsrCallServiceMimoIntegrationTests
         var row = await _db.AiRequestLogs.AsNoTracking().SingleAsync();
         using var metadata = JsonDocument.Parse(row.MetadataJson);
         Assert.True(metadata.RootElement.GetProperty("requestBodyCaptured").GetBoolean());
+    }
+
+    [Theory]
+    [InlineData(429, AiRequestStatus.Failed, false, "upstream_http", 429, "upstream_http_429")]
+    [InlineData(504, AiRequestStatus.TimedOut, false, "provider_timeout", 504,
+        "provider_timeout_outcome_unknown")]
+    [InlineData(400, AiRequestStatus.Failed, true, "upstream_http", 400, "upstream_http_400")]
+    public async Task Legacy_sync_provider_http_failure_is_persisted_with_distinct_diagnostics(
+        int statusCode, AiRequestStatus expectedStatus, bool expectedOutcomeKnown,
+        string expectedAbortSource, int expectedUpstreamStatus, string expectedErrorCode)
+    {
+        var handler = new StubHandler(() =>
+            new HttpResponseMessage((HttpStatusCode)statusCode));
+        await SeedAsync();
+        using var provider = BuildProvider(handler);
+        var registry = provider.GetRequiredService<AiAsrPresetRegistry>();
+        var service = Service(registry);
+
+        var result = await service.CallAsync(Request(registry), CancellationToken.None);
+
+        Assert.Equal(expectedStatus, result.Status);
+        _db.ChangeTracker.Clear();
+        var row = await _db.AiRequestLogs.AsNoTracking().SingleAsync();
+        Assert.Equal(expectedErrorCode, row.ErrorCode);
+        using var metadata = JsonDocument.Parse(row.MetadataJson);
+        Assert.Equal(expectedAbortSource,
+            metadata.RootElement.GetProperty("abortSource").GetString());
+        Assert.Equal(expectedOutcomeKnown,
+            metadata.RootElement.GetProperty("outcomeKnown").GetBoolean());
+        Assert.Equal(expectedUpstreamStatus,
+            metadata.RootElement.GetProperty("upstreamStatus").GetInt32());
+    }
+
+    [Fact]
+    public async Task Legacy_sync_browser_disconnect_is_not_reported_as_provider_timeout()
+    {
+        var handler = new BlockingHandler();
+        await SeedAsync();
+        using var provider = BuildProvider(handler);
+        var registry = provider.GetRequiredService<AiAsrPresetRegistry>();
+        var service = Service(registry);
+        using var browser = new CancellationTokenSource();
+
+        var running = service.CallAsync(Request(registry), browser.Token);
+        await handler.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        browser.Cancel();
+        var result = await running.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Equal(AiRequestStatus.Incomplete, result.Status);
+        _db.ChangeTracker.Clear();
+        var row = await _db.AiRequestLogs.AsNoTracking().SingleAsync();
+        Assert.Equal("caller_disconnect_outcome_unknown", row.ErrorCode);
+        using var metadata = JsonDocument.Parse(row.MetadataJson);
+        Assert.Equal("caller_disconnect",
+            metadata.RootElement.GetProperty("abortSource").GetString());
+        Assert.False(metadata.RootElement.GetProperty("outcomeKnown").GetBoolean());
+        Assert.Equal(JsonValueKind.Null,
+            metadata.RootElement.GetProperty("upstreamStatus").ValueKind);
     }
 
     private AiAsrCallService Service(AiAsrPresetRegistry registry) =>
@@ -293,6 +353,20 @@ public sealed class AiAsrCallServiceMimoIntegrationTests
         {
             Calls++;
             return Task.FromResult(response());
+        }
+    }
+
+    private sealed class BlockingHandler : HttpMessageHandler
+    {
+        public TaskCompletionSource Entered { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,
+            CancellationToken ct)
+        {
+            Entered.TrySetResult();
+            await Task.Delay(Timeout.InfiniteTimeSpan, ct);
+            throw new InvalidOperationException("unreachable");
         }
     }
 

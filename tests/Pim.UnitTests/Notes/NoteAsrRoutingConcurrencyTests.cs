@@ -288,6 +288,65 @@ public sealed class NoteAsrRoutingConcurrencyTests
     }
 
     [SkippableFact]
+    public async Task Claim_replay_after_heartbeat_expiry_returns_original_live_lease_only()
+    {
+        Skip.If(string.IsNullOrWhiteSpace(ConnectionString), "PIM_ASR516_PG is not configured");
+        var owner = Guid.NewGuid();
+        var nodeA = Guid.NewGuid();
+        var nodeB = Guid.NewGuid();
+        var attemptId = await SeedAsync(owner, nodeA, nodeB);
+        NoteAsrClaimDto first;
+        await using (var db = NewDb(owner))
+            first = await NewService(db, owner).ClaimAsync(
+                new ClaimNoteAsrTaskRequest(nodeA, "heartbeat-expiry-replay"), CancellationToken.None);
+        Assert.Equal("claimed", first.Status);
+        Assert.NotNull(first.Lease);
+
+        await using (var db = NewDb(owner))
+        {
+            var stale = DateTimeOffset.UtcNow.AddMinutes(-10);
+            await db.NoteAsrNodes.Where(x => x.Id == nodeA)
+                .ExecuteUpdateAsync(setters => setters.SetProperty(x => x.LastHeartbeatAt, stale));
+        }
+
+        await using (var db = NewDb(owner))
+        {
+            var replay = await NewService(db, owner).ClaimAsync(
+                new ClaimNoteAsrTaskRequest(nodeA, "heartbeat-expiry-replay"), CancellationToken.None);
+            Assert.Equal("claimed", replay.Status);
+            Assert.Equal(first.Lease!.LeaseId, replay.Lease!.LeaseId);
+            Assert.Equal(first.Lease.LeaseToken, replay.Lease.LeaseToken);
+            Assert.Equal(first.Lease.FencingToken, replay.Lease.FencingToken);
+        }
+
+        await using (var db = NewDb(owner))
+        {
+            var newClaim = await NewService(db, owner).ClaimAsync(
+                new ClaimNoteAsrTaskRequest(nodeA, "new-key-after-expiry"), CancellationToken.None);
+            Assert.Equal("unavailable", newClaim.Status);
+            Assert.Null(newClaim.Lease);
+        }
+
+        await using (var db = NewDb(owner))
+        {
+            var otherNodeReplay = await NewService(db, owner).ClaimAsync(
+                new ClaimNoteAsrTaskRequest(nodeB, "heartbeat-expiry-replay"), CancellationToken.None);
+            Assert.Equal("replayed", otherNodeReplay.Status);
+            Assert.Null(otherNodeReplay.Lease);
+        }
+
+        await using (var check = NewDb(owner))
+        {
+            Assert.Equal(1, await check.NoteAsrLeases.CountAsync(x => x.OwnerId == owner));
+            Assert.Equal(1, await check.NoteAsrAckReceipts.CountAsync(x =>
+                x.OwnerId == owner && x.Kind == "claim" && x.ProviderHandle == "heartbeat-expiry-replay"));
+            Assert.Equal(1L, await check.NoteAsrAttempts.Where(x => x.Id == attemptId)
+                .Select(x => x.FencingToken).SingleAsync());
+        }
+        await CleanupAsync(owner);
+    }
+
+    [SkippableFact]
     public async Task Stale_ack_after_newer_fence_cannot_mutate_attempt()
     {
         Skip.If(string.IsNullOrWhiteSpace(ConnectionString), "PIM_ASR516_PG is not configured");

@@ -21,6 +21,21 @@ public static class AiModelEndpoints
             Results.Ok(ApiResponse<AiTextCallResultDto>.Ok(await service.CallAsync(request, ct))))
             .WithMetadata(new RequestSizeLimitAttribute(AiAsrMaterialService.MaxMimoRequestJsonBytes))
             .Produces<ApiResponse<AiTextCallResultDto>>(200).Produces(400).Produces(401).Produces(403).Produces(409).Produces(413).Produces(503);
+        group.MapPost("/asr-jobs", async (AiAsrCallRequest request, [FromServices] AiAsrJobService service, CancellationToken ct) =>
+            Results.Ok(ApiResponse<AiAsrJobResultDto>.Ok(await service.SubmitAsync(request, ct))))
+            .WithMetadata(new RequestSizeLimitAttribute(AiAsrMaterialService.MaxMimoRequestJsonBytes))
+            .Produces<ApiResponse<AiAsrJobResultDto>>(200).Produces(400).Produces(401).Produces(403).Produces(409).Produces(413).Produces(503);
+        group.MapGet("/asr-jobs/{clientRequestId:guid}", async (Guid clientRequestId, [FromServices] AiAsrJobService service, CancellationToken ct) =>
+            Results.Ok(ApiResponse<AiAsrJobResultDto>.Ok(await service.GetAsync(clientRequestId, ct))))
+            .Produces<ApiResponse<AiAsrJobResultDto>>(200).Produces(401).Produces(403).Produces(404);
+        group.MapDelete("/asr-jobs/{clientRequestId:guid}", async (Guid clientRequestId, [FromServices] AiAsrJobService service, CancellationToken ct) =>
+            Results.Ok(ApiResponse<AiAsrJobResultDto>.Ok(await service.CancelAsync(clientRequestId, ct))))
+            .Produces<ApiResponse<AiAsrJobResultDto>>(200).Produces(401).Produces(403).Produces(404);
+        group.MapPost("/asr-transport-observations", async (AiAsrTransportObservationRequest request,
+            [FromServices] AiAsrTransportObservationService service, CancellationToken ct) =>
+            Results.Ok(ApiResponse<AiAsrTransportObservationDto>.Ok(await service.ReportAsync(request, ct))))
+            .Produces<ApiResponse<AiAsrTransportObservationDto>>(200)
+            .Produces(400).Produces(401).Produces(403).Produces(404);
         group.MapPost("/asr-url-calls", async (AiAsrUrlCallRequest request, [FromServices] AiAsrCallService service, CancellationToken ct) =>
             Results.Ok(ApiResponse<AiAsrUrlCallResultDto>.Ok(await service.CallUrlAsync(request, ct))))
             .WithMetadata(new RequestSizeLimitAttribute(32 * 1024))

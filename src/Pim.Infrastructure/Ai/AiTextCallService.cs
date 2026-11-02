@@ -174,7 +174,8 @@ public sealed class AiTextCallService(PimDbContext db, ISecretProtector secrets,
                     $"data:{images![index].ContentType};base64,{Convert.ToBase64String(images[index].Bytes)}")).ToArray());
                 foreach (var image in images!) messages[^1].Contents.Add(new DataContent(image.Bytes, image.ContentType));
             }
-            using var client = clients.Create(new(profile.BaseUrl, profile.Model, key!, profile.TimeoutSeconds));
+            using var client = clients.Create(new(profile.BaseUrl, profile.Model, key!,
+                profile.TimeoutSeconds, profile.MaxOutputTokens));
             var response = await client.Client.GetResponseAsync(messages, new ChatOptions { MaxOutputTokens = profile.MaxOutputTokens }, linked.Token);
             row.ResponseText = Safe(response.Text, key, out var replyRedacted);
             var raw = response.RawRepresentation is ChatCompletion completion ? ModelReaderWriter.Write(completion).ToString()

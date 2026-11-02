@@ -63,6 +63,7 @@ public static class NoteMaterialEndpoints
             if (version.Upload.Phase == "Uploading") throw new DomainException(40901, "材料尚未提交完整");
             if (fileIndex < 0 || fileIndex >= version.Upload.Files.Count) throw new DomainException(40401, "材料文件不存在");
             var file = version.Upload.Files[fileIndex];
+            context.Response.Headers.CacheControl = "private, no-store";
             context.Response.Headers["X-Content-SHA256"] = file.Sha256;
             context.Response.Headers["X-Content-Type-Options"] = "nosniff";
             return Results.Stream(output => store.ReadFileAsync(userId, versionId, fileIndex, output, ct),
@@ -75,12 +76,6 @@ public static class NoteMaterialEndpoints
             await store.CancelAsync(UserId(user), versionId, ct);
             return Results.Ok(ApiResponse<string>.Ok("未完成上传已取消，本机原材料不受影响"));
         }).Produces<ApiResponse<string>>().Produces(401).Produces<ApiResponse<string>>(409);
-        group.MapDelete("/{noteId:guid}", async (Guid noteId, NoteMaterialUploadStore store,
-            ICurrentUserService user, CancellationToken ct) =>
-        {
-            await store.DeleteNoteAsync(UserId(user), noteId, ct);
-            return Results.Ok(ApiResponse<string>.Ok("本篇笔记的服务器材料已删除，本机原材料不受影响"));
-        }).Produces<ApiResponse<string>>().Produces(401);
         return endpoints;
     }
 

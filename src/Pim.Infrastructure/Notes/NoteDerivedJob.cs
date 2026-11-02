@@ -8,6 +8,7 @@ using Pim.Core.Exceptions;
 using Pim.Core.Notes;
 using Pim.Infrastructure.Ai;
 using Pim.Infrastructure.Data;
+using Pim.Infrastructure.Data.Entities;
 
 namespace Pim.Infrastructure.Notes;
 
@@ -196,6 +197,105 @@ public sealed class NoteDerivedJob(
             var result = AiCallAudit.Result(receipt, true);
             _ = await ApplyResultAsync(owner, taskId, step.Key, candidate.RequestId, result, receipt, ct);
         }
+    }
+
+    internal async Task<NoteDerivedTaskReceiptDto> ReceiptAsync(Guid owner, Guid taskId,
+        CancellationToken ct)
+    {
+        var state = await tasks.ReadTaskAsync(owner, taskId, ct);
+        var source = await ValidateSourcesAsync(state, ct);
+        var actual = await ReadActualImagesAsync(state, ct);
+        var receiptContext = await LoadReceiptContextAsync(state, ct);
+        var issues = NoteDerivedCoverage.DistinctIssues(source.Issues
+            .Concat(actual.Issues)
+            .Concat(state.Issues));
+        return NoteDerivedReceipts.Build(state, actual.Images, source.CompletedLogIds,
+            receiptContext, issues);
+    }
+
+    private async Task<NoteDerivedReceiptContext> LoadReceiptContextAsync(
+        NoteDerivedTaskState state, CancellationToken ct)
+    {
+        NoteAsrState? asr = null;
+        if (state.Request.AsrTaskId is { } asrTaskId)
+        {
+            try { asr = await asrTasks.ReadAsync(state.Owner, asrTaskId, ct); }
+            catch (DomainException) { }
+        }
+
+        var logIds = state.Steps.Where(x => x.Current.LogId.HasValue)
+            .Select(x => x.Current.LogId!.Value)
+            .Concat(state.Plan.Input.Transcripts.Where(x => x.LogId.HasValue)
+                .Select(x => x.LogId!.Value))
+            .Distinct()
+            .ToArray();
+        var requestIds = state.Steps.Select(x => x.Current.RequestId)
+            .Concat(asr?.Steps.Select(x => x.Current.RequestId) ?? [])
+            .Where(x => x != Guid.Empty)
+            .Distinct()
+            .ToArray();
+
+        var logs = new List<AiRequestLogEntity>();
+        if (logIds.Length > 0)
+            logs.AddRange(await db.AiRequestLogs.AsNoTracking()
+                .Where(x => x.UserId == state.Owner && logIds.Contains(x.Id))
+                .ToListAsync(ct));
+        if (requestIds.Length > 0)
+            logs.AddRange(await db.AiRequestLogs.AsNoTracking()
+                .Where(x => x.UserId == state.Owner && x.ClientRequestId.HasValue &&
+                    requestIds.Contains(x.ClientRequestId.Value))
+                .ToListAsync(ct));
+        var distinctLogs = logs.DistinctBy(x => x.Id).ToArray();
+        var logsById = distinctLogs.ToDictionary(x => x.Id);
+        var logsByRequestId = distinctLogs
+            .Where(x => x.ClientRequestId.HasValue)
+            .GroupBy(x => x.ClientRequestId!.Value)
+            .ToDictionary(x => x.Key, x => (IReadOnlyList<AiRequestLogEntity>)x
+                .OrderBy(row => row.Id).ToArray());
+
+        var allLogIds = distinctLogs.Select(x => x.Id).ToArray();
+        var audioByLogId = allLogIds.Length == 0
+            ? new Dictionary<Guid, AiCallAudioEntity>()
+            : (await db.AiCallAudio.AsNoTracking()
+                .Where(x => allLogIds.Contains(x.LogId))
+                .ToListAsync(ct))
+                .GroupBy(x => x.LogId)
+                .ToDictionary(x => x.Key, x => x.OrderBy(row => row.Id).First());
+
+        var versionsByStep = new Dictionary<string, NoteDerivedVersionDto>(StringComparer.Ordinal);
+        foreach (var step in state.Steps.Where(x =>
+                     x.Kind is NoteDerivedStepKind.RecordSynthesis or
+                         NoteDerivedStepKind.AnalysisSynthesis))
+        {
+            var artifactId = step.Kind == NoteDerivedStepKind.RecordSynthesis
+                ? state.CompleteRecordArtifactId
+                : state.IndependentAnalysisArtifactId;
+            if (artifactId == Guid.Empty || step.Current.RequestId == Guid.Empty) continue;
+            var artifactKind = step.Kind == NoteDerivedStepKind.RecordSynthesis
+                ? NoteDerivedArtifactKind.CompleteRecord
+                : NoteDerivedArtifactKind.IndependentAnalysis;
+            var versionId = VersionId(state.Request.TaskId, step.Current.RequestId, artifactKind);
+            try
+            {
+                versionsByStep[step.Key] =
+                    await tasks.GetVersionAsync(state.Owner, artifactId, versionId, ct);
+            }
+            catch (DomainException) { }
+        }
+
+        var attempt = asr?.AttemptId is { } attemptId
+            ? await db.NoteAsrAttempts.AsNoTracking()
+                .SingleOrDefaultAsync(x => x.Id == attemptId && x.OwnerId == state.Owner, ct)
+            : null;
+        var asrModel = asr?.Request.Consent is { } consent
+            ? await db.AiModelProfiles.AsNoTracking()
+                .SingleOrDefaultAsync(x => x.Id == consent.ModelId, ct)
+            : null;
+        var accepted = attempt is null || asr is null
+            ? new Dictionary<int, NoteAsrSegmentEvidenceEntity>()
+            : await NoteAsrAcceptedEvidence.LoadAsync(db, state.Owner, attempt, asr, ct);
+        return new(logsById, logsByRequestId, versionsByStep, audioByLogId, asr, attempt,
+            asrModel, accepted);
     }
 
     private static NoteDerivedStepState? ReadyStep(NoteDerivedTaskState state)

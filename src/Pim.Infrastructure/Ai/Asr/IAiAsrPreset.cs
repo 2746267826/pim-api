@@ -1,4 +1,5 @@
 using Pim.Core.Ai;
+using Pim.Core.Exceptions;
 
 namespace Pim.Infrastructure.Ai.Asr;
 
@@ -21,6 +22,12 @@ public sealed record AiAsrInput(string Name, string Format, byte[] Bytes, string
 
 public sealed record AiAsrProviderResult(string Text, string? FinishReason, long? InputTokens, long? OutputTokens,
     long? TotalTokens, string RawJson, bool HasTranscript, double? ReportedSeconds);
+
+public sealed class AiAsrProviderHttpException(int statusCode, string message)
+    : DomainException(50201, message)
+{
+    public int StatusCode { get; } = statusCode;
+}
 
 /// <summary>Trusted provider strategy: protocol differences stay behind one adapter, not controller/UI switches.</summary>
 public interface IAiAsrPreset

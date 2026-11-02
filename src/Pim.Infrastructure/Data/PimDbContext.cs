@@ -68,6 +68,9 @@ public class PimDbContext : DbContext
     public DbSet<AiRequestLogEntity> AiRequestLogs => Set<AiRequestLogEntity>();
     public DbSet<AiCallImageEntity> AiCallImages => Set<AiCallImageEntity>();
     public DbSet<AiCallAudioEntity> AiCallAudio => Set<AiCallAudioEntity>();
+    public DbSet<AiAsrJobEntity> AiAsrJobs => Set<AiAsrJobEntity>();
+    public DbSet<AiAsrTransportObservationEntity> AiAsrTransportObservations =>
+        Set<AiAsrTransportObservationEntity>();
     public DbSet<AiModelProfileEntity> AiModelProfiles => Set<AiModelProfileEntity>();
     public DbSet<AiModelRuntimeEntity> AiModelRuntime => Set<AiModelRuntimeEntity>();
     public DbSet<NoteAsrRouteConfigEntity> NoteAsrRouteConfigs => Set<NoteAsrRouteConfigEntity>();
@@ -228,6 +231,21 @@ public class PimDbContext : DbContext
         {
             e.HasIndex(x => x.LogId).IsUnique();
             e.HasOne<AiRequestLogEntity>().WithMany().HasForeignKey(x => x.LogId).OnDelete(DeleteBehavior.Cascade);
+        });
+        modelBuilder.Entity<AiAsrJobEntity>(e =>
+        {
+            e.HasIndex(x => new { x.OwnerId, x.ClientRequestId }).IsUnique();
+            e.HasIndex(x => new { x.Status, x.ExecutionExpiresAt });
+            e.HasOne<AiRequestLogEntity>().WithMany().HasForeignKey(x => x.LogId).OnDelete(DeleteBehavior.Cascade);
+        });
+        modelBuilder.Entity<AiAsrTransportObservationEntity>(e =>
+        {
+            e.HasIndex(x => new { x.OwnerId, x.ClientRequestId, x.TransportKind, x.Source })
+                .HasDatabaseName("IX_ai_asr_transport_observations_owner_kind_source")
+                .IsUnique();
+            e.HasIndex(x => x.LogId);
+            e.HasOne<AiRequestLogEntity>().WithMany().HasForeignKey(x => x.LogId)
+                .OnDelete(DeleteBehavior.Cascade);
         });
 
         modelBuilder.Entity<AiModelProfileEntity>(e =>

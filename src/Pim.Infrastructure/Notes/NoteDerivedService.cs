@@ -78,6 +78,13 @@ public sealed class NoteDerivedService(
         return await DescribeAsync(await store.ReadTaskAsync(owner, taskId, ct), ct);
     }
 
+    public async Task<NoteDerivedTaskReceiptDto> ReceiptAsync(Guid taskId, CancellationToken ct)
+    {
+        var owner = await RequireActiveOwnerAsync(ct);
+        await job.ReconcileAsync(owner, taskId, ct);
+        return await job.ReceiptAsync(owner, taskId, ct);
+    }
+
     public async Task<NoteDerivedStepsDto> StepsAsync(Guid taskId, int offset, int limit, CancellationToken ct)
     {
         var owner = await RequireActiveOwnerAsync(ct);
@@ -515,6 +522,38 @@ public sealed class NoteDerivedService(
         {
             BackgroundProcessingAvailable = BackgroundProcessingAvailable
         };
+        if (described.Coverage.Complete)
+        {
+            try
+            {
+                var receipt = await job.ReceiptAsync(state.Owner, state.Request.TaskId, ct);
+                if (!receipt.Complete)
+                {
+                    var issues = NoteDerivedCoverage.DistinctIssues(described.Issues
+                        .Concat(receipt.Issues)
+                        .Append(new("receipt_incomplete",
+                            "历史调用回执未闭合固定材料、来源、输入或输出绑定；完整记录不再标记为全材料完成，也不会自动重发",
+                            StepKey: null)));
+                    described = described with
+                    {
+                        Coverage = described.Coverage with { Complete = false, Issues = issues },
+                        Issues = issues
+                    };
+                }
+            }
+            catch (Exception error) when (error is DomainException or IOException or JsonException)
+            {
+                var issues = NoteDerivedCoverage.DistinctIssues(described.Issues.Append(
+                    new("receipt_unavailable",
+                        "历史任务已完成，但当前无法重建材料消费回执；完整记录不再标记为全材料完成，也不会自动重发",
+                        StepKey: null)));
+                described = described with
+                {
+                    Coverage = described.Coverage with { Complete = false, Issues = issues },
+                    Issues = issues
+                };
+            }
+        }
         var record = await store.GetArtifactAsync(state.Owner, state.CompleteRecordArtifactId, ct);
         var analysis = await store.GetArtifactAsync(state.Owner, state.IndependentAnalysisArtifactId, ct);
         return described with
