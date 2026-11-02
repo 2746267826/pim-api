@@ -1,6 +1,6 @@
 ﻿# PIM 原生客户端与笔记路线图
 
-版本：v0.50 为 2026-11-02 的当前执行覆盖，记录完整 PR CI 的实际失败、已验证的三仓发布与下一批开发。下方 v0.49 及更早正文保持为历史；M0–M5、45 个稳定 ID、AC1–19 与 #516 五阶段范围不变。
+版本：v0.50 为 2026-11-02 的历史执行覆盖，记录完整 PR CI 的实际失败、已验证的三仓发布与下一批开发。下方 v0.49 及更早正文保持为历史；M0–M5、45 个稳定 ID、AC1–19 与 #516 五阶段范围不变。
 
 版本：v0.49 为当前执行覆盖，记录实际源码集成、真实 Test Swagger 契约、跨包回归与交付阻断；下方 v0.48 及更早版本行均为保留历史。详见 v0.49 当前执行层。M0–M5、45 个稳定 ID 与 AC1–19 未整体完成。
 
@@ -21,6 +21,24 @@
 本文位于 `pim-api/docs/product/native-notes-roadmap.md`，作为跨仓持续维护的唯一总路线图。Android、Windows 与 Web 按批次引用同一份需求，不复制另一套台账；首版范围和视觉规范分别通过文内链接细化。更新状态时标明平台、证据和仍未交付部分，不以聊天记录代替仓内记录。
 
 总跟踪：[pim-api#505](https://github.com/2746267826/pim-api/issues/505)。主题切片 [pim-android#31](https://github.com/2746267826/pim-android/issues/31) 已合并；录音切片：[pim-android#33](https://github.com/2746267826/pim-android/issues/33)；混合文档与基础手写：[pim-android#35](https://github.com/2746267826/pim-android/issues/35)；完整材料版本：[pim-android#37](https://github.com/2746267826/pim-android/issues/37)。总跟踪不能随主题切片或安卓首版完成而提前关闭。
+
+版本：v0.51 为 2026-11-02 的当前执行覆盖：PR #556 exact head `6d97c934585968b88ef85862cf8bab91e15b45c1` 的完整 CI 41365251283 为 6483 PASS / 99 skipped / 0 FAIL / 6582 total，CI Gate 成功；PR 普通 matched-head merge 为 `4f788cc8a3b36e10714f8d5f088e8a72574c9059`。master CI 41367905805 与新 API Release 仍待核，不能记为已发布。下方 v0.50 及更早版本和历史正文保留；45 个稳定 ID、32 capability、32 gap、13 MIG、AC1–19、M0–M5 与 #516 五阶段均不缩减或宣称整体完成。
+
+<a id="v051-current"></a>
+
+### v0.51 当前执行层：PR #556 合并与跨端开发覆盖（2026-11-02）
+
+本层只更新当前执行事实，不改写下方 v0.50 及更早的历史记录。源码合并、聚焦测试、完整 CI、GitHub Release、部署及真实 provider/设备验收分别记账。
+
+| 范围 | 当前事实 | 未完成 / 边界 |
+| --- | --- | --- |
+| API PR #556（#552–554 与相关笔记能力） | Exact head `6d97c934585968b88ef85862cf8bab91e15b45c1`；PR CI [41365251283](https://github.com/2746267826/pim-api/actions/runs/41365251283) 与 CI Gate 成功，API 为 6483 PASS / 99 skipped / 0 FAIL / 6582 total。普通 matched-head merge `4f788cc8a3b36e10714f8d5f088e8a72574c9059` 于 2026-11-02T00:34:53Z 完成。 | master CI [41367905805](https://github.com/2746267826/pim-api/actions/runs/41367905805) 与新 API Release/资产/台账尚待父核验；当前不可称已发布或已部署。真实 provider、网关及用户环境仍未验。|
+| Web 笔记与材料消费 | 当前 next-tree Web 完整回归为 66 files / 549 tests PASS（`--maxWorkers=4`）；合成浏览器 fixture 覆盖桌面与 390px 窄屏手写预览及完整原始包下载入口。 | fixture 仅合成内存 API/字节，无 `.env`、live backend、账号、provider 或真实音频/ZIP；不是线上/API E2E。原始材料包下载不代表编辑或重建录音稿。|
+| Android M2 / Today | 新 M2 提交 `e66e6bd` 已集成；Today 原生入口也在推进。 | 新 M2 完整回归尚无全绿回执；Today 及相关任务/日历原生动作仍待源级验证和集成验收，不把旧 APK/测试计数移植到新 source。|
+| Windows | `c0ce` source 的 Core 359 / App 105 与 `08c` source 的 focused 17 分开记录。 | 三组结果不属于同一 source，不能相加或写成单一完整全绿包；材料往返、兼容和更广原生迁移仍在开发/验收。|
+| SAFE / Resource / TASK-01 | API/Web 任务建议生命周期基础已随 PR #556 合并；安全删除/导出生命周期、资源反馈持久化及 TASK-01 跨端接入继续开发。 | SAFE 与 Resource 待完整恢复/并发回归；TASK-01 Android/Windows 消费、来源体验与跨端验收未完成。局部测试不表示任一整项完成。|
+
+M0–M5 仍是完整开发范围而非完成状态。保留 45 个稳定需求 ID（32 capabilities + 13 MIG）、32 行 gap、13 个迁移项、AC1–19 及 #516 五阶段原编号与历史；不以 CI、合成 API/browser fixture 或 GitHub Release 代替生产、真实付费 provider、模型质量、物理设备/OEM 或端到端验收。
 
 <a id="v050-current"></a>
 
@@ -1412,3 +1430,4 @@ Windows 记录、Web 编辑、TASK-01 和 MIG-01 至 MIG-13 继续保留原阶�
 | 2026-11-01 | v0.46 记录 API/Web 与 Windows 实际发布、Android 本地 source/test 完成与远端链路阻塞 | API/Web master `84ef802e`、CI `41272531071` 与 Release `api-v26.11.1047` 已核；Windows PR40 head `5a28b844` 普通 merge `1270bf6a`，master CI `41276828062` 的 15 jobs/Gate SUCCESS，Release `windows-v26.11.1111` 已发布；master raw counts Core `294/0/1/295`、App `93/0/0/93`，Core skip 与本地 `295 passed` 分开记账，tag target 以 immutable tag 解析 `1270bf6a` 而非 `target_commitish=master`。Android clean local commit `277236a8`，App `2068` 实跑 PASS、Core `72` XML UP-TO-DATE，但 NORMAL HTTPS/OpenSSL/HTTP1.1/Schannel push TLS 握手失败，SSH known-host 缺失拒认证且未写 known_hosts/未绕过验证；因此 NOTPUSHED、PR NOT CREATED、CI/merge/Release pending。外部模型/provider/device/hardware/OEM AC 与 production 仍 NOT-VERIFIED；本条版本 v0.46 |
 | 2026-11-01 | v0.47 记录三平台产品 CI/Release 已核，GitHub 发布不代表部署或外部模型/设备验收 | API/Web 产品发布源/implementation merge `84ef802e`、master CI `41272531071`、Release `api-v26.11.1047`；Windows merge `1270bf6a`、CI `41276828062`、Release `windows-v26.11.1111`（Core `294/0/1/295`、App `93/0/0/93`）；Android PR58 head `277236a8`/CI `41282476600` ordinary merge `4ddbbf43`，master CI `41283326434` 七 jobs/Gate/Release SUCCESS，Release `android-v26.11.1147` tag resolves to merge. v0.46 network blocker remains historical; model/provider quality, deployment, hardware, OEM/device UX and full AC `NOT-VERIFIED`. Docs PR [#550](https://github.com/2746267826/pim-api/pull/550) contains documentation-only changes and does not rebuild/change the API/Web product Release. |
 | 2026-11-01 | v0.48 将全笔记路线图明确为 M0–M5/32 capabilities/13 MIG 的当前开发执行层，并同步 API 与 Android 新 issue 分工 | API #525/#533 已关闭；#516/#539 保持 OPEN；API #539/#551 由 Sagan、#552–554 与匹配 Web consumer 由 Meitner、Android #59/#61/#62 由 Dewey、#60/#63 由 Euclid 分线开发。所有包在证据回填前均为进行中，代码存在不等于 M0–M5 或 AC 完成；真实 provider/付费、物理设备/OEM、目标硬件与 production 仍 `NOT-VERIFIED`。AI-01 保持可选，AI-09 仍待范围决定，不新增付费实时安装门槛。45/32/32/13、AC1–19、五阶段与既有 history 字节保留。本条版本 v0.48 |
+| 2026-11-02 | v0.51 更新 PR #556 合并后当前执行事实与跨端未验边界 | Exact head `6d97c934` 的 PR CI 41365251283 为 6483 PASS / 99 skipped / 0 FAIL / 6582 total，CI Gate SUCCESS；普通 matched-head merge `4f788cc8a3b36e10714f8d5f088e8a72574c9059`。master CI 41367905805 与 API Release 待核。Web 66 files / 549 tests；Android `e66e6bd` 新 M2/Today 与 Windows 分 source 结果分开记录；SAFE/Resource 和 TASK-01 跨端工作继续进行。保留45稳定ID、32 capabilities、32 gap、13 MIG、AC1–19、M0–M5、五阶段与旧历史；未以 CI/合并声明生产/provider/设备验收。本条版本 v0.51 |
