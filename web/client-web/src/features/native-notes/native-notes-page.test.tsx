@@ -4,6 +4,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import userEvent from '@testing-library/user-event'
 import { createMemoryRouter, RouterProvider } from 'react-router'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { setApiBase } from '@/lib/apiBase'
 import { NativeNotesPage } from './native-notes-page'
 import { buildMaterialBundle, type NoteMaterialUpload, type NoteMaterialVersion } from './material-model'
 import { exportAndroidNotePackage } from './material-package'
@@ -17,11 +18,13 @@ const nativeApi = vi.hoisted(() => ({
   complete: vi.fn(),
   promote: vi.fn(),
   fileBytes: vi.fn(),
+  downloadBundle: vi.fn(),
 }))
 const quickApi = vi.hoisted(() => ({
   list: vi.fn(),
   get: vi.fn(),
 }))
+const authState = vi.hoisted(() => ({ userId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' }))
 vi.mock('./api', () => ({
   bindNativeNotesApi: () => nativeApi,
 }))
@@ -29,7 +32,7 @@ vi.mock('@/features/quick-notes/api', () => ({ quickNotesApi: quickApi }))
 vi.mock('@/features/auth/auth-context', () => ({
   useAuth: () => ({
     user: {
-      id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      id: authState.userId,
       username: 'synthetic',
       displayName: '合成用户',
       role: 'user',
@@ -121,6 +124,7 @@ const conflictMaterial: NoteMaterialVersion = {
 }
 
 let client: QueryClient
+let testRouter: ReturnType<typeof createMemoryRouter>
 
 function page() {
   client = new QueryClient({
@@ -129,7 +133,7 @@ function page() {
       mutations: { retry: false },
     },
   })
-  const router = createMemoryRouter([
+  testRouter = createMemoryRouter([
     {
       path: '/native-notes',
       element:
@@ -140,11 +144,12 @@ function page() {
     { path: '/native-notes/processing', element: <p>处理页</p> },
     { path: '/quick-notes', element: <p>旧记录页</p> },
   ], { initialEntries: ['/native-notes'] })
-  return render(<RouterProvider router={router} />)
+  return render(<RouterProvider router={testRouter} />)
 }
 
 beforeEach(() => {
   vi.resetAllMocks()
+  authState.userId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
   Object.defineProperties(URL, {
     createObjectURL: { configurable: true, value: vi.fn(() => 'blob:synthetic-note-image') },
     revokeObjectURL: { configurable: true, value: vi.fn() },
@@ -218,6 +223,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   client.clear()
+  setApiBase('')
   vi.restoreAllMocks()
 })
 
@@ -226,6 +232,95 @@ async function consentToStorage() {
 }
 
 describe('NativeNotesPage', () => {
+  it('允许含录音的固定版本下载原始包，但不启用重建导出', async () => {
+    nativeApi.sources.mockResolvedValue({ total: 1, offset: 0, items: [{ ...source, recordings: 1 }] })
+    nativeApi.downloadBundle.mockResolvedValue({
+      blob: new Blob([new Uint8Array([1, 2, 3])], { type: 'application/zip' }),
+      filename: `${versionId}.pimnote.zip`,
+    })
+    const anchorClick = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined)
+    page()
+    await userEvent.click((await screen.findByText('课堂笔记')).closest('button')!)
+    const downloadButton = await screen.findByRole('button', { name: '下载完整原始材料包' })
+    expect(downloadButton.hasAttribute('disabled')).toBe(false)
+    expect(screen.getByRole('button', { name: '导出 Android 笔记包' }).hasAttribute('disabled')).toBe(true)
+    expect(screen.getByText(/128 MiB/)).toBeTruthy()
+
+    await userEvent.click(downloadButton)
+    await waitFor(() => expect(nativeApi.downloadBundle).toHaveBeenCalledWith(versionId, expect.any(AbortSignal)))
+    await waitFor(() => expect(anchorClick).toHaveBeenCalledOnce())
+    expect(URL.createObjectURL).toHaveBeenCalledWith(expect.objectContaining({ type: 'application/zip' }))
+  })
+
+  it('服务器切换后丢弃晚到的旧下载，不创建 URL 或触发下载', async () => {
+    let resolveDownload!: (value: { blob: Blob; filename: string }) => void
+    nativeApi.downloadBundle.mockImplementationOnce(() => new Promise((resolve) => { resolveDownload = resolve }))
+    const createUrl = vi.mocked(URL.createObjectURL)
+    const anchorClick = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined)
+    page()
+    await userEvent.click((await screen.findByText('课堂笔记')).closest('button')!)
+    await userEvent.click(await screen.findByRole('button', { name: '下载完整原始材料包' }))
+    await waitFor(() => expect(nativeApi.downloadBundle).toHaveBeenCalledOnce())
+    const oldSignal = nativeApi.downloadBundle.mock.calls[0]?.[1] as AbortSignal
+    const createUrlCalls = createUrl.mock.calls.length
+
+    setApiBase('https://new-server.synthetic.invalid')
+    await waitFor(() => expect(oldSignal.aborted).toBe(true))
+    resolveDownload({
+      blob: new Blob([new Uint8Array([1])], { type: 'application/zip' }),
+      filename: `${versionId}.pimnote.zip`,
+    })
+    await Promise.resolve()
+
+    expect(createUrl).toHaveBeenCalledTimes(createUrlCalls)
+    expect(anchorClick).not.toHaveBeenCalled()
+  })
+
+  it('账号切换后丢弃晚到的旧下载，不创建 URL 或触发下载', async () => {
+    let resolveDownload!: (value: { blob: Blob; filename: string }) => void
+    nativeApi.downloadBundle.mockImplementationOnce(() => new Promise((resolve) => { resolveDownload = resolve }))
+    const createUrl = vi.mocked(URL.createObjectURL)
+    const anchorClick = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined)
+    const view = page()
+    await userEvent.click((await screen.findByText('课堂笔记')).closest('button')!)
+    await userEvent.click(await screen.findByRole('button', { name: '下载完整原始材料包' }))
+    await waitFor(() => expect(nativeApi.downloadBundle).toHaveBeenCalledOnce())
+    const oldSignal = nativeApi.downloadBundle.mock.calls[0]?.[1] as AbortSignal
+    const createUrlCalls = createUrl.mock.calls.length
+
+    authState.userId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+    const nextRouter = createMemoryRouter([
+      {
+        path: '/native-notes',
+        element: <QueryClientProvider client={client}><NativeNotesPage /></QueryClientProvider>,
+      },
+    ], { initialEntries: ['/native-notes'] })
+    view.rerender(<RouterProvider router={nextRouter} />)
+    await waitFor(() => expect(oldSignal.aborted).toBe(true))
+    resolveDownload({
+      blob: new Blob([new Uint8Array([1])], { type: 'application/zip' }),
+      filename: `${versionId}.pimnote.zip`,
+    })
+    await Promise.resolve()
+
+    expect(createUrl).toHaveBeenCalledTimes(createUrlCalls)
+    expect(anchorClick).not.toHaveBeenCalled()
+  })
+
+  it('下载失败时保留本机编辑稿并明确不生成文件', async () => {
+    nativeApi.downloadBundle.mockRejectedValueOnce(new Error('响应 MIME 不匹配'))
+    page()
+    await userEvent.click((await screen.findByText('课堂笔记')).closest('button')!)
+    const title = screen.getByLabelText('笔记标题') as HTMLInputElement
+    await userEvent.clear(title)
+    await userEvent.type(title, '本机稿保留')
+    await userEvent.click(await screen.findByRole('button', { name: '下载完整原始材料包' }))
+
+    expect(await screen.findByText(/本机草稿保持不变/)).toBeTruthy()
+    expect((screen.getByLabelText('笔记标题') as HTMLInputElement).value).toBe('本机稿保留')
+    expect(URL.createObjectURL).not.toHaveBeenCalled()
+  })
+
   it('shows the note library and reopens the exact fixed material version', async () => {
     page()
     expect(await screen.findByText('课堂笔记')).toBeTruthy()

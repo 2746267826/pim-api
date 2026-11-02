@@ -166,6 +166,7 @@ function LoadedEditor({
   const [progress, setProgress] = useState<MaterialUploadProgress | null>(null)
   const [busy, setBusy] = useState(false)
   const [exporting, setExporting] = useState(false)
+  const [downloading, setDownloading] = useState(false)
   const [promoting, setPromoting] = useState(false)
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
@@ -343,6 +344,39 @@ function LoadedEditor({
     }
   }
 
+  async function downloadOriginalBundle() {
+    if (!baseVersionId || downloading) return
+    let session: EditorUploadSession
+    try {
+      session = requireUploadSession()
+    } catch {
+      return
+    }
+    setDownloading(true)
+    setError('')
+    try {
+      const download = await api.downloadBundle(baseVersionId, session.controller.signal)
+      assertUploadSessionActive(session)
+      const url = URL.createObjectURL(download.blob)
+      try {
+        assertUploadSessionActive(session)
+        const link = document.createElement('a')
+        link.href = url
+        link.download = download.filename
+        link.click()
+      } finally {
+        window.setTimeout(() => URL.revokeObjectURL(url), 1_000)
+      }
+      setMessage('已下载该固定版本的完整原始材料包。下载不修改材料，也不开放录音编辑。')
+    } catch (failure) {
+      if (isUploadSessionActive(session)) {
+        setError(`${errorText(failure)}。未创建下载；本机草稿保持不变。`)
+      }
+    } finally {
+      if (isUploadSessionActive(session)) setDownloading(false)
+    }
+  }
+
   async function promote() {
     if (!baseVersionId || busy || promoting) return
     let session: EditorUploadSession
@@ -422,6 +456,9 @@ function LoadedEditor({
       <PageHeader className="mb-0" title={baseVersionId ? '编辑固定材料' : '新建固定材料'} subtitle={baseVersionId ? `将基于版本 ${shortId(baseVersionId)} 创建第 ${revision + 1} 版；旧版本原样保留。` : '首次保存会创建新笔记和第一个固定材料版本。'} actions={
         <div className="flex flex-wrap items-center gap-2">
           {baseVersionId && !isCurrent && <Button size="sm" loading={promoting} onClick={() => void promote()}>设为当前版本</Button>}
+          {baseVersionId && <Button size="sm" variant="secondary" disabled={downloading} loading={downloading} onClick={() => void downloadOriginalBundle()}>
+            <Download className="size-4" aria-hidden />下载完整原始材料包
+          </Button>}
           <Button size="sm" variant="ghost" disabled={busy || exporting || recordings > 0 || Boolean(inkEditor) || inkPending} loading={exporting} onClick={() => void exportPackage()}>
             <Download className="size-4" aria-hidden />导出 Android 笔记包
           </Button>
@@ -433,6 +470,7 @@ function LoadedEditor({
     </div>
 
     <div className="space-y-4 p-5">
+      {baseVersionId && <p className="text-xs leading-5 text-text-3">原始材料包下载上限为 128 MiB；包含录音的版本可下载原包，但不能在此重建或编辑录音内容。</p>}
       {legacyNotice && <InlineAlert tone="warn" title="旧闪念兼容副本">{legacyNotice}</InlineAlert>}
       {lockedReason && <InlineAlert tone={recordings > 0 || !isCurrent ? 'warn' : 'info'}>{lockedReason}</InlineAlert>}
       <div>

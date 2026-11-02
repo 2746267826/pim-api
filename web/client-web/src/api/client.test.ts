@@ -5,6 +5,7 @@ import {
   apiFetch,
   apiPutBinary,
   clearTokens,
+  fetchBoundedDownload,
   fetchBlob,
   resetRefreshState,
   setTokens,
@@ -186,6 +187,94 @@ describe('apiFetch 基础行为', () => {
     await expect(apiFetch('/api/v1/x', {}, { allowStatuses: [429] })).resolves.toEqual({
       limited: true,
     })
+  })
+})
+
+describe('有界原始材料下载', () => {
+  const headers = {
+    'content-type': 'application/zip',
+    'content-disposition': 'attachment; filename="22222222-2222-4222-8222-222222222222.pimnote.zip"',
+  }
+  const options = {
+    expectedFilename: '22222222-2222-4222-8222-222222222222.pimnote.zip',
+    maxBytes: 4,
+    refreshOn401: true,
+  }
+
+  it('无 Content-Length 时逐块累计并在预算外拒绝', async () => {
+    const fetchMock = vi.fn(async () => new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array([1, 2, 3]))
+        controller.enqueue(new Uint8Array([4, 5]))
+        controller.close()
+      },
+    }), { headers }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(fetchBoundedDownload('/api/v1/native-notes/versions/x/bundle', undefined, options))
+      .rejects.toThrow('字节预算')
+  })
+
+  it('Content-Length 超预算时不读取响应体', async () => {
+    const getReader = vi.fn()
+    const cancel = vi.fn(async () => undefined)
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      headers: new Headers({ ...headers, 'content-length': '5' }),
+      body: { getReader, cancel },
+    } as unknown as Response)))
+
+    await expect(fetchBoundedDownload('/api/v1/native-notes/versions/x/bundle', undefined, options))
+      .rejects.toThrow('字节预算')
+    expect(getReader).not.toHaveBeenCalled()
+    expect(cancel).toHaveBeenCalledOnce()
+  })
+
+  it('拒绝错误 MIME、错误文件名和声明长度不匹配', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(new Uint8Array([1]), {
+      headers: { ...headers, 'content-type': 'text/html' },
+    })))
+    await expect(fetchBoundedDownload('/bundle', undefined, options)).rejects.toThrow('内容类型')
+
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(new Uint8Array([1]), {
+      headers: { ...headers, 'content-disposition': 'attachment; filename="other.zip"' },
+    })))
+    await expect(fetchBoundedDownload('/bundle', undefined, options)).rejects.toThrow('文件名')
+
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(new Uint8Array([1, 2]), {
+      headers: { ...headers, 'content-length': '1' },
+    })))
+    await expect(fetchBoundedDownload('/bundle', undefined, options)).rejects.toThrow('长度')
+  })
+
+  it('流读取期间会话切换后丢弃旧响应', async () => {
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    let active = true
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        controller.enqueue(new Uint8Array([1]))
+        await gate
+        controller.enqueue(new Uint8Array([2]))
+        controller.close()
+      },
+    }), { headers })))
+
+    const download = fetchBoundedDownload('/bundle', undefined, {
+      ...options,
+      assertActive: () => {
+        if (!active) {
+          const error = new Error('workspace changed')
+          error.name = 'AbortError'
+          throw error
+        }
+      },
+    })
+    await Promise.resolve()
+    active = false
+    release()
+    await expect(download).rejects.toMatchObject({ name: 'AbortError' })
   })
 })
 

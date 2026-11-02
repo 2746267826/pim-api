@@ -440,6 +440,19 @@ export interface BlobFetchOptions {
   assertActive?: () => void
 }
 
+export interface BoundedDownloadOptions extends BlobFetchOptions {
+  expectedFilename: string
+  maxBytes?: number
+  expectedContentType?: string
+}
+
+export interface BoundedDownload {
+  blob: Blob
+  filename: string
+}
+
+export const MAX_BOUNDED_DOWNLOAD_BYTES = 128 * 1024 * 1024
+
 /**
  * 带认证的裸 fetch（Blob 下载通道，03 §5）：
  * 用于 img/iframe 带不了认证头的场景（缩略图、导出 JSON、ICS 等）。
@@ -450,6 +463,96 @@ export async function fetchBlob(
   signal?: AbortSignal,
   opts: BlobFetchOptions = {},
 ): Promise<Blob> {
+  const res = await fetchDownloadResponse(path, signal, opts)
+  const blob = await res.blob()
+  assertRequestActive({ signal, assertActive: opts.assertActive })
+  return blob
+}
+
+/** Stream a validated download into bounded memory before exposing a Blob. */
+export async function fetchBoundedDownload(
+  path: string,
+  signal: AbortSignal | undefined,
+  opts: BoundedDownloadOptions,
+): Promise<BoundedDownload> {
+  const requestOptions = { signal, assertActive: opts.assertActive }
+  const res = await fetchDownloadResponse(path, signal, opts)
+  assertRequestActive(requestOptions)
+
+  const expectedType = (opts.expectedContentType ?? 'application/zip').toLowerCase()
+  const actualType = (res.headers.get('content-type') ?? '').split(';', 1)[0]?.trim().toLowerCase()
+  if (actualType !== expectedType) {
+    discardDownloadBody(res)
+    throw new ApiError('下载内容类型不匹配，未保存文件', -1, res.status)
+  }
+
+  let filename: string
+  try {
+    filename = parseDownloadFilename(res.headers.get('content-disposition'))
+  } catch (error) {
+    discardDownloadBody(res)
+    throw error
+  }
+  if (filename !== opts.expectedFilename || !isSafeDownloadFilename(filename)) {
+    discardDownloadBody(res)
+    throw new ApiError('下载文件名与固定材料版本不匹配，未保存文件', -1, res.status)
+  }
+
+  const maxBytes = opts.maxBytes ?? MAX_BOUNDED_DOWNLOAD_BYTES
+  if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) {
+    throw new RangeError('下载预算必须是正安全整数')
+  }
+  const rawLength = res.headers.get('content-length')
+  let declaredLength: number | undefined
+  if (rawLength !== null) {
+    if (!/^(0|[1-9]\d*)$/.test(rawLength.trim())) {
+      throw new ApiError('下载长度标头无效，未保存文件', -1, res.status)
+    }
+    declaredLength = Number(rawLength)
+    if (!Number.isSafeInteger(declaredLength) || declaredLength > maxBytes) {
+      discardDownloadBody(res)
+      throw new ApiError('下载内容超过允许的字节预算', -1, res.status)
+    }
+  }
+  if (!res.body) throw new ApiError('下载流不可用，未保存文件', -1, res.status)
+
+  const reader = res.body.getReader()
+  const chunks: Uint8Array<ArrayBuffer>[] = []
+  let total = 0
+  try {
+    while (true) {
+      assertRequestActive(requestOptions)
+      const { done, value } = await reader.read()
+      assertRequestActive(requestOptions)
+      if (done) break
+      if (!value) continue
+      total += value.byteLength
+      if (total > maxBytes) {
+        void reader.cancel().catch(() => undefined)
+        throw new ApiError('下载内容超过允许的字节预算', -1, res.status)
+      }
+      const chunk = new Uint8Array(value.byteLength)
+      chunk.set(value)
+      chunks.push(chunk)
+    }
+  } catch (error) {
+    void reader.cancel().catch(() => undefined)
+    throw error
+  } finally {
+    reader.releaseLock()
+  }
+  assertRequestActive(requestOptions)
+  if (total === 0 || (declaredLength !== undefined && total !== declaredLength)) {
+    throw new ApiError('下载长度与响应标头不一致，未保存文件', -1, res.status)
+  }
+  return { blob: new Blob(chunks, { type: expectedType }), filename }
+}
+
+async function fetchDownloadResponse(
+  path: string,
+  signal: AbortSignal | undefined,
+  opts: BlobFetchOptions,
+): Promise<Response> {
   const requestOptions = { signal, assertActive: opts.assertActive }
   assertRequestActive(requestOptions)
   const host = detectHostChannel() === 'host'
@@ -476,7 +579,29 @@ export async function fetchBlob(
   if (!res.ok) {
     throw new ApiError(`下载失败（HTTP ${res.status}）`, -1, res.status)
   }
-  const blob = await res.blob()
-  assertRequestActive(requestOptions)
-  return blob
+  return res
+}
+
+function parseDownloadFilename(disposition: string | null): string {
+  if (!disposition) throw new ApiError('下载缺少文件名，未保存文件')
+  const encoded = disposition.match(/(?:^|;)\s*filename\*\s*=\s*UTF-8''([^;]+)/i)?.[1]?.trim()
+  if (encoded) {
+    try {
+      return decodeURIComponent(encoded.replace(/^"|"$/g, ''))
+    } catch {
+      throw new ApiError('下载文件名编码无效，未保存文件')
+    }
+  }
+  const plain = disposition.match(/(?:^|;)\s*filename\s*=\s*(?:"([^"]*)"|([^;]*))/i)
+  const filename = (plain?.[1] ?? plain?.[2])?.trim()
+  if (!filename) throw new ApiError('下载缺少文件名，未保存文件')
+  return filename
+}
+
+function isSafeDownloadFilename(filename: string): boolean {
+  return filename.length <= 180 && /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(filename)
+}
+
+function discardDownloadBody(response: Response): void {
+  void response.body?.cancel?.().catch(() => undefined)
 }
