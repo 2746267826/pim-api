@@ -1,6 +1,8 @@
 # ASR 双通道增量方案（#516 排期）
 
-状态（v0.50 历史覆盖）：2026-11-02 首轮完整 PR #556 CI 已回读为失败；Notes 与 EF fixture 根因修复均已集成，聚焦回归分别 9 PASS 及 58 PASS / 6 条件跳过，等待新完整 CI。不得用聚焦结果替代完整 CI。三仓已发布版本、下一批跨端材料及资源反馈进度见本文 v0.50 和总路线图 v0.50。下方状态行与全部既有正文保留历史。
+状态（v0.51 当前入口）：当前执行事实见下方 v0.51；以下 v0.50 及更早状态行和正文均保留为当时的历史记录。
+
+状态（v0.50 当前覆盖）：2026-11-02 首轮完整 PR #556 CI 已回读为失败；Notes 与 EF fixture 根因修复均已集成，聚焦回归分别 9 PASS 及 58 PASS / 6 条件跳过，等待新完整 CI。不得用聚焦结果替代完整 CI。三仓已发布版本、下一批跨端材料及资源反馈进度见本文 v0.50 和总路线图 v0.50。下方状态行与全部既有正文保留历史。
 
 状态（v0.49 当前覆盖）：实际源码/契约、测试失败和后续交付以本文 v0.49 及总路线图 v0.49 为准。下方 v0.48 及更早状态行保留历史，不替代当前检查点。
 
@@ -28,8 +30,8 @@
 | --- | --- | --- |
 | API #552–554 | PR #556 `6d97c934`；CI 41365251283 `6483 PASS / 99 skipped / 0 FAIL / 6582 total`，CI Gate 成功；merge `4f788cc8a3b36e10714f8d5f088e8a72574c9059`。 | master CI 41367905805、Release 与发布台账待核；真实长请求、provider、网关和部署验收未证。|
 | Web 材料/手写 | 66 files / 549 tests PASS；合成浏览器 fixture 检查桌面/窄屏及原始包入口。 | fixture 非 live API/provider/真实材料；整篇原始材料可下载不代表录音可编辑或可重建。|
-| Android M2 / Today | `e66e6bd` 已集成，新 M2 与 Today 原生入口在推进。 | 尚无该 source 的完整全绿验收；Today/业务动作仍待验证。|
-| Windows | Core 359 / App 105 属于 `c0ce`；focused 17 属于 `08c`。 | source 不同，计数不可拼接；继续验证跨端材料与原生迁移。|
+| Android M2 / Today | `e66e6bd` 已集成；Today 原生入口 `546f7d4/edfb4c2` 已提交，栏目状态和跨账号编辑问题继续修复。 | 尚无新组合 source 的完整全绿验收。|
+| Windows | Core 359 / App 105 属于 `c0cebc76516b`；focused 17 属于 `08c65ea3`。 | source 不同，计数不可拼接；继续验证跨端材料与原生迁移。|
 | SAFE / Resource / TASK-01 | API/Web 任务建议基础随 PR #556 合并；安全删除/导出、资源门反馈及 TASK-01 跨端接入继续开发。 | SAFE/Resource 完整恢复与并发回归、Android/Windows 建议任务消费和全链验收未完成；M0–M5、五阶段与 AC1–19 仍按原范围追踪。|
 
 本覆盖不改写 v0.50 或更早历史，不缩减 45 个稳定 ID、32 capabilities、32 gaps、13 MIG、AC1–19 和五阶段范围。CI/合成测试/merge 不等于新产品 Release、production、真实 provider、模型质量、物理设备/OEM 或完整端到端验收。总状态见[路线图 v0.51](../product/native-notes-roadmap.md#v051-current)。

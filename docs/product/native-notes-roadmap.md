@@ -1,6 +1,8 @@
 ﻿# PIM 原生客户端与笔记路线图
 
-版本：v0.50 为 2026-11-02 的历史执行覆盖，记录完整 PR CI 的实际失败、已验证的三仓发布与下一批开发。下方 v0.49 及更早正文保持为历史；M0–M5、45 个稳定 ID、AC1–19 与 #516 五阶段范围不变。
+版本：v0.51 为当前执行覆盖，详见下方 v0.51 当前执行层。以下 v0.50 及更早版本行和正文均保留为当时的历史记录。
+
+版本：v0.50 为 2026-11-02 的当前执行覆盖，记录完整 PR CI 的实际失败、已验证的三仓发布与下一批开发。下方 v0.49 及更早正文保持为历史；M0–M5、45 个稳定 ID、AC1–19 与 #516 五阶段范围不变。
 
 版本：v0.49 为当前执行覆盖，记录实际源码集成、真实 Test Swagger 契约、跨包回归与交付阻断；下方 v0.48 及更早版本行均为保留历史。详见 v0.49 当前执行层。M0–M5、45 个稳定 ID 与 AC1–19 未整体完成。
 
@@ -34,8 +36,8 @@
 | --- | --- | --- |
 | API PR #556（#552–554 与相关笔记能力） | Exact head `6d97c934585968b88ef85862cf8bab91e15b45c1`；PR CI [41365251283](https://github.com/2746267826/pim-api/actions/runs/41365251283) 与 CI Gate 成功，API 为 6483 PASS / 99 skipped / 0 FAIL / 6582 total。普通 matched-head merge `4f788cc8a3b36e10714f8d5f088e8a72574c9059` 于 2026-11-02T00:34:53Z 完成。 | master CI [41367905805](https://github.com/2746267826/pim-api/actions/runs/41367905805) 与新 API Release/资产/台账尚待父核验；当前不可称已发布或已部署。真实 provider、网关及用户环境仍未验。|
 | Web 笔记与材料消费 | 当前 next-tree Web 完整回归为 66 files / 549 tests PASS（`--maxWorkers=4`）；合成浏览器 fixture 覆盖桌面与 390px 窄屏手写预览及完整原始包下载入口。 | fixture 仅合成内存 API/字节，无 `.env`、live backend、账号、provider 或真实音频/ZIP；不是线上/API E2E。原始材料包下载不代表编辑或重建录音稿。|
-| Android M2 / Today | 新 M2 提交 `e66e6bd` 已集成；Today 原生入口也在推进。 | 新 M2 完整回归尚无全绿回执；Today 及相关任务/日历原生动作仍待源级验证和集成验收，不把旧 APK/测试计数移植到新 source。|
-| Windows | `c0ce` source 的 Core 359 / App 105 与 `08c` source 的 focused 17 分开记录。 | 三组结果不属于同一 source，不能相加或写成单一完整全绿包；材料往返、兼容和更广原生迁移仍在开发/验收。|
+| Android M2 / Today | 新 M2 提交 `e66e6bd` 已集成；Today 原生入口 `546f7d4/edfb4c2` 已提交，父审查发现的栏目状态和跨账号编辑问题继续修复。 | 新 M2/Today 完整回归尚无全绿回执；不把旧 APK/测试计数移植到新 source。|
+| Windows | `c0cebc76516b` source 的 Core 359 / App 105 与 `08c65ea3` source 的 focused 17 分开记录。 | 三组结果不属于同一 source，不能相加或写成单一完整全绿包；材料往返、兼容和更广原生迁移仍在开发/验收。|
 | SAFE / Resource / TASK-01 | API/Web 任务建议生命周期基础已随 PR #556 合并；安全删除/导出生命周期、资源反馈持久化及 TASK-01 跨端接入继续开发。 | SAFE 与 Resource 待完整恢复/并发回归；TASK-01 Android/Windows 消费、来源体验与跨端验收未完成。局部测试不表示任一整项完成。|
 
 M0–M5 仍是完整开发范围而非完成状态。保留 45 个稳定需求 ID（32 capabilities + 13 MIG）、32 行 gap、13 个迁移项、AC1–19 及 #516 五阶段原编号与历史；不以 CI、合成 API/browser fixture 或 GitHub Release 代替生产、真实付费 provider、模型质量、物理设备/OEM 或端到端验收。
