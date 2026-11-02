@@ -250,7 +250,6 @@ public sealed class NoteAsrRoutingService(PimDbContext db, ICurrentUserService u
         ClaimNoteAsrTaskRequest request, DateTimeOffset now, CancellationToken ct)
     {
         var decision = request.ResourceGate;
-        if (decision is null) return null; // Older clients retain the prior claim contract.
         if (db.Database.IsRelational())
         {
             var current = await db.NoteAsrNodes.FromSqlInterpolated($"""
@@ -263,12 +262,27 @@ public sealed class NoteAsrRoutingService(PimDbContext db, ICurrentUserService u
             node.ResourceGateFailureReasonsJson = current.ResourceGateFailureReasonsJson;
             node.ResourceDecisionAt = current.ResourceDecisionAt;
         }
+        var prior = await db.NoteAsrResourceDecisions.AsNoTracking().SingleOrDefaultAsync(x =>
+            x.OwnerId == owner && x.NodeId == node.Id && x.ClaimKey == request.IdempotencyKey, ct);
+        if (decision is null)
+        {
+            if (prior is not null)
+                throw new DomainException(40901, "同一领取幂等标识不能移除已提交的资源门决策");
+
+            var existingClaim = await db.NoteAsrAckReceipts.AsNoTracking().AnyAsync(x =>
+                x.OwnerId == owner && x.Kind == "claim" && x.ProviderHandle == request.IdempotencyKey, ct);
+            if (existingClaim)
+                throw new DomainException(40901, "已提交的旧版领取不能补加资源门决策");
+            return null; // A genuinely new legacy key keeps the prior claim contract.
+        }
+        if (prior is null && await db.NoteAsrAckReceipts.AsNoTracking().AnyAsync(x =>
+                x.OwnerId == owner && x.Kind == "claim" && x.ProviderHandle == request.IdempotencyKey, ct))
+            throw new DomainException(40901, "已提交的旧版领取不能补加资源门决策");
+
         var reasonsJson = decision.Reasons is null
             ? null
             : JsonSerializer.Serialize(decision.Reasons.Order(StringComparer.Ordinal));
         var sampledAt = TruncateToPostgresPrecision(decision.SampledAt);
-        var prior = await db.NoteAsrResourceDecisions.AsNoTracking().SingleOrDefaultAsync(x =>
-            x.OwnerId == owner && x.NodeId == node.Id && x.ClaimKey == request.IdempotencyKey, ct);
         if (prior is not null)
         {
             if (prior.IsAutomatic != decision.IsAutomatic || prior.GatePassed != decision.Passed ||

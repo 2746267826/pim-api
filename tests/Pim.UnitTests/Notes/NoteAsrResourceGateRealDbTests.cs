@@ -64,6 +64,11 @@ public sealed class NoteAsrResourceGateRealDbTests
         var replay = await strictFreshnessService.ClaimAsync(firstRequest, CancellationToken.None);
         Assert.Equal("resource_blocked", replay.Status);
         Assert.Equal(1, replay.ConsecutiveAutomaticResourceFailures);
+        var omittedDecision = await Assert.ThrowsAsync<DomainException>(() =>
+            service.ClaimAsync(new ClaimNoteAsrTaskRequest(nodeId, firstRequest.IdempotencyKey),
+                CancellationToken.None));
+        Assert.Equal(40901, omittedDecision.ErrorCode);
+        Assert.Equal(1, await database.Db.NoteAsrResourceDecisions.CountAsync(x => x.OwnerId == owner));
 
         var capped = await service.ClaimAsync(Claim(nodeId, "auto-2", automatic: true, passed: false,
             ["resource-vram-insufficient"]), CancellationToken.None);
@@ -154,6 +159,10 @@ public sealed class NoteAsrResourceGateRealDbTests
         await Task.Delay(TimeSpan.FromMilliseconds(1100));
         var replay = await service.ClaimAsync(request, CancellationToken.None);
         Assert.Equal("empty", replay.Status);
+        var omittedDecision = await Assert.ThrowsAsync<DomainException>(() =>
+            service.ClaimAsync(new ClaimNoteAsrTaskRequest(nodeId, request.IdempotencyKey),
+                CancellationToken.None));
+        Assert.Equal(40901, omittedDecision.ErrorCode);
 
         var changedPayload = Claim(nodeId, "pass-empty", automatic: false, passed: true, [], DateTimeOffset.UtcNow);
         var conflict = await Assert.ThrowsAsync<DomainException>(() =>
@@ -238,6 +247,15 @@ public sealed class NoteAsrResourceGateRealDbTests
             CancellationToken.None);
         Assert.Equal("claimed", legacy.Status);
         Assert.NotNull(legacy.Lease);
+        var addedDecision = await Assert.ThrowsAsync<DomainException>(() => service.ClaimAsync(
+            Claim(nodeId, "legacy-client", automatic: true, passed: false,
+                ["resource-memory-insufficient"]), CancellationToken.None));
+        Assert.Equal(40901, addedDecision.ErrorCode);
+        database.Db.ChangeTracker.Clear();
+        Assert.Equal(1, await database.Db.NoteAsrResourceDecisions.CountAsync(x => x.OwnerId == owner));
+        var legacyLease = await database.Db.NoteAsrLeases.AsNoTracking().SingleAsync(x =>
+            x.Id == legacy.Lease!.LeaseId);
+        Assert.Equal("Active", legacyLease.Status);
         CleanupTaskFile(owner);
     }
 
