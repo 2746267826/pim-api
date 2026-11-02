@@ -34,10 +34,12 @@ The change is limited to service-side feedback, durable state, and an
 opt-in configured cap. It does not parse the opaque snapshot, count heartbeats,
 or treat client measurements as proof of real GPU capability.
 
-1. Persist failed decisions in `note_asr_resource_decisions`, uniquely keyed by
-   owner, node, and existing claim idempotency key; update the node's latest
-   status/reasons and counter in the claim transaction. Replays return the
-   stored outcome without incrementing again.
+1. Persist every accepted decision, including pass results whose claim found no
+   work, in `note_asr_resource_decisions`, uniquely keyed by owner, node, and
+   existing claim idempotency key. Replays compare the immutable normalized
+   payload before freshness checks and return the original outcome without
+   incrementing again. This also preserves an earlier refusal after later
+   successful recovery resets the live counter.
 2. Keep the maximum automatic-failure count nullable and configuration-driven.
    Configure `NativeNotes:Routing:MaxAutomaticResourceFailures`. An unset cap
    does not suppress automatic processing; a configured cap returns
@@ -64,6 +66,8 @@ separate reporting endpoint is added.
 - Isolated PostgreSQL migration creates durable gate records and node state.
 - Identical claim replay is idempotent; a distinct automatic failure increments
   once; owner isolation prevents cross-account reads/writes.
+- Stale same-key replay returns its stored outcome; a passed/no-work receipt
+  rejects payload changes; concurrent identical PostgreSQL claims count once.
 - A configured cap yields `manual_required`; no configured cap invents a
   default; manual processing still fails closed on a failed resource gate.
 - Successful fenced completion resets the count; synthetic resource values do

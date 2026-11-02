@@ -58,7 +58,10 @@ public sealed class NoteAsrResourceGateRealDbTests
         Assert.Equal(1, first.ConsecutiveAutomaticResourceFailures);
         Assert.Null(first.LeaseId);
 
-        var replay = await service.ClaimAsync(firstRequest, CancellationToken.None);
+        await Task.Delay(TimeSpan.FromMilliseconds(1100));
+        var strictFreshnessService = Service(database.Db, owner, tasks, maxAutomaticFailures: 2,
+            heartbeatTimeoutSeconds: 1);
+        var replay = await strictFreshnessService.ClaimAsync(firstRequest, CancellationToken.None);
         Assert.Equal("resource_blocked", replay.Status);
         Assert.Equal(1, replay.ConsecutiveAutomaticResourceFailures);
 
@@ -91,6 +94,11 @@ public sealed class NoteAsrResourceGateRealDbTests
             passed: true, []), CancellationToken.None);
         Assert.Equal("claimed", manualReady.Status);
         Assert.NotNull(manualReady.Lease);
+        var changedLeasedPayload = Claim(nodeId, "manual-ready", automatic: false,
+            passed: true, [], DateTimeOffset.UtcNow.AddSeconds(-1));
+        var changedLeasedDecision = await Assert.ThrowsAsync<DomainException>(() =>
+            service.ClaimAsync(changedLeasedPayload, CancellationToken.None));
+        Assert.Equal(40901, changedLeasedDecision.ErrorCode);
 
         for (var index = 0; index < 3; index++)
         {
@@ -108,9 +116,88 @@ public sealed class NoteAsrResourceGateRealDbTests
         Assert.Equal(0, storedNode.ConsecutiveAutomaticResourceFailures);
         Assert.Equal("recovered", storedNode.ResourceGateStatus);
         Assert.Equal("[]", storedNode.ResourceGateFailureReasonsJson);
-        Assert.Equal(3, await database.Db.NoteAsrResourceDecisions.CountAsync(x => x.OwnerId == owner));
+        Assert.Equal(4, await database.Db.NoteAsrResourceDecisions.CountAsync(x => x.OwnerId == owner));
         Assert.Equal(0, await database.Db.NoteAsrResourceDecisions.CountAsync(x => x.OwnerId == otherOwner));
+
+        var oldRefusalAfterRecovery = await strictFreshnessService.ClaimAsync(firstRequest, CancellationToken.None);
+        Assert.Equal("resource_blocked", oldRefusalAfterRecovery.Status);
+        Assert.Equal(1, oldRefusalAfterRecovery.ConsecutiveAutomaticResourceFailures);
+        database.Db.ChangeTracker.Clear();
+        storedNode = await database.Db.NoteAsrNodes.AsNoTracking().SingleAsync(x => x.Id == nodeId);
+        Assert.Equal(0, storedNode.ConsecutiveAutomaticResourceFailures);
+        Assert.Equal("recovered", storedNode.ResourceGateStatus);
         CleanupTaskFile(owner);
+    }
+
+    [SkippableFact]
+    public async Task Passed_decision_without_work_is_durable_and_replay_keeps_original_outcome()
+    {
+        await using var database = await TempMigrationDatabase.CreateAsync("test_asr516_resource_pass_receipt");
+        await database.MigrateAsync();
+
+        var owner = Guid.NewGuid();
+        var nodeId = Guid.NewGuid();
+        var now = DateTimeOffset.UtcNow;
+        database.Db.Users.Add(User(owner));
+        database.Db.NoteAsrNodes.Add(Node(owner, nodeId, now));
+        await database.Db.SaveChangesAsync();
+
+        var service = Service(database.Db, owner,
+            new NoteAsrTaskStore(Options.Create(new NoteMaterialUploadOptions { StorageRoot = StorageRoot })),
+            maxAutomaticFailures: 2, heartbeatTimeoutSeconds: 1);
+        var request = Claim(nodeId, "pass-empty", automatic: true, passed: true, [], now);
+        var initial = await service.ClaimAsync(request, CancellationToken.None);
+        Assert.Equal("empty", initial.Status);
+
+        database.Db.NoteAsrNodes.Single(x => x.Id == nodeId).Enabled = false;
+        await database.Db.SaveChangesAsync();
+        await Task.Delay(TimeSpan.FromMilliseconds(1100));
+        var replay = await service.ClaimAsync(request, CancellationToken.None);
+        Assert.Equal("empty", replay.Status);
+
+        var changedPayload = Claim(nodeId, "pass-empty", automatic: false, passed: true, [], DateTimeOffset.UtcNow);
+        var conflict = await Assert.ThrowsAsync<DomainException>(() =>
+            service.ClaimAsync(changedPayload, CancellationToken.None));
+        Assert.Equal(40901, conflict.ErrorCode);
+
+        database.Db.ChangeTracker.Clear();
+        var receipt = await database.Db.NoteAsrResourceDecisions.AsNoTracking().SingleAsync();
+        Assert.True(receipt.GatePassed);
+        Assert.Equal("empty", receipt.Outcome);
+        Assert.Equal(0, receipt.ConsecutiveFailuresAfter);
+    }
+
+    [SkippableFact]
+    public async Task Concurrent_identical_resource_decision_is_applied_once_in_postgres()
+    {
+        await using var database = await TempMigrationDatabase.CreateAsync("test_asr516_resource_concurrent");
+        await database.MigrateAsync();
+
+        var owner = Guid.NewGuid();
+        var nodeId = Guid.NewGuid();
+        database.Db.Users.Add(User(owner));
+        database.Db.NoteAsrNodes.Add(Node(owner, nodeId, DateTimeOffset.UtcNow));
+        await database.Db.SaveChangesAsync();
+
+        var options = new DbContextOptionsBuilder<PimDbContext>()
+            .UseNpgsql(database.ConnectionString).Options;
+        await using var firstDb = new PimDbContext(options);
+        await using var secondDb = new PimDbContext(options);
+        var tasks = new NoteAsrTaskStore(Options.Create(new NoteMaterialUploadOptions { StorageRoot = StorageRoot }));
+        var firstService = Service(firstDb, owner, tasks, maxAutomaticFailures: 2);
+        var secondService = Service(secondDb, owner, tasks, maxAutomaticFailures: 2);
+        var request = Claim(nodeId, "same-concurrent-key", automatic: true, passed: false,
+            ["resource-vram-insufficient"]);
+
+        var results = await Task.WhenAll(
+            firstService.ClaimAsync(request, CancellationToken.None),
+            secondService.ClaimAsync(request, CancellationToken.None));
+
+        Assert.All(results, result => Assert.Equal("resource_blocked", result.Status));
+        database.Db.ChangeTracker.Clear();
+        var node = await database.Db.NoteAsrNodes.AsNoTracking().SingleAsync(x => x.Id == nodeId);
+        Assert.Equal(1, node.ConsecutiveAutomaticResourceFailures);
+        Assert.Equal(1, await database.Db.NoteAsrResourceDecisions.CountAsync());
     }
 
     [SkippableFact]
@@ -155,18 +242,22 @@ public sealed class NoteAsrResourceGateRealDbTests
     }
 
     private static ClaimNoteAsrTaskRequest Claim(Guid nodeId, string key, bool automatic, bool passed,
-        IReadOnlyList<string> reasons) => new(nodeId, key, 120,
-        new NoteAsrResourceGateDecision(automatic, passed, reasons, DateTimeOffset.UtcNow));
+        IReadOnlyList<string> reasons, DateTimeOffset? sampledAt = null) => new(nodeId, key, 120,
+        new NoteAsrResourceGateDecision(automatic, passed, reasons, sampledAt ?? DateTimeOffset.UtcNow));
 
     private static NoteAsrRoutingService Service(PimDbContext db, Guid owner, NoteAsrTaskStore tasks,
-        int? maxAutomaticFailures)
+        int? maxAutomaticFailures, int heartbeatTimeoutSeconds = 90)
     {
         var user = new FixedUser(owner);
         var materialOptions = Options.Create(new NoteMaterialUploadOptions { StorageRoot = StorageRoot });
         return new NoteAsrRoutingService(db, user, new NoteMaterialUploadStore(materialOptions),
             new AiAsrPresetRegistry(Array.Empty<IAiAsrPreset>()), tasks,
             new NoteAsrEvidenceService(db, tasks, user), new PassthroughSecrets(),
-            Options.Create(new NoteAsrRoutingOptions { MaxAutomaticResourceFailures = maxAutomaticFailures }));
+            Options.Create(new NoteAsrRoutingOptions
+            {
+                MaxAutomaticResourceFailures = maxAutomaticFailures,
+                NodeHeartbeatTimeoutSeconds = heartbeatTimeoutSeconds
+            }));
     }
 
     private static UserEntity User(Guid id) => new()
