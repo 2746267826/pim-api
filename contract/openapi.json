@@ -5243,6 +5243,9 @@
           "nodeId": {
             "format": "uuid",
             "type": "string"
+          },
+          "resourceGate": {
+            "$ref": "#/components/schemas/NoteAsrResourceGateDecision"
           }
         },
         "required": [
@@ -15465,6 +15468,11 @@
       "NoteAsrClaimDto": {
         "additionalProperties": false,
         "properties": {
+          "consecutiveAutomaticResourceFailures": {
+            "format": "int32",
+            "nullable": true,
+            "type": "integer"
+          },
           "execution": {
             "$ref": "#/components/schemas/NoteAsrExecutionDto"
           },
@@ -15475,6 +15483,17 @@
             "format": "uuid",
             "nullable": true,
             "type": "string"
+          },
+          "manualTriggerRequired": {
+            "nullable": true,
+            "type": "boolean"
+          },
+          "resourceFailureReasons": {
+            "items": {
+              "type": "string"
+            },
+            "nullable": true,
+            "type": "array"
           },
           "status": {
             "type": "string"
@@ -15789,6 +15808,9 @@
       "NoteAsrNodeDto": {
         "additionalProperties": false,
         "properties": {
+          "automaticProcessingManualRequired": {
+            "type": "boolean"
+          },
           "capabilities": {
             "items": {
               "type": "string"
@@ -15797,6 +15819,10 @@
           },
           "claimable": {
             "type": "boolean"
+          },
+          "consecutiveAutomaticResourceFailures": {
+            "format": "int32",
+            "type": "integer"
           },
           "createdAt": {
             "format": "date-time",
@@ -15823,6 +15849,22 @@
             "type": "string"
           },
           "nodeIdExternal": {
+            "type": "string"
+          },
+          "resourceDecisionAt": {
+            "format": "date-time",
+            "nullable": true,
+            "type": "string"
+          },
+          "resourceGateFailureReasons": {
+            "items": {
+              "type": "string"
+            },
+            "nullable": true,
+            "type": "array"
+          },
+          "resourceGateStatus": {
+            "nullable": true,
             "type": "string"
           },
           "resourceSnapshotJson": {
@@ -16164,6 +16206,34 @@
         "required": [
           "expectedConfigRevision",
           "expectedConsentVersion"
+        ],
+        "type": "object"
+      },
+      "NoteAsrResourceGateDecision": {
+        "additionalProperties": false,
+        "properties": {
+          "isAutomatic": {
+            "type": "boolean"
+          },
+          "passed": {
+            "type": "boolean"
+          },
+          "reasons": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "sampledAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "isAutomatic",
+          "passed",
+          "reasons",
+          "sampledAt"
         ],
         "type": "object"
       },
