@@ -1,6 +1,6 @@
 ﻿# PIM 原生客户端与笔记路线图
 
-版本：v0.53 当前执行覆盖（2026-11-02）。API/Web 产品 Release `api-v26.11.1060` 源为 PR #558 merge `7922f6e2ce6e8884dd3251c0e3af933912167d14`；Windows `windows-v26.11.1121` 源为 PR #43 merge `b0d0b28e14e58f96d45fd23b2b2d585f21fc791c`；Android `android-v26.11.1154` 源为 PR #65 merge `c5614fc80af045b16790fc45ca119b072b504482`。本层是最新执行状态；下方 v0.52 及更早内容按原字节保留作历史快照。Release 不代表生产部署、真实 provider/模型质量或物理设备验收。
+版本：v0.53 当前执行覆盖（事实冻结于 `2026-11-02T17:05:46+08:00`）。API/Web 产品 Release `api-v26.11.1060` 源为 PR #558 merge `7922f6e2ce6e8884dd3251c0e3af933912167d14`；Windows `windows-v26.11.1121` 源为 PR #43 merge `b0d0b28e14e58f96d45fd23b2b2d585f21fc791c`；Android 当前 Release `android-v26.11.1154` 源为 PR #65 merge `c5614fc80af045b16790fc45ca119b072b504482`。本层是最新执行状态；下方 v0.52 及更早内容按原字节保留作历史快照。Release 不代表生产部署、真实 provider/模型质量或物理设备验收。
 
 <a id="v053-current"></a>
 
@@ -14,19 +14,19 @@
 | --- | --- | --- |
 | API/Web | #539/#551随`api-v26.11.1052`发布；#552–554随`api-v26.11.1056`发布并由`api-v26.11.1060`继承。PR #558 source `6f6d1c11`合并为`7922f6e2ce6e8884dd3251c0e3af933912167d14`；master CI `41404982876`为6488 PASS / 100 skipped / 0 failed / 6588 total，Release 1060已核验。完整 Notes 隔离 PG绑定`6f6d1c11`：402 PASS / 2 URL opt-in skipped / 0 failed / 404 total。 | 不因 issue仍 OPEN而误写修复未实现；production部署、真实长请求/provider/网关质量、付费Batch/audio/region/TTL未验证。两个URL skip不是pass；该Notes套件也不是全部API测试。 |
 | Windows | [PR #43](https://github.com/2746267826/pim-windows/pull/43) head `774ce1d8f65bbdc632dbc020e0e60ef573041418`于`2026-11-02T08:27:28Z`普通matched-head merge为`b0d0b28e14e58f96d45fd23b2b2d585f21fc791c`；[master CI 41413209690](https://github.com/2746267826/pim-windows/actions/runs/41413209690)的15 jobs（含Gate/release）全SUCCESS。正式[windows-v26.11.1121](https://github.com/2746267826/pim-windows/releases/tag/windows-v26.11.1121)于08:31:17Z发布，tag指向merge；633 B `version.json` ledger SHA-256 `8797f419a1eb777c944c3e311ebd9281e8fefb26049b9fc29b754066854122ce`与Release digest MATCH（回执：`scratch/full-roadmap-20261101/windows-resource-delivery-20261102/verified-release-receipt.json`）。 | #43持久化冻结resource decision并通过typed claim上报，重试复用原intent/key；没有GPU/VRAM测量或新阈值。仅下载核对ledger，不声称完整安装包下载、安装或实际硬件验收。 |
-| Android | 正式[android-v26.11.1154](https://github.com/2746267826/pim-android/releases/tag/android-v26.11.1154)源为merge`c5614fc80af045b16790fc45ca119b072b504482`，包含原生笔记材料包、录音、TASK-01和部分MIG动作。后续[PR #66](https://github.com/2746267826/pim-android/pull/66) head `5d106e335009644344c7b197ca6dca680014aa73`为电脑/手机历史查询切片；source receipt记录App 2228项实际通过，Core 74为UP-TO-DATE缓存，0 fail/skip。 | [PR #66首轮CI 41411854148](https://github.com/2746267826/pim-android/actions/runs/41411854148) Contract freshness失败，定位为helper在fixture cwd错误解析source路径；Contract codegen freshness成功。Dewey独立修复中；不是已确认的上游API bytes不匹配。尚无merge/Release，无设备测试。 |
-| Issues / 验收 | API #525/#533由用户关闭；#533有真机25 MB日志、66 MB core导出成功且未闪退证据。API #516与Android #59–63仍OPEN；#59–63既有修复随`android-v26.11.1150`发布并由1154继承。 | #533关闭不扩展为全部Android设备/AC验收；issue OPEN也不等于修复代码未交付。Production、provider、硬件、设备/OEM及完整端到端按具体证据仍`NOT-VERIFIED`。 |
+| Android | 正式[android-v26.11.1154](https://github.com/2746267826/pim-android/releases/tag/android-v26.11.1154)源为merge`c5614fc80af045b16790fc45ca119b072b504482`，包含原生笔记材料包、录音、TASK-01和部分MIG动作。电脑/手机活动历史查询切片[PR #66](https://github.com/2746267826/pim-android/pull/66)已由修复提交`7ffe554a88ab86663383ae57b7eefe1ef5ab8a4d`推送；新CI [41417477292](https://github.com/2746267826/pim-android/actions/runs/41417477292)的Contract freshness与Contract codegen均SUCCESS，App/shell build仍进行中。 | 前一head`5d106e335009644344c7b197ca6dca680014aa73`的首轮CI 41411854148失败记录保留；新head尚未完成适用build/Gate，未合并/发布。临时本地Kotlin结果14通过/2失败，不作为绿灯或替代CI。无设备测试；该切片属于MIG-05/06，不是ASR consumer依赖。 |
+| Issues / 验收 | API #525/#533由用户关闭；#533的具体物理机样本、导出大小与结果未在本层以issue/comment直接回执核实，故不列数字或扩展结论。API #516与Android #59–63仍OPEN；#59–63既有修复随`android-v26.11.1150`发布并由1154继承。#516既有评论6555130064于`2026-11-02T08:58:51Z`仅更新Windows 1121当前段，GET body精确MATCH且原历史全文保留；回执：`scratch/full-roadmap-20261101/windows-resource-delivery-20261102/516-progress-windows1121-receipt.json`。 | #533关闭不扩展为全部Android设备/AC验收；issue OPEN也不等于修复代码未交付。Production、provider、硬件、设备/OEM及完整端到端按具体证据仍`NOT-VERIFIED`。 |
 
 ### M0–M5 当前开发总账
 
 | 阶段 | 已交付实现 | 仍缺的具体代码 / 流程 | 外部验收 / 依赖 |
 | --- | --- | --- | --- |
-| M0 风险与数据边界 | Offline-first、owner/consent/fixed-version基础；#533用户真机诊断导出问题已关闭。 | SAFE-01对derived/audio副本、unknown `providerAttempted`、活动provider工作和幂等清理的全量安全围栏；NOTE-03稳定旧身份/附件映射与可回滚迁移。公开整篇DELETE路由保持关闭。 | Production retention/deletion audit、目标设备与真实录音/笔触/后台风险。 |
+| M0 风险与数据边界 | Offline-first、owner/consent/fixed-version基础；#533由用户关闭；SAFE readguard test 与 isolated route fixture commits `2c6e91f5`、`0820f1d6` 已集成。 | SAFE-01对derived/audio副本、unknown `providerAttempted`、活动provider工作和幂等清理的全量安全围栏仍未完成；unknown-state包由Euler继续开发，当前不得标全绿。NOTE-03稳定旧身份/附件映射与可回滚迁移。公开整篇DELETE路由保持关闭。 | Production retention/deletion audit、目标设备与真实录音/笔触/后台风险。 |
 | M1 本地笔记 | Android 1154有笔记库、Markdown编辑/历史（`NoteEditHistory`与history journal支持整篇undo/redo及重启恢复）、录音、手写/图片、材料包v1；Windows 1121有本机笔记、编辑/不可变版本、WinMM PCM主动录音及校验`.pimnote.zip`。 | 长文压力、autosave/崩溃故障矩阵尚未完整证明；legacy quick-note稳定身份与附件crosswalk；三端包格式兼容需共享格式或converter，不能混称已互通。 | 100/180分钟、Android OEM/锁屏/来电/手写和Windows麦克风/睡眠恢复。 |
 | M2 云端与多端处理 | API 1052交付#539/#551、1056交付#552–554、1060继承；固定版本、分段任务、receipt、不可变派生输出及客户端消费者基础已有。 | 逐材料coverage/receipt、冲突双方恢复与各端取消/重试状态按实际缺口完善；后端#539/#551–554不得继续误列为未实现。 | Production部署、真实provider/网关/长请求、付费Batch/audio/region/TTL、真实课堂与后台恢复。 |
 | M3 混合材料 | Web bundle preview/有界原包下载；Windows本机混合材料编辑、服务器schema-v1 builder/restore与录音；Android 1154材料包和录音代码。 | 明确共同互操作格式或converter，保留source/raw JSON、block顺序/身份/尺寸与音频。Windows`.pimnote.zip`与服务器schema-v1包是不同格式。 | 三端真实文件往返、部署、设备/OEM和长音频完整性。 |
 | M4 智能组织 | API/Web TASK-01建议持久化、CAS编辑/放弃/确认与幂等创建；Android 1154和Windows 1121均有原生建议消费操作。 | 只补可定位的来源回链、重试/session fence、事实/推断展示差异；已有task/calendar CRUD与suggestion UI不能列为未实现。 | 授权真实笔记提取准确性；付费提取需明确授权。 |
-| M5 业务迁移 | Android有Today/workbench、任务日历、confirmation/reminder/habit、分类/应用上下文、设备和部分诊断操作；Windows有笔记/录音/planner/TASK-01/device center/tray/worker基础。 | 按MIG-01–13补明确的Web-only动作、Windows knowledge category/app-context、Android MIG-05/06活动查询切片（PR #66）及SAFE/诊断剩余项；不以入口/导航存在宣称迁移完成。 | 每域权限/owner隔离、真实operator workflow、生产数据迁移。 |
+| M5 业务迁移 | Android有Today/workbench、任务日历、confirmation/reminder/habit、分类/应用上下文、设备和部分诊断操作；Windows有笔记/录音/planner/TASK-01/device center/tray/worker基础。PR #66对应MIG-05/06活动历史查询；修复已推送，新CI两项契约门禁通过、App/shell build待完成。 | 按MIG-01–13补明确的Web-only动作、Windows knowledge category/app-context及SAFE/诊断剩余项；不以入口/导航存在宣称迁移完成。 | 每域权限/owner隔离、真实operator workflow、生产数据迁移。 |
 
 ### 32 capability 逐平台实现差距
 
@@ -73,8 +73,8 @@
 | MIG-02 | task CRUD/status/timer、task-book、calendar/event常用动作；recurrence/Outlook写入受限。 | planner有常见task/calendar操作；recurrence/task-book parity未证。 | 重复范围、提醒附件、Outlook write-back、高级task-book。 | 多端日历一致性。 |
 | MIG-03 | pending confirmation列表/详情/拒绝、提醒dismiss/snooze、habit archive；confirm执行/habit创建编辑/check-in/report仍Web。 | notification action router有；多数业务页仍Web。 | 安全预览后逐项迁剩余操作。 | 真实提醒与审阅。 |
 | MIG-04 | legacy quick-note list/detail/create/edit/lifecycle；HTML只读，通用文件写缺。 | `/quick-notes` Web兼容与新本机库分离。 | 稳定身份/附件映射、可逆导入、文件动作。 | 生产迁移回滚演练。 |
-| MIG-05 | 电脑/手机历史查询属于未发布PR #66。 | 1118/1121本机已结束电脑会话历史、筛选、详情；服务器完整历史仍Web。 | PR #66修helper cwd路径并通过普通freshness/CI；Windows必要的服务器历史页。 | 多日采集和隐私。 |
-| MIG-06 | 1154有位置采集/轨迹；usage/location历史浏览在PR #66。 | 不适用手机采集。 | PR #66普通freshness/Gate及页面取消/session fence。 | 实地/后台权限。 |
+| MIG-05 | PR #66活动历史查询修复提交`7ffe554a`已推送；CI 41417477292 Contract freshness/codegen SUCCESS，App/shell build待验证。 | Windows 1121本机已结束电脑会话历史、筛选、详情；服务器完整历史仍Web。 | PR #66适用build/Gate；Windows必要的服务器历史页。 | 多日采集和隐私。 |
+| MIG-06 | Android 1154有位置采集/轨迹；usage/location历史浏览在PR #66，修复head的两项契约门禁通过，build仍进行中。 | 不适用手机采集。 | PR #66适用build/Gate及页面取消/session fence。 | 实地/后台权限。 |
 | MIG-07 | `NativeWorkbenchRepository` + `KnowledgeNativeContent`有category tree CRUD、app search、app-context list/add/delete；不是知识条目全文CRUD。 | 无原生knowledge category/app-context页面，仍WebView。 | Windows原生分类/应用上下文；Android条目全文/关系仅在合同支持范围内。 | 真实数据迁移/关系/可用性。 |
 | MIG-08 | managed device list/sort/rename/delete-preview/confirmed delete。 | 设备列表、基本详情与collection quality；已发布范围未证管理写动作。 | Windows明确需要的管理写/audit。 | 真实node生命周期/库存。 |
 | MIG-09 | 登录/session/owner-generation基础；完整admin/user管理未迁。 | Login/DPAPI/server地址原生；admin/user仍Web。 | 有typed、安全角色边界的缺失动作。 | 跨账号安全。 |
