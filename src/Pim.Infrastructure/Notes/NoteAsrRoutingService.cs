@@ -857,13 +857,29 @@ public sealed class NoteAsrRoutingService(PimDbContext db, ICurrentUserService u
                         throw new DomainException(40901, "租约已被并发终结，回执未重复完成");
                     if (request.Kind == "complete" && request.Result == "Succeeded")
                     {
-                        await db.NoteAsrNodes
-                            .Where(x => x.Id == lease.NodeId && x.OwnerId == owner)
-                            .ExecuteUpdateAsync(setters => setters
-                                .SetProperty(x => x.ConsecutiveAutomaticResourceFailures, 0)
-                                .SetProperty(x => x.ResourceGateStatus, "recovered")
-                                .SetProperty(x => x.ResourceGateFailureReasonsJson, "[]")
-                                .SetProperty(x => x.UpdatedAt, now), token);
+                        if (db.Database.IsRelational())
+                        {
+                            await db.NoteAsrNodes
+                                .Where(x => x.Id == lease.NodeId && x.OwnerId == owner)
+                                .ExecuteUpdateAsync(setters => setters
+                                    .SetProperty(x => x.ConsecutiveAutomaticResourceFailures, 0)
+                                    .SetProperty(x => x.ResourceGateStatus, "recovered")
+                                    .SetProperty(x => x.ResourceGateFailureReasonsJson, "[]")
+                                    .SetProperty(x => x.UpdatedAt, now), token);
+                        }
+                        else
+                        {
+                            var node = await db.NoteAsrNodes.SingleOrDefaultAsync(
+                                x => x.Id == lease.NodeId && x.OwnerId == owner, token);
+                            if (node is not null)
+                            {
+                                node.ConsecutiveAutomaticResourceFailures = 0;
+                                node.ResourceGateStatus = "recovered";
+                                node.ResourceGateFailureReasonsJson = "[]";
+                                node.UpdatedAt = now;
+                                await db.SaveChangesAsync(token);
+                            }
+                        }
                     }
                 }
                 return new AckOutcome(new(lease.Id, "accepted", false, lease.FencingToken), attempt);
