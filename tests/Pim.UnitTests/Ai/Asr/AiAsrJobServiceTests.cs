@@ -24,6 +24,20 @@ namespace Pim.UnitTests.Ai.Asr;
 public sealed class AiAsrJobServiceTests
 {
     [Fact]
+    public async Task Repeated_fixtures_do_not_exhaust_EF_provider_cache_before_mobile_contexts()
+    {
+        for (var i = 0; i < 24; i++)
+        {
+            await using var fixture = await InMemoryFixture.CreateAsync();
+            Assert.NotNull(fixture.Db.Model);
+        }
+
+        await using var mobile = await Pim.UnitTests.Mobile.DeviceScopeTestDb
+            .CreateAsync(Guid.NewGuid());
+        Assert.True(await mobile.Db.Database.CanConnectAsync());
+    }
+
+    [Fact]
     public async Task Submit_is_durable_replayable_owner_scoped_cancellable_and_token_preflighted()
     {
         await using var fixture = await InMemoryFixture.CreateAsync();
@@ -750,6 +764,7 @@ public sealed class AiAsrJobServiceTests
 
     private sealed class InMemoryFixture : IAsyncDisposable
     {
+        private static readonly InMemoryDatabaseRoot SharedRoot = new();
         private readonly ServiceProvider _scopes;
         private readonly DbContextOptions<PimDbContext> _options;
 
@@ -777,11 +792,8 @@ public sealed class AiAsrJobServiceTests
         public static async Task<InMemoryFixture> CreateAsync()
         {
             var name = "asr-job-" + Guid.NewGuid().ToString("N");
-            var root = new InMemoryDatabaseRoot();
             var options = new DbContextOptionsBuilder<PimDbContext>()
-                .UseInMemoryDatabase(name, root)
-                .ConfigureWarnings(warnings => warnings.Ignore(
-                    CoreEventId.ManyServiceProvidersCreatedWarning))
+                .UseInMemoryDatabase(name, SharedRoot)
                 .Options;
             var db = new PimDbContext(options);
             var owner = new Owner();
@@ -802,9 +814,7 @@ public sealed class AiAsrJobServiceTests
 
             var services = new ServiceCollection();
             services.AddDbContext<PimDbContext>(builder =>
-                builder.UseInMemoryDatabase(name, root)
-                    .ConfigureWarnings(warnings => warnings.Ignore(
-                        CoreEventId.ManyServiceProvidersCreatedWarning)));
+                builder.UseInMemoryDatabase(name, SharedRoot));
             return new InMemoryFixture(db, services.BuildServiceProvider(), owner, files, secrets,
                 profile, new RecordingDispatcher(), options);
         }
