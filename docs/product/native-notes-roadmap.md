@@ -33,7 +33,7 @@
 | 范围 | 当前实际状态 | 本轮继续处理 |
 | --- | --- | --- |
 | API #539 / #551 | 已随 PR #555 合并为 `def642099aeb5d8057b2a5bc620b05b6f943d0ec`；master CI `41312005940` 成功，Release `api-v26.11.1052` 的标签和实际台账均已核验。 | 生产长请求、旧 pending 恢复与用户手机同步收敛未在本轮复验；两项保持 OPEN。 |
-| API #552 / #553 / #554 | 持久异步 ASR、模型输出预算与 Web 配置、独立传输观察均在 PR #556，远端 head `81c30bb485f72730b77356866332a7e79dda7a68`。完整 CI `41322796046` 失败，尚未合并或发布。 | 四项笔记回归与 receipt 校验在 worker `76f93109` 实跑 9/9 通过，父审查后集成为 `2d348c9d`；EF provider fixture 修复仍在验证。两类修复齐备后重新通过完整 CI Gate。 |
+| API #552 / #553 / #554 | 持久异步 ASR、模型输出预算与 Web 配置、独立传输观察均在 PR #556。首轮 head `81c30bb485f72730b77356866332a7e79dda7a68` 的完整 CI `41322796046` 失败，尚未合并或发布。 | 四项笔记回归与 receipt 校验实跑 9/9 通过，父集成 `2d348c9d`；EF provider fixture 根因修复 `a84b2fb7` 的相关测试为 58 PASS / 6 条件跳过 / 0 FAIL。两类修复已齐备，等待新完整 CI Gate；聚焦测试不代替整套回归。 |
 | Android #59 / #60 / #61 / #62 / #63 | PR #64 正常合并为 `2e7867d7b85797c75e9d1f9cd25270e36bfb3279`；master CI `41316247538` 成功，Release `android-v26.11.1150` 标签及实际台账已核验。 | 五项均已更新既有 issue 评论；升级后的历史诊断数据、崩溃与 OEM 两小时定位等实机验收仍缺，保持 OPEN。 |
 | Windows 跨端笔记首批 | PR #41 正常合并为 `7ce774b0f6e64dc0b7cfbbc797175a5315df7a4c`；master CI `41319049639` 成功，Release `windows-v26.11.1114` 标签及实际台账已核验。 | 下一批云端材料恢复继续补齐多分片录音、混合块身份和顺序；正式契约刷新等待 API 合并。 |
 
@@ -60,6 +60,7 @@ API #525/#533 继续保持用户已关闭状态；本轮没有重新打开。202
 - Windows 已核验发布台账：`26.11.1114`，633 B，SHA-256 `ed0f58c33691107e94ed44afa9fee9a06d093b3c52fd6b144911a23ffbd03052`。首批最终 App `105/105`、0 fail/error/skip，TRX SHA-256 `22a78ecafa20ed71ac891dd59dd214e99651657570aaf5abb198a23928902c13`；未变的 Core 既有 `332/332` 单独记录。
 - SAFE ZIP worker focused `2/2` 是 TestHost/EF InMemory 证据，不是 PostgreSQL、真实设备或跨端全材料往返验收。新 API 形状必须重新从实际运行的 Test API 导出，经 `jq -S` 与官方生成/只读一致性检查。
 - 首批 Notes 修复的 worker `76f93109` 实跑四项原 CI 失败用例与 receipt 校验，共 `9/9 PASS / 0 skipped`，日志 SHA-256 `c03d6ad15818005f17dd26b6de4cc781a6ffbf6dbedf0fa65123419feceb55b0`；父审查确认音频查询仍从 owner-scoped 日志集合关联，模型、revision、endpoint、请求与来源指纹继续严格校验，集成为 `2d348c9d`。此结果不代替后续完整 CI。
+- EF fixture worker `a569dce2` 集成为 `a84b2fb7`：共享稳定 InMemory root、数据库名称保持唯一，去除局部 warning suppress；新增连续 24 次 fixture 后构造 Mobile context 的回归。相关测试 `58 PASS / 6 条件跳过 / 0 FAIL / 64 total`，六项专用 PostgreSQL 条件测试未在该回执执行，TRX SHA-256 `04abd6e1fcbc37db2743d191cd22745284af66918c756d15fd9782ccd8804d98`。
 - 下一批 API 从实际 Test API source `9acde62c08c5b15841e73937810afc0b3fee7ff2`、新建专用合成数据库导出并 `jq -S`；契约提交 `28eb0fe8`，1,251,056 B，SHA-256 `e7741cf3a69a30eb178d3a77fa329c71bc657dd2ede186c125816e63b6d2bfb2`。相对首批仅新增 binary ZIP 路径 `GET /api/v1/native-notes/versions/{versionId}/bundle`，没有恢复 unsafe DELETE。官方 Web update/check 通过；该开发契约尚非 merged-master consumer freshness。
 - 下一批材料 HTTP/store/OpenAPI shape 父集成实跑 `56/56 PASS / 0 skipped`，TRX SHA-256 `6ee4435aa62d8137c5881853d850c2589ac9d596abcc88d6b920a3fd5e619395`。Web source `9acde62c` 定向 `28/28`、完整 `66 files / 537 tests` 通过，build 通过，lint 0 errors / 78 warnings；完整套使用 `--maxWorkers=4`，默认并发首次一项 5 秒超时的旧回执保留，未修改断言或超时配置。后续下载入口新改动另作验证。
 - 交付次序：首批 CI 根因修复 → exact-head CI Gate → 正常 matched-head merge → master CI/Release/tag/实际台账 → 客户端正式刷新/生成与各自 PR/CI/Release；后续 M3/SAFE/资源反馈保持独立批次。
