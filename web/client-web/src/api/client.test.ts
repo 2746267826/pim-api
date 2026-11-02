@@ -31,6 +31,22 @@ function deferred<T>(): {
   return { promise, resolve }
 }
 
+function responseWithCancelSpy(status: number, headers: HeadersInit = {}): {
+  response: Response
+  cancel: ReturnType<typeof vi.fn>
+} {
+  const cancel = vi.fn(() => Promise.resolve())
+  return {
+    response: {
+      ok: status >= 200 && status < 300,
+      status,
+      headers: new Headers(headers),
+      body: { cancel },
+    } as unknown as Response,
+    cancel,
+  }
+}
+
 beforeEach(() => {
   resetRefreshState()
   setApiBase('')
@@ -229,6 +245,56 @@ describe('有界原始材料下载', () => {
       .rejects.toThrow('字节预算')
     expect(getReader).not.toHaveBeenCalled()
     expect(cancel).toHaveBeenCalledOnce()
+  })
+
+  it.each([
+    ['无效预算', { maxBytes: 0 }, headers],
+    ['无效 Content-Length', {}, { ...headers, 'content-length': '1.5' }],
+  ])('%s 时取消尚未读取的响应体', async (_label, override, responseHeaders) => {
+    const { response, cancel } = responseWithCancelSpy(200, responseHeaders)
+    vi.stubGlobal('fetch', vi.fn(async () => response))
+
+    await expect(fetchBoundedDownload('/bundle', undefined, {
+      ...options,
+      ...override,
+    })).rejects.toThrow()
+    expect(cancel).toHaveBeenCalledOnce()
+  })
+
+  it('401 刷新替换原响应前取消未消费的响应体', async () => {
+    setTokens('old-access', 'refresh-token')
+    const unauthorized = responseWithCancelSpy(401)
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).includes('/auth/refresh')) {
+        return jsonResponse({
+          code: 0,
+          message: 'ok',
+          data: { accessToken: 'new-access', refreshToken: 'new-refresh' },
+          timestamp: 't',
+        })
+      }
+      if (new Headers(init?.headers).get('Authorization') === 'Bearer new-access') {
+        return new Response(new Uint8Array([1]), {
+          headers: { ...headers, 'content-length': '1' },
+        })
+      }
+      return unauthorized.response
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(fetchBoundedDownload('/bundle', undefined, options)).resolves.toMatchObject({
+      filename: options.expectedFilename,
+    })
+    expect(unauthorized.cancel).toHaveBeenCalledOnce()
+  })
+
+  it('非成功 HTTP 响应抛错前取消未消费的响应体', async () => {
+    const failure = responseWithCancelSpy(503)
+    vi.stubGlobal('fetch', vi.fn(async () => failure.response))
+
+    await expect(fetchBoundedDownload('/bundle', undefined, options))
+      .rejects.toThrow('HTTP 503')
+    expect(failure.cancel).toHaveBeenCalledOnce()
   })
 
   it('拒绝错误 MIME、错误文件名和声明长度不匹配', async () => {

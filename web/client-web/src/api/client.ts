@@ -477,7 +477,12 @@ export async function fetchBoundedDownload(
 ): Promise<BoundedDownload> {
   const requestOptions = { signal, assertActive: opts.assertActive }
   const res = await fetchDownloadResponse(path, signal, opts)
-  assertRequestActive(requestOptions)
+  try {
+    assertRequestActive(requestOptions)
+  } catch (error) {
+    discardDownloadBody(res)
+    throw error
+  }
 
   const expectedType = (opts.expectedContentType ?? 'application/zip').toLowerCase()
   const actualType = (res.headers.get('content-type') ?? '').split(';', 1)[0]?.trim().toLowerCase()
@@ -500,12 +505,14 @@ export async function fetchBoundedDownload(
 
   const maxBytes = opts.maxBytes ?? MAX_BOUNDED_DOWNLOAD_BYTES
   if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) {
+    discardDownloadBody(res)
     throw new RangeError('下载预算必须是正安全整数')
   }
   const rawLength = res.headers.get('content-length')
   let declaredLength: number | undefined
   if (rawLength !== null) {
     if (!/^(0|[1-9]\d*)$/.test(rawLength.trim())) {
+      discardDownloadBody(res)
       throw new ApiError('下载长度标头无效，未保存文件', -1, res.status)
     }
     declaredLength = Number(rawLength)
@@ -566,17 +573,29 @@ async function fetchDownloadResponse(
     return headers
   }
   let res = await fetch(apiUrl(path), { headers: authHeaders(), signal })
-  assertRequestActive(requestOptions)
+  try {
+    assertRequestActive(requestOptions)
+  } catch (error) {
+    discardDownloadBody(res)
+    throw error
+  }
   if (res.status === 401 && (opts.refreshOn401 || host)) {
+    discardDownloadBody(res)
     assertRequestActive(requestOptions)
     const refreshed = await refreshOnce(requestSession ?? captureAuthSession())
     assertRequestActive(requestOptions)
     if (refreshed.status !== 'ok') throwRefreshFailure(refreshed)
     if (!sessionStillCurrent(refreshed.session)) throwRefreshFailure(refreshed)
     res = await fetch(apiUrl(path), { headers: authHeaders(), signal })
-    assertRequestActive(requestOptions)
+    try {
+      assertRequestActive(requestOptions)
+    } catch (error) {
+      discardDownloadBody(res)
+      throw error
+    }
   }
   if (!res.ok) {
+    discardDownloadBody(res)
     throw new ApiError(`下载失败（HTTP ${res.status}）`, -1, res.status)
   }
   return res
@@ -603,5 +622,9 @@ function isSafeDownloadFilename(filename: string): boolean {
 }
 
 function discardDownloadBody(response: Response): void {
-  void response.body?.cancel?.().catch(() => undefined)
+  try {
+    void response.body?.cancel?.().catch(() => undefined)
+  } catch {
+    // Discarding a rejected response must not replace the original error.
+  }
 }
