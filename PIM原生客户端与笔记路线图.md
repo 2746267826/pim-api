@@ -11,7 +11,7 @@
 - M0–M5、#516、#539、#551–554、Android #59–63 均未整体完成，issues 保持开放。生产、真实 provider、硬件、设备/OEM 与端到端跨端往返仍 NOT-VERIFIED。
 
 <!-- current-pointer-pr44-pr67-repaired-20261102 -->
-## 当前执行检查点（2026-11-02）
+## 历史执行检查点（2026-11-02；当前状态见上方 2026-11-04 快照）
 
 - **Android 当前产品**：正式版本 `android-v26.11.1161` 已于 `2026-11-02T11:02:40Z` 发布，继承 PR #66 的1158。PR #67 合并提交 `56169e788c30bcec18a42753906c83f8e8fce146`；master CI `41432001403` 七个 jobs 全部成功，tag 指向 merge，480 B版本账本 SHA-256 `88cabc01b60b24b54ba3cf496c976896c9011d35df2c65df8574b340e72d5b34` 与 Release digest匹配。核验回执：`scratch/android-pr67-passive-location-20261102/delivery/verified-release-receipt.json`。这不等同于真实设备/OEM验收。
 - **Android #67 验证**：最终 head `fe9bf9ea4f88af58e752a00714cd5cad8101abc7` 的 PR CI `41429913121` 与 CI Gate 全部成功，正常 matched-head 合并并已发布1161。最终源码 App 2239/2239、focused 2/2、Node editor 9/9 与 build 通过，父独立核验全部190份XML与5份日志哈希；回执 `scratch/android-pr67-passive-location-20261102/parent-verified-receipt.json`。首轮 CI `41424187890` 单项失败原始证据保留；生产仍使用 `Dispatchers.Default`。
