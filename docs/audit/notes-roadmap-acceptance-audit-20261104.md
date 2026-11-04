@@ -8,8 +8,9 @@
 
 - API：材料定向测试 26/26；Test Swagger HTTP 200；官方 Web contract update/check 通过；Notes+Contract 回归 438 total / 330 passed / 108 skipped / 0 failed / 0 timeout。108 skipped 不计 PASS。
 - Web 本地提交链：`78c4a17a` → `d229185b` → `f5037e08` → `e6f5ea82` → `d0b796f1`。四个 native-notes 聚焦文件 52/52，`npm run build` PASS，lint 仅既有 warnings，材料保全已有加测。Playwright 因 Chromium executable 缺失 FAIL，未进入页面、无截图；浏览器验收 NOT-VERIFIED。
-- Android Draft PR #70 / `3f6b1d4`：`:app:compileDebugKotlin` PASS、契约生成物一致；2256 JVM 中 14 项失败，首个为既有 `NoteEditHistoryTest.oversizedDocumentDegradesHistoryWhileTheNoteStillSaves`；connected UI NOT-VERIFIED。
+- Android Draft PR #70 / `3f6b1d4`：`:app:compileDebugKotlin` PASS、契约生成物一致；2256 JVM 中 14 项失败，但当前缺少完整 XML/日志，无法分类全部 14 项。首个用例名为 `NoteEditHistoryTest.oversizedDocumentDegradesHistoryWhileTheNoteStillSaves`，不能据此称为既有失败；其余 13 项无法精确归因。connected UI 因 ADB、Android SDK 与已核实专用设备均不可用而 NOT-VERIFIED。
 - 正常跨端发现、完整材料恢复、续写与冲突仍未整体验收。ASR 凭据仅管理员通过「设置 → AI 与 ASR → ASR 配置」管理；普通用户不显示凭据配置，阅读写作不依赖 ASR 配置。
+- 正常同步不需要 Android 包导入：各客户端适配共同云端契约，内部格式差异由客户端处理；Android 包仅用于离线交换、备份恢复或旧格式兼容。
 - M0–M5、#516、#539、#551–554、Android #59–63 未整体完成；issues 不关闭。以下原审计结论是本轮早期状态快照，若与本更新冲突，以本节及三份当前状态文档为准。
 
 本审计只核对文档、源码/提交记录、已有测试回执和 2026-11-04 的远端只读快照，不修改产品代码、CI 或 issue。结论是：M0–M5 均未整体完成；API #516、#539、#551–554 与 Android #59–63 在快照中仍为 OPEN。OPEN 不等于完全没有实现，但也不等于全部验收完成。生产、真实 provider、物理设备/OEM 和 Web 与 Android 之间完整往返均未验证。
@@ -44,7 +45,7 @@
 
 | Issue | 2026-11-04 远端状态 | 可证实内容 / 边界 | 下一步 |
 | --- | --- | --- | --- |
-| API #516 | OPEN | 五阶段、AC1–19、双通道/资源退避与 MiMo Batch 规划保留；已有 provider/mock/契约等工程切片，不代表真实音频 Batch、成本、region/TTL 或硬件闭环 | 按 Phase 1→2/3→4→5 的顺序验收；真实能力保持 NOT-VERIFIED |
+| API #516 | OPEN | 五阶段、AC1–19、双通道/资源退避与 MiMo Batch 规划保留；MiMo Batch 已有工程实现切片，但 Phase 2 用户闭环未完成，真实音频 Batch 能力、质量、费用、region/TTL 与硬件闭环均未验证；代码/mock/契约不等于用户可用 | 按 Phase 1→2/3→4→5 的顺序验收；先闭合 Phase 2 用户闭环，真实能力保持 NOT-VERIFIED |
 | API #539 | OPEN | 历史发布包含同步耗时/pending/错误码相关修复；固定 issue 快照仍 OPEN，需逐条对 AC 复核 | 核对长请求上限、pending 收敛、错误码和客户端表现 |
 | API #551 | OPEN | 历史发布包含缺口窗口/重复上传修复方向；issue 描述的真实空洞收敛未获本轮现场复核 | 用受控数据验证窗口收敛、重采和重复事件上传 |
 | API #552 | OPEN | 历史发布包含 ASR/网关超时相关修复；8 分 28 秒真实音频与部署超时仍 NOT-VERIFIED | 在隔离环境验证长音频及网关/模型超时区分 |
