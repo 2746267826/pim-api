@@ -37,7 +37,7 @@ export interface NewInkInput {
 }
 
 export type MaterialDraftBlock =
-  | { kind: 'markdown'; id: string; text: string }
+  | { kind: 'markdown'; id: string; text: string; source?: Record<string, unknown> }
   | ({ kind: 'photo' } & (NewPhotoInput | ExistingPhotoInput))
   | ({ kind: 'ink' } & (ExistingInkInput | NewInkInput))
 
@@ -49,6 +49,7 @@ export interface ParsedPhotoBlock {
   sha256: string
   path: string
   fileIndex: number
+  source: Record<string, unknown>
 }
 
 export interface ParsedInkBlock {
@@ -58,10 +59,11 @@ export interface ParsedInkBlock {
   path: string
   fileIndex: number
   previewSha256: string
+  source: Record<string, unknown>
 }
 
 export type ParsedMaterialBlock =
-  | { id: string; kind: 'markdown'; text: string }
+  | { id: string; kind: 'markdown'; text: string; source: Record<string, unknown> }
   | ParsedPhotoBlock
   | ParsedInkBlock
 
@@ -73,12 +75,28 @@ export interface ParsedNoteMaterial {
   createdAtMillis: number
   blocks: ParsedMaterialBlock[]
   recordings: number
+  recordingEntries: unknown[]
+  manifestFiles: PreservedMaterialFile[]
+  sourceInputJson: string
 }
 
 export interface MaterialFileSpec {
   path: string
   kind: string
   bytes: Uint8Array
+  sha256: string
+  sizeBytes: number
+  blockId?: string
+  recordingId?: string
+  segment?: number
+  chunkIndex?: number
+  samples?: number
+  preserved?: boolean
+}
+
+export interface PreservedMaterialFile {
+  path: string
+  kind: string
   sha256: string
   sizeBytes: number
   blockId?: string
@@ -109,6 +127,10 @@ export interface BuildMaterialInput {
   createdAtMillis: number
   blocks: MaterialDraftBlock[]
   recordings?: unknown[]
+  preservedRecordings?: unknown[]
+  preservedFiles?: PreservedMaterialFile[]
+  preserveSourceFiles?: boolean
+  sourceInputJson?: string
 }
 
 const encoder = new TextEncoder()
@@ -150,7 +172,7 @@ export async function buildMaterialBundle(input: BuildMaterialInput): Promise<Ma
     if (!block.id || blockIds.has(block.id)) throw new Error('正文块标识重复，请刷新后重试')
     blockIds.add(block.id)
     if (block.kind === 'markdown') {
-      noteBlocks.push({ id: block.id, kind: 'markdown', text: block.text })
+      noteBlocks.push({ ...(block.source ?? {}), id: block.id, kind: 'markdown', text: block.text })
       rendered.push(block.text)
       continue
     }
@@ -164,7 +186,7 @@ export async function buildMaterialBundle(input: BuildMaterialInput): Promise<Ma
         throw new Error('已保存照片的摘要发生变化，未创建新版本')
       }
       const path = `assets/${block.assetId}.${extension}`
-      noteBlocks.push({
+      noteBlocks.push({ ...(block.source ?? {}),
         id: block.id,
         kind: 'photo',
         assetId: block.assetId,
@@ -189,7 +211,7 @@ export async function buildMaterialBundle(input: BuildMaterialInput): Promise<Ma
     if ('sha256' in block && hash !== block.sha256) throw new Error('已保存手写卡片的摘要发生变化，未创建新版本')
     if (block.bytes.length > 40 * 1024 * 1024) throw new Error('单张手写预览不能超过 40 MiB')
     const path = `assets/${block.id}-${hash}.png`
-    noteBlocks.push({ id: block.id, kind: 'ink', ink: block.ink })
+    noteBlocks.push({ ...(block.source ?? {}), id: block.id, kind: 'ink', ink: block.ink })
     rendered.push(`![手写卡片](${path})\n<!-- 可编辑笔迹、身份和尺寸保存在同包 note.json 中 -->`)
     files.push({
       path,
@@ -201,7 +223,13 @@ export async function buildMaterialBundle(input: BuildMaterialInput): Promise<Ma
     })
   }
 
+  const sourceInput = input.sourceInputJson ? JSON.parse(input.sourceInputJson) as {
+    [key: string]: unknown
+    note?: Record<string, unknown>
+  } : undefined
+  const sourceNote = sourceInput?.note
   const note = {
+    ...(sourceNote ?? {}),
     schemaVersion: 1,
     id: input.noteId,
     revision: input.revision,
@@ -210,11 +238,12 @@ export async function buildMaterialBundle(input: BuildMaterialInput): Promise<Ma
     blocks: noteBlocks,
   }
   const inputDocument = {
+    ...(sourceInput ?? {}),
     schemaVersion: 1,
     createdAtMillis: input.createdAtMillis,
     id: input.versionId,
     note,
-    recordings: input.recordings ?? [],
+    recordings: input.preservedRecordings ?? input.recordings ?? [],
   }
   const inputJson = JSON.stringify(inputDocument)
   const noteJson = JSON.stringify(note)
@@ -222,7 +251,7 @@ export async function buildMaterialBundle(input: BuildMaterialInput): Promise<Ma
 
   const documentBytes = encoder.encode(documentMarkdown)
   const noteBytes = encoder.encode(noteJson)
-  files.unshift(
+  const metadataFiles: MaterialFileSpec[] = [
     {
       path: 'note.json',
       kind: 'Document',
@@ -237,7 +266,30 @@ export async function buildMaterialBundle(input: BuildMaterialInput): Promise<Ma
       sha256: await sha256Hex(documentBytes),
       sizeBytes: documentBytes.length,
     },
-  )
+  ]
+  const sourceByPath = new Map((input.preservedFiles ?? []).map((file) => [file.path, file]))
+  const generatedByPath = new Map([...metadataFiles, ...files].map((file) => [file.path, file]))
+  const preservedFiles = input.preservedFiles ?? []
+  const orderedFiles: MaterialFileSpec[] = []
+  for (const preserved of preservedFiles) {
+    const generated = generatedByPath.get(preserved.path)
+    if (generated) {
+      if (generated.kind === preserved.kind && generated.sha256 === preserved.sha256 &&
+          generated.sizeBytes === preserved.sizeBytes) {
+        const source = sourceByPath.get(preserved.path) ?? preserved
+        orderedFiles.push({ ...generated, ...source, bytes: generated.bytes, preserved: true })
+      } else if (input.preserveSourceFiles && (preserved.kind === 'Photo' || preserved.kind === 'InkPreview')) {
+        throw new Error(`续写附件与原版本不匹配：${preserved.path}`)
+      } else {
+        orderedFiles.push(generated)
+      }
+      generatedByPath.delete(preserved.path)
+    } else {
+      orderedFiles.push({ ...preserved, bytes: new Uint8Array(), preserved: true })
+    }
+  }
+  orderedFiles.push(...generatedByPath.values())
+  files.splice(0, files.length, ...orderedFiles)
 
   const manifest = {
     schemaVersion: 1,
@@ -251,6 +303,10 @@ export async function buildMaterialBundle(input: BuildMaterialInput): Promise<Ma
       sha256: file.sha256,
       sizeBytes: file.sizeBytes,
       blockId: file.blockId,
+      recordingId: file.recordingId,
+      segment: file.segment,
+      chunkIndex: file.chunkIndex,
+      samples: file.samples,
     })),
   }
 
@@ -345,7 +401,7 @@ export function parseMaterialVersion(material: NoteMaterialVersion): ParsedNoteM
     const id = String(raw.id ?? '')
     if (!id) throw new Error('固定材料包含无效正文块')
     const kind = String(raw.kind ?? '')
-    if (kind === 'markdown') return { id, kind, text: String(raw.text ?? '') }
+    if (kind === 'markdown') return { id, kind, text: String(raw.text ?? ''), source: { ...raw } }
     if (kind === 'photo') {
       const assetId = String(raw.assetId ?? '')
       const mimeType = String(raw.mimeType ?? '') as SupportedPhotoMime
@@ -360,6 +416,7 @@ export function parseMaterialVersion(material: NoteMaterialVersion): ParsedNoteM
         sha256: String(raw.sha256 ?? ''),
         path,
         fileIndex: fileIndex(path, 'Photo'),
+        source: { ...raw },
       }
     }
     if (kind === 'ink') {
@@ -375,6 +432,7 @@ export function parseMaterialVersion(material: NoteMaterialVersion): ParsedNoteM
         path: file.path,
         fileIndex: index,
         previewSha256: String(file.sha256 ?? ''),
+        source: { ...raw },
       }
     }
     throw new Error(`Web 暂不能编辑未知正文块：${kind || 'unknown'}`)
@@ -388,6 +446,11 @@ export function parseMaterialVersion(material: NoteMaterialVersion): ParsedNoteM
     createdAtMillis: Number(input.note.createdAtMillis ?? 0),
     blocks,
     recordings: input.recordings?.length ?? 0,
+    recordingEntries: input.recordings ?? [],
+    manifestFiles: files.map((file) => ({ ...file })),
+    sourceInputJson: material.inputJson,
+    preservedRecordings: input.recordings ?? [],
+    preservedFiles: files,
   }
 }
 

@@ -15,7 +15,6 @@ import {
   ShieldCheck,
   Smartphone,
   Sunrise,
-  Zap,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 
@@ -56,8 +55,7 @@ export const NAV_GROUPS: NavGroup[] = [
   {
     label: '收集',
     items: [
-      { to: '/quick-notes', label: '快速记录', icon: Zap },
-      { to: '/native-notes', label: '原生笔记', icon: NotebookPen },
+      { to: '/native-notes', label: '笔记', icon: NotebookPen },
       { to: '/files', label: '文件', icon: FolderClosed },
     ],
   },
