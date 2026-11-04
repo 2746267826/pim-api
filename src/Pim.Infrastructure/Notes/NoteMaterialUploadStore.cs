@@ -78,6 +78,131 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
         return new(await DescribeAsync(userId, versionId, entry, ledger, files, ct), request.InputJson, request.ManifestJson);
     }
 
+    public async Task<NativeNotePageDto> ListNativeNotesAsync(Guid userId, int offset, int limit, CancellationToken ct = default)
+    {
+        if (offset < 0 || offset > _options.MaxVersionsPerUser || limit is < 1 or > 50)
+            throw Invalid("笔记分页范围无效，单页最多50篇且起始位置不得超过账号版本上限");
+        await using var lease = await LockAsync(userId, ct);
+        var ledger = await LoadLedgerAsync(userId, ct);
+        await PruneAsync(userId, ledger, ct);
+        var conflicts = ledger.Versions.Values.Where(item => item.Phase == "Conflict" || item.HasConflict)
+            .Select(item => item.NoteId).ToHashSet();
+        var candidates = ledger.Heads.Select(head =>
+            (Head: head, Parsed: Guid.TryParseExact(head.Key, "D", out var noteId) ? noteId : Guid.Empty))
+            .Where(item => item.Parsed != Guid.Empty &&
+                ledger.Versions.TryGetValue(Key(item.Head.Value), out var version) &&
+                version.NoteId == item.Parsed && version.Phase == "Uploaded")
+            .Select(item => (NoteId: item.Parsed, VersionId: item.Head.Value, Entry: ledger.Versions[Key(item.Head.Value)],
+                HasConflict: conflicts.Contains(item.Parsed)))
+            .OrderByDescending(item => item.Entry.CreatedAt).ThenBy(item => item.NoteId).ToArray();
+        var page = new List<NativeNoteSummaryDto>();
+        foreach (var item in candidates.Skip(offset).Take(limit))
+        {
+            var request = await RequestAsync(userId, item.VersionId, ct);
+            _ = NoteMaterialManifestValidator.Validate(request, ReadLimits);
+            page.Add(new(item.NoteId, ReadTitle(request.InputJson), item.VersionId, item.HasConflict));
+        }
+        return new(candidates.Length, offset, page);
+    }
+
+    public async Task<NoteMaterialVersionDto> GetCurrentAsync(Guid userId, Guid noteId, CancellationToken ct = default)
+    {
+        await using var lease = await LockAsync(userId, ct);
+        var ledger = await LoadLedgerAsync(userId, ct);
+        await PruneAsync(userId, ledger, ct);
+        var versionId = Current(ledger, noteId) ?? throw new DomainException(40401, "当前完整笔记不存在");
+        var entry = Find(ledger, versionId);
+        if (entry.NoteId != noteId || entry.Phase != "Uploaded")
+            throw new DomainException(40401, "当前完整笔记不存在");
+        var request = await RequestAsync(userId, versionId, ct);
+        var files = NoteMaterialManifestValidator.Validate(request, ReadLimits);
+        _ = ReadTitle(request.InputJson);
+        return new(await DescribeAsync(userId, versionId, entry, ledger, files, ct), request.InputJson, request.ManifestJson);
+    }
+
+    public async Task<NoteMaterialUploadDto> CloneAsync(Guid userId, Guid sourceVersionId,
+        CloneNoteMaterialVersionRequest clone, CancellationToken ct = default)
+    {
+        var request = clone.Material;
+        await using var lease = await LockAsync(userId, ct);
+        var ledger = await LoadLedgerAsync(userId, ct);
+        await PruneAsync(userId, ledger, ct);
+        var sourceEntry = Find(ledger, sourceVersionId);
+        if (sourceEntry.NoteId != request.NoteId) throw new DomainException(40401, "材料版本不存在或已过期");
+        var files = NoteMaterialManifestValidator.Validate(request, ReadLimits);
+        if (sourceVersionId == request.VersionId) throw Invalid("新材料版本必须使用新的版本标识");
+        var fingerprint = NoteMaterialManifestValidator.Hash(JsonSerializer.Serialize(request, Json));
+        if (sourceEntry.NoteId != request.NoteId || sourceEntry.Phase != "Uploaded" ||
+            Current(ledger, request.NoteId) != sourceVersionId || clone.ExpectedCurrentVersionId != sourceVersionId ||
+            request.BaseVersionId != sourceVersionId)
+            throw Conflict("当前材料版本已变化或来源不是当前完整版本，请重新读取后再编辑");
+        var source = await RequestAsync(userId, sourceVersionId, ct);
+        var sourceFiles = NoteMaterialManifestValidator.Validate(source, ReadLimits);
+        var sourceByPath = sourceFiles.Select((file, index) => (File: file, Index: index))
+            .ToDictionary(item => item.File.Path, StringComparer.Ordinal);
+        foreach (var sourceFile in sourceFiles.Where(file => file.Kind is "AudioChunk" or "RecordingManifest" or "Photo" or "InkPreview"))
+        {
+            if (!files.Any(file => file.Path == sourceFile.Path && file.Kind == sourceFile.Kind &&
+                    file.Sha256 == sourceFile.Sha256 && file.SizeBytes == sourceFile.SizeBytes &&
+                    file.RecordingId == sourceFile.RecordingId && file.Segment == sourceFile.Segment &&
+                    file.ChunkIndex == sourceFile.ChunkIndex && file.Samples == sourceFile.Samples &&
+                    file.BlockId == sourceFile.BlockId))
+                throw Invalid("续写材料必须完整保留原版本的音频、照片与手写预览；请从当前版本重新载入原稿");
+        }
+        var key = Key(request.VersionId);
+        if (!ledger.Versions.TryGetValue(key, out var targetEntry))
+        {
+            var total = files.Sum(file => file.SizeBytes);
+            var reserved = checked(total + Encoding.UTF8.GetByteCount(JsonSerializer.Serialize(request, Json)) + 1024L);
+            if (total > _options.MaxVersionBytes || files.Count > _options.MaxFiles ||
+                ledger.Versions.Count >= _options.MaxVersionsPerUser ||
+                ledger.Versions.Values.Count(item => item.Phase == "Uploading") >= _options.MaxPendingVersions ||
+                reserved > _options.MaxUserReservedBytes - ledger.Versions.Values.Sum(item => item.SizeBytes))
+                throw new DomainException(41301, "服务器笔记存储配额或待上传数量已达上限；本机原稿保留");
+            var now = _clock.GetUtcNow();
+            targetEntry = new StoredVersion(request.NoteId, request.BaseVersionId, fingerprint, reserved, now,
+                now.AddHours(_options.UploadExpiryHours), "Uploading");
+            Directory.CreateDirectory(VersionFolder(userId, request.VersionId));
+            await WriteAsync(Path.Combine(VersionFolder(userId, request.VersionId), "request.json"), request, ct);
+            ledger.Versions.Add(key, targetEntry);
+            await SaveLedgerAsync(userId, ledger, ct);
+        }
+        else if (targetEntry.Fingerprint != fingerprint)
+            throw Conflict("同一材料版本已经绑定到另一份固定输入，原版本保留");
+
+        for (var targetIndex = 0; targetIndex < files.Count; targetIndex++)
+        {
+            ct.ThrowIfCancellationRequested();
+            var targetFile = files[targetIndex];
+            if (!sourceByPath.TryGetValue(targetFile.Path, out var sourceFile) ||
+                sourceFile.File.Kind != targetFile.Kind || sourceFile.File.Sha256 != targetFile.Sha256 ||
+                sourceFile.File.SizeBytes != targetFile.SizeBytes || sourceFile.File.RecordingId != targetFile.RecordingId ||
+                sourceFile.File.Segment != targetFile.Segment || sourceFile.File.ChunkIndex != targetFile.ChunkIndex ||
+                sourceFile.File.Samples != targetFile.Samples || sourceFile.File.BlockId != targetFile.BlockId)
+                continue;
+            await VerifyFileAsync(userId, sourceVersionId, sourceFile.Index, sourceFile.File, ct);
+            for (var partIndex = 0; partIndex < PartCount(targetFile); partIndex++)
+            {
+                await using var part = File.OpenRead(PartFile(userId, sourceVersionId, sourceFile.Index, partIndex));
+                var expectedLength = PartLength(targetFile, partIndex);
+                if (part.Length != expectedLength) throw Conflict("来源材料分块缺失或损坏，未能保全原稿");
+                var partHash = await HashAsync(part, ct);
+                var targetPath = PartFile(userId, request.VersionId, targetIndex, partIndex);
+                if (File.Exists(targetPath))
+                {
+                    await using var existingPart = File.OpenRead(targetPath);
+                    if (existingPart.Length != expectedLength || await HashAsync(existingPart, ct) != partHash)
+                        throw Conflict("续写版本中已保存的材料分块与来源不一致，不能覆盖");
+                    continue;
+                }
+                part.Position = 0;
+                await _binaries.PutAsync(userId, ManagedBinaryStore.NoteParts, request.VersionId, part,
+                    expectedLength, ct, PartKey(targetIndex, partIndex), partHash);
+            }
+        }
+        return await DescribeAsync(userId, request.VersionId, targetEntry, ledger, files, ct);
+    }
+
     public async Task WriteBundleAsync(Guid userId, Guid versionId, Stream output, CancellationToken ct = default)
     {
         var version = await GetAsync(userId, versionId, ct);
@@ -493,6 +618,14 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
     private static StoredVersion Find(Ledger ledger, Guid id) => ledger.Versions.TryGetValue(Key(id), out var entry)
         ? entry : throw new DomainException(40401, "材料版本不存在或已过期");
     private static Guid? Current(Ledger ledger, Guid noteId) => ledger.Heads.TryGetValue(Key(noteId), out var id) ? id : null;
+    private static string ReadTitle(string inputJson)
+    {
+        using var document = JsonDocument.Parse(inputJson);
+        var title = document.RootElement.GetProperty("note").GetProperty("title");
+        var value = title.ValueKind == JsonValueKind.String ? title.GetString() : null;
+        if (value is null || value.Length > 500) throw new InvalidDataException("Invalid native note title metadata");
+        return value;
+    }
     private static NoteUploadedMaterial FileAt(IReadOnlyList<NoteUploadedMaterial> files, int index) => index >= 0 && index < files.Count
         ? files[index] : throw new DomainException(40401, "材料文件不存在");
     private static int PartCount(NoteUploadedMaterial file) => checked((int)((file.SizeBytes + NoteMaterialUploadOptions.PartSizeBytes - 1) / NoteMaterialUploadOptions.PartSizeBytes));

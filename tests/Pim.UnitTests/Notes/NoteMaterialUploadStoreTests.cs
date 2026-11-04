@@ -177,6 +177,104 @@ public sealed class NoteMaterialUploadStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task ClonePreservesAudioPhotoAndEditableInkWhileRequiringNewDocumentUpload()
+    {
+        var original = Fixture.Create(audioSamples: 160_000);
+        var store = Store();
+        await store.BeginAsync(_user, original.Request);
+        await UploadAll(store, original);
+        await store.CompleteAsync(_user, original.Request.VersionId);
+        var next = CloneFixture(original);
+
+        var cloned = await store.CloneAsync(_user, original.Request.VersionId,
+            new CloneNoteMaterialVersionRequest(original.Request.VersionId, next.Request));
+        Assert.Equal(next.Request.VersionId, cloned.VersionId);
+        Assert.Equal("Uploading", cloned.Phase);
+        Assert.Empty(cloned.Files[0].UploadedParts);
+        Assert.Empty(cloned.Files[1].UploadedParts);
+        Assert.All(cloned.Files.Skip(2), file => Assert.Equal(file.PartCount, file.UploadedParts.Count));
+        await UploadPart(store, next, 0, 0);
+        await UploadPart(store, next, 1, 0);
+        var complete = await store.CompleteAsync(_user, next.Request.VersionId);
+        Assert.True(complete.IsCurrent);
+
+        var saved = await store.GetAsync(_user, next.Request.VersionId);
+        Assert.Contains("续写标题", saved.InputJson);
+        for (var index = 1; index < next.Content.Count; index++)
+        {
+            using var output = new MemoryStream();
+            await store.ReadFileAsync(_user, next.Request.VersionId, index, output);
+            Assert.Equal(next.Content[index], output.ToArray());
+        }
+        Assert.Contains("\"kind\":\"ink\"", saved.InputJson);
+        Assert.Contains("\"recordings\":[", saved.InputJson);
+    }
+
+    [Fact]
+    public async Task CloneRejectsCrossOwnerMissingSourceAndStaleCurrentVersion()
+    {
+        var original = Fixture.Create();
+        var store = Store();
+        await store.BeginAsync(_user, original.Request);
+        await UploadAll(store, original);
+        await store.CompleteAsync(_user, original.Request.VersionId);
+        var next = CloneFixture(original);
+        var clone = new CloneNoteMaterialVersionRequest(original.Request.VersionId, next.Request);
+
+        await Error(40401, () => store.CloneAsync(Guid.NewGuid(), original.Request.VersionId, clone));
+        await Error(40401, () => store.CloneAsync(_user, Guid.NewGuid(), clone));
+        await Error(40901, () => store.CloneAsync(_user, original.Request.VersionId,
+            clone with { ExpectedCurrentVersionId = Guid.NewGuid() }));
+        await store.DeleteNoteAsync(_user, original.Request.NoteId);
+        await Error(40401, () => store.CloneAsync(_user, original.Request.VersionId, clone));
+    }
+
+    [Fact]
+    public async Task CloneDoesNotAcceptMissingOrCorruptedSourceMaterial()
+    {
+        var original = Fixture.Create();
+        var store = Store();
+        await store.BeginAsync(_user, original.Request);
+        await UploadAll(store, original);
+        await store.CompleteAsync(_user, original.Request.VersionId);
+        var sourcePart = Path.Combine(_root, "binary", _user.ToString("D"), "note-parts",
+            original.Request.VersionId.ToString("D"), Hash(Encoding.UTF8.GetBytes("2/0")) + ".blob");
+        File.Delete(sourcePart);
+        var next = CloneFixture(original);
+
+        await Error(40901, () => store.CloneAsync(_user, original.Request.VersionId,
+            new CloneNoteMaterialVersionRequest(original.Request.VersionId, next.Request)));
+        Assert.Equal(original.Request.VersionId,
+            (await store.GetAsync(_user, original.Request.VersionId)).Upload.CurrentVersionId);
+    }
+
+    [Fact]
+    public async Task ClonePublishedAfterAnotherVersionBecomesCurrentIsRetainedAsConflict()
+    {
+        var original = Fixture.Create();
+        var store = Store();
+        await store.BeginAsync(_user, original.Request);
+        await UploadAll(store, original);
+        await store.CompleteAsync(_user, original.Request.VersionId);
+        var clone = CloneFixture(original);
+        await store.CloneAsync(_user, original.Request.VersionId,
+            new CloneNoteMaterialVersionRequest(original.Request.VersionId, clone.Request));
+        await UploadPart(store, clone, 0, 0);
+        await UploadPart(store, clone, 1, 0);
+
+        var parallel = Fixture.Create(noteId: original.Request.NoteId, baseId: original.Request.VersionId);
+        await store.BeginAsync(_user, parallel.Request);
+        await UploadAll(store, parallel);
+        Assert.True((await store.CompleteAsync(_user, parallel.Request.VersionId)).IsCurrent);
+
+        var result = await store.CompleteAsync(_user, clone.Request.VersionId);
+        Assert.Equal("Conflict", result.Phase);
+        Assert.True(result.HasConflict);
+        Assert.Equal(parallel.Request.VersionId, result.CurrentVersionId);
+        Assert.Equal(clone.Request.InputJson, (await store.GetAsync(_user, clone.Request.VersionId)).InputJson);
+    }
+
+    [Fact]
     public async Task AccountIsolationAppliesToReadsPartsCompletionPromotionCancellationAndDeletion()
     {
         var fixture = Fixture.Create(); var other = Guid.NewGuid();
@@ -334,6 +432,41 @@ public sealed class NoteMaterialUploadStoreTests : IDisposable
         await store.UploadPartAsync(_user, fixture.Request.VersionId, file, part, Hash(chunk), new MemoryStream(chunk));
     }
     private static string Hash(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+    private static Fixture CloneFixture(Fixture original)
+    {
+        var nextVersionId = Guid.NewGuid();
+        var input = JsonNode.Parse(original.Request.InputJson)!.AsObject();
+        input["id"] = nextVersionId.ToString("D");
+        var note = input["note"]!.AsObject();
+        note["title"] = "续写标题";
+        note["revision"] = note["revision"]!.GetValue<int>() + 1;
+        note["blocks"]![0]!["text"] = "## 研究方法\n\n续写正文。";
+        var noteJson = note.ToJsonString(Json);
+        var content = original.Content.Select(bytes => bytes.ToArray()).ToList();
+        content[0] = Encoding.UTF8.GetBytes(noteJson);
+        var manifest = JsonNode.Parse(original.Request.ManifestJson)!.AsObject();
+        manifest["versionId"] = nextVersionId.ToString("D");
+        manifest["revision"] = note["revision"]!.GetValue<int>();
+        manifest["inputSha256"] = Hash(Encoding.UTF8.GetBytes(input.ToJsonString(Json)));
+        manifest["files"]![0]!["sha256"] = Hash(content[0]);
+        manifest["files"]![0]!["sizeBytes"] = content[0].LongLength;
+        using (var parsedManifest = JsonDocument.Parse(original.Request.ManifestJson))
+        {
+            var photoPath = parsedManifest.RootElement.GetProperty("files")[2].GetProperty("path").GetString();
+            var inkPath = parsedManifest.RootElement.GetProperty("files")[3].GetProperty("path").GetString();
+            content[1] = Encoding.UTF8.GetBytes($"## 研究方法\n\n续写正文。\n\n![照片]({photoPath})\n\n![手写卡片]({inkPath})\n<!-- 可编辑笔迹、身份和尺寸保存在同包 note.json 中 -->");
+        }
+        manifest["files"]![1]!["sha256"] = Hash(content[1]);
+        manifest["files"]![1]!["sizeBytes"] = content[1].LongLength;
+        var request = original.Request with
+        {
+            VersionId = nextVersionId,
+            BaseVersionId = original.Request.VersionId,
+            InputJson = input.ToJsonString(Json),
+            ManifestJson = manifest.ToJsonString(Json),
+        };
+        return new(request, content);
+    }
     public void Dispose() { if (Directory.Exists(_root)) Directory.Delete(_root, recursive: true); }
     private sealed class MutableTime : TimeProvider
     {
