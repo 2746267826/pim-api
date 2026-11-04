@@ -7,10 +7,17 @@
 - API：材料定向测试 26/26；Test Swagger HTTP 200；官方 contract update/check 通过；Notes+Contract 有界回归 438 total / 330 passed / 108 skipped / 0 failed / 0 timeout，108 skipped 不计 PASS。
 - Web：提交链 `78c4a17a` → `d229185b` → `f5037e08` → `e6f5ea82` → `d0b796f1`；四个 native-notes 聚焦测试文件 52/52，`npm run build` PASS，lint 仅既有 warnings；材料保全已加测。Playwright 因 Chromium executable 缺失而 FAIL，未进入页面、无截图，浏览器验收 NOT-VERIFIED。
 - Android：Draft PR #70 / 当前 head `3f6b1d4`；Android Studio JDK、已安装 SDK、Gradle 8.14 环境下完整 `:app:testDebugUnitTest --no-daemon --stacktrace` 为 193 XML / 2256 tests、0 failures / 0 errors / 0 skipped；Kotlin compile PASS、契约生成物一致。此前汇总曾报告 14 项失败（当时无 XML），本次精确 head 重跑未复现，原因未知。ADB 可读设备列表但没有连接设备，connected UI 仍 NOT-VERIFIED。正常跨端发现、完整恢复、续写与冲突尚未整体验收。
-- 同步与格式边界：正常跨端同步不需要 Android 包导入；客户端适配共同云端契约，用户无需处理各端内部格式。Android 包导入仅用于离线交换、备份恢复或旧格式兼容，不是同步步骤。
+- 同步与格式边界：Android 初始化时自动刷新云端列表，但需用户点击同一篇后才下载、校验并安装本机副本；同 `noteId` 本机已有副本时当前拒绝覆盖，因此这是自动发现 + 用户选定下载，不是自动双向同步/合并。在线版本通过共同 cloud-material API contract（`inputJson`、`manifestJson`、`files` 与生成 DTO）交换，本地数据库/编辑器不必相同。schema-v1 仅有 Markdown/照片/手写基础材料的共同理解；Android 完整材料包可含录音，Web 导入拒绝 `recordings/` 且 Web 导出不含录音，ZIP/离线包通用格式及跨端 converter 未交付。包差异不妨碍在线同步；离线包仅用于支持范围内的离线交换、备份恢复或旧格式兼容。
 - #516 Phase 2：已有 MiMo Batch 工程实现切片（客户端、状态/结果处理及测试证据按各自范围记录），不等于 Phase 2 用户闭环完成；用户流程、真实音频 Batch 能力/质量、费用、region/TTL 与生产运行仍未完成或 NOT-VERIFIED。
 - ASR：管理员入口为 Web「设置 → AI 与 ASR → ASR 配置」；普通用户不显示凭据配置，阅读写作不依赖配置。
 - M0–M5、#516、#539、#551–554、Android #59–63 均未整体完成，issues 保持开放。生产、真实 provider、硬件、设备/OEM 与端到端跨端往返仍 NOT-VERIFIED。
+
+### 当前用户流程与验证增量（2026-11-04）
+
+- 目标顺序为“找笔记 → 阅读/续写 → 保存并看版本/冲突 → 若有录音再转写 → 整理”。转写目标、材料范围、数据出域、可能费用与授权须在执行前常显；语言、批处理、地址、历史与诊断默认折叠。
+- Web 本地 head `d30076bc` 的 ASR/Derived 两个 UX 测试文件为 37/37 PASS，`npm run build` PASS；构建有 `__dirname`、大 chunk（>500KB）及 `INEFFECTIVE_DYNAMIC_IMPORT` warnings。Chrome 已进入 React 页面并显示正文、录音保全提示与“转写录音”；首轮综合 runner 被陈旧断言拦截，runner 正修订，浏览器流程未通过/未完成，不能视为验收。
+- Android PR70 head `3f6b1d4` JVM 2256/2256 PASS；无连接设备，connected UI NOT-VERIFIED。Android 契约 freshness CI 的真实差异为上游 API master 419 operations/734 schemas、Android snapshot 422/738：须先完成 API #561 用户授权、审查、CI 与合并，再官方刷新 Android contract/generated/provenance 并重跑 CI；不能手改快照或绕过门禁。
+- API #561 远端仍为旧 head `faa6ab30`；本地 `d30076bc` 后续提交未推送。推送曾被自动审批拒绝，未尝试绕过。issues #516/#539/#551–554、Android #59–63 与 M0–M5 仍 OPEN/未整体完成。
 
 <!-- current-pointer-pr44-pr67-repaired-20261102 -->
 ## 历史执行检查点（2026-11-02；当前状态见上方 2026-11-04 快照）

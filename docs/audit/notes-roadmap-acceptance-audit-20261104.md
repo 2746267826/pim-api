@@ -2,21 +2,23 @@
 
 ## 结论
 
-截至 2026-11-04，本轮可以证实 API 材料定向测试 26/26、Web 原生笔记聚焦测试 52/52 与 build 通过；这些只证明对应代码切片。浏览器用户流程、Android connected UI、完整跨端往返、生产/provider/设备验收仍未验证。M0–M5 与所列 issues 均未整体完成；局部实现或测试通过不构成整体完成或 issue 关闭依据。
+截至 2026-11-04，本轮可证实 API 材料定向测试 26/26、Web 当前 UX 测试 37/37 与 build 通过、Android 精确 head JVM 2256/2256。Chrome 已进入 React 页面，但综合流程首轮被陈旧 runner 断言拦截，修订 runner 后待重跑；Android connected UI、完整跨端往返、生产/provider/设备验收仍未验证。M0–M5 与所列 issues 均未整体完成；局部实现或测试通过不构成整体完成或 issue 关闭依据。
 
 ## 交付状态更新（2026-11-04）
 
 - API：材料定向测试 26/26；Test Swagger HTTP 200；官方 Web contract update/check 通过；Notes+Contract 回归 438 total / 330 passed / 108 skipped / 0 failed / 0 timeout。108 skipped 不计 PASS。
-- Web 本地提交链：`78c4a17a` → `d229185b` → `f5037e08` → `e6f5ea82` → `d0b796f1`。四个 native-notes 聚焦文件 52/52，`npm run build` PASS，lint 仅既有 warnings，材料保全已有加测。Playwright 因 Chromium executable 缺失 FAIL，未进入页面、无截图；浏览器验收 NOT-VERIFIED。
+- Web：本地 head `d30076bc`；ASR/Derived 两个 UX 测试文件 37/37 PASS，`npm run build` PASS。构建 warnings 为 `__dirname`、>500KB chunks、`INEFFECTIVE_DYNAMIC_IMPORT`。Chrome 已到 React 页面并看到正文、录音保全提示、“转写录音”；综合流程首轮因 runner 陈旧断言未通过，截图是失败现场。runner 正修订，流程仍未验收；不再称缺 Chromium 或未进入页面。
 - Android Draft PR #70 / 精确 head `3f6b1d4`：Android Studio JDK、已安装 SDK、Gradle 8.14 环境下完整 `:app:testDebugUnitTest --no-daemon --stacktrace` 重跑，193 XML / 2256 tests、0 failures / 0 errors / 0 skipped；`:app:compileDebugKotlin` PASS、契约生成物一致。此前汇总曾报告 14 项失败，但当时缺 XML；本次精确 head 重跑未复现，旧失败原因未知，不能判定为既有问题或本次回归。ADB 可读取设备列表但没有连接设备，connected UI 仍 NOT-VERIFIED；阻断原因是没有专用设备，不是缺 SDK/JDK。
 - Android JVM 本地重跑的环境、命令、XML 路径、计数和差异说明见 [回执](../../scratch/notes-user-flow-verification-20261104/android-jvm-rerun-receipt-20261104.md)；该记录不是 CI 或 connected-device 证据。
-- 正常跨端发现、完整材料恢复、续写与冲突仍未整体验收。ASR 凭据仅管理员通过「设置 → AI 与 ASR → ASR 配置」管理；普通用户不显示凭据配置，阅读写作不依赖 ASR 配置。
-- 正常同步不需要 Android 包导入：各客户端适配共同云端契约，内部格式差异由客户端处理；Android 包仅用于离线交换、备份恢复或旧格式兼容。
+- Android 初始化自动刷新云端列表；用户选定笔记后才下载、校验并安装副本。相同 `noteId` 本地已有副本时当前拒绝覆盖，因此只是自动发现 + 用户选定下载，不是自动双向同步或合并。共同 cloud-material contract（`inputJson`、`manifestJson`、`files` 与生成 DTO）是在线交换边界，不要求本地 DB/editor 相同。
+- schema-v1 只对 Markdown/照片/手写基础材料有共同理解。离线 ZIP 不通用：Android 完整包可含录音，Web 导入拒绝 `recordings/`，Web export 不含录音，converter/录音互导未完成。包差异不妨碍在线同步；包导入只用于支持范围内的离线交换、备份恢复或旧格式兼容。
+- ASR 凭据仅管理员通过「设置 → AI 与 ASR → ASR 配置」管理；普通用户不显示凭据配置，阅读写作不依赖 ASR 配置。
+- Android PR70 freshness CI 已有失败日志：API master `622382f4` 为 419 operations/734 schemas，Android snapshot 为 422/738。依赖是 API 新契约先进入 master；再官方 fetch-contract 刷新 Android snapshot/provenance/generated 并重跑 CI。不得手改或绕过 freshness。
 - M0–M5、#516、#539、#551–554、Android #59–63 未整体完成；issues 不关闭。以下原审计结论是本轮早期状态快照，若与本更新冲突，以本节及三份当前状态文档为准。
 
 本审计只核对文档、源码/提交记录、已有测试回执和 2026-11-04 的远端只读快照，不修改产品代码、CI 或 issue。结论是：M0–M5 均未整体完成；API #516、#539、#551–554 与 Android #59–63 在快照中仍为 OPEN。OPEN 不等于完全没有实现，但也不等于全部验收完成。生产、真实 provider、物理设备/OEM 和 Web 与 Android 之间完整往返均未验证。
 
-本文件替换“Kant 正进行诊断”“更广回归 pending”“PR #561 当前 head 为 `faa6ab30`”等过期叙述。可核对的固定事实是：
+本文件替换“Kant 正进行诊断”“更广回归 pending”等过期叙述。PR #561 的远端仍是初始 head `faa6ab30`；本地新增提交未推送。可核对的固定事实是：
 
 - `faa6ab30` 是 PR #561 的初始远端 head；本地 `78c4a17a` 及后续未提交改动不能自动写成该 PR 的当前 head。
 - 有界 Notes+Contract 回归已有完成 TRX：438 total / 330 passed / 108 skipped / 0 failed / 0 timeout。108 skipped 不是 PASS。
@@ -27,7 +29,7 @@
 
 | 顺序 | 用户目标 | 本轮可执行内容 | 完成门槛 |
 | --- | --- | --- | --- |
-| P0 | 从笔记列表打开一篇已有笔记，安全续写并保存 | Web 材料保全实现与聚焦测试已提交；下一步补真实 Chromium 桌面、390px 窄屏流程，Android 云端发现/下载/还原继续做组合验证 | 同一账号可见同一笔记；正文可读写；原件不丢；冲突不覆盖；保存/同步状态明确 |
+| P0 | 找到笔记→阅读/续写→保存并看版本/冲突→若有录音再转写→整理 | Web 当前 UX 测试/build 通过，Chrome 已入页面但综合 runner 断言过时、修订后待重跑；Android 自动发现后由用户选定下载，同 ID 冲突拒绝覆盖 | 同一账号发现；选择后完整还原；正文可读写；原件不丢；冲突有清楚且安全的处理；状态明确 |
 | P1 | 同步稳定、失败后知道怎么办 | 逐条接收 #539/#551–554 与 Android #59–63；先核对已发布实现，再补真实缺口 | 每项原始 AC 有精确源码、测试/现场证据；设备或生产结论单独标记 |
 | P2 | 录音能可靠转写和整理 | 按 #516 依赖完成 Phase 1 工程验收，再推进 Phase 2 多模态/批处理、Phase 3 Windows 节点、Phase 4 用户闭环、Phase 5 历史与恢复 | 不以 mock、synthetic PG、provider 代码存在代替真实能力/质量/成本验收 |
 
@@ -41,6 +43,10 @@
 | M3 混合材料 | Web 有材料包/读取基础，Android/Windows 有各自材料能力；API 有材料保全与克隆方向 | 完成云端同笔记发现→材料还原→续写→冲突保全；核对路径/hash/大小/预算；离线包单列 | 未整体完成；真实跨端往返 NOT-VERIFIED |
 | M4 智能组织 | 多端保留任务建议、派生处理和结果选择等工程资产 | 核对来源回链、授权、幂等、人工稿保护与用户可见状态 | 未整体完成；真实模型质量/授权效果 NOT-VERIFIED |
 | M5 全面迁移 | Android/Windows 已有多个业务域和咨询/历史入口 | 按 MIG 和业务域逐项验收，不以导航入口或已有页面代替迁移 | 未整体完成；生产迁移 NOT-VERIFIED |
+
+## 同步与离线格式边界
+
+在线笔记交换通过共同 cloud-material API contract（`inputJson`、`manifestJson`、`files` 与 generated DTO）；客户端适配各自 DB/editor，故本地格式不同不等于云端不能同步。当前实现是列表自动刷新、用户选定后下载/校验/安装；Android 同 `noteId` 已存在时拒绝覆盖，自动冲突合并未交付。schema-v1 仅有 Markdown、照片、手写基础材料共同理解；离线 ZIP 不完全通用，Android 完整包可含录音，Web import 不接受 `recordings/`，Web export 不含音频。converter 与录音互导未交付。因此不能声称 Web↔Android 完整无损往返已完成。
 
 ## Issue 审计与下一步
 
