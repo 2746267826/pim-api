@@ -170,12 +170,18 @@ it('shows the ordinary-user ASR start entry on native notes without admin model 
   expect(assistant.asrPresets).not.toHaveBeenCalled()
 })
 
-it('shows ordinary-owner ASR task detail, retry and immutable history without admin settings', async () => {
+it('keeps the current ASR summary visible and collapses task recovery by default', async () => {
   derived.sources.mockResolvedValue({ total: 1, offset: 0, items: [{ ...source, recordings: 1, totalSamples: 16000 }] })
   assistant.noteAsrTasks.mockResolvedValue([asrTask])
   page()
   await chooseSource()
-  expect(await screen.findByText('本版本录音转写任务')).toBeTruthy()
+  expect(await screen.findByText(/更多：转写任务与恢复 · 1 项/)).toBeTruthy()
+  const disclosure = screen.getByText(/更多：转写任务与恢复/).closest('details')
+  expect(disclosure?.open).toBe(false)
+  expect(screen.getByText('逐片进度与恢复').closest('details')).toBe(disclosure)
+  await userEvent.click(screen.getByText(/更多：转写任务与恢复/))
+  expect(disclosure?.open).toBe(true)
+  expect(await screen.findByRole('status', { name: '当前转写任务摘要' })).toBeTruthy()
   await userEvent.click(await screen.findByRole('button', { name: /0\/1 片/ }))
   expect(await screen.findByText('逐片进度与恢复')).toBeTruthy()
   expect(await screen.findByText('重处理（显式确认）')).toBeTruthy()
@@ -184,7 +190,7 @@ it('shows ordinary-owner ASR task detail, retry and immutable history without ad
   expect(assistant.asrPresets).not.toHaveBeenCalled()
 })
 
-it('presents transcription before generation and keeps only language collapsed', async () => {
+it('presents transcription before generation and keeps nonessential controls collapsed', async () => {
   derived.sources.mockResolvedValue({ total: 1, offset: 0, items: [{ ...source, recordings: 1, totalSamples: 16000 }] })
   assistant.asrRouteConfig.mockResolvedValue({
     cloudConfigured: true, cloudModelId: destinationId, consentVersion: 'consent-1', defaultRoute: 'cloud-asr',
@@ -196,6 +202,9 @@ it('presents transcription before generation and keeps only language collapsed',
   const ordered = await screen.findAllByRole('heading', { name: /先完成录音转写|整理并生成/ })
   expect(ordered.map((heading) => heading.textContent)).toEqual(['1 · 先完成录音转写', '2 · 整理并生成'])
   expect(screen.getByRole('button', { name: '确认创建云端任务' })).toBeTruthy()
+  expect(screen.getByRole('combobox', { name: '执行位置' }).closest('details')).toBeNull()
+  expect(screen.getByRole('checkbox', { name: '确认创建录音转写任务' })).toBeTruthy()
+  expect(screen.queryByRole('combobox', { name: '执行方式' })).toBeNull()
   const options = screen.getByText('高级选项：识别语言').closest('details')
   expect(options?.open).toBe(false)
   expect(screen.getByRole('combobox', { name: '执行位置' }).closest('details')).toBeNull()
@@ -211,6 +220,23 @@ it('presents transcription before generation and keeps only language collapsed',
   await userEvent.click(screen.getByText('高级选项：识别语言'))
   expect(options?.open).toBe(true)
 })
+
+  it('keeps the selected task summary visible while history and controls stay collapsed', async () => {
+    derived.tasks.mockResolvedValue([task])
+    derived.task.mockResolvedValue(task)
+    page()
+    await chooseSource()
+    await userEvent.click(await screen.findByRole('button', { name: /材料覆盖完整/ }))
+    expect(await screen.findByRole('status', { name: '当前整理任务摘要' })).toBeTruthy()
+    const history = screen.getByText(/更多：历史任务与处理进度/).closest('details')
+    const controls = screen.getByText(/更多：任务详情、停止与恢复/).closest('details')
+    expect(history?.open).toBe(false)
+    expect(controls?.open).toBe(false)
+    expect(screen.getByRole('button', { name: /停止后续步骤/ }).closest('details')).toBe(controls)
+    await userEvent.click(screen.getByText(/更多：任务详情、停止与恢复/))
+    expect(controls?.open).toBe(true)
+    expect(await screen.findByRole('button', { name: /停止后续步骤/ })).toBeTruthy()
+  })
 
 it('preselects the linked material version and preserves it in the return-to-note link', async () => {
   window.history.replaceState({}, '', `/native-notes/processing?version=${sourceVersionId}&from=processing`)
@@ -251,6 +277,8 @@ it('renders a nullable local task without touching destination fields or admin s
   assistant.noteAsrTask.mockResolvedValue(localAsrTask)
   page()
   await chooseSource()
+  expect(await screen.findByText(/更多：转写任务与恢复/)).toBeTruthy()
+  await userEvent.click(screen.getByText(/更多：转写任务与恢复/))
   await userEvent.click(await screen.findByRole('button', { name: /0\/1 片/ }))
   expect(await screen.findByText('本机排队转写 · 未发送云端')).toBeTruthy()
   expect(await screen.findByText('逐片进度与恢复')).toBeTruthy()
@@ -259,14 +287,22 @@ it('renders a nullable local task without touching destination fields or admin s
 })
 
 it('requires exact destination consent and creates with a persisted UUID intent', async () => {
+  derived.tasks.mockImplementation(() => Promise.resolve(derived.start.mock.calls.length ? [task] : []))
   page(); await chooseSource(); await chooseDestination()
   const disclosure = screen.getByRole('group', { name: '本次生成目标、材料范围与费用' })
   expect(disclosure.textContent).toContain('本次目标：合成共享目标 · synthetic-vision-text')
   expect(disclosure.textContent).toContain('固定版本的完整正文、照片和手写渲染图')
   expect(disclosure.textContent).toContain('可能产生服务商费用')
   expect(disclosure.textContent).toContain('不会自动创建或自动付费')
+  expect(disclosure.closest('details')).toBeNull()
+  expect(screen.getByRole('combobox', { name: '本次生成目标' }).closest('details')).toBeNull()
+  expect(screen.queryByRole('combobox', { name: '同版本已完成 ASR' })).toBeNull()
+  expect(screen.getByText('诊断与高级限制').closest('details')?.open).toBe(false)
+  expect(screen.getByText(`服务地址：${destination.endpoint}`).closest('details')?.open).toBe(false)
   const checkbox = screen.getByRole('checkbox', { name: /确认将上述材料发送至上方所选生成目标/ })
+  expect(checkbox.closest('details')).toBeNull()
   expect((checkbox as HTMLInputElement).disabled).toBe(false)
+  const taskListReadsBeforeStart = derived.tasks.mock.calls.length
   await userEvent.click(checkbox)
   await userEvent.click(screen.getByRole('button', { name: /创建派生任务/ }))
   await waitFor(() => expect(derived.start).toHaveBeenCalledOnce())
@@ -276,7 +312,13 @@ it('requires exact destination consent and creates with a persisted UUID intent'
     consent: { modelId: destinationId, modelRevision: destinationRevision, endpoint: destination.endpoint, confirmed: true },
   }))
   expect(body.taskId).toMatch(/^[0-9a-f-]{36}$/)
-  await screen.findByRole('heading', { name: '当前任务进度' })
+  expect(await screen.findByRole('status', { name: '当前整理任务摘要' })).toBeTruthy()
+  expect(derived.tasks.mock.calls.length).toBeGreaterThan(taskListReadsBeforeStart)
+  expect(screen.getByRole('status', { name: '当前整理任务摘要' }).textContent).toContain('整理进度：等待处理')
+  const detailDisclosure = screen.getByText(/更多：任务详情、停止与恢复/).closest('details')
+  expect(detailDisclosure?.open).toBe(false)
+  await userEvent.click(screen.getByText(/更多：任务详情、停止与恢复/))
+  expect(await screen.findByRole('heading', { name: '当前任务进度' })).toBeTruthy()
 })
 
 it('shows generated candidates and requires an explicit head selection before manual editing', async () => {

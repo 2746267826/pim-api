@@ -387,7 +387,6 @@ export function NoteAsrStartPanel({ userId, serverBinding, versionId, onCreated 
       <p>发送范围：当前固定版本的全部录音。</p>
       {effectiveRoute === 'cloud' && savedDestination && <>
         <p className="break-words">目标：{savedDestination.displayName} · {savedDestination.model}</p>
-        <p className="break-all font-mono text-text-3">服务地址：{savedDestination.endpoint}</p>
         <p className="font-medium text-warn">音频将离开本机；服务商可能按成功请求或 Token 收取现金费用。</p>
       </>}
       {effectiveRoute === 'cloud' && !savedDestination && <InlineAlert tone="warn" title={cloudInvalid ? '已保存云端目标失效' : '云端尚未配置'}>
@@ -399,8 +398,8 @@ export function NoteAsrStartPanel({ userId, serverBinding, versionId, onCreated 
           当前账号尚未保存本机 ASR 模型；可先联系管理员启用云端共享目标，或由本机客户端注册模型后重新开始。
         </InlineAlert>)}
     </div>
-    <div className="space-y-3 rounded-ctl border border-border p-3 text-sm text-text-2">
-      <div><Label htmlFor="note-asr-start-route">执行位置</Label>
+    <div className="max-w-sm">
+      <Label htmlFor="note-asr-start-route">转写方式</Label>
         <Select id="note-asr-start-route" ariaLabel="执行位置" value={route} disabled={busy || Boolean(intent) || Boolean(batchIntent) || Boolean(blockedIntent)}
         options={[
           { value: 'default', label: effectiveRoute === 'cloud' ? '按当前默认路由（云端）' : '按当前默认路由（本机）' },
@@ -415,8 +414,10 @@ export function NoteAsrStartPanel({ userId, serverBinding, versionId, onCreated 
           setNotice('')
           setError('')
         }} />
-      </div>
-      {supportsBatch && <div className="max-w-sm"><Label htmlFor="note-asr-start-execution-mode">执行方式</Label>
+    </div>
+    {supportsBatch && <details className="rounded-ctl border border-border px-3 py-2 text-sm text-text-2">
+      <summary className="cursor-pointer font-medium">更多：批量转写选项</summary>
+      <div className="mt-3 max-w-sm"><Label htmlFor="note-asr-start-execution-mode">执行方式</Label>
         <Select id="note-asr-start-execution-mode" ariaLabel="执行方式" value={executionMode}
           disabled={busy || Boolean(intent) || Boolean(batchIntent) || Boolean(blockedIntent)}
           options={[{ value: 'realtime', label: '实时云端转写' }, { value: 'batch', label: 'MiMo Batch 闲时批量（预览）' }]}
@@ -428,8 +429,8 @@ export function NoteAsrStartPanel({ userId, serverBinding, versionId, onCreated 
             setError('')
           }} />
         <p className="mt-1 text-xs leading-5 text-text-3">Batch 只提交已冻结的多模态任务，可能等待数小时；没有供应商任务标识时保持 UNKNOWN 并人工核对。</p>
-      </div>}
-    </div>
+      </div>
+    </details>}
     {blockedIntent && <InlineAlert tone="crit" title="原提交状态无法确认">{blockedIntent}</InlineAlert>}
     <details className="rounded-ctl border border-border px-3 py-2 text-sm text-text-2">
       <summary className="cursor-pointer font-medium">高级选项：识别语言</summary>
@@ -437,6 +438,10 @@ export function NoteAsrStartPanel({ userId, serverBinding, versionId, onCreated 
         <Select id="note-asr-start-language" ariaLabel="识别语言" value={language} options={languageOptions}
           disabled={busy || Boolean(intent) || Boolean(blockedIntent)} onValueChange={(value) => { setLanguage(value); setConfirmed(false) }} /></div>
     </details>
+    {effectiveRoute === 'cloud' && savedDestination && <details className="rounded-ctl border border-border px-3 py-2 text-xs text-text-3">
+      <summary className="cursor-pointer">诊断与服务地址</summary>
+      <p className="mt-2 break-all font-mono">{savedDestination.endpoint}</p>
+    </details>}
     {intent ? <div className="space-y-2 rounded-ctl border border-warn-border bg-warn-soft p-3 text-xs text-text-2">
       <p className="break-all">已冻结原任务标识：<span className="font-mono">{intent.taskId}</span>。目标与原因不可在核对前静默更改。</p>
       <div className="flex flex-wrap gap-2">

@@ -248,7 +248,14 @@ function Workspace({ ownerId, serverBinding, role }: { ownerId: string; serverBi
           }} />
         </section>}
 
-        <Card className="space-y-3 p-5">
+        {selectedTask && <div role="status" aria-label="当前整理任务摘要" className="rounded-ctl border border-border bg-bg p-3 text-xs text-text-2">
+          <span className="font-medium">整理进度：{phaseNames[selectedTask.phase] ?? selectedTask.phase}</span>
+          <span className="ml-2 text-text-3">ASR {selectedTask.coverage.completedTranscriptSegments}/{selectedTask.coverage.transcriptSegments} 片 · 图片 {selectedTask.coverage.completedPhotos + selectedTask.coverage.completedInkPreviews}/{selectedTask.coverage.photos + selectedTask.coverage.inkPreviews}</span>
+        </div>}
+
+        <details className="rounded-card border border-border bg-bg px-4 py-3 shadow-card">
+          <summary className="cursor-pointer text-sm font-medium text-text-2">更多：历史任务与处理进度{tasks.data?.length ? ` · ${tasks.data.length} 项` : ''}</summary>
+          <div className="mt-3 space-y-3 p-1">
           <div className="flex flex-wrap items-center justify-between gap-2"><div><h2 className="text-sm font-semibold text-text-1">处理进度</h2><p className="mt-1 text-xs text-text-3">任务保存在服务器，可离开后返回；旧任务与结果不会被新稿自动替换。</p></div><Button size="sm" variant="ghost" onClick={() => void tasks.refetch()}>刷新任务</Button></div>
           {tasks.isPending ? <Skeleton className="h-16" /> : tasks.isError ? <p role="alert" className="text-sm text-text-2">任务加载失败：{errorText(tasks.error)}</p>
             : !tasks.data?.length ? <p className="text-sm text-text-3">还没有派生任务。</p>
@@ -256,9 +263,13 @@ function Workspace({ ownerId, serverBinding, role }: { ownerId: string; serverBi
                 className="flex w-full flex-wrap items-center justify-between gap-2 rounded-ctl border border-border p-3 text-left text-sm hover:bg-surface">
                 <span className="min-w-0"><span className="block truncate">{time(item.createdAt)} · {item.coverage.complete ? '材料覆盖完整' : '有材料缺口'}</span><span className="mt-1 block text-xs text-text-3">ASR {item.coverage.completedTranscriptSegments}/{item.coverage.transcriptSegments} 片 · 图片 {item.coverage.completedPhotos + item.coverage.completedInkPreviews}/{item.coverage.photos + item.coverage.inkPreviews}</span></span>
                 <State value={item.phase} /></button>)}</div>}
-        </Card>
+          </div>
+        </details>
 
-        {taskId && <TaskDetailCard key={taskId} taskId={taskId} ownerId={ownerId} serverBinding={serverBinding} onChanged={refresh} />}
+        {taskId && <details className="min-w-0">
+          <summary className="cursor-pointer rounded-card border border-border bg-bg px-4 py-3 text-sm font-medium text-text-2 shadow-card">更多：任务详情、停止与恢复 · {phaseNames[selectedTask?.phase ?? ''] ?? '查看任务'}</summary>
+          <div className="mt-3"><TaskDetailCard key={taskId} taskId={taskId} ownerId={ownerId} serverBinding={serverBinding} onChanged={refresh} /></div>
+        </details>}
     </div>
 
     {message && <p role="status" className="rounded-ctl bg-surface p-3 text-sm text-text-2">{message}</p>}
@@ -370,8 +381,12 @@ function StartTaskCard({ ownerId, serverBinding, role, source, destinations, des
       <p>{destination ? `本次目标：${destination.displayName} · ${destination.model}` : '本次目标：尚未选择可用的共享生成目标'}</p>
       <p>发送材料：固定版本的完整正文、照片和手写渲染图{needsAsr ? '，以及已核对成功的 ASR 转写' : ''}。</p>
       <p className="font-medium text-warn">创建后可能产生服务商费用；页面不会自动创建或自动付费。</p>
-      {destination && <><p>能力：{destination.capabilities.join(' / ') || '由服务端判定'}</p><details className="text-text-3"><summary className="cursor-pointer">处理详情：服务地址</summary><p className="mt-1 break-all font-mono">{destination.endpoint}</p></details></>}
     </div>
+    {destination && <details className="text-xs text-text-3"><summary className="cursor-pointer">诊断与高级限制</summary><div className="mt-2 space-y-2 rounded-ctl bg-surface p-3">
+      <p>目标能力：{destination.capabilities.join(' / ') || '由服务端判定'}</p>
+      <p className="break-all font-mono">服务地址：{destination.endpoint}</p>
+      {limits && <p>单步证据最多 {limits.maxEvidenceCharsPerStep.toLocaleString()} 字符 · 最多 {limits.maxVisionCalls} 次图片调用</p>}
+    </div></details>}
     <label className="flex items-start gap-2 rounded-ctl border border-border p-3 text-xs leading-5 text-text-2">
       <input type="checkbox" className="mt-0.5 size-4 shrink-0 accent-primary" checked={consentedTo === approval && approvedKey(source.versionId, destinationId, asrTaskId, needsAsr) === approval} disabled={!ready || busy}
         onChange={(event) => setConsentedTo(event.target.checked ? approval : '')} />
@@ -380,8 +395,7 @@ function StartTaskCard({ ownerId, serverBinding, role, source, destinations, des
     {storageError && <p role="alert" className="rounded-ctl bg-warn-soft p-3 text-xs leading-5 text-warn">{storageError}</p>}
     {pending && <div className="space-y-2 rounded-ctl border border-warn-border bg-warn-soft p-3 text-xs leading-5 text-text-2"><p>已有创建意图 {pending.intentId}，还没有确认服务端结果。刷新或丢响应时必须用同一标识核对。</p><Button size="sm" onClick={() => void reconcile()} disabled={busy || !pending.requestJson}>核对原提交</Button></div>}
     {message && <p role="alert" className="rounded-ctl bg-surface p-3 text-sm text-text-2">{message}</p>}
-    <div className="flex flex-wrap gap-2"><Button variant="primary" loading={busy} disabled={!ready || consentedTo !== approval} onClick={() => void start()}><Play className="size-4" aria-hidden />创建派生任务</Button>
-      {limits && <span className="self-center text-xs text-text-3">单步证据最多 {limits.maxEvidenceCharsPerStep.toLocaleString()} 字符 · 最多 {limits.maxVisionCalls} 次图片调用</span>}</div>
+    <div className="flex flex-wrap gap-2"><Button variant="primary" loading={busy} disabled={!ready || consentedTo !== approval} onClick={() => void start()}><Play className="size-4" aria-hidden />创建派生任务</Button></div>
   </Card>
 }
 
