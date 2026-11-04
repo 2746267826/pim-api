@@ -8,7 +8,8 @@
 
 - API：材料定向测试 26/26；Test Swagger HTTP 200；官方 Web contract update/check 通过；Notes+Contract 回归 438 total / 330 passed / 108 skipped / 0 failed / 0 timeout。108 skipped 不计 PASS。
 - Web 本地提交链：`78c4a17a` → `d229185b` → `f5037e08` → `e6f5ea82` → `d0b796f1`。四个 native-notes 聚焦文件 52/52，`npm run build` PASS，lint 仅既有 warnings，材料保全已有加测。Playwright 因 Chromium executable 缺失 FAIL，未进入页面、无截图；浏览器验收 NOT-VERIFIED。
-- Android Draft PR #70 / `3f6b1d4`：`:app:compileDebugKotlin` PASS、契约生成物一致；2256 JVM 中 14 项失败，但当前缺少完整 XML/日志，无法分类全部 14 项。首个用例名为 `NoteEditHistoryTest.oversizedDocumentDegradesHistoryWhileTheNoteStillSaves`，不能据此称为既有失败；其余 13 项无法精确归因。connected UI 因 ADB、Android SDK 与已核实专用设备均不可用而 NOT-VERIFIED。
+- Android Draft PR #70 / 精确 head `3f6b1d4`：Android Studio JDK、已安装 SDK、Gradle 8.14 环境下完整 `:app:testDebugUnitTest --no-daemon --stacktrace` 重跑，193 XML / 2256 tests、0 failures / 0 errors / 0 skipped；`:app:compileDebugKotlin` PASS、契约生成物一致。此前汇总曾报告 14 项失败，但当时缺 XML；本次精确 head 重跑未复现，旧失败原因未知，不能判定为既有问题或本次回归。ADB 可读取设备列表但没有连接设备，connected UI 仍 NOT-VERIFIED；阻断原因是没有专用设备，不是缺 SDK/JDK。
+- Android JVM 本地重跑的环境、命令、XML 路径、计数和差异说明见 [回执](../../scratch/notes-user-flow-verification-20261104/android-jvm-rerun-receipt-20261104.md)；该记录不是 CI 或 connected-device 证据。
 - 正常跨端发现、完整材料恢复、续写与冲突仍未整体验收。ASR 凭据仅管理员通过「设置 → AI 与 ASR → ASR 配置」管理；普通用户不显示凭据配置，阅读写作不依赖 ASR 配置。
 - 正常同步不需要 Android 包导入：各客户端适配共同云端契约，内部格式差异由客户端处理；Android 包仅用于离线交换、备份恢复或旧格式兼容。
 - M0–M5、#516、#539、#551–554、Android #59–63 未整体完成；issues 不关闭。以下原审计结论是本轮早期状态快照，若与本更新冲突，以本节及三份当前状态文档为准。

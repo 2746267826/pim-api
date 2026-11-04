@@ -6,7 +6,7 @@
 
 - API：材料定向测试 26/26；Test Swagger HTTP 200；官方 contract update/check 通过；Notes+Contract 有界回归 438 total / 330 passed / 108 skipped / 0 failed / 0 timeout，108 skipped 不计 PASS。
 - Web：提交链 `78c4a17a` → `d229185b` → `f5037e08` → `e6f5ea82` → `d0b796f1`；四个 native-notes 聚焦测试文件 52/52，`npm run build` PASS，lint 仅既有 warnings；材料保全已加测。Playwright 因 Chromium executable 缺失而 FAIL，未进入页面、无截图，浏览器验收 NOT-VERIFIED。
-- Android：Draft PR #70 / `3f6b1d4`；Kotlin compile PASS、契约生成物一致；2256 JVM 中 14 项失败，但当前缺少完整 XML/日志，无法分类全部失败。首个用例名为 `NoteEditHistoryTest.oversizedDocumentDegradesHistoryWhileTheNoteStillSaves`，不可据此称为既有失败，其余 13 项也无法精确归因；connected UI 因 ADB、Android SDK 与已核实专用设备均不可用而 NOT-VERIFIED。正常跨端发现、完整恢复、续写与冲突尚未整体验收。
+- Android：Draft PR #70 / 当前 head `3f6b1d4`；Android Studio JDK、已安装 SDK、Gradle 8.14 环境下完整 `:app:testDebugUnitTest --no-daemon --stacktrace` 为 193 XML / 2256 tests、0 failures / 0 errors / 0 skipped；Kotlin compile PASS、契约生成物一致。此前汇总曾报告 14 项失败（当时无 XML），本次精确 head 重跑未复现，原因未知。ADB 可读设备列表但没有连接设备，connected UI 仍 NOT-VERIFIED。正常跨端发现、完整恢复、续写与冲突尚未整体验收。
 - 同步与格式边界：正常跨端同步不需要 Android 包导入；客户端适配共同云端契约，用户无需处理各端内部格式。Android 包导入仅用于离线交换、备份恢复或旧格式兼容，不是同步步骤。
 - #516 Phase 2：已有 MiMo Batch 工程实现切片（客户端、状态/结果处理及测试证据按各自范围记录），不等于 Phase 2 用户闭环完成；用户流程、真实音频 Batch 能力/质量、费用、region/TTL 与生产运行仍未完成或 NOT-VERIFIED。
 - ASR：管理员入口为 Web「设置 → AI 与 ASR → ASR 配置」；普通用户不显示凭据配置，阅读写作不依赖配置。

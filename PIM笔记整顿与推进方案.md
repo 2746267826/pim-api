@@ -47,13 +47,13 @@ PR560 当前范围是已同步原稿的发现/只读阅读，不能视为跨端�
 
 - API 材料定向测试 26/26；Test Swagger HTTP 200；官方 Web contract update/check 通过。有界 Notes+Contract 回归 438 total / 330 passed / 108 skipped / 0 failed / 0 timeout，108 skipped 不计 PASS。
 - Web 当前提交链 `78c4a17a` → `d229185b` → `f5037e08` → `e6f5ea82` → `d0b796f1`；四个 native-notes 聚焦测试文件 52/52，`npm run build` PASS，lint 仅保留既有 warnings；材料保全已有补充测试。Playwright 因 Chromium executable 缺失而 FAIL，未进入页面、无截图，浏览器验收 NOT-VERIFIED。
-- Android Draft PR #70 / commit `3f6b1d4`：`:app:compileDebugKotlin` PASS、契约生成物一致；2256 JVM 中 14 项失败，但缺少完整 XML/日志，无法分类全部失败。首个用例名为 `NoteEditHistoryTest.oversizedDocumentDegradesHistoryWhileTheNoteStillSaves`，不能称为既有失败；其余 13 项无法精确归因。connected UI 因 ADB、Android SDK 与已核实专用设备均不可用而 NOT-VERIFIED。跨端发现、完整恢复、续写、冲突仍未整体验收。
+- Android Draft PR #70 / commit `3f6b1d4`：`:app:compileDebugKotlin` PASS、契约生成物一致；在 Android Studio JDK、已安装 Android SDK 与 Gradle 8.14 环境下重跑 `:app:testDebugUnitTest --no-daemon --stacktrace`，193 份 XML 共 2256 tests / 0 failures / 0 errors / 0 skipped。此前汇总曾报告 14 项失败，但当时缺少 XML；本次在同一 PR head 未复现，旧失败原因未知，不能据此归因为既有问题或本次代码回归。ADB 可读取设备列表，但当前无连接设备；connected UI 仍 NOT-VERIFIED，原因是没有专用设备。跨端发现、完整恢复、续写、冲突仍未整体验收。
 - ASR 凭据入口为管理员「设置 → AI 与 ASR → ASR 配置」；普通用户不显示凭据配置，阅读写作不依赖该配置。
 - M0–M5、#516、#539、#551–554、Android #59–63 未整体完成，issues 不关闭。
 
 本轮聚焦“从笔记库找到并续写；有音频先转写、无音频直接整理；高级选项默认折叠，发送目标、范围、费用常驻可见”。当前验证和边界见上方“最新交付快照”；API 有界回归的 108 skipped 不计 PASS。
 
-此前 41/41 是 AI 处理入口的局部旧快照；当前 Web 以最新交付快照中的 52/52、build、lint 和 Playwright 结果为准。材料保全已补测，但浏览器未进入页面，不能宣称体验验收通过。Android 以 Draft PR #70 最新结果为准：compile 通过、14/2256 JVM 失败，connected UI 与完整跨端闭环未验证。Windows 本轮未实施。
+此前 41/41 是 AI 处理入口的局部旧快照；当前 Web 以最新交付快照中的 52/52、build、lint 和 Playwright 结果为准。材料保全已补测，但浏览器未进入页面，不能宣称体验验收通过。Android 以 Draft PR #70 的精确 head `3f6b1d4` 重跑结果为准：compile 通过，193 XML / 2256 JVM tests 全通过（0 failures、0 errors、0 skipped）；旧汇总中的 14 项失败未在本次复现、原因未知。ADB 无连接设备，connected UI 与完整跨端闭环未验证。Windows 本轮未实施。
 
 用户可理解的排期：P0 先做到“打开并安全续写一篇已有笔记”——Web 材料保全已有实现与聚焦测试，下一步完成真实浏览器用户流程验收；Android 继续验收自动发现、完整还原同一云端笔记且保全原件。P1 逐项接收稳定性 issue：API #539（请求耗时、pending 与错误语义）、#551（缺口窗口与重复上传）、Android #59（rejected usage）、#60（定位诊断重复）、#61（诊断包完整性）、#62（崩溃堆栈）、#63（采样档抖动）；逐条核对原 AC、已发布实现和测试，只补真实缺口，外部/设备结论仍标 NOT-VERIFIED。P2 推进 #516 五阶段：先核 Phase 1 路由/准入、重试/停止等可复现工程验收；再按依赖推进 Phase 2 多模态及 MiMo Batch、Phase 3 Windows 本地节点；随后闭合 Phase 4 转写/整理用户体验及结果保护、Phase 5 历史/取消/失败恢复。真实音频 Batch 能力、成本、硬件和生产质量均 NOT-VERIFIED。
 

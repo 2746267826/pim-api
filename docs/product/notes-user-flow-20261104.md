@@ -18,7 +18,7 @@
 
 - **API/契约**：材料定向测试 26/26；Test Swagger HTTP 200；官方 Web `update-contract` 与 `check-contract` 通过。有界 Notes+Contract 回归为 438 total / 330 passed / 108 skipped / 0 failed / 0 timeout；108 skipped 不计 PASS。该回归只证明对应锁定源码范围。
 - **Web**：当前提交链为 `78c4a17a`、`d229185b`、`f5037e08`、`e6f5ea82`、`d0b796f1`。四个 native-notes 聚焦测试文件 52/52 通过；`npm run build` PASS；lint 仅保留既有 warnings。材料保全已补测。Playwright 因 Chromium executable 缺失而 FAIL，未进入页面、未生成截图，浏览器验收 NOT-VERIFIED。
-- **Android**：Draft PR [#70](https://github.com/2746267826/pim-android/pull/70)，提交 `3f6b1d4`。`:app:compileDebugKotlin` PASS，契约生成物一致；2256 项 JVM 测试中 14 项失败，但缺少完整 XML/日志，无法分类全部失败。首个用例名为 `NoteEditHistoryTest.oversizedDocumentDegradesHistoryWhileTheNoteStillSaves`，不能称为既有失败；其余 13 项无法精确归因。connected UI 因 ADB、Android SDK 与已核实专用设备均不可用而 NOT-VERIFIED。正常跨端发现、完整材料恢复、续写与冲突处理仍未整体验收。
+- **Android**：Draft PR [#70](https://github.com/2746267826/pim-android/pull/70)，当前 head `3f6b1d4`。Android Studio JDK、已安装 Android SDK、Gradle 8.14 环境下 `:app:testDebugUnitTest --no-daemon --stacktrace` 完整重跑通过：193 XML / 2256 tests，0 failures、0 errors、0 skipped；`:app:compileDebugKotlin` 通过，契约生成物一致。此前曾汇总 14 项失败，当时没有 XML；精确 head 重跑未复现，旧失败原因未知。ADB 可读取设备列表但没有连接设备，因此 connected UI 仍 NOT-VERIFIED。正常跨端发现、完整材料恢复、续写与冲突处理仍未整体验收。
 - **ASR 配置与可用性**：管理员在 Web「设置 → AI 与 ASR → ASR 配置」管理凭据；普通用户不显示凭据配置。阅读、编辑和写作不依赖 ASR 配置，缺配置不应阻塞日常笔记。
 - **路线图与 issues**：M0–M5、#516、#539、#551–554、Android #59–63 均未整体完成；issues 保持开放，不因本地实现或局部测试关闭。
 - **Windows**：本轮未实施，不声称已有同步、PR、CI 或发布。
