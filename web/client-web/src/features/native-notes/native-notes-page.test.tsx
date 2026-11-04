@@ -137,7 +137,7 @@ function ProcessingPage() {
   </div>
 }
 
-function page() {
+function page(initialEntry = '/native-notes') {
   client = new QueryClient({
     defaultOptions: {
       queries: { retry: false, gcTime: 0 },
@@ -154,7 +154,7 @@ function page() {
     },
     { path: '/native-notes/processing', element: <ProcessingPage /> },
     { path: '/quick-notes', element: <p>旧记录页</p> },
-  ], { initialEntries: ['/native-notes'] })
+  ], { initialEntries: [initialEntry] })
   return render(<RouterProvider router={testRouter} />)
 }
 
@@ -297,6 +297,18 @@ describe('NativeNotesPage', () => {
 
     expect(await screen.findByRole('button', { name: '整理笔记' })).toBeTruthy()
     expect(screen.queryByRole('button', { name: '转写录音' })).toBeNull()
+  })
+
+  it('opens a direct note URL after current loads even while the library is still pending', async () => {
+    let releaseNotes!: (value: { total: number; offset: number; items: typeof source[] }) => void
+    nativeApi.notes.mockReturnValue(new Promise((resolve) => { releaseNotes = resolve }))
+    page(`/native-notes?note=${noteId}`)
+
+    expect(await screen.findByRole('button', { name: '整理笔记' })).toBeTruthy()
+    expect(await screen.findByRole('heading', { name: '继续写这篇笔记' })).toBeTruthy()
+
+    releaseNotes({ total: 1, offset: 0, items: [source] })
+    await waitFor(() => expect(screen.getByText('课堂笔记')).toBeTruthy())
   })
 
   it('saves first, then opens processing for the exact note and version', async () => {

@@ -1,5 +1,4 @@
 import { describe, expect, it } from 'vitest'
-import type { NoteLibrarySource } from './api'
 import { groupNoteLibrary } from './library-model'
 
 const noteId = '11111111-1111-4111-8111-111111111111'

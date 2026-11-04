@@ -18,7 +18,7 @@ import { quickNotesApi } from '@/features/quick-notes/api'
 import type { QuickNoteListItem } from '@/features/quick-notes/types'
 import { groupNoteLibrary, type NoteLibraryEntry } from './library-model'
 import { bindNativeNotesApi } from './api'
-import { createMaterialId } from './material-model'
+import { createMaterialId, type NoteMaterialUpload } from './material-model'
 import { assertAndroidNotePackageSize, importAndroidNotePackage } from './material-package'
 import { NoteEditorPane, type NoteEditorSeed } from './note-material-editor'
 import {
@@ -171,10 +171,7 @@ function Workspace({ ownerId, serverBinding }: { ownerId: string; serverBinding:
     const query = search.trim().toLocaleLowerCase()
     return query ? library.filter((item) => item.title.toLocaleLowerCase().includes(query)) : library
   }, [library, search])
-  const selectedSummary = library.find((item) => item.noteId === selectedNoteId)
-  const selectedSource = selectedSummary && selectedCurrent.data
-    ? selectedCurrent.data.upload
-    : undefined
+  const selectedSource = selectedCurrent.data?.upload
   const selectedNoteVersions = selectedVersions.data ?? []
   const legacyCount = quickNotes.data?.totalCount ?? 0
 
@@ -276,7 +273,7 @@ function Workspace({ ownerId, serverBinding }: { ownerId: string; serverBinding:
     changeInternalNavigation(() => setParams({ note: selectedNoteId, version: versionId }))
   }
 
-  async function saved(upload: { versionId: string }) {
+  async function saved(upload: NoteMaterialUpload) {
     setEditorDirty(false)
     setSeed(null)
     setMessage('固定材料版本已保存。页面正在回读实际服务端版本与当前选用状态。')
@@ -298,7 +295,7 @@ function Workspace({ ownerId, serverBinding }: { ownerId: string; serverBinding:
       </>}
     />
 
-    {message && <InlineAlert tone="ok" role="status">{message}</InlineAlert>}
+    {message && <InlineAlert tone="ok">{message}</InlineAlert>}
     {error && <InlineAlert tone="crit" title="操作未完成">{error}</InlineAlert>}
     <p className="text-xs leading-5 text-text-3">已保存版本与冲突候选都会保留。含录音的当前版本可在保留原件的前提下续写；历史版本仅供阅读。</p>
 
@@ -419,7 +416,6 @@ function Workspace({ ownerId, serverBinding }: { ownerId: string; serverBinding:
               api={requestApi}
               versionId={selectedVersionId || selectedSource?.versionId || selectedCurrent.data?.upload.versionId}
               seed={seed ?? undefined}
-              source={selectedVersionId ? undefined : selectedSource}
               onDirtyChange={setEditorDirty}
               onSaved={(upload) => void saved(upload)}
             />}

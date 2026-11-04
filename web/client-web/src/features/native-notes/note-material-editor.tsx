@@ -13,7 +13,7 @@ import {
   type ParsedNoteMaterial,
   type SupportedPhotoMime,
 } from './material-model'
-import type { NativeNotesClient, NoteLibrarySource } from './api'
+import type { NativeNotesClient } from './api'
 import { uploadMaterialBundle, type MaterialUploadProgress } from './upload-engine'
 import { InkCanvasEditor } from './ink-canvas-editor'
 import { exportAndroidNotePackage } from './material-package'
@@ -43,7 +43,6 @@ interface LoadedEditorProps {
   revision: number
   noteCreatedAtMillis: number
   baseVersionId: string | null
-  recordings: number
   isCurrent: boolean
   currentVersionId: string | null
   preservedRecordings?: unknown[]
@@ -96,7 +95,6 @@ export function NoteEditorPane({
       revision={0}
       noteCreatedAtMillis={Date.now()}
       baseVersionId={null}
-      recordings={0}
       isCurrent
       currentVersionId={null}
       legacyNotice={seed.legacyNotice}
@@ -126,7 +124,6 @@ export function NoteEditorPane({
     revision={parsed.revision}
     noteCreatedAtMillis={parsed.createdAtMillis}
     baseVersionId={parsed.versionId}
-    recordings={parsed.recordings}
     isCurrent={material.data.upload.isCurrent}
     currentVersionId={material.data.upload.currentVersionId ?? null}
     preservedRecordings={parsed.recordingEntries}
@@ -156,7 +153,6 @@ function LoadedEditor({
   revision,
   noteCreatedAtMillis,
   baseVersionId,
-  recordings,
   isCurrent,
   currentVersionId,
   preservedRecordings = [],
@@ -167,7 +163,6 @@ function LoadedEditor({
   api,
   onDirtyChange,
   onSaved,
-  onProcessing,
 }: LoadedEditorProps) {
   const [title, setTitle] = useState(initialTitle)
   const [blocks, setBlocks] = useState<MaterialDraftBlock[]>(initialBlocks)
@@ -664,10 +659,6 @@ function PreviewImage({ bytes, mimeType, alt }: { bytes: Uint8Array; mimeType: s
   return url
     ? <img src={url} alt={alt} className="max-h-72 w-full object-contain bg-surface" />
     : <div className="h-40 bg-surface" aria-hidden />
-}
-
-function shortId(value: string) {
-  return value.length > 12 ? `${value.slice(0, 8)}…` : value
 }
 
 function safePackageName(value: string) {

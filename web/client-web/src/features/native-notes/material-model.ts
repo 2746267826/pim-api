@@ -11,6 +11,7 @@ export interface NewPhotoInput {
   assetId: string
   mimeType: SupportedPhotoMime
   bytes: Uint8Array
+  source?: Record<string, unknown>
 }
 
 export interface ExistingPhotoInput {
@@ -20,6 +21,7 @@ export interface ExistingPhotoInput {
   sha256: string
   fileIndex: number
   bytes: Uint8Array
+  source?: Record<string, unknown>
 }
 
 export interface ExistingInkInput {
@@ -28,12 +30,14 @@ export interface ExistingInkInput {
   sha256: string
   fileIndex: number
   bytes: Uint8Array
+  source?: Record<string, unknown>
 }
 
 export interface NewInkInput {
   id: string
   ink: Record<string, unknown>
   bytes: Uint8Array
+  source?: Record<string, unknown>
 }
 
 export type MaterialDraftBlock =
@@ -409,8 +413,27 @@ export function parseMaterialVersion(material: NoteMaterialVersion): ParsedNoteM
     throw new Error('固定材料清单与原笔记身份或修订号不一致')
   }
   const files = manifest.files ?? []
+  const preservedFiles: PreservedMaterialFile[] = files.map((file) => {
+    if (typeof file.path !== 'string' || !file.path ||
+        typeof file.kind !== 'string' || !file.kind ||
+        typeof file.sha256 !== 'string' || !file.sha256 ||
+        typeof file.sizeBytes !== 'number' || !Number.isSafeInteger(file.sizeBytes) || file.sizeBytes < 0) {
+      throw new Error('固定材料清单包含不完整文件描述')
+    }
+    return {
+      path: file.path,
+      kind: file.kind,
+      sha256: file.sha256,
+      sizeBytes: file.sizeBytes,
+      ...(file.blockId !== undefined ? { blockId: file.blockId } : {}),
+      ...(file.recordingId !== undefined ? { recordingId: file.recordingId } : {}),
+      ...(file.segment !== undefined ? { segment: file.segment } : {}),
+      ...(file.chunkIndex !== undefined ? { chunkIndex: file.chunkIndex } : {}),
+      ...(file.samples !== undefined ? { samples: file.samples } : {}),
+    }
+  })
   const fileIndex = (path: string, expectedKind: string) => {
-    const index = files.findIndex((file) => file.path === path && file.kind === expectedKind)
+    const index = preservedFiles.findIndex((file) => file.path === path && file.kind === expectedKind)
     if (index < 0) throw new Error(`固定材料缺少 ${path}`)
     return index
   }
@@ -440,8 +463,8 @@ export function parseMaterialVersion(material: NoteMaterialVersion): ParsedNoteM
     if (kind === 'ink') {
       const ink = raw.ink
       if (!ink || typeof ink !== 'object' || Array.isArray(ink)) throw new Error('固定材料包含无效手写卡片')
-      const index = files.findIndex((file) => file.kind === 'InkPreview' && file.blockId === id)
-      const file = files[index]
+      const index = preservedFiles.findIndex((file) => file.kind === 'InkPreview' && file.blockId === id)
+      const file = preservedFiles[index]
       if (index < 0 || !file?.path) throw new Error('固定材料缺少手写预览图')
       return {
         id,
@@ -465,10 +488,8 @@ export function parseMaterialVersion(material: NoteMaterialVersion): ParsedNoteM
     blocks,
     recordings: input.recordings?.length ?? 0,
     recordingEntries: input.recordings ?? [],
-    manifestFiles: files.map((file) => ({ ...file })),
+    manifestFiles: preservedFiles,
     sourceInputJson: material.inputJson,
-    preservedRecordings: input.recordings ?? [],
-    preservedFiles: files,
   }
 }
 

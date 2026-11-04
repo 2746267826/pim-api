@@ -23,7 +23,6 @@ import {
   type StartNoteDerived,
 } from './api'
 import {
-  MAX_LOCAL_DRAFT_CHARACTERS,
   canAdoptSelectedVersion,
   canonicalServerBinding,
   clearStoredIntent,
