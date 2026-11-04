@@ -2,7 +2,13 @@
 
 本路线图保留 45 个稳定 ID、32 capabilities、32 gaps、13 MIG、AC1–19、M0–M5 和 #516 五阶段追踪范围；不代表整体完成。逐阶段用户可理解排期及 #516/#539/#551–554/Android #59–63 状态见[笔记整顿方案](PIM笔记整顿与推进方案.md)和[审计台账](docs/audit/notes-roadmap-acceptance-audit-20261104.md)。下方 v0.53 执行层是 2026-11-02 历史快照，不应当作当前发布/PR 状态。
 
-API #561 初始远端 head `faa6ab30` 有 26/26 材料定向测试、Test Swagger HTTP 200、官方 Web contract 更新/检查及 Notes+Contract 438 total / 330 passed / 108 skipped / 0 failed / 0 timeout 的记录；108 skipped 不计 PASS。提交 `78c4a17a` 及之后 Web 本地改动未证明已进入远端 PR head；最新 CI、完整 Web tests/lint/build 与浏览器验收 NOT-VERIFIED。Android `d840094` 的自动上传 5/5 和 compile 在 DTO/恢复接入前运行；后续恢复 WIP 的组合测试与 freshness NOT-VERIFIED。API #539/#551–554、Android #59–63 和 #516 在 2026-11-04 远端快照中均 OPEN；历史已发布切片不自动满足全部 issue 或设备验收。生产、真实 provider、硬件、设备/OEM 和端到端跨端往返均 NOT-VERIFIED。
+### 当前交付快照（2026-11-04）
+
+- API：材料定向测试 26/26；Test Swagger HTTP 200；官方 contract update/check 通过；Notes+Contract 有界回归 438 total / 330 passed / 108 skipped / 0 failed / 0 timeout，108 skipped 不计 PASS。
+- Web：提交链 `78c4a17a` → `d229185b` → `f5037e08` → `e6f5ea82` → `d0b796f1`；四个 native-notes 聚焦测试文件 52/52，`npm run build` PASS，lint 仅既有 warnings；材料保全已加测。Playwright 因 Chromium executable 缺失而 FAIL，未进入页面、无截图，浏览器验收 NOT-VERIFIED。
+- Android：Draft PR #70 / `3f6b1d4`；Kotlin compile PASS、契约生成物一致；2256 JVM 中 14 项失败（首个为既有 `NoteEditHistoryTest.oversizedDocumentDegradesHistoryWhileTheNoteStillSaves`）；connected UI NOT-VERIFIED。正常跨端发现、完整恢复、续写与冲突尚未整体验收。
+- ASR：管理员入口为 Web「设置 → AI 与 ASR → ASR 配置」；普通用户不显示凭据配置，阅读写作不依赖配置。
+- M0–M5、#516、#539、#551–554、Android #59–63 均未整体完成，issues 保持开放。生产、真实 provider、硬件、设备/OEM 与端到端跨端往返仍 NOT-VERIFIED。
 
 <!-- current-pointer-pr44-pr67-repaired-20261102 -->
 ## 当前执行检查点（2026-11-02）

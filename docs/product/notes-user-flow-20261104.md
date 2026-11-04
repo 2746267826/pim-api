@@ -16,12 +16,11 @@
 
 ## 当前进度
 
-- **API/契约**：后端发现列表、current 读取及材料保全克隆定向测试 26/26 通过。Test Swagger 实际导出 HTTP 200，并经官方 Web `update-contract` / `check-contract` 校验。提交 `faa6ab30` 是草稿 [PR #561](https://github.com/2746267826/pim-api/pull/561) 的初始远端 head；之后的本地提交和工作树更改未证明已经推送，不能写成当前 PR 最新 head。
-- **API CI 边界**：此前旧 head 的 Web build SUCCESS 不适用于后续代码。基于当前可核对材料，PR #561 最新 head 与对应 CI 状态为 NOT-VERIFIED；不得把历史运行结果继承给未推送代码。
-- **笔记处理**：AI 笔记处理/ASR 顺序、上下文与返回、默认折叠、目标/范围/费用常驻的 focused tests 41/41 通过。父级本地提交 `78c4a17a` 尚未 push，尚无对应远端 CI。
-- **Web**：AI 处理页 focused tests 41/41 通过；页面/模型和材料往返仍有本地改动。只读审查发现正文块未知扩展属性丢失风险，以及 clone 未知结果恢复可能未校验 `baseVersionId`；这两项修复测试及最终组合验证均 NOT-VERIFIED。完整 Web tests、lint、build 和浏览器桌面/窄屏验收尚未完成。
-- **Android**：基线 autosubmit 5/5 与 compile 通过，但发生在云端 DTO/恢复接入前。真实契约 fetch/生成/generated check 通过；freshness NOT-VERIFIED。Android worktree 后续有发现、下载、恢复相关未提交 WIP；组合 compile、单测、正常笔记库自动还原与续写仍 NOT-VERIFIED，不能称完整同步。
-- **广域回归**：有界 Notes+Contract 回归 TRX 为 438 total / 330 passed / 108 skipped / 0 failed / 0 timeout，正常完成，耗时 6.34 分钟。108 项因外部 PostgreSQL 等条件未启用，计为 skipped 而非 PASS。此前“更广回归仍 pending”和“Kant 正进行诊断”均为过时状态；该回归已有完成结果，不应继续写成进行中。此结果仅适用于当时锁定源码，不代表后续 PR、Web 或 Android 组合通过。
+- **API/契约**：材料定向测试 26/26；Test Swagger HTTP 200；官方 Web `update-contract` 与 `check-contract` 通过。有界 Notes+Contract 回归为 438 total / 330 passed / 108 skipped / 0 failed / 0 timeout；108 skipped 不计 PASS。该回归只证明对应锁定源码范围。
+- **Web**：当前提交链为 `78c4a17a`、`d229185b`、`f5037e08`、`e6f5ea82`、`d0b796f1`。四个 native-notes 聚焦测试文件 52/52 通过；`npm run build` PASS；lint 仅保留既有 warnings。材料保全已补测。Playwright 因 Chromium executable 缺失而 FAIL，未进入页面、未生成截图，浏览器验收 NOT-VERIFIED。
+- **Android**：Draft PR [#70](https://github.com/2746267826/pim-android/pull/70)，提交 `3f6b1d4`。`:app:compileDebugKotlin` PASS，契约生成物一致；2256 项 JVM 测试中 14 项失败，首个失败为既有 `NoteEditHistoryTest.oversizedDocumentDegradesHistoryWhileTheNoteStillSaves`，不能记为全绿；connected UI NOT-VERIFIED。正常跨端发现、完整材料恢复、续写与冲突处理仍未整体验收。
+- **ASR 配置与可用性**：管理员在 Web「设置 → AI 与 ASR → ASR 配置」管理凭据；普通用户不显示凭据配置。阅读、编辑和写作不依赖 ASR 配置，缺配置不应阻塞日常笔记。
+- **路线图与 issues**：M0–M5、#516、#539、#551–554、Android #59–63 均未整体完成；issues 保持开放，不因本地实现或局部测试关闭。
 - **Windows**：本轮未实施，不声称已有同步、PR、CI 或发布。
 
 ## 用户仍不能做什么
@@ -30,9 +29,9 @@
 
 ## 下一步
 
-1. 先修复并加测 Web 未知正文扩展与 clone 基线恢复风险，再对最终 Web 源码运行 focused/full tests、lint、build 和桌面/窄屏浏览器流程；同步核实并更新 PR #561 实际 head/CI。
-2. 在 Android 云端 DTO 接入后验证 compile、契约 freshness、发现—下载—材料还原—续写/冲突流程，覆盖原件路径/hash/大小/预算，随后才形成 Android PR。
+1. 补齐真实 Chromium 环境后重跑 Playwright 桌面与窄屏用户流程；当前浏览器验收 NOT-VERIFIED。
+2. 继续 Android 验证发现—下载—材料还原—续写/冲突流程，覆盖原件路径/hash/大小/预算，并补跑 connected UI；当前不得声称完整同步。
 3. 按用户顺序闭合跨端链路：从笔记列表自动找到 → 正文与材料可读 → 续写保存且状态清楚 → 有音频先转写、无音频直接整理 → 返回后仍保留人工修改和原件。设备/OEM 及生产/provider 结论单列 NOT-VERIFIED。
-4. 438/330/108/0/0 的既有回归结果无需标记 pending；只有代码范围改变或发现具体缺口时，才对受影响范围重跑并追加精确结果。
+4. 438/330/108/0/0 是已完成的有界回归，108 skipped 不计 PASS；只在代码范围改变或发现具体缺口时重跑受影响范围。
 
 以上局部通过项不改变 M0–M5 未整体完成的状态；不批量关闭 issue，也不提前标记全部 PASS、已发布或可生产使用。

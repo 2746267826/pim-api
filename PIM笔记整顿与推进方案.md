@@ -43,10 +43,18 @@ PR560 当前范围是已同步原稿的发现/只读阅读，不能视为跨端�
 
 ## 当前批次（2026-11-04，审计校准）
 
-本轮聚焦“从笔记库找到并续写；有音频先转写、无音频直接整理；高级选项默认折叠，发送目标、范围、费用常驻可见”。API 后端发现列表、current 读取及材料保全克隆聚焦测试 26/26 通过；Test Swagger 实际 HTTP 200 导出及官方 Web `update-contract` / `check-contract` 均通过。提交 `faa6ab30` 是草稿 [API PR #561](https://github.com/2746267826/pim-api/pull/561) 的初始远端 head，并非当前所有本地改动均已推送的证明。有界 Notes+Contract 回归为 438 total / 330 passed / 108 skipped / 0 failed / 0 timeout；108 项因外部 PostgreSQL 等条件未启用，不计 PASS。旧 head 的 CI 不继承到后续源码；最新 PR head 与 CI 状态 NOT-VERIFIED。
+### 最新交付快照（2026-11-04）
 
-笔记处理/ASR 顺序、上下文与返回、默认折叠及目标/范围/费用常驻的 focused tests 为 41/41；提交 `78c4a17a` 已在本地分支历史，但不在已知 API PR #561 初始远端 head `faa6ab30`。Web 页面/模型和材料往返仍有未提交改动；只读审查发现正文块未知扩展字段可能丢失、clone 未知结果恢复未比对 `baseVersionId`，修复与回归测试尚无完成证据。完整 Web tests、lint、build、桌面/窄屏浏览器验收均 NOT-VERIFIED。Android `d840094` 的自动上传测试 5/5 与 compile 通过，但早于云端 DTO/恢复接入；契约 fetch/生成/generated check 通过，freshness NOT-VERIFIED。之后 Android 云端笔记发现/下载/恢复已有未提交 WIP，组合 compile、测试和完整同步验收未验证。Windows 本轮未实施。
+- API 材料定向测试 26/26；Test Swagger HTTP 200；官方 Web contract update/check 通过。有界 Notes+Contract 回归 438 total / 330 passed / 108 skipped / 0 failed / 0 timeout，108 skipped 不计 PASS。
+- Web 当前提交链 `78c4a17a` → `d229185b` → `f5037e08` → `e6f5ea82` → `d0b796f1`；四个 native-notes 聚焦测试文件 52/52，`npm run build` PASS，lint 仅保留既有 warnings；材料保全已有补充测试。Playwright 因 Chromium executable 缺失而 FAIL，未进入页面、无截图，浏览器验收 NOT-VERIFIED。
+- Android Draft PR #70 / commit `3f6b1d4`：`:app:compileDebugKotlin` PASS、契约生成物一致；2256 JVM 中 14 项失败，首个为既有 `NoteEditHistoryTest.oversizedDocumentDegradesHistoryWhileTheNoteStillSaves`；connected UI NOT-VERIFIED。跨端发现、完整恢复、续写、冲突仍未整体验收。
+- ASR 凭据入口为管理员「设置 → AI 与 ASR → ASR 配置」；普通用户不显示凭据配置，阅读写作不依赖该配置。
+- M0–M5、#516、#539、#551–554、Android #59–63 未整体完成，issues 不关闭。
 
-用户可理解的排期：P0 先做到“打开并安全续写一篇已有笔记”——修复 Web 材料往返风险并完成 Web 用户流程验收，同时让 Android 能自动发现、还原同一云端笔记且保全原件。P1 逐项接收稳定性 issue：API #539（请求耗时、pending 与错误语义）、#551（缺口窗口与重复上传）、Android #59（rejected usage）、#60（定位诊断重复）、#61（诊断包完整性）、#62（崩溃堆栈）、#63（采样档抖动）；逐条核对原 AC、已发布实现和测试，只补真实缺口，外部/设备结论仍标 NOT-VERIFIED。P2 推进 #516 五阶段：先核 Phase 1 路由/准入、重试/停止等可复现工程验收；再按依赖推进 Phase 2 多模态及 MiMo Batch、Phase 3 Windows 本地节点；随后闭合 Phase 4 转写/整理用户体验及结果保护、Phase 5 历史/取消/失败恢复。真实音频 Batch 能力、成本、硬件和生产质量均 NOT-VERIFIED。
+本轮聚焦“从笔记库找到并续写；有音频先转写、无音频直接整理；高级选项默认折叠，发送目标、范围、费用常驻可见”。当前验证和边界见上方“最新交付快照”；API 有界回归的 108 skipped 不计 PASS。
+
+此前 41/41 是 AI 处理入口的局部旧快照；当前 Web 以最新交付快照中的 52/52、build、lint 和 Playwright 结果为准。材料保全已补测，但浏览器未进入页面，不能宣称体验验收通过。Android 以 Draft PR #70 最新结果为准：compile 通过、14/2256 JVM 失败，connected UI 与完整跨端闭环未验证。Windows 本轮未实施。
+
+用户可理解的排期：P0 先做到“打开并安全续写一篇已有笔记”——Web 材料保全已有实现与聚焦测试，下一步完成真实浏览器用户流程验收；Android 继续验收自动发现、完整还原同一云端笔记且保全原件。P1 逐项接收稳定性 issue：API #539（请求耗时、pending 与错误语义）、#551（缺口窗口与重复上传）、Android #59（rejected usage）、#60（定位诊断重复）、#61（诊断包完整性）、#62（崩溃堆栈）、#63（采样档抖动）；逐条核对原 AC、已发布实现和测试，只补真实缺口，外部/设备结论仍标 NOT-VERIFIED。P2 推进 #516 五阶段：先核 Phase 1 路由/准入、重试/停止等可复现工程验收；再按依赖推进 Phase 2 多模态及 MiMo Batch、Phase 3 Windows 本地节点；随后闭合 Phase 4 转写/整理用户体验及结果保护、Phase 5 历史/取消/失败恢复。真实音频 Batch 能力、成本、硬件和生产质量均 NOT-VERIFIED。
 
 M0–M5 逐阶段均未整体完成：M0 验证 owner/授权/原件/删除安全边界；M1 接收本地新建、重开、编辑和异常恢复；M2 接上发现、保存、转写/整理与结果恢复，并复核 #539/#551–554 已发布实现；M3 优先闭合云端同笔记发现→材料还原→续写→冲突保全，离线包另行排期；M4 保留任务建议，仅补来源、授权和确认缺口；M5 按平台迁移业务域，不以入口存在代表迁移完成。逐条证据与下一动作见[本轮审计台账](docs/audit/notes-roadmap-acceptance-audit-20261104.md)。当前无生产、真实 provider、实机/OEM 或 Web↔Android 端到端验收证据；issue 不批量关闭。

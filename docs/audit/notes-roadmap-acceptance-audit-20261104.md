@@ -2,6 +2,14 @@
 
 ## 结论
 
+## 交付状态更新（2026-11-04）
+
+- API：材料定向测试 26/26；Test Swagger HTTP 200；官方 Web contract update/check 通过；Notes+Contract 回归 438 total / 330 passed / 108 skipped / 0 failed / 0 timeout。108 skipped 不计 PASS。
+- Web 本地提交链：`78c4a17a` → `d229185b` → `f5037e08` → `e6f5ea82` → `d0b796f1`。四个 native-notes 聚焦文件 52/52，`npm run build` PASS，lint 仅既有 warnings，材料保全已有加测。Playwright 因 Chromium executable 缺失 FAIL，未进入页面、无截图；浏览器验收 NOT-VERIFIED。
+- Android Draft PR #70 / `3f6b1d4`：`:app:compileDebugKotlin` PASS、契约生成物一致；2256 JVM 中 14 项失败，首个为既有 `NoteEditHistoryTest.oversizedDocumentDegradesHistoryWhileTheNoteStillSaves`；connected UI NOT-VERIFIED。
+- 正常跨端发现、完整材料恢复、续写与冲突仍未整体验收。ASR 凭据仅管理员通过「设置 → AI 与 ASR → ASR 配置」管理；普通用户不显示凭据配置，阅读写作不依赖 ASR 配置。
+- M0–M5、#516、#539、#551–554、Android #59–63 未整体完成；issues 不关闭。以下原审计结论是本轮早期状态快照，若与本更新冲突，以本节及三份当前状态文档为准。
+
 本审计只核对文档、源码/提交记录、已有测试回执和 2026-11-04 的远端只读快照，不修改产品代码、CI 或 issue。结论是：M0–M5 均未整体完成；API #516、#539、#551–554 与 Android #59–63 在快照中仍为 OPEN。OPEN 不等于完全没有实现，但也不等于全部验收完成。生产、真实 provider、物理设备/OEM 和 Web 与 Android 之间完整往返均未验证。
 
 本文件替换“Kant 正进行诊断”“更广回归 pending”“PR #561 当前 head 为 `faa6ab30`”等过期叙述。可核对的固定事实是：

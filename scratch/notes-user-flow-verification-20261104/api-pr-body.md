@@ -4,9 +4,9 @@
 
 Add owner-scoped note discovery, current-version reads, and verified material cloning. Finalization checks the version baseline and retains concurrent edits. Export the contract from the Test host's Swagger HTTP response and regenerate Web types.
 
-此草稿的远端初始提交包含后端及契约；Web 后续本地改动不属于已知远端 head，页面与处理流程验收完成后再更新正文和验证结果。
+本地 Web 交付提交链为 `78c4a17a`、`d229185b`、`f5037e08`、`e6f5ea82`、`d0b796f1`。本 PR 的远端最新 head 与 CI 状态须以 GitHub 实时记录为准；本文不以本地提交链推断远端 CI 已通过。
 
-The initial remote commit contains the backend and contract. Later Web work is local and is not part of the known remote head; update this description after the integrated flow is verified.
+The local Web delivery chain is `78c4a17a`, `d229185b`, `f5037e08`, `e6f5ea82`, and `d0b796f1`. Verify the actual PR head and CI in GitHub; this local chain does not imply remote CI success.
 
 ## 功能变化 / Feature changes
 
@@ -16,9 +16,9 @@ Provide the server support needed to discover synced notes and retain existing a
 
 ## 如何体验 / How to try it
 
-本 PR 暂为草稿，等待 Web 用户流程接入后补充完整操作说明。最终体验目标是：从笔记列表打开已有笔记，继续编辑并保存；含录音的笔记先转写，纯文字笔记可直接整理；高级设置默认收起，处理目标、材料范围及可能费用在确认前直接可见。
+从笔记列表打开已有笔记，继续编辑并保存；含录音的笔记先转写，纯文字笔记可直接整理；高级设置默认收起，处理目标、材料范围及可能费用在确认前直接可见。管理员在「设置 → AI 与 ASR → ASR 配置」管理凭据；普通用户不显示凭据配置，阅读写作无需配置。
 
-This draft awaits the Web integration. The intended flow is to open a note from the library, continue writing and save, transcribe audio when present, and organize text directly when audio is absent. Advanced options start collapsed, while destination, material scope, and possible charges remain visible before confirmation.
+Open a note from the library, continue writing and save, transcribe audio when present, and organize text directly when audio is absent. Advanced options start collapsed, while destination, material scope, and possible charges remain visible before confirmation. Administrators manage credentials under Settings → AI & ASR → ASR Configuration; ordinary users do not see credential settings, and reading/writing does not depend on ASR setup.
 
 ## 测试 / Tests
 
@@ -26,7 +26,10 @@ This draft awaits the Web integration. The intended flow is to open a note from 
 - Test-host `GET /swagger/v1/swagger.json`: HTTP 200; contract normalized and exported.
 - Official `web/scripts/ci/update-contract.sh` and `check-contract.sh`: passed.
 - Targeted Notes + Contract regression: 438 total / 330 passed / 108 skipped / 0 failed / 0 timeout. The 108 skipped tests are not PASS.
-- Final Web tests/build and browser scenarios: NOT-VERIFIED. No production, paid provider, or physical-device acceptance is claimed.
+- Web local commit chain: `78c4a17a`, `d229185b`, `f5037e08`, `e6f5ea82`, `d0b796f1`; four native-notes focused files: 52/52 passed; `npm run build`: PASS; lint: existing warnings only; material-preservation coverage added.
+- Playwright: FAIL because the Chromium executable is missing; it did not enter the page and produced no screenshot. Browser acceptance: NOT-VERIFIED.
+- Android Draft PR #70 / commit `3f6b1d4`: `:app:compileDebugKotlin` PASS and generated contract artifacts match. Of 2,256 JVM tests, 14 failed; the first is the existing `NoteEditHistoryTest.oversizedDocumentDegradesHistoryWhileTheNoteStillSaves`. Connected UI: NOT-VERIFIED.
+- Normal cross-device discovery, complete restore, continuation, and conflict handling are not accepted end-to-end. M0–M5 and issues #516, #539, #551–554, Android #59–63 are not complete and remain open. No production, paid-provider, or physical-device acceptance is claimed.
 
 ## 需求与验收映射 / Requirement & Acceptance Mapping
 
@@ -35,5 +38,5 @@ This draft awaits the Web integration. The intended flow is to open a note from 
 | Discover saved notes / 发现已保存笔记 | Owner-scoped current-note listing and reads / 按账号列出并读取当前笔记 | Material HTTP/store tests / 材料 HTTP 与存储测试 | PASS |
 | Preserve source materials / 保全原材料 | Continue with validated original attachments and conflict protection / 续写保全已校验附件并保留冲突 | Material clone/store tests / 克隆与存储测试 | PASS |
 | Use real contract / 使用真实契约 | Test Swagger export and generated Web types match / 真实契约与 Web 生成物一致 | Official generation/check scripts / 官方生成和检查脚本 | PASS |
-| Follow the user's note workflow / 按使用顺序组织界面 | Library, editing, saving, and processing form a clear flow / 笔记库、编辑、保存及处理衔接清楚 | Web integration and final browser check / Web 集成及最终浏览器检查 | NOT-VERIFIED |
-| Normal cross-device continuation / 正常跨端续写 | Discover, restore, continue, and preserve materials without manual file exchange / 不手动搬文件完成发现、还原、续写与材料保全 | Client integration and device acceptance pending / 客户端及设备验收待完成 | NOT-VERIFIED |
+| Follow the user's note workflow / 按使用顺序组织界面 | Library, editing, saving, and processing form a clear flow / 笔记库、编辑、保存及处理衔接清楚 | Web focused tests 52/52 and build PASS; Playwright did not enter page because Chromium is missing / Web 聚焦测试 52/52、build 通过；Playwright 因缺 Chromium 未进入页面 | NOT-VERIFIED |
+| Normal cross-device continuation / 正常跨端续写 | Discover, restore, continue, and preserve materials without manual file exchange / 不手动搬文件完成发现、还原、续写与材料保全 | Android compile PASS; 14/2256 JVM failures; connected UI and end-to-end flow NOT-VERIFIED / Android 编译通过；2256 项 JVM 中 14 项失败；connected UI 与端到端流程未验证 | NOT-VERIFIED |
