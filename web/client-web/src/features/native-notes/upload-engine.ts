@@ -55,6 +55,9 @@ export async function uploadMaterialBundle(
   }
   let began: NoteMaterialUpload
   if (options.cloneSourceVersionId) {
+    if (options.cloneSourceVersionId !== bundle.baseVersionId) {
+      throw new Error('续写来源与固定材料基版本不一致')
+    }
     try {
       began = await requireClone(api)(options.cloneSourceVersionId, {
         expectedCurrentVersionId: options.expectedCurrentVersionId,
@@ -71,6 +74,9 @@ export async function uploadMaterialBundle(
   assertUploadActive(options)
   if (began.noteId !== bundle.noteId || began.versionId !== bundle.versionId) {
     throw new Error('服务器返回的材料版本与提交意图不一致')
+  }
+  if (began.baseVersionId !== bundle.baseVersionId) {
+    throw new Error('服务器返回的材料来源版本与提交意图不一致')
   }
   if (began.files.length !== bundle.files.length) {
     throw new Error('服务器返回的材料文件数量与本地固定清单不一致')

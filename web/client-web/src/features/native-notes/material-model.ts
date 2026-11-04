@@ -271,11 +271,16 @@ export async function buildMaterialBundle(input: BuildMaterialInput): Promise<Ma
   const generatedByPath = new Map([...metadataFiles, ...files].map((file) => [file.path, file]))
   const preservedFiles = input.preservedFiles ?? []
   const orderedFiles: MaterialFileSpec[] = []
+  const preservedPaths = new Set<string>()
   for (const preserved of preservedFiles) {
+    if (preservedPaths.has(preserved.path)) throw new Error(`原版本包含重复材料路径：${preserved.path}`)
+    preservedPaths.add(preserved.path)
     const generated = generatedByPath.get(preserved.path)
     if (generated) {
       if (generated.kind === preserved.kind && generated.sha256 === preserved.sha256 &&
-          generated.sizeBytes === preserved.sizeBytes) {
+          generated.sizeBytes === preserved.sizeBytes && generated.blockId === preserved.blockId &&
+          generated.recordingId === preserved.recordingId && generated.segment === preserved.segment &&
+          generated.chunkIndex === preserved.chunkIndex && generated.samples === preserved.samples) {
         const source = sourceByPath.get(preserved.path) ?? preserved
         orderedFiles.push({ ...generated, ...source, bytes: generated.bytes, preserved: true })
       } else if (input.preserveSourceFiles && (preserved.kind === 'Photo' || preserved.kind === 'InkPreview')) {
@@ -285,6 +290,9 @@ export async function buildMaterialBundle(input: BuildMaterialInput): Promise<Ma
       }
       generatedByPath.delete(preserved.path)
     } else {
+      if (input.preserveSourceFiles && (preserved.kind === 'Photo' || preserved.kind === 'InkPreview')) {
+        throw new Error(`续写正文未引用原版本附件：${preserved.path}`)
+      }
       orderedFiles.push({ ...preserved, bytes: new Uint8Array(), preserved: true })
     }
   }
@@ -318,7 +326,7 @@ export async function buildMaterialBundle(input: BuildMaterialInput): Promise<Ma
     inputJson,
     manifestJson: JSON.stringify(manifest),
     files,
-    recordedAudio: input.recordings?.length ?? 0,
+    recordedAudio: (input.preservedRecordings ?? input.recordings)?.length ?? 0,
   }
 }
 
@@ -379,7 +387,17 @@ export function parseMaterialVersion(material: NoteMaterialVersion): ParsedNoteM
     versionId?: string
     noteId?: string
     revision?: number
-    files?: Array<{ path?: string; kind?: string; sha256?: string; blockId?: string }>
+    files?: Array<{
+      path?: string
+      kind?: string
+      sha256?: string
+      sizeBytes?: number
+      blockId?: string
+      recordingId?: string
+      segment?: number
+      chunkIndex?: number
+      samples?: number
+    }>
   }
   if (!input.note || input.note.id !== material.upload.noteId || input.id !== material.upload.versionId) {
     throw new Error('固定材料来源与版本标识不一致')

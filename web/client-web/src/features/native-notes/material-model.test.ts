@@ -174,6 +174,144 @@ describe('native note material model', () => {
     })
   })
 
+  it('round-trips unknown block fields and preserves mixed recording and attachment descriptors on append', async () => {
+    const photoBytes = new Uint8Array([9, 8, 7, 6])
+    const photoHash = await sha256Hex(photoBytes)
+    const recordingId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    const recording = {
+      id: recordingId,
+      noteId,
+      schemaVersion: 1,
+      currentSegment: 1,
+      phase: 'Completed',
+      createdAtMillis: 15,
+      chunks: [{ segment: 1, index: 1, samples: 1, vendorChunk: { keep: true } }],
+      vendorRecording: { keep: true },
+    }
+    const markdown = {
+      id: '44444444-4444-4444-8444-444444444444',
+      kind: 'markdown',
+      text: '原文',
+      vendorBlock: { keep: true },
+    }
+    const photo = {
+      id: '55555555-5555-4555-8555-555555555555',
+      kind: 'photo',
+      assetId,
+      mimeType: 'image/png',
+      sha256: photoHash,
+      vendorBlock: { keep: true },
+    }
+    const ink = { width: 120, height: 160, strokes: [] }
+    const inkId = '66666666-6666-4666-8666-666666666666'
+    const inkHash = await sha256Hex(encoder.encode(JSON.stringify(ink)))
+    const inkBytes = new Uint8Array([5, 4, 3, 2, 1])
+    const inkPreviewHash = await sha256Hex(inkBytes)
+    const inkBlock = { id: inkId, kind: 'ink', ink, vendorBlock: { keep: true } }
+    const note = {
+      schemaVersion: 1,
+      id: noteId,
+      revision: 4,
+      title: '原始混合笔记',
+      createdAtMillis: 10,
+      blocks: [markdown, photo, inkBlock],
+      vendorNote: { keep: true },
+    }
+    const inputJson = JSON.stringify({
+      schemaVersion: 1,
+      createdAtMillis: 20,
+      id: versionId,
+      note,
+      recordings: [recording],
+      vendorEnvelope: { keep: true },
+    })
+    const rendered = [
+      '原文',
+      `![照片](assets/${assetId}.png)`,
+      `![手写卡片](assets/${inkId}-${inkHash}.png)\n<!-- 可编辑笔迹、身份和尺寸保存在同包 note.json 中 -->`,
+    ].join('\n\n')
+    const noteBytes = encoder.encode(JSON.stringify(note))
+    const recordingBytes = encoder.encode(JSON.stringify(recording))
+    const sourceFiles = [
+      { path: 'note.json', kind: 'Document', sha256: await sha256Hex(noteBytes), sizeBytes: noteBytes.length },
+      { path: 'document.md', kind: 'Markdown', sha256: await sha256Hex(encoder.encode(rendered)), sizeBytes: encoder.encode(rendered).length },
+      { path: `assets/${assetId}.png`, kind: 'Photo', sha256: photoHash, sizeBytes: photoBytes.length, blockId: photo.id },
+      { path: `assets/${inkId}-${inkHash}.png`, kind: 'InkPreview', sha256: inkPreviewHash, sizeBytes: inkBytes.length, blockId: inkId },
+      { path: `recordings/${recordingId}/manifest.json`, kind: 'RecordingManifest', sha256: await sha256Hex(recordingBytes), sizeBytes: recordingBytes.length, recordingId },
+      {
+        path: `recordings/${recordingId}/s0001-c000001.wav`,
+        kind: 'AudioChunk',
+        sha256: 'a'.repeat(64),
+        sizeBytes: 46,
+        recordingId,
+        segment: 1,
+        chunkIndex: 1,
+        samples: 1,
+      },
+    ]
+    const manifestJson = JSON.stringify({
+      schemaVersion: 1,
+      versionId,
+      noteId,
+      inputSha256: await sha256Hex(encoder.encode(inputJson)),
+      revision: 4,
+      files: sourceFiles,
+    })
+    const material: NoteMaterialVersion = {
+      inputJson,
+      manifestJson,
+      upload: {
+        ...asMaterialVersion(await buildMaterialBundle({
+          versionId, noteId, baseVersionId: null, revision: 0, title: 'fixture',
+          noteCreatedAtMillis: 0, createdAtMillis: 0,
+          blocks: [{ id: '77777777-7777-4777-8777-777777777777', kind: 'markdown', text: 'fixture' }],
+        })).upload,
+        baseVersionId: versionId,
+        files: sourceFiles.map((file, index) => ({
+          index,
+          ...file,
+          partCount: 1,
+          uploadedParts: [0],
+        })),
+      },
+    }
+
+    const parsed = parseMaterialVersion(material)
+    expect(parsed.blocks[0]).toMatchObject({ source: { vendorBlock: { keep: true } } })
+    const blocks = await hydrateParsedPhotos(parsed, material, async (_sourceVersionId, index) => {
+      const path = sourceFiles[index]?.path
+      if (path === `assets/${assetId}.png`) return photoBytes
+      if (path === `assets/${inkId}-${inkHash}.png`) return inkBytes
+      throw new Error(`unexpected block attachment ${path}`)
+    })
+    const next = await buildMaterialBundle({
+      versionId: '88888888-8888-4888-8888-888888888888',
+      noteId,
+      baseVersionId: versionId,
+      revision: 5,
+      title: '续写后的笔记',
+      noteCreatedAtMillis: 10,
+      createdAtMillis: 30,
+      blocks: [...blocks, { id: '99999999-9999-4999-8999-999999999999', kind: 'markdown', text: '新增内容' }],
+      sourceInputJson: inputJson,
+      preservedRecordings: parsed.recordingEntries,
+      preservedFiles: parsed.manifestFiles,
+      preserveSourceFiles: true,
+    })
+    const nextInput = JSON.parse(next.inputJson)
+    const nextManifest = JSON.parse(next.manifestJson)
+    expect(nextInput.vendorEnvelope).toEqual({ keep: true })
+    expect(nextInput.note.vendorNote).toEqual({ keep: true })
+    expect(nextInput.recordings).toEqual([recording])
+    expect(next.recordedAudio).toBe(1)
+    expect(nextInput.note.blocks.slice(0, 3)).toEqual([markdown, photo, inkBlock])
+    expect(nextManifest.files.slice(2)).toEqual(sourceFiles.slice(2))
+    expect(next.files.slice(2).map(({ path, kind, sha256, sizeBytes, blockId, recordingId: owner, segment, chunkIndex, samples }) => ({
+      path, kind, sha256, sizeBytes, blockId, recordingId: owner, segment, chunkIndex, samples,
+    }))).toEqual(sourceFiles.slice(2))
+    expect(next.files.slice(2).every((file) => file.preserved)).toBe(true)
+  })
+
   it('fails closed when the fixed manifest identifies a different note version', async () => {
     const bundle = await buildMaterialBundle({
       versionId,
