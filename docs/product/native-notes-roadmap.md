@@ -1,5 +1,69 @@
 ﻿# PIM 原生客户端与笔记路线图
 
+## 接续检查点（2026-11-03）
+
+本段是接续记录，不替换既有路线图、版本历史或稳定需求索引。当前文件原有 v0.43 执行层（见下文）与独立 worktree 中较新的路线图草稿尚未统一；草稿内容不是合并事实，本段也不复制/回填 v0.54。本段不采纳未经本轮直接核验的“v0.53 已合并 canonical”说法，仍明确区分主工作树 v0.43 与较新独立 worktree 草稿。以下为只读专项调查的静态汇总；本地实现与隔离非生产验证已获授权，但当前尚无本轮产品测试通过证据，不把交接陈述当成独立代码核实或新 PASS。
+
+### 调查时基线与文档分支
+
+| 仓库 | 调查时分支 / HEAD | 调查时状态 | 限定 |
+| --- | --- | --- | --- |
+| `pim-api` | `master` / `33a2c42f8b1c0e571d38aec76897b009e515647d` | 干净 | `behind 140` 只表示当时本地跟踪引用的比较结果；未 fetch，不代表实时远端差距。 |
+| `pim-windows` | `master` / `8900dc87b0c1d22a7a1acd0271356d4b15a2c326` | 干净 | 只记录调查时本地快照。 |
+| `pim-android` | `codex-win/note-asr-client` / `93d934379b9a0e10318a9369e4d9d80c47e5e2` | 干净 | 只记录调查时本地快照；跟踪分支状态不作为产品验收。 |
+
+本段在确认 API `master` 工作树干净后，创建本地文档分支 `claude-win/roadmap-continuation-20261103`；该分支只承载本路线图的未提交文档更新，不代表代码基线改变、合并或发布。本次更新未提交；未执行 fetch、提交、推送或 PR 操作。`D:\AIPD\61023cidexpim\wt\notes-roadmap-v053-20261102\docs\product\native-notes-roadmap.md` 中的较新工作树草稿不作为 master 合并事实或本段的代码基线。
+
+### 接续中的三条主线
+
+| 主线 | 当前状态 | 最小阻塞与串行退出条件 |
+| --- | --- | --- |
+| Windows PR45 / WPF / contract 联合候选 | **受阻 / 未验证**：PR45、WPF 与 newline 修复仍分离；静态调查发现 WPF 反射得到 `object` 后形成 `object[]`，与生产代码要求的 `IEnumerable<CategoryRow>` 不符；失败路径清理与真实 Cancel 覆盖不足。 | WPF 修正并取得定向成功 handoff → 冻结唯一联合候选 → 同一候选 Core/App 全量与 `generate-contract-csharp.sh`、`check-contract-csharp.sh`、`test-contract-csharp.sh` 三个契约脚本成功，且无目标跳过。历史各自结果不可拼为联合 PASS。 |
+| API Derived provider 元数据围栏 | **受阻 / 未验证**：writer 与 fixture 的字段缺失/显式 `null`、provider 元数据尚未对齐；两文件 WIP 尚未应用到接手目录。不能只翻转 `expectedSafe`。 | 对齐真实 writer 语义与正例数据 → 冻结候选 → 隔离 PostgreSQL 实际回归，零失败、零跳过，并对 Deleted 与 40901 保留场景分别留证。 |
+| Android M3-A 材料包互操作 | **受阻 / 未验证**：干净接手树没有 M3-A 生产实现；未接线的转换器输出不等于当前 Android 导入格式。 | 核对真实 Windows/server exporter 格式及 fixture/hash → 接入生产链并验证保真、明确拒绝、失败原子性、取消清理与旧 ZIP 兼容 → 同候选 Gradle/XML/log/退出码回归。 |
+
+三条主线均为本轮静态调查结果，不是运行验证；不得根据截断结果填写新 PASS。另有 contract provenance 摘要/字节数不一致这一静态待核风险；尚无本轮远端/CI核实，不表示远端/CI失败，也不表示本轮修改契约文件。实施批次可并行做 Windows WPF/契约审查、API 元数据/DB 预检、Android 格式/toolchain 预检；各自候选冻结后验收串行，路线图最后升级。候选证据至少应同时记录路径、branch、HEAD、base、精确变更及 diff SHA-256、命令退出码、TRX 或 XML/log、失败/跳过数和隔离清理结果，方可升级状态。
+
+### 2026-11-04 用户确认：跨端同步主流程决策
+
+以下决策覆盖旧草案中“每个材料版本逐次确认上传”的交互口径；历史文字保留作为历史记录，不再作为当前实现目标。它们是 `CONFIRMED PRODUCT DECISION / IMPLEMENTATION PLANNED`，不是已实现或验收通过：
+
+- **全部材料同步**：普通 Markdown 正文、照片原图、可编辑手写向量及其派生图、全部录音段与元数据，以及其他受支持的关联材料，属于同一笔记材料版本。缺失或无法表达的材料必须明确阻塞/拒绝，不能静默丢弃。
+- **录音结束后默认自动提交**：录音结束并完成本地固定材料校验后，默认自动创建一次提交并进入持久队列，不再要求每个版本逐次点击“确认上传”。首次使用或设置中授予按账号与服务器绑定的持续授权；授权可撤销，换账号/服务器需重新授权。上传/存储授权与 AI 第三方处理、费用或模型目的授权分开。
+- **离线自动续传**：断网时本地保存并显示待上传；网络恢复后自动续传同一固定版本，应用重启不改变输入版本，不产生重复笔记或重复处理任务。
+- **冲突由用户选择**：版本冲突保留本地与服务端双方完整材料，由用户查看并选择要继续使用/另存的版本；不静默覆盖、不按最后写入者取胜、不默认自动合并，也不让 AI 替用户决定。
+- **处理结果独立成页**：逐段正式转写、完整记录和独立分析均作为原笔记之外的独立结果内容，绑定输入材料版本；原笔记继续可编辑，AI 不回写原笔记。旧结果在新版本产生后仍可读，并明确提示来源已变化；重新处理必须由用户明确触发。
+
+主流程验收标签为 `MAIN`；Windows/server 材料包导入等迁移互操作为 `INTEROP`，不得作为日常同步主流程或其验收证据。
+
+#### 本次纠偏的验收映射
+
+| 稳定需求 | 用户可观察的验收条件 | 本次状态 |
+| --- | --- | --- |
+| NOTE-01、SYNC-01 | 同账号另一端无需导入 ZIP 即可发现并打开同一篇笔记；能访问当前完整材料版本 | 服务端发现/当前读取本地实现与 Notes 筛选回归已完成（137 PASS、1 SKIP、0 FAIL）；契约/Web/客户端消费及跨端操作未验收 |
+| REC-04、SYNC-01、SAFE-01 | 持续授权开启后结束记录，可靠落盘并完成材料准备即自动入队；无网保留，重启与联网后继续；换账号/服务器不串传；授权可撤销 | Android 本地实现已接线；撤销按版本取消自动提交 Worker、Preparing/Ready 两路径取消隔离及立即调度已通过 3 个定向 suite 共 17 项、0 fail/error/skip 及 Debug 构建；真实设备/联网端到端未验收 |
+| NOTE-04、INK-03、AI-06 | 正文、照片原图、向量笔迹/尺寸/顺序、派生图、全部录音及元数据均可读取；缺一项不声称完整 | NOT-VERIFIED |
+| SYNC-02、AI-04 | 两端从旧基线保存后完整保留双方材料，用户选择当前版本；选择时再次校验版本，不默认合并 | NOT-VERIFIED |
+| AI-02/03/04/07、NOTE-05 | 原笔记外查看转写、完整记录及分析；旧结果关联旧输入，原稿修改后提示来源变化，人工稿不被重生成覆盖 | NOT-VERIFIED |
+
+实施按可执行的垂直切片推进：先收口 Android 持续授权与材料准备后的自动入队，并补服务端同账号笔记发现/当前版本读取；随后接同仓 Web 与客户端消费、完整冲突选择和结果页面。复用既有固定材料、分块队列和结果版本能力，契约缺口必须由 API 实现并真实导出后再接消费者。Windows 主动记录与跨端完整编辑仍在总目标内，不能以只读结果页销项。
+
+### 职责与范围边界
+
+- **统筹主代理**：协调三条主线、收集适用证据；本轮用户批准跳过当前不可运行/受阻的验收，不代表通过、豁免安全/格式要求或整体完成。
+- **交付优先级**：Windows/API 本地候选补丁已打包交付（附件 `D:\AIPD\61023cidexpim\deliverables\continuation-20261103\windows-candidate.patch`、`api-candidate.patch`、`SHA256SUMS.txt`），未改原源码/索引/提交。独立 scratch 基线物化后的 `git apply --check` 两包 exit 0，校验和通过；Windows mode 100644/100755 提示非阻断。该证据仅证明补丁对指定基线静态适用，不是构建、测试或产品验收，前述失败与本轮 DEFERRED 状态保持。Android 由唯一新 writer 负责 M3-A 生产导入；生产链既有，契约核定 Windows helper `WindowsLocalNotePackageImporter.kt` 为第三路径：无 ServerSource 的普通 Markdown+有序附件为 derivedLayout，保留源材料序/身份并明确派生新 block ID；无法表达的内联引用须拒绝，不能静默丢弃。实现/编译仍待回，独立契约核对已确认不等于功能验收。真实 fixture/设备验收后补。
+- **状态例外（用户批准暂缓）**：Windows WPF host 整体失败待解，本轮不再诊断/复跑；API首次真实DB 7/5/2/0 exit 1及retain-02 auto拒绝测试未启动；Android旧候选2250=2236/14/0skip保留原失败，新probe因ADB unauthorized未运行。以上相关测试标 `DEFERRED / 用户批准暂缓`（历史失败保持原状，不重标PASS）；七库数据和日志仍保留，清理受执行层拒绝而阻塞。
+- **API Derived 实现与真实 DB 回归**：候选 `cf196c...` 首轮真实保留模式 run（DLL `7dd...`，UTC 08:28:43–08:29:50）exit 1：7/7执行、5通过、2失败、0跳过，保留为历史。两失败定位为 fixture 问题：308行非法 JSON 触发 PG22P02；197行只占 gate 1 permit，真实 writer 正常 succeeded。fixture修正（合法非object负例、占满gate并检查请求数不增）编译exit 0；retain-02被auto拒绝，测试未启动，按用户决定本轮 `DEFERRED / 用户批准暂缓`。manifest 实际7库；原 owner 仅对 tab c2 发 Ctrl-C 优雅停服，PG日志记录 shutdown；19:34:42+0800 只读确认实例 STOPPED、PID/进程已移除、35450无监听。七库数据及日志均保留，清理仍受阻，不称已删库或清理完成。
+- **Windows 候选恢复（实施代理接管）**：上一轮独立诊断代理的部分 Write/Edit 造成 fixture 字段与 Dispose 引用不一致，且目标测试含诊断 overlay；该代理已停止，未运行 build/test、无 TRX。Windows实现owner已恢复的三处文件与tracked `d3f5...` / aggregate `de75...`算法哈希均匹配原候选，`git diff --check`通过；`recovery-build-01`仅证明恢复后的隔离编译 exit 0、0 errors、1既有 CS0649，不证明host hang解除。Windows目标测试的受控线程/teardown诊断结果仍未回。
+- **Android 旧候选基线单测（非 M3-A 验收）**：基线候选 branch `omo-win/android-source-doc-r1-20261102`、HEAD `f4f340b82514ca09bc868ac934857b106df91b00` 当时 clean。首轮 Gradle 因 `:app:buildNoteEditor` 找不到 `npm.cmd` 退出 1，单测未执行（保留历史）。后续 Node 24.22.1/npm 11.19.1 实测、`npm ci` exit 0 安装 88 packages；同一旧候选离线 Gradle exit 1：191 suites/2250 tests，2236 passed、14 failed、0 errors、0 skipped；editor 9/9 passed，失败分布为 NoteEditHistory 2、NoteFileStore 4、NoteHistoryConcurrency 2、NoteMaterialStore 3、NoteUploadEngine 1、RecordingEngine 2。归因报告已回但发现多个当前稿冷读 revision 疑点；上传失败不是固定上传语义冲突。两次诊断 attempt（各 1/0/0）均观察到 `note.json` revision 0、`.new` revision 1，读取时 `.new` 被清除；第二轮 rename 返回值探针已完成：目标存在时 `false`、目标缺失时 `true`，结合 API34 路径已观察到 Windows 宿主覆盖差异。拟用 NIO `ATOMIC_MOVE + REPLACE_EXISTING` existing-target 行为依 provider 决定，不能保证所需 POSIX 原子替换；不接受先删除目标 fallback，作者在 shadow/helper 实施前停止。Linux/WSL对照仍待用户提供环境；Android诊断主线仍受阻/未验证。旧 probe 在 Pixel_9 / emulator-5554 / API37 / x86_64 新装后 instrumentation 超时；SDK36.1 Instrumentation 默认 `onCreate` 为空，旧 probe 缺 `onCreate/start`，因此根因为 probe 自身生命周期缺失，不归因 AtomicFile/PIM。旧包已按包级 force-stop/uninstall 成功清理，package/PID 不存在、未动其他 app/数据，AVD online。旧 probe APK 保留于 `D:\AIPD\61023cidexpim\scratch\continuation-20261103\android-runtime-probe\old-artifacts\app-debug-before-lifecycle-fix.apk`，已卸载清理；Pixel9保持online。scratch-only修正版 APK `D:\AIPD\61023cidexpim\scratch\continuation-20261103\android-runtime-probe\app\build\outputs\apk\debug\app-debug.apk` 已完成生命周期修复（`onCreate→start` / `onStart finally finish`），离线build exit 0、aapt权限/apksigner检查通过，SHA-256前缀`44f255e3…`。新APK尚未安装/运行；Pixel9 当前 ADB 状态为 `emulator-5554 unauthorized`，不是测试运行结果。用户需在模拟器侧完成授权后，环境owner才可按确认的单次≤60秒执行并仅卸载该包；不 kill-server、不换 key、不改配置。`ADB_VENDOR_KEYS` 未设置仅是环境提示，不能单独当根因。
+- **本轮暂缓与交付优先级**：用户批准将当前不可运行/受阻的验收标记为 `DEFERRED`，保留既有失败事实，不重标 PASS，也不豁免格式/安全要求。Windows WPF host 诊断与PR级联合验收暂缓；API retain-02未启动、首轮7/5/2/0失败保留，七库清理仍因执行层拒绝而 BLOCKED；Android旧基线14个失败未解，Pixel 9 probe因ADB unauthorized未运行。转向交付：Android唯一新writer实现M3-A生产导入并独立核契约，真实fixture/设备验收后补；Windows/API准备可审阅本地patch和构建证据，不提交/推送/开PR。
+- **路线图维护代理**：只在本规范路线图追加接续事实并维护相关状态与证据引用，不另建平行 backlog、不改写旧历史。
+- **后续实现 / 独立验证**：实现与独立验证候选须分别记录来源及适用输入；单一文件/范围由单一 owner 写入，避免并行覆盖。候选冻结后，独立验证只验该冻结候选；结果不得跨候选拼接。
+
+M0–M5、45 个稳定需求 ID、32 项 capability、13 个 MIG、32 行 gap、AC1–19 与 #516 五阶段均未整体验收。设备/OEM、production、真实付费 provider/模型质量、GPU/VRAM 与完整端到端仍须获得相应授权并以适用实证验证；CI、历史测试、交接说明和 GitHub Release 均不能替代这些验收。
+
+基线/状态来源：工作区根目录 `D:\AIPD\61023cidexpim\DEVELOPMENT_HANDOFF_2026-11-03.md`（仓库状态及三条主线），`D:\AIPD\61023cidexpim\scratch\omo-orchestration\initial-inventory.md`、`D:\AIPD\61023cidexpim\scratch\omo-orchestration\git-inventory-raw.json`、`D:\AIPD\61023cidexpim\scratch\omo-orchestration\windows-r4\integrated\handoff.json`、`D:\AIPD\61023cidexpim\scratch\omo-orchestration\android-m3a\verification.md`，以及工作区根目录（仓库外）的静态候选分析文件 `D:\AIPD\61023cidexpim\.omo\evidence\omo-wave-text-outcomes-20261102.md`、`D:\AIPD\61023cidexpim\.omo\evidence\omo-wave-vision-outcomes-20261102.md`、`D:\AIPD\61023cidexpim\.omo\evidence\omo-wave-durable-state-20261102.md` 与 `D:\AIPD\61023cidexpim\.omo\evidence\omo-wave-derived-oracle-gate-20261102.md`。这些是调查记录，不是本次重新运行的测试、远端状态、契约变更或运行验收。
+
 版本：v0.43 记录 API/Android 202 处理协议交付、#533 集成状态与 #516 分 Phase 证据。更新日期：2026-10-31。下方 v0.42 版本行及更早正文作为历史快照保留。
 
 版本：v0.42 新增 #516 MiMo Batch 云端异步 provider 需求与排期。更新日期：2026-10-31。v0.41 记录两项 #516 产品决策确认；v0.41 及更早正文保持原样。

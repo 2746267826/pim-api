@@ -34,6 +34,7 @@ const ReportsPage = lazyPage(() => import('@/features/calendar/pages/reports-pag
 const HabitsPage = lazyPage(() => import('@/features/calendar/pages/habits-page'), 'HabitsPage')
 const QuickNotesPage = lazyPage(() => import('@/features/quick-notes/pages/quick-notes-page'), 'QuickNotesPage')
 const NoteDerivedPage = lazyPage(() => import('@/features/ai/note-derived/note-derived-page'), 'NoteDerivedPage')
+const NativeNotesPage = lazyPage(() => import('@/features/native-notes/native-notes-page'), 'NativeNotesPage')
 const DataCenterPage = lazyPage(() => import('@/features/calendar/pages/data-center-page'), 'DataCenterPage')
 const AuditTimelinePage = lazyPage(() => import('@/features/operations/pages/audit-timeline-page'), 'AuditTimelinePage')
 
@@ -108,6 +109,8 @@ export const router = createBrowserRouter([
 
           // ── 收集 ──
           { path: 'quick-notes', element: <QuickNotesPage /> },
+          { path: 'native-notes/library', element: <NativeNotesPage /> },
+          { path: 'native-notes/library/:noteId', element: <NativeNotesPage /> },
           { path: 'native-notes', element: <NoteDerivedPage /> },
           { path: 'files', element: <FilesPage /> },
 

@@ -1,5 +1,6 @@
 import {
   Bell,
+  BookOpenText,
   Calendar,
   CheckSquare,
   Database,
@@ -57,6 +58,7 @@ export const NAV_GROUPS: NavGroup[] = [
     label: '收集',
     items: [
       { to: '/quick-notes', label: '快速记录', icon: Zap },
+      { to: '/native-notes/library', label: '笔记原稿', icon: BookOpenText },
       { to: '/native-notes', label: '笔记处理', icon: NotebookPen },
       { to: '/files', label: '文件', icon: FolderClosed },
     ],

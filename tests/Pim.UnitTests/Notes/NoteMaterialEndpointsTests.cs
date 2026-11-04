@@ -67,6 +67,56 @@ public sealed class NoteMaterialEndpointsTests : IDisposable
     }
 
     [Fact]
+    public async Task AuthenticatedAccountsDiscoverOnlyPublishedHeadsAndReadTheCurrentVersion()
+    {
+        var owner = await AuthRegistrationTestHost.SeedAndLoginAsync(_factory, "notes-discovery-owner");
+        var other = await AuthRegistrationTestHost.SeedAndLoginAsync(_factory, "notes-discovery-other");
+        using var client = AuthRegistrationTestHost.Authed(_factory, owner.AccessToken);
+        using var otherClient = AuthRegistrationTestHost.Authed(_factory, other.AccessToken);
+        var fixture = NoteMaterialUploadStoreTests.Fixture.Create();
+
+        Assert.Equal(HttpStatusCode.OK, (await client.PostAsJsonAsync(Root + "/versions", fixture.Request)).StatusCode);
+        var incomplete = await client.GetFromJsonAsync<ApiResponse<NativeNotePageDto>>(Root);
+        Assert.NotNull(incomplete?.Data);
+        Assert.Equal(0, incomplete!.Data!.Total);
+        Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync($"{Root}/{fixture.Request.NoteId}/current")).StatusCode);
+
+        var begun = (await client.PostAsJsonAsync(Root + "/versions", fixture.Request)).Content;
+        var upload = (await begun.ReadFromJsonAsync<ApiResponse<NoteMaterialUploadDto>>())!.Data!;
+        for (var file = 0; file < fixture.Content.Count; file++)
+        {
+            var bytes = fixture.Content[file];
+            for (var part = 0; part < upload.Files[file].PartCount; part++)
+            {
+                var offset = part * upload.Limits.PartSizeBytes;
+                var chunk = bytes.AsSpan(offset, Math.Min(upload.Limits.PartSizeBytes, bytes.Length - offset)).ToArray();
+                using var body = new ByteArrayContent(chunk);
+                body.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
+                var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(chunk)).ToLowerInvariant();
+                Assert.Equal(HttpStatusCode.OK, (await client.PutAsync(
+                    $"{Root}/versions/{fixture.Request.VersionId}/files/{file}/parts/{part}?sha256={hash}", body)).StatusCode);
+            }
+        }
+        Assert.Equal(HttpStatusCode.OK, (await client.PostAsync($"{Root}/versions/{fixture.Request.VersionId}/complete", null)).StatusCode);
+
+        var page = await client.GetFromJsonAsync<ApiResponse<NativeNotePageDto>>(Root + "?offset=0&limit=20");
+        var item = Assert.Single(page!.Data!.Items);
+        Assert.Equal(fixture.Request.NoteId, item.NoteId);
+        Assert.Equal(fixture.Request.VersionId, item.CurrentVersionId);
+        var current = await client.GetFromJsonAsync<ApiResponse<NoteMaterialVersionDto>>($"{Root}/{fixture.Request.NoteId}/current");
+        Assert.Equal(fixture.Request.VersionId, current!.Data!.Upload.VersionId);
+
+        var otherPage = await otherClient.GetFromJsonAsync<ApiResponse<NativeNotePageDto>>(Root);
+        Assert.Empty(otherPage!.Data!.Items);
+        Assert.Equal(HttpStatusCode.NotFound, (await otherClient.GetAsync($"{Root}/{fixture.Request.NoteId}/current")).StatusCode);
+
+        Assert.Equal(HttpStatusCode.OK, (await client.DeleteAsync($"{Root}/{fixture.Request.NoteId}")).StatusCode);
+        var afterDelete = await client.GetFromJsonAsync<ApiResponse<NativeNotePageDto>>(Root);
+        Assert.Empty(afterDelete!.Data!.Items);
+        Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync($"{Root}/{fixture.Request.NoteId}/current")).StatusCode);
+    }
+
+    [Fact]
     public async Task AnonymousAndOtherAccountsCannotAccessOrMutateMaterials()
     {
         var owner = await AuthRegistrationTestHost.SeedAndLoginAsync(_factory, "notes-alice");

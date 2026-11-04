@@ -48,3 +48,14 @@ public sealed record NoteMaterialVersionDto(
     string ManifestJson);
 
 public sealed record PromoteNoteMaterialVersionRequest(Guid? ExpectedCurrentVersionId);
+
+public sealed record NativeNoteSummaryDto(
+    Guid NoteId,
+    string Title,
+    Guid CurrentVersionId,
+    bool HasConflict);
+
+public sealed record NativeNotePageDto(
+    int Total,
+    int Offset,
+    IReadOnlyList<NativeNoteSummaryDto> Items);

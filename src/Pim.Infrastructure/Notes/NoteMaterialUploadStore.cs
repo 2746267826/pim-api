@@ -92,6 +92,54 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
         return result;
     }
 
+    public async Task<NativeNotePageDto> ListNativeNotesAsync(Guid userId, int offset, int limit, CancellationToken ct = default)
+    {
+        if (offset < 0 || offset > _options.MaxVersionsPerUser || limit is < 1 or > 50)
+            throw Invalid("笔记分页范围无效，单页最多50篇且起始位置不得超过账号版本上限");
+        await using var lease = await LockAsync(userId, ct);
+        var ledger = await LoadLedgerAsync(userId, ct);
+        await PruneAsync(userId, ledger, ct);
+        // Build the conflict index once from the ledger snapshot. Do not scan every version for each head.
+        var conflictNoteIds = ledger.Versions.Values
+            .Where(candidate => candidate.Phase == "Conflict" || candidate.HasConflict)
+            .Select(candidate => candidate.NoteId)
+            .ToHashSet();
+        var candidates = new List<(DateTimeOffset CreatedAt, Guid NoteId, Guid VersionId, bool HasConflict)>();
+        foreach (var (noteKey, versionId) in ledger.Heads)
+        {
+            if (!Guid.TryParseExact(noteKey, "D", out var noteId) || noteId == Guid.Empty ||
+                !ledger.Versions.TryGetValue(Key(versionId), out var entry) || entry.NoteId != noteId || entry.Phase != "Uploaded")
+                continue;
+            candidates.Add((entry.CreatedAt, noteId, versionId, conflictNoteIds.Contains(noteId)));
+        }
+        var ordered = candidates.OrderByDescending(item => item.CreatedAt)
+            .ThenBy(item => item.NoteId).ThenBy(item => item.VersionId).ToArray();
+        var page = ordered.Skip(offset).Take(limit).ToArray();
+        var items = new List<NativeNoteSummaryDto>(page.Length);
+        foreach (var item in page)
+        {
+            // Only the selected page reads/validates request.json; Total comes from the ledger candidates.
+            var request = await RequestAsync(userId, item.VersionId, ct);
+            _ = NoteMaterialManifestValidator.Validate(request, ReadLimits);
+            items.Add(new NativeNoteSummaryDto(item.NoteId, ReadTitle(request.InputJson), item.VersionId, item.HasConflict));
+        }
+        return new(ordered.Length, offset, items);
+    }
+
+    public async Task<NoteMaterialVersionDto> GetCurrentAsync(Guid userId, Guid noteId, CancellationToken ct = default)
+    {
+        await using var lease = await LockAsync(userId, ct);
+        var ledger = await LoadLedgerAsync(userId, ct);
+        await PruneAsync(userId, ledger, ct);
+        var versionId = Current(ledger, noteId) ?? throw new DomainException(40401, "当前完整笔记不存在");
+        var entry = Find(ledger, versionId);
+        if (entry.NoteId != noteId || entry.Phase != "Uploaded") throw new DomainException(40401, "当前完整笔记不存在");
+        var request = await RequestAsync(userId, versionId, ct);
+        var files = NoteMaterialManifestValidator.Validate(request, ReadLimits);
+        _ = ReadTitle(request.InputJson);
+        return new(await DescribeAsync(userId, versionId, entry, ledger, files, ct), request.InputJson, request.ManifestJson);
+    }
+
     public Task<NoteAsrSourcesDto> ListAsrSourcesAsync(Guid owner, int offset, int limit, CancellationToken ct) =>
         ListAsrSourcesAsync(owner, offset, limit, ct, includeWithoutAudio: true);
 
@@ -465,6 +513,15 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
     private static StoredVersion Find(Ledger ledger, Guid id) => ledger.Versions.TryGetValue(Key(id), out var entry)
         ? entry : throw new DomainException(40401, "材料版本不存在或已过期");
     private static Guid? Current(Ledger ledger, Guid noteId) => ledger.Heads.TryGetValue(Key(noteId), out var id) ? id : null;
+    private static string ReadTitle(string inputJson)
+    {
+        using var document = JsonDocument.Parse(inputJson);
+        var title = document.RootElement.GetProperty("note").GetProperty("title");
+        var value = title.ValueKind == JsonValueKind.String ? title.GetString() : null;
+        if (value is null || value.Length > 500)
+            throw new InvalidDataException("Invalid native note title metadata");
+        return value;
+    }
     private static NoteUploadedMaterial FileAt(IReadOnlyList<NoteUploadedMaterial> files, int index) => index >= 0 && index < files.Count
         ? files[index] : throw new DomainException(40401, "材料文件不存在");
     private static int PartCount(NoteUploadedMaterial file) => checked((int)((file.SizeBytes + NoteMaterialUploadOptions.PartSizeBytes - 1) / NoteMaterialUploadOptions.PartSizeBytes));

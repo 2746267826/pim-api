@@ -126,6 +126,108 @@ public sealed class NoteMaterialUploadStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task NativeNoteDiscoveryShowsOnlyCompleteHeadsAndReadsTheCurrentVersion()
+    {
+        var pending = Fixture.Create();
+        await Store().BeginAsync(_user, pending.Request);
+
+        var first = Fixture.Create();
+        await Store().BeginAsync(_user, first.Request); await UploadAll(Store(), first);
+        await Store().CompleteAsync(_user, first.Request.VersionId);
+
+        var branch = Fixture.Create(noteId: first.Request.NoteId, baseId: first.Request.VersionId);
+        var conflict = Fixture.Create(noteId: first.Request.NoteId, baseId: first.Request.VersionId);
+        await Store().BeginAsync(_user, branch.Request); await UploadAll(Store(), branch);
+        await Store().BeginAsync(_user, conflict.Request); await UploadAll(Store(), conflict);
+        await Store().CompleteAsync(_user, branch.Request.VersionId);
+        var conflictResult = await Store().CompleteAsync(_user, conflict.Request.VersionId);
+        Assert.Equal("Conflict", conflictResult.Phase);
+
+        var page = await Store().ListNativeNotesAsync(_user, 0, 50);
+        var item = Assert.Single(page.Items);
+        Assert.Equal(1, page.Total);
+        Assert.Equal(first.Request.NoteId, item.NoteId);
+        Assert.Equal(branch.Request.VersionId, item.CurrentVersionId);
+        Assert.Equal("研究方法", item.Title);
+        Assert.True(item.HasConflict);
+
+        var current = await Store().GetCurrentAsync(_user, first.Request.NoteId);
+        Assert.Equal(branch.Request.VersionId, current.Upload.VersionId);
+        Assert.Equal(branch.Request.InputJson, current.InputJson);
+        var versions = await Store().ListAsync(_user, first.Request.NoteId);
+        Assert.Equal(3, versions.Count);
+        Assert.Contains(versions, version => version.Phase == "Conflict" && version.VersionId == conflict.Request.VersionId);
+    }
+
+    [Fact]
+    public async Task NativeNoteDiscoveryIsStableAndValidatesPaginationBounds()
+    {
+        foreach (var _ in Enumerable.Range(0, 3))
+        {
+            var fixture = Fixture.Create();
+            await Store().BeginAsync(_user, fixture.Request); await UploadAll(Store(), fixture);
+            await Store().CompleteAsync(_user, fixture.Request.VersionId);
+        }
+
+        var all = await Store().ListNativeNotesAsync(_user, 0, 50);
+        var repeat = await Store().ListNativeNotesAsync(_user, 0, 50);
+        Assert.Equal(3, all.Total);
+        Assert.Equal(all.Items.Select(item => item.NoteId), repeat.Items.Select(item => item.NoteId));
+
+        var firstPage = await Store().ListNativeNotesAsync(_user, 0, 2);
+        var secondPage = await Store().ListNativeNotesAsync(_user, 2, 2);
+        var emptyPage = await Store().ListNativeNotesAsync(_user, 3, 2);
+        Assert.Equal(3, firstPage.Total);
+        Assert.Equal(2, firstPage.Items.Count);
+        Assert.Single(secondPage.Items);
+        Assert.Empty(emptyPage.Items);
+        await Error(40001, () => Store().ListNativeNotesAsync(_user, -1, 2));
+        await Error(40001, () => Store().ListNativeNotesAsync(_user, 0, 0));
+        await Error(40001, () => Store().ListNativeNotesAsync(_user, 0, 51));
+    }
+
+    [Fact]
+    public async Task NativeNoteDiscoveryReadsOnlyTheRequestedPage()
+    {
+        var time = new MutableTime();
+        var earlier = Fixture.Create(noteId: Guid.Parse("00000000-0000-0000-0000-000000000001"));
+        var later = Fixture.Create(noteId: Guid.Parse("00000000-0000-0000-0000-000000000002"));
+        foreach (var fixture in new[] { earlier, later })
+        {
+            await Store(time).BeginAsync(_user, fixture.Request);
+            await UploadAll(Store(time), fixture);
+            await Store(time).CompleteAsync(_user, fixture.Request.VersionId);
+        }
+
+        var outsidePage = Path.Combine(_root, _user.ToString("D"), later.Request.VersionId.ToString("D"), "request.json");
+        await File.WriteAllTextAsync(outsidePage, "not valid metadata");
+
+        var firstPage = await Store(time).ListNativeNotesAsync(_user, 0, 1);
+        Assert.Equal(2, firstPage.Total);
+        Assert.Equal(earlier.Request.NoteId, Assert.Single(firstPage.Items).NoteId);
+        await Assert.ThrowsAsync<JsonException>(() => Store(time).ListNativeNotesAsync(_user, 1, 1));
+    }
+
+    [Fact]
+    public async Task NativeNoteDiscoveryAndCurrentReadAreAccountIsolatedAndHonorDeletion()
+    {
+        var fixture = Fixture.Create();
+        await Store().BeginAsync(_user, fixture.Request); await UploadAll(Store(), fixture);
+        await Store().CompleteAsync(_user, fixture.Request.VersionId);
+        var other = Guid.NewGuid();
+
+        Assert.Empty((await Store().ListNativeNotesAsync(other, 0, 20)).Items);
+        await Error(40401, () => Store().GetCurrentAsync(other, fixture.Request.NoteId));
+        var visible = Assert.Single((await Store().ListNativeNotesAsync(_user, 0, 20)).Items);
+        Assert.Equal(fixture.Request.NoteId, visible.NoteId);
+
+        await Store().DeleteNoteAsync(_user, fixture.Request.NoteId);
+        Assert.Empty((await Store().ListNativeNotesAsync(_user, 0, 20)).Items);
+        await Error(40401, () => Store().GetCurrentAsync(_user, fixture.Request.NoteId));
+        await Error(40401, () => Store().GetAsync(_user, fixture.Request.VersionId));
+    }
+
+    [Fact]
     public async Task AccountIsolationAppliesToReadsPartsCompletionPromotionCancellationAndDeletion()
     {
         var fixture = Fixture.Create(); var other = Guid.NewGuid();
