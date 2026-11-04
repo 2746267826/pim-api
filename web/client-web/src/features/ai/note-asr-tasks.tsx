@@ -114,19 +114,20 @@ export function TaskDetail({ id, userId, serverBinding, prefix, showDetail }: {
       <div className="flex flex-wrap items-center justify-between gap-2"><State value={task.data.phase} /><span className="text-xs text-text-3">{task.data.completedSegments}/{task.data.totalSegments} 片 · 已覆盖 {time(task.data.completedSamples, task.data.sampleRate)} / {time(task.data.totalSamples, task.data.sampleRate)}</span></div>
       <progress aria-label="成功转写覆盖进度" className="h-2 w-full accent-primary" max={task.data.totalSamples} value={task.data.completedSamples} />
       {!task.data.backgroundProcessingAvailable && <p role="status" className="text-sm text-text-2">服务器未启用后台调度，任务已保存；启用后才会继续处理。</p>}
-      <p className="break-all text-xs text-text-3">本任务发送目标：{task.data.destination?.endpoint ?? '本机执行 · 未发送云端'}</p>
+      <p className="text-xs text-text-3">{task.data.destination ? '本任务使用已确认的云端目标' : '本机排队转写 · 未发送云端'}</p>
+      {task.data.destination && <details className="text-xs text-text-3"><summary className="cursor-pointer">处理详情：服务地址</summary><p className="mt-1 break-all font-mono">{task.data.destination.endpoint}</p></details>}
       <p className="text-xs text-text-3">停止后不再发送下一片，当前已发送分片会先核对结果。未知结果不会自动重试；成功分片不会重跑。</p>
       {!task.data.stopRequested && task.data.phase !== 'Succeeded' && <Button size="sm" variant="secondary" disabled={busy} onClick={() => void change(() => aiApi.noteAsrStop(id))}>停止后续转写</Button>}
       {segments.isError && <p role="alert">分片结果加载失败，请刷新核对。</p>}
       <div className="space-y-3">{segments.data?.items.map((part) => {
         const retryable = !['Succeeded', 'Running'].includes(part.status)
         return <div key={part.index} className="space-y-2 rounded-ctl border border-border p-3"><div className="flex flex-wrap items-center justify-between gap-2"><span className="text-sm">第 {part.index + 1} 片 · {time(part.timelineOffsetSamples)}–{time(part.timelineOffsetSamples + part.samples)}</span><State value={part.status} /></div>
-          <p className="text-xs text-text-3">第 {part.recordingSegment} 段 · 原始分块 {part.chunkIndex} · {part.attempts.length} 次记录</p>
           {part.transcript != null && <pre aria-label={`第${part.index + 1}片转写`} className="max-h-64 overflow-auto whitespace-pre-wrap break-words text-sm text-text-1">{part.transcript || '空转写，请试听原音频核对。'}</pre>}
+          <details className="text-xs text-text-3"><summary className="cursor-pointer">分片核对与恢复</summary><div className="mt-2 space-y-2"><p>第 {part.recordingSegment} 段 · 原始分块 {part.chunkIndex} · {part.attempts.length} 次记录</p>
           {part.attempts.map((attempt, index) => <div key={attempt.requestId} className="flex flex-wrap items-center gap-2 text-xs text-text-3"><span>第 {index + 1} 次 · {names[attempt.status] ?? attempt.status}{attempt.errorMessage ? ` · ${attempt.errorMessage}` : ''}</span>
             {attempt.logId && showDetail && <Button size="sm" variant="ghost" onClick={() => showDetail(attempt.logId!)}>查看分片调用记录</Button>}</div>)}
           {retryable && <label className="flex items-center gap-2 text-xs text-text-2"><input type="checkbox" aria-label={`恢复第${part.index + 1}片`} checked={selected.includes(part.index)} disabled={busy}
-            onChange={(event) => { setSelected((s) => event.target.checked ? [...s, part.index] : s.filter((i) => i !== part.index)); setApproved('') }} />选择恢复该片</label>}
+            onChange={(event) => { setSelected((s) => event.target.checked ? [...s, part.index] : s.filter((i) => i !== part.index)); setApproved('') }} />选择恢复该片</label>}</div></details>
         </div>
       })}</div>
       {segments.data && segments.data.total > 10 && <div className="flex gap-2"><Button size="sm" disabled={offset === 0} onClick={() => setOffset((p) => p - 10)}>上一页分片</Button><Button size="sm" disabled={offset + 10 >= segments.data.total} onClick={() => setOffset((p) => p + 10)}>下一页分片</Button></div>}
@@ -138,7 +139,7 @@ export function TaskDetail({ id, userId, serverBinding, prefix, showDetail }: {
         <label className="flex items-start gap-2 text-xs text-text-2"><input type="checkbox" aria-label="确认分片恢复和可能重复计费" checked={approved === approvalKey} onChange={(event) => setApproved(event.target.checked ? approvalKey : '')} /><span>已核对原目标和记录，确认恢复，理解未知结果的重试可能重复计费</span></label>
         <Button disabled={busy || approved !== approvalKey} onClick={() => void change((value) => aiApi.noteAsrRetry(id, { retryId: createAiRequestId(), expectedUserId: userId, expectedRevision: value.revision,
           segmentIndexes: selected, consent: value.destination ?? null, acknowledgePossibleDuplicateCharge: true }))}>恢复所选分片</Button></div>}
-      <NoteAsrReprocessPanel task={task.data} userId={userId} serverBinding={serverBinding} />
+      <details className="text-xs text-text-3"><summary className="cursor-pointer">高级选项：重处理与历史</summary><div className="mt-3"><NoteAsrReprocessPanel task={task.data} userId={userId} serverBinding={serverBinding} /></div></details>
       {message && <p role="alert" className="text-sm text-text-2">{message}</p>}
     </>}
   </Card>

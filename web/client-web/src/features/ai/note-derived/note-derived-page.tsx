@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { Link, useSearchParams } from 'react-router'
 import { Play, RefreshCw, ShieldCheck, Square } from 'lucide-react'
 import { Button, Card, EmptyState, Label, PageHeader, Select, Skeleton, StatusBadge, Textarea } from '@/components/ui'
 import { useAuth } from '@/features/auth/auth-context'
@@ -107,8 +108,11 @@ export function NoteDerivedPage() {
 
 function Workspace({ ownerId, serverBinding, role }: { ownerId: string; serverBinding: string; role?: string }) {
   const qc = useQueryClient()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const asrSection = useRef<HTMLElement>(null)
+  const organizeSection = useRef<HTMLElement>(null)
   const [sourcePage, setSourcePage] = useState(0)
-  const [sourceVersionId, setSourceVersionId] = useState('')
+  const [sourceVersionId, setSourceVersionId] = useState(() => searchParams.get('version') ?? searchParams.get('versionId') ?? '')
   const [asrTaskId, setAsrTaskId] = useState('')
   const [taskId, setTaskId] = useState('')
   const [message, setMessage] = useState('')
@@ -116,6 +120,40 @@ function Workspace({ ownerId, serverBinding, role }: { ownerId: string; serverBi
   const destinations = useQuery({ queryKey: ['note-derived', ownerId, serverBinding, 'destinations'], queryFn: ({ signal }) => noteDerivedApi.destinations(signal) })
   const limits = useQuery({ queryKey: ['note-derived', ownerId, serverBinding, 'limits'], queryFn: ({ signal }) => noteDerivedApi.limits(signal) })
   const source = sources.data?.items.find((item) => item.versionId === sourceVersionId)
+  const requestedNoteId = searchParams.get('noteId') ?? ''
+  const requestedAction = searchParams.get('action')
+  useEffect(() => {
+    if (!sourceVersionId && requestedNoteId && sources.data) {
+      const matchingNoteVersions = sources.data.items.filter((item) => item.noteId === requestedNoteId)
+      const preferredVersion = matchingNoteVersions.find((item) => item.isCurrent) ?? matchingNoteVersions[0]
+      if (preferredVersion) {
+        setSourceVersionId(preferredVersion.versionId)
+        setSearchParams((current) => {
+          const next = new URLSearchParams(current)
+          next.set('version', preferredVersion.versionId)
+          return next
+        }, { replace: true })
+        return
+      }
+    }
+    const searchingForLinkedSource = Boolean(sourceVersionId || requestedNoteId)
+    const sourceFound = source || (requestedNoteId && sources.data?.items.some((item) => item.noteId === requestedNoteId))
+    if (searchingForLinkedSource && sources.data && !sourceFound && sourcePage + sources.data.items.length < sources.data.total) {
+      setSourcePage((page) => page + 20)
+    }
+  }, [requestedNoteId, source, sourcePage, sourceVersionId, sources.data, setSearchParams])
+  useEffect(() => {
+    if (!source || (requestedAction !== 'transcribe' && requestedAction !== 'organize')) return
+    const target = requestedAction === 'transcribe' && source.recordings > 0 ? asrSection.current : organizeSection.current
+    if (!target) return
+    target.scrollIntoView({ block: 'start' })
+    target.focus({ preventScroll: true })
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current)
+      next.delete('action')
+      return next
+    }, { replace: true })
+  }, [requestedAction, setSearchParams, source])
   const tasks = useQuery({
     queryKey: ['note-derived', ownerId, serverBinding, 'tasks', source?.noteId ?? 'all'],
     queryFn: ({ signal }) => noteDerivedApi.tasks(source?.noteId ?? null, signal),
@@ -140,22 +178,28 @@ function Workspace({ ownerId, serverBinding, role }: { ownerId: string; serverBi
   const refreshArtifacts = () => {
     void qc.invalidateQueries({ queryKey: ['note-derived', ownerId, serverBinding, 'artifacts'] })
   }
+  const returnParams = new URLSearchParams(searchParams)
+  if (sourceVersionId) returnParams.set('version', sourceVersionId)
+  returnParams.delete('versionId')
+  returnParams.delete('action')
+  const returnQuery = returnParams.toString()
 
   return <div className="space-y-5">
-    <PageHeader title="笔记处理" subtitle="固定材料版本，复用已完成 ASR，分别生成完整记录与独立分析" actions={<>
-      <Button variant="ghost" size="sm" onClick={() => { window.location.assign('/native-notes') }}>返回笔记库</Button>
+      <PageHeader title="继续处理这篇笔记" subtitle="先完成录音转写，再整理成完整记录和分析。" actions={<>
+      <Link className="inline-flex h-8 items-center justify-center rounded-ctl px-3 text-[13px] font-medium text-text-2 transition-colors hover:bg-surface hover:text-text-1 focus-visible:outline-2 focus-visible:outline-primary-ring" to={`/native-notes${returnQuery ? `?${returnQuery}` : ''}`}>返回所选笔记</Link>
       <Button variant="secondary" size="sm" onClick={refresh}><RefreshCw className="size-4" aria-hidden />刷新</Button>
     </>} />
-    <div className="flex items-start gap-3 rounded-ctl border border-info-border bg-info-soft px-4 py-3 text-sm text-text-2">
-      <ShieldCheck className="mt-0.5 size-4 shrink-0 text-info" aria-hidden />
-      <div className="space-y-1"><p>页面不会因为上传或打开而自动调用模型。创建前必须核对固定材料、实际模型地址与同意范围；所有提交意图会先保存在本机。</p>
-        <p>{role === 'admin' ? '管理员可在“设置 → AI 与 ASR”的“ASR 配置”维护全局模型与凭据；此处仍按固定材料和明确同意发起。' : '普通账号只消费管理员已启用的共享目标，不显示或读取全局模型设置与凭据。'}</p></div>
-    </div>
+    <details className="rounded-ctl border border-info-border bg-info-soft px-4 py-3 text-sm text-text-2">
+      <summary className="flex cursor-pointer items-center gap-2 font-medium"><ShieldCheck className="size-4 shrink-0 text-info" aria-hidden />隐私与处理说明</summary>
+      <div className="mt-2 space-y-1 pl-6 text-xs leading-5 text-text-3">
+        <p>打开页面不会自动调用模型；只有明确确认后才会创建任务。提交意图会保存在本机以便核对。</p>
+        <p>{role === 'admin' ? '管理员可在设置 → AI 与 ASR 维护共享目标；本页只使用启用的安全目标，不显示凭据。' : '普通账号只能使用管理员启用的共享目标，不能查看或配置模型凭据。'}</p>
+      </div>
+    </details>
 
-    <div className="grid gap-5 xl:grid-cols-[minmax(0,1.35fr)_minmax(320px,.65fr)]">
-      <div className="space-y-5">
+    <div className="space-y-5">
         <Card className="space-y-4 p-5">
-          <SectionTitle number="1" title="固定材料版本" description="只展示当前普通账号已上传的固定材料；零录音版本也会显示，且不需要 ASR 任务。" />
+          <SectionTitle number="1" title="选择笔记材料" description="从所选笔记的固定版本继续；零录音版本可直接整理，录音版本先完成转写。" />
           {sources.isPending ? <Skeleton className="h-16" /> : sources.isError ? <EmptyState title="材料版本加载失败" action={<Button onClick={() => void sources.refetch()}>重试</Button>} />
             : !sources.data?.items.length ? <EmptyState title="没有已上传材料" description="请先在客户端提交完整笔记材料版本。" />
               : <>
@@ -167,6 +211,11 @@ function Workspace({ ownerId, serverBinding, role }: { ownerId: string; serverBi
                     }))}
                     onValueChange={(value) => {
                       setSourceVersionId(value)
+                      setSearchParams((current) => {
+                        const next = new URLSearchParams(current)
+                        next.set('version', value)
+                        return next
+                      }, { replace: true })
                       setAsrTaskId('')
                       setTaskId('')
                       setMessage('')
@@ -176,25 +225,32 @@ function Workspace({ ownerId, serverBinding, role }: { ownerId: string; serverBi
               </>}
         </Card>
 
-        {source && <StartTaskCard key={source.versionId} ownerId={ownerId} serverBinding={serverBinding} role={role} source={source}
+        {source && source.recordings > 0 && <section ref={asrSection} tabIndex={-1} aria-label="录音转写" className="space-y-3 rounded-ctl border border-primary/20 bg-primary/5 p-4 outline-none sm:p-5">
+          <div><h2 className="text-base font-semibold text-text-1">1 · 先完成录音转写</h2><p className="mt-1 text-sm text-text-3">选好本次录音转写后再生成笔记整理结果；已有成功转写可以直接复用。</p></div>
+          <NoteAsrStartPanel key={`asr-${source.versionId}`} userId={ownerId} serverBinding={serverBinding} versionId={source.versionId}
+            onCreated={(task) => {
+              setAsrTaskId(task.taskId)
+              setMessage('转写任务已保存；可离开此页，稍后从所选笔记继续。')
+              void qc.invalidateQueries({ queryKey: ['note-derived', ownerId, serverBinding, 'asr-tasks', source.versionId] })
+            }} />
+          <NoteAsrOwnerTasks userId={ownerId} serverBinding={serverBinding} versionId={source.versionId}
+            selectedTaskId={asrTaskId} onSelect={setAsrTaskId} />
+        </section>}
+        {source && <section ref={organizeSection} tabIndex={-1} aria-label="整理生成" className="space-y-3 rounded-ctl border border-border p-4 outline-none sm:p-5">
+          <div><h2 className="text-base font-semibold text-text-1">{source.recordings > 0 ? '2 · 整理并生成' : '1 · 整理并生成'}</h2><p className="mt-1 text-sm text-text-3">生成完整记录与独立分析；原笔记和已选版本保持不变。</p></div>
+          {source.recordings > 0 && <p className="rounded-ctl bg-surface p-3 text-sm text-text-2">仅使用当前固定版本已成功的转写。若转写仍在处理中，可稍后返回；不会自动启动生成。</p>}
+          <StartTaskCard key={source.versionId} ownerId={ownerId} serverBinding={serverBinding} role={role} source={source}
           destinations={destinations.data?.items ?? []} destinationsError={destinations.isError ? errorText(destinations.error) : ''}
           asrTasks={asrTasks.data ?? []} asrLoading={asrTasks.isPending} limits={limits.data}
           onCreated={(task) => {
             setTaskId(task.taskId)
             setMessage('派生任务已创建，后续生成不会自动覆盖当前选用版本。')
             refresh()
-          }} />}
-        {source && source.recordings > 0 && <NoteAsrStartPanel key={`asr-${source.versionId}`} userId={ownerId} serverBinding={serverBinding} versionId={source.versionId}
-          onCreated={(task) => {
-            setAsrTaskId(task.taskId)
-            setMessage(`录音转写任务已创建并保留在历史中：${task.taskId}`)
-            void qc.invalidateQueries({ queryKey: ['note-derived', ownerId, serverBinding, 'asr-tasks', source.versionId] })
-          }} />}
-        {source && source.recordings > 0 && <NoteAsrOwnerTasks userId={ownerId} serverBinding={serverBinding} versionId={source.versionId}
-          selectedTaskId={asrTaskId} onSelect={setAsrTaskId} />}
+          }} />
+        </section>}
 
         <Card className="space-y-3 p-5">
-          <div className="flex flex-wrap items-center justify-between gap-2"><div><h2 className="text-sm font-semibold text-text-1">派生任务</h2><p className="mt-1 text-xs text-text-3">任务、步骤与结果按固定材料版本保存，旧任务不会被新稿自动替换。</p></div><Button size="sm" variant="ghost" onClick={() => void tasks.refetch()}>刷新任务</Button></div>
+          <div className="flex flex-wrap items-center justify-between gap-2"><div><h2 className="text-sm font-semibold text-text-1">处理进度</h2><p className="mt-1 text-xs text-text-3">任务保存在服务器，可离开后返回；旧任务与结果不会被新稿自动替换。</p></div><Button size="sm" variant="ghost" onClick={() => void tasks.refetch()}>刷新任务</Button></div>
           {tasks.isPending ? <Skeleton className="h-16" /> : tasks.isError ? <p role="alert" className="text-sm text-text-2">任务加载失败：{errorText(tasks.error)}</p>
             : !tasks.data?.length ? <p className="text-sm text-text-3">还没有派生任务。</p>
               : <div className="space-y-2">{tasks.data.map((item) => <button key={item.taskId} type="button" onClick={() => setTaskId(item.taskId)}
@@ -204,19 +260,9 @@ function Workspace({ ownerId, serverBinding, role }: { ownerId: string; serverBi
         </Card>
 
         {taskId && <TaskDetailCard key={taskId} taskId={taskId} ownerId={ownerId} serverBinding={serverBinding} onChanged={refresh} />}
-      </div>
-
-      <aside className="space-y-5 xl:sticky xl:top-4 xl:self-start">
-        <Card className="space-y-3 p-5">
-          <h2 className="text-sm font-semibold text-text-1">本次保护边界</h2>
-          <p className="text-xs leading-5 text-text-3">模型生成的版本只作为候选，不会自动覆盖当前选用版本；人工修订、历史选择和新生成版本分别保留。</p>
-          <p className="text-xs leading-5 text-text-3">本机草稿按账号、服务器、结果、来源版本和类型隔离；不保存令牌，超过 {MAX_LOCAL_DRAFT_CHARACTERS.toLocaleString()} 字符时明确报错并保留当前页面内容。</p>
-          {limits.data && <p className="text-xs leading-5 text-text-3">服务端人工正文上限 {limits.data.maxDerivedContentCharacters.toLocaleString()} 字符；图片最多 {limits.data.maxImages} 张。</p>}
-          {message && <p role="status" className="rounded-ctl bg-surface p-3 text-xs leading-5 text-text-2">{message}</p>}
-        </Card>
-      </aside>
     </div>
 
+    {message && <p role="status" className="rounded-ctl bg-surface p-3 text-sm text-text-2">{message}</p>}
     {noteId && <div className="grid gap-5 lg:grid-cols-2">
       {(['CompleteRecord', 'IndependentAnalysis'] as const).map((kind) => {
         const artifact = artifacts.data?.find((item) => item.kind === kind)
@@ -308,7 +354,7 @@ function StartTaskCard({ ownerId, serverBinding, role, source, destinations, des
   }
 
   return <Card className="space-y-4 p-5">
-    <SectionTitle number="2" title="生成目标与同意" description="普通账号只消费管理员已启用的安全目标；不读取管理员模型设置或凭据。" />
+    <SectionTitle number={source.recordings > 0 ? '2' : '1'} title="生成目标与同意" description="普通账号只消费管理员已启用的安全目标；不读取管理员模型设置或凭据。" />
     {destinationsError && <p role="alert" className="text-sm text-text-2">安全目标加载失败：{destinationsError}</p>}
     <div className="grid gap-3 md:grid-cols-2">
       <div><Label htmlFor="note-derived-model">本次生成目标</Label><Select id="note-derived-model" ariaLabel="本次生成目标" value={destinationId} className="mt-1 w-full"
@@ -321,11 +367,16 @@ function StartTaskCard({ ownerId, serverBinding, role, source, destinations, des
     {!destinations.length && <p role="status" className="rounded-ctl bg-surface p-3 text-xs leading-5 text-text-3">暂无可用的共享生成目标。{role === 'admin' ? '请先在“设置 → AI 与 ASR”启用安全目标。' : '普通账号不能查看或配置模型凭据，请联系管理员启用共享目标。'}</p>}
     {needsAsr && !asrLoading && completedAsr.length === 0 && <p role="status" className="rounded-ctl bg-surface p-3 text-xs leading-5 text-text-3">{role === 'admin' ? '该版本还没有完整成功的 ASR。请先在“设置 → AI 与 ASR”完成配置与 ASR 任务后再生成。' : '该版本还没有完整成功的 ASR。请使用客户端完成录音转写；共享 ASR 目标由管理员预先启用。'}</p>}
     {!needsAsr && <p className="rounded-ctl bg-surface p-3 text-xs leading-5 text-text-3">该版本为零录音材料，不需要绑定 ASR 任务；正文、照片和手写图仍会由服务端完整核对。</p>}
-    {destination && <div className="space-y-1 rounded-ctl border border-border p-3 text-xs leading-5 text-text-2"><p>{destination.model} · {destination.endpoint}</p><p className="break-all font-mono">{destination.endpoint}</p><p>能力：{destination.capabilities.join(' / ') || '由服务端判定'}</p></div>}
+    <div role="group" aria-label="本次生成目标、材料范围与费用" className="space-y-1 rounded-ctl border border-border p-3 text-xs leading-5 text-text-2">
+      <p>{destination ? `本次目标：${destination.displayName} · ${destination.model}` : '本次目标：尚未选择可用的共享生成目标'}</p>
+      <p>发送材料：固定版本的完整正文、照片和手写渲染图{needsAsr ? '，以及已核对成功的 ASR 转写' : ''}。</p>
+      <p className="font-medium text-warn">创建后可能产生服务商费用；页面不会自动创建或自动付费。</p>
+      {destination && <><p>能力：{destination.capabilities.join(' / ') || '由服务端判定'}</p><details className="text-text-3"><summary className="cursor-pointer">处理详情：服务地址</summary><p className="mt-1 break-all font-mono">{destination.endpoint}</p></details></>}
+    </div>
     <label className="flex items-start gap-2 rounded-ctl border border-border p-3 text-xs leading-5 text-text-2">
       <input type="checkbox" className="mt-0.5 size-4 shrink-0 accent-primary" checked={consentedTo === approval && approvedKey(source.versionId, destinationId, asrTaskId, needsAsr) === approval} disabled={!ready || busy}
         onChange={(event) => setConsentedTo(event.target.checked ? approval : '')} />
-      <span>确认将固定版本的完整正文、照片、手写渲染图和已核对成功的 ASR 转写发送至上述模型。目标或版本变化后需要重新确认。</span>
+      <span>确认将上述材料发送至上方所选生成目标，并理解可能产生服务商费用。目标或材料版本变化后需要重新确认。</span>
     </label>
     {storageError && <p role="alert" className="rounded-ctl bg-warn-soft p-3 text-xs leading-5 text-warn">{storageError}</p>}
     {pending && <div className="space-y-2 rounded-ctl border border-warn-border bg-warn-soft p-3 text-xs leading-5 text-text-2"><p>已有创建意图 {pending.intentId}，还没有确认服务端结果。刷新或丢响应时必须用同一标识核对。</p><Button size="sm" onClick={() => void reconcile()} disabled={busy || !pending.requestJson}>核对原提交</Button></div>}
@@ -351,24 +402,27 @@ function TaskDetailCard({ taskId, ownerId, serverBinding, onChanged }: { taskId:
     finally { setBusy(false) }
   }
   return <Card className="space-y-4 p-5">
-    <div className="flex flex-wrap items-start justify-between gap-2"><div><h2 className="text-sm font-semibold text-text-1">任务步骤与覆盖</h2><p className="mt-1 text-xs text-text-3">{time(value.createdAt)}</p></div><State value={value.phase} /></div>
-    <details className="text-xs leading-5 text-text-3"><summary className="cursor-pointer">任务核对信息</summary><div className="mt-2 space-y-1 rounded-ctl bg-surface p-3 font-mono"><p className="break-all">任务 ID：{value.taskId}</p><p className="break-all">材料来源版本：{value.sourceVersionId}</p><p className="break-all">输入摘要：{value.inputSha256}</p></div></details>
+    <div className="flex flex-wrap items-start justify-between gap-2"><div><h2 className="text-sm font-semibold text-text-1">当前任务进度</h2><p className="mt-1 text-xs text-text-3">{time(value.createdAt)} · 任务已保存，可离开后返回</p></div><State value={value.phase} /></div>
+    <details className="text-xs leading-5 text-text-3"><summary className="cursor-pointer">处理详情</summary><div className="mt-2 space-y-3 rounded-ctl bg-surface p-3"><div className="space-y-1 font-mono"><p className="break-all">任务 ID：{value.taskId}</p><p className="break-all">材料来源版本：{value.sourceVersionId}</p><p className="break-all">输入摘要：{value.inputSha256}</p></div>
     <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
       <Metric label="正文块" value={String(value.coverage.textBlocks)} />
       <Metric label="ASR 片段" value={`${value.coverage.completedTranscriptSegments}/${value.coverage.transcriptSegments}`} />
       <Metric label="照片" value={`${value.coverage.completedPhotos}/${value.coverage.photos}`} />
       <Metric label="手写图" value={`${value.coverage.completedInkPreviews}/${value.coverage.inkPreviews}`} />
     </div>
+    </div></details>
     {!value.coverage.complete && <div className="rounded-ctl border border-warn-border bg-warn-soft p-3 text-xs leading-5 text-text-2"><p className="font-medium">当前不能发布“完整”结果</p><p>材料覆盖仍有缺口；生成任务可以继续保持失败状态，不能被页面改写成完整。</p></div>}
     {value.issues.length > 0 && <div className="space-y-2"><h3 className="text-xs font-medium text-text-2">覆盖缺口</h3>{value.issues.map((issue, index) => <div key={`${issue.code}/${issue.stepKey}/${index}`} className="rounded-ctl border border-border p-3 text-xs leading-5 text-text-2"><p className="font-medium">{issue.message}</p><p className="mt-1 break-all text-text-3">{issue.code}{issue.sourcePath ? ` · ${issue.sourcePath}` : ''}{issue.stepKey ? ` · ${issue.stepKey}` : ''}</p></div>)}</div>}
     {!value.backgroundProcessingAvailable && <p className="text-xs text-text-3">服务器后台处理当前不可用；任务已保存，不会伪造完成状态。</p>}
     <div className="flex flex-wrap gap-2"><Button size="sm" variant="secondary" disabled={busy || value.stopRequested || value.phase === 'Succeeded'} onClick={() => void stop()}><Square className="size-3.5" aria-hidden />停止后续步骤</Button><Button size="sm" variant="ghost" onClick={() => { void task.refetch(); void steps.refetch() }}><RefreshCw className="size-3.5" aria-hidden />刷新步骤</Button></div>
+    <details className="text-xs text-text-3"><summary className="cursor-pointer">步骤、尝试与 endpoint 详情</summary>
     {steps.isPending ? <Skeleton className="h-28" /> : steps.isError ? <p role="alert" className="text-sm text-text-2">步骤读取失败：{errorText(steps.error)}</p>
       : !steps.data?.items.length ? <p className="text-sm text-text-3">当前没有可显示的步骤。</p>
         : <div className="space-y-2">{steps.data.items.map((step) => <div key={step.key} className="space-y-2 rounded-ctl border border-border p-3">
           <div className="flex flex-wrap items-center justify-between gap-2"><div><p className="text-sm text-text-1">{stepNames[step.kind] ?? step.kind}</p><p className="mt-1 break-all text-xs text-text-3">{step.key}</p></div><State value={step.status} /></div>
           {step.attempts.length > 0 && <div className="space-y-1">{step.attempts.map((attempt, index) => <p key={attempt.requestId} className="break-all text-xs text-text-3">第 {index + 1} 次 · {attempt.status}{attempt.errorCode ? ` · ${attempt.errorCode}` : ''}{attempt.errorMessage ? ` · ${attempt.errorMessage}` : ''}{attempt.logId ? ` · 调用 ${attempt.logId}` : ''}</p>)}</div>}
         </div>)}</div>}
+    </details>
     <RetryControls key={`${value.taskId}/${value.sourceVersionId}`} task={value} steps={steps.data} ownerId={ownerId} serverBinding={serverBinding} onChanged={onChanged} />
     {message && <p role="alert" className="rounded-ctl bg-surface p-3 text-sm text-text-2">{message}</p>}
   </Card>
@@ -482,13 +536,13 @@ function ArtifactCard({ artifact, ownerId, serverBinding, onChanged }: { artifac
   }
 
   return <Card className="space-y-4 p-5">
-    <div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="text-sm font-semibold text-text-1">{kindNames[artifact.kind]}</h2><p className="mt-1 text-xs leading-5 text-text-3">模型版本先进入候选；选择历史或生成版本只切换当前选用版本，不覆盖任何已保存正文。</p></div><StatusBadge tone={artifact.headVersionId ? 'ok' : 'warn'} dot={false}>{artifact.headVersionId ? '已选用版本' : '等待明确选择'}</StatusBadge></div>
-    <div className="space-y-2"><Label htmlFor={`artifact-version-${artifact.artifactId}`}>版本历史</Label><Select id={`artifact-version-${artifact.artifactId}`} ariaLabel={`${kindNames[artifact.kind]}版本历史`} value={selectedVersionId} className="w-full"
+    <div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="text-base font-semibold text-text-1">{kindNames[artifact.kind]}</h2><p className="mt-1 text-xs leading-5 text-text-3">正文优先显示；选择新版本或人工修订都不会覆盖旧正文。</p></div><StatusBadge tone={artifact.headVersionId ? 'ok' : 'warn'} dot={false}>{artifact.headVersionId ? '已选用版本' : '等待明确选择'}</StatusBadge></div>
+    <div className="text-xs text-text-3">当前查看：{selectedSummary ? `${authorNames[selectedSummary.author]} · ${time(selectedSummary.createdAt)}` : '尚无版本'}</div>
+    {selectedSummary && <details className="text-xs leading-5 text-text-3"><summary className="cursor-pointer">高级选项：版本历史与处理详情</summary><div className="mt-2 space-y-3 rounded-ctl bg-surface p-3"><p>模型生成版本先作为候选；需要时可明确切换选用版本，保留人工稿和历史记录。</p><div className="space-y-2"><Label htmlFor={`artifact-version-${artifact.artifactId}`}>版本历史</Label><Select id={`artifact-version-${artifact.artifactId}`} ariaLabel={`${kindNames[artifact.kind]}版本历史`} value={selectedVersionId} className="w-full"
       options={artifact.versions.length ? artifact.versions.map((item) => ({ value: item.versionId, label: `${authorNames[item.author]} · ${time(item.createdAt)}${item.isHead ? ' · 已选用' : ''}${item.hasConflict ? ' · 冲突候选' : ''}` })) : [{ value: '', label: '还没有可读取版本' }]}
       onValueChange={setSelectedVersionId} disabled={busy || !artifact.versions.length} /></div>
-    {selectedSummary && <div className="flex flex-wrap gap-2 text-xs text-text-3"><span>{selectedSummary.hasConflict ? '冲突候选，未改变当前选用版本' : '版本记录已核对'}</span></div>}
-    {selectedSummary && <details className="text-xs leading-5 text-text-3"><summary className="cursor-pointer">版本核对信息</summary><div className="mt-2 space-y-1 rounded-ctl bg-surface p-3 font-mono"><p className="break-all">结果 ID：{artifact.artifactId}</p><p className="break-all">版本 ID：{selectedSummary.versionId}</p><p className="break-all">材料来源版本：{selectedSummary.sourceVersionId}</p>{selectedSummary.generationTaskId && <p className="break-all">生成任务：{selectedSummary.generationTaskId}</p>}</div></details>}
-    <div className="flex flex-wrap gap-2"><Button size="sm" variant="secondary" disabled={busy || !selectedVersionId || selectedSummary?.isHead} onClick={() => void selectVersion()}>明确设为当前版本</Button><Button size="sm" variant="ghost" disabled={!selectedVersionId} onClick={() => void version.refetch()}><RefreshCw className="size-3.5" aria-hidden />刷新正文</Button></div>
+    <div className="flex flex-wrap items-center gap-2"><Button size="sm" variant="secondary" disabled={busy || !selectedVersionId || selectedSummary.isHead} onClick={() => void selectVersion()}>明确设为当前版本</Button><Button size="sm" variant="ghost" disabled={!selectedVersionId} onClick={() => void version.refetch()}><RefreshCw className="size-3.5" aria-hidden />刷新正文</Button></div>
+    <div className="space-y-1 font-mono"><p className="break-all">结果 ID：{artifact.artifactId}</p><p className="break-all">版本 ID：{selectedSummary.versionId}</p><p className="break-all">材料来源版本：{selectedSummary.sourceVersionId}</p>{selectedSummary.generationTaskId && <p className="break-all">生成任务：{selectedSummary.generationTaskId}</p>}</div></div></details>}
     {version.isPending ? <Skeleton className="h-40" /> : version.isError ? <p role="alert" className="text-sm text-text-2">版本读取失败：{errorText(version.error)}</p>
       : version.data ? <ArtifactEditor key={`${artifact.revision}/${version.data.versionId}`} artifact={artifact} version={version.data} ownerId={ownerId} serverBinding={serverBinding} onChanged={onChanged} /> : null}
     {version.data && <NoteTaskSuggestionsPanel

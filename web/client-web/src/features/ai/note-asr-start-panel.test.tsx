@@ -124,7 +124,7 @@ describe('NoteAsrStartPanel', () => {
       localModelRevision: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
     })
     renderPanel()
-    expect(await screen.findByText('本机执行')).toBeTruthy()
+    expect(await screen.findByText('音频只在本机处理，不会发送到云端，也不会产生云端服务商费用。')).toBeTruthy()
     await userEvent.click(screen.getByRole('checkbox', { name: '确认创建录音转写任务' }))
     await userEvent.click(screen.getByRole('button', { name: '创建本机排队任务' }))
     await waitFor(() => expect(ai.noteAsrStart).toHaveBeenCalledOnce())
@@ -146,7 +146,7 @@ describe('NoteAsrStartPanel', () => {
       localModelRevision: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
     })
     renderPanel()
-    await screen.findByText('本机执行')
+    await screen.findByText('音频只在本机处理，不会发送到云端，也不会产生云端服务商费用。')
     expect(screen.getByRole('button', { name: '创建本机排队任务' })).toBeTruthy()
     expect(screen.queryByRole('button', { name: '云端目标失效' })).toBeNull()
     await userEvent.click(screen.getByRole('checkbox', { name: '确认创建录音转写任务' }))
@@ -193,6 +193,39 @@ describe('NoteAsrStartPanel', () => {
     renderPanel()
     expect(await screen.findByText(/已保存云端目标失效/)).toBeTruthy()
     expect((screen.getByRole('button', { name: '云端目标失效' }) as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('keeps execution target, audio scope and cost visible while language starts collapsed', async () => {
+    renderPanel()
+    await screen.findByText(/合成云端ASR/)
+    const advanced = screen.getByText('高级选项：识别语言').closest('details')
+    expect(advanced?.open).toBe(false)
+    expect(screen.getByRole('combobox', { name: '执行位置' }).closest('details')).toBeNull()
+    expect(advanced?.querySelector('[aria-label="识别语言"]')).toBeTruthy()
+    const summary = screen.getByRole('group', { name: '本次转写执行位置、目标与费用' })
+    expect(summary.textContent).toContain('云端 · 实时')
+    expect(summary.textContent).toContain('合成云端ASR · synthetic-asr')
+    expect(summary.textContent).toContain(destination.endpoint)
+    expect(summary.textContent).toContain('当前固定版本的全部录音')
+    expect(summary.textContent).toContain('音频将离开本机')
+    expect(summary.textContent).toContain('现金费用')
+    expect(screen.getByRole('checkbox', { name: '确认创建录音转写任务' })).toBeTruthy()
+    expect(screen.getByText(/理解音频出域与可能产生的服务商费用/)).toBeTruthy()
+    expect(ai.noteAsrStart).not.toHaveBeenCalled()
+    await userEvent.click(screen.getByText('高级选项：识别语言'))
+    expect(advanced?.open).toBe(true)
+  })
+
+  it('keeps missing target remediation visible without hiding local/cloud choices', async () => {
+    ai.noteAsrDestinations.mockResolvedValue({ total: 0, items: [] })
+    ai.asrRouteConfig.mockResolvedValue({ ...config, cloudConfigured: false, cloudModelId: null })
+    renderPanel()
+    await screen.findByText(/云端尚未配置/)
+    const summary = screen.getByRole('group', { name: '本次转写执行位置、目标与费用' })
+    expect(summary.textContent).toContain('管理员启用共享目标')
+    expect(summary.textContent).toContain('注册模型后改选本机')
+    expect((screen.getByRole('checkbox', { name: '确认创建录音转写任务' }) as HTMLInputElement).disabled).toBe(true)
+    expect(ai.noteAsrStart).not.toHaveBeenCalled()
   })
 
   it('prepares one frozen task and submits Batch with the same id without clearing intent early', async () => {

@@ -7,7 +7,7 @@ import { NoteAsrOwnerBatches } from './note-asr-owner-batches'
 
 const phaseNames: Record<string, string> = {
   Queued: '等待处理', Running: '转写中', Succeeded: '转写完成', NeedsAttention: '有分片需处理',
-  Stopped: '已停止', Failed: '失败', Blocked: '未发送', Cancelled: '已取消', Unknown: '结果待核对',
+  Stopped: '已停止', Failed: '失败', Blocked: '未发送', Cancelled: '已取消', Unknown: '处理状态需核对',
 }
 
 function stateTone(phase: string) {
@@ -58,9 +58,7 @@ function TaskRow({ task, selected, onSelect }: { task: NoteAsrTask; selected: bo
       <span className="break-words text-text-2">{formatTime(task.createdAt)} · {task.completedSegments}/{task.totalSegments} 片 · 失败 {task.failedSegments}</span>
       <StatusBadge size="xs" dot={false} tone={stateTone(task.phase)}>{phaseNames[task.phase] ?? task.phase}</StatusBadge>
     </span>
-    <span className="mt-1 block break-all font-mono text-text-3">
-      {task.destination?.endpoint ?? '本机执行 · 未发送云端'}
-    </span>
+    <span className="mt-1 block text-text-3">{task.destination ? '云端转写' : '本机排队转写'}</span>
     {task.stopRequested && <span className="mt-1 block text-warn">已请求停止；未知结果不会自动重试。</span>}
   </button>
 }
