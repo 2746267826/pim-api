@@ -1,0 +1,60 @@
+{
+  "checkedAtUtc": "2026-11-05T11:34:27.8028516+08:00",
+  "head": "302210428b471e5add970988d2b7f32c10ab98c4",
+  "committed": false,
+  "sourceFiles": [
+    {
+      "path": "web/client-web/src/features/ai/note-derived/note-derived-page.tsx",
+      "sha256": "BD5CE53A065D898A6F673CB2F1DEBDE3768425AE917F4AE987EBF6535BEBD045"
+    },
+    {
+      "path": "web/client-web/src/features/ai/note-derived/note-derived-page.test.tsx",
+      "sha256": "01E83D467C6551BB906F7216601EC268D46BFF34A123274F7B1FE518EDAF9D68"
+    },
+    {
+      "path": "web/client-web/src/features/native-notes/native-notes-page.tsx",
+      "sha256": "5EA5DBCDE3DF5975562C77532EAC7636F07DD55F1BD67A63D4A3F5832F18AD54"
+    },
+    {
+      "path": "web/client-web/src/features/native-notes/native-notes-page.test.tsx",
+      "sha256": "9CE14F6FF661838D9E1EF0F3FC49DFEA38C4DE328D98E78AB2BDE97604324DFA"
+    }
+  ],
+  "focusedTests": {
+    "result": "PASS",
+    "command": "npm test -- --run src/features/ai/note-derived/note-derived-page.test.tsx src/features/native-notes/native-notes-page.test.tsx",
+    "failed": 0,
+    "passed": 49,
+    "files": 2
+  },
+  "build": {
+    "result": "PASS",
+    "command": "npm run build",
+    "indexSha256": "167E7A6DEA005274D6A5DE592ABE927E16659353EB0A0C3955119053ED8B7DA1"
+  },
+  "lint": {
+    "result": "PASS",
+    "warnings": "2 existing React warnings",
+    "scope": "four modified source/test files"
+  },
+  "browser": {
+    "result": "PASS",
+    "report": "scratch/qa/notes-user-flow/offline-20261105/run-2026-11-05T03-33-28-452Z/report.json",
+    "boundary": "Built UI assets served by Playwright route.fulfill; synthetic API fixtures only. No real service, provider, billing, device or cross-client acceptance.",
+    "viewports": [
+      {
+        "name": "desktop",
+        "width": 1440,
+        "height": 1000,
+        "horizontalOverflow": false
+      },
+      {
+        "name": "narrow",
+        "width": 390,
+        "height": 844,
+        "horizontalOverflow": false
+      }
+    ]
+  },
+  "remoteStateRefreshed": false
+}

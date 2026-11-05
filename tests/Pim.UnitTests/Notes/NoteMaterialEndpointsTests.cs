@@ -102,6 +102,47 @@ public sealed class NoteMaterialEndpointsTests : IDisposable
     }
 
     [Fact]
+    public async Task AuthenticatedOwnerCanDiscoverAndReadCurrentNoteButOtherOwnerCannot()
+    {
+        var owner = await AuthRegistrationTestHost.SeedAndLoginAsync(_factory, "notes-discovery-owner");
+        var other = await AuthRegistrationTestHost.SeedAndLoginAsync(_factory, "notes-discovery-other");
+        using var client = AuthRegistrationTestHost.Authed(_factory, owner.AccessToken);
+        using var otherClient = AuthRegistrationTestHost.Authed(_factory, other.AccessToken);
+        using var anonymous = _factory.CreateClient();
+        var fixture = NoteMaterialUploadStoreTests.Fixture.Create();
+        var store = _factory.Services.GetRequiredService<NoteMaterialUploadStore>();
+
+        Assert.Equal(HttpStatusCode.Unauthorized, (await anonymous.GetAsync(Root)).StatusCode);
+        var pendingPage = await client.GetFromJsonAsync<ApiResponse<NativeNotePageDto>>(Root);
+        Assert.Empty(pendingPage!.Data!.Items);
+        Assert.Equal(HttpStatusCode.NotFound,
+            (await otherClient.GetAsync($"{Root}/{fixture.Request.NoteId}/current")).StatusCode);
+
+        await store.BeginAsync(owner.UserId, fixture.Request);
+        for (var file = 0; file < fixture.Content.Count; file++)
+            for (var part = 0; part < (fixture.Content[file].Length + NoteMaterialUploadOptions.PartSizeBytes - 1) /
+                 NoteMaterialUploadOptions.PartSizeBytes; part++)
+            {
+                var start = part * NoteMaterialUploadOptions.PartSizeBytes;
+                var bytes = fixture.Content[file].AsSpan(start,
+                    Math.Min(NoteMaterialUploadOptions.PartSizeBytes, fixture.Content[file].Length - start)).ToArray();
+                var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes)).ToLowerInvariant();
+                await store.UploadPartAsync(owner.UserId, fixture.Request.VersionId, file, part, hash, new MemoryStream(bytes));
+            }
+        await store.CompleteAsync(owner.UserId, fixture.Request.VersionId);
+
+        var page = await client.GetFromJsonAsync<ApiResponse<NativeNotePageDto>>(Root + "?offset=0&limit=20");
+        var item = Assert.Single(page!.Data!.Items);
+        Assert.Equal(fixture.Request.NoteId, item.NoteId);
+        Assert.Equal(fixture.Request.VersionId, item.CurrentVersionId);
+        var current = await client.GetFromJsonAsync<ApiResponse<NoteMaterialVersionDto>>(
+            $"{Root}/{fixture.Request.NoteId}/current");
+        Assert.Equal(fixture.Request.InputJson, current!.Data!.InputJson);
+        Assert.Equal(HttpStatusCode.NotFound,
+            (await otherClient.GetAsync($"{Root}/{fixture.Request.NoteId}/current")).StatusCode);
+    }
+
+    [Fact]
     public async Task ActualMiddlewareReportsConsentIntegrityAndIncompleteUploadErrors()
     {
         var owner = await AuthRegistrationTestHost.SeedAndLoginAsync(_factory, "notes-errors");
@@ -209,6 +250,10 @@ public sealed class NoteMaterialEndpointsTests : IDisposable
         Assert.True(headers.TryGetProperty("X-Content-Type-Options", out _));
         Assert.True(paths.TryGetProperty(Root + "/versions/{versionId}/complete", out _));
         Assert.True(paths.TryGetProperty(Root + "/versions/{versionId}/promote", out _));
+        Assert.True(paths.TryGetProperty(Root, out var discovery));
+        Assert.True(discovery.TryGetProperty("get", out _));
+        Assert.True(paths.TryGetProperty(Root + "/{noteId}/current", out _));
+        Assert.True(paths.TryGetProperty(Root + "/versions/{sourceVersionId}/clone", out _));
         Assert.True(paths.TryGetProperty(Root + "/versions/{versionId}/bundle", out var bundle));
         Assert.True(bundle.TryGetProperty("get", out var bundleGet));
         var bundleResponse = bundleGet.GetProperty("responses").GetProperty("200");

@@ -2,8 +2,12 @@ import { apiGet, apiPost, apiPutBinary, fetchBlob, fetchBoundedDownload, MAX_BOU
 import type { components, paths } from '@/api/generated'
 import type { NoteMaterialUpload, NoteMaterialVersion } from './material-model'
 
-export type NoteLibrarySource = components['schemas']['NoteAsrSourceDto']
-export type NoteLibrarySources = components['schemas']['NoteAsrSourcesDto']
+export type NativeNoteSummary = components['schemas']['NativeNoteSummaryDto']
+export type NativeNotePage = components['schemas']['NativeNotePageDto']
+export type NativeNoteVersion = components['schemas']['NoteMaterialVersionDto']
+export type NativeNoteUpload = components['schemas']['NoteMaterialUploadDto']
+export type NoteLibrarySource = NativeNoteSummary
+export type NoteLibrarySources = NativeNotePage
 export type NoteMaterialLimits = components['schemas']['NoteMaterialUploadLimitsDto']
 type BundlePath = paths['/api/v1/native-notes/versions/{versionId}/bundle']['get']['parameters']['path']
 type BundleContentType = keyof paths['/api/v1/native-notes/versions/{versionId}/bundle']['get']['responses'][200]['content']
@@ -33,10 +37,14 @@ function createNativeNotesApi(context: NativeNotesRequestContext) {
       scoped(signal, (options) =>
         apiGet<NoteMaterialLimits>('/api/v1/native-notes/upload-limits', options)),
 
-    sources: (offset: number, limit = 50, signal?: AbortSignal) =>
+    notes: (offset: number, limit = 50, signal?: AbortSignal) =>
       scoped(signal, (options) =>
-        apiGet<NoteLibrarySources>(
-          `/api/v1/native-notes/derived-tasks/sources?offset=${offset}&limit=${limit}`,
+        apiGet<NativeNotePage>(`/api/v1/native-notes?offset=${offset}&limit=${limit}`, options)),
+
+    current: (noteId: string, signal?: AbortSignal) =>
+      scoped(signal, (options) =>
+        apiGet<NativeNoteVersion>(
+          `/api/v1/native-notes/${encodeURIComponent(noteId)}/current`,
           options,
         )),
 
@@ -47,9 +55,28 @@ function createNativeNotesApi(context: NativeNotesRequestContext) {
           options,
         )),
 
+    versions: (noteId: string, signal?: AbortSignal) =>
+      scoped(signal, (options) =>
+        apiGet<NativeNoteUpload[]>(
+          `/api/v1/native-notes/${encodeURIComponent(noteId)}/versions`,
+          options,
+        )),
+
     begin: (body: components['schemas']['BeginNoteMaterialUploadRequest'], signal?: AbortSignal) =>
       scoped(signal, (options) =>
         apiPost<NoteMaterialUpload>('/api/v1/native-notes/versions', body, options)),
+
+    clone: (
+      sourceVersionId: string,
+      body: components['schemas']['CloneNoteMaterialVersionRequest'],
+      signal?: AbortSignal,
+    ) =>
+      scoped(signal, (options) =>
+        apiPost<NoteMaterialUpload>(
+          `/api/v1/native-notes/versions/${encodeURIComponent(sourceVersionId)}/clone`,
+          body,
+          options,
+        )),
 
     uploadPart: (
       versionId: string,

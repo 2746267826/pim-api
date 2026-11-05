@@ -15,6 +15,21 @@ public static class NoteMaterialEndpoints
         var group = endpoints.MapGroup("/api/v1/native-notes").RequireAuthorization().WithTags("Native notes");
         group.MapGet("/upload-limits", (NoteMaterialUploadStore store) => Results.Ok(ApiResponse<NoteMaterialUploadLimitsDto>.Ok(store.Limits)))
             .Produces<ApiResponse<NoteMaterialUploadLimitsDto>>().Produces(401);
+        group.MapGet("", async (NoteMaterialUploadStore store, ICurrentUserService user, CancellationToken ct,
+            int offset = 0, int limit = 20) =>
+            Results.Ok(ApiResponse<NativeNotePageDto>.Ok(await store.ListNativeNotesAsync(UserId(user), offset, limit, ct))))
+            .Produces<ApiResponse<NativeNotePageDto>>().Produces(400).Produces(401);
+        group.MapGet("/{noteId:guid}/current", async (Guid noteId, NoteMaterialUploadStore store,
+            ICurrentUserService user, CancellationToken ct) =>
+            Results.Ok(ApiResponse<NoteMaterialVersionDto>.Ok(await store.GetCurrentAsync(UserId(user), noteId, ct))))
+            .Produces<ApiResponse<NoteMaterialVersionDto>>().Produces(401).Produces<ApiResponse<string>>(404);
+        group.MapPost("/versions/{sourceVersionId:guid}/clone", async (Guid sourceVersionId,
+            CloneNoteMaterialVersionRequest request, NoteMaterialUploadStore store, ICurrentUserService user,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<NoteMaterialUploadDto>.Ok(await store.CloneAsync(UserId(user), sourceVersionId, request, ct))))
+            .WithMetadata(new RequestSizeLimitAttribute(64L * 1024 * 1024))
+            .Produces<ApiResponse<NoteMaterialUploadDto>>().Produces(400).Produces(401)
+            .Produces<ApiResponse<string>>(404).Produces<ApiResponse<string>>(409).Produces<ApiResponse<string>>(413);
         group.MapPost("/versions", async (BeginNoteMaterialUploadRequest request, NoteMaterialUploadStore store,
             ICurrentUserService user, CancellationToken ct) =>
             Results.Ok(ApiResponse<NoteMaterialUploadDto>.Ok(await store.BeginAsync(UserId(user), request, ct))))

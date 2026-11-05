@@ -1,5 +1,28 @@
 ﻿# PIM 原生客户端与笔记路线图
 
+## 11/5 当前补充层：API 候选收口、Android 契约与混合 bundle 续写（2026-11-05）
+
+本层只记录 2026-11-05 当前执行状态；下方 v0.53 及更早内容保持原样。稳定范围仍为 45 个 ID（32 capabilities + 13 MIG）、AC1–19、M0–M5 与 #516 五阶段，不宣称本轮整体完成。Scope 4 的真实 provider、计费、物理设备、OEM 与生产验证由用户接手，不阻塞本轮候选推进。
+
+### 本迭代交付主线
+
+1. **API #560/#561：单一候选形态**。候选收口为 3 个端点：发现（discovery）、current、clone；processing fixed-version 接口保留。父已于 11/5 真实联网核实 API master `622382f4`。#561 Draft 远端 `faa6ab` 的旧 Gate PASS 不覆盖本地候选；#560 `c20dac` 存在冲突。当前推荐单一候选为 #561；不改动脏的 `pim-api` 树。
+2. **API 主线契约后 Android consumer**。在 API 主线契约之后，推进 Android 官方 fetch、generate、freshness 与精确 CI；Android #70 父 `3f6b1d4` 当前 freshness 为红，上游缺 3 paths / 4 schemas。不得猜最终计数、CI 结果或合并状态。
+3. **同一生产 builder 的合成混合 bundle**。本地候选已冻结：Web 完整 `68 files / 586 PASS`；最终类型/ctor 小修后的定向 raw/model/golden `14 PASS`、build PASS、lint PASS。API 原 `27` 项加同一样本 `3` 项 Store/TestServer，共 `30 PASS / 0 fail / 0 skip`。Android 分开记录全量 JVM `2258` + compile PASS，以及生产 `CloudNoteRepository` refresh -> restore 读回真正 Web 续写的 `1 case PASS`；不将其相加写成 `2259` 全套。原/新图、ink、录音 hash 相同，已有本机 `noteId` 拒绝覆盖。原 Android `inputSha` `67d62e...930b` / manifest `31389e...b5d8`；Web `inputSha` `19916b...77c3` / manifest `5cbf921733156fe44daba52ce291f09fcc85671e64ce6a032765810f51cf492a`。raw `320.0` 与 known-null metadata 已修复，普通用户 UI 未新增配置。
+
+### 当前证据与边界
+
+- API 原 `27` 项加同一样本 `3` 项 Store/TestServer，共 `30 PASS / 0 fail / 0 skip`；Web 完整 `68 files / 586 PASS`，定向 raw/model/golden `14 PASS`，build 与 lint PASS。
+- Android 精确结果：代码 `dfa9558` 加 3 个 test-fixture 补丁；全 App JVM `193 XML / 2258 tests / 0 fail / 0 error / 0 skip`，`compileDebugKotlin` 均 `BUILD SUCCESSFUL`。receipt：`scratch/notes-continuation-20261105/android-jvm/receipt.txt`，含 3 个 source hash。
+- raw `320.0` 与 known-null metadata 已修复；普通用户 UI 未新增配置。原 Android bundle 与 Web 产物的 input/manifest 标识保持如上。
+- Android 另有生产 `CloudNoteRepository` refresh -> restore 读回真正 Web 续写的 `1 case PASS`，不与全量 JVM 相加为 `2259` 全套；官方 master freshness 仍 FAIL，待 API merge 后刷新。
+- API/Web/Android 的候选、契约、freshness 与 bundle 结果分别记账；局部 PASS 不等于 API 合并、Android #70 合并、生产部署或跨端最终完成。
+- 收据：`scratch/notes-continuation-20261105/verification.json`；最终两视口报告 `scratch/notes-continuation-20261105/browser/run-2026-11-05T05-44-31-260Z/report.json` 为 PASS，dist 离线 + API 合成 mock，no errors/overflow。候选仅本地冻结；远端提交、CI 与 merge 仍待推进，不写已合并。当前主线为 master `622`，远端 `faa` 仍为旧 Draft；后续提交 #561，CI 通过后再推进主线与 Android 官方刷新。Scope 4 由用户接手，不阻塞。
+
+### 下一步（仅前三步）
+
+本地候选已冻结，交回父提交 #561 并推进远端 CI/merge；通过后按主线刷新 Android 官方 fetch/generate/freshness。Scope 4 真实测试由用户接手，不作为阻塞。
+
 版本：v0.53 当前执行覆盖（事实冻结于 `2026-11-02T17:05:46+08:00`）。API/Web 产品 Release `api-v26.11.1060` 源为 PR #558 merge `7922f6e2ce6e8884dd3251c0e3af933912167d14`；Windows `windows-v26.11.1121` 源为 PR #43 merge `b0d0b28e14e58f96d45fd23b2b2d585f21fc791c`；Android 当前 Release `android-v26.11.1154` 源为 PR #65 merge `c5614fc80af045b16790fc45ca119b072b504482`。本层是最新执行状态；下方 v0.52 及更早内容按原字节保留作历史快照。Release 不代表生产部署、真实 provider/模型质量或物理设备验收。
 
 <a id="v053-current"></a>

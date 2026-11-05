@@ -1,0 +1,314 @@
+{
+  "boundary": "Isolated synthetic browser fixtures and API mocks only; no real note, provider, sync, billing, or device acceptance.",
+  "baseURL": "http://127.0.0.1:3000",
+  "staticDistRoot": "D:\\AIPD\\61023cidexpim\\wt\\notes-user-flow-20261104\\web\\client-web\\dist",
+  "viewports": [
+    {
+      "name": "desktop",
+      "width": 1440,
+      "height": 1000,
+      "states": [
+        "note-library",
+        "direct-noteId-current-load",
+        "current-audio-note-edit",
+        "explicit-consent-clone-save",
+        "conflict-candidate-readonly-explicit-promotion",
+        "recording-photo-ink-preservation",
+        "transcribe-action-context",
+        "missing-derived-target",
+        "visible-scope-and-cost",
+        "collapsed-history-language-and-optional-retranscription",
+        "running-asr-no-duplicate-start",
+        "successful-asr-reuse",
+        "running-transcription-and-transcript",
+        "zero-audio-organize-entry",
+        "expanded-legacy-import"
+      ],
+      "horizontalOverflow": false,
+      "apiCounts": {
+        "GET /api/v1/auth/me": 4,
+        "GET /api/v1/status/summary": 4,
+        "GET /api/v1/calendar/calendars": 4,
+        "GET /api/version": 4,
+        "GET /api/v1/calendar/task-books": 4,
+        "GET /api/v1/native-notes": 6,
+        "GET /api/v1/quick-notes": 6,
+        "GET /api/v1/native-notes/22222222-2222-4222-8222-222222222222/current": 4,
+        "GET /api/v1/native-notes/versions/33333333-3333-4333-8333-333333333333": 3,
+        "GET /api/v1/native-notes/22222222-2222-4222-8222-222222222222/versions": 4,
+        "GET /api/v1/native-notes/versions/33333333-3333-4333-8333-333333333333/files/3": 2,
+        "GET /api/v1/native-notes/versions/33333333-3333-4333-8333-333333333333/files/4": 2,
+        "POST /api/v1/native-notes/versions/33333333-3333-4333-8333-333333333333/clone": 1,
+        "PUT /api/v1/native-notes/versions/da87bfc0-af70-451b-9604-c8652c9ca0f7/files/0/parts/0": 1,
+        "PUT /api/v1/native-notes/versions/da87bfc0-af70-451b-9604-c8652c9ca0f7/files/1/parts/0": 1,
+        "POST /api/v1/native-notes/versions/da87bfc0-af70-451b-9604-c8652c9ca0f7/complete": 1,
+        "GET /api/v1/native-notes/versions/da87bfc0-af70-451b-9604-c8652c9ca0f7": 2,
+        "GET /api/v1/native-notes/versions/da87bfc0-af70-451b-9604-c8652c9ca0f7/files/3": 1,
+        "GET /api/v1/native-notes/versions/da87bfc0-af70-451b-9604-c8652c9ca0f7/files/4": 1,
+        "POST /api/v1/native-notes/versions/da87bfc0-af70-451b-9604-c8652c9ca0f7/promote": 1,
+        "GET /api/v1/native-notes/44444444-4444-4444-8444-444444444444/current": 1,
+        "GET /api/v1/native-notes/versions/55555555-5555-4555-8555-555555555555": 1,
+        "GET /api/v1/native-notes/44444444-4444-4444-8444-444444444444/versions": 1,
+        "GET /api/v1/native-notes/derived-tasks/sources": 2,
+        "GET /api/v1/native-notes/derived-tasks/destinations": 2,
+        "GET /api/v1/native-notes/derived-tasks/limits": 2,
+        "GET /api/v1/native-notes/derived-tasks": 4,
+        "GET /api/v1/native-notes/asr-tasks": 2,
+        "GET /api/v1/native-notes/derived-artifacts": 3,
+        "GET /api/v1/native-notes/asr-tasks/66666666-6666-4666-8666-666666666666": 1,
+        "GET /api/v1/native-notes/asr-tasks/66666666-6666-4666-8666-666666666666/segments": 1,
+        "GET /api/v1/native-notes/asr-routing/batches": 1,
+        "GET /api/v1/native-notes/derived-artifacts/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/versions/dddddddd-dddd-4ddd-8ddd-dddddddddddd": 4,
+        "GET /api/v1/native-notes/derived-artifacts/cccccccc-cccc-4ccc-8ccc-cccccccccccc/versions/eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee": 4,
+        "GET /api/v1/native-notes/asr-routing/config": 1,
+        "GET /api/v1/native-notes/asr-tasks/destinations": 1,
+        "GET /api/v1/native-notes/asr-tasks/66666666-6666-4666-8666-666666666666/reprocess-history": 1,
+        "GET /api/v1/native-notes/asr-routing/attempts": 1,
+        "GET /api/v1/native-notes/task-suggestions": 1
+      },
+      "cloneCount": 1,
+      "completedUploadCount": 1
+    },
+    {
+      "name": "narrow",
+      "width": 390,
+      "height": 844,
+      "states": [
+        "note-library",
+        "direct-noteId-current-load",
+        "current-audio-note-edit",
+        "explicit-consent-clone-save",
+        "conflict-candidate-readonly-explicit-promotion",
+        "recording-photo-ink-preservation",
+        "transcribe-action-context",
+        "missing-derived-target",
+        "visible-scope-and-cost",
+        "collapsed-history-language-and-optional-retranscription",
+        "running-asr-no-duplicate-start",
+        "successful-asr-reuse",
+        "running-transcription-and-transcript",
+        "zero-audio-organize-entry",
+        "expanded-legacy-import"
+      ],
+      "horizontalOverflow": false,
+      "apiCounts": {
+        "GET /api/v1/auth/me": 4,
+        "GET /api/v1/status/summary": 4,
+        "GET /api/v1/calendar/calendars": 4,
+        "GET /api/version": 4,
+        "GET /api/v1/calendar/task-books": 4,
+        "GET /api/v1/native-notes": 6,
+        "GET /api/v1/quick-notes": 6,
+        "GET /api/v1/native-notes/22222222-2222-4222-8222-222222222222/current": 4,
+        "GET /api/v1/native-notes/versions/33333333-3333-4333-8333-333333333333": 3,
+        "GET /api/v1/native-notes/22222222-2222-4222-8222-222222222222/versions": 4,
+        "GET /api/v1/native-notes/versions/33333333-3333-4333-8333-333333333333/files/3": 2,
+        "GET /api/v1/native-notes/versions/33333333-3333-4333-8333-333333333333/files/4": 2,
+        "POST /api/v1/native-notes/versions/33333333-3333-4333-8333-333333333333/clone": 1,
+        "PUT /api/v1/native-notes/versions/7f981b08-e490-47db-beba-9571a7dd3242/files/0/parts/0": 1,
+        "PUT /api/v1/native-notes/versions/7f981b08-e490-47db-beba-9571a7dd3242/files/1/parts/0": 1,
+        "POST /api/v1/native-notes/versions/7f981b08-e490-47db-beba-9571a7dd3242/complete": 1,
+        "GET /api/v1/native-notes/versions/7f981b08-e490-47db-beba-9571a7dd3242": 2,
+        "GET /api/v1/native-notes/versions/7f981b08-e490-47db-beba-9571a7dd3242/files/3": 1,
+        "GET /api/v1/native-notes/versions/7f981b08-e490-47db-beba-9571a7dd3242/files/4": 1,
+        "POST /api/v1/native-notes/versions/7f981b08-e490-47db-beba-9571a7dd3242/promote": 1,
+        "GET /api/v1/native-notes/44444444-4444-4444-8444-444444444444/current": 1,
+        "GET /api/v1/native-notes/versions/55555555-5555-4555-8555-555555555555": 1,
+        "GET /api/v1/native-notes/44444444-4444-4444-8444-444444444444/versions": 1,
+        "GET /api/v1/native-notes/derived-tasks/sources": 2,
+        "GET /api/v1/native-notes/derived-tasks/destinations": 2,
+        "GET /api/v1/native-notes/derived-tasks/limits": 2,
+        "GET /api/v1/native-notes/derived-tasks": 4,
+        "GET /api/v1/native-notes/asr-tasks": 2,
+        "GET /api/v1/native-notes/derived-artifacts": 3,
+        "GET /api/v1/native-notes/asr-tasks/66666666-6666-4666-8666-666666666666": 1,
+        "GET /api/v1/native-notes/asr-tasks/66666666-6666-4666-8666-666666666666/segments": 1,
+        "GET /api/v1/native-notes/asr-routing/batches": 1,
+        "GET /api/v1/native-notes/derived-artifacts/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/versions/dddddddd-dddd-4ddd-8ddd-dddddddddddd": 4,
+        "GET /api/v1/native-notes/derived-artifacts/cccccccc-cccc-4ccc-8ccc-cccccccccccc/versions/eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee": 4,
+        "GET /api/v1/native-notes/asr-routing/config": 1,
+        "GET /api/v1/native-notes/asr-tasks/destinations": 1,
+        "GET /api/v1/native-notes/asr-tasks/66666666-6666-4666-8666-666666666666/reprocess-history": 1,
+        "GET /api/v1/native-notes/asr-routing/attempts": 1,
+        "GET /api/v1/native-notes/task-suggestions": 1
+      },
+      "cloneCount": 1,
+      "completedUploadCount": 1
+    }
+  ],
+  "mockViolations": [],
+  "diagnostics": [
+    {
+      "viewport": "desktop",
+      "unmatched": [],
+      "external": [],
+      "pageErrors": [],
+      "consoleErrors": [],
+      "overflowStates": [
+        {
+          "state": "note-library",
+          "width": 1440,
+          "documentWidth": 1440,
+          "bodyWidth": 1440,
+          "overflow": false
+        },
+        {
+          "state": "direct-audio-note",
+          "width": 1440,
+          "documentWidth": 1440,
+          "bodyWidth": 1440,
+          "overflow": false
+        },
+        {
+          "state": "audio-note-editor",
+          "width": 1440,
+          "documentWidth": 1440,
+          "bodyWidth": 1440,
+          "overflow": false
+        },
+        {
+          "state": "conflict-candidate",
+          "width": 1440,
+          "documentWidth": 1440,
+          "bodyWidth": 1440,
+          "overflow": false
+        },
+        {
+          "state": "promoted-conflict-version",
+          "width": 1440,
+          "documentWidth": 1440,
+          "bodyWidth": 1440,
+          "overflow": false
+        },
+        {
+          "state": "audio-processing",
+          "width": 1440,
+          "documentWidth": 1440,
+          "bodyWidth": 1440,
+          "overflow": false
+        },
+        {
+          "state": "transcription-results",
+          "width": 1440,
+          "documentWidth": 1440,
+          "bodyWidth": 1440,
+          "overflow": false
+        },
+        {
+          "state": "task-progress-details",
+          "width": 1440,
+          "documentWidth": 1440,
+          "bodyWidth": 1440,
+          "overflow": false
+        },
+        {
+          "state": "transcription-reentry",
+          "width": 1440,
+          "documentWidth": 1440,
+          "bodyWidth": 1440,
+          "overflow": false
+        },
+        {
+          "state": "zero-audio-organize",
+          "width": 1440,
+          "documentWidth": 1440,
+          "bodyWidth": 1440,
+          "overflow": false
+        },
+        {
+          "state": "expanded-legacy",
+          "width": 1440,
+          "documentWidth": 1440,
+          "bodyWidth": 1440,
+          "overflow": false
+        }
+      ]
+    },
+    {
+      "viewport": "narrow",
+      "unmatched": [],
+      "external": [],
+      "pageErrors": [],
+      "consoleErrors": [],
+      "overflowStates": [
+        {
+          "state": "note-library",
+          "width": 390,
+          "documentWidth": 390,
+          "bodyWidth": 390,
+          "overflow": false
+        },
+        {
+          "state": "direct-audio-note",
+          "width": 390,
+          "documentWidth": 390,
+          "bodyWidth": 390,
+          "overflow": false
+        },
+        {
+          "state": "audio-note-editor",
+          "width": 390,
+          "documentWidth": 390,
+          "bodyWidth": 390,
+          "overflow": false
+        },
+        {
+          "state": "conflict-candidate",
+          "width": 390,
+          "documentWidth": 390,
+          "bodyWidth": 390,
+          "overflow": false
+        },
+        {
+          "state": "promoted-conflict-version",
+          "width": 390,
+          "documentWidth": 390,
+          "bodyWidth": 390,
+          "overflow": false
+        },
+        {
+          "state": "audio-processing",
+          "width": 390,
+          "documentWidth": 390,
+          "bodyWidth": 390,
+          "overflow": false
+        },
+        {
+          "state": "transcription-results",
+          "width": 390,
+          "documentWidth": 390,
+          "bodyWidth": 390,
+          "overflow": false
+        },
+        {
+          "state": "task-progress-details",
+          "width": 390,
+          "documentWidth": 390,
+          "bodyWidth": 390,
+          "overflow": false
+        },
+        {
+          "state": "transcription-reentry",
+          "width": 390,
+          "documentWidth": 390,
+          "bodyWidth": 390,
+          "overflow": false
+        },
+        {
+          "state": "zero-audio-organize",
+          "width": 390,
+          "documentWidth": 390,
+          "bodyWidth": 390,
+          "overflow": false
+        },
+        {
+          "state": "expanded-legacy",
+          "width": 390,
+          "documentWidth": 390,
+          "bodyWidth": 390,
+          "overflow": false
+        }
+      ]
+    }
+  ]
+}

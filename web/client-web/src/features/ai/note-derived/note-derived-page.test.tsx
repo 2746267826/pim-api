@@ -3,6 +3,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { MemoryRouter } from 'react-router'
 import { NAV_GROUPS } from '@/app/nav'
 import { NoteDerivedPage } from './note-derived-page'
 import type { NoteDerivedArtifact, NoteDerivedTask, NoteDerivedVersion } from './api'
@@ -58,6 +59,23 @@ const localAsrTask: NoteAsrTask = {
   route: 'local',
   destination: null,
 }
+const succeededAsrTask: NoteAsrTask = {
+  ...asrTask,
+  taskId: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+  phase: 'Succeeded',
+  completedSegments: 1,
+  failedSegments: 0,
+}
+const runningAsrTask: NoteAsrTask = {
+  ...asrTask,
+  phase: 'Running',
+  completedSegments: 0,
+  failedSegments: 0,
+}
+const inconsistentSucceededAsrTask: NoteAsrTask = {
+  ...succeededAsrTask,
+  failedSegments: 1,
+}
 const source = {
   noteId, versionId: sourceVersionId, title: '零录音材料', createdAt: '2026-10-29T00:00:00Z', isCurrent: true,
   hasConflict: false, recordings: 0, totalSamples: 0, sampleRate: 16000,
@@ -91,7 +109,8 @@ const version: NoteDerivedVersion = {
 let client: QueryClient
 function page() {
   client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 }, mutations: { retry: false } } })
-  return render(<QueryClientProvider client={client}><NoteDerivedPage /></QueryClientProvider>)
+  const entry = `${window.location.pathname}${window.location.search}`
+  return render(<MemoryRouter initialEntries={[entry]}><QueryClientProvider client={client}><NoteDerivedPage /></QueryClientProvider></MemoryRouter>)
 }
 async function chooseSource() {
   await userEvent.click(await screen.findByRole('combobox', { name: '材料版本' }))
@@ -104,6 +123,7 @@ async function chooseDestination() {
 
 beforeEach(() => {
   localStorage.clear(); vi.resetAllMocks(); auth.user.id = owner; auth.user.role = 'user'
+  window.history.replaceState({}, '', '/')
   Object.defineProperties(HTMLElement.prototype, {
     hasPointerCapture: { configurable: true, value: () => false }, setPointerCapture: { configurable: true, value: () => undefined },
     releasePointerCapture: { configurable: true, value: () => undefined }, scrollIntoView: { configurable: true, value: () => undefined },
@@ -129,20 +149,25 @@ beforeEach(() => {
   assistant.asrRoutingAttempts.mockResolvedValue([])
   taskSuggestions.list.mockResolvedValue({ total: 0, items: [] })
 })
-afterEach(() => { cleanup(); client.clear() })
+afterEach(() => { cleanup(); client?.clear() })
 
 it('loads ordinary sources including zero recordings and never calls admin model settings', async () => {
   const collection = NAV_GROUPS.find((group) => group.label === '收集')
-  expect(collection?.items).toContainEqual(expect.objectContaining({ to: '/native-notes', label: '原生笔记' }))
+  expect(collection?.items).toContainEqual(expect.objectContaining({ to: '/native-notes', label: '笔记' }))
   page()
-  expect(await screen.findByRole('heading', { name: '笔记处理' })).toBeTruthy()
+  expect(await screen.findByRole('heading', { name: '继续处理这篇笔记' })).toBeTruthy()
+  expect(screen.getByText('选择固定版本后，按需转写录音或直接整理。')).toBeTruthy()
+  expect(screen.getByText('隐私与处理说明').closest('details')?.open).toBe(false)
   await chooseSource()
+  expect(screen.getByText('该版本没有录音，可直接整理成完整记录和分析。')).toBeTruthy()
+  expect(screen.queryByText('先完成录音转写，再整理成完整记录和分析。')).toBeNull()
+  expect(screen.getByRole('heading', { name: '选择笔记材料' }).previousElementSibling).toBeNull()
   expect((await screen.findAllByText(/零录音版本/)).length).toBeGreaterThan(0)
   expect(derived.sources).toHaveBeenCalled()
   expect(derived.destinations).toHaveBeenCalled()
   expect(assistant.noteAsrTasks).not.toHaveBeenCalled()
   expect(screen.queryByText('模型设置')).toBeNull()
-  expect(screen.getByText(/普通账号只消费管理员已启用的共享目标/)).toBeTruthy()
+  expect(screen.getByText('隐私与处理说明').closest('details')?.textContent).toContain('普通账号只能使用管理员启用的共享目标')
 })
 
 it('explains an empty shared destination catalogue without exposing admin configuration to ordinary users', async () => {
@@ -159,6 +184,8 @@ it('shows the ordinary-user ASR start entry on native notes without admin model 
   page()
   await chooseSource()
   expect(await screen.findByText('启动录音转写')).toBeTruthy()
+  expect(screen.getByText('先完成录音转写，再整理成完整记录和分析。')).toBeTruthy()
+  expect(screen.getByRole('heading', { name: '选择笔记材料' }).previousElementSibling).toBeNull()
   expect(await screen.findByText('没有本机模型')).toBeTruthy()
   await waitFor(() => expect(assistant.noteAsrDestinations).toHaveBeenCalledOnce())
   expect(assistant.asrRouteConfig).toHaveBeenCalled()
@@ -166,18 +193,241 @@ it('shows the ordinary-user ASR start entry on native notes without admin model 
   expect(assistant.asrPresets).not.toHaveBeenCalled()
 })
 
-it('shows ordinary-owner ASR task detail, retry and immutable history without admin settings', async () => {
+it('uses the task-list selection as the sole completed ASR choice for generation', async () => {
+  derived.sources.mockResolvedValue({ total: 1, offset: 0, items: [{ ...source, recordings: 1, totalSamples: 16000 }] })
+  assistant.noteAsrTasks.mockResolvedValue([succeededAsrTask])
+  page()
+  await chooseSource()
+
+  expect(await screen.findByText('已选用完整成功结果，可直接继续整理；如需其他结果可在任务列表中切换。')).toBeTruthy()
+  expect(screen.queryByText('先完成录音转写，再整理成完整记录和分析。')).toBeNull()
+  expect(screen.queryByRole('combobox', { name: '同版本已完成 ASR' })).toBeNull()
+  expect(screen.getByText('重新转写（可选）').closest('details')?.open).toBe(false)
+  const consent = screen.getByRole('checkbox', { name: /确认将上述材料发送至上方所选生成目标/ }) as HTMLInputElement
+  expect(consent.disabled).toBe(true)
+
+  await chooseDestination()
+  expect(consent.disabled).toBe(false)
+  await userEvent.click(consent)
+  await userEvent.click(screen.getByRole('button', { name: /生成完整记录与分析/ }))
+  await waitFor(() => expect(derived.start).toHaveBeenCalledOnce())
+  expect(derived.start.mock.calls[0]?.[0]).toEqual(expect.objectContaining({ asrTaskId: succeededAsrTask.taskId }))
+})
+
+it('requires fresh consent after switching ASR tasks away and back', async () => {
+  const secondSucceededAsrTask: NoteAsrTask = {
+    ...succeededAsrTask,
+    taskId: 'abababab-abab-4bab-8bab-abababababab',
+    totalSegments: 2,
+    completedSegments: 2,
+  }
+  derived.sources.mockResolvedValue({ total: 1, offset: 0, items: [{ ...source, recordings: 1, totalSamples: 16000 }] })
+  assistant.noteAsrTasks.mockResolvedValue([succeededAsrTask, secondSucceededAsrTask])
+  page()
+  await chooseSource()
+  await chooseDestination()
+
+  const consent = screen.getByRole('checkbox', { name: /确认将上述材料发送至上方所选生成目标/ }) as HTMLInputElement
+  const generate = screen.getByRole('button', { name: /生成完整记录与分析/ }) as HTMLButtonElement
+  expect(screen.getByRole('combobox', { name: '本次生成目标' }).textContent).toContain('合成共享目标')
+  expect(consent.disabled).toBe(false)
+  await userEvent.click(consent)
+  expect(consent.checked).toBe(true)
+  expect(generate.disabled).toBe(false)
+
+  await userEvent.click(screen.getByText(/^更多：转写任务与恢复/))
+  await userEvent.click(await screen.findByRole('button', { name: /2\/2 片/ }))
+  await userEvent.click(await screen.findByRole('button', { name: /1\/1 片/ }))
+
+  expect(consent.checked).toBe(false)
+  expect(generate.disabled).toBe(true)
+  expect(screen.getByRole('combobox', { name: '本次生成目标' }).textContent).toContain('合成共享目标')
+  expect(derived.start).not.toHaveBeenCalled()
+})
+
+it('updates the next step when an active ASR task becomes reusable', async () => {
+  derived.sources.mockResolvedValue({ total: 1, offset: 0, items: [{ ...source, recordings: 1, totalSamples: 16000 }] })
+  let currentAsrTasks = [runningAsrTask]
+  assistant.noteAsrTasks.mockImplementation(() => Promise.resolve(currentAsrTasks))
+  page()
+  await chooseSource()
+
+  expect(await screen.findByText('录音正在转写中；完成后可复用结果，也可以先查看任务进度。')).toBeTruthy()
+  expect(screen.queryByText('重新转写（可选）')).toBeNull()
+
+  currentAsrTasks = [succeededAsrTask]
+  await waitFor(() => expect(screen.getByText('已选用完整成功结果，可直接继续整理；如需其他结果可在任务列表中切换。')).toBeTruthy(), { timeout: 7000, interval: 50 })
+  expect(screen.getByText('重新转写（可选）').closest('details')?.open).toBe(false)
+  expect(screen.getByRole('status', { name: '当前转写任务摘要' }).textContent).toContain('转写完成')
+}, 10000)
+
+it('does not enable a new ASR start while the task list is pending or failed', async () => {
+  derived.sources.mockResolvedValue({ total: 1, offset: 0, items: [{ ...source, recordings: 1, totalSamples: 16000 }] })
+  assistant.noteAsrTasks.mockReturnValue(new Promise(() => undefined))
+  const pending = page()
+  await chooseSource()
+  expect(screen.queryByText('启动录音转写')).toBeNull()
+  pending.unmount()
+
+  assistant.noteAsrTasks.mockRejectedValue(new Error('任务读取失败'))
+  page()
+  await chooseSource()
+  expect(await screen.findByText('任务读取失败，请刷新核对；页面不会自动重发。')).toBeTruthy()
+  expect(screen.queryByText('启动录音转写')).toBeNull()
+})
+
+it('does not offer a duplicate transcription start while this version is queued or running', async () => {
+  derived.sources.mockResolvedValue({ total: 1, offset: 0, items: [{ ...source, recordings: 1, totalSamples: 16000 }] })
+  assistant.noteAsrTasks.mockResolvedValue([runningAsrTask])
+  page()
+  await chooseSource()
+
+  expect(await screen.findByText('录音正在转写中；完成后可复用结果，也可以先查看任务进度。')).toBeTruthy()
+  expect(await screen.findByRole('status', { name: '当前转写任务摘要' })).toBeTruthy()
+  expect(screen.queryByText('启动录音转写')).toBeNull()
+  expect(screen.queryByRole('heading', { name: /ASR 路由/ })).toBeNull()
+
+  await userEvent.click(screen.getByText(/^更多：转写任务与恢复/))
+  expect(await screen.findByRole('button', { name: /0\/1 片/ })).toBeTruthy()
+  expect(screen.queryByText('启动录音转写')).toBeNull()
+  expect(assistant.noteAsrStart).not.toHaveBeenCalled()
+})
+
+it('does not authorize generation from a succeeded ASR task with failed segments', async () => {
+  derived.sources.mockResolvedValue({ total: 1, offset: 0, items: [{ ...source, recordings: 1, totalSamples: 16000 }] })
+  assistant.noteAsrTasks.mockResolvedValue([inconsistentSucceededAsrTask])
+  page()
+  await chooseSource()
+  await chooseDestination()
+
+  expect(await screen.findByText(/请在转写任务列表中选择本版本完整成功的结果/)).toBeTruthy()
+  expect((screen.getByRole('checkbox', { name: /确认将上述材料发送至上方所选生成目标/ }) as HTMLInputElement).disabled).toBe(true)
+  expect((screen.getByRole('button', { name: /生成完整记录与分析/ }) as HTMLButtonElement).disabled).toBe(true)
+  expect(derived.start).not.toHaveBeenCalled()
+})
+
+it('clears an ASR selection when switching to a different material version', async () => {
+  const otherVersionId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+  derived.sources.mockResolvedValue({ total: 2, offset: 0, items: [
+    { ...source, recordings: 1, totalSamples: 16000 },
+    { ...source, versionId: otherVersionId, title: '另一版录音', recordings: 1, totalSamples: 16000, isCurrent: false },
+  ] })
+  assistant.noteAsrTasks.mockResolvedValue([succeededAsrTask])
+  page()
+  await chooseSource()
+  await userEvent.click(screen.getByText(/^更多：转写任务与恢复/))
+  await userEvent.click(await screen.findByRole('button', { name: /1\/1 片/ }))
+  await chooseDestination()
+  expect((screen.getByRole('checkbox', { name: /确认将上述材料发送至上方所选生成目标/ }) as HTMLInputElement).disabled).toBe(false)
+
+  await userEvent.click(screen.getByRole('combobox', { name: '材料版本' }))
+  await userEvent.click(await screen.findByRole('option', { name: /另一版录音/ }))
+  expect(await screen.findByText(/请在转写任务列表中选择本版本完整成功的结果/)).toBeTruthy()
+  expect((screen.getByRole('checkbox', { name: /确认将上述材料发送至上方所选生成目标/ }) as HTMLInputElement).disabled).toBe(true)
+})
+
+it('keeps the current ASR summary visible and collapses task recovery by default', async () => {
   derived.sources.mockResolvedValue({ total: 1, offset: 0, items: [{ ...source, recordings: 1, totalSamples: 16000 }] })
   assistant.noteAsrTasks.mockResolvedValue([asrTask])
   page()
   await chooseSource()
-  expect(await screen.findByText('本版本录音转写任务')).toBeTruthy()
-  await userEvent.click(await screen.findByRole('button', { name: /synthetic-asr|synthetic\.invalid/ }))
+  expect(await screen.findByText(/更多：转写任务与恢复 · 1 项/)).toBeTruthy()
+  const taskSummary = await screen.findByRole('status', { name: '当前转写任务摘要' })
+  const startPanel = screen.getByText('启动录音转写')
+  expect(taskSummary.compareDocumentPosition(startPanel) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  const disclosure = screen.getByText(/^更多：转写任务与恢复/).closest('details')
+  expect(disclosure?.open).toBe(false)
+  expect(screen.getByText('逐片进度与恢复').closest('details')).toBe(disclosure)
+  await userEvent.click(screen.getByText(/^更多：转写任务与恢复/))
+  expect(disclosure?.open).toBe(true)
+  expect(await screen.findByRole('status', { name: '当前转写任务摘要' })).toBeTruthy()
+  await userEvent.click(await screen.findByRole('button', { name: /0\/1 片/ }))
   expect(await screen.findByText('逐片进度与恢复')).toBeTruthy()
   expect(await screen.findByText('重处理（显式确认）')).toBeTruthy()
   expect(await screen.findByText('重处理历史（不可变）')).toBeTruthy()
   expect(assistant.models).not.toHaveBeenCalled()
   expect(assistant.asrPresets).not.toHaveBeenCalled()
+})
+
+it('presents transcription before generation and keeps nonessential controls collapsed', async () => {
+  derived.sources.mockResolvedValue({ total: 1, offset: 0, items: [{ ...source, recordings: 1, totalSamples: 16000 }] })
+  assistant.asrRouteConfig.mockResolvedValue({
+    cloudConfigured: true, cloudModelId: destinationId, consentVersion: 'consent-1', defaultRoute: 'cloud-asr',
+    localModelId: null, localModelRevision: null, revision: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', updatedAt: '2026-10-29T00:00:00Z',
+  })
+  assistant.noteAsrDestinations.mockResolvedValue({ total: 1, items: [{ ...destination, presetId: 'standard-asr', presetVersion: 'v1' }] })
+  page()
+  await chooseSource()
+  const ordered = await screen.findAllByRole('heading', { name: /先完成录音转写|整理并生成/ })
+  expect(ordered.map((heading) => heading.textContent)).toEqual(['1 · 先完成录音转写', '2 · 整理并生成'])
+  expect(screen.getByRole('button', { name: '确认创建云端任务' })).toBeTruthy()
+  expect(screen.getByRole('combobox', { name: '执行位置' }).closest('details')).toBeNull()
+  expect(screen.getByRole('checkbox', { name: '确认创建录音转写任务' })).toBeTruthy()
+  expect(screen.queryByRole('combobox', { name: '执行方式' })).toBeNull()
+  const options = screen.getByText('高级选项：识别语言').closest('details')
+  expect(options?.open).toBe(false)
+  expect(screen.getByRole('combobox', { name: '执行位置' }).closest('details')).toBeNull()
+  const consentSummary = screen.getByRole('group', { name: '本次转写执行位置、目标与费用' })
+  expect(consentSummary.textContent).toContain('云端 · 实时')
+  expect(consentSummary.textContent).toContain('合成共享目标 · synthetic-vision-text')
+  expect(consentSummary.textContent).toContain('当前固定版本的全部录音')
+  expect(consentSummary.textContent).toContain('音频将离开本机')
+  expect(consentSummary.textContent).toContain('现金费用')
+  expect(screen.getByRole('checkbox', { name: '确认创建录音转写任务' }).getAttribute('aria-checked')).toBe('false')
+  expect(assistant.noteAsrStart).not.toHaveBeenCalled()
+  expect(options?.contains(screen.getByRole('combobox', { name: '识别语言' }))).toBe(true)
+  await userEvent.click(screen.getByText('高级选项：识别语言'))
+  expect(options?.open).toBe(true)
+})
+
+  it('keeps the selected task summary visible while history and controls stay collapsed', async () => {
+    derived.tasks.mockResolvedValue([task])
+    derived.task.mockResolvedValue(task)
+    page()
+    await chooseSource()
+    await userEvent.click(await screen.findByRole('button', { name: /材料覆盖完整/ }))
+    expect(await screen.findByRole('status', { name: '当前整理任务摘要' })).toBeTruthy()
+    const history = screen.getByText(/更多：历史任务与处理进度/).closest('details')
+    const controls = screen.getByText(/更多：任务详情、停止与恢复/).closest('details')
+    expect(history?.open).toBe(false)
+    expect(controls?.open).toBe(false)
+    expect(screen.getByRole('button', { name: /停止后续步骤/ }).closest('details')).toBe(controls)
+    await userEvent.click(screen.getByText(/更多：任务详情、停止与恢复/))
+    expect(controls?.open).toBe(true)
+    expect(await screen.findByRole('button', { name: /停止后续步骤/ })).toBeTruthy()
+  })
+
+it('preselects the linked material version and preserves it in the return-to-note link', async () => {
+  window.history.replaceState({}, '', `/native-notes/processing?version=${sourceVersionId}&from=processing`)
+  page()
+  const sourcePicker = await screen.findByRole('combobox', { name: '材料版本' })
+  expect(sourcePicker.textContent).toContain('零录音材料')
+  expect(await screen.findByRole('heading', { name: '1 · 整理并生成' })).toBeTruthy()
+  expect(screen.getByRole('link', { name: '返回所选笔记' }).getAttribute('href')).toBe(`/native-notes?version=${sourceVersionId}&from=processing`)
+})
+
+it('consumes note and action context, selects its current version and focuses the requested next step', async () => {
+  const scrollIntoView = vi.spyOn(HTMLElement.prototype, 'scrollIntoView')
+  window.history.replaceState({}, '', `/native-notes/processing?noteId=${noteId}&action=organize`)
+  page()
+  const sourcePicker = await screen.findByRole('combobox', { name: '材料版本' })
+  expect(sourcePicker.textContent).toContain('零录音材料')
+  expect(await screen.findByRole('heading', { name: '1 · 整理并生成' })).toBeTruthy()
+  await waitFor(() => expect(scrollIntoView).toHaveBeenCalledWith({ block: 'start' }))
+  await waitFor(() => expect(screen.getByRole('link', { name: '返回所选笔记' }).getAttribute('href')).toBe(`/native-notes?noteId=${noteId}&version=${sourceVersionId}`))
+})
+
+it('finds a linked material version beyond the first page', async () => {
+  const olderVersions = Array.from({ length: 20 }, (_, index) => ({
+    ...source, versionId: `00000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`, title: `较早笔记 ${index + 1}`,
+  }))
+  derived.sources.mockImplementation((offset: number) => Promise.resolve(offset === 0
+    ? { total: 21, offset, items: olderVersions }
+    : { total: 21, offset, items: [source] }))
+  window.history.replaceState({}, '', `/native-notes/processing?version=${sourceVersionId}`)
+  page()
+  expect(await screen.findByRole('heading', { name: '1 · 整理并生成' })).toBeTruthy()
+  expect(derived.sources).toHaveBeenCalledWith(20, expect.any(AbortSignal))
 })
 
 it('renders a nullable local task without touching destination fields or admin settings', async () => {
@@ -186,19 +436,34 @@ it('renders a nullable local task without touching destination fields or admin s
   assistant.noteAsrTask.mockResolvedValue(localAsrTask)
   page()
   await chooseSource()
-  expect(await screen.findByText('本机执行 · 未发送云端')).toBeTruthy()
-  await userEvent.click(await screen.findByRole('button', { name: /本机执行/ }))
+  expect(await screen.findByText(/更多：转写任务与恢复/)).toBeTruthy()
+  await userEvent.click(screen.getByText(/^更多：转写任务与恢复/))
+  await userEvent.click(await screen.findByRole('button', { name: /0\/1 片/ }))
+  expect(await screen.findByText('本机排队转写 · 未发送云端')).toBeTruthy()
   expect(await screen.findByText('逐片进度与恢复')).toBeTruthy()
-  expect(screen.getByText(/本任务发送目标：本机执行/)).toBeTruthy()
+  expect(screen.queryByText(/本任务发送目标/)).toBeNull()
   expect(assistant.models).not.toHaveBeenCalled()
 })
 
 it('requires exact destination consent and creates with a persisted UUID intent', async () => {
+  derived.tasks.mockImplementation(() => Promise.resolve(derived.start.mock.calls.length ? [task] : []))
   page(); await chooseSource(); await chooseDestination()
-  const checkbox = screen.getByRole('checkbox', { name: /确认将固定版本的完整正文/ })
+  const disclosure = screen.getByRole('group', { name: '本次生成目标、材料范围与费用' })
+  expect(disclosure.textContent).toContain('本次目标：合成共享目标 · synthetic-vision-text')
+  expect(disclosure.textContent).toContain('固定版本的完整正文、照片和手写渲染图')
+  expect(disclosure.textContent).toContain('可能产生服务商费用')
+  expect(disclosure.textContent).toContain('不会自动创建或自动付费')
+  expect(disclosure.closest('details')).toBeNull()
+  expect(screen.getByRole('combobox', { name: '本次生成目标' }).closest('details')).toBeNull()
+  expect(screen.queryByRole('combobox', { name: '同版本已完成 ASR' })).toBeNull()
+  expect(screen.getByText('诊断与高级限制').closest('details')?.open).toBe(false)
+  expect(screen.getByText(`服务地址：${destination.endpoint}`).closest('details')?.open).toBe(false)
+  const checkbox = screen.getByRole('checkbox', { name: /确认将上述材料发送至上方所选生成目标/ })
+  expect(checkbox.closest('details')).toBeNull()
   expect((checkbox as HTMLInputElement).disabled).toBe(false)
+  const taskListReadsBeforeStart = derived.tasks.mock.calls.length
   await userEvent.click(checkbox)
-  await userEvent.click(screen.getByRole('button', { name: /创建派生任务/ }))
+  await userEvent.click(screen.getByRole('button', { name: /生成完整记录与分析/ }))
   await waitFor(() => expect(derived.start).toHaveBeenCalledOnce())
   const body = derived.start.mock.calls[0]?.[0]
   expect(body).toEqual(expect.objectContaining({
@@ -206,7 +471,13 @@ it('requires exact destination consent and creates with a persisted UUID intent'
     consent: { modelId: destinationId, modelRevision: destinationRevision, endpoint: destination.endpoint, confirmed: true },
   }))
   expect(body.taskId).toMatch(/^[0-9a-f-]{36}$/)
-  await screen.findByText('任务步骤与覆盖')
+  expect(await screen.findByRole('status', { name: '当前整理任务摘要' })).toBeTruthy()
+  expect(derived.tasks.mock.calls.length).toBeGreaterThan(taskListReadsBeforeStart)
+  expect(screen.getByRole('status', { name: '当前整理任务摘要' }).textContent).toContain('整理进度：等待处理')
+  const detailDisclosure = screen.getByText(/更多：任务详情、停止与恢复/).closest('details')
+  expect(detailDisclosure?.open).toBe(false)
+  await userEvent.click(screen.getByText(/更多：任务详情、停止与恢复/))
+  expect(await screen.findByRole('heading', { name: '当前任务进度' })).toBeTruthy()
 })
 
 it('shows generated candidates and requires an explicit head selection before manual editing', async () => {
@@ -215,6 +486,9 @@ it('shows generated candidates and requires an explicit head selection before ma
   expect(await screen.findByText('完整记录')).toBeTruthy()
   expect(await screen.findByText('等待明确选择')).toBeTruthy()
   await waitFor(() => expect(derived.version).toHaveBeenCalled())
+  const history = screen.getByText('高级选项：版本历史与处理详情')
+  expect(history.closest('details')?.open).toBe(false)
+  await userEvent.click(history)
   await userEvent.click(await screen.findByRole('button', { name: '明确设为当前版本' }))
   await waitFor(() => expect(derived.select).toHaveBeenCalledWith(artifactId, expect.objectContaining({ expectedHeadRevision: artifact.revision, versionId })))
 })

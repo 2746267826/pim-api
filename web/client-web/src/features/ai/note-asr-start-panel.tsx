@@ -77,6 +77,9 @@ export function NoteAsrStartPanel({ userId, serverBinding, versionId, onCreated 
   const languageOptions = (selectedDestination?.languages ?? ['auto', 'zh', 'en'])
     .map((value) => ({ value, label: languageNames[value] ?? value }))
   const cloudInvalid = Boolean(config.data?.cloudModelId) && !savedDestination
+  const executionLabel = effectiveRoute === 'cloud'
+    ? selectedExecutionMode === 'batch' ? '云端 · Batch 闲时' : '云端 · 实时'
+    : localConfigured ? '本机队列' : '本机 · 未配置模型'
 
   useEffect(() => {
     setIntentState(loadNoteAsrStartIntent(userId, serverBinding, versionId))
@@ -376,7 +379,27 @@ export function NoteAsrStartPanel({ userId, serverBinding, versionId, onCreated 
       <h3 className="text-sm font-semibold text-text-1">启动录音转写</h3>
       <p className="mt-1 break-words text-xs text-text-3">只为当前固定材料版本创建新任务。本机不可用时保持排队且不会自动改用云端；云端执行必须单独确认出域与费用。旧任务和结果不会覆盖。</p>
     </div>
-    <div><Label htmlFor="note-asr-start-route">执行位置</Label>
+    <div role="group" aria-label="本次转写执行位置、目标与费用" className="space-y-2 rounded-ctl border border-border bg-surface p-3 text-xs leading-5 text-text-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="font-medium text-text-1">当前执行位置</span>
+        <StatusBadge size="xs" dot={false} tone={effectiveRoute === 'cloud' ? 'warn' : localConfigured ? 'ok' : 'warn'}>{executionLabel}</StatusBadge>
+      </div>
+      <p>发送范围：当前固定版本的全部录音。</p>
+      {effectiveRoute === 'cloud' && savedDestination && <>
+        <p className="break-words">目标：{savedDestination.displayName} · {savedDestination.model}</p>
+        <p className="font-medium text-warn">音频将离开本机；服务商可能按成功请求或 Token 收取现金费用。</p>
+      </>}
+      {effectiveRoute === 'cloud' && !savedDestination && <InlineAlert tone="warn" title={cloudInvalid ? '已保存云端目标失效' : '云端尚未配置'}>
+        {cloudInvalid ? '保存的云端模型不在当前共享目录中；本页不会改用其他目标。请先联系管理员重新启用共享目标，或在本机客户端注册模型后改选本机。' : '管理员尚未提供可用云端目标；不会自动回退到本机。请先联系管理员启用共享目标，或在本机客户端注册模型后改选本机。'}
+      </InlineAlert>}
+      {effectiveRoute === 'local' && (localConfigured
+        ? <p className="font-medium text-text-1">音频只在本机处理，不会发送到云端，也不会产生云端服务商费用。</p>
+        : <InlineAlert tone="warn" title="没有本机模型">
+          当前账号尚未保存本机 ASR 模型；可先联系管理员启用云端共享目标，或由本机客户端注册模型后重新开始。
+        </InlineAlert>)}
+    </div>
+    <div className="max-w-sm">
+      <Label htmlFor="note-asr-start-route">转写方式</Label>
         <Select id="note-asr-start-route" ariaLabel="执行位置" value={route} disabled={busy || Boolean(intent) || Boolean(batchIntent) || Boolean(blockedIntent)}
         options={[
           { value: 'default', label: effectiveRoute === 'cloud' ? '按当前默认路由（云端）' : '按当前默认路由（本机）' },
@@ -392,39 +415,33 @@ export function NoteAsrStartPanel({ userId, serverBinding, versionId, onCreated 
           setError('')
         }} />
     </div>
-    {supportsBatch && <div className="max-w-sm"><Label htmlFor="note-asr-start-execution-mode">执行方式</Label>
-      <Select id="note-asr-start-execution-mode" ariaLabel="执行方式" value={executionMode}
-        disabled={busy || Boolean(intent) || Boolean(batchIntent) || Boolean(blockedIntent)}
-        options={[{ value: 'realtime', label: '实时云端转写' }, { value: 'batch', label: 'MiMo Batch 闲时批量（预览）' }]}
-        onValueChange={(value) => {
-          setExecutionMode(value as 'realtime' | 'batch')
-          setConfirmed(false)
-          setBatchConfirmed(false)
-          setNotice('')
-          setError('')
-        }} />
-      <p className="mt-1 text-xs leading-5 text-text-3">Batch 只提交已冻结的多模态任务，可能等待数小时；没有供应商任务标识时保持 UNKNOWN 并人工核对。</p>
-    </div>}
-    {effectiveRoute === 'local' && (localConfigured
-      ? <InlineAlert tone="info" title="本机执行">
-        任务保存后在本机队列执行，不发送云端、不需要云端凭据；本机离线时保持排队，不会自动切换云端。
-      </InlineAlert>
-      : <InlineAlert tone="warn" title="没有本机模型">
-        当前账号尚未保存本机 ASR 模型；请选择云端目标，或由本机客户端注册模型后重新开始。
-      </InlineAlert>)}
-    {effectiveRoute === 'cloud' && (savedDestination
-      ? <div className="space-y-2 rounded-ctl border border-border p-3 text-xs text-text-2">
-        <p className="break-words">目标：{savedDestination.displayName} · {savedDestination.model}</p>
-        <p className="break-all font-mono text-text-3">{savedDestination.endpoint}</p>
-        <p>预设 {savedDestination.presetId} v{savedDestination.presetVersion}。音频将离开本机并产生可能的服务商费用。</p>
+    {supportsBatch && <details className="rounded-ctl border border-border px-3 py-2 text-sm text-text-2">
+      <summary className="cursor-pointer font-medium">更多：批量转写选项</summary>
+      <div className="mt-3 max-w-sm"><Label htmlFor="note-asr-start-execution-mode">执行方式</Label>
+        <Select id="note-asr-start-execution-mode" ariaLabel="执行方式" value={executionMode}
+          disabled={busy || Boolean(intent) || Boolean(batchIntent) || Boolean(blockedIntent)}
+          options={[{ value: 'realtime', label: '实时云端转写' }, { value: 'batch', label: 'MiMo Batch 闲时批量（预览）' }]}
+          onValueChange={(value) => {
+            setExecutionMode(value as 'realtime' | 'batch')
+            setConfirmed(false)
+            setBatchConfirmed(false)
+            setNotice('')
+            setError('')
+          }} />
+        <p className="mt-1 text-xs leading-5 text-text-3">Batch 只提交已冻结的多模态任务，可能等待数小时；没有供应商任务标识时保持 UNKNOWN 并人工核对。</p>
       </div>
-      : <InlineAlert tone="warn" title={cloudInvalid ? '已保存云端目标失效' : '云端尚未配置'}>
-        {cloudInvalid ? '保存的云端模型不在当前共享目录中；本页不会改用其他目标。' : '管理员尚未提供可用云端目标；不会自动回退到本机。'}
-      </InlineAlert>)}
+    </details>}
     {blockedIntent && <InlineAlert tone="crit" title="原提交状态无法确认">{blockedIntent}</InlineAlert>}
-    <div className="max-w-sm"><Label htmlFor="note-asr-start-language">识别语言</Label>
-      <Select id="note-asr-start-language" ariaLabel="识别语言" value={language} options={languageOptions}
-        disabled={busy || Boolean(intent) || Boolean(blockedIntent)} onValueChange={(value) => { setLanguage(value); setConfirmed(false) }} /></div>
+    <details className="rounded-ctl border border-border px-3 py-2 text-sm text-text-2">
+      <summary className="cursor-pointer font-medium">高级选项：识别语言</summary>
+      <div className="mt-3 max-w-sm"><Label htmlFor="note-asr-start-language">识别语言</Label>
+        <Select id="note-asr-start-language" ariaLabel="识别语言" value={language} options={languageOptions}
+          disabled={busy || Boolean(intent) || Boolean(blockedIntent)} onValueChange={(value) => { setLanguage(value); setConfirmed(false) }} /></div>
+    </details>
+    {effectiveRoute === 'cloud' && savedDestination && <details className="rounded-ctl border border-border px-3 py-2 text-xs text-text-3">
+      <summary className="cursor-pointer">诊断与服务地址</summary>
+      <p className="mt-2 break-all font-mono">{savedDestination.endpoint}</p>
+    </details>}
     {intent ? <div className="space-y-2 rounded-ctl border border-warn-border bg-warn-soft p-3 text-xs text-text-2">
       <p className="break-all">已冻结原任务标识：<span className="font-mono">{intent.taskId}</span>。目标与原因不可在核对前静默更改。</p>
       <div className="flex flex-wrap gap-2">
@@ -445,10 +462,10 @@ export function NoteAsrStartPanel({ userId, serverBinding, versionId, onCreated 
         <Checkbox ariaLabel="确认创建录音转写任务" checked={confirmed} disabled={!targetReady || busy || Boolean(blockedIntent)}
           onCheckedChange={(value) => { setConfirmed(value); if (!value) setBatchConfirmed(false) }} />
         <span>{batchReady
-          ? '确认将固定版本录音发送至上述 MiMo 多模态目标作为整批请求，理解闲时调度、长等待、可能仅部分成功与现金费用'
+          ? '确认将上述当前固定版本全部录音发送至上方所列 MiMo 多模态目标作为整批请求，理解闲时调度、长等待、可能仅部分成功与现金费用'
           : effectiveRoute === 'local'
-          ? '确认按当前本机配置创建转写任务；本机不可用时只排队，不会自动切换到云端'
-          : '确认将当前版本录音发送至上述云端目标，理解可能的新费用与长等待'}</span>
+          ? '确认按上方执行位置创建本机转写任务；音频不发送云端，本机不可用时只排队'
+          : '确认将上述当前固定版本全部录音发送至上方所列云端目标，理解音频出域与可能产生的服务商费用'}</span>
       </label>
       {batchReady && <label className="flex items-start gap-2 text-xs text-text-2">
         <Checkbox ariaLabel="确认Batch整批范围与现金计费" checked={batchConfirmed} disabled={!confirmed || busy || Boolean(blockedIntent)}

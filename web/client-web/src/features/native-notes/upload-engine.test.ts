@@ -39,6 +39,15 @@ function remoteFrom(bundle: Awaited<ReturnType<typeof buildMaterialBundle>>, par
   } satisfies NoteMaterialUpload
 }
 
+function completeReceipt(bundle: Awaited<ReturnType<typeof buildMaterialBundle>>, partSize: number) {
+  const receipt = remoteFrom(bundle, partSize)
+  receipt.phase = 'Uploaded'
+  receipt.files.forEach((file) => {
+    file.uploadedParts = Array.from({ length: file.partCount }, (_, part) => part)
+  })
+  return receipt
+}
+
 describe('native note upload engine', () => {
   it('resumes from server-recorded parts and posts exact binary hashes before completion', async () => {
     const bundle = await buildMaterialBundle({
@@ -53,7 +62,7 @@ describe('native note upload engine', () => {
     })
     const partSize = 8
     const uploading = remoteFrom(bundle, partSize, [0])
-    const completed = { ...uploading, phase: 'Uploaded', isCurrent: true }
+    const completed = { ...completeReceipt(bundle, partSize), isCurrent: true }
     const api = {
       begin: vi.fn(async () => uploading),
       uploadPart: vi.fn(async (
@@ -148,6 +157,179 @@ describe('native note upload engine', () => {
     await expect(uploadMaterialBundle(bundle, partsApi, { storageConsent: true }))
       .rejects.toThrow('服务器返回的分块数与本地固定文件不一致')
     expect(partsApi.uploadPart).not.toHaveBeenCalled()
+  })
+
+  it('rejects a clone receipt that omits any source attachment', async () => {
+    const photoBytes = new Uint8Array([9, 8, 7, 6])
+    const bundle = await buildMaterialBundle({
+      versionId,
+      noteId,
+      baseVersionId: versionId,
+      revision: 1,
+      title: '续写附件校验',
+      noteCreatedAtMillis: 1,
+      createdAtMillis: 2,
+      blocks: [
+        { id: '33333333-3333-4333-8333-333333333333', kind: 'markdown', text: '正文' },
+        {
+          id: '44444444-4444-4444-8444-444444444444',
+          kind: 'photo',
+          assetId: '55555555-5555-4555-8555-555555555555',
+          mimeType: 'image/png',
+          bytes: photoBytes,
+        },
+      ],
+    })
+    const incomplete = remoteFrom(bundle, 1024)
+    const omitted = bundle.files.findIndex((file) => file.kind === 'Photo')
+    incomplete.files.splice(omitted, 1)
+    incomplete.files.forEach((file, index) => { file.index = index })
+    const api = {
+      begin: vi.fn(async () => incomplete),
+      clone: vi.fn(async () => incomplete),
+      uploadPart: vi.fn(async () => 'ok'),
+      complete: vi.fn(async () => incomplete),
+    } satisfies NoteMaterialUploadApi
+
+    await expect(uploadMaterialBundle(bundle, api, {
+      storageConsent: true,
+      cloneSourceVersionId: versionId,
+      expectedCurrentVersionId: versionId,
+    })).rejects.toThrow('服务器返回的材料文件数量与本地固定清单不一致')
+    expect(api.uploadPart).not.toHaveBeenCalled()
+    expect(api.complete).not.toHaveBeenCalled()
+  })
+
+  it('rejects a clone receipt that does not confirm every preserved source chunk', async () => {
+    const recordingId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    const recording = {
+      id: recordingId,
+      noteId,
+      schemaVersion: 1,
+      currentSegment: 1,
+      phase: 'Completed',
+      createdAtMillis: 1,
+      chunks: [{ segment: 1, index: 1, samples: 1 }],
+    }
+    const recordingBytes = new TextEncoder().encode(JSON.stringify(recording))
+    const bundle = await buildMaterialBundle({
+      versionId,
+      noteId,
+      baseVersionId: versionId,
+      revision: 1,
+      title: '续写分块校验',
+      noteCreatedAtMillis: 1,
+      createdAtMillis: 2,
+      blocks: [{ id: '33333333-3333-4333-8333-333333333333', kind: 'markdown', text: '正文' }],
+      recordings: [recording],
+      preservedRecordings: [recording],
+      preservedFiles: [
+        {
+          path: `recordings/${recordingId}/manifest.json`,
+          kind: 'RecordingManifest',
+          sha256: await sha256Hex(recordingBytes),
+          sizeBytes: recordingBytes.length,
+          recordingId,
+        },
+        {
+          path: `recordings/${recordingId}/s0001-c000001.wav`,
+          kind: 'AudioChunk',
+          sha256: 'a'.repeat(64),
+          sizeBytes: 46,
+          recordingId,
+          segment: 1,
+          chunkIndex: 1,
+          samples: 1,
+        },
+      ],
+      preserveSourceFiles: true,
+    })
+    const audioChunk = bundle.files.find((file) => file.kind === 'AudioChunk')!
+    audioChunk.preserved = true
+    const incomplete = remoteFrom(bundle, 1024)
+    incomplete.files.forEach((file, index) => {
+      if (bundle.files[index]?.kind === 'RecordingManifest') file.uploadedParts = [0]
+    })
+    const api = {
+      begin: vi.fn(async () => incomplete),
+      clone: vi.fn(async () => incomplete),
+      uploadPart: vi.fn(async () => 'ok'),
+      complete: vi.fn(async () => incomplete),
+    } satisfies NoteMaterialUploadApi
+
+    await expect(uploadMaterialBundle(bundle, api, {
+      storageConsent: true,
+      cloneSourceVersionId: versionId,
+      expectedCurrentVersionId: versionId,
+    })).rejects.toThrow(`服务器未确认完整复用原材料：${audioChunk.path}`)
+    expect(api.uploadPart).not.toHaveBeenCalled()
+    expect(api.complete).not.toHaveBeenCalled()
+  })
+
+  it('rejects recovery state whose source base version differs from the frozen intent', async () => {
+    const bundle = await buildMaterialBundle({
+      versionId,
+      noteId,
+      baseVersionId: versionId,
+      revision: 1,
+      title: '恢复基版本校验',
+      noteCreatedAtMillis: 1,
+      createdAtMillis: 2,
+      blocks: [{ id: '33333333-3333-4333-8333-333333333333', kind: 'markdown', text: '正文' }],
+    })
+    const differentBase = remoteFrom(bundle, 1024)
+    differentBase.baseVersionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    const cloneFailure = new Error('clone request timed out')
+    const api = {
+      begin: vi.fn(async () => differentBase),
+      clone: vi.fn(async () => { throw cloneFailure }),
+      version: vi.fn(async () => ({
+        inputJson: bundle.inputJson,
+        manifestJson: bundle.manifestJson,
+        upload: differentBase,
+      })),
+      uploadPart: vi.fn(async () => 'ok'),
+      complete: vi.fn(async () => differentBase),
+    } satisfies NoteMaterialUploadApi
+
+    await expect(uploadMaterialBundle(bundle, api, {
+      storageConsent: true,
+      cloneSourceVersionId: versionId,
+      expectedCurrentVersionId: versionId,
+    })).rejects.toThrow('clone request timed out')
+    expect(api.version).toHaveBeenCalledWith(versionId, undefined)
+    expect(api.uploadPart).not.toHaveBeenCalled()
+    expect(api.complete).not.toHaveBeenCalled()
+  })
+
+  it('rejects a clone whose confirmed terminal receipt has a missing file or chunk', async () => {
+    const bundle = await buildMaterialBundle({
+      versionId,
+      noteId,
+      baseVersionId: versionId,
+      revision: 1,
+      title: '终态回执校验',
+      noteCreatedAtMillis: 1,
+      createdAtMillis: 2,
+      blocks: [{ id: '33333333-3333-4333-8333-333333333333', kind: 'markdown', text: '正文' }],
+    })
+    const incomplete = remoteFrom(bundle, 1024)
+    incomplete.phase = 'Uploaded'
+    incomplete.files[0]!.uploadedParts = []
+    const api = {
+      begin: vi.fn(async () => incomplete),
+      clone: vi.fn(async () => incomplete),
+      uploadPart: vi.fn(async () => 'ok'),
+      complete: vi.fn(async () => incomplete),
+    } satisfies NoteMaterialUploadApi
+
+    await expect(uploadMaterialBundle(bundle, api, {
+      storageConsent: true,
+      cloneSourceVersionId: versionId,
+      expectedCurrentVersionId: versionId,
+    })).rejects.toThrow('服务器完成回执未确认全部材料分块：note.json')
+    expect(api.uploadPart).not.toHaveBeenCalled()
+    expect(api.complete).not.toHaveBeenCalled()
   })
 
   it('requires explicit server-storage consent before the first request', async () => {
