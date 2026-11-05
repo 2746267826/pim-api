@@ -255,15 +255,20 @@ describe('NativeNotesPage', () => {
     expect(collection?.items.some((item) => item.to === '/quick-notes')).toBe(false)
   })
 
-  it('keeps import and legacy conversion collapsed outside the daily workspace', async () => {
+  it('keeps daily note actions primary and labels offline restore as optional', async () => {
     page()
     await screen.findByText('课堂笔记')
+    expect(screen.getByRole('button', { name: /新建笔记/ })).toBeTruthy()
+    expect(screen.getByRole('textbox', { name: '搜索笔记标题' })).toBeTruthy()
     const more = screen.getByText(/更多：旧记录与导入/).closest('details')
     expect(more?.open).toBe(false)
 
     await userEvent.click(screen.getByText(/更多：旧记录与导入/))
     expect(more?.open).toBe(true)
     expect(screen.getByText('旧快速记录')).toBeTruthy()
+    expect(screen.getByRole('heading', { name: '从 Android 导入' })).toBeTruthy()
+    expect(screen.getByText(/云端笔记会直接显示在笔记列表中，无需导入/)).toBeTruthy()
+    expect(screen.getByText(/仅用于可选的 Android 文件交换或备份恢复/)).toBeTruthy()
     expect(screen.getByRole('button', { name: '选择笔记包' })).toBeTruthy()
     expect(screen.getByText(/不会自动合并、覆盖或删除旧记录/)).toBeTruthy()
   })

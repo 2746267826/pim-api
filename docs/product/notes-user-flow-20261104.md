@@ -1,10 +1,14 @@
-# 笔记主流程推进记录（2026-11-04）
+# 笔记主流程推进记录（2026-11-04；11/5收口）
+
+本记录保留该批次的本地 UI 验证。后续契约集成、Android 接入与原始材料兼容修复以 [11/5 续篇](notes-continuation-20261105.md) 为准。
+
+更新时间：2026-11-05（11/5收口）。
 
 ## 本轮目标
 
 把日常笔记路径收敛为：从笔记库发现并打开笔记，编辑正文并保存；有音频时先转写再整理，无音频时直接整理正文及支持的图片材料。高级配置默认折叠，但发送目标、材料范围、可能费用和授权信息在确认前常驻可见。
 
-本轮包括 API/Web 与 Android 的开发；Windows 未实施。以下只记录当前可复核进度，不把局部测试、PR 创建或 CI 状态当作跨端、生产或发布验收。
+本轮包括 API/Web 与 Android 的开发；Windows 未实施。以下只记录当前可复核进度，不把局部测试、PR 创建或 CI 状态当作跨端、生产或发布验收。当前 Web worktree branch `codex-win/notes-user-flow-20261104` HEAD `302210428b471e5add970988d2b7f32c10ab98c4`；页面/测试 UX 改动尚未提交，本轮不提交。
 
 ## 接受标准
 
@@ -17,8 +21,8 @@
 ## 当前进度
 
 - **API/契约**：材料定向测试 26/26；Test Swagger HTTP 200；官方 Web `update-contract` 与 `check-contract` 通过。有界 Notes+Contract 回归为 438 total / 330 passed / 108 skipped / 0 failed / 0 timeout；108 skipped 不计 PASS。该回归只证明对应锁定源码范围。
-- **Web**：当前本地 head `d30076bc`；ASR/Derived 两个 UX 测试文件 37/37 通过，`npm run build` PASS。构建 warnings 包括 `__dirname`、>500KB chunks、`INEFFECTIVE_DYNAMIC_IMPORT`。Chrome 已进入 React 页面并显示正文、录音保全提示及“转写录音”按钮；首轮流程因 runner 断言陈旧而未通过，QA 代理正在仅修 runner，综合浏览器验收仍 NOT-VERIFIED。
-- **Android**：Draft PR [#70](https://github.com/2746267826/pim-android/pull/70)，当前 head `3f6b1d4`。Android Studio JDK、已安装 Android SDK、Gradle 8.14 环境下 `:app:testDebugUnitTest --no-daemon --stacktrace` 完整重跑通过：193 XML / 2256 tests，0 failures、0 errors、0 skipped；`:app:compileDebugKotlin` 通过，契约生成物一致。此前曾汇总 14 项失败，当时没有 XML；精确 head 重跑未复现，旧失败原因未知。ADB 可读取设备列表但没有连接设备，因此 connected UI 仍 NOT-VERIFIED。正常跨端发现、完整材料恢复、续写与冲突处理仍未整体验收。
+- **Web**：当前未提交 UX 改动让处理页按零录音/进行中/失败/成功状态自适应提示，并修复任务列表与生成表单重复选择；笔记库将旧记录/离线包移至默认折叠“更多”，明确云端列表无需导入。focused 两文件共 `49/49`（derived `23/23`、native `26/26`），真实 5 秒轮询状态转移及 A→B→A 授权复位回归通过；`npm run build`、四份源码/测试的局部 `npm run lint --` 通过，保留 2 条既有 React warning，`git diff --check` 与 Node check 通过。ASR 已固定为 5 秒轮询，`pending`/`error`/`active` 不启动重复任务，成功默认复用，重新转写默认折叠，主操作按钮为“生成完整记录与分析”；切换转写结果时，即使从 A 切回原结果 A，也必须重新确认，生成目标与持久提交保留。浏览器实际运行通过：1440x1000 与 390x844 两视口均通过，每视口 11 个状态无横向溢出，`unmatched`、`external`、`pageErrors`、`consoleErrors` 均为空；覆盖库新建/搜索、正文阅读编辑、显式保存、冲突候选只读及明确选用、录音/照片/手写引用保全、ASR 无重复启动与成功复用、重新转写折叠、返回重进、零录音整理入口及旧记录/导入折叠。新 runner 使用实际 `npm run build` 的 dist，并由 Playwright `route.fulfill` 提供本地静态资源；API 为合成 mock，未访问真实服务、Provider、生产或设备。报告仅使用合成 mock 和离线构建产物，不扩大为真实服务覆盖。主源码 SHA256 为 `BD5CE53A065D898A6F673CB2F1DEBDE3768425AE917F4AE987EBF6535BEBD045`。证据：[最终验证 receipt](../../scratch/qa/notes-user-flow/validation-20261105.json)、[最终浏览器报告](../../scratch/qa/notes-user-flow/offline-20261105/run-2026-11-05T03-33-28-452Z/report.json)；前 Vite 网络阻断仅保留为历史记录。
+- **Android**：当前 worktree HEAD `dfa9558df11c0996eec5e98da75ce86acb948b99`。历史 2256 tests 仅对应父 `3f6b1d4`，不是当前 HEAD 验证。API #561 freshness 依赖仍在；须待契约进入 API master 后执行官方 fetch/generate/freshness 与精确 CI。发现、下载、材料还原、续写和冲突处理仍未整体验收。
 - **ASR 配置与可用性**：管理员在 Web「设置 → AI 与 ASR → ASR 配置」管理凭据；普通用户不显示凭据配置。阅读、编辑和写作不依赖 ASR 配置，缺配置不应阻塞日常笔记。
 - **路线图与 issues**：M0–M5、#516、#539、#551–554、Android #59–63 均未整体完成；issues 保持开放，不因本地实现或局部测试关闭。
 - **Windows**：本轮未实施，不声称已有同步、PR、CI 或发布。
@@ -26,7 +30,7 @@
 
 schema-v1 只确认 Markdown/照片/手写基础材料有共同理解，不能称离线 ZIP 全通用：Android 完整包可含录音，Web 导入拒绝 `recordings/`、导出不含录音；跨端 converter 与录音互导未交付。离线文件用于支持范围内交换/备份/旧格式迁移，格式不通用不妨碍在线云端契约同步。
 
-API PR #561 本地 head `d30076bc`，远端仍旧 head `faa6ab30`，后续本地提交尚未推送。Android PR70 freshness CI 对照上游 API master 419 operations/734 schemas 与 Android snapshot 422/738；正确顺序是先经授权完成 API PR 审查、CI、合并，再按官方流程刷新 Android 契约/生成物/provenance 并重跑 CI。当前 issues #516/#539/#551–554、Android #59–63 与 M0–M5 均未整体完成、保持开放。
+API #561 契约尚未进入 API master，Issue/PR 远端状态不刷新。正确顺序为：先核实并收敛 API #561 上游契约与 PR 重叠 → API #561 契约经授权审查/CI并进入 master → Android 官方 fetch/generate/freshness 与精确 CI → 跨端材料往返。M0–M5 均未整体完成；此处不刷新 issues 状态，也不批量关闭。
 
 ## 用户仍不能做什么
 
@@ -34,9 +38,8 @@ API PR #561 本地 head `d30076bc`，远端仍旧 head `faa6ab30`，后续本地
 
 ## 下一步
 
-1. 修订 runner 的陈旧断言后重跑 Chrome 桌面与窄屏流程；确认用户顺序和高级项折叠，不将首轮到达页面记为流程通过。
-2. API #561 先完成用户授权、审查/CI/合并；再按官方脚本刷新 Android 契约并重跑 freshness/CI。继续验证发现—选定下载—还原—续写/同 ID 冲突流程；connected UI 需专用设备。
-3. 按用户顺序闭合跨端链路：从笔记列表自动找到 → 正文与材料可读 → 续写保存且状态清楚 → 有音频先转写、无音频直接整理 → 返回后仍保留人工修改和原件。设备/OEM 及生产/provider 结论单列 NOT-VERIFIED。
-4. 438/330/108/0/0 是已完成的有界回归，108 skipped 不计 PASS；只在代码范围改变或发现具体缺口时重跑受影响范围。
+1. 核实并收敛 API #561 上游契约与 PR 重叠。
+2. API #561 契约经授权进入 master 后，执行 Android 官方 fetch/generate/freshness 与精确 CI；历史 2256 tests 不得沿用为当前 HEAD 结果。
+3. 再做跨端材料往返；生产、真实 Provider/费用和实体设备/OEM 测试须另行授权。
 
 以上局部通过项不改变 M0–M5 未整体完成的状态；不批量关闭 issue，也不提前标记全部 PASS、已发布或可生产使用。

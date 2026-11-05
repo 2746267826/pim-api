@@ -59,6 +59,23 @@ const localAsrTask: NoteAsrTask = {
   route: 'local',
   destination: null,
 }
+const succeededAsrTask: NoteAsrTask = {
+  ...asrTask,
+  taskId: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+  phase: 'Succeeded',
+  completedSegments: 1,
+  failedSegments: 0,
+}
+const runningAsrTask: NoteAsrTask = {
+  ...asrTask,
+  phase: 'Running',
+  completedSegments: 0,
+  failedSegments: 0,
+}
+const inconsistentSucceededAsrTask: NoteAsrTask = {
+  ...succeededAsrTask,
+  failedSegments: 1,
+}
 const source = {
   noteId, versionId: sourceVersionId, title: '零录音材料', createdAt: '2026-10-29T00:00:00Z', isCurrent: true,
   hasConflict: false, recordings: 0, totalSamples: 0, sampleRate: 16000,
@@ -139,8 +156,12 @@ it('loads ordinary sources including zero recordings and never calls admin model
   expect(collection?.items).toContainEqual(expect.objectContaining({ to: '/native-notes', label: '笔记' }))
   page()
   expect(await screen.findByRole('heading', { name: '继续处理这篇笔记' })).toBeTruthy()
+  expect(screen.getByText('选择固定版本后，按需转写录音或直接整理。')).toBeTruthy()
   expect(screen.getByText('隐私与处理说明').closest('details')?.open).toBe(false)
   await chooseSource()
+  expect(screen.getByText('该版本没有录音，可直接整理成完整记录和分析。')).toBeTruthy()
+  expect(screen.queryByText('先完成录音转写，再整理成完整记录和分析。')).toBeNull()
+  expect(screen.getByRole('heading', { name: '选择笔记材料' }).previousElementSibling).toBeNull()
   expect((await screen.findAllByText(/零录音版本/)).length).toBeGreaterThan(0)
   expect(derived.sources).toHaveBeenCalled()
   expect(derived.destinations).toHaveBeenCalled()
@@ -163,11 +184,146 @@ it('shows the ordinary-user ASR start entry on native notes without admin model 
   page()
   await chooseSource()
   expect(await screen.findByText('启动录音转写')).toBeTruthy()
+  expect(screen.getByText('先完成录音转写，再整理成完整记录和分析。')).toBeTruthy()
+  expect(screen.getByRole('heading', { name: '选择笔记材料' }).previousElementSibling).toBeNull()
   expect(await screen.findByText('没有本机模型')).toBeTruthy()
   await waitFor(() => expect(assistant.noteAsrDestinations).toHaveBeenCalledOnce())
   expect(assistant.asrRouteConfig).toHaveBeenCalled()
   expect(assistant.models).not.toHaveBeenCalled()
   expect(assistant.asrPresets).not.toHaveBeenCalled()
+})
+
+it('uses the task-list selection as the sole completed ASR choice for generation', async () => {
+  derived.sources.mockResolvedValue({ total: 1, offset: 0, items: [{ ...source, recordings: 1, totalSamples: 16000 }] })
+  assistant.noteAsrTasks.mockResolvedValue([succeededAsrTask])
+  page()
+  await chooseSource()
+
+  expect(await screen.findByText('已选用完整成功结果，可直接继续整理；如需其他结果可在任务列表中切换。')).toBeTruthy()
+  expect(screen.queryByText('先完成录音转写，再整理成完整记录和分析。')).toBeNull()
+  expect(screen.queryByRole('combobox', { name: '同版本已完成 ASR' })).toBeNull()
+  expect(screen.getByText('重新转写（可选）').closest('details')?.open).toBe(false)
+  const consent = screen.getByRole('checkbox', { name: /确认将上述材料发送至上方所选生成目标/ }) as HTMLInputElement
+  expect(consent.disabled).toBe(true)
+
+  await chooseDestination()
+  expect(consent.disabled).toBe(false)
+  await userEvent.click(consent)
+  await userEvent.click(screen.getByRole('button', { name: /生成完整记录与分析/ }))
+  await waitFor(() => expect(derived.start).toHaveBeenCalledOnce())
+  expect(derived.start.mock.calls[0]?.[0]).toEqual(expect.objectContaining({ asrTaskId: succeededAsrTask.taskId }))
+})
+
+it('requires fresh consent after switching ASR tasks away and back', async () => {
+  const secondSucceededAsrTask: NoteAsrTask = {
+    ...succeededAsrTask,
+    taskId: 'abababab-abab-4bab-8bab-abababababab',
+    totalSegments: 2,
+    completedSegments: 2,
+  }
+  derived.sources.mockResolvedValue({ total: 1, offset: 0, items: [{ ...source, recordings: 1, totalSamples: 16000 }] })
+  assistant.noteAsrTasks.mockResolvedValue([succeededAsrTask, secondSucceededAsrTask])
+  page()
+  await chooseSource()
+  await chooseDestination()
+
+  const consent = screen.getByRole('checkbox', { name: /确认将上述材料发送至上方所选生成目标/ }) as HTMLInputElement
+  const generate = screen.getByRole('button', { name: /生成完整记录与分析/ }) as HTMLButtonElement
+  expect(screen.getByRole('combobox', { name: '本次生成目标' }).textContent).toContain('合成共享目标')
+  expect(consent.disabled).toBe(false)
+  await userEvent.click(consent)
+  expect(consent.checked).toBe(true)
+  expect(generate.disabled).toBe(false)
+
+  await userEvent.click(screen.getByText(/^更多：转写任务与恢复/))
+  await userEvent.click(await screen.findByRole('button', { name: /2\/2 片/ }))
+  await userEvent.click(await screen.findByRole('button', { name: /1\/1 片/ }))
+
+  expect(consent.checked).toBe(false)
+  expect(generate.disabled).toBe(true)
+  expect(screen.getByRole('combobox', { name: '本次生成目标' }).textContent).toContain('合成共享目标')
+  expect(derived.start).not.toHaveBeenCalled()
+})
+
+it('updates the next step when an active ASR task becomes reusable', async () => {
+  derived.sources.mockResolvedValue({ total: 1, offset: 0, items: [{ ...source, recordings: 1, totalSamples: 16000 }] })
+  let currentAsrTasks = [runningAsrTask]
+  assistant.noteAsrTasks.mockImplementation(() => Promise.resolve(currentAsrTasks))
+  page()
+  await chooseSource()
+
+  expect(await screen.findByText('录音正在转写中；完成后可复用结果，也可以先查看任务进度。')).toBeTruthy()
+  expect(screen.queryByText('重新转写（可选）')).toBeNull()
+
+  currentAsrTasks = [succeededAsrTask]
+  await waitFor(() => expect(screen.getByText('已选用完整成功结果，可直接继续整理；如需其他结果可在任务列表中切换。')).toBeTruthy(), { timeout: 7000, interval: 50 })
+  expect(screen.getByText('重新转写（可选）').closest('details')?.open).toBe(false)
+  expect(screen.getByRole('status', { name: '当前转写任务摘要' }).textContent).toContain('转写完成')
+}, 10000)
+
+it('does not enable a new ASR start while the task list is pending or failed', async () => {
+  derived.sources.mockResolvedValue({ total: 1, offset: 0, items: [{ ...source, recordings: 1, totalSamples: 16000 }] })
+  assistant.noteAsrTasks.mockReturnValue(new Promise(() => undefined))
+  const pending = page()
+  await chooseSource()
+  expect(screen.queryByText('启动录音转写')).toBeNull()
+  pending.unmount()
+
+  assistant.noteAsrTasks.mockRejectedValue(new Error('任务读取失败'))
+  page()
+  await chooseSource()
+  expect(await screen.findByText('任务读取失败，请刷新核对；页面不会自动重发。')).toBeTruthy()
+  expect(screen.queryByText('启动录音转写')).toBeNull()
+})
+
+it('does not offer a duplicate transcription start while this version is queued or running', async () => {
+  derived.sources.mockResolvedValue({ total: 1, offset: 0, items: [{ ...source, recordings: 1, totalSamples: 16000 }] })
+  assistant.noteAsrTasks.mockResolvedValue([runningAsrTask])
+  page()
+  await chooseSource()
+
+  expect(await screen.findByText('录音正在转写中；完成后可复用结果，也可以先查看任务进度。')).toBeTruthy()
+  expect(await screen.findByRole('status', { name: '当前转写任务摘要' })).toBeTruthy()
+  expect(screen.queryByText('启动录音转写')).toBeNull()
+  expect(screen.queryByRole('heading', { name: /ASR 路由/ })).toBeNull()
+
+  await userEvent.click(screen.getByText(/^更多：转写任务与恢复/))
+  expect(await screen.findByRole('button', { name: /0\/1 片/ })).toBeTruthy()
+  expect(screen.queryByText('启动录音转写')).toBeNull()
+  expect(assistant.noteAsrStart).not.toHaveBeenCalled()
+})
+
+it('does not authorize generation from a succeeded ASR task with failed segments', async () => {
+  derived.sources.mockResolvedValue({ total: 1, offset: 0, items: [{ ...source, recordings: 1, totalSamples: 16000 }] })
+  assistant.noteAsrTasks.mockResolvedValue([inconsistentSucceededAsrTask])
+  page()
+  await chooseSource()
+  await chooseDestination()
+
+  expect(await screen.findByText(/请在转写任务列表中选择本版本完整成功的结果/)).toBeTruthy()
+  expect((screen.getByRole('checkbox', { name: /确认将上述材料发送至上方所选生成目标/ }) as HTMLInputElement).disabled).toBe(true)
+  expect((screen.getByRole('button', { name: /生成完整记录与分析/ }) as HTMLButtonElement).disabled).toBe(true)
+  expect(derived.start).not.toHaveBeenCalled()
+})
+
+it('clears an ASR selection when switching to a different material version', async () => {
+  const otherVersionId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+  derived.sources.mockResolvedValue({ total: 2, offset: 0, items: [
+    { ...source, recordings: 1, totalSamples: 16000 },
+    { ...source, versionId: otherVersionId, title: '另一版录音', recordings: 1, totalSamples: 16000, isCurrent: false },
+  ] })
+  assistant.noteAsrTasks.mockResolvedValue([succeededAsrTask])
+  page()
+  await chooseSource()
+  await userEvent.click(screen.getByText(/^更多：转写任务与恢复/))
+  await userEvent.click(await screen.findByRole('button', { name: /1\/1 片/ }))
+  await chooseDestination()
+  expect((screen.getByRole('checkbox', { name: /确认将上述材料发送至上方所选生成目标/ }) as HTMLInputElement).disabled).toBe(false)
+
+  await userEvent.click(screen.getByRole('combobox', { name: '材料版本' }))
+  await userEvent.click(await screen.findByRole('option', { name: /另一版录音/ }))
+  expect(await screen.findByText(/请在转写任务列表中选择本版本完整成功的结果/)).toBeTruthy()
+  expect((screen.getByRole('checkbox', { name: /确认将上述材料发送至上方所选生成目标/ }) as HTMLInputElement).disabled).toBe(true)
 })
 
 it('keeps the current ASR summary visible and collapses task recovery by default', async () => {
@@ -176,10 +332,13 @@ it('keeps the current ASR summary visible and collapses task recovery by default
   page()
   await chooseSource()
   expect(await screen.findByText(/更多：转写任务与恢复 · 1 项/)).toBeTruthy()
-  const disclosure = screen.getByText(/更多：转写任务与恢复/).closest('details')
+  const taskSummary = await screen.findByRole('status', { name: '当前转写任务摘要' })
+  const startPanel = screen.getByText('启动录音转写')
+  expect(taskSummary.compareDocumentPosition(startPanel) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  const disclosure = screen.getByText(/^更多：转写任务与恢复/).closest('details')
   expect(disclosure?.open).toBe(false)
   expect(screen.getByText('逐片进度与恢复').closest('details')).toBe(disclosure)
-  await userEvent.click(screen.getByText(/更多：转写任务与恢复/))
+  await userEvent.click(screen.getByText(/^更多：转写任务与恢复/))
   expect(disclosure?.open).toBe(true)
   expect(await screen.findByRole('status', { name: '当前转写任务摘要' })).toBeTruthy()
   await userEvent.click(await screen.findByRole('button', { name: /0\/1 片/ }))
@@ -278,7 +437,7 @@ it('renders a nullable local task without touching destination fields or admin s
   page()
   await chooseSource()
   expect(await screen.findByText(/更多：转写任务与恢复/)).toBeTruthy()
-  await userEvent.click(screen.getByText(/更多：转写任务与恢复/))
+  await userEvent.click(screen.getByText(/^更多：转写任务与恢复/))
   await userEvent.click(await screen.findByRole('button', { name: /0\/1 片/ }))
   expect(await screen.findByText('本机排队转写 · 未发送云端')).toBeTruthy()
   expect(await screen.findByText('逐片进度与恢复')).toBeTruthy()
@@ -304,7 +463,7 @@ it('requires exact destination consent and creates with a persisted UUID intent'
   expect((checkbox as HTMLInputElement).disabled).toBe(false)
   const taskListReadsBeforeStart = derived.tasks.mock.calls.length
   await userEvent.click(checkbox)
-  await userEvent.click(screen.getByRole('button', { name: /创建派生任务/ }))
+  await userEvent.click(screen.getByRole('button', { name: /生成完整记录与分析/ }))
   await waitFor(() => expect(derived.start).toHaveBeenCalledOnce())
   const body = derived.start.mock.calls[0]?.[0]
   expect(body).toEqual(expect.objectContaining({

@@ -1,0 +1,97 @@
+{
+  "recordedAt": "2026-11-05T13:49:15.0797279+08:00",
+  "testedParent": "302210428b471e5add970988d2b7f32c10ab98c4",
+  "worktreeChanges": true,
+  "sourceFiles": [
+    {
+      "path": "tests/Pim.UnitTests/Notes/NoteMaterialUploadStoreTests.cs",
+      "sha256": "438BE03352A3FCAEABAE88B3FBF57B8A1D9BE4A06D7719294860296E4CA60FA3"
+    },
+    {
+      "path": "tests/Pim.UnitTests/Notes/AndroidMixedMaterialInteropTests.cs",
+      "sha256": "370EB51CC0D0C81B25A4A637583278C299A8433F6FA20D530C49675B6CEAC9C5"
+    },
+    {
+      "path": "web/client-web/src/features/ai/note-derived/note-derived-page.tsx",
+      "sha256": "BD5CE53A065D898A6F673CB2F1DEBDE3768425AE917F4AE987EBF6535BEBD045"
+    },
+    {
+      "path": "web/client-web/src/features/ai/note-derived/note-derived-page.test.tsx",
+      "sha256": "01E83D467C6551BB906F7216601EC268D46BFF34A123274F7B1FE518EDAF9D68"
+    },
+    {
+      "path": "web/client-web/src/features/native-notes/native-notes-page.tsx",
+      "sha256": "5EA5DBCDE3DF5975562C77532EAC7636F07DD55F1BD67A63D4A3F5832F18AD54"
+    },
+    {
+      "path": "web/client-web/src/features/native-notes/native-notes-page.test.tsx",
+      "sha256": "9CE14F6FF661838D9E1EF0F3FC49DFEA38C4DE328D98E78AB2BDE97604324DFA"
+    },
+    {
+      "path": "web/client-web/src/features/native-notes/material-model.ts",
+      "sha256": "27C44949D6B650BE4C66D00105C8A47B0DFB01ACADB6C6C7CB81AEBDE4150EA4"
+    },
+    {
+      "path": "web/client-web/src/features/native-notes/material-model.test.ts",
+      "sha256": "0167C7015B4262154A4E62B0389D8717726B095618DE4B263988A421994BABF0"
+    },
+    {
+      "path": "web/client-web/src/features/native-notes/raw-json.ts",
+      "sha256": "A78A437666FD51241A3E89A16691347F9F7292A4562F5F8BD53B5819F283B26F"
+    },
+    {
+      "path": "web/client-web/src/features/native-notes/raw-json.test.ts",
+      "sha256": "64DEF81E6DA8CBB1E9CD11A384AF36B388EFBB0F25C58F221E10030322A52521"
+    },
+    {
+      "path": "web/client-web/src/features/native-notes/native-notes-canonical-bundle.test.tsx",
+      "sha256": "386E4D3123ED68F306A46353C9E8A5CE953CFEC15B34B9796C2B594AEDD03070"
+    }
+  ],
+  "web": {
+    "lint": "PASS",
+    "build": "PASS",
+    "full": {
+      "passed": 586,
+      "files": 68,
+      "failed": 0
+    },
+    "focused": {
+      "failed": 0,
+      "passed": 14
+    }
+  },
+  "api": {
+    "materialTests": 27,
+    "interopTests": 3,
+    "skipped": 0,
+    "failed": 0,
+    "boundary": "Temporary stores, TestServer and synthetic fixtures"
+  },
+  "browser": {
+    "report": "scratch/notes-continuation-20261105/browser/run-2026-11-05T05-44-31-260Z/report.json",
+    "viewports": [
+      {
+        "name": "desktop",
+        "width": 1440,
+        "height": 1000,
+        "horizontalOverflow": false
+      },
+      {
+        "name": "narrow",
+        "width": 390,
+        "height": 844,
+        "horizontalOverflow": false
+      }
+    ],
+    "boundary": "Built assets served offline; synthetic API fixtures only",
+    "result": "PASS"
+  },
+  "golden": {
+    "androidManifest": "31389E894159DC249501CBB7AA65605E6EFDA58F05482406B7E593CDA7ADB5D8",
+    "androidInput": "67D62EFC9EDA1CE06283C8417F424A5D7A4E70A43370BDD574793D1BE246930B",
+    "webInput": "19916B65F47D4C9DEA18A989E0A55FC5DE28F926584E261A37A60796B47377C3",
+    "webManifest": "5CBF921733156FE44DABA52CE291F09FCC85671E64CE6A032765810F51CF492A"
+  },
+  "scope": "Real provider, billing, physical device/OEM and production validation handed to user per request; not agent completion blockers"
+}

@@ -359,7 +359,7 @@ function Workspace({ ownerId, serverBinding }: { ownerId: string; serverBinding:
             </section>
             <section className="space-y-3 border-t border-divider pt-4" aria-labelledby="note-import-title">
               <h2 id="note-import-title" className="text-sm font-semibold text-text-1">从 Android 导入</h2>
-              <p className="text-xs leading-5 text-text-3">校验并读取 schema-v1 笔记包中的有序正文、照片和手写材料；内容先进入编辑器，不会在导入时上传。保存时仍需确认服务器存储。</p>
+              <p className="text-xs leading-5 text-text-3">云端笔记会直接显示在笔记列表中，无需导入。此处仅用于可选的 Android 文件交换或备份恢复；内容先进入编辑器，保存到服务器前仍需确认。</p>
               <Button size="sm" variant="secondary" loading={packageBusy} disabled={packageBusy} onClick={() => packageInputRef.current?.click()}>
                 <Upload className="size-4" aria-hidden />选择笔记包
               </Button>

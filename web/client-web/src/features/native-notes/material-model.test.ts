@@ -1,5 +1,9 @@
+/// <reference types="node" />
+
 // @vitest-environment node
 import { describe, expect, it } from 'vitest'
+import { readFileSync } from 'node:fs'
+import path from 'node:path'
 import {
   buildMaterialBundle,
   hydrateParsedPhotos,
@@ -8,6 +12,7 @@ import {
   type MaterialDraftBlock,
   type NoteMaterialVersion,
 } from './material-model'
+import { extractJsonValue } from './raw-json'
 
 const noteId = '11111111-1111-4111-8111-111111111111'
 const versionId = '22222222-2222-4222-8222-222222222222'
@@ -408,5 +413,45 @@ describe('native note material model', () => {
       sha256: previewHash,
     }))
     expect(JSON.parse(next.inputJson).note.blocks[0].ink).toEqual(ink)
+  })
+
+  it('round-trips the Android mixed-material golden with raw lexical ink and recordings', async () => {
+    const fixtureDirectory = path.resolve(process.cwd(), '../../tests/Pim.UnitTests/Fixtures/notes/mixed-material-v1')
+    const inputJson = new TextDecoder().decode(new Uint8Array(readFileSync(path.join(fixtureDirectory, 'input.json'))))
+    const manifestJson = new TextDecoder().decode(new Uint8Array(readFileSync(path.join(fixtureDirectory, 'manifest.json'))))
+    const input = JSON.parse(inputJson) as { id: string; note: { id: string; title: string; revision: number; createdAtMillis: number; blocks: Array<Record<string, unknown>> }; recordings: unknown[] }
+    const manifest = JSON.parse(manifestJson) as { files: Array<{ path: string; kind: string; sha256: string; sizeBytes: number; blockId?: string; recordingId?: string; segment?: number; chunkIndex?: number; samples?: number }>; revision: number; versionId: string; noteId: string }
+    const material: NoteMaterialVersion = {
+      inputJson,
+      manifestJson,
+      upload: {
+        ...asMaterialVersion(await buildMaterialBundle({ versionId, noteId, baseVersionId: null, revision: 0, title: 'fixture', noteCreatedAtMillis: 1, createdAtMillis: 2, blocks: [{ id: 'fixture', kind: 'markdown', text: 'fixture' }] })).upload,
+        versionId: manifest.versionId,
+        noteId: manifest.noteId,
+        files: manifest.files.map((file, index) => ({ index, path: file.path, kind: file.kind, sha256: file.sha256, sizeBytes: file.sizeBytes, ...(file.blockId ? { blockId: file.blockId } : {}), ...(file.recordingId ? { recordingId: file.recordingId } : {}), ...(file.segment ? { segment: file.segment } : {}), ...(file.chunkIndex ? { chunkIndex: file.chunkIndex } : {}), ...(file.samples ? { samples: file.samples } : {}), partCount: 1, uploadedParts: [0] })),
+      },
+    }
+    const parsed = parseMaterialVersion(material)
+    const blocks = await hydrateParsedPhotos(parsed, material, async (_versionId, index) => {
+      const file = manifest.files[index]!
+      return new Uint8Array(readFileSync(path.join(fixtureDirectory, file.path)))
+    })
+    const next = await buildMaterialBundle({
+      versionId: '99999999-9999-4999-8999-999999999999', noteId: input.note.id, baseVersionId: input.id,
+      revision: input.note.revision + 1, title: 'Canonical mixed materials edited', noteCreatedAtMillis: input.note.createdAtMillis,
+      createdAtMillis: 1735689603000, blocks: blocks.map((block) => block.id === '33333333-3333-4333-8333-333333333333' && block.kind === 'markdown' ? { ...block, text: 'edited\n' } : block),
+      sourceInputJson: inputJson, preservedRecordings: parsed.recordingEntries, preservedFiles: parsed.manifestFiles, preserveSourceFiles: true,
+    })
+    const nextNote = extractJsonValue(next.inputJson, ['note'])
+    expect(nextNote).toBe(new TextDecoder().decode(new Uint8Array(readFileSync(path.join(fixtureDirectory, 'note.json')))).replace('Canonical mixed materials', 'Canonical mixed materials edited').replace('"revision":7', '"revision":8').replace('# Canonical note\\n\\n**keep this body**\\n', 'edited\\n'))
+    expect(nextNote).toContain('320.0')
+    expect(nextNote).toContain('12.0')
+    expect(next.inputJson).toContain(new TextDecoder().decode(new Uint8Array(readFileSync(path.join(fixtureDirectory, 'recordings/77777777-7777-4777-8777-777777777777/manifest.json')))))
+    expect(next.files.slice(2).map((file) => `${file.kind}:${file.path}:${file.sha256}`)).toEqual(manifest.files.slice(2).map((file) => `${file.kind}:${file.path}:${file.sha256}`))
+
+    const ink = parsed.blocks.find((block) => block.kind === 'ink')!
+    const badPath = { ...parsed, blocks: parsed.blocks.map((block) => block === ink ? { ...block, path: `${block.path}.bad` } : block) }
+    await expect(hydrateParsedPhotos(badPath, material, async (_versionId, index) => new Uint8Array(readFileSync(path.join(fixtureDirectory, manifest.files[index]!.path))))).rejects.toThrow('路径不一致')
+    await expect(hydrateParsedPhotos(parsed, material, async (_versionId, index) => { const bytes = new Uint8Array(readFileSync(path.join(fixtureDirectory, manifest.files[index]!.path))); if (manifest.files[index]!.kind === 'InkPreview') bytes[0] ^= 1; return bytes })).rejects.toThrow('预览图原字节摘要')
   })
 })

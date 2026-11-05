@@ -189,6 +189,9 @@ public sealed class NoteMaterialUploadStoreTests : IDisposable
         var cloned = await store.CloneAsync(_user, original.Request.VersionId,
             new CloneNoteMaterialVersionRequest(original.Request.VersionId, next.Request));
         Assert.Equal(next.Request.VersionId, cloned.VersionId);
+        Assert.Equal(original.Request.VersionId, cloned.BaseVersionId);
+        Assert.Equal(original.Request.VersionId, cloned.CurrentVersionId);
+        Assert.False(cloned.IsCurrent);
         Assert.Equal("Uploading", cloned.Phase);
         Assert.Empty(cloned.Files[0].UploadedParts);
         Assert.Empty(cloned.Files[1].UploadedParts);
@@ -208,6 +211,41 @@ public sealed class NoteMaterialUploadStoreTests : IDisposable
         }
         Assert.Contains("\"kind\":\"ink\"", saved.InputJson);
         Assert.Contains("\"recordings\":[", saved.InputJson);
+    }
+
+    [Fact]
+    public async Task RawMaterialJsonPreservesUnknownFieldsAcrossCurrentReadAndClone()
+    {
+        var fixture = Fixture.Create();
+        var input = JsonNode.Parse(fixture.Request.InputJson)!.AsObject();
+        input["futureInputField"] = new JsonObject { ["preserved"] = true };
+        var inputJson = input.ToJsonString(Json);
+        var manifest = JsonNode.Parse(fixture.Request.ManifestJson)!.AsObject();
+        manifest["futureManifestField"] = new JsonObject { ["preserved"] = "yes" };
+        manifest["inputSha256"] = Hash(Encoding.UTF8.GetBytes(inputJson));
+        var manifestJson = manifest.ToJsonString(Json);
+        fixture = fixture with { Request = fixture.Request with { InputJson = inputJson, ManifestJson = manifestJson } };
+
+        var store = Store();
+        await store.BeginAsync(_user, fixture.Request);
+        await UploadAll(store, fixture);
+        await store.CompleteAsync(_user, fixture.Request.VersionId);
+
+        var current = await store.GetCurrentAsync(_user, fixture.Request.NoteId);
+        Assert.Equal(inputJson, current.InputJson);
+        Assert.Equal(manifestJson, current.ManifestJson);
+
+        var next = CloneFixture(fixture);
+        var cloned = await store.CloneAsync(_user, fixture.Request.VersionId,
+            new CloneNoteMaterialVersionRequest(fixture.Request.VersionId, next.Request));
+
+        Assert.Equal(fixture.Request.VersionId, cloned.BaseVersionId);
+        Assert.Equal(fixture.Request.VersionId, cloned.CurrentVersionId);
+        var clonedVersion = await store.GetAsync(_user, next.Request.VersionId);
+        Assert.Equal(next.Request.InputJson, clonedVersion.InputJson);
+        Assert.Equal(next.Request.ManifestJson, clonedVersion.ManifestJson);
+        Assert.Equal(true, JsonNode.Parse(clonedVersion.InputJson)! ["futureInputField"]!["preserved"]!.GetValue<bool>());
+        Assert.Equal("yes", JsonNode.Parse(clonedVersion.ManifestJson)! ["futureManifestField"]!["preserved"]!.GetValue<string>());
     }
 
     [Fact]
