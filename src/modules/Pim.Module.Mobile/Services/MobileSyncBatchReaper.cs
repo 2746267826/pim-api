@@ -110,8 +110,10 @@ public sealed class MobileSyncBatchReaper : BackgroundService
             $"SELECT pg_advisory_xact_lock({ReaperLockKey})",
             ct);
 
-        var released = await ReleaseExpiredLeasesAsync(db, now, ct);
+        // 先归档再清租约：超期孤儿会被第一条语句直接收敛成终态，
+        // 随后的清租约在 WHERE 里就自然跳过它们，省掉同一行在本事务内的第二次更新。
         var archived = await ArchiveUnrecoverableAsync(db, now, ct);
+        var released = await ReleaseExpiredLeasesAsync(db, now, ct);
         await RecordLongTransactionsAsync(db, ct);
         await tx.CommitAsync(ct);
 
