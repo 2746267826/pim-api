@@ -1,4 +1,8 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging.Abstractions;
 using Pim.Core.Exceptions;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
@@ -142,6 +146,49 @@ public sealed class MobileSyncIssue568Tests
     public void ContinuationConcurrencyLimit_IsClamped(string? configured, int expected)
         => Assert.Equal(expected, MobileSyncIngestRunner.ResolveConcurrencyLimit(configured));
 
+    [Fact]
+    public async Task Continuation_KeepsWorkingAfterTheClientDisconnects()
+    {
+        var options = CreateOptions();
+        var request = Request("android-continuation-disconnect", Now.AddHours(-2));
+
+        var firstSave = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseWork = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var blockingDb = new BlockAfterFirstSaveDbContext(options, firstSave, releaseWork);
+
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton<PimDbContext>(blockingDb);
+        services.AddScoped(sp => new MobileUsageIngestService(
+            sp.GetRequiredService<PimDbContext>(),
+            MobileTestHelpers.CurrentUser(),
+            new MobileSessionInterpreter(sp.GetRequiredService<PimDbContext>(), MobileTestHelpers.Time(Now)),
+            MobileTestHelpers.Time(Now)));
+        using var provider = services.BuildServiceProvider();
+        using var runner = new MobileSyncIngestRunner(
+            provider.GetRequiredService<IServiceScopeFactory>(),
+            new StubLifetime(),
+            new ConfigurationBuilder().Build(),
+            NullLogger<MobileSyncIngestRunner>.Instance);
+
+        using var client = new CancellationTokenSource();
+        var run = runner.RunAsync(MobileTestHelpers.UserId, request, client.Token);
+        // pending 行已经落库 → 此刻客户端断开（生产里 OkHttp 90 秒超时就是这么走的）。
+        await firstSave.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        client.Cancel();
+        releaseWork.SetResult(true);
+
+        var result = await run.WaitAsync(TimeSpan.FromSeconds(15));
+        Assert.Equal(0, result.FailedCount);
+
+        await using var verify = new PimDbContext(options);
+        var batch = await verify.Set<MobileSyncBatchEntity>()
+            .AsNoTracking()
+            .SingleAsync(row => row.BatchId == request.BatchId);
+        // 关键断言：客户端断开没有让这次入库白做，批次自己落到了终态。
+        Assert.Equal(MobileSyncBatchStatus.Completed, batch.Status);
+    }
+
     private static DbContextOptions<PimDbContext> CreateOptions()
     {
         MobileTestHelpers.RegisterMobileModule();
@@ -173,6 +220,40 @@ public sealed class MobileSyncIssue568Tests
                 "item-1")
         ],
         []);
+
+    private sealed class StubLifetime : IHostApplicationLifetime
+    {
+        public CancellationToken ApplicationStarted => CancellationToken.None;
+
+        public CancellationToken ApplicationStopping => CancellationToken.None;
+
+        public CancellationToken ApplicationStopped => CancellationToken.None;
+
+        public void StopApplication()
+        {
+        }
+    }
+
+    /// <summary>在 pending 行提交后停住，方便测试在"服务端正在处理"这个时刻取消客户端。</summary>
+    private sealed class BlockAfterFirstSaveDbContext(
+        DbContextOptions<PimDbContext> options,
+        TaskCompletionSource<bool> firstSave,
+        TaskCompletionSource<bool> releaseWork) : PimDbContext(options)
+    {
+        private int _saves;
+
+        public override async Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
+        {
+            var written = await base.SaveChangesAsync(cancellationToken);
+            if (Interlocked.Increment(ref _saves) == 1)
+            {
+                firstSave.TrySetResult(true);
+                await releaseWork.Task.WaitAsync(TimeSpan.FromSeconds(30), cancellationToken);
+            }
+
+            return written;
+        }
+    }
 
     private sealed class AnonymousUser : ICurrentUserService
     {

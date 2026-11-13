@@ -96,6 +96,33 @@ public sealed class MobileSyncIssue568RealDbTests
     }
 
     [SkippableFact]
+    public async Task Reaper_DoesNotArchiveABatchThatIsStillProcessing()
+    {
+        await using var database = await TempDatabase.CreateAsync();
+        await using var db = database.Db;
+
+        // 在途批次：持有未来租约，且窗口既超出补传期、又同窗口已有成功批次——
+        // 这正是"补偿重投"的常见形状，回收器绝不能把它归档掉（否则跑完的事务会被 LeaseLost 回滚）。
+        var outOfHorizon = Now.AddDays(-20);
+        await SeedAsync(db, "reaper-inflight-horizon", outOfHorizon, Now.AddMinutes(10), null);
+        await SeedCompletedAsync(db, "reaper-inflight-winner", outOfHorizon);
+        await SeedAsync(db, "reaper-inflight-covered", outOfHorizon, Now.AddMinutes(10), null);
+
+        var summary = await BuildReaper(database).SweepOnceAsync(CancellationToken.None);
+
+        Assert.Equal(0, summary.ReleasedLeases);
+        Assert.Equal(0, summary.ArchivedBatches);
+
+        db.ChangeTracker.Clear();
+        var rows = await db.Set<MobileSyncBatchEntity>().AsNoTracking().ToListAsync();
+        foreach (var row in rows.Where(row => row.Status == MobileSyncBatchStatus.Pending))
+        {
+            var envelope = MobileSyncBatchEnvelopeCodec.DeserializeOrEmpty(row.ErrorJson);
+            Assert.Equal(Now.AddMinutes(10), envelope.LeaseUntilUtc);
+        }
+    }
+
+    [SkippableFact]
     public async Task Reaper_IsIdempotentAcrossRepeatedSweeps()
     {
         await using var database = await TempDatabase.CreateAsync();

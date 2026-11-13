@@ -158,6 +158,11 @@ public sealed class MobileSyncBatchReaper : BackgroundService
     /// <summary>
     /// 归档两种「数据已确定拿不回来」的 pending：窗口早于补传期，或同窗口已被成功批次覆盖。
     /// 不按时间沉默判死——见类型注释。
+    ///
+    /// **必须排除仍在处理中的批次**（评审 Critical）：正在执行的批次持有未来的租约，
+    /// 它的窗口完全可能落在补传期边界上、也可能与一条已成功的批次同窗口（补偿重投就是这么来的）。
+    /// 若在它脚下改成 abandoned，<c>FinalizePendingBatchAsync</c> 的 <c>status = 'pending'</c> 条件会失败，
+    /// 一整个跑完的昂贵事务被回滚并抛 LeaseLost。
     /// </summary>
     private async Task<int> ArchiveUnrecoverableAsync(
         PimDbContext db,
@@ -174,6 +179,10 @@ public sealed class MobileSyncBatchReaper : BackgroundService
                        'ArchivedAtUtc', to_jsonb({now}),
                        'ArchiveNote', {ArchiveNote})
              WHERE b.status = {MobileSyncBatchStatus.Pending}
+               AND (
+                    (b.error_json->>'LeaseUntilUtc') IS NULL
+                    OR (b.error_json->>'LeaseUntilUtc')::timestamptz <= {now})
+               AND COALESCE((b.error_json->>'RetryAfterUtc')::timestamptz, {now}) <= {now}
                AND (
                     b.window_end_utc < {backfillCutoff}
                     OR EXISTS (

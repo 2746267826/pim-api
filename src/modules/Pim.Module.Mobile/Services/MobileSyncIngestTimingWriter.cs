@@ -15,8 +15,13 @@ namespace Pim.Module.Mobile.Services;
 /// </summary>
 public sealed class MobileSyncIngestTimingWriter
 {
-    /// <summary>超过这一段才抓阻塞快照，避免为每条记录都多打一次系统视图。</summary>
-    private static readonly TimeSpan BlockerSampleThreshold = TimeSpan.FromSeconds(1);
+    /// <summary>
+    /// 超过这一段才抓阻塞快照。生产单批本来就在秒级到分钟级，门槛取 1 秒会让几乎每条记录都多打一次
+    /// 系统视图；30 秒只留真正需要解释的慢请求，锁等待另有独立的 5 秒门槛。
+    /// </summary>
+    private static readonly TimeSpan BlockerSampleThreshold = TimeSpan.FromSeconds(30);
+
+    private static readonly TimeSpan BlockerSampleLockThreshold = TimeSpan.FromSeconds(5);
 
     private const int BlockerSnapshotMaxChars = 500;
     private const int BlockerSnapshotMaxRows = 5;
@@ -44,7 +49,7 @@ public sealed class MobileSyncIngestTimingWriter
                 return;
 
             var blockers = record.TotalMs >= (long)BlockerSampleThreshold.TotalMilliseconds
-                || record.AdvisoryLockWaitMs >= (long)BlockerSampleThreshold.TotalMilliseconds
+                || record.AdvisoryLockWaitMs >= (long)BlockerSampleLockThreshold.TotalMilliseconds
                     ? await TrySampleBlockersAsync(db, ct)
                     : null;
 
