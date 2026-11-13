@@ -9,6 +9,8 @@ namespace Pim.Module.Mobile.Services;
 /// <item><c>completed</c>：处理完成。<b>条目级校验拒绝（rejected）不影响批次状态</b>，只体现在 rejected_count 与 error_json。</item>
 /// <item><c>failed</c>：确实有条目失败（failed_count &gt; 0）。</item>
 /// <item><c>completed-with-errors</c>：历史遗留状态，写入侧不再产生；因 failed_count = 0 时它并不代表失败，覆盖率与质量判据都不再把它当失败。</item>
+/// <item><c>abandoned</c>：归档终态（#568）。租约早已过期的孤儿批次，在补传窗口外（或同窗口已被成功批次覆盖）被一次性归档；
+/// 数据已不可能再被接受，行保留以便审计。重投该批次标识会得到 40903，客户端应换批次标识重传。</item>
 /// </list>
 /// 判据只有一份实现（EPIC #254 §6），避免"面板一套、测试一套"。
 /// </para>
@@ -21,6 +23,13 @@ public static class MobileSyncBatchStatus
 
     /// <summary>历史遗留状态：条目级拒绝曾被误当作批次失败（#241）。</summary>
     public const string LegacyCompletedWithErrors = "completed-with-errors";
+
+    /// <summary>
+    /// 归档终态（#568）：孤儿 pending 在补传窗口外或同窗口已被成功批次覆盖时归档。
+    /// 不用 <see cref="Failed"/> 是因为 S11（INV-M21）禁止 failed_count = 0 的批次处于 failed 类状态。
+    /// 非活动态 ⇒ 仍按终态处理：不再认领、不提供覆盖依据、不计入积压。
+    /// </summary>
+    public const string Abandoned = "abandoned";
 
     /// <summary>
     /// "还在动"的判定窗口：处理中的批次在该窗口内没有刷新过租约，就认为处理者已经消失。

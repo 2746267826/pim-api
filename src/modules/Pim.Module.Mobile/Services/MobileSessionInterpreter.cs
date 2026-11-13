@@ -167,9 +167,13 @@ public sealed class MobileSessionInterpreter
             return;
 
         var lockKey = MobileAnalyticsMaterializationLock.KeyFor(userId, deviceId);
+        // 等锁是排队时间：把它单独记进入库耗时分解（#568），否则"慢"会被误记成"算得慢"。
+        var lockWatch = System.Diagnostics.Stopwatch.StartNew();
         await _db.Database.ExecuteSqlInterpolatedAsync(
             $"SELECT pg_advisory_xact_lock({lockKey})",
             ct);
+        lockWatch.Stop();
+        IngestTimingScope.RecordAdvisoryLockWait(lockWatch.ElapsedMilliseconds);
     }
 
     private static bool CanContinueBoundaryOpenSession(

@@ -13,6 +13,7 @@ using Pim.Core.Common;
 using Pim.Core.Caching;
 using Pim.Core.Modules;
 using Pim.Module.Mobile.Entities;
+using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
 using Pim.Module.Mobile.DTOs;
 using Pim.Module.Mobile.Services;
@@ -58,6 +59,11 @@ public sealed class MobileModule : IModule
         services.AddScoped<DeviceManagementService>();
         services.AddScoped<MobileSyncBacklogInspector>();
         services.AddScoped<IDataQualityInspector, MobileSyncBacklogInspector>();
+
+        // #568：入库执行入口（脱离请求连接）+ 耗时分解落表 + 孤儿批次回收。
+        services.AddSingleton<MobileSyncIngestTimingWriter>();
+        services.AddSingleton<MobileSyncIngestRunner>();
+        services.AddHostedService<MobileSyncBatchReaper>();
     }
 
     public void MapEndpoints(IEndpointRouteBuilder endpoints)
@@ -157,10 +163,18 @@ public sealed class MobileModule : IModule
         group.MapPost("/usage/events", async (
             HttpContext httpContext,
             [FromBody] MobileUsageEventsUploadRequest request,
-            [FromServices] MobileUsageIngestService service,
+            [FromServices] MobileSyncIngestRunner runner,
+            [FromServices] ICurrentUserService currentUser,
             CancellationToken ct) =>
         {
-            var result = await service.IngestAsync(request, ct);
+            // #568：用户身份必须在**请求作用域**里解析——执行放在独立作用域，
+            // 那里没有 HttpContext，ICurrentUserService 解析出来是空的。
+            var userId = MobileUserContext.RequireUserId(currentUser);
+            var result = await runner.RunAsync(userId, request, ct);
+            // 客户端已经走了：批次照样落库，但不必再写响应——写一个已断开的响应只会
+            // 让中间件记一条误导性的 499（看着像又失败了一次，其实这批已经成功，#568）。
+            if (httpContext.RequestAborted.IsCancellationRequested)
+                return Results.Empty;
             if (result.ProcessingState is null)
                 return Results.Ok(ApiResponse<MobileUsageIngestResult>.Ok(result));
 

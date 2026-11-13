@@ -249,3 +249,14 @@ public sealed class MobileUsageGoalEntityConfiguration : IEntityTypeConfiguratio
         builder.HasIndex(e => new { e.UserId, e.PackageName });
     }
 }
+
+/// <summary>入库耗时分解（#568）：按时间倒序扫描与保留期清理是唯一访问方式。</summary>
+public sealed class MobileSyncIngestTimingEntityConfiguration : IEntityTypeConfiguration<MobileSyncIngestTimingEntity>
+{
+    public void Configure(EntityTypeBuilder<MobileSyncIngestTimingEntity> builder)
+    {
+        builder.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
+        builder.HasIndex(e => e.CreatedAt);
+        builder.HasIndex(e => new { e.UserId, e.DeviceId, e.BatchId });
+    }
+}

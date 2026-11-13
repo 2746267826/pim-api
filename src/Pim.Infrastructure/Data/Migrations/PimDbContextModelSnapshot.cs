@@ -5909,6 +5909,95 @@ namespace Pim.Infrastructure.Data.Migrations
                     b.ToTable("mobile_sync_batches");
                 });
 
+            modelBuilder.Entity("Pim.Module.Mobile.Entities.MobileSyncIngestTimingEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<long>("AdvisoryLockWaitMs")
+                        .HasColumnType("bigint")
+                        .HasColumnName("advisory_lock_wait_ms");
+
+                    b.Property<int>("Attempt")
+                        .HasColumnType("integer")
+                        .HasColumnName("attempt");
+
+                    b.Property<string>("BatchId")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("batch_id");
+
+                    b.Property<string>("Blockers")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("blockers");
+
+                    b.Property<long>("CommitMs")
+                        .HasColumnType("bigint")
+                        .HasColumnName("commit_ms");
+
+                    b.Property<long>("ComputeMs")
+                        .HasColumnType("bigint")
+                        .HasColumnName("compute_ms");
+
+                    b.Property<long>("ConnectionWaitMs")
+                        .HasColumnType("bigint")
+                        .HasColumnName("connection_wait_ms");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<string>("DeviceId")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("device_id");
+
+                    b.Property<long>("MaterializeMs")
+                        .HasColumnType("bigint")
+                        .HasColumnName("materialize_ms");
+
+                    b.Property<string>("Outcome")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("outcome");
+
+                    b.Property<long>("SessionRebuildMs")
+                        .HasColumnType("bigint")
+                        .HasColumnName("session_rebuild_ms");
+
+                    b.Property<long>("TotalMs")
+                        .HasColumnType("bigint")
+                        .HasColumnName("total_ms");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.Property<DateTimeOffset>("WindowEndUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("window_end_utc");
+
+                    b.Property<DateTimeOffset>("WindowStartUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("window_start_utc");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CreatedAt");
+
+                    b.HasIndex("UserId", "DeviceId", "BatchId");
+
+                    b.ToTable("mobile_sync_ingest_timings");
+                });
+
             modelBuilder.Entity("Pim.Module.Mobile.Entities.MobileTimelineBlockEntity", b =>
                 {
                     b.Property<Guid>("Id")

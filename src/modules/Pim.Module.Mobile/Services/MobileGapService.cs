@@ -8,7 +8,11 @@ namespace Pim.Module.Mobile.Services;
 
 public sealed class MobileGapService
 {
-    private static readonly TimeSpan MaxBackfillAge = TimeSpan.FromDays(14);
+    /// <summary>
+    /// 补传窗口上限。孤儿批次回收器用同一份口径判断"这批数据是否已经不可能再回来"（#568），
+    /// 因此不能再写成两份常量。
+    /// </summary>
+    internal static readonly TimeSpan MaxBackfillAge = TimeSpan.FromDays(14);
     private static readonly TimeSpan MinGapThreshold = TimeSpan.FromMinutes(5);
     private readonly PimDbContext _db;
     private readonly ICurrentUserService _currentUser;
