@@ -47,6 +47,14 @@ public static class PimMetrics
         "pim_sync_batch_backlog_total",
         "Total count of overdue or pending mobile sync batches");
 
+    /// <summary>
+    /// 长时间活跃的数据库会话数（#568）。「所有端点一起变慢、不取锁的端点也跟着卡」
+    /// 只有上游阻塞能解释，这个指标是那种现象最直接的证据。
+    /// </summary>
+    public static readonly Gauge SyncIngestLongTransactions = Prometheus.Metrics.CreateGauge(
+        "pim_sync_ingest_long_transactions",
+        "Count of database sessions active for longer than the mobile ingest long-transaction threshold");
+
     /// <summary>待分类/待打标签建议队列积压数量。</summary>
     public static readonly Gauge UntaggedRecordsBacklog = Prometheus.Metrics.CreateGauge(
         "pim_untagged_records_backlog_total",

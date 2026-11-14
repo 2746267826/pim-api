@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
@@ -39,6 +40,7 @@ public sealed class MobileUsageIngestService
     private readonly TimeProvider _timeProvider;
     private readonly MobileAppCatalogOverrideService? _catalogOverrideService;
     private readonly MobileAnalyticsMaterializationService? _materializationService;
+    private readonly MobileSyncIngestTimingWriter? _timingWriter;
 
     public MobileUsageIngestService(
         PimDbContext db,
@@ -46,7 +48,8 @@ public sealed class MobileUsageIngestService
         MobileSessionInterpreter sessionInterpreter,
         TimeProvider timeProvider,
         MobileAppCatalogOverrideService? catalogOverrideService = null,
-        MobileAnalyticsMaterializationService? materializationService = null)
+        MobileAnalyticsMaterializationService? materializationService = null,
+        MobileSyncIngestTimingWriter? timingWriter = null)
     {
         _db = db;
         _currentUser = currentUser;
@@ -54,26 +57,52 @@ public sealed class MobileUsageIngestService
         _timeProvider = timeProvider;
         _catalogOverrideService = catalogOverrideService;
         _materializationService = materializationService;
+        _timingWriter = timingWriter;
     }
 
     public async Task<MobileUsageIngestResult> IngestAsync(
         MobileUsageEventsUploadRequest request,
         CancellationToken ct = default)
+        => await IngestForUserAsync(MobileUserContext.RequireUserId(_currentUser), request, ct);
+
+    /// <summary>
+    /// 以显式用户身份执行入库（#568）。
+    ///
+    /// 续跑路径必须走这个入口：请求作用域在客户端断开后会被释放，而 <see cref="ICurrentUserService"/>
+    /// 依赖 <c>HttpContext</c>，在新作用域里解析出来是空的（会抛 6200）。
+    /// </summary>
+    public async Task<MobileUsageIngestResult> IngestForUserAsync(
+        Guid userId,
+        MobileUsageEventsUploadRequest request,
+        CancellationToken ct = default)
     {
-        var userId = MobileUserContext.RequireUserId(_currentUser);
+        var timing = new MobileIngestTimingAccumulator();
+        using var timingScope = IngestTimingScope.Begin(timing);
+        var total = Stopwatch.StartNew();
+        var outcome = "failed";
         var strategy = _db.Database.CreateExecutionStrategy();
         var attemptState = new IngestAttemptState();
         using var attemptDeadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
         attemptDeadline.CancelAfter(AttemptDeadline);
         try
         {
-            return await strategy.ExecuteAsync(
+            var result = await strategy.ExecuteAsync(
                 token => IngestAttemptAsync(userId, request, attemptState, token),
                 attemptDeadline.Token);
+            outcome = result.ProcessingState ?? "completed";
+            return result;
         }
-        catch (OperationCanceledException) when (!ct.IsCancellationRequested
-            && attemptDeadline.IsCancellationRequested)
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
+            // 客户端断开（服务端记 499）：工作已随连接中止，必须把租约放回去并把这次尝试退回，
+            // 否则重投只会拿到 202 并空等到租约到期（#568）。
+            outcome = "cancelled";
+            await RecordInterruptedAttemptAsync(userId, request, attemptState);
+            throw;
+        }
+        catch (OperationCanceledException) when (attemptDeadline.IsCancellationRequested)
+        {
+            outcome = "deadline";
             await RecordProcessingFailureAsync(
                 userId,
                 request,
@@ -88,6 +117,104 @@ public sealed class MobileUsageIngestService
             await RecordProcessingFailureAsync(userId, request, attemptState, ex);
             throw;
         }
+        finally
+        {
+            total.Stop();
+            timing.Attempt = attemptState.AttemptCount;
+            await RecordTimingAsync(userId, request, timing, outcome, total.ElapsedMilliseconds);
+        }
+    }
+
+    /// <summary>
+    /// 客户端断开时把租约放回、并把这次尝试退回（#568）。
+    ///
+    /// 写 <c>LeaseUntilUtc = null</c> + <c>RetryAfterUtc = now</c>：批次立刻可被下次重投认领，
+    /// 不再让客户端对着 202 空等 15 分钟。保留 <c>LeaseId</c> 是必要的——<see cref="MobileSyncBatchEnvelopeCodec.EffectiveLeaseUntil"/>
+    /// 会把"LeaseId 为空且 AttemptCount = 0"当成历史行，重新按 created_at + 15 分钟加锁。
+    /// 写失败不影响原始取消：过期租约还有后台回收兜底。
+    /// </summary>
+    private async Task RecordInterruptedAttemptAsync(
+        Guid userId,
+        MobileUsageEventsUploadRequest request,
+        IngestAttemptState attemptState)
+    {
+        if (attemptState.LeaseId is not { } leaseId)
+            return;
+
+        try
+        {
+            _db.ChangeTracker.Clear();
+            var batch = await FindBatchAsync(userId, request, CancellationToken.None);
+            if (batch is null || MobileSyncBatchStatus.IsTerminal(batch.Status))
+                return;
+
+            var envelope = MobileSyncBatchEnvelopeCodec.DeserializeOrEmpty(batch.ErrorJson);
+            var leaseText = leaseId.ToString("N");
+            if (!string.Equals(envelope.LeaseId, leaseText, StringComparison.Ordinal))
+                return;
+
+            var now = _timeProvider.GetUtcNow();
+            // 这次尝试没有结果，不计入配额（#568）。
+            var refundedAttempts = Math.Max(0, envelope.AttemptCount - 1);
+            var interruptedEnvelope = MobileSyncBatchEnvelopeCodec.Serialize(
+                envelope.ItemResults,
+                envelope.BatchErrors,
+                envelope.PayloadSha256 ?? ComputePayloadSha256(request),
+                leaseUntilUtc: null,
+                refundedAttempts,
+                "processing-interrupted",
+                envelope.LeaseId,
+                retryAfterUtc: now);
+
+            if (!_db.Database.IsRelational())
+            {
+                batch.ErrorJson = interruptedEnvelope;
+                await _db.SaveChangesAsync(CancellationToken.None);
+                return;
+            }
+
+            FormattableString release = $@"
+                UPDATE mobile_sync_batches
+                   SET error_json = {interruptedEnvelope}::jsonb
+                 WHERE id = {batch.Id}
+                   AND status = {MobileSyncBatchStatus.Pending}
+                   AND error_json->>'LeaseId' = {leaseText};";
+            await _db.Database.ExecuteSqlInterpolatedAsync(
+                release,
+                CancellationToken.None);
+        }
+        catch (Exception)
+        {
+            // best-effort：写不进去时租约会在 15 分钟后过期，由后台回收器接住。
+        }
+    }
+
+    private async Task RecordTimingAsync(
+        Guid userId,
+        MobileUsageEventsUploadRequest request,
+        MobileIngestTimingAccumulator timing,
+        string outcome,
+        long totalMs)
+    {
+        if (_timingWriter is null)
+            return;
+
+        var computeMs = Math.Max(0, totalMs - timing.ConnectionWaitMs - timing.CommitMs);
+        await _timingWriter.TryRecordAsync(new MobileSyncIngestTimingRecord(
+            userId,
+            request.DeviceId,
+            request.BatchId,
+            request.WindowStartUtc,
+            request.WindowEndUtc,
+            Math.Max(0, timing.Attempt),
+            outcome,
+            timing.ConnectionWaitMs,
+            timing.AdvisoryLockWaitMs,
+            timing.SessionRebuildMs,
+            timing.MaterializeMs,
+            computeMs,
+            timing.CommitMs,
+            totalMs));
     }
 
     private async Task<MobileUsageIngestResult> IngestAttemptAsync(
@@ -106,7 +233,11 @@ public sealed class MobileUsageIngestService
         ValidateRequestBudget(request);
         var payloadSha256 = ComputePayloadSha256(request);
         var leaseId = Guid.NewGuid();
+        // 第一条数据库命令的耗时里含着连接池取连接（#568）：这一段大说明池被占满或建连慢。
+        var firstCommand = Stopwatch.StartNew();
         var existingBatch = await FindBatchAsync(userId, request, ct);
+        firstCommand.Stop();
+        IngestTimingScope.RecordConnectionWait(firstCommand.ElapsedMilliseconds);
 
         if (existingBatch is not null)
         {
@@ -238,6 +369,7 @@ public sealed class MobileUsageIngestService
             var sessionChanged = false;
             if (hasNewUsageEvents || await HasExtendableOpenSessionAsync(userId, request, ct))
             {
+                var rebuildWatch = Stopwatch.StartNew();
                 var rebuild = await _sessionInterpreter.RebuildSessionsAsync(
                     userId,
                     request.DeviceId,
@@ -247,6 +379,8 @@ public sealed class MobileUsageIngestService
                     hasNewUsageEvents
                         ? request.Events.Select(usageEvent => usageEvent.EventTimestampUtc).ToArray()
                         : Array.Empty<DateTimeOffset>());
+                rebuildWatch.Stop();
+                IngestTimingScope.RecordSessionRebuild(rebuildWatch.ElapsedMilliseconds);
                 sessionChanged = rebuild.Changed;
             }
 
@@ -268,12 +402,15 @@ public sealed class MobileUsageIngestService
             // 新条目或 open-session 窗口扩宽确实改变派生输入时才重算；纯重复批继续跳过。
             if (_materializationService is not null && derivedDataChanged)
             {
+                var materializeWatch = Stopwatch.StartNew();
                 await _materializationService.MaterializeAsync(
                     userId,
                     request.DeviceId,
                     request.WindowStartUtc,
                     request.WindowEndUtc,
                     ct);
+                materializeWatch.Stop();
+                IngestTimingScope.RecordMaterialize(materializeWatch.ElapsedMilliseconds);
             }
 
             // accepted_count 反映该批全部被接受的条目（事件 / 元数据 / 汇总），
@@ -286,7 +423,12 @@ public sealed class MobileUsageIngestService
                 now,
                 ct);
             if (transaction is not null)
+            {
+                var commitWatch = Stopwatch.StartNew();
                 await transaction.CommitAsync(ct);
+                commitWatch.Stop();
+                IngestTimingScope.RecordCommit(commitWatch.ElapsedMilliseconds);
+            }
 
             attemptState.OwnedPendingBatchId = null;
             return result;
@@ -361,7 +503,13 @@ public sealed class MobileUsageIngestService
                 "同步批次处理次数已耗尽；本地记录保留，请使用新的批次标识重试");
         }
 
-        var attemptCount = Math.Max(1, envelope.AttemptCount) + 1;
+        // 中断过的尝试会被退回（AttemptCount 归零），所以这里用 +1 再夹到 ≥1，
+        // 而不是 max(1, n) + 1 —— 后者会让一次被中断的尝试仍然吃掉一次配额（#568）。
+        // 例外：没有 LeaseId 且 AttemptCount = 0 的是"租约出现之前"的历史行（error_json 只有 {}），
+        // 沿用既有口径记作第 2 次，不改变这部分数据的行为。
+        var attemptCount = envelope.LeaseId is null && envelope.AttemptCount == 0
+            ? 2
+            : Math.Max(1, envelope.AttemptCount + 1);
         var nextEnvelope = MobileSyncBatchEnvelopeCodec.Serialize(
             envelope.ItemResults,
             envelope.BatchErrors,
@@ -486,7 +634,9 @@ public sealed class MobileUsageIngestService
     {
         var envelope = MobileSyncBatchEnvelopeCodec.DeserializeOrEmpty(batch.ErrorJson);
         var previousLeaseId = envelope.LeaseId;
-        var attemptCount = Math.Max(1, envelope.AttemptCount) + 1;
+        // 这是同一次请求内的重跑（ExecuteStrategy 遇到瞬态故障），不是新的一次外部认领：
+        // 只续租、不递增 AttemptCount，否则数据库抖一下就会白吃一次 5 次配额（#568）。
+        var attemptCount = Math.Max(1, envelope.AttemptCount);
         var nextEnvelope = MobileSyncBatchEnvelopeCodec.Serialize(
             envelope.ItemResults,
             envelope.BatchErrors,
@@ -652,6 +802,15 @@ public sealed class MobileUsageIngestService
             throw new InvalidOperationException("Replay requires a terminal mobile sync batch.");
 
         var envelope = MobileSyncBatchEnvelopeCodec.DeserializeOrEmpty(batch.ErrorJson);
+        // 归档批次（#568）：这个批次标识不会再被接受。必须明确告诉客户端换标识，
+        // 否则回放会返回 200 + 全零计数，客户端既不确认也不上传，形成无意义的重复请求。
+        if (string.Equals(batch.Status, MobileSyncBatchStatus.Abandoned, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new DomainException(
+                MobileSyncErrorCodes.RetryExhausted,
+                "同步批次已归档（窗口已超出补传期，或同窗口已被成功批次覆盖）；本地记录保留，请使用新的批次标识重试");
+        }
+
         if (string.Equals(batch.Status, MobileSyncBatchStatus.Failed, StringComparison.OrdinalIgnoreCase)
             && envelope.ItemResults.Count == 0)
         {

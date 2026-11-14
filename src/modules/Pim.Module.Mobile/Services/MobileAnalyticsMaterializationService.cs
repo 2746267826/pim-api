@@ -1,4 +1,4 @@
-﻿using System.Globalization;
+using System.Globalization;
 using Microsoft.EntityFrameworkCore;
 using Pim.Infrastructure.Data;
 using Pim.Module.Mobile.DTOs;
@@ -169,9 +169,13 @@ public sealed class MobileAnalyticsMaterializationService
             return;
 
         var lockKey = MobileAnalyticsMaterializationLock.KeyFor(userId, deviceId);
+        // 与 MobileSessionInterpreter 同一把锁、同一段口径（#568）。
+        var lockWatch = System.Diagnostics.Stopwatch.StartNew();
         await _db.Database.ExecuteSqlInterpolatedAsync(
             $"SELECT pg_advisory_xact_lock({lockKey})",
             ct);
+        lockWatch.Stop();
+        IngestTimingScope.RecordAdvisoryLockWait(lockWatch.ElapsedMilliseconds);
     }
 
     private static List<MobileUsageAggregateEntity> BuildAggregateRows(
