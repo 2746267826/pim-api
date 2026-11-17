@@ -17,6 +17,11 @@ public class EndpointStatusEntity : IUserOwnedEntity
     [Column("collection_cache_count")] public int CollectionCacheCount { get; set; }
     [Column("online_only_blocked_count")] public int OnlineOnlyBlockedCount { get; set; }
     [Column("last_heartbeat_at")] public DateTimeOffset? LastHeartbeatAt { get; set; }
+
+    /// <summary>最近一次同步唤醒未上传的原因（#569）。诊断字段，不参与任何判定。</summary>
+    [Column("last_wake_block_reason")]
+    [MaxLength(64)]
+    public string? LastWakeBlockReason { get; set; }
     [Column("created_at")] public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
     [Column("updated_at")] public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
 }

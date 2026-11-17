@@ -2321,6 +2321,11 @@ namespace Pim.Infrastructure.Data.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("last_heartbeat_at");
 
+                    b.Property<string>("LastWakeBlockReason")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("last_wake_block_reason");
+
                     b.Property<int>("OnlineOnlyBlockedCount")
                         .HasColumnType("integer")
                         .HasColumnName("online_only_blocked_count");

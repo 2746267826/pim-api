@@ -42,7 +42,12 @@ public class EndpointBoundaryTests
         await using var db = CreateDb();
         await CreateService(db, UserId).UpsertHeartbeatAsync(
             "win-1",
-            new EndpointHeartbeatRequest("windows", "1.0.0", "Healthy", 2));
+            new EndpointHeartbeatRequest(
+                "windows",
+                "1.0.0",
+                "Healthy",
+                2,
+                LastWakeBlockReason: "  deferred-not-before  "));
 
         var userReload = await CreateService(db, UserId).ListAsync();
         var otherUserReload = await CreateService(db, OtherUserId).ListAsync();
@@ -52,7 +57,27 @@ public class EndpointBoundaryTests
         Assert.Equal("windows", status.Platform);
         Assert.Equal("Healthy", status.UploadStatus);
         Assert.Equal(2, status.CollectionCacheCount);
+        // #569：唤醒未上传原因是诊断字段，落库时去空白；未上报就是 null。
+        Assert.Equal("deferred-not-before", status.LastWakeBlockReason);
         Assert.Empty(otherUserReload);
+    }
+
+    [Fact]
+    public async Task EndpointHeartbeatWithoutWakeReasonClearsThePreviousOne()
+    {
+        await using var db = CreateDb();
+        var service = CreateService(db, UserId);
+        await service.UpsertHeartbeatAsync(
+            "android-3",
+            new EndpointHeartbeatRequest("android", "2.0.0", "Healthy", 0, "upload-failed"));
+
+        // 下一次心跳没上报原因：不能让上一跳的旧值冒充"最近一次"。
+        var status = await service.UpsertHeartbeatAsync(
+            "android-3",
+            new EndpointHeartbeatRequest("android", "2.0.0", "Healthy", 0));
+
+        Assert.Null(status.LastWakeBlockReason);
+        Assert.Null(Assert.Single(await service.ListAsync()).LastWakeBlockReason);
     }
 
     [Fact]
