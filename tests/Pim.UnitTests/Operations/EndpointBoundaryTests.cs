@@ -81,6 +81,61 @@ public class EndpointBoundaryTests
     }
 
     [Fact]
+    public async Task EndpointHeartbeatTruncatesAnOverlongWakeReason()
+    {
+        await using var db = CreateDb();
+        var service = CreateService(db, UserId);
+        var overlong = new string('x', 100);
+
+        var status = await service.UpsertHeartbeatAsync(
+            "android-4",
+            new EndpointHeartbeatRequest("android", "2.0.0", "Healthy", 0, overlong));
+
+        // 列宽 64：超长诊断串必须被安全截断，而不是让整次心跳因为 DbUpdateException 失败。
+        Assert.Equal(64, status.LastWakeBlockReason?.Length);
+        Assert.Equal(new string('x', 64), status.LastWakeBlockReason);
+    }
+
+    [Fact]
+    public async Task EndpointHeartbeatKeepsUnknownWakeReasonAndDropsBlankOnes()
+    {
+        await using var db = CreateDb();
+        var service = CreateService(db, UserId);
+
+        // 服务端不校验取值集合：客户端先上线的未知诊断码也要能落库。
+        var unknown = await service.UpsertHeartbeatAsync(
+            "android-5",
+            new EndpointHeartbeatRequest("android", "2.0.0", "Healthy", 0, "experimental-custom-block"));
+        Assert.Equal("experimental-custom-block", unknown.LastWakeBlockReason);
+
+        // 纯空白等于没报。
+        var blank = await service.UpsertHeartbeatAsync(
+            "android-5",
+            new EndpointHeartbeatRequest("android", "2.0.0", "Healthy", 0, "   "));
+        Assert.Null(blank.LastWakeBlockReason);
+    }
+
+    [Fact]
+    public async Task WakeReasonIsScopedPerDevice()
+    {
+        await using var db = CreateDb();
+        var service = CreateService(db, UserId);
+        await service.UpsertHeartbeatAsync(
+            "android-6",
+            new EndpointHeartbeatRequest("android", "2.0.0", "Healthy", 0, "deferred-not-before"));
+
+        // 同一用户的另一台设备（Windows 不报这个字段）不得清掉 Android 的原因。
+        await service.UpsertHeartbeatAsync(
+            "win-6",
+            new EndpointHeartbeatRequest("windows", "1.0.0", "Healthy", 0));
+
+        var statuses = await service.ListAsync();
+        Assert.Equal("deferred-not-before",
+            statuses.Single(row => row.DeviceId == "android-6").LastWakeBlockReason);
+        Assert.Null(statuses.Single(row => row.DeviceId == "win-6").LastWakeBlockReason);
+    }
+
+    [Fact]
     public async Task NotificationActionsPersistHistoryAndBlockedCount()
     {
         await using var db = CreateDb();

@@ -52,8 +52,11 @@ public sealed class StrictValueSetsSchemaFilter : ISchemaFilter
     /// 而「文字 description 说明例外」并不能改变 enum 的机器约束。
     /// 所以这里改成：把**当前写入侧只产生哪四个值**与**历史行可能是别的字符串**都写进
     /// description，让契约与响应现实一致（本仓原则：契约说的必须成真）。
+    ///
+    /// 字典同时容纳请求侧字段（例如客户端上报的心跳诊断码）：机制相同——只追加 description、
+    /// 不生成 enum，因为服务端对这些请求字段不做集合校验。
     /// </summary>
-    private static readonly Dictionary<string, string> ResponseNotes = new(StringComparer.Ordinal)
+    private static readonly Dictionary<string, string> DescriptionNotes = new(StringComparer.Ordinal)
     {
         ["TaskResponse.Status"] =
             "任务状态。服务端当前只写入 NEEDS-ACTION / IN-PROCESS / COMPLETED / CANCELLED，" +
@@ -124,7 +127,7 @@ public sealed class StrictValueSetsSchemaFilter : ISchemaFilter
     /// <summary>把响应侧口径说明写进字段 description（不改变字段类型，也不声明 enum）。</summary>
     private static void ApplyNotes(OpenApiSchema schema, SchemaFilterContext context)
     {
-        foreach (var (key, note) in ResponseNotes)
+        foreach (var (key, note) in DescriptionNotes)
         {
             var dot = key.LastIndexOf('.');
             if (!string.Equals(context.Type.Name, key[..dot], StringComparison.Ordinal))
