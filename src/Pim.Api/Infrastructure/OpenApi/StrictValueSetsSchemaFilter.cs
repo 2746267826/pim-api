@@ -52,8 +52,11 @@ public sealed class StrictValueSetsSchemaFilter : ISchemaFilter
     /// 而「文字 description 说明例外」并不能改变 enum 的机器约束。
     /// 所以这里改成：把**当前写入侧只产生哪四个值**与**历史行可能是别的字符串**都写进
     /// description，让契约与响应现实一致（本仓原则：契约说的必须成真）。
+    ///
+    /// 字典同时容纳请求侧字段（例如客户端上报的心跳诊断码）：机制相同——只追加 description、
+    /// 不生成 enum，因为服务端对这些请求字段不做集合校验。
     /// </summary>
-    private static readonly Dictionary<string, string> ResponseNotes = new(StringComparer.Ordinal)
+    private static readonly Dictionary<string, string> DescriptionNotes = new(StringComparer.Ordinal)
     {
         ["TaskResponse.Status"] =
             "任务状态。服务端当前只写入 NEEDS-ACTION / IN-PROCESS / COMPLETED / CANCELLED，" +
@@ -66,6 +69,26 @@ public sealed class StrictValueSetsSchemaFilter : ISchemaFilter
             + "正在计时的段按查询时刻计入，planned（尚未执行）不计；逐段四舍五入取秒。"
             + "注意它是「实际花在任务上的时间」，包含任务被取消/删除前已经发生的那段，"
             + "**不代表任务成功完成**（是否完成看 TaskStatus）。",
+
+        ["MobileSyncBatchSummaryDto.Status"] =
+            "同步批次状态。服务端当前写入：pending（已受理、处理中）/ completed（处理完成）"
+            + " / failed（有条目失败）/ abandoned（已归档：窗口超出 14 天补传期，或同窗口已被成功批次覆盖）；"
+            + "历史行还可能是 completed-with-errors（遗留状态，写入侧不再产生）。"
+            + "**故意不声明闭合 enum**：库里存在值域收敛前写入的历史值，声明 enum 会让严格生成的客户端"
+            + "反序列化失败。客户端请按「未知值原样展示、不要回写」处理。abandoned 是终态："
+            + "重投该批次标识会返回 40903，应换用新的批次标识重传。",
+
+        ["EndpointHeartbeatRequest.LastWakeBlockReason"] =
+            "最近一次同步唤醒为什么没有完成上传（#569）。可选；客户端未上报时省略。"
+            + "服务端只做去空白与 64 字符截断，不校验取值集合（诊断字段，客户端升级可能先于服务端）。"
+            + "当前写入侧会产生的值：uploaded（本跳已完成上传）/ deferred-not-before（服务端 202，"
+            + "按 Retry-After 等待）/ skipped-busy（上一次同步未结束，本跳被跳过）/ lock-dead-reset"
+            + "（持锁超时判定卡死并重置锁）/ auth-required / permission-required / "
+            + "server-not-configured / upload-failed。",
+
+        ["EndpointStatusDto.LastWakeBlockReason"] =
+            "最近一次同步唤醒未上传的原因，取值见 EndpointHeartbeatRequest.lastWakeBlockReason。"
+            + "**故意不声明闭合 enum**：它是服务端原样保存的诊断字段，历史值可能与当前写入侧不同。",
 
         ["MobileUsageIngestResult.LeaseUntilUtc"] =
             "Present only when processingState=in-flight. It is the upper bound of the active "
@@ -104,7 +127,7 @@ public sealed class StrictValueSetsSchemaFilter : ISchemaFilter
     /// <summary>把响应侧口径说明写进字段 description（不改变字段类型，也不声明 enum）。</summary>
     private static void ApplyNotes(OpenApiSchema schema, SchemaFilterContext context)
     {
-        foreach (var (key, note) in ResponseNotes)
+        foreach (var (key, note) in DescriptionNotes)
         {
             var dot = key.LastIndexOf('.');
             if (!string.Equals(context.Type.Name, key[..dot], StringComparison.Ordinal))

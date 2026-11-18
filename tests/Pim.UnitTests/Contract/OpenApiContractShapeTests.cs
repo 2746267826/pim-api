@@ -93,6 +93,41 @@ public sealed class OpenApiContractShapeTests
     }
 
     [Fact]
+    public void SyncBatchSummaryStatusIsDocumentedWithoutAClosedEnum()
+    {
+        // #569：abandoned 成为一等终态，但响应字段只写 description —— 库里存在值域收敛前的历史值，
+        // 声明 enum 会让严格生成的客户端反序列化失败。
+        var schema = Schema("MobileSyncBatchSummaryDto");
+        var status = Resolve(schema.Properties["status"]);
+
+        Assert.Equal("string", status.Type);
+        // 不声明闭合 enum：Swashbuckle 给的是空集合而不是 null，两种都算"没有机器约束"。
+        Assert.True(status.Enum is null || status.Enum.Count == 0, "status 不应声明 enum");
+        Assert.False(string.IsNullOrWhiteSpace(status.Description), "status 必须有 description");
+        foreach (var value in new[] { "pending", "completed", "failed", "completed-with-errors", "abandoned" })
+        {
+            Assert.Contains(value, status.Description, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public void EndpointHeartbeatCarriesTheLastWakeBlockReason()
+    {
+        // #569：客户端在心跳里上报"最近一次唤醒未上传原因"，服务端原样保存，只在 description 里写取值口径。
+        var request = Schema("EndpointHeartbeatRequest").Properties["lastWakeBlockReason"];
+        var documented = Resolve(request);
+        Assert.Equal("string", documented.Type);
+        Assert.True(documented.Enum is null || documented.Enum.Count == 0);
+        Assert.Contains("deferred-not-before", documented.Description, StringComparison.Ordinal);
+        Assert.Contains("skipped-busy", documented.Description, StringComparison.Ordinal);
+
+        var response = Schema("EndpointStatusDto").Properties["lastWakeBlockReason"];
+        var responseSchema = Resolve(response);
+        Assert.Equal("string", responseSchema.Type);
+        Assert.False(string.IsNullOrWhiteSpace(responseSchema.Description));
+    }
+
+    [Fact]
     public void NoteAsrSegmentContentUsesHeadersAndDocumentsImmutableIdentityMetadata()
     {
         var operation = Document.Paths[

@@ -226,7 +226,20 @@ public sealed class EndpointStatusService
             state.UploadStatus,
             state.CollectionCacheCount,
             state.OnlineOnlyBlockedCount,
-            state.LastHeartbeatAt);
+            state.LastHeartbeatAt,
+            state.LastWakeBlockReason);
+
+    /// <summary>
+    /// 唤醒未上传原因（#569）：诊断字段，服务端不校验取值集合——客户端升级可能先于服务端，
+    /// 收下未知值比拒收一次心跳更有用。只做去空白与长度保护（列宽 64）。
+    /// </summary>
+    private static string? NormalizeWakeBlockReason(string? reason)
+    {
+        var trimmed = reason?.Trim();
+        if (string.IsNullOrEmpty(trimmed))
+            return null;
+        return trimmed.Length <= 64 ? trimmed : trimmed[..64];
+    }
 
     private static string NormalizeDeviceId(string deviceId)
     {
@@ -257,6 +270,7 @@ public sealed class EndpointStatusService
         state.Platform = NormalizePlatform(request.Platform);
         state.AppVersion = request.AppVersion;
         state.UploadStatus = NormalizeUploadStatus(request.UploadStatus);
+        state.LastWakeBlockReason = NormalizeWakeBlockReason(request.LastWakeBlockReason);
         state.CollectionCacheCount = Math.Max(0, request.CollectionCacheCount ?? 0);
         state.LastHeartbeatAt = now;
         state.UpdatedAt = now;
