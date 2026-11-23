@@ -523,6 +523,165 @@ public sealed class NoteProcessingTests(NoteProcessingFixture host)
     }
 
     [Fact]
+    public async Task StoppedUnboundAttemptIsBlockedInsteadOfBeingReboundAndDispatched()
+    {
+        var owner = await OwnerAsync("asr-stopped-unbound");
+        using var client = AuthRegistrationTestHost.Authed(host.Factory, owner.AccessToken);
+        var models = await ConfigureAsync(client, auto: false);
+        _ = await ConfigureCloudRouteAsync(client, models.Asr.Id);
+        var material = await CompleteMaterialAsync(owner, client, withAudio: true);
+
+        using var scope = host.Factory.Services.CreateScope();
+        var asrService = scope.ServiceProvider.GetRequiredService<NoteAsrService>();
+        var materials = scope.ServiceProvider.GetRequiredService<NoteMaterialUploadStore>();
+        var asrStore = scope.ServiceProvider.GetRequiredService<NoteAsrTaskStore>();
+        var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
+        var version = await materials.GetAsync(owner.UserId, material.VersionId,
+            CancellationToken.None);
+        var request = await asrService.BuildDefaultRequestForProcessingAsync(owner.UserId,
+            version, CancellationToken.None);
+        var started = await asrService.StartForOwnerAsync(owner.UserId, request,
+            CancellationToken.None);
+        Assert.NotNull(started.AttemptId);
+        var attemptId = started.AttemptId!.Value;
+        await asrStore.UpdateAsync(owner.UserId, request.TaskId, state =>
+        {
+            state.AttemptId = null;
+        }, CancellationToken.None);
+        var attempt = await db.NoteAsrAttempts.SingleAsync(x =>
+            x.Id == attemptId && x.OwnerId == owner.UserId);
+        attempt.State = "Failed";
+        attempt.StopRequested = true;
+        await db.SaveChangesAsync();
+
+        var error = await Assert.ThrowsAsync<DomainException>(() =>
+            asrService.EnsureAttemptForOwnerAsync(owner.UserId, request.TaskId,
+                request.VersionId, CancellationToken.None));
+
+        Assert.Equal(40901, error.ErrorCode);
+        var blocked = await asrStore.ReadAsync(owner.UserId, request.TaskId,
+            CancellationToken.None);
+        Assert.All(blocked.Steps, step => Assert.Equal("Blocked", step.Current.Status));
+        Assert.Equal(1, await AttemptCountAsync(owner.UserId, request.TaskId));
+        Assert.Equal(0, host.Models.Calls);
+    }
+
+    [Fact]
+    public async Task BoundTerminalAttemptIsNotDispatchedOrReused()
+    {
+        var owner = await OwnerAsync("asr-stopped-bound");
+        using var client = AuthRegistrationTestHost.Authed(host.Factory, owner.AccessToken);
+        var models = await ConfigureAsync(client, auto: false);
+        _ = await ConfigureCloudRouteAsync(client, models.Asr.Id);
+        var material = await CompleteMaterialAsync(owner, client, withAudio: true);
+
+        using var scope = host.Factory.Services.CreateScope();
+        var asrService = scope.ServiceProvider.GetRequiredService<NoteAsrService>();
+        var asrJob = scope.ServiceProvider.GetRequiredService<NoteAsrJob>();
+        var materials = scope.ServiceProvider.GetRequiredService<NoteMaterialUploadStore>();
+        var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
+        var version = await materials.GetAsync(owner.UserId, material.VersionId,
+            CancellationToken.None);
+        var request = await asrService.BuildDefaultRequestForProcessingAsync(owner.UserId,
+            version, CancellationToken.None);
+        var started = await asrService.StartForOwnerAsync(owner.UserId, request,
+            CancellationToken.None);
+        var attempt = await db.NoteAsrAttempts.SingleAsync(x =>
+            x.Id == started.AttemptId && x.OwnerId == owner.UserId);
+        attempt.State = "Failed";
+        attempt.StopRequested = true;
+        await db.SaveChangesAsync();
+        host.Models.Reset();
+
+        await asrJob.RunAsync(owner.UserId, request.TaskId, CancellationToken.None);
+
+        Assert.Equal(0, host.Models.Calls);
+        var error = await Assert.ThrowsAsync<DomainException>(() =>
+            asrService.EnsureAttemptForOwnerAsync(owner.UserId, request.TaskId,
+                request.VersionId, CancellationToken.None));
+        Assert.Equal(40901, error.ErrorCode);
+        var blocked = await host.Factory.Services.GetRequiredService<NoteAsrTaskStore>()
+            .ReadAsync(owner.UserId, request.TaskId, CancellationToken.None);
+        Assert.All(blocked.Steps, step => Assert.Equal("Blocked", step.Current.Status));
+    }
+
+    [Fact]
+    public async Task StoppingTaskAlsoStopsAnUnboundQueuedAttempt()
+    {
+        var owner = await OwnerAsync("asr-stop-orphan");
+        using var client = AuthRegistrationTestHost.Authed(host.Factory, owner.AccessToken);
+        var models = await ConfigureAsync(client, auto: false);
+        _ = await ConfigureCloudRouteAsync(client, models.Asr.Id);
+        var material = await CompleteMaterialAsync(owner, client, withAudio: true);
+
+        using var scope = host.Factory.Services.CreateScope();
+        var asrService = scope.ServiceProvider.GetRequiredService<NoteAsrService>();
+        var materials = scope.ServiceProvider.GetRequiredService<NoteMaterialUploadStore>();
+        var asrStore = scope.ServiceProvider.GetRequiredService<NoteAsrTaskStore>();
+        var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
+        var version = await materials.GetAsync(owner.UserId, material.VersionId,
+            CancellationToken.None);
+        var request = await asrService.BuildDefaultRequestForProcessingAsync(owner.UserId,
+            version, CancellationToken.None);
+        var started = await asrService.StartForOwnerAsync(owner.UserId, request,
+            CancellationToken.None);
+        var attemptId = Assert.IsType<Guid>(started.AttemptId);
+        await asrStore.UpdateAsync(owner.UserId, request.TaskId, state =>
+        {
+            state.AttemptId = null;
+        }, CancellationToken.None);
+
+        _ = await Data<NoteAsrTaskDto>(await client.PostAsync(
+            $"/api/v1/native-notes/asr-tasks/{request.TaskId}/stop", null));
+
+        var attempt = await db.NoteAsrAttempts.AsNoTracking().SingleAsync(x =>
+            x.Id == attemptId && x.OwnerId == owner.UserId);
+        Assert.True(attempt.StopRequested);
+        Assert.Equal("Unknown", attempt.State);
+        var stopped = await asrStore.ReadAsync(owner.UserId, request.TaskId,
+            CancellationToken.None);
+        Assert.True(stopped.StopRequested);
+        Assert.Null(stopped.AttemptId);
+        Assert.Equal(0, host.Models.Calls);
+    }
+
+    [Fact]
+    public async Task ChangedAsrSegmentIdentityIsBlockedBeforeAttemptCreation()
+    {
+        var owner = await OwnerAsync("asr-segment-identity");
+        using var client = AuthRegistrationTestHost.Authed(host.Factory, owner.AccessToken);
+        var models = await ConfigureAsync(client, auto: false);
+        _ = await ConfigureCloudRouteAsync(client, models.Asr.Id);
+        var material = await CompleteMaterialAsync(owner, client, withAudio: true);
+
+        using var scope = host.Factory.Services.CreateScope();
+        var asrService = scope.ServiceProvider.GetRequiredService<NoteAsrService>();
+        var materials = scope.ServiceProvider.GetRequiredService<NoteMaterialUploadStore>();
+        var asrStore = scope.ServiceProvider.GetRequiredService<NoteAsrTaskStore>();
+        var version = await materials.GetAsync(owner.UserId, material.VersionId,
+            CancellationToken.None);
+        var request = await asrService.BuildDefaultRequestForProcessingAsync(owner.UserId,
+            version, CancellationToken.None);
+        await asrStore.CreateAsync(owner.UserId, request, version,
+            NoteAsrPlan.Build(version), request.Route, request.Route?.ExecutionMode,
+            NoteAsrPlan.SamplesPerCall, CancellationToken.None);
+        await asrStore.UpdateAsync(owner.UserId, request.TaskId, state =>
+        {
+            state.Steps[0].SourceOffset++;
+        }, CancellationToken.None);
+
+        var error = await Assert.ThrowsAsync<DomainException>(() =>
+            asrService.EnsureAttemptForOwnerAsync(owner.UserId, request.TaskId,
+                request.VersionId, CancellationToken.None));
+
+        Assert.Equal(40901, error.ErrorCode);
+        Assert.Equal(0, await AttemptCountAsync(owner.UserId, request.TaskId));
+        var blocked = await asrStore.ReadAsync(owner.UserId, request.TaskId,
+            CancellationToken.None);
+        Assert.All(blocked.Steps, step => Assert.Equal("Blocked", step.Current.Status));
+    }
+
+    [Fact]
     public async Task LegacyDerivedPayloadWithoutAwaitingAsrMigratesToWaitingWithoutEmptyTranscriptSuccess()
     {
         var owner = await OwnerAsync("legacy-derived-wait");
@@ -551,6 +710,67 @@ public sealed class NoteProcessingTests(NoteProcessingFixture host)
         Assert.True(stillWaiting.AwaitingAsr);
         Assert.NotEqual("Succeeded", NoteDerivedStore.DescribePhase(stillWaiting));
         Assert.Empty(stillWaiting.Plan.Input.Transcripts);
+        Assert.Equal(0, host.Models.Calls);
+    }
+
+    [Fact]
+    public async Task StoppedLegacyDerivedPayloadCannotAppearSucceededWithEmptyTranscripts()
+    {
+        var owner = await OwnerAsync("legacy-derived-stopped");
+        using var client = AuthRegistrationTestHost.Authed(host.Factory, owner.AccessToken);
+        var models = await ConfigureAsync(client, auto: true);
+        _ = await ConfigureCloudRouteAsync(client, models.Asr.Id);
+        host.Models.Reset();
+        var material = await CompleteMaterialAsync(owner, client, withAudio: true);
+        var started = await StatusAsync(client, material.NoteId, material.VersionId);
+        var taskId = started.Derived.TaskId!.Value;
+        await RemoveAwaitingAsrPropertyAsync(owner.UserId, taskId);
+        await DerivedStore().UpdateTaskAsync(owner.UserId, taskId, state =>
+        {
+            state.StopRequested = true;
+            foreach (var step in state.Steps)
+                step.Current.Status = "Succeeded";
+        }, CancellationToken.None);
+
+        await host.Factory.Services.GetRequiredService<NoteDerivedJob>().RunAsync(
+            owner.UserId, taskId, CancellationToken.None);
+
+        var task = await DerivedTaskAsync(owner.UserId, taskId);
+        Assert.True(task.StopRequested);
+        Assert.True(task.Blocked);
+        Assert.Equal("Stopped", NoteDerivedStore.DescribePhase(task));
+        Assert.Empty(task.Plan.Input.Transcripts);
+        Assert.Equal(0, host.Models.Calls);
+    }
+
+    [Fact]
+    public async Task StoppedLegacyDerivedPayloadWithoutPlanIsVisibleAsStopped()
+    {
+        var owner = await OwnerAsync("legacy-derived-no-plan");
+        using var client = AuthRegistrationTestHost.Authed(host.Factory, owner.AccessToken);
+        var models = await ConfigureAsync(client, auto: true);
+        _ = await ConfigureCloudRouteAsync(client, models.Asr.Id);
+        host.Models.Reset();
+        var material = await CompleteMaterialAsync(owner, client, withAudio: true);
+        var started = await StatusAsync(client, material.NoteId, material.VersionId);
+        var taskId = started.Derived.TaskId!.Value;
+        await RemoveAwaitingAsrPropertyAsync(owner.UserId, taskId);
+        await DerivedStore().UpdateTaskAsync(owner.UserId, taskId, state =>
+        {
+            state.Plan = null!;
+            state.StopRequested = true;
+            foreach (var step in state.Steps)
+                step.Current.Status = "Succeeded";
+        }, CancellationToken.None);
+
+        await host.Factory.Services.GetRequiredService<NoteDerivedJob>().RunAsync(
+            owner.UserId, taskId, CancellationToken.None);
+
+        var task = await DerivedTaskAsync(owner.UserId, taskId);
+        Assert.True(task.StopRequested);
+        Assert.True(task.Blocked);
+        Assert.Equal("Stopped", NoteDerivedStore.DescribePhase(task));
+        Assert.Null(task.Plan);
         Assert.Equal(0, host.Models.Calls);
     }
 

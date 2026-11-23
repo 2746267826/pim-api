@@ -405,6 +405,9 @@ public sealed class NoteDerivedStore(IOptions<NoteMaterialUploadOptions> options
     {
         if (state.AwaitingAsr && state.StopRequested) return "Stopped";
         if (state.AwaitingAsr) return "WaitingForAsr";
+        if (state.Request.AsrTaskId is not null && state.StopRequested &&
+            (state.Plan is null || state.Plan.Input.Transcripts.Count == 0))
+            return "Stopped";
         if (state.Blocked) return "Blocked";
         if (state.Steps.Count > 0 && state.Steps.All(x => x.Current.Status == "Succeeded")) return "Succeeded";
         if (state.StopRequested) return "Stopped";
@@ -422,7 +425,7 @@ public sealed class NoteDerivedStore(IOptions<NoteMaterialUploadOptions> options
         state.Request.AsrTaskId is not null &&
         !state.AwaitingAsr &&
         !state.Blocked &&
-        state.Plan?.Input?.Transcripts?.Count == 0;
+        (state.Plan is null || state.Plan.Input.Transcripts.Count == 0);
 
     internal static NoteDerivedTaskDto DescribeTask(NoteDerivedTaskState state) => new(
         state.Request.TaskId,
@@ -430,7 +433,7 @@ public sealed class NoteDerivedStore(IOptions<NoteMaterialUploadOptions> options
         state.NoteId,
         state.Request.VersionId,
         state.Request.AsrTaskId,
-        state.Plan.Input.AsrRevision,
+        state.Plan?.Input?.AsrRevision,
         state.InputSha256,
         state.ManifestSha256,
         DescribePhase(state),
@@ -442,7 +445,7 @@ public sealed class NoteDerivedStore(IOptions<NoteMaterialUploadOptions> options
         ],
         state.Issues,
         state.Steps.Take(10).Select(DescribeStep).ToArray(),
-        state.Plan.PlanVersion,
+        state.Plan?.PlanVersion ?? NoteDerivedLimits.PlanVersion,
         state.CreatedAt,
         state.UpdatedAt,
         state.StopRequested,

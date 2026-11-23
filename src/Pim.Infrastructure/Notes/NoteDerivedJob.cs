@@ -178,9 +178,13 @@ public sealed class NoteDerivedJob(
         {
             var state = await tasks.ReadTaskAsync(owner, taskId, ct);
             legacy = !state.AwaitingAsr && NoteDerivedStore.NeedsAsrRecovery(state);
-            if ((!state.AwaitingAsr && !legacy) || state.StopRequested ||
-                state.Request.AsrTaskId is null)
+            if ((!state.AwaitingAsr && !legacy) || state.Request.AsrTaskId is null)
                 return false;
+            if (state.StopRequested)
+            {
+                if (legacy) await BlockLegacyAsrAsync(owner, taskId, ct);
+                return false;
+            }
             if (legacy && state.Steps.Any(step => step.Current.Status != "Queued"))
             {
                 await BlockLegacyAsrAsync(owner, taskId, ct);
@@ -256,7 +260,7 @@ public sealed class NoteDerivedJob(
     {
         await tasks.UpdateTaskAsync(owner, taskId, current =>
         {
-            if (!NoteDerivedStore.NeedsAsrRecovery(current) || current.StopRequested) return;
+            if (!NoteDerivedStore.NeedsAsrRecovery(current)) return;
             current.Blocked = true;
             var issues = new[] { LegacyIssue() }.Concat(current.Issues)
                 .DistinctBy(issue => (issue.Code, issue.Message, issue.SourcePath,

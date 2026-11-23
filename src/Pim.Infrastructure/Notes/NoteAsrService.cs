@@ -134,16 +134,8 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
     internal async Task<NoteAsrState> EnsureAttemptForOwnerAsync(Guid owner, Guid taskId,
         Guid versionId, CancellationToken ct)
     {
-        var state = await tasks.ReadAsync(owner, taskId, ct);
-        if (state.Request.ExpectedUserId != owner || state.Request.VersionId != versionId)
-            throw new DomainException(40901, "ASR 任务不属于当前账号或固定材料版本");
-        var version = await materials.GetAsync(owner, versionId, ct);
-        if (state.NoteId != version.Upload.NoteId ||
-            state.InputSha256 != NoteMaterialManifestValidator.Hash(version.InputJson) ||
-            state.ManifestSha256 != NoteMaterialManifestValidator.Hash(version.ManifestJson))
-            throw new DomainException(40901, "ASR 任务与固定材料身份或摘要不一致");
-        await EnsureAttemptAsync(owner, state, ct);
-        return await tasks.ReadAsync(owner, taskId, ct);
+        return await tasks.WithLockAsync(owner,
+            lockedCt => EnsureAttemptLockedAsync(owner, taskId, versionId, lockedCt), ct);
     }
     public async Task<NoteAsrSegmentsDto> SegmentsAsync(Guid id, int offset, int limit, CancellationToken ct)
     {
@@ -165,10 +157,19 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
     public async Task<NoteAsrTaskDto> StopAsync(Guid id, CancellationToken ct)
     {
         var owner = await RequireActiveOwnerAsync(ct);
-        var updated = await tasks.UpdateAsync(owner, id, state => state.StopRequested = true, ct);
-        if (updated.AttemptId is { } attemptId)
-            await routing.StopAttemptAsync(attemptId, ct);
-        return Describe(updated);
+        return await tasks.WithLockAsync(owner, async lockedCt =>
+        {
+            var updated = await tasks.UpdateLockedAsync(owner, id,
+                state => state.StopRequested = true, lockedCt);
+            var attemptIds = await db.NoteAsrAttempts.AsNoTracking()
+                .Where(x => x.OwnerId == owner && x.TaskId == id &&
+                    x.State != "Succeeded" && x.State != "Failed" && x.State != "Cancelled")
+                .Select(x => x.Id)
+                .ToArrayAsync(lockedCt);
+            foreach (var attemptId in attemptIds)
+                await routing.StopAttemptAsync(attemptId, lockedCt);
+            return Describe(updated);
+        }, ct);
     }
     public async Task<NoteAsrTaskDto> RetryAsync(Guid id, RetryNoteAsrRequest request, CancellationToken ct)
     {
@@ -404,10 +405,34 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
         }
     }
 
-    private async Task EnsureAttemptAsync(Guid owner, NoteAsrState state, CancellationToken ct)
+    private Task EnsureAttemptAsync(Guid owner, NoteAsrState state, CancellationToken ct) =>
+        tasks.WithLockAsync(owner,
+            lockedCt => EnsureAttemptLockedAsync(owner, state.Request.TaskId,
+                state.Request.VersionId, lockedCt), ct);
+
+    private async Task<NoteAsrState> EnsureAttemptLockedAsync(Guid owner, Guid taskId,
+        Guid versionId, CancellationToken ct)
     {
-        if (state.Route is null) return;
-        if (state.StopRequested) return;
+        var state = await tasks.ReadAsync(owner, taskId, ct);
+        if (state.Request.ExpectedUserId != owner || state.Request.VersionId != versionId)
+            throw new DomainException(40901, "ASR 任务不属于当前账号或固定材料版本");
+        var version = await materials.GetAsync(owner, versionId, ct);
+        if (state.NoteId != version.Upload.NoteId ||
+            state.InputSha256 != NoteMaterialManifestValidator.Hash(version.InputJson) ||
+            state.ManifestSha256 != NoteMaterialManifestValidator.Hash(version.ManifestJson))
+        {
+            await BlockAttemptRecoveryAsync(owner, state,
+                "ASR 任务与固定材料身份或摘要不一致；未自动外发，请刷新并重新确认", ct);
+            throw new DomainException(40901, "ASR 任务与固定材料身份或摘要不一致");
+        }
+        if (state.Route is null) return state;
+        if (state.StopRequested) return state;
+        if (!MatchesFixedPlan(state, version))
+        {
+            await BlockAttemptRecoveryAsync(owner, state,
+                "ASR 任务分片身份或固定偏移与材料版本不一致；未自动外发，请重新发起", ct);
+            throw new DomainException(40901, "ASR 任务分片身份或固定偏移与材料版本不一致");
+        }
         var existing = await db.NoteAsrAttempts.AsNoTracking()
             .SingleOrDefaultAsync(x => x.OwnerId == owner && x.TaskId == state.Request.TaskId, ct);
         if (state.AttemptId is { } bound)
@@ -418,6 +443,16 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
                     "任务绑定的执行快照与数据库记录不一致；未自动外发，请核对记录后重试", ct);
                 throw new DomainException(40901, "任务绑定的执行快照与数据库记录不一致，请核对记录");
             }
+        }
+        else if (existing is not null &&
+            (existing.State != "Queued" || existing.StopRequested ||
+             await db.NoteAsrLeases.AsNoTracking().AnyAsync(x =>
+                 x.OwnerId == owner && x.AttemptId == existing.Id &&
+                 x.Status == "Active" && x.ExpiresAt > DateTimeOffset.UtcNow, ct)))
+        {
+            await BlockAttemptRecoveryAsync(owner, state,
+                "ASR 执行快照已有停止、终态或活动租约；未自动重新绑定，请核对记录后重试", ct);
+            throw new DomainException(40901, "ASR 执行快照已有停止、终态或活动租约，未自动重新绑定");
         }
         else if (existing is null)
         {
@@ -433,6 +468,8 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
                     x.SourceObjectType == "native-note-asr-task" &&
                     x.SourceObjectId == taskIdText, ct) ||
                 await db.NoteAsrSegmentEvidence.AsNoTracking().AnyAsync(x =>
+                    x.OwnerId == owner && x.TaskId == state.Request.TaskId, ct) ||
+                await db.NoteAsrBatchJobs.AsNoTracking().AnyAsync(x =>
                     x.OwnerId == owner && x.TaskId == state.Request.TaskId, ct);
             if (hasDurableAsrEvidence)
             {
@@ -469,6 +506,10 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
             }
         }
 
+        if (state.AttemptId == existing.Id && !CanExecuteAttempt(existing) &&
+            !NoteAsrTaskStore.Active(state))
+            return state;
+
         if (!AttemptMatches(state, existing))
         {
             await BlockAttemptRecoveryAsync(owner, state,
@@ -478,7 +519,7 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
 
         if (state.AttemptId != existing.Id)
         {
-            await tasks.UpdateAsync(owner, state.Request.TaskId, current =>
+            await tasks.UpdateLockedAsync(owner, state.Request.TaskId, current =>
             {
                 if (!SameTaskIdentity(current, state))
                     throw new DomainException(40901, "ASR 任务身份已变化，未绑定执行快照");
@@ -489,6 +530,7 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
                 current.ExecutionMode = existing.ExecutionMode ?? "realtime";
             }, ct);
         }
+        return await tasks.ReadAsync(owner, taskId, ct);
     }
 
     private static bool AllStepsQueued(NoteAsrState state) =>
@@ -510,6 +552,36 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
         left.RouteConsentVersion == right.RouteConsentVersion &&
         left.ExecutionMode == right.ExecutionMode &&
         left.Steps.Count == right.Steps.Count;
+
+    private static bool MatchesFixedPlan(NoteAsrState state, NoteMaterialVersionDto version)
+    {
+        List<NoteAsrStep> expected;
+        try
+        {
+            expected = NoteAsrPlan.Build(version,
+                state.SamplesPerCall > 0 ? state.SamplesPerCall : NoteAsrPlan.SamplesPerCall);
+        }
+        catch (DomainException)
+        {
+            return false;
+        }
+
+        return expected.Count == state.Steps.Count &&
+            expected.Zip(state.Steps).All(pair => SameStepIdentity(pair.First, pair.Second));
+    }
+
+    private static bool SameStepIdentity(NoteAsrStep expected, NoteAsrStep actual) =>
+        expected.Index == actual.Index &&
+        expected.RecordingId == actual.RecordingId &&
+        expected.RecordingSegment == actual.RecordingSegment &&
+        expected.ChunkIndex == actual.ChunkIndex &&
+        expected.FileIndex == actual.FileIndex &&
+        string.Equals(expected.Path, actual.Path, StringComparison.Ordinal) &&
+        string.Equals(expected.Sha256, actual.Sha256, StringComparison.Ordinal) &&
+        expected.SourceOffset == actual.SourceOffset &&
+        expected.RecordingOffset == actual.RecordingOffset &&
+        expected.TimelineOffset == actual.TimelineOffset &&
+        expected.Samples == actual.Samples;
 
     private async Task ValidateRecoveryTargetAsync(NoteAsrState state, CancellationToken ct)
     {
@@ -550,6 +622,7 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
         attempt.ConsentVersion == state.RouteConsentVersion &&
         attempt.ExpectedSegments == state.Steps.Count &&
         attempt.Language == state.Request.Language &&
+        CanExecuteAttempt(attempt) &&
         (state.Route == NoteAsrRoute.Local
             ? attempt.ModelId is null && attempt.LocalModelId is not null
             : state.Request.Consent is { } consent &&
@@ -560,14 +633,20 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
               string.Equals(attempt.Endpoint, consent.Endpoint, StringComparison.Ordinal)) &&
         attempt.ExecutionMode == (state.ExecutionMode ?? NoteAsrExecutionMode.Realtime);
 
+    private static bool CanExecuteAttempt(NoteAsrAttemptEntity attempt) =>
+        !attempt.StopRequested && attempt.State is ("Queued" or "Running" or "Leased");
+
     private async Task BlockAttemptRecoveryAsync(Guid owner, NoteAsrState state, string message,
         CancellationToken ct)
     {
-        await tasks.UpdateAsync(owner, state.Request.TaskId, current =>
+        var current = await tasks.ReadAsync(owner, state.Request.TaskId, ct);
+        if (current.Revision != state.Revision || !SameTaskIdentity(current, state)) return;
+        if (!current.Steps.Any(step =>
+                step.Current.Status is "Queued" or "Running" or "Unknown"))
+            return;
+        await tasks.UpdateLockedAsync(owner, state.Request.TaskId, currentState =>
         {
-            if (current.Revision != state.Revision ||
-                !SameTaskIdentity(current, state)) return;
-            foreach (var step in current.Steps.Where(step =>
+            foreach (var step in currentState.Steps.Where(step =>
                          step.Current.Status is "Queued" or "Running" or "Unknown"))
             {
                 step.Current.Status = "Blocked";

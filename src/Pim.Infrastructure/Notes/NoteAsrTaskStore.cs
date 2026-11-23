@@ -66,7 +66,13 @@ public sealed class NoteAsrTaskStore(IOptions<NoteMaterialUploadOptions> options
     internal async Task<NoteAsrState> UpdateAsync(Guid owner, Guid id, Action<NoteAsrState> update, CancellationToken ct)
     {
         await using var lease = await LockAsync(owner, ct);
-        var state = await ReadAsync(owner, id, ct); update(state);
+        return await UpdateLockedAsync(owner, id, update, ct);
+    }
+    internal async Task<NoteAsrState> UpdateLockedAsync(Guid owner, Guid id,
+        Action<NoteAsrState> update, CancellationToken ct)
+    {
+        var state = await ReadAsync(owner, id, ct);
+        update(state);
         state.Revision = Guid.NewGuid(); state.UpdatedAt = DateTimeOffset.UtcNow;
         await SaveAsync(state, ct); return state;
     }
