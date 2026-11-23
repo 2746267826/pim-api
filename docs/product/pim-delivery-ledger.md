@@ -11,7 +11,20 @@
 
 | 批次 | 场景 | 参与仓库 | 依赖 | 状态 | 证据 |
 | --- | --- | --- | --- | --- | --- |
-| 1 | 笔记结束、材料逐项回执、服务端 ASR/整理双链路、换端恢复 | pim-api、pim-android、pim-windows | 当前 API 契约 e1eccd55；客户端各自 master 基线 | 进行中 | 首批审计工单已派发，等待真实流程与 CI 回执 |
+| 1 | 笔记结束、材料逐项回执、服务端 ASR/整理双链路、换端恢复 | pim-api、pim-android、pim-windows | 当前 API 契约 e1eccd55；客户端各自 master 基线 | 进行中 | API/Web 编排实现中；Android 回执/冲突工单已派发；Windows 规划器入口提交 9b18e00；首批真实流程和 CI 仍待执行 |
+
+## 已回收审计回执
+
+| 回执 | 基线 | 当前判定 | 证据与边界 |
+| --- | --- | --- | --- |
+| API/Web 首批笔记链路 | pim-api e1eccd55 | 四个场景均为 PARTIAL | 当前 API/Web 代码和测试覆盖材料校验、ASR、整理、恢复的局部能力。真实 TestHost、隔离数据库和浏览器流程尚未执行。审计回执见 [审计 API/Web 首批笔记链路](t3-thread://v2/cbad7524-a94d-4cc4-a3e3-2fc1b43001ed/thread:delegated-task:command%3Amcp%3Adf3df0cd-79e7-4758-8cce-cb469cd5ec6d%3Adelegate-task%3Apim-audit-api-web-20261123)。 |
+| Android 首批笔记链路 | pim-android 7bcedb8；API e1eccd55 | 结束 PASS；材料回执 PARTIAL；双链路 PASS（源码与模拟器级测试）；换端 PARTIAL | 设备测试和真实 Test API 未执行。冲突选择未接入，材料页没有逐文件/逐分块回执列表。审计回执见 [审计 Android 笔记收口链路](t3-thread://v2/cbad7524-a94d-4cc4-a3e3-2fc1b43001ed/thread:delegated-task:command%3Amcp%3Adf3df0cd-79e7-4758-8cce-cb469cd5ec6d%3Adelegate-task%3Apim-audit-android-notes-20261123)。 |
+| Windows 首批笔记链路 | pim-windows 3baea3c；API e1eccd55 | 结束 PARTIAL；材料回执 BLOCKED；双链路 PARTIAL；换端 PARTIAL | Windows 实机、真实 Test API、WPF 流程和播放器未执行。当前录音仍为整段 WAV，笔记窗口没有三状态聚合页。审计回执见 [审计 Windows 笔记收口链路](t3-thread://v2/cbad7524-a94d-4cc4-a3e3-2fc1b43001ed/thread:delegated-task:command%3Amcp%3Adf3df0cd-79e7-4758-8cce-cb469cd5ec6d%3Adelegate-task%3Apim-audit-windows-notes-20261123)。 |
+| API/Web A-K 全量盘点 | pim-api e1eccd55 | PASS 0；PARTIAL 56；FAIL 27；BLOCKED 9；NOT-VERIFIED 15；原决议跳过/暂缓 4 | 本次为源码和测试源码盘点，未运行 API、Web、真实 provider、PostgreSQL、浏览器或设备流程。审计回执见 [盘点 API/Web A-K](t3-thread://v2/cbad7524-a94d-4cc4-a3e3-2fc1b43001ed/thread:delegated-task:command%3Amcp%3Adf3df0cd-79e7-4758-8cce-cb469cd5ec6d%3Adelegate-task%3Apim-audit-api-web-a-k-20261123)。 |
+| Android L-P-Q 全量盘点 | pim-android 7bcedb8；API e1eccd55 | 0 项可判定完成；18 项部分实现；7 项未实现；Q01 需求确认缺口；Q02 原决议跳过 | 未运行 Android 测试、构建、设备流程或 CI。Q01 不能按跳过处理，需要补确认。审计回执见 [盘点 Android L-P-Q](t3-thread://v2/cbad7524-a94d-4cc4-a3e3-2fc1b43001ed/thread:delegated-task:command%3Amcp%3Adf3df0cd-79e7-4758-8cce-cb469cd5ec6d%3Adelegate-task%3Apim-audit-android-l-m-p-q-20261123)。 |
+| Windows M-P-Q-R-Z 全量盘点 | pim-windows 3baea3c；API e1eccd55 | 原生笔记与采集有局部实现；M05/P03 入口 FAIL；Q02 保留原决议 | `dotnet test` 429 passed、1 skipped，契约生成校验通过，但 Windows-only UI、实机、真实 API 和当前 CI 未验证。审计回执见 [盘点 Windows M-P-Q-R](t3-thread://v2/cbad7524-a94d-4cc4-a3e3-2fc1b43001ed/thread:delegated-task:command%3Amcp%3Adf3df0cd-79e7-4758-8cce-cb469cd5ec6d%3Adelegate-task%3Apim-audit-windows-m-n-p-q-r-20261123)。 |
+
+台账中的交付包原始状态只表示 2026-11-05 功能表结论。当前判定以回执中的代码、测试和真实流程边界为准。审计回执尚未替代真实用户流程验收，未验证项继续保留为 NOT-VERIFIED、BLOCKED 或 PARTIAL。
 
 ## 首批工单
 
@@ -25,6 +38,9 @@
 | AUDIT-API-Q-RZ | pim-api | Q01-Q08、R01-R05、Z01-Z02 全量源码与证据盘点 | pim-api e1eccd55 | MCP/API 合同、服务器中心边界、基础服务安全和恢复 | 逐项状态、精确文件/命令、PR/commit、未验证边界 |
 | AUDIT-ANDROID-LPQ | pim-android | L01-L14、P01-P05、Q01-Q08 盘点 | Android 7bcedb8；API e1eccd55 | 原生入口、权限、采集、基础服务、契约 freshness、设备边界 | 逐项状态、测试/发布/设备证据 |
 | AUDIT-WINDOWS-MNPQRZ | pim-windows | M01-M06、N01-N03、P01-P05、Q01-Q08、R01-R05、Z01-Z02 盘点 | Windows 3baea3c；API e1eccd55 | 原生工作区、扩展、契约生成、托盘、录音、权限和用户流程 | 逐项状态、测试/CI/实机边界 |
+| ANDROID-1 | pim-android | 首批逐文件/逐分块材料回执、冲突版本显式选择、promote CAS、契约生成与测试 | API e1eccd55；依赖已有 promote 接口 | 上传重试恢复；服务器回执丢失后重核对；Conflict 选择保留版本；stale CAS 拒绝 | commit、JVM 测试、契约门禁、CI、设备/真实 Test API 边界 |
+| WINDOWS-1 | pim-windows | 首批材料回执、ASR/整理状态聚合、换端恢复接入，按 API 编排最终契约刷新 | API/Web 编排最终 commit；Windows 3baea3c | 单篇上传/ASR/整理状态；材料消费回执；恢复与 owner 隔离；真实 Windows 流程 | commit、契约生成校验、客户端测试、PR/CI、实机边界 |
+| WINDOWS-M05-ENTRY | pim-windows | 原生规划器托盘入口，复用 NativePlannerWindow 单例 | Windows 3baea3c；API e1eccd55 | 托盘进入原生日历/任务；关闭重开不重复；原有托盘入口不回归 | commit 9b18e00；431 passed、1 skipped；Windows 实机未验证，PR/CI 待补 |
 
 ## 全量清单
 
@@ -159,7 +175,7 @@
 |M02 | [~] 🟡 | Windows；API/Web 衔接 | 按交付包确认范围执行 | 按交付包中 M02 的确认规则完成端到端用户流程，保留错误、重试、权限、冲突和恢复分支，并以当前版本实际执行证据收口。 | 交付包原始功能表（2026-11-05）记录：有原生 WPF 笔记库（列表、标题正文搜索、编辑），但正文是 Consolas 字体的纯文本框，不渲染 Markdown；列表只显示标题；从服务器拉下来的笔记（安卓/Web 写的）一律只读，标题、正文、照片、手写、录音按钮全部禁用，只有在本机新建的笔记能改；当前版本复验待执行。 | 服务器唯一事实源、当前 OpenAPI/生成契约及该项目记录列出的前置能力。 | Windows Agent；父代理协调 | 待创建 | 交付包/00-交付说明/原始输入/PIM功能表.md；交付包/01-讨论记录/M02；当前源码、测试、PR CI 待补。 | 部分实现，补齐缺口后复验 |
 |M03 | [~] 🟡 | Windows；API/Web 衔接 | 按交付包确认范围执行 | 按交付包中 M03 的确认规则完成端到端用户流程，保留错误、重试、权限、冲突和恢复分支，并以当前版本实际执行证据收口。 | 交付包原始功能表（2026-11-05）记录：能录：16 kHz 单声道 16 位，整段录成一个 WAV，界面用文字显示「录音中 mm:ss · 实际输入峰值 x%」。缺：没有暂停、没有分片、没有时长上限、没有波形；程序崩溃时 WAV 头里的数据长度还是 0，文件留在 %LOCALAPPDATA%\PIM\Recordings，不会自动挂回笔记；当前版本复验待执行。 | 服务器唯一事实源、当前 OpenAPI/生成契约及该项目记录列出的前置能力。 | Windows Agent；父代理协调 | 待创建 | 交付包/00-交付说明/原始输入/PIM功能表.md；交付包/01-讨论记录/M03；当前源码、测试、PR CI 待补。 | 部分实现，补齐缺口后复验 |
 |M04 | [x] ✅ | Windows；API/Web 衔接 | 按交付包确认范围执行 | 按交付包中 M04 的确认规则完成端到端用户流程，保留错误、重试、权限、冲突和恢复分支，并以当前版本实际执行证据收口。 | 交付包原始功能表（2026-11-05）记录：托盘采集保留：启动就显示托盘，并启动前台窗口 Tracker、浏览器桥、KeyStats 和心跳；托盘菜单有立即同步、状态中心、登录、退出；当前版本复验待执行。 | 服务器唯一事实源、当前 OpenAPI/生成契约及该项目记录列出的前置能力。 | Windows Agent；父代理协调 | 待创建 | 交付包/00-交付说明/原始输入/PIM功能表.md；交付包/01-讨论记录/M04；当前源码、测试、PR CI 待补。 | 已有实现，按当前版本复验 |
-|M05 | [~] 🟡 | Windows；API/Web 衔接 | 按交付包确认范围执行 | 按交付包中 M05 的确认规则完成端到端用户流程，保留错误、重试、权限、冲突和恢复分支，并以当前版本实际执行证据收口。 | 交付包原始功能表（2026-11-05）记录：原生「日历与任务」窗口写好了（日程、任务两个标签页，可读、新建、标记完成），但用户打不开：只有 MainShellWindow 上的按钮能打开它，而 MainShellWindow 全工程没有调用方；托盘菜单里没有今日/任务/日历。原生「今日」页根本没有；当前版本复验待执行。 | 服务器唯一事实源、当前 OpenAPI/生成契约及该项目记录列出的前置能力。 | Windows Agent；父代理协调 | 待创建 | 交付包/00-交付说明/原始输入/PIM功能表.md；交付包/01-讨论记录/M05；当前源码、测试、PR CI 待补。 | 部分实现，补齐缺口后复验 |
+|M05 | [~] 🟡 | Windows；API/Web 衔接 | 按交付包确认范围执行 | 按交付包中 M05 的确认规则完成端到端用户流程，保留错误、重试、权限、冲突和恢复分支，并以当前版本实际执行证据收口。 | 交付包原始功能表（2026-11-05）记录：原生「日历与任务」窗口写好了（日程、任务两个标签页，可读、新建、标记完成），但用户打不开：只有 MainShellWindow 上的按钮能打开它，而 MainShellWindow 全工程没有调用方；托盘菜单里没有今日/任务/日历。原生「今日」页根本没有。提交 `9b18e00` 已在托盘加入“原生日历与任务”入口并复用已有单例窗口。 | 服务器唯一事实源、当前 OpenAPI/生成契约及该项目记录列出的前置能力。 | Windows Agent；父代理协调 | pim-windows PR #49 | `NativePlannerTrayEntryTests` 2/2；`CalendarTaskServiceTests` 3/3；完整核心套件 431 passed、1 skipped；Windows 实机和 WPF 用户流程未执行，PR CI 待完成。 | 等待 PR #49 的 CI 和 Windows 实机复验 |
 |M06 | [~] 🟡 | Windows；API/Web 衔接 | 按交付包确认范围执行 | 按交付包中 M06 的确认规则完成端到端用户流程，保留错误、重试、权限、冲突和恢复分支，并以当前版本实际执行证据收口。 | 交付包原始功能表（2026-11-05）记录：守护程序里嵌 WebView2 的 MainShellWindow 已经进不去了，托盘改成「在浏览器打开 Web 工作台」（系统浏览器开 /today）；但安装包仍装旧壳 Pim.Shell.App（整窗 WebView2 加载服务器首页）并建「PIM Shell」快捷方式，电脑上看今日/任务/日历仍只能看网页；当前版本复验待执行。 | 服务器唯一事实源、当前 OpenAPI/生成契约及该项目记录列出的前置能力。 | Windows Agent；父代理协调 | 待创建 | 交付包/00-交付说明/原始输入/PIM功能表.md；交付包/01-讨论记录/M06；当前源码、测试、PR CI 待补。 | 部分实现，补齐缺口后复验 |
 |N01 | [~] 🟡 | Web；API | 按交付包确认范围执行 | 按交付包中 N01 的确认规则完成端到端用户流程，保留错误、重试、权限、冲突和恢复分支，并以当前版本实际执行证据收口。 | 交付包原始功能表（2026-11-05）记录：Web「笔记」能看列表、按标题搜、打开当前版、改标题和正文、加照片/拍照/手写并保存到服务器。缺：笔记相关页面都没有录音播放器（全站只有 AI 设置的测试页有 <audio>），录音听不了；正文是分段纯文本框，不渲染 Markdown（Tiptap 只用在旧快速记录）；已有照片/手写不能删也不能换；保存前必须先勾「确认保存到当前服务器」（默认不勾）；当前版本复验待执行。 | 服务器唯一事实源、当前 OpenAPI/生成契约及该项目记录列出的前置能力。 | API/Web Agent；父代理协调 | 待创建 | 交付包/00-交付说明/原始输入/PIM功能表.md；交付包/01-讨论记录/N01；当前源码、测试、PR CI 待补。 | 部分实现，补齐缺口后复验 |
 |N02 | [x] ✅ | Web；API | 按交付包确认范围执行 | 按交付包中 N02 的确认规则完成端到端用户流程，保留错误、重试、权限、冲突和恢复分支，并以当前版本实际执行证据收口。 | 交付包原始功能表（2026-11-05）记录：有处理页 /native-notes/processing：从笔记点「转写录音」或「整理笔记」进入，分「先完成录音转写 → 整理并生成」两步，任务进行中每 5 秒自动刷新，显示阶段、每步尝试次数和错误，可重试。缺口：笔记列表本身不显示处理状态；步骤里直接露出 step key、errorCode、调用 ID 等工程字段；当前版本复验待执行。 | 服务器唯一事实源、当前 OpenAPI/生成契约及该项目记录列出的前置能力。 | API/Web Agent；父代理协调 | 待创建 | 交付包/00-交付说明/原始输入/PIM功能表.md；交付包/01-讨论记录/N02；当前源码、测试、PR CI 待补。 | 已有实现，按当前版本复验 |
