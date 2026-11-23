@@ -4,7 +4,9 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.AspNetCore.Routing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Pim.Core.Ai;
@@ -147,7 +149,7 @@ public sealed class NoteProcessingTests(NoteProcessingFixture host)
         Assert.Equal(NoteProcessingState.Processing, started.State);
         Assert.True(started.Asr.TaskCreated);
         Assert.True(started.Derived.TaskCreated);
-        Assert.Equal(NoteProcessingChainState.Queued, started.Derived.State);
+        Assert.Equal(NoteProcessingChainState.WaitingForAsr, started.Derived.State);
         Assert.Equal((Asr: 1, Derived: 1), TaskCounts(owner));
         var asrBefore = await AsrTaskAsync(owner.UserId, started.Asr.TaskId!.Value);
         var derivedBefore = await DerivedTaskAsync(owner.UserId, started.Derived.TaskId!.Value);
@@ -235,7 +237,7 @@ public sealed class NoteProcessingTests(NoteProcessingFixture host)
     }
 
     [Fact]
-    public async Task DerivedRunsWhileAsrIsPending_AndDoesNotAllocateAgainOnAsrCompletion()
+    public async Task DerivedWaitsForAsr_ThenMaterializesTranscriptsOnceBeforeCompleting()
     {
         var owner = await OwnerAsync("continuation");
         using var client = AuthRegistrationTestHost.Authed(host.Factory, owner.AccessToken);
@@ -246,14 +248,17 @@ public sealed class NoteProcessingTests(NoteProcessingFixture host)
         var derivedId = status.Derived.TaskId!.Value;
         var derivedJob = host.Factory.Services.GetRequiredService<NoteDerivedJob>();
 
+        Assert.Equal(NoteProcessingChainState.WaitingForAsr, status.Derived.State);
+        Assert.Equal(NoteProcessingState.Processing, status.State);
         var pending = await DerivedTaskAsync(owner.UserId, derivedId);
-        Assert.False(pending.AwaitingAsr);
+        Assert.True(pending.AwaitingAsr);
+        Assert.Equal("WaitingForAsr", NoteDerivedStore.DescribePhase(pending));
+        Assert.Empty(pending.Plan.Input.Transcripts);
         await derivedJob.RunAsync(owner.UserId, derivedId, CancellationToken.None);
-        var completedBeforeAsr = await DerivedTaskAsync(owner.UserId, derivedId);
-        Assert.False(completedBeforeAsr.AwaitingAsr);
-        Assert.Equal("Succeeded", NoteDerivedStore.DescribePhase(completedBeforeAsr));
-        var callsBeforeAsr = host.Models.Calls;
-        Assert.True(callsBeforeAsr > 0);
+        var stillPending = await DerivedTaskAsync(owner.UserId, derivedId);
+        Assert.True(stillPending.AwaitingAsr);
+        Assert.Empty(stillPending.Plan.Input.Transcripts);
+        Assert.Equal(0, host.Models.Calls);
 
         await MarkAsrSucceededWithSyntheticReceiptsAsync(owner.UserId, status.Asr.TaskId!.Value,
             material);
@@ -262,12 +267,133 @@ public sealed class NoteProcessingTests(NoteProcessingFixture host)
         var continued = await DerivedTaskAsync(owner.UserId, derivedId);
         Assert.False(continued.AwaitingAsr);
         Assert.Equal("Succeeded", NoteDerivedStore.DescribePhase(continued));
-        Assert.Equal(callsBeforeAsr, host.Models.Calls);
+        var transcript = Assert.Single(continued.Plan.Input.Transcripts);
+        Assert.False(string.IsNullOrWhiteSpace(transcript.Text));
+        Assert.True(host.Models.Calls >= 1);
         var completed = await StatusAsync(client, material.NoteId, material.VersionId);
         Assert.Equal(NoteProcessingChainState.Succeeded, completed.Asr.State);
         Assert.Equal(NoteProcessingChainState.Succeeded, completed.Derived.State);
         Assert.Equal(NoteProcessingState.Completed, completed.State);
-        Assert.True(host.Models.Calls >= 1);
+    }
+
+    [Fact]
+    public async Task DerivedBlocksWhenAsrFailsBeforeMaterialization_WithoutEmptyTranscriptSuccess()
+    {
+        var owner = await OwnerAsync("continuation-failed");
+        using var client = AuthRegistrationTestHost.Authed(host.Factory, owner.AccessToken);
+        _ = await ConfigureAsync(client, auto: true);
+        host.Models.Reset();
+        var material = await CompleteMaterialAsync(owner, client, withAudio: true);
+        var started = await StatusAsync(client, material.NoteId, material.VersionId);
+        var asr = await AsrTaskAsync(owner.UserId, started.Asr.TaskId!.Value);
+        _ = await AsrStore().UpdateAsync(owner.UserId, asr.Request.TaskId, state =>
+        {
+            state.Steps[0].Current.Status = "Failed";
+            state.Steps[0].Current.ErrorMessage = "合成 ASR 失败";
+        }, CancellationToken.None);
+
+        await host.Factory.Services.GetRequiredService<NoteDerivedJob>().RunAsync(
+            owner.UserId, started.Derived.TaskId!.Value, CancellationToken.None);
+
+        var task = await DerivedTaskAsync(owner.UserId, started.Derived.TaskId.Value);
+        Assert.False(task.AwaitingAsr);
+        Assert.True(task.Blocked);
+        Assert.Empty(task.Plan.Input.Transcripts);
+        Assert.Contains(task.Issues, issue => issue.Code == "asr_unavailable");
+        Assert.Equal("Blocked", NoteDerivedStore.DescribePhase(task));
+        Assert.Equal(0, host.Models.Calls);
+        var status = await StatusAsync(client, material.NoteId, material.VersionId);
+        Assert.Equal(NoteProcessingChainState.NeedsAttention, status.Asr.State);
+        Assert.Equal(NoteProcessingChainState.NeedsAttention, status.Derived.State);
+        Assert.Equal(NoteProcessingState.NeedsAttention, status.State);
+    }
+
+    [Fact]
+    public async Task CompletedProcessingRecordIsNotRewrittenByCompensationScan()
+    {
+        var owner = await OwnerAsync("dispatch-complete");
+        using var client = AuthRegistrationTestHost.Authed(host.Factory, owner.AccessToken);
+        _ = await ConfigureAsync(client, auto: true);
+        host.Models.Reset();
+        var material = await CompleteMaterialAsync(owner, client, withAudio: true);
+        var started = await StatusAsync(client, material.NoteId, material.VersionId);
+        var derivedJob = host.Factory.Services.GetRequiredService<NoteDerivedJob>();
+        await MarkAsrSucceededWithSyntheticReceiptsAsync(owner.UserId, started.Asr.TaskId!.Value,
+            material);
+        await derivedJob.RunAsync(owner.UserId, started.Derived.TaskId!.Value,
+            CancellationToken.None);
+        var completed = await StatusAsync(client, material.NoteId, material.VersionId);
+        Assert.Equal(NoteProcessingState.Completed, completed.State);
+
+        var store = host.Factory.Services.GetRequiredService<NoteProcessingStore>();
+        var before = await store.ReadAsync(owner.UserId, started.ProcessingId, default);
+        var asrBefore = await AsrTaskAsync(owner.UserId, started.Asr.TaskId.Value);
+        var derivedBefore = await DerivedTaskAsync(owner.UserId, started.Derived.TaskId.Value);
+        var callsBefore = host.Models.Calls;
+        var dispatch = host.Factory.Services.GetRequiredService<NoteProcessingDispatchJob>();
+
+        await dispatch.RunAsync(default);
+        await dispatch.RunAsync(default);
+
+        var after = await store.ReadAsync(owner.UserId, started.ProcessingId, default);
+        Assert.Equal(before.Revision, after.Revision);
+        Assert.Equal(before.UpdatedAt, after.UpdatedAt);
+        Assert.Equal(before.StartedAt, after.StartedAt);
+        Assert.Equal(asrBefore.Revision,
+            (await AsrTaskAsync(owner.UserId, started.Asr.TaskId.Value)).Revision);
+        Assert.Equal(derivedBefore.Revision,
+            (await DerivedTaskAsync(owner.UserId, started.Derived.TaskId.Value)).Revision);
+        Assert.Equal((Asr: 1, Derived: 1), TaskCounts(owner));
+        Assert.Equal(callsBefore, host.Models.Calls);
+        Assert.Equal(NoteProcessingState.Completed,
+            (await StatusAsync(client, material.NoteId, material.VersionId)).State);
+    }
+
+    [Fact]
+    public async Task CompensationScanStartsMissingIntentOnce_WithoutRewritingStartedRecord()
+    {
+        var owner = await OwnerAsync("dispatch-recovery");
+        using var client = AuthRegistrationTestHost.Authed(host.Factory, owner.AccessToken);
+        _ = await ConfigureAsync(client, auto: true);
+        var material = NoteDerivedFixture.CreateMaterial(withAudio: false);
+        await NoteDerivedFixture.UploadAsync(
+            host.Factory.Services.GetRequiredService<NoteMaterialUploadStore>(),
+            owner.UserId, material);
+        var dispatch = host.Factory.Services.GetRequiredService<NoteProcessingDispatchJob>();
+
+        await dispatch.RunAsync(default);
+
+        var status = await StatusAsync(client, material.NoteId, material.VersionId);
+        Assert.True(status.Derived.TaskCreated);
+        Assert.Equal((Asr: 0, Derived: 1), TaskCounts(owner));
+        var store = host.Factory.Services.GetRequiredService<NoteProcessingStore>();
+        var before = await store.ReadAsync(owner.UserId, status.ProcessingId, default);
+
+        await dispatch.RunAsync(default);
+
+        var after = await store.ReadAsync(owner.UserId, status.ProcessingId, default);
+        Assert.Equal(before.Revision, after.Revision);
+        Assert.Equal(before.UpdatedAt, after.UpdatedAt);
+        Assert.Equal((Asr: 0, Derived: 1), TaskCounts(owner));
+        Assert.Equal(NoteProcessingChainState.Queued,
+            (await StatusAsync(client, material.NoteId, material.VersionId)).Derived.State);
+    }
+
+    [Fact]
+    public void ProcessingStatusRouteHasNoTrailingSlash()
+    {
+        const string expected = "/api/v1/native-notes/processing";
+        var routes = host.Factory.Services.GetRequiredService<EndpointDataSource>()
+            .Endpoints.OfType<RouteEndpoint>()
+            .Where(endpoint =>
+                endpoint.Metadata.GetMetadata<HttpMethodMetadata>()?.HttpMethods.Contains("GET") == true &&
+                endpoint.RoutePattern.RawText is { } raw && !raw.Contains('{') &&
+                "/" + raw.Trim('/') == expected)
+            .ToArray();
+
+        var route = Assert.Single(routes);
+        Assert.False(route.RoutePattern.RawText!.EndsWith('/'),
+            $"processing status route still ends with a slash: {route.RoutePattern.RawText}");
     }
 
     [Fact]

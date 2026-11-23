@@ -32,10 +32,12 @@ public static class NoteProcessingEndpoints
             .WithMetadata(new RequestSizeLimitAttribute(64 * 1024))
             .Produces<ApiResponse<NoteProcessingStatusDto>>().Produces(400).Produces(401)
             .Produces(403).Produces(404).Produces(409).Produces(413).Produces(503);
-        group.MapGet("/", async ([FromQuery] Guid noteId, [FromQuery] Guid versionId,
+        endpoints.MapGet("/api/v1/native-notes/processing", async ([FromQuery] Guid noteId,
+            [FromQuery] Guid versionId,
             [FromServices] NoteProcessingService service, CancellationToken ct) =>
             Results.Ok(ApiResponse<NoteProcessingStatusDto>.Ok(
                 await service.GetAsync(noteId, versionId, ct))))
+            .RequireAuthorization().WithTags("Native note processing")
             .Produces<ApiResponse<NoteProcessingStatusDto>>().Produces(400).Produces(401)
             .Produces(403).Produces(404);
         group.MapGet("/{processingId:guid}", async (Guid processingId,

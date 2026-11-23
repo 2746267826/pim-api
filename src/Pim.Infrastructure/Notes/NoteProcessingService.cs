@@ -123,10 +123,14 @@ public sealed class NoteProcessingService(
             var derivedCreated = await TryReadDerivedAsync(owner, derivedTaskId, lockedCt) is not null;
             if ((!hasAudio || asrCreated) && derivedCreated)
             {
-                state.PendingReason = null;
-                state.Issues = [];
-                state.StartedAt ??= DateTimeOffset.UtcNow;
-                _ = await processing.SaveLockedAsync(state, lockedCt);
+                if (state.StartedAt is null || state.PendingReason is not null ||
+                    state.Issues.Count > 0)
+                {
+                    state.PendingReason = null;
+                    state.Issues = [];
+                    state.StartedAt ??= DateTimeOffset.UtcNow;
+                    _ = await processing.SaveLockedAsync(state, lockedCt);
+                }
                 return await BuildStatusAsync(owner, version, state, autoEnabled, lockedCt);
             }
             if (automatic && !autoEnabled)
@@ -161,7 +165,7 @@ public sealed class NoteProcessingService(
                 {
                     startingTask = NoteProcessingTaskKind.Derived;
                     _ = await derived.StartForOwnerAsync(owner, state.DerivedRequest,
-                        waitForAsr: false, allowIncompleteAsr: true, lockedCt);
+                        waitForAsr: hasAudio, allowIncompleteAsr: false, lockedCt);
                 }
             }
             catch (DomainException error)
