@@ -278,6 +278,68 @@ public sealed class McpToolExecutorTests : IDisposable
         Assert.True(string.IsNullOrEmpty(request.Query));
     }
 
+    public static TheoryData<string> HabitRangeParams => new() { "start", "end" };
+
+    [Theory]
+    [MemberData(nameof(HabitRangeParams))]
+    public async Task HabitOccurrences_MissingCanonicalRangeParam_Returns400BeforeDispatch(string missing)
+    {
+        CreateExecutor();
+        var args = new Dictionary<string, JsonElement>
+        {
+            ["habitId"] = Json("\"h1\""),
+        };
+        AddOtherHabitRangeParam(args, missing);
+
+        var result = await CallTool("get_habit_occurrences", args);
+
+        Assert.Equal(400, result!["code"]!.GetValue<int>());
+        Assert.Equal($"{missing} is required", result["error"]!.GetValue<string>());
+        Assert.Empty(_requests);
+    }
+
+    [Theory]
+    [MemberData(nameof(HabitRangeParams))]
+    public async Task HabitOccurrences_MissingLegacyRangeParam_Returns400BeforeAuthentication(string missing)
+    {
+        CreateExecutor(http: false, stdioToken: null);
+        var args = new Dictionary<string, JsonElement>
+        {
+            ["habit_id"] = Json("\"h1\""),
+        };
+        AddOtherHabitRangeParam(args, missing);
+
+        var result = await CallTool("get_habit_occurrences", args);
+
+        Assert.Equal(400, result!["code"]!.GetValue<int>());
+        Assert.Equal($"{missing} is required", result["error"]!.GetValue<string>());
+        Assert.Empty(_requests);
+    }
+
+    [Fact]
+    public async Task HabitOccurrences_ConflictingHabitIdAliases_AreRejectedBeforeDispatch()
+    {
+        CreateExecutor();
+
+        var result = await CallTool("get_habit_occurrences", new Dictionary<string, JsonElement>
+        {
+            ["habitId"] = Json("\"habit-camel\""),
+            ["habit_id"] = Json("\"habit-legacy\""),
+            ["start"] = Json("\"2026-09-01\""),
+            ["end"] = Json("\"2026-09-02\""),
+        });
+
+        Assert.Equal(400, result!["code"]!.GetValue<int>());
+        Assert.Contains("different values", result["error"]!.GetValue<string>());
+        Assert.Empty(_requests);
+    }
+
+    private static void AddOtherHabitRangeParam(Dictionary<string, JsonElement> args, string missing)
+    {
+        var other = missing == "start" ? "end" : "start";
+        args[other] = Json(other == "start" ? "\"2026-09-01\"" : "\"2026-09-02\"");
+    }
+
     // ---------- validation ----------
 
     [Fact]

@@ -142,7 +142,7 @@ public static class McpToolTable
             S("get_outlook_local_data_preview", "GET", "/api/v1/calendar/outlook/local-data/preview"),
             S("get_event_by_id", "GET", "/api/v1/calendar/events/{eventId}", req: R("eventId"), kind: McpToolKind.EventById),
             S("get_task_by_id", "GET", "/api/v1/calendar/tasks/{taskId}", req: R("taskId"), kind: McpToolKind.TaskById),
-            S("get_habit_occurrences", "GET", "/api/v1/calendar/habits/{habitId}/occurrences", Q("start", "end"), req: R("habitId"), kind: McpToolKind.HabitOccurrences),
+            S("get_habit_occurrences", "GET", "/api/v1/calendar/habits/{habitId}/occurrences", Q("start", "end"), req: R("habitId", "start", "end"), kind: McpToolKind.HabitOccurrences),
             S("get_schedule_preview", "POST", "/api/v1/calendar/schedule", body: true, kind: McpToolKind.SchedulePreview),
             S("get_calendar_by_id", "GET", "/api/v1/calendar/calendars", req: R("calendarId"), kind: McpToolKind.CalendarById),
             S("get_task_checklist", "GET", "/api/v1/calendar/tasks/{taskId}/checklist", req: R("taskId"), kind: McpToolKind.TaskChecklist),

@@ -132,4 +132,16 @@ public sealed class McpToolParameterNamingTests
             failures.Count == 0,
             "MCP 兼容别名契约不符合要求：" + Environment.NewLine + string.Join(Environment.NewLine, failures));
     }
+
+    [Fact]
+    public void GetHabitOccurrences_ToolTableRequiredMatchesContract()
+    {
+        var tool = McpToolExecutor.ToolContract.Single(t => t.Name == "get_habit_occurrences");
+        var contractRequired = tool.InputSchema.GetProperty("required")
+            .EnumerateArray()
+            .Select(value => value.GetString());
+        var tableRequired = McpToolTable.TryGet(tool.Name)!.Required;
+
+        Assert.Equal(contractRequired, tableRequired);
+    }
 }
