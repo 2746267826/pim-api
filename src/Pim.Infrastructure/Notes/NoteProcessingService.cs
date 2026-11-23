@@ -161,6 +161,8 @@ public sealed class NoteProcessingService(
             NoteProcessingTaskKind? startingTask = null;
             try
             {
+                var asrRequestBefore = JsonSerializer.Serialize(state.AsrRequest);
+                var derivedRequestBefore = JsonSerializer.Serialize(state.DerivedRequest);
                 if (!hasAudio)
                     state.AsrRequest = null;
                 else if (!asrCreated)
@@ -175,7 +177,11 @@ public sealed class NoteProcessingService(
                 }
                 state.PendingReason = "处理任务正在持久化入队";
                 state.Issues = [];
-                _ = await processing.SaveLockedAsync(state, lockedCt);
+                // Repeated compensation scans must not rotate the record when the frozen
+                // child requests are unchanged.
+                if (asrRequestBefore != JsonSerializer.Serialize(state.AsrRequest) ||
+                    derivedRequestBefore != JsonSerializer.Serialize(state.DerivedRequest))
+                    _ = await processing.SaveLockedAsync(state, lockedCt);
 
                 if (hasAudio && !asrCreated)
                 {

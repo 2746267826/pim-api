@@ -218,6 +218,50 @@ public sealed class NoteProcessingTests(NoteProcessingFixture host)
     }
 
     [Fact]
+    public async Task RepeatedCompensationScansKeepBlockingIssueStableWithoutRevisionRotation()
+    {
+        var owner = await OwnerAsync("dispatch-blocked-stable");
+        using var client = AuthRegistrationTestHost.Authed(host.Factory, owner.AccessToken);
+        var admin = await AuthRegistrationTestHost.SeedAndLoginAsync(host.Factory,
+            "dispatch-blocked-admin-" + Guid.NewGuid().ToString("N"), "admin");
+        using var adminClient = AuthRegistrationTestHost.Authed(host.Factory, admin.AccessToken);
+        var settings = await Data<AiModelSettingsDto>(
+            await adminClient.GetAsync("/api/v1/ai/model-settings"));
+        _ = await Data<AiModelSettingsDto>(await adminClient.PutAsJsonAsync(
+            "/api/v1/ai/model-settings",
+            new SaveAiModelSettingsRequest(settings.Revision, true, null, null, null)));
+        _ = await SetAutoProcessingAsync(client, true);
+        host.Models.Reset();
+
+        var material = await CompleteMaterialAsync(owner, client, withAudio: true);
+        var first = await StatusAsync(client, material.NoteId, material.VersionId);
+        Assert.Equal(NoteProcessingState.PendingProcessing, first.State);
+        var store = host.Factory.Services.GetRequiredService<NoteProcessingStore>();
+        var before = await store.ReadAsync(owner.UserId, first.ProcessingId, default);
+        var callsBefore = host.Models.Calls;
+        var aiCallsBefore = await AiCallCountAsync(owner.UserId);
+        var dispatch = host.Factory.Services.GetRequiredService<NoteProcessingDispatchJob>();
+
+        await dispatch.RunAsync(default);
+        await dispatch.RunAsync(default);
+
+        var after = await store.ReadAsync(owner.UserId, first.ProcessingId, default);
+        Assert.Equal(before.Revision, after.Revision);
+        Assert.Equal(before.UpdatedAt, after.UpdatedAt);
+        Assert.Equal(before.PendingReason, after.PendingReason);
+        Assert.Equal(before.Issues, after.Issues);
+        Assert.Equal((Asr: 0, Derived: 0), TaskCounts(owner));
+        Assert.Equal(callsBefore, host.Models.Calls);
+        Assert.Equal(aiCallsBefore, await AiCallCountAsync(owner.UserId));
+        var last = await StatusAsync(client, material.NoteId, material.VersionId);
+        Assert.Equal(first.PendingReason, last.PendingReason);
+        Assert.Equal(first.Issues, last.Issues);
+        Assert.Equal(first.UpdatedAt, last.UpdatedAt);
+        Assert.Equal(0, host.Models.Calls);
+        Assert.Equal(0, await AiCallCountAsync(owner.UserId));
+    }
+
+    [Fact]
     public async Task StatusAndStartAreOwnerScoped_EvenWithKnownProcessingIdentity()
     {
         var owner = await OwnerAsync("owner-scope");

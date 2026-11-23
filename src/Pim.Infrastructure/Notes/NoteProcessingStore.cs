@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Microsoft.Extensions.Options;
 using Pim.Core.Exceptions;
 using Pim.Core.Notes;
@@ -100,14 +101,36 @@ public sealed class NoteProcessingStore(IOptions<NoteMaterialUploadOptions> opti
         return state;
     }
 
-    /// <summary>Caller already holds the owner orchestration lock.</summary>
+    /// <summary>
+    /// Caller already holds the owner orchestration lock. An unchanged snapshot is a no-op so
+    /// periodic reconciliation does not rotate <see cref="NoteProcessingRecord.Revision"/> or
+    /// <see cref="NoteProcessingRecord.UpdatedAt"/> for the same blocked input.
+    /// </summary>
     internal async Task<NoteProcessingRecord> SaveLockedAsync(NoteProcessingRecord state,
         CancellationToken ct)
     {
+        var existing = await TryReadAsync(state.Owner, state.ProcessingId, ct);
+        if (existing is not null && HasSameContent(existing, state))
+        {
+            state.Revision = existing.Revision;
+            state.UpdatedAt = existing.UpdatedAt;
+            return state;
+        }
         state.Revision = Guid.NewGuid();
         state.UpdatedAt = _clock.GetUtcNow();
         await WriteAsync(FilePath(state.Owner, state.ProcessingId), state, ct);
         return state;
+    }
+
+    private static bool HasSameContent(NoteProcessingRecord left, NoteProcessingRecord right) =>
+        JsonNode.DeepEquals(ComparableJson(left), ComparableJson(right));
+
+    private static JsonNode ComparableJson(NoteProcessingRecord state)
+    {
+        var node = JsonSerializer.SerializeToNode(state, Json)!.AsObject();
+        node.Remove(JsonNamingPolicy.CamelCase.ConvertName(nameof(NoteProcessingRecord.Revision)));
+        node.Remove(JsonNamingPolicy.CamelCase.ConvertName(nameof(NoteProcessingRecord.UpdatedAt)));
+        return node;
     }
 
     internal IEnumerable<(Guid Owner, Guid Id)> Enumerate(Guid? owner = null)
