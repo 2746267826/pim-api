@@ -126,6 +126,25 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
         var owner = await RequireActiveOwnerAsync(ct);
         return Describe(await ReconcileAsync(owner, id, ct));
     }
+
+    /// <summary>
+    /// Repairs only the durable attempt for one exact owner/version task. This never calls a provider;
+    /// an ambiguous checkpoint is explicitly blocked instead of being rebound to another snapshot.
+    /// </summary>
+    internal async Task<NoteAsrState> EnsureAttemptForOwnerAsync(Guid owner, Guid taskId,
+        Guid versionId, CancellationToken ct)
+    {
+        var state = await tasks.ReadAsync(owner, taskId, ct);
+        if (state.Request.ExpectedUserId != owner || state.Request.VersionId != versionId)
+            throw new DomainException(40901, "ASR 任务不属于当前账号或固定材料版本");
+        var version = await materials.GetAsync(owner, versionId, ct);
+        if (state.NoteId != version.Upload.NoteId ||
+            state.InputSha256 != NoteMaterialManifestValidator.Hash(version.InputJson) ||
+            state.ManifestSha256 != NoteMaterialManifestValidator.Hash(version.ManifestJson))
+            throw new DomainException(40901, "ASR 任务与固定材料身份或摘要不一致");
+        await EnsureAttemptAsync(owner, state, ct);
+        return await tasks.ReadAsync(owner, taskId, ct);
+    }
     public async Task<NoteAsrSegmentsDto> SegmentsAsync(Guid id, int offset, int limit, CancellationToken ct)
     {
         var owner = await RequireActiveOwnerAsync(ct);
@@ -228,6 +247,11 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
         // The task file is committed first; only then requeue the durable attempt against the exact
         // pre-intent attempt epoch. A crash between the two is replayable without clearing a new stop.
         if (retryIntent is not null) await RequireRetryAttemptAsync(owner, updated, retryIntent, ct);
+        if (updated.Route is not null && updated.AttemptId is null && !updated.StopRequested)
+        {
+            await EnsureAttemptAsync(owner, updated, ct);
+            updated = await tasks.ReadAsync(owner, id, ct);
+        }
         return Describe(updated);
     }
 
@@ -383,35 +407,173 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
     private async Task EnsureAttemptAsync(Guid owner, NoteAsrState state, CancellationToken ct)
     {
         if (state.Route is null) return;
+        if (state.StopRequested) return;
         var existing = await db.NoteAsrAttempts.AsNoTracking()
             .SingleOrDefaultAsync(x => x.OwnerId == owner && x.TaskId == state.Request.TaskId, ct);
         if (state.AttemptId is { } bound)
         {
             if (existing is null || existing.Id != bound)
-                throw new DomainException(40901, "任务绑定的执行快照不存在，请核对记录");
-        }
-        else
-        {
-            if (existing is null)
             {
-                var consent = new NoteAsrRouteConsent(state.Route, state.RouteConfigRevision,
-                    state.RouteConsentVersion, true,
-                    state.ExecutionMode ?? NoteAsrExecutionMode.Realtime,
-                    state.Request.Route?.BatchScopeConfirmed ?? false);
-                existing = await routing.CreateAttemptCoreAsync(owner, state.Request.TaskId,
-                    state.Request.VersionId, state.Steps.Count, state.Request.Language, consent, ct);
+                await BlockAttemptRecoveryAsync(owner, state,
+                    "任务绑定的执行快照与数据库记录不一致；未自动外发，请核对记录后重试", ct);
+                throw new DomainException(40901, "任务绑定的执行快照与数据库记录不一致，请核对记录");
             }
+        }
+        else if (existing is null)
+        {
+            if (!AllStepsQueued(state))
+            {
+                await BlockAttemptRecoveryAsync(owner, state,
+                    "ASR 检查点已有执行进度但缺少执行快照；未自动重发，请核对记录后重试", ct);
+                throw new DomainException(40901, "ASR 检查点已有执行进度但缺少执行快照，未自动重发");
+            }
+            var taskIdText = state.Request.TaskId.ToString("D");
+            var hasDurableAsrEvidence = await db.AiRequestLogs.AsNoTracking().AnyAsync(x =>
+                    x.UserId == owner && x.Purpose == "ai.asr-call" &&
+                    x.SourceObjectType == "native-note-asr-task" &&
+                    x.SourceObjectId == taskIdText, ct) ||
+                await db.NoteAsrSegmentEvidence.AsNoTracking().AnyAsync(x =>
+                    x.OwnerId == owner && x.TaskId == state.Request.TaskId, ct);
+            if (hasDurableAsrEvidence)
+            {
+                await BlockAttemptRecoveryAsync(owner, state,
+                    "ASR 检查点已有调用或分片证据但缺少执行快照；未自动重发，请核对记录后重试", ct);
+                throw new DomainException(40901,
+                    "ASR 检查点已有调用或分片证据但缺少执行快照，未自动重发");
+            }
+            try
+            {
+                await ValidateRecoveryTargetAsync(state, ct);
+            }
+            catch (DomainException)
+            {
+                await BlockAttemptRecoveryAsync(owner, state,
+                    "ASR 执行目标已变化；未自动外发，请刷新并重新确认", ct);
+                throw;
+            }
+            var consent = new NoteAsrRouteConsent(state.Route, state.RouteConfigRevision,
+                state.RouteConsentVersion, true,
+                state.ExecutionMode ?? NoteAsrExecutionMode.Realtime,
+                state.Request.Route?.BatchScopeConfirmed ?? false);
+            try
+            {
+                existing = await routing.CreateAttemptCoreAsync(owner, state.Request.TaskId,
+                    state.Request.VersionId, state.Steps.Count, state.Request.Language,
+                    consent, ct);
+            }
+            catch (DomainException)
+            {
+                await BlockAttemptRecoveryAsync(owner, state,
+                    "ASR 执行快照无法按原任务重建；未自动外发，请核对记录后重试", ct);
+                throw;
+            }
+        }
+
+        if (!AttemptMatches(state, existing))
+        {
+            await BlockAttemptRecoveryAsync(owner, state,
+                "ASR 任务与执行快照身份不一致；未自动外发，请核对记录后重试", ct);
+            throw new DomainException(40901, "任务与执行快照不一致，请核对记录");
+        }
+
+        if (state.AttemptId != existing.Id)
+        {
             await tasks.UpdateAsync(owner, state.Request.TaskId, current =>
             {
+                if (!SameTaskIdentity(current, state))
+                    throw new DomainException(40901, "ASR 任务身份已变化，未绑定执行快照");
+                if (current.StopRequested) return;
+                if (current.AttemptId is { } currentBound && currentBound != existing.Id)
+                    throw new DomainException(40901, "任务已绑定另一执行快照，未覆盖");
                 current.AttemptId = existing.Id;
                 current.ExecutionMode = existing.ExecutionMode ?? "realtime";
             }, ct);
         }
+    }
 
-        if (existing.Route != state.Route || existing.VersionId != state.Request.VersionId ||
-            existing.ExpectedSegments != state.Steps.Count ||
-            existing.ExecutionMode != (state.ExecutionMode ?? NoteAsrExecutionMode.Realtime))
-            throw new DomainException(40901, "任务与执行快照不一致，请核对记录");
+    private static bool AllStepsQueued(NoteAsrState state) =>
+        state.Steps.Count > 0 && state.Steps.All(step => step.Current.Status == "Queued");
+
+    private static bool SameTaskIdentity(NoteAsrState left, NoteAsrState right) =>
+        left.Owner == right.Owner &&
+        left.NoteId == right.NoteId &&
+        left.Request.TaskId == right.Request.TaskId &&
+        left.Request.VersionId == right.Request.VersionId &&
+        left.Request.ExpectedUserId == right.Request.ExpectedUserId &&
+        left.Request.Language == right.Request.Language &&
+        Equals(left.Request.Consent, right.Request.Consent) &&
+        Equals(left.Request.Route, right.Request.Route) &&
+        left.InputSha256 == right.InputSha256 &&
+        left.ManifestSha256 == right.ManifestSha256 &&
+        left.Route == right.Route &&
+        left.RouteConfigRevision == right.RouteConfigRevision &&
+        left.RouteConsentVersion == right.RouteConsentVersion &&
+        left.ExecutionMode == right.ExecutionMode &&
+        left.Steps.Count == right.Steps.Count;
+
+    private async Task ValidateRecoveryTargetAsync(NoteAsrState state, CancellationToken ct)
+    {
+        var config = await db.NoteAsrRouteConfigs.AsNoTracking().SingleOrDefaultAsync(x =>
+            x.OwnerId == state.Owner && x.Revision == state.RouteConfigRevision, ct);
+        if (config is null || !string.Equals(config.ConsentVersion, state.RouteConsentVersion,
+                StringComparison.Ordinal))
+            throw new DomainException(40901, "ASR 路由配置已变化，请刷新并重新确认");
+
+        if (state.Route == NoteAsrRoute.Local)
+        {
+            if (state.ExecutionMode != NoteAsrExecutionMode.Realtime ||
+                string.IsNullOrWhiteSpace(config.LocalModelId))
+                throw new DomainException(40901, "本机 ASR 执行目标已变化，请刷新并重新确认");
+            return;
+        }
+
+        if (state.Route is not (NoteAsrRoute.CloudAsr or NoteAsrRoute.CloudMultimodal) ||
+            state.Request.Consent is not { Confirmed: true } consent)
+            throw new DomainException(40901, "云端 ASR 执行目标缺少固定确认，请刷新并重新确认");
+        var descriptor = await ValidateDestinationAsync(consent, state.Request.Language, ct);
+        if (state.Route == NoteAsrRoute.CloudMultimodal &&
+            descriptor.Id != MimoMultimodalPreset.PresetId)
+            throw new DomainException(40901, "多模态 ASR 执行目标已变化，请刷新并重新确认");
+        if (state.Route == NoteAsrRoute.CloudAsr &&
+            descriptor.Id == MimoMultimodalPreset.PresetId)
+            throw new DomainException(40901, "专用云端 ASR 执行目标已变化，请刷新并重新确认");
+    }
+
+    private static bool AttemptMatches(NoteAsrState state, NoteAsrAttemptEntity attempt) =>
+        attempt.OwnerId == state.Owner &&
+        attempt.TaskId == state.Request.TaskId &&
+        attempt.NoteId == state.NoteId &&
+        attempt.VersionId == state.Request.VersionId &&
+        attempt.InputSha256 == state.InputSha256 &&
+        attempt.Route == state.Route &&
+        attempt.ConfigRevision == state.RouteConfigRevision &&
+        attempt.ConsentVersion == state.RouteConsentVersion &&
+        attempt.ExpectedSegments == state.Steps.Count &&
+        attempt.Language == state.Request.Language &&
+        (state.Route == NoteAsrRoute.Local
+            ? attempt.ModelId is null && attempt.LocalModelId is not null
+            : state.Request.Consent is { } consent &&
+              attempt.ModelId == consent.ModelId &&
+              attempt.ModelRevision == consent.ModelRevision &&
+              attempt.PresetId == consent.PresetId &&
+              attempt.PresetVersion == consent.PresetVersion &&
+              string.Equals(attempt.Endpoint, consent.Endpoint, StringComparison.Ordinal)) &&
+        attempt.ExecutionMode == (state.ExecutionMode ?? NoteAsrExecutionMode.Realtime);
+
+    private async Task BlockAttemptRecoveryAsync(Guid owner, NoteAsrState state, string message,
+        CancellationToken ct)
+    {
+        await tasks.UpdateAsync(owner, state.Request.TaskId, current =>
+        {
+            if (current.Revision != state.Revision ||
+                !SameTaskIdentity(current, state)) return;
+            foreach (var step in current.Steps.Where(step =>
+                         step.Current.Status is "Queued" or "Running" or "Unknown"))
+            {
+                step.Current.Status = "Blocked";
+                step.Current.ErrorMessage = message;
+            }
+        }, ct);
     }
 
     private async Task<Guid> RequireActiveOwnerAsync(CancellationToken ct)

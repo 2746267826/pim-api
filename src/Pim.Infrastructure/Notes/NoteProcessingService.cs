@@ -18,6 +18,7 @@ public sealed class NoteProcessingService(
     NoteMaterialUploadStore materials,
     NoteAsrService asr,
     NoteDerivedService derived,
+    NoteDerivedJob derivedJob,
     NoteAsrTaskStore asrTasks,
     NoteDerivedStore derivedTasks,
     PimDbContext db,
@@ -119,7 +120,27 @@ public sealed class NoteProcessingService(
                 NoteProcessingTaskKind.Asr);
             var derivedTaskId = NoteProcessingIdentity.Task(owner, request.VersionId,
                 NoteProcessingTaskKind.Derived);
-            var asrCreated = hasAudio && await TryReadAsrAsync(owner, asrTaskId, lockedCt) is not null;
+            var asrState = hasAudio ? await TryReadAsrAsync(owner, asrTaskId, lockedCt) : null;
+            if (asrState is not null)
+            {
+                try
+                {
+                    asrState = await asr.EnsureAttemptForOwnerAsync(owner, asrTaskId,
+                        request.VersionId, lockedCt);
+                }
+                catch (DomainException error)
+                {
+                    state.PendingReason = error.Message;
+                    state.Issues =
+                    [
+                        new("asr_attempt_recovery", error.Message, NoteProcessingTaskKind.Asr)
+                    ];
+                    _ = await processing.SaveLockedAsync(state, lockedCt);
+                    if (!automatic) throw;
+                    return await BuildStatusAsync(owner, version, state, autoEnabled, lockedCt);
+                }
+            }
+            var asrCreated = asrState is not null;
             var derivedCreated = await TryReadDerivedAsync(owner, derivedTaskId, lockedCt) is not null;
             if ((!hasAudio || asrCreated) && derivedCreated)
             {
@@ -410,6 +431,18 @@ public sealed class NoteProcessingService(
     }
 
     private async Task<NoteDerivedTaskState?> TryReadDerivedAsync(Guid owner, Guid taskId,
+        CancellationToken ct)
+    {
+        var state = await ReadDerivedRawAsync(owner, taskId, ct);
+        if (state is not null && NoteDerivedStore.NeedsAsrRecovery(state))
+        {
+            await derivedJob.ReconcileAsync(owner, taskId, ct);
+            state = await ReadDerivedRawAsync(owner, taskId, ct);
+        }
+        return state;
+    }
+
+    private async Task<NoteDerivedTaskState?> ReadDerivedRawAsync(Guid owner, Guid taskId,
         CancellationToken ct)
     {
         try { return await derivedTasks.ReadTaskAsync(owner, taskId, ct); }

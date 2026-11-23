@@ -144,7 +144,8 @@ public sealed class NoteDerivedSnapshotBuilder(
                 phase is "Queued" or "Running")
                 awaitingAsr = true;
             else if (phase != "Succeeded" && !allowIncompleteAsr)
-                issues.Add(new("asr_unavailable", $"ASR 当前未提供可用结果，状态为 {phase}；整理链路继续使用固定原始材料"));
+                issues.Add(new("asr_unavailable",
+                    $"ASR 当前未提供可用结果，状态为 {phase}；整理链路不会以空转写继续，请恢复 ASR 后重试"));
 
             if (!awaitingAsr && phase == "Succeeded" && sourceMatches)
             {

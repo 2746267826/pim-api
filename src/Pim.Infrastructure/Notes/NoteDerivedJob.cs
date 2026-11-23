@@ -65,7 +65,7 @@ public sealed class NoteDerivedJob(
         {
             ct.ThrowIfCancellationRequested();
             var state = await tasks.ReadTaskAsync(owner, taskId, ct);
-            if (state.AwaitingAsr)
+            if (state.AwaitingAsr || NoteDerivedStore.NeedsAsrRecovery(state))
             {
                 if (!await MaterializeAsrInputsAsync(owner, taskId, ct)) return;
                 state = await tasks.ReadTaskAsync(owner, taskId, ct);
@@ -173,35 +173,71 @@ public sealed class NoteDerivedJob(
     private async Task<bool> MaterializeAsrInputsAsync(Guid owner, Guid taskId,
         CancellationToken ct)
     {
+        var legacy = false;
         try
         {
             var state = await tasks.ReadTaskAsync(owner, taskId, ct);
-            if (!state.AwaitingAsr || state.StopRequested || state.Request.AsrTaskId is null)
+            legacy = !state.AwaitingAsr && NoteDerivedStore.NeedsAsrRecovery(state);
+            if ((!state.AwaitingAsr && !legacy) || state.StopRequested ||
+                state.Request.AsrTaskId is null)
                 return false;
+            if (legacy && state.Steps.Any(step => step.Current.Status != "Queued"))
+            {
+                await BlockLegacyAsrAsync(owner, taskId, ct);
+                return false;
+            }
             var version = await materials.GetAsync(owner, state.Request.VersionId, ct);
             var built = await snapshots.BuildAsync(owner, version, state.InputSha256,
                 state.ManifestSha256, state.Request.AsrTaskId,
                 waitForAsr: true, allowIncompleteAsr: false, ct);
-            if (built.AwaitingAsr) return false;
             var plan = new NoteDerivedPlanner().Build(built.Snapshot);
+            if (built.AwaitingAsr)
+            {
+                if (legacy)
+                {
+                    await tasks.UpdateTaskAsync(owner, taskId, current =>
+                    {
+                        if (!NoteDerivedStore.NeedsAsrRecovery(current) ||
+                            current.StopRequested) return;
+                        if (current.Steps.Any(step => step.Current.Status != "Queued"))
+                        {
+                            current.Blocked = true;
+                            current.Issues = new[] { LegacyIssue() }.Concat(current.Issues)
+                                .DistinctBy(issue => (issue.Code, issue.Message,
+                                    issue.SourcePath, issue.BlockId, issue.StepKey)).ToList();
+                            current.Coverage = current.Coverage with
+                            {
+                                Complete = false,
+                                Issues = current.Issues
+                            };
+                            return;
+                        }
+                        ApplyPlan(current, plan, awaitingAsr: true);
+                    }, ct);
+                }
+                return false;
+            }
             await tasks.UpdateTaskAsync(owner, taskId, current =>
             {
-                if (!current.AwaitingAsr || current.StopRequested) return;
-                current.Plan = plan;
-                current.Coverage = plan.InitialCoverage;
-                current.Issues = plan.InitialCoverage.Issues.ToList();
-                current.Steps = plan.Steps.Select(step => new NoteDerivedStepState
+                if (current.StopRequested) return;
+                var currentLegacy = !current.AwaitingAsr &&
+                    NoteDerivedStore.NeedsAsrRecovery(current);
+                if (!current.AwaitingAsr && !currentLegacy) return;
+                if (currentLegacy &&
+                    current.Steps.Any(step => step.Current.Status != "Queued"))
                 {
-                    Key = step.Key,
-                    Kind = step.Kind,
-                    DependsOn = step.DependsOn,
-                    Images = step.Images,
-                    InputCharacters = step.InputCharacters,
-                    Attempts = [new()]
-                }).ToList();
-                current.Blocked = plan.Steps.Count == 0 ||
-                    plan.InitialCoverage.Issues.Count > 0;
-                current.AwaitingAsr = false;
+                    current.Blocked = true;
+                    current.Issues = new[] { LegacyIssue() }.Concat(current.Issues)
+                        .DistinctBy(issue => (issue.Code, issue.Message,
+                            issue.SourcePath, issue.BlockId, issue.StepKey)).ToList();
+                    current.Coverage = current.Coverage with
+                    {
+                        Complete = false,
+                        Issues = current.Issues
+                    };
+                    return;
+                }
+                ApplyPlan(current, plan, awaitingAsr: false);
             }, ct);
             return true;
         }
@@ -210,9 +246,57 @@ public sealed class NoteDerivedJob(
         {
             logger.LogWarning("Derived task {TaskId} could not materialize ASR inputs ({ErrorType})",
                 taskId, error.GetType().Name);
+            if (legacy && error is DomainException)
+                await BlockLegacyAsrAsync(owner, taskId, ct);
             return false;
         }
     }
+
+    private async Task BlockLegacyAsrAsync(Guid owner, Guid taskId, CancellationToken ct)
+    {
+        await tasks.UpdateTaskAsync(owner, taskId, current =>
+        {
+            if (!NoteDerivedStore.NeedsAsrRecovery(current) || current.StopRequested) return;
+            current.Blocked = true;
+            var issues = new[] { LegacyIssue() }.Concat(current.Issues)
+                .DistinctBy(issue => (issue.Code, issue.Message, issue.SourcePath,
+                    issue.BlockId, issue.StepKey)).ToList();
+            current.Issues = issues;
+            current.Coverage = current.Coverage with { Complete = false, Issues = issues };
+            foreach (var step in current.Steps.Where(step =>
+                         step.Current.Status is "Queued" or "Running"))
+            {
+                step.Current.Status = "Cancelled";
+                step.Current.ErrorCode = "legacy_asr_transcript_missing";
+                step.Current.ErrorMessage =
+                    "旧整理任务缺少完整 ASR 转写，已阻断且不会继续发送";
+            }
+        }, ct);
+    }
+
+    private static void ApplyPlan(NoteDerivedTaskState current, NoteDerivedPlan plan,
+        bool awaitingAsr)
+    {
+        current.Plan = plan;
+        current.Coverage = plan.InitialCoverage;
+        current.Issues = plan.InitialCoverage.Issues.ToList();
+        current.Steps = plan.Steps.Select(step => new NoteDerivedStepState
+        {
+            Key = step.Key,
+            Kind = step.Kind,
+            DependsOn = step.DependsOn,
+            Images = step.Images,
+            InputCharacters = step.InputCharacters,
+            Attempts = [new()]
+        }).ToList();
+        current.Blocked = !awaitingAsr &&
+            (plan.Steps.Count == 0 || plan.InitialCoverage.Issues.Count > 0);
+        current.AwaitingAsr = awaitingAsr;
+    }
+
+    private static NoteDerivedIssueDto LegacyIssue() => Issue(
+        "legacy_asr_transcript_missing",
+        "旧整理任务缺少完整 ASR 转写，已阻断，不会以空转写成功；请恢复 ASR 后重新发起整理");
 
     internal async Task ReconcileAsync(Guid owner, Guid taskId, CancellationToken ct)
     {
@@ -224,6 +308,11 @@ public sealed class NoteDerivedJob(
     internal async Task ReconcileLockedAsync(Guid owner, Guid taskId, CancellationToken ct)
     {
         var state = await tasks.ReadTaskAsync(owner, taskId, ct);
+        if (NoteDerivedStore.NeedsAsrRecovery(state))
+        {
+            _ = await MaterializeAsrInputsAsync(owner, taskId, ct);
+            state = await tasks.ReadTaskAsync(owner, taskId, ct);
+        }
         var candidates = state.Steps
             .Where(x => x.Current.RequestId != Guid.Empty &&
                 x.Current.Status is "Running" or "Unknown")
@@ -656,7 +745,13 @@ public sealed class NoteDerivedJob(
         var issues = new List<NoteDerivedIssueDto>();
         var completed = new HashSet<Guid>();
         if (state.Plan.Input.Transcripts.Count == 0)
+        {
+            if (state.Request.AsrTaskId is not null ||
+                state.Plan.Input.AsrTaskId is not null)
+                issues.Add(Issue("asr_transcripts_missing",
+                    "材料绑定了 ASR 但固定派生快照没有任何成功转写；已阻断，不会以空转写继续"));
             return new(completed, issues);
+        }
         if (state.Request.AsrTaskId is null)
         {
             issues.Add(Issue("asr_required", "材料包含录音但派生任务未绑定 ASR 任务"));

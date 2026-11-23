@@ -418,6 +418,12 @@ public sealed class NoteDerivedStore(IOptions<NoteMaterialUploadOptions> options
             x.Current.Status == "Running" ||
             !state.StopRequested && x.Current.Status == "Queued"));
 
+    internal static bool NeedsAsrRecovery(NoteDerivedTaskState state) =>
+        state.Request.AsrTaskId is not null &&
+        !state.AwaitingAsr &&
+        !state.Blocked &&
+        state.Plan?.Input?.Transcripts?.Count == 0;
+
     internal static NoteDerivedTaskDto DescribeTask(NoteDerivedTaskState state) => new(
         state.Request.TaskId,
         state.Revision,

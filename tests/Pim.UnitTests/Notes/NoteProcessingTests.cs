@@ -3,6 +3,7 @@ using System.Net.Http.Json;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -11,6 +12,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Pim.Core.Ai;
 using Pim.Core.Common;
+using Pim.Core.Exceptions;
 using Pim.Core.Notes;
 using Pim.Infrastructure.Ai;
 using Pim.Infrastructure.Data;
@@ -27,6 +29,7 @@ public sealed class NoteProcessingFixture : IDisposable
         "pim-note-processing", Guid.NewGuid().ToString("N"));
     public WebApplicationFactory<Program> Factory { get; }
     public SyntheticModelHandler Models { get; } = new();
+    public string NativeNotesRoot => Path.Combine(_root, "materials");
 
     public NoteProcessingFixture() =>
         Factory = AuthRegistrationTestHost.Create(
@@ -418,6 +421,242 @@ public sealed class NoteProcessingTests(NoteProcessingFixture host)
     }
 
     [Fact]
+    public async Task FileCommittedAsrIntentWithoutAttemptIsRecoveredByCompensationScanAndRemainsStable()
+    {
+        var owner = await OwnerAsync("asr-attempt-recovery");
+        using var client = AuthRegistrationTestHost.Authed(host.Factory, owner.AccessToken);
+        var models = await ConfigureAsync(client, auto: false);
+        _ = await ConfigureCloudRouteAsync(client, models.Asr.Id);
+        host.Models.Reset();
+        var material = await CompleteMaterialAsync(owner, client, withAudio: true);
+
+        using var scope = host.Factory.Services.CreateScope();
+        var asrService = scope.ServiceProvider.GetRequiredService<NoteAsrService>();
+        var materials = scope.ServiceProvider.GetRequiredService<NoteMaterialUploadStore>();
+        var asrStore = scope.ServiceProvider.GetRequiredService<NoteAsrTaskStore>();
+        var version = await materials.GetAsync(owner.UserId, material.VersionId,
+            CancellationToken.None);
+        var request = await asrService.BuildDefaultRequestForProcessingAsync(owner.UserId,
+            version, CancellationToken.None);
+        Assert.NotNull(request.Route);
+        _ = await asrStore.CreateAsync(owner.UserId, request, version,
+            NoteAsrPlan.Build(version), request.Route, request.Route.ExecutionMode,
+            NoteAsrPlan.SamplesPerCall, CancellationToken.None);
+        Assert.Equal(0, await AttemptCountAsync(owner.UserId, request.TaskId));
+        var wrongVersion = await Assert.ThrowsAsync<DomainException>(() =>
+            asrService.EnsureAttemptForOwnerAsync(owner.UserId, request.TaskId,
+                Guid.NewGuid(), CancellationToken.None));
+        Assert.Equal(40901, wrongVersion.ErrorCode);
+        Assert.Equal(0, await AttemptCountAsync(owner.UserId, request.TaskId));
+        _ = await SetAutoProcessingAsync(client, true);
+
+        var dispatch = host.Factory.Services.GetRequiredService<NoteProcessingDispatchJob>();
+        await dispatch.RunAsync(CancellationToken.None);
+
+        var first = await StatusAsync(client, material.NoteId, material.VersionId);
+        Assert.True(first.Asr.TaskCreated);
+        Assert.True(first.Derived.TaskCreated);
+        Assert.Equal(NoteProcessingChainState.WaitingForAsr, first.Derived.State);
+        var asr = await AsrTaskAsync(owner.UserId, first.Asr.TaskId!.Value);
+        Assert.NotNull(asr.AttemptId);
+        Assert.Equal(1, await AttemptCountAsync(owner.UserId, asr.Request.TaskId));
+        var boundAttempt = asr.AttemptId;
+        var revision = asr.Revision;
+
+        var jobs = new RecordingJobs();
+        var asrDispatch = new NoteAsrDispatchJob(AsrStore(), asrService, jobs,
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<NoteAsrDispatchJob>.Instance);
+        await asrDispatch.RunAsync(CancellationToken.None);
+        var job = Assert.Single(jobs.Items.Where(item =>
+            item.Args[0].Equals(owner.UserId) && item.Args[1].Equals(asr.Request.TaskId)));
+        Assert.Equal(typeof(NoteAsrJob), job.Type);
+
+        await dispatch.RunAsync(CancellationToken.None);
+        var second = await StatusAsync(client, material.NoteId, material.VersionId);
+        var replay = await AsrTaskAsync(owner.UserId, first.Asr.TaskId.Value);
+        Assert.Equal(first.Asr.TaskId, second.Asr.TaskId);
+        Assert.Equal(first.Derived.TaskId, second.Derived.TaskId);
+        Assert.Equal(boundAttempt, replay.AttemptId);
+        Assert.Equal(revision, replay.Revision);
+        Assert.Equal(1, await AttemptCountAsync(owner.UserId, replay.Request.TaskId));
+        Assert.Equal(0, host.Models.Calls);
+        Assert.Equal(0, await AiCallCountAsync(owner.UserId));
+    }
+
+    [Fact]
+    public async Task MissingBoundAttemptIsBlockedInsteadOfReboundToANewSnapshot()
+    {
+        var owner = await OwnerAsync("asr-bound-attempt-missing");
+        using var client = AuthRegistrationTestHost.Authed(host.Factory, owner.AccessToken);
+        var models = await ConfigureAsync(client, auto: false);
+        _ = await ConfigureCloudRouteAsync(client, models.Asr.Id);
+        var material = await CompleteMaterialAsync(owner, client, withAudio: true);
+
+        using var scope = host.Factory.Services.CreateScope();
+        var asrService = scope.ServiceProvider.GetRequiredService<NoteAsrService>();
+        var materials = scope.ServiceProvider.GetRequiredService<NoteMaterialUploadStore>();
+        var asrStore = scope.ServiceProvider.GetRequiredService<NoteAsrTaskStore>();
+        var version = await materials.GetAsync(owner.UserId, material.VersionId,
+            CancellationToken.None);
+        var request = await asrService.BuildDefaultRequestForProcessingAsync(owner.UserId,
+            version, CancellationToken.None);
+        var created = await asrStore.CreateAsync(owner.UserId, request, version,
+            NoteAsrPlan.Build(version), request.Route, request.Route?.ExecutionMode,
+            NoteAsrPlan.SamplesPerCall, CancellationToken.None);
+        var missingAttempt = Guid.NewGuid();
+        await asrStore.UpdateAsync(owner.UserId, request.TaskId, state =>
+        {
+            state.AttemptId = missingAttempt;
+        }, CancellationToken.None);
+
+        var error = await Assert.ThrowsAsync<DomainException>(() =>
+            asrService.EnsureAttemptForOwnerAsync(owner.UserId, request.TaskId,
+                request.VersionId, CancellationToken.None));
+
+        Assert.Equal(40901, error.ErrorCode);
+        var blocked = await asrStore.ReadAsync(owner.UserId, request.TaskId,
+            CancellationToken.None);
+        Assert.Equal(missingAttempt, blocked.AttemptId);
+        Assert.All(blocked.Steps, step => Assert.Equal("Blocked", step.Current.Status));
+        Assert.Equal(0, await AttemptCountAsync(owner.UserId, request.TaskId));
+        Assert.Equal(created.Steps.Count, blocked.Steps.Count);
+    }
+
+    [Fact]
+    public async Task LegacyDerivedPayloadWithoutAwaitingAsrMigratesToWaitingWithoutEmptyTranscriptSuccess()
+    {
+        var owner = await OwnerAsync("legacy-derived-wait");
+        using var client = AuthRegistrationTestHost.Authed(host.Factory, owner.AccessToken);
+        var models = await ConfigureAsync(client, auto: true);
+        _ = await ConfigureCloudRouteAsync(client, models.Asr.Id);
+        host.Models.Reset();
+        var material = await CompleteMaterialAsync(owner, client, withAudio: true);
+        var started = await StatusAsync(client, material.NoteId, material.VersionId);
+        Assert.Equal(NoteProcessingChainState.WaitingForAsr, started.Derived.State);
+
+        await RemoveAwaitingAsrPropertyAsync(owner.UserId, started.Derived.TaskId!.Value);
+
+        var migrated = await StatusAsync(client, material.NoteId, material.VersionId);
+        Assert.Equal(NoteProcessingChainState.WaitingForAsr, migrated.Derived.State);
+        var task = await DerivedTaskAsync(owner.UserId, started.Derived.TaskId.Value);
+        Assert.True(task.AwaitingAsr);
+        Assert.Empty(task.Plan.Input.Transcripts);
+
+        var derivedJob = host.Factory.Services.GetRequiredService<NoteDerivedJob>();
+        await derivedJob.RunAsync(owner.UserId, started.Derived.TaskId.Value,
+            CancellationToken.None);
+        await derivedJob.RunAsync(owner.UserId, started.Derived.TaskId.Value,
+            CancellationToken.None);
+        var stillWaiting = await DerivedTaskAsync(owner.UserId, started.Derived.TaskId.Value);
+        Assert.True(stillWaiting.AwaitingAsr);
+        Assert.NotEqual("Succeeded", NoteDerivedStore.DescribePhase(stillWaiting));
+        Assert.Empty(stillWaiting.Plan.Input.Transcripts);
+        Assert.Equal(0, host.Models.Calls);
+    }
+
+    [Fact]
+    public async Task AsrStoppedBeforeDerivedMaterializationBlocksWithoutEmptyTranscriptSuccess()
+    {
+        var owner = await OwnerAsync("asr-stopped-block");
+        using var client = AuthRegistrationTestHost.Authed(host.Factory, owner.AccessToken);
+        var models = await ConfigureAsync(client, auto: true);
+        _ = await ConfigureCloudRouteAsync(client, models.Asr.Id);
+        host.Models.Reset();
+        var material = await CompleteMaterialAsync(owner, client, withAudio: true);
+        var started = await StatusAsync(client, material.NoteId, material.VersionId);
+        Assert.Equal(NoteProcessingChainState.WaitingForAsr, started.Derived.State);
+        _ = await AsrStore().UpdateAsync(owner.UserId, started.Asr.TaskId!.Value, state =>
+        {
+            state.StopRequested = true;
+            foreach (var step in state.Steps)
+            {
+                step.Current.Status = "Cancelled";
+                step.Current.ErrorMessage = "用户已停止 ASR";
+            }
+        }, CancellationToken.None);
+
+        await host.Factory.Services.GetRequiredService<NoteDerivedJob>().RunAsync(
+            owner.UserId, started.Derived.TaskId!.Value, CancellationToken.None);
+
+        var task = await DerivedTaskAsync(owner.UserId, started.Derived.TaskId.Value);
+        Assert.False(task.AwaitingAsr);
+        Assert.True(task.Blocked);
+        Assert.NotEqual("Succeeded", NoteDerivedStore.DescribePhase(task));
+        Assert.Empty(task.Plan.Input.Transcripts);
+        Assert.Contains(task.Issues, issue => issue.Code == "asr_unavailable");
+        Assert.DoesNotContain(task.Issues, issue =>
+            issue.Message.Contains("继续使用固定原始材料", StringComparison.Ordinal));
+        Assert.Contains(task.Issues, issue =>
+            issue.Message.Contains("不会以空转写继续", StringComparison.Ordinal));
+        Assert.Equal(0, host.Models.Calls);
+        var status = await StatusAsync(client, material.NoteId, material.VersionId);
+        Assert.Equal(NoteProcessingChainState.NeedsAttention, status.Derived.State);
+        Assert.Equal(NoteProcessingState.NeedsAttention, status.State);
+    }
+
+    [Fact]
+    public async Task AsrSucceededWithoutReceiptsBlocksInsteadOfUsingEmptyTranscripts()
+    {
+        var owner = await OwnerAsync("asr-missing-receipt");
+        using var client = AuthRegistrationTestHost.Authed(host.Factory, owner.AccessToken);
+        var models = await ConfigureAsync(client, auto: true);
+        _ = await ConfigureCloudRouteAsync(client, models.Asr.Id);
+        host.Models.Reset();
+        var material = await CompleteMaterialAsync(owner, client, withAudio: true);
+        var started = await StatusAsync(client, material.NoteId, material.VersionId);
+        _ = await AsrStore().UpdateAsync(owner.UserId, started.Asr.TaskId!.Value, state =>
+        {
+            foreach (var step in state.Steps)
+            {
+                step.Current.Status = "Succeeded";
+                step.Current.LogId = null;
+                step.Current.ErrorMessage = null;
+            }
+            state.CompletionAcknowledged = true;
+        }, CancellationToken.None);
+
+        await host.Factory.Services.GetRequiredService<NoteDerivedJob>().RunAsync(
+            owner.UserId, started.Derived.TaskId!.Value, CancellationToken.None);
+
+        var task = await DerivedTaskAsync(owner.UserId, started.Derived.TaskId.Value);
+        Assert.False(task.AwaitingAsr);
+        Assert.True(task.Blocked);
+        Assert.NotEqual("Succeeded", NoteDerivedStore.DescribePhase(task));
+        Assert.Empty(task.Plan.Input.Transcripts);
+        Assert.Contains(task.Issues, issue => issue.Code == "asr_segment_incomplete");
+        Assert.Equal(0, host.Models.Calls);
+        Assert.Equal(0, await AiCallCountAsync(owner.UserId));
+    }
+
+    [Fact]
+    public async Task AsrSourceFromAnotherVersionBlocksInsteadOfUsingEmptyTranscripts()
+    {
+        var owner = await OwnerAsync("asr-wrong-source");
+        using var client = AuthRegistrationTestHost.Authed(host.Factory, owner.AccessToken);
+        var models = await ConfigureAsync(client, auto: true);
+        _ = await ConfigureCloudRouteAsync(client, models.Asr.Id);
+        host.Models.Reset();
+        var material = await CompleteMaterialAsync(owner, client, withAudio: true);
+        var started = await StatusAsync(client, material.NoteId, material.VersionId);
+        _ = await AsrStore().UpdateAsync(owner.UserId, started.Asr.TaskId!.Value, state =>
+        {
+            state.Request = state.Request with { VersionId = Guid.NewGuid() };
+        }, CancellationToken.None);
+
+        await host.Factory.Services.GetRequiredService<NoteDerivedJob>().RunAsync(
+            owner.UserId, started.Derived.TaskId!.Value, CancellationToken.None);
+
+        var task = await DerivedTaskAsync(owner.UserId, started.Derived.TaskId.Value);
+        Assert.False(task.AwaitingAsr);
+        Assert.True(task.Blocked);
+        Assert.NotEqual("Succeeded", NoteDerivedStore.DescribePhase(task));
+        Assert.Empty(task.Plan.Input.Transcripts);
+        Assert.Contains(task.Issues, issue => issue.Code == "asr_source_mismatch");
+        Assert.Equal(0, host.Models.Calls);
+        Assert.Equal(0, await AiCallCountAsync(owner.UserId));
+    }
+
+    [Fact]
     public async Task UserProcessingSettingUsesRevisionCas_AndStatusErrorsRedactPrivateUrls()
     {
         var admin = await AuthRegistrationTestHost.SeedAndLoginAsync(host.Factory,
@@ -481,6 +720,17 @@ public sealed class NoteProcessingTests(NoteProcessingFixture host)
         return (asr, derived);
     }
 
+    private static async Task<NoteAsrRouteConfigDto> ConfigureCloudRouteAsync(
+        HttpClient client, Guid asrModelId)
+    {
+        var current = await Data<NoteAsrRouteConfigDto>(
+            await client.GetAsync("/api/v1/native-notes/asr-routing/config"));
+        return await Data<NoteAsrRouteConfigDto>(await client.PutAsJsonAsync(
+            "/api/v1/native-notes/asr-routing/config",
+            new UpdateNoteAsrRouteConfigRequest(current.Revision, NoteAsrRoute.CloudAsr,
+                null, null, asrModelId, "synthetic-cloud-consent-v1")));
+    }
+
     private static async Task<NoteProcessingPreferencesDto> SetAutoProcessingAsync(
         HttpClient client, bool enabled)
     {
@@ -536,6 +786,23 @@ public sealed class NoteProcessingTests(NoteProcessingFixture host)
         using var scope = host.Factory.Services.CreateScope();
         return await scope.ServiceProvider.GetRequiredService<PimDbContext>()
             .AiRequestLogs.AsNoTracking().CountAsync(x => x.UserId == owner);
+    }
+
+    private async Task<int> AttemptCountAsync(Guid owner, Guid taskId)
+    {
+        using var scope = host.Factory.Services.CreateScope();
+        return await scope.ServiceProvider.GetRequiredService<PimDbContext>()
+            .NoteAsrAttempts.AsNoTracking().CountAsync(x =>
+                x.OwnerId == owner && x.TaskId == taskId);
+    }
+
+    private async Task RemoveAwaitingAsrPropertyAsync(Guid owner, Guid taskId)
+    {
+        var path = Path.Combine(host.NativeNotesRoot, "derived", owner.ToString("D"),
+            "tasks", taskId.ToString("D") + ".json");
+        var root = JsonNode.Parse(await File.ReadAllTextAsync(path))!.AsObject();
+        Assert.True(root.Remove("awaitingAsr"));
+        await File.WriteAllTextAsync(path, root.ToJsonString(Json));
     }
 
     private async Task MarkAsrSucceededWithSyntheticReceiptsAsync(Guid owner,
@@ -606,6 +873,18 @@ public sealed class NoteProcessingTests(NoteProcessingFixture host)
         Assert.True(response.StatusCode == HttpStatusCode.OK,
             $"HTTP {(int)response.StatusCode}: {body}");
         return JsonSerializer.Deserialize<ApiResponse<T>>(body, Json)!.Data!;
+    }
+
+    private sealed class RecordingJobs : Hangfire.IBackgroundJobClient
+    {
+        public List<Hangfire.Common.Job> Items { get; } = [];
+        public string Create(Hangfire.Common.Job job, Hangfire.States.IState state)
+        {
+            Items.Add(job);
+            return Items.Count.ToString();
+        }
+        public bool ChangeState(string jobId, Hangfire.States.IState state,
+            string expectedState) => throw new NotSupportedException();
     }
 
     public void Dispose() => host.Models.Reset();

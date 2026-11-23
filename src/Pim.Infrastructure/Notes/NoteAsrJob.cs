@@ -15,7 +15,8 @@ using Pim.Infrastructure.Data.Entities;
 
 namespace Pim.Infrastructure.Notes;
 
-public sealed class NoteAsrDispatchJob(NoteAsrTaskStore tasks, IBackgroundJobClient jobs, ILogger<NoteAsrDispatchJob> logger)
+public sealed class NoteAsrDispatchJob(NoteAsrTaskStore tasks, NoteAsrService asr,
+    IBackgroundJobClient jobs, ILogger<NoteAsrDispatchJob> logger)
 {
     [AutomaticRetry(Attempts = 0)]
     public async Task RunAsync(CancellationToken ct)
@@ -26,6 +27,9 @@ public sealed class NoteAsrDispatchJob(NoteAsrTaskStore tasks, IBackgroundJobCli
             try
             {
                 var state = await tasks.ReadAsync(owner, id, ct);
+                if (state.Route is not null)
+                    state = await asr.EnsureAttemptForOwnerAsync(owner, id,
+                        state.Request.VersionId, ct);
                 if (!NoteAsrTaskStore.Active(state)) continue;
                 using var lease = tasks.TryRunLease(owner, id);
                 if (lease is not null) jobs.Enqueue<NoteAsrJob>(job => job.RunAsync(owner, id, CancellationToken.None));
