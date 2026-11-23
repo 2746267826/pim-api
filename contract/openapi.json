@@ -1899,9 +1899,6 @@
       "AiModelSettingsDto": {
         "additionalProperties": false,
         "properties": {
-          "autoNoteProcessingEnabled": {
-            "type": "boolean"
-          },
           "enabled": {
             "type": "boolean"
           },
@@ -18563,6 +18560,48 @@
         ],
         "type": "object"
       },
+      "NoteProcessingPreferencesDto": {
+        "additionalProperties": false,
+        "properties": {
+          "autoProcessingEnabled": {
+            "type": "boolean"
+          },
+          "revision": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "autoProcessingEnabled",
+          "revision"
+        ],
+        "type": "object"
+      },
+      "NoteProcessingPreferencesDtoApiResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "data": {
+            "$ref": "#/components/schemas/NoteProcessingPreferencesDto"
+          },
+          "message": {
+            "type": "string"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
+        "type": "object"
+      },
       "NoteProcessingState": {
         "enum": [
           "WaitingForMaterial",
@@ -22647,10 +22686,6 @@
       "SaveAiModelSettingsRequest": {
         "additionalProperties": false,
         "properties": {
-          "autoNoteProcessingEnabled": {
-            "nullable": true,
-            "type": "boolean"
-          },
           "enabled": {
             "type": "boolean"
           },
@@ -22813,6 +22848,23 @@
           "contentMarkdown",
           "expectedHeadRevision",
           "revisionId"
+        ],
+        "type": "object"
+      },
+      "SaveNoteProcessingPreferencesRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "autoProcessingEnabled": {
+            "type": "boolean"
+          },
+          "expectedRevision": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "autoProcessingEnabled",
+          "expectedRevision"
         ],
         "type": "object"
       },
@@ -43891,6 +43943,80 @@
           },
           "404": {
             "description": "Not Found"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Native note processing"
+        ]
+      }
+    },
+    "/api/v1/native-notes/processing/preferences": {
+      "get": {
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NoteProcessingPreferencesDtoApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Native note processing"
+        ]
+      },
+      "put": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SaveNoteProcessingPreferencesRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NoteProcessingPreferencesDtoApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "409": {
+            "description": "Conflict"
           }
         },
         "security": [

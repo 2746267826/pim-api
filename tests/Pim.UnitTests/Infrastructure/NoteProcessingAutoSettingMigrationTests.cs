@@ -13,28 +13,28 @@ public sealed class NoteProcessingAutoSettingMigrationTests
     private const string PreviousPublishedHead = "20261117165057_AddEndpointLastWakeBlockReason";
 
     [SkippableFact]
-    public async Task PublishedDatabase_UpgradesWithDefaultOff_AndPreservesExistingRuntimeRow()
+    public async Task PublishedDatabase_UpgradesWithDefaultOff_AndPreservesExistingUsers()
     {
         await using var database = await TempMigrationDatabase.CreateAsync(
             "test_note_processing_auto_upgrade");
 
         await database.MigrateToAsync(PreviousPublishedHead);
-        Assert.False(await database.ColumnExistsAsync("ai_model_runtime",
+        Assert.False(await database.ColumnExistsAsync("note_processing_preferences",
             "auto_note_processing_enabled"));
-        var revision = Guid.NewGuid();
+        var owner = Guid.NewGuid();
         await database.ExecuteAsync($"""
-INSERT INTO ai_model_runtime (id, revision, enabled, text_model_id, vision_model_id, transcription_model_id)
-VALUES ('sdk', '{revision:D}', false, NULL, NULL, NULL);
+INSERT INTO users (id, username, email, password_hash, role, is_active, created_at, updated_at)
+VALUES ('{owner:D}', 'note-processing-owner', 'note-processing-owner@example.invalid', 'test', 'user', true, now(), now());
 """);
 
         var error = await Record.ExceptionAsync(database.MigrateAsync);
         Assert.Null(error);
 
         Assert.True(await database.HasMigrationLikeAsync("AddNoteProcessingAutoSetting"));
-        Assert.True(await database.ColumnExistsAsync("ai_model_runtime",
+        Assert.True(await database.ColumnExistsAsync("note_processing_preferences",
             "auto_note_processing_enabled"));
-        Assert.False(await AutoEnabledAsync(database, "sdk"));
-        Assert.Equal(revision.ToString("D"), await RuntimeRevisionAsync(database, "sdk"));
+        Assert.Equal("1", (await ScalarAsync(database,
+            "SELECT count(*) FROM users WHERE id = @owner", ("owner", owner)))?.ToString());
 
         Assert.Null(await Record.ExceptionAsync(database.MigrateAsync));
         Assert.Equal(await database.MigrationsOnDiskAsync(),
@@ -51,28 +51,14 @@ VALUES ('sdk', '{revision:D}', false, NULL, NULL, NULL);
         Assert.Null(error);
 
         Assert.True(await database.HasMigrationLikeAsync("AddNoteProcessingAutoSetting"));
-        Assert.True(await database.ColumnExistsAsync("ai_model_runtime",
+        Assert.True(await database.ColumnExistsAsync("note_processing_preferences",
             "auto_note_processing_enabled"));
         Assert.Equal("NO", await ColumnNullableAsync(database,
-            "ai_model_runtime", "auto_note_processing_enabled"));
+            "note_processing_preferences", "auto_note_processing_enabled"));
         Assert.Equal("false", await ColumnDefaultAsync(database,
-            "ai_model_runtime", "auto_note_processing_enabled"));
+            "note_processing_preferences", "auto_note_processing_enabled"));
         Assert.Equal(await database.MigrationsOnDiskAsync(),
             await database.AppliedMigrationCountAsync());
-    }
-
-    private static async Task<bool> AutoEnabledAsync(TempMigrationDatabase database, string id)
-    {
-        var value = await ScalarAsync(database,
-            "SELECT auto_note_processing_enabled FROM ai_model_runtime WHERE id = @id", ("id", id));
-        return value is true;
-    }
-
-    private static async Task<string?> RuntimeRevisionAsync(TempMigrationDatabase database, string id)
-    {
-        var value = await ScalarAsync(database,
-            "SELECT revision::text FROM ai_model_runtime WHERE id = @id", ("id", id));
-        return value?.ToString();
     }
 
     private static async Task<string?> ColumnNullableAsync(TempMigrationDatabase database,

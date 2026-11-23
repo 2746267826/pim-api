@@ -74,7 +74,7 @@ public sealed class NoteProcessingService(
     {
         if (request.NoteId == Guid.Empty || request.VersionId == Guid.Empty)
             throw new DomainException(40001, "笔记或材料版本标识无效");
-        var autoEnabled = await AutoEnabledAsync(ct);
+        var autoEnabled = await AutoEnabledAsync(owner, ct);
         var supplied = await materials.GetAsync(owner, request.VersionId, ct);
         if (supplied.Upload.NoteId != request.NoteId)
             throw new DomainException(40401, "材料版本不存在或不属于当前笔记");
@@ -133,12 +133,15 @@ public sealed class NoteProcessingService(
                 return await SavePendingAsync(state, "auto_processing_disabled",
                     "自动笔记处理未开启；材料已完整，可在笔记处理页手动发起", lockedCt);
 
+            NoteProcessingTaskKind? startingTask = null;
             try
             {
-                state.AsrRequest ??= hasAudio
-                    ? await asr.BuildDefaultRequestForProcessingAsync(owner, version, lockedCt)
-                    : null;
-                if (state.DerivedRequest is null)
+                if (!hasAudio)
+                    state.AsrRequest = null;
+                else if (!asrCreated)
+                    state.AsrRequest = await asr.BuildDefaultRequestForProcessingAsync(
+                        owner, version, lockedCt);
+                if (!derivedCreated)
                 {
                     var consent = await derived.ResolveDefaultConsentForProcessingAsync(
                         owner, version, lockedCt);
@@ -150,10 +153,16 @@ public sealed class NoteProcessingService(
                 _ = await processing.SaveLockedAsync(state, lockedCt);
 
                 if (hasAudio && !asrCreated)
+                {
+                    startingTask = NoteProcessingTaskKind.Asr;
                     _ = await asr.StartForOwnerAsync(owner, state.AsrRequest!, lockedCt);
+                }
                 if (!derivedCreated)
+                {
+                    startingTask = NoteProcessingTaskKind.Derived;
                     _ = await derived.StartForOwnerAsync(owner, state.DerivedRequest,
-                        waitForAsr: true, lockedCt);
+                        waitForAsr: false, allowIncompleteAsr: true, lockedCt);
+                }
             }
             catch (DomainException error)
             {
@@ -161,7 +170,7 @@ public sealed class NoteProcessingService(
                 state.Issues =
                 [
                     new("processing_not_started", error.Message,
-                        hasAudio ? NoteProcessingTaskKind.Asr : NoteProcessingTaskKind.Derived)
+                        startingTask ?? (hasAudio ? NoteProcessingTaskKind.Asr : NoteProcessingTaskKind.Derived))
                 ];
                 _ = await processing.SaveLockedAsync(state, lockedCt);
                 if (!automatic) throw;
@@ -192,7 +201,7 @@ public sealed class NoteProcessingService(
         var version = await materials.GetAsync(owner, versionId, ct);
         if (version.Upload.NoteId != noteId)
             throw new DomainException(40401, "材料版本不存在或不属于当前笔记");
-        var autoEnabled = await AutoEnabledAsync(ct);
+        var autoEnabled = await AutoEnabledAsync(owner, ct);
         var state = await processing.TryReadAsync(owner,
             NoteProcessingIdentity.Processing(owner, versionId), ct);
         return await BuildStatusAsync(owner, version, state, autoEnabled, ct);
@@ -290,14 +299,9 @@ public sealed class NoteProcessingService(
             NoteProcessingTaskKind.Derived);
         if (task is null)
         {
-            var asrPhase = asrTask is null ? null : NoteAsrTaskStore.Describe(asrTask).Phase;
-            var state = hasAudio && asrTask is not null && asrPhase != "Succeeded"
-                ? NoteProcessingChainState.WaitingForAsr
-                : NoteProcessingChainState.PendingStart;
+            var state = NoteProcessingChainState.PendingStart;
             return new(NoteProcessingTaskKind.Derived, state, taskId, false, null, null,
-                0, 0, 0, false, [], state == NoteProcessingChainState.WaitingForAsr
-                    ? "整理任务等待 ASR 完整成功"
-                    : processing?.PendingReason ?? "整理任务尚未创建");
+                0, 0, 0, false, [], processing?.PendingReason ?? "整理任务尚未创建");
         }
 
         var phase = NoteDerivedStore.DescribePhase(task);
@@ -420,14 +424,18 @@ public sealed class NoteProcessingService(
             @"https?://[^\s""'<>]+", "[地址已隐藏]",
             System.Text.RegularExpressions.RegexOptions.IgnoreCase,
             TimeSpan.FromMilliseconds(100));
+        redacted = Pim.Infrastructure.Ai.AiRedactor.RedactPlainText(redacted) ?? "";
         redacted = System.Text.RegularExpressions.Regex.Replace(redacted,
-            @"(?i)\b(bearer\s+)[A-Za-z0-9._~+/=-]{8,}", "$1[已隐藏]",
-            System.Text.RegularExpressions.RegexOptions.None, TimeSpan.FromMilliseconds(100));
+            @"(?<![\w/])(?:/[^\s""'<>]+)+", "[路径已隐藏]",
+            System.Text.RegularExpressions.RegexOptions.None,
+            TimeSpan.FromMilliseconds(100));
         return redacted.Length <= 500 ? redacted : redacted[..500];
     }
 
-    private Task<bool> AutoEnabledAsync(CancellationToken ct) =>
-        db.AiModelRuntime.AsNoTracking().Select(x => x.AutoNoteProcessingEnabled)
+    private Task<bool> AutoEnabledAsync(Guid owner, CancellationToken ct) =>
+        db.NoteProcessingPreferences.AsNoTracking()
+            .Where(x => x.OwnerId == owner)
+            .Select(x => x.AutoNoteProcessingEnabled)
             .SingleOrDefaultAsync(ct);
 
     private Task<bool> IsActiveOwnerAsync(Guid owner, CancellationToken ct) =>

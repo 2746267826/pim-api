@@ -180,7 +180,8 @@ public sealed class NoteDerivedJob(
                 return false;
             var version = await materials.GetAsync(owner, state.Request.VersionId, ct);
             var built = await snapshots.BuildAsync(owner, version, state.InputSha256,
-                state.ManifestSha256, state.Request.AsrTaskId, waitForAsr: true, ct);
+                state.ManifestSha256, state.Request.AsrTaskId,
+                waitForAsr: true, allowIncompleteAsr: false, ct);
             if (built.AwaitingAsr) return false;
             var plan = new NoteDerivedPlanner().Build(built.Snapshot);
             await tasks.UpdateTaskAsync(owner, taskId, current =>

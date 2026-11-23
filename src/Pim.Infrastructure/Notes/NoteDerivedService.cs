@@ -32,10 +32,11 @@ public sealed class NoteDerivedService(
 
     public Task<NoteDerivedTaskDto> StartAsync(StartNoteDerivedTaskRequest request,
         CancellationToken ct) =>
-        StartForOwnerAsync(Owner, request, waitForAsr: false, ct);
+        StartForOwnerAsync(Owner, request, waitForAsr: false, allowIncompleteAsr: false, ct);
 
     internal async Task<NoteDerivedTaskDto> StartForOwnerAsync(Guid owner,
-        StartNoteDerivedTaskRequest request, bool waitForAsr, CancellationToken ct)
+        StartNoteDerivedTaskRequest request, bool waitForAsr, bool allowIncompleteAsr,
+        CancellationToken ct)
     {
         await RequireActiveOwnerAsync(owner, ct);
         if (request.TaskId == Guid.Empty || request.VersionId == Guid.Empty)
@@ -63,7 +64,7 @@ public sealed class NoteDerivedService(
         var hasImages = version.Upload.Files.Any(x => x.Kind is "Photo" or "InkPreview");
         await ValidateDestinationAsync(request.Consent, hasImages, ct);
         var built = await snapshots.BuildAsync(owner, version, inputSha, manifestSha,
-            request.AsrTaskId, waitForAsr, ct);
+            request.AsrTaskId, waitForAsr, allowIncompleteAsr, ct);
         var snapshot = built.Snapshot;
         var plan = new NoteDerivedPlanner().Build(snapshot);
         var state = await store.CreateTaskAsync(owner, request, plan, fingerprint, ct,
@@ -77,12 +78,13 @@ public sealed class NoteDerivedService(
         var runtime = await db.AiModelRuntime.AsNoTracking().SingleOrDefaultAsync(ct);
         if (runtime is null || !runtime.Enabled)
             throw Conflict("AI 服务未启用，无法使用账号默认模型整理笔记");
-        if (runtime.TextModelId is not { } modelId)
+        var hasImages = version.Upload.Files.Any(x => x.Kind is "Photo" or "InkPreview");
+        var modelId = hasImages ? runtime.VisionModelId ?? runtime.TextModelId : runtime.TextModelId;
+        if (modelId is not { } selectedModelId)
             throw Conflict("账号默认文本模型未配置，无法整理笔记");
         var profile = await db.AiModelProfiles.AsNoTracking()
-            .SingleOrDefaultAsync(x => x.Id == modelId, ct)
+            .SingleOrDefaultAsync(x => x.Id == selectedModelId, ct)
             ?? throw Conflict("账号默认文本模型不存在，无法整理笔记");
-        var hasImages = version.Upload.Files.Any(x => x.Kind is "Photo" or "InkPreview");
         var consent = new NoteDerivedGenerationConsent(profile.Id, profile.Revision,
             profile.BaseUrl, true);
         await ValidateDestinationAsync(consent, hasImages, ct);

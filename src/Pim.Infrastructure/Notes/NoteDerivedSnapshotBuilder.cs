@@ -24,7 +24,7 @@ public sealed class NoteDerivedSnapshotBuilder(
 {
     internal async Task<NoteDerivedSnapshotBuild> BuildAsync(Guid owner,
         NoteMaterialVersionDto version, string inputSha, string manifestSha,
-        Guid? asrTaskId, bool waitForAsr, CancellationToken ct)
+        Guid? asrTaskId, bool waitForAsr, bool allowIncompleteAsr, CancellationToken ct)
     {
         using var document = JsonDocument.Parse(version.InputJson);
         var input = document.RootElement;
@@ -134,52 +134,56 @@ public sealed class NoteDerivedSnapshotBuilder(
         {
             var asr = await asrTasks.ReadAsync(owner, asrTaskId.Value, ct);
             asrRevision = asr.Revision;
-            if (asr.Request.VersionId != version.Upload.VersionId ||
-                asr.InputSha256 != inputSha || asr.ManifestSha256 != manifestSha)
+            var sourceMatches = asr.Request.VersionId == version.Upload.VersionId &&
+                asr.InputSha256 == inputSha && asr.ManifestSha256 == manifestSha;
+            if (!sourceMatches)
                 issues.Add(new("asr_source_mismatch", "ASR 任务不属于当前固定材料版本或摘要不一致"));
             var phase = NoteAsrTaskStore.Describe(asr).Phase;
-            if (phase != "Succeeded" && waitForAsr)
-                awaitingAsr = true;
-            else if (phase != "Succeeded")
-                issues.Add(new("asr_incomplete", $"ASR 尚未完整成功，当前状态为 {phase}"));
-
-            List<NoteAsrStep> expectedSteps;
-            try
-            {
-                expectedSteps = NoteAsrPlan.Build(version,
-                    asr.SamplesPerCall > 0 ? asr.SamplesPerCall : NoteAsrPlan.SamplesPerCall);
-            }
-            catch (DomainException error)
-            {
-                expectedSteps = [];
-                issues.Add(new("asr_plan_invalid", "无法从固定材料重建完整 ASR 片段计划：" + error.Message));
-            }
             var actualSteps = asr.Steps.OrderBy(x => x.Index).ToArray();
-            if (actualSteps.Length != expectedSteps.Count)
-                issues.Add(new("asr_segment_set_mismatch",
-                    $"ASR 任务包含 {actualSteps.Length} 片，固定材料应有 {expectedSteps.Count} 片；禁止遗漏或复用其他片段"));
-            for (var index = 0; index < Math.Min(actualSteps.Length, expectedSteps.Count); index++)
-            {
-                var expected = expectedSteps[index];
-                var actual = actualSteps[index];
-                if (actual.Index != expected.Index ||
-                    actual.RecordingId != expected.RecordingId ||
-                    actual.RecordingSegment != expected.RecordingSegment ||
-                    actual.ChunkIndex != expected.ChunkIndex ||
-                    actual.FileIndex != expected.FileIndex ||
-                    !string.Equals(actual.Path, expected.Path, StringComparison.Ordinal) ||
-                    !string.Equals(actual.Sha256, expected.Sha256, StringComparison.Ordinal) ||
-                    actual.SourceOffset != expected.SourceOffset ||
-                    actual.RecordingOffset != expected.RecordingOffset ||
-                    actual.TimelineOffset != expected.TimelineOffset ||
-                    actual.Samples != expected.Samples)
-                    issues.Add(new("asr_segment_plan_mismatch",
-                        "ASR 片段身份、来源文件、偏移或样本范围与固定材料重建计划不一致",
-                        actual.Path, StepKey: $"asr:{actual.Index:D5}"));
-            }
+            if (phase != "Succeeded" && waitForAsr && sourceMatches &&
+                phase is "Queued" or "Running")
+                awaitingAsr = true;
+            else if (phase != "Succeeded" && !allowIncompleteAsr)
+                issues.Add(new("asr_unavailable", $"ASR 当前未提供可用结果，状态为 {phase}；整理链路继续使用固定原始材料"));
 
-            if (!awaitingAsr)
+            if (!awaitingAsr && phase == "Succeeded" && sourceMatches)
+            {
+                List<NoteAsrStep> expectedSteps;
+                try
+                {
+                    expectedSteps = NoteAsrPlan.Build(version,
+                        asr.SamplesPerCall > 0 ? asr.SamplesPerCall : NoteAsrPlan.SamplesPerCall);
+                }
+                catch (DomainException error)
+                {
+                    expectedSteps = [];
+                    issues.Add(new("asr_plan_invalid", "无法从固定材料重建完整 ASR 片段计划：" + error.Message));
+                }
+                if (actualSteps.Length != expectedSteps.Count)
+                    issues.Add(new("asr_segment_set_mismatch",
+                        $"ASR 任务包含 {actualSteps.Length} 片，固定材料应有 {expectedSteps.Count} 片；禁止遗漏或复用其他片段"));
+                for (var index = 0; index < Math.Min(actualSteps.Length, expectedSteps.Count); index++)
+                {
+                    var expected = expectedSteps[index];
+                    var actual = actualSteps[index];
+                    if (actual.Index != expected.Index ||
+                        actual.RecordingId != expected.RecordingId ||
+                        actual.RecordingSegment != expected.RecordingSegment ||
+                        actual.ChunkIndex != expected.ChunkIndex ||
+                        actual.FileIndex != expected.FileIndex ||
+                        !string.Equals(actual.Path, expected.Path, StringComparison.Ordinal) ||
+                        !string.Equals(actual.Sha256, expected.Sha256, StringComparison.Ordinal) ||
+                        actual.SourceOffset != expected.SourceOffset ||
+                        actual.RecordingOffset != expected.RecordingOffset ||
+                        actual.TimelineOffset != expected.TimelineOffset ||
+                        actual.Samples != expected.Samples)
+                        issues.Add(new("asr_segment_plan_mismatch",
+                            "ASR 片段身份、来源文件、偏移或样本范围与固定材料重建计划不一致",
+                            actual.Path, StepKey: $"asr:{actual.Index:D5}"));
+                }
+
                 await AddTranscriptsAsync();
+            }
 
             async Task AddTranscriptsAsync()
             {

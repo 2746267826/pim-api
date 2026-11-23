@@ -110,7 +110,7 @@ public sealed class AiModelSettingsService(PimDbContext db, ISecretProtector sec
     public async Task<AiModelSettingsDto> GetSettingsAsync(CancellationToken ct)
     {
         var row = await db.AiModelRuntime.AsNoTracking().SingleOrDefaultAsync(ct);
-        return row is null ? new(Guid.Empty, false, null, null, null, false) : Map(row);
+        return row is null ? new(Guid.Empty, false, null, null, null) : Map(row);
     }
 
     public async Task<AiModelSettingsDto> SaveSettingsAsync(SaveAiModelSettingsRequest request, CancellationToken ct)
@@ -127,7 +127,6 @@ public sealed class AiModelSettingsService(PimDbContext db, ISecretProtector sec
         if (row is null) { row = new(); db.AiModelRuntime.Add(row); }
         row.Enabled = request.Enabled; row.TextModelId = request.TextModelId;
         row.VisionModelId = request.VisionModelId; row.TranscriptionModelId = request.TranscriptionModelId;
-        row.AutoNoteProcessingEnabled = request.AutoNoteProcessingEnabled ?? row.AutoNoteProcessingEnabled;
         row.Revision = Guid.NewGuid();
         try { await db.SaveChangesAsync(ct); }
         catch (DbUpdateConcurrencyException) { throw Conflict(); }
@@ -161,7 +160,7 @@ public sealed class AiModelSettingsService(PimDbContext db, ISecretProtector sec
         row.AsrPresetId, row.AsrBatchBaseUrl, row.AsrPrompt,
         row.Capabilities == 4 ? AiAsrPromptTemplate.Normalize(row.AsrPrompt).Revision : null);
     private static AiModelSettingsDto Map(AiModelRuntimeEntity row) => new(row.Revision, row.Enabled,
-        row.TextModelId, row.VisionModelId, row.TranscriptionModelId, row.AutoNoteProcessingEnabled);
+        row.TextModelId, row.VisionModelId, row.TranscriptionModelId);
     private static DomainException Invalid(string message) => new(40001, message);
     private static bool IsConflict(DbUpdateException error) => error.InnerException is PostgresException
         { SqlState: PostgresErrorCodes.UniqueViolation or PostgresErrorCodes.ForeignKeyViolation };

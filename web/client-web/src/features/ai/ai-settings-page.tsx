@@ -64,7 +64,6 @@ function Workspace({ userId }: { userId: string }) {
     try {
       const saved = await aiApi.saveSettings({ enabled: settings.data.enabled, textModelId: settings.data.textModelId,
         visionModelId: settings.data.visionModelId, transcriptionModelId: settings.data.transcriptionModelId,
-        autoNoteProcessingEnabled: settings.data.autoNoteProcessingEnabled ?? false,
         expectedRevision: settings.data.revision, ...patch })
       qc.setQueryData([...prefix, 'settings'], saved); notifySuccess('模型设置已保存')
     } catch (error) { notifyError(errorText(error)); void refresh() }
@@ -84,12 +83,6 @@ function Workspace({ userId }: { userId: string }) {
           <Card className="space-y-4 p-5">
             <div className="flex items-center justify-between gap-4"><div><h2 className="text-sm font-semibold text-text-1">SDK 直连</h2><p className="mt-1 text-xs text-text-3">此开关控制新直连调用；旧环境链路保留原有配置。</p></div>
               <div className="flex items-center gap-2"><Label htmlFor="ai-sdk-enabled">启用 SDK 直连</Label><Switch id="ai-sdk-enabled" checked={settings.data.enabled} disabled={busy} onCheckedChange={(enabled) => void patchSettings({ enabled })} /></div></div>
-            <div className="flex flex-wrap items-center justify-between gap-3 rounded-ctl border border-border p-3">
-              <div className="min-w-0"><Label htmlFor="ai-auto-note-processing">材料完成后自动处理笔记</Label>
-                <p className="mt-1 text-xs leading-5 text-text-3">默认关闭。仅对完整当前版本生效；会使用默认文本/视觉模型和转写路由。缺少目标或账号停用时保持待发起，不向模型外发。</p></div>
-              <Switch id="ai-auto-note-processing" checked={settings.data.autoNoteProcessingEnabled ?? false} disabled={busy}
-                onCheckedChange={(autoNoteProcessingEnabled) => void patchSettings({ autoNoteProcessingEnabled })} />
-            </div>
             <div className="grid gap-3 md:grid-cols-3">{capabilities.map((cap) => {
               const field = cap === 'Text' ? 'textModelId' : cap === 'Vision' ? 'visionModelId' : 'transcriptionModelId'
               const chosen = settings.data![field]

@@ -146,6 +146,8 @@ builder.Services.AddSingleton<Pim.Infrastructure.Ai.Asr.Mimo.IMimoBatchClientFac
     Pim.Infrastructure.Ai.Asr.Mimo.MimoBatchClientFactory>();
 builder.Services.AddScoped<Pim.Infrastructure.Notes.NoteDerivedService>();
 builder.Services.AddScoped<Pim.Infrastructure.Notes.NoteProcessingService>();
+builder.Services.AddScoped<Pim.Infrastructure.Notes.NoteProcessingPreferencesService>();
+builder.Services.AddScoped<Pim.Infrastructure.Notes.NoteProcessingDispatchJob>();
 builder.Services.AddScoped<Pim.Infrastructure.Notes.NoteAsrJob>();
 builder.Services.AddScoped<Pim.Infrastructure.Notes.NoteDerivedJob>();
 builder.Services.AddAggregateResultCaching();
@@ -499,6 +501,8 @@ else
             "ai-asr-job-dispatch", job => job.RunAsync(CancellationToken.None), Cron.Minutely);
         RecurringJob.AddOrUpdate<Pim.Infrastructure.Notes.NoteDerivedDispatchJob>(
             "native-note-derived-dispatch", job => job.RunAsync(CancellationToken.None), Cron.Minutely);
+        RecurringJob.AddOrUpdate<Pim.Infrastructure.Notes.NoteProcessingDispatchJob>(
+            "native-note-processing-dispatch", job => job.RunAsync(CancellationToken.None), Cron.Minutely);
 
         RecurringJob.AddOrUpdate<HeartbeatStaleInspectionJob>(
             "heartbeat-stale-inspection",

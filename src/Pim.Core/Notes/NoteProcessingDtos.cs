@@ -36,6 +36,12 @@ public enum NoteProcessingTaskKind
 
 public sealed record StartNoteProcessingRequest(Guid NoteId, Guid VersionId);
 
+public sealed record NoteProcessingPreferencesDto(Guid Revision, bool AutoProcessingEnabled);
+
+public sealed record SaveNoteProcessingPreferencesRequest(
+    Guid ExpectedRevision,
+    bool AutoProcessingEnabled);
+
 public sealed record NoteProcessingIssueDto(
     string Code,
     string Message,

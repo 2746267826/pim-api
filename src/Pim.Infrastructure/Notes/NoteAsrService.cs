@@ -71,7 +71,7 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
             .SingleOrDefaultAsync(x => x.OwnerId == owner, ct);
         if (config is null)
         {
-            var (consent, _) = await DefaultCloudConsentAsync(owner, ct);
+            var (consent, _) = await DefaultCloudConsentAsync(owner, preferredModelId: null, ct);
             return new(taskId, owner, version.Upload.VersionId, consent);
         }
 
@@ -87,7 +87,7 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
             return new(taskId, owner, version.Upload.VersionId, null, "auto", routeConsent);
         }
 
-        var (cloudConsent, descriptor) = await DefaultCloudConsentAsync(owner, ct);
+        var (cloudConsent, descriptor) = await DefaultCloudConsentAsync(owner, config.CloudModelId, ct);
         var isMultimodal = descriptor.Id == MimoMultimodalPreset.PresetId;
         if (route == NoteAsrRoute.CloudMultimodal && !isMultimodal)
             throw new DomainException(40901,
@@ -487,15 +487,16 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
     }
 
     private async Task<(AiAsrDestinationConsent Consent, AiAsrPresetDto Descriptor)>
-        DefaultCloudConsentAsync(Guid owner, CancellationToken ct)
+        DefaultCloudConsentAsync(Guid owner, Guid? preferredModelId, CancellationToken ct)
     {
         var runtime = await db.AiModelRuntime.AsNoTracking().SingleOrDefaultAsync(ct);
         if (runtime is null || !runtime.Enabled)
             throw new DomainException(40901, "AI 服务未启用，材料保持待发起");
-        if (runtime.TranscriptionModelId is not { } modelId)
+        var modelId = preferredModelId ?? runtime.TranscriptionModelId;
+        if (modelId is not { } selectedModelId)
             throw new DomainException(40901, "账号默认语音转写模型未配置，材料保持待发起");
         var model = await db.AiModelProfiles.AsNoTracking()
-            .SingleOrDefaultAsync(x => x.Id == modelId, ct)
+            .SingleOrDefaultAsync(x => x.Id == selectedModelId, ct)
             ?? throw new DomainException(40901, "账号默认语音转写模型不存在，材料保持待发起");
         var preset = presets.Resolve(model.AsrPresetId);
         preset.ValidateModel(model.Model);

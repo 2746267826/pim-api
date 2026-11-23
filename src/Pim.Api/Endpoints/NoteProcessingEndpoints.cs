@@ -11,6 +11,20 @@ public static class NoteProcessingEndpoints
     {
         var group = endpoints.MapGroup("/api/v1/native-notes/processing")
             .RequireAuthorization().WithTags("Native note processing");
+        group.MapGet("/preferences", async (
+            [FromServices] NoteProcessingPreferencesService service,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<NoteProcessingPreferencesDto>.Ok(
+                await service.GetAsync(ct))))
+            .Produces<ApiResponse<NoteProcessingPreferencesDto>>().Produces(401).Produces(403);
+        group.MapPut("/preferences", async (
+            SaveNoteProcessingPreferencesRequest request,
+            [FromServices] NoteProcessingPreferencesService service,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<NoteProcessingPreferencesDto>.Ok(
+                await service.SaveAsync(request, ct))))
+            .Produces<ApiResponse<NoteProcessingPreferencesDto>>().Produces(400).Produces(401)
+            .Produces(403).Produces(409);
         group.MapPost("/start", async (StartNoteProcessingRequest request,
             [FromServices] NoteProcessingService service, CancellationToken ct) =>
             Results.Ok(ApiResponse<NoteProcessingStatusDto>.Ok(

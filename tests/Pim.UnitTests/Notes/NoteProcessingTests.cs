@@ -147,7 +147,7 @@ public sealed class NoteProcessingTests(NoteProcessingFixture host)
         Assert.Equal(NoteProcessingState.Processing, started.State);
         Assert.True(started.Asr.TaskCreated);
         Assert.True(started.Derived.TaskCreated);
-        Assert.Equal(NoteProcessingChainState.WaitingForAsr, started.Derived.State);
+        Assert.Equal(NoteProcessingChainState.Queued, started.Derived.State);
         Assert.Equal((Asr: 1, Derived: 1), TaskCounts(owner));
         var asrBefore = await AsrTaskAsync(owner.UserId, started.Asr.TaskId!.Value);
         var derivedBefore = await DerivedTaskAsync(owner.UserId, started.Derived.TaskId!.Value);
@@ -195,7 +195,8 @@ public sealed class NoteProcessingTests(NoteProcessingFixture host)
             await adminClient.GetAsync("/api/v1/ai/model-settings"));
         _ = await Data<AiModelSettingsDto>(await adminClient.PutAsJsonAsync(
             "/api/v1/ai/model-settings",
-            new SaveAiModelSettingsRequest(settings.Revision, true, null, null, null, true)));
+            new SaveAiModelSettingsRequest(settings.Revision, true, null, null, null)));
+        _ = await SetAutoProcessingAsync(client, true);
 
         var material = await CompleteMaterialAsync(owner, client, withAudio: true);
         var status = await StatusAsync(client, material.NoteId, material.VersionId);
@@ -234,7 +235,7 @@ public sealed class NoteProcessingTests(NoteProcessingFixture host)
     }
 
     [Fact]
-    public async Task PendingAsrStaysWaiting_ThenSuccessContinuationBuildsTranscriptsAndCompletesDerived()
+    public async Task DerivedRunsWhileAsrIsPending_AndDoesNotAllocateAgainOnAsrCompletion()
     {
         var owner = await OwnerAsync("continuation");
         using var client = AuthRegistrationTestHost.Authed(host.Factory, owner.AccessToken);
@@ -245,11 +246,14 @@ public sealed class NoteProcessingTests(NoteProcessingFixture host)
         var derivedId = status.Derived.TaskId!.Value;
         var derivedJob = host.Factory.Services.GetRequiredService<NoteDerivedJob>();
 
-        var waiting = await DerivedTaskAsync(owner.UserId, derivedId);
-        Assert.True(waiting.AwaitingAsr);
+        var pending = await DerivedTaskAsync(owner.UserId, derivedId);
+        Assert.False(pending.AwaitingAsr);
         await derivedJob.RunAsync(owner.UserId, derivedId, CancellationToken.None);
-        Assert.True((await DerivedTaskAsync(owner.UserId, derivedId)).AwaitingAsr);
-        Assert.Equal(0, host.Models.Calls);
+        var completedBeforeAsr = await DerivedTaskAsync(owner.UserId, derivedId);
+        Assert.False(completedBeforeAsr.AwaitingAsr);
+        Assert.Equal("Succeeded", NoteDerivedStore.DescribePhase(completedBeforeAsr));
+        var callsBeforeAsr = host.Models.Calls;
+        Assert.True(callsBeforeAsr > 0);
 
         await MarkAsrSucceededWithSyntheticReceiptsAsync(owner.UserId, status.Asr.TaskId!.Value,
             material);
@@ -257,8 +261,8 @@ public sealed class NoteProcessingTests(NoteProcessingFixture host)
 
         var continued = await DerivedTaskAsync(owner.UserId, derivedId);
         Assert.False(continued.AwaitingAsr);
-        Assert.Single(continued.Plan.Input.Transcripts);
-        Assert.DoesNotContain(continued.Issues, issue => issue.Code == "asr_incomplete");
+        Assert.Equal("Succeeded", NoteDerivedStore.DescribePhase(continued));
+        Assert.Equal(callsBeforeAsr, host.Models.Calls);
         var completed = await StatusAsync(client, material.NoteId, material.VersionId);
         Assert.Equal(NoteProcessingChainState.Succeeded, completed.Asr.State);
         Assert.Equal(NoteProcessingChainState.Succeeded, completed.Derived.State);
@@ -288,23 +292,23 @@ public sealed class NoteProcessingTests(NoteProcessingFixture host)
     }
 
     [Fact]
-    public async Task AutoSettingUsesRevisionCas_AndStatusErrorsRedactPrivateUrls()
+    public async Task UserProcessingSettingUsesRevisionCas_AndStatusErrorsRedactPrivateUrls()
     {
         var admin = await AuthRegistrationTestHost.SeedAndLoginAsync(host.Factory,
             "revision-admin-" + Guid.NewGuid().ToString("N"), "admin");
         using var client = AuthRegistrationTestHost.Authed(host.Factory, admin.AccessToken);
-        var settings = await Data<AiModelSettingsDto>(
-            await client.GetAsync("/api/v1/ai/model-settings"));
-        var saved = await Data<AiModelSettingsDto>(await client.PutAsJsonAsync(
-            "/api/v1/ai/model-settings",
-            new SaveAiModelSettingsRequest(settings.Revision, false, null, null, null, true)));
-        Assert.True(saved.AutoNoteProcessingEnabled);
+        var preferences = await Data<NoteProcessingPreferencesDto>(
+            await client.GetAsync(Processing + "/preferences"));
+        var saved = await Data<NoteProcessingPreferencesDto>(await client.PutAsJsonAsync(
+            Processing + "/preferences",
+            new SaveNoteProcessingPreferencesRequest(preferences.Revision, true)));
+        Assert.True(saved.AutoProcessingEnabled);
         Assert.Equal(HttpStatusCode.Conflict, (await client.PutAsJsonAsync(
-            "/api/v1/ai/model-settings",
-            new SaveAiModelSettingsRequest(settings.Revision, false, null, null, null, false)))
+            Processing + "/preferences",
+            new SaveNoteProcessingPreferencesRequest(preferences.Revision, false)))
             .StatusCode);
-        Assert.True((await Data<AiModelSettingsDto>(
-            await client.GetAsync("/api/v1/ai/model-settings"))).AutoNoteProcessingEnabled);
+        Assert.True((await Data<NoteProcessingPreferencesDto>(
+            await client.GetAsync(Processing + "/preferences"))).AutoProcessingEnabled);
 
         _ = await ConfigureAsync(client, auto: true);
         var material = await CompleteMaterialAsync(admin, client, withAudio: true);
@@ -346,8 +350,19 @@ public sealed class NoteProcessingTests(NoteProcessingFixture host)
         _ = await Data<AiModelSettingsDto>(await client.PutAsJsonAsync(
             "/api/v1/ai/model-settings",
             new SaveAiModelSettingsRequest(settings.Revision, true, derived.Id, derived.Id,
-                asr.Id, auto)));
+                asr.Id)));
+        _ = await SetAutoProcessingAsync(client, auto);
         return (asr, derived);
+    }
+
+    private static async Task<NoteProcessingPreferencesDto> SetAutoProcessingAsync(
+        HttpClient client, bool enabled)
+    {
+        var current = await Data<NoteProcessingPreferencesDto>(
+            await client.GetAsync(Processing + "/preferences"));
+        return await Data<NoteProcessingPreferencesDto>(await client.PutAsJsonAsync(
+            Processing + "/preferences",
+            new SaveNoteProcessingPreferencesRequest(current.Revision, enabled)));
     }
 
     private async Task<NoteDerivedFixture.Material> CompleteMaterialAsync(

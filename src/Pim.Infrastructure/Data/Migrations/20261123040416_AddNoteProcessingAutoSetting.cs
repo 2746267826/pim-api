@@ -10,20 +10,26 @@ namespace Pim.Infrastructure.Data.Migrations
         /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.AddColumn<bool>(
-                name: "auto_note_processing_enabled",
-                table: "ai_model_runtime",
-                type: "boolean",
-                nullable: false,
-                defaultValue: false);
+            migrationBuilder.CreateTable(
+                name: "note_processing_preferences",
+                columns: table => new
+                {
+                    owner_id = table.Column<Guid>(type: "uuid", nullable: false),
+                    revision = table.Column<Guid>(type: "uuid", nullable: false),
+                    auto_note_processing_enabled = table.Column<bool>(type: "boolean", nullable: false, defaultValue: false),
+                    updated_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_note_processing_preferences", x => x.owner_id);
+                });
         }
 
         /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.DropColumn(
-                name: "auto_note_processing_enabled",
-                table: "ai_model_runtime");
+            migrationBuilder.DropTable(
+                name: "note_processing_preferences");
         }
     }
 }
