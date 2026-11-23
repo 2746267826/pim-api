@@ -457,16 +457,22 @@
   },
   {
     "name": "get_report",
-    "description": "Get single report artifact by id. Returns ReportArtifact.",
+    "description": "Get single report artifact by id. Returns ReportArtifact. Deprecated compatibility alias: report_id (use reportId).",
     "inputSchema": {
       "properties": {
-        "report_id": {
+        "reportId": {
           "title": "Report Id",
           "type": "string"
+        },
+        "report_id": {
+          "title": "Report Id",
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated compatibility alias for reportId."
         }
       },
       "required": [
-        "report_id"
+        "reportId"
       ],
       "title": "get_reportArguments",
       "type": "object"
@@ -589,16 +595,22 @@
   },
   {
     "name": "get_task_segments",
-    "description": "List execution segments for a task. Returns TaskExecutionSegment[].",
+    "description": "List execution segments for a task. Returns TaskExecutionSegment[]. Deprecated compatibility alias: task_id (use taskId).",
     "inputSchema": {
       "properties": {
-        "task_id": {
+        "taskId": {
           "title": "Task Id",
           "type": "string"
+        },
+        "task_id": {
+          "title": "Task Id",
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated compatibility alias for taskId."
         }
       },
       "required": [
-        "task_id"
+        "taskId"
       ],
       "title": "get_task_segmentsArguments",
       "type": "object"
@@ -779,16 +791,22 @@
   },
   {
     "name": "get_event_by_id",
-    "description": "Get single event by id. Tries direct fetch, falls back to filtered list. Returns Event. Note: fallback scans 730-day window page 1 only; if not found try broader search via search_pim.",
+    "description": "Get single event by id. Tries direct fetch, falls back to filtered list. Returns Event. Note: fallback scans 730-day window page 1 only; if not found try broader search via search_pim. Deprecated compatibility alias: event_id (use eventId).",
     "inputSchema": {
       "properties": {
-        "event_id": {
+        "eventId": {
           "title": "Event Id",
           "type": "string"
+        },
+        "event_id": {
+          "title": "Event Id",
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated compatibility alias for eventId."
         }
       },
       "required": [
-        "event_id"
+        "eventId"
       ],
       "title": "get_event_by_idArguments",
       "type": "object"
@@ -796,16 +814,22 @@
   },
   {
     "name": "get_task_by_id",
-    "description": "Get single task by id. Falls back to filtered list if direct endpoint missing. Returns Task. Fallback limited to page 1.",
+    "description": "Get single task by id. Falls back to filtered list if direct endpoint missing. Returns Task. Fallback limited to page 1. Deprecated compatibility alias: task_id (use taskId).",
     "inputSchema": {
       "properties": {
-        "task_id": {
+        "taskId": {
           "title": "Task Id",
           "type": "string"
+        },
+        "task_id": {
+          "title": "Task Id",
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated compatibility alias for taskId."
         }
       },
       "required": [
-        "task_id"
+        "taskId"
       ],
       "title": "get_task_by_idArguments",
       "type": "object"
@@ -813,12 +837,18 @@
   },
   {
     "name": "get_habit_occurrences",
-    "description": "List occurrences for a habit in range. Returns Occurrence[]. Uses data-center query as primary (no dedicated GET).",
+    "description": "List occurrences for a habit in range. Returns Occurrence[]. Uses data-center query as primary (no dedicated GET). Deprecated compatibility alias: habit_id (use habitId).",
     "inputSchema": {
       "properties": {
-        "habit_id": {
+        "habitId": {
           "title": "Habit Id",
           "type": "string"
+        },
+        "habit_id": {
+          "title": "Habit Id",
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated compatibility alias for habitId."
         },
         "start": {
           "title": "Start",
@@ -830,7 +860,7 @@
         }
       },
       "required": [
-        "habit_id",
+        "habitId",
         "start",
         "end"
       ],
@@ -865,16 +895,22 @@
   },
   {
     "name": "get_calendar_by_id",
-    "description": "Get single calendar by id (via list filter). Returns Calendar.",
+    "description": "Get single calendar by id (via list filter). Returns Calendar. Deprecated compatibility alias: calendar_id (use calendarId).",
     "inputSchema": {
       "properties": {
-        "calendar_id": {
+        "calendarId": {
           "title": "Calendar Id",
           "type": "string"
+        },
+        "calendar_id": {
+          "title": "Calendar Id",
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated compatibility alias for calendarId."
         }
       },
       "required": [
-        "calendar_id"
+        "calendarId"
       ],
       "title": "get_calendar_by_idArguments",
       "type": "object"
@@ -882,16 +918,22 @@
   },
   {
     "name": "get_task_checklist",
-    "description": "Get checklist items for a task via GET /api/v1/calendar/tasks/{id}/checklist (pim-api#443). Success returns the REST ApiResponse envelope (`data` is ChecklistItem[]). The API answers 400 with business code 02004 when the task does not exist or belongs to another user; MCP wraps HTTP errors as {error, details, code:400}, so read the business code from details.code rather than the top-level code.",
+    "description": "Get checklist items for a task via GET /api/v1/calendar/tasks/{id}/checklist (pim-api#443). Success returns the REST ApiResponse envelope (`data` is ChecklistItem[]). The API answers 400 with business code 02004 when the task does not exist or belongs to another user; MCP wraps HTTP errors as {error, details, code:400}, so read the business code from details.code rather than the top-level code. Deprecated compatibility alias: task_id (use taskId).",
     "inputSchema": {
       "properties": {
-        "task_id": {
+        "taskId": {
           "title": "Task Id",
           "type": "string"
+        },
+        "task_id": {
+          "title": "Task Id",
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated compatibility alias for taskId."
         }
       },
       "required": [
-        "task_id"
+        "taskId"
       ],
       "title": "get_task_checklistArguments",
       "type": "object"
@@ -2197,16 +2239,22 @@
   },
   {
     "name": "get_quick_note",
-    "description": "Get single quick note by id. Returns QuickNoteDetailDto.",
+    "description": "Get single quick note by id. Returns QuickNoteDetailDto. Deprecated compatibility alias: note_id (use noteId).",
     "inputSchema": {
       "properties": {
-        "note_id": {
+        "noteId": {
           "title": "Note Id",
           "type": "string"
+        },
+        "note_id": {
+          "title": "Note Id",
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated compatibility alias for noteId."
         }
       },
       "required": [
-        "note_id"
+        "noteId"
       ],
       "title": "get_quick_noteArguments",
       "type": "object"
@@ -2214,16 +2262,22 @@
   },
   {
     "name": "get_quick_note_attachment_meta",
-    "description": "Get quick note attachment metadata (not binary). Returns download info meta. If API streams binary, returns headers only.",
+    "description": "Get quick note attachment metadata (not binary). Returns download info meta. If API streams binary, returns headers only. Deprecated compatibility alias: attachment_id (use attachmentId).",
     "inputSchema": {
       "properties": {
-        "attachment_id": {
+        "attachmentId": {
           "title": "Attachment Id",
           "type": "string"
+        },
+        "attachment_id": {
+          "title": "Attachment Id",
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated compatibility alias for attachmentId."
         }
       },
       "required": [
-        "attachment_id"
+        "attachmentId"
       ],
       "title": "get_quick_note_attachment_metaArguments",
       "type": "object"
@@ -2277,16 +2331,22 @@
   },
   {
     "name": "get_file",
-    "description": "Get single file item by id. Returns FileItemDto.",
+    "description": "Get single file item by id. Returns FileItemDto. Deprecated compatibility alias: file_id (use fileId).",
     "inputSchema": {
       "properties": {
-        "file_id": {
+        "fileId": {
           "title": "File Id",
           "type": "string"
+        },
+        "file_id": {
+          "title": "File Id",
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated compatibility alias for fileId."
         }
       },
       "required": [
-        "file_id"
+        "fileId"
       ],
       "title": "get_fileArguments",
       "type": "object"
@@ -2321,12 +2381,18 @@
   },
   {
     "name": "read_file_text",
-    "description": "Read a text-extractable OneDrive file's content (txt/md/docx/pptx; transient, never stored). Sensitive paths are rejected.",
+    "description": "Read a text-extractable OneDrive file's content (txt/md/docx/pptx; transient, never stored). Sensitive paths are rejected. Deprecated compatibility alias: file_id (use fileId).",
     "inputSchema": {
       "properties": {
-        "file_id": {
+        "fileId": {
           "title": "File Id",
           "type": "string"
+        },
+        "file_id": {
+          "title": "File Id",
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated compatibility alias for fileId."
         },
         "maxBytes": {
           "default": 65536,
@@ -2335,7 +2401,7 @@
         }
       },
       "required": [
-        "file_id"
+        "fileId"
       ],
       "title": "read_file_textArguments",
       "type": "object"
@@ -2363,16 +2429,22 @@
   },
   {
     "name": "get_file_open_link",
-    "description": "Get the OneDrive web URL for a file item. Returns {openLink}. Note: may contain a url, hashed when redactUrls is set. Sensitive paths are rejected.",
+    "description": "Get the OneDrive web URL for a file item. Returns {openLink}. Note: may contain a url, hashed when redactUrls is set. Sensitive paths are rejected. Deprecated compatibility alias: file_id (use fileId).",
     "inputSchema": {
       "properties": {
-        "file_id": {
+        "fileId": {
           "title": "File Id",
           "type": "string"
+        },
+        "file_id": {
+          "title": "File Id",
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated compatibility alias for fileId."
         }
       },
       "required": [
-        "file_id"
+        "fileId"
       ],
       "title": "get_file_open_linkArguments",
       "type": "object"
@@ -2506,10 +2578,10 @@
   },
   {
     "name": "get_ai_requests",
-    "description": "List AI requests with filters. Returns PagedResult<AiRequest>.",
+    "description": "List AI requests with filters. Returns PagedResult<AiRequest>. Deprecated compatibility alias: from_time (use fromTime).",
     "inputSchema": {
       "properties": {
-        "from_time": {
+        "fromTime": {
           "anyOf": [
             {
               "type": "string"
@@ -2520,6 +2592,20 @@
           ],
           "default": null,
           "title": "From Time"
+        },
+        "from_time": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "From Time",
+          "deprecated": true,
+          "description": "Deprecated compatibility alias for fromTime."
         },
         "to": {
           "anyOf": [
@@ -2574,12 +2660,18 @@
   },
   {
     "name": "get_ai_usage_summary",
-    "description": "Get AI usage summary in range. Returns {totalRequests, tokens, cost}. Maps to GET /ai/usage/summary?from&to.",
+    "description": "Get AI usage summary in range. Returns {totalRequests, tokens, cost}. Maps to GET /ai/usage/summary?from&to. Deprecated compatibility alias: from_time (use fromTime).",
     "inputSchema": {
       "properties": {
-        "from_time": {
+        "fromTime": {
           "title": "From Time",
           "type": "string"
+        },
+        "from_time": {
+          "title": "From Time",
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated compatibility alias for fromTime."
         },
         "to": {
           "anyOf": [
@@ -2595,7 +2687,7 @@
         }
       },
       "required": [
-        "from_time"
+        "fromTime"
       ],
       "title": "get_ai_usage_summaryArguments",
       "type": "object"

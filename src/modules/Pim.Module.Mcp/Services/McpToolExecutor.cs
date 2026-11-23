@@ -129,7 +129,9 @@ public sealed class McpToolExecutor
 
     private async Task<JsonNode?> ExecuteSpecAsync(McpToolSpec spec, JsonObject args, CancellationToken ct)
     {
-        var validationError = Validate(spec, args) ?? McpToolInputPolicy.Apply(spec.Name, args);
+        var validationError = McpToolInputPolicy.NormalizeAliases(spec.Name, args)
+            ?? Validate(spec, args)
+            ?? McpToolInputPolicy.Apply(spec.Name, args);
         if (validationError is not null)
             return validationError;
 
@@ -209,7 +211,7 @@ public sealed class McpToolExecutor
             return timeError;
 
         if (spec.Name == "get_ai_usage_summary"
-            && args.TryGetPropertyValue("from_time", out var fromNode) && fromNode is not null
+            && args.TryGetPropertyValue("fromTime", out var fromNode) && fromNode is not null
             && !args.ContainsKey("to"))
         {
             var from = GetString(fromNode);
@@ -227,7 +229,7 @@ public sealed class McpToolExecutor
         if (start is not null && end is not null)
             return ValidateTimeRange(start, end);
 
-        var fromTime = GetString(args, "from_time");
+        var fromTime = GetString(args, "fromTime");
         var to = GetString(args, "to");
         if (fromTime is not null && to is not null)
             return ValidateTimeRange(fromTime, to);
@@ -739,7 +741,7 @@ public sealed class McpToolExecutor
     private async Task<JsonNode?> AttachmentMetaAsync(McpToolSpec spec, JsonObject args, string accessToken, CancellationToken ct)
     {
         var path = BuildPath(spec.Route, args);
-        var attachmentId = GetString(args, "attachment_id") ?? string.Empty;
+        var attachmentId = GetString(args, "attachmentId") ?? string.Empty;
 
         var headRequest = new HttpRequestMessage(HttpMethod.Head, path);
         headRequest.Headers.TryAddWithoutValidation("Authorization", $"Bearer {accessToken}");
@@ -814,7 +816,7 @@ public sealed class McpToolExecutor
 
     private async Task<JsonNode?> EventByIdAsync(McpToolSpec spec, JsonObject args, string accessToken, CancellationToken ct)
     {
-        var eventId = GetString(args, "event_id") ?? string.Empty;
+        var eventId = GetString(args, "eventId") ?? string.Empty;
         var direct = await CallAsync(spec, args, accessToken, redact: false, ct);
         if (direct is JsonObject directObj && GetInt(directObj, "code") is { } code && code is 404 or 405)
         {
@@ -859,7 +861,7 @@ public sealed class McpToolExecutor
 
     private async Task<JsonNode?> TaskByIdAsync(McpToolSpec spec, JsonObject args, string accessToken, CancellationToken ct)
     {
-        var taskId = GetString(args, "task_id") ?? string.Empty;
+        var taskId = GetString(args, "taskId") ?? string.Empty;
         var direct = await CallAsync(spec, args, accessToken, redact: false, ct);
 
         var directObj = direct as JsonObject;
@@ -913,7 +915,7 @@ public sealed class McpToolExecutor
         if (code is not (404 or 405) && directObj is not null && !directObj.ContainsKey("error"))
             return direct;
 
-        var habitId = GetString(args, "habit_id") ?? string.Empty;
+        var habitId = GetString(args, "habitId") ?? string.Empty;
         var dc = await SendAsync(
             new McpToolSpec { Name = "query_data_center", Method = "POST", Route = "/api/v1/calendar/data-center/query", HasBody = true },
             new JsonObject { ["search"] = habitId, ["objectType"] = "habit-occurrence", ["page"] = 1, ["pageSize"] = 50 },
@@ -936,7 +938,7 @@ public sealed class McpToolExecutor
 
     private async Task<JsonNode?> CalendarByIdAsync(McpToolSpec spec, JsonObject args, string accessToken, CancellationToken ct)
     {
-        var calendarId = GetString(args, "calendar_id") ?? string.Empty;
+        var calendarId = GetString(args, "calendarId") ?? string.Empty;
         var listSpec = new McpToolSpec { Name = "get_calendars", Method = "GET", Route = "/api/v1/calendar/calendars" };
         var list = await CallAsync(listSpec, new JsonObject(), accessToken, redact: false, ct);
         if (list is JsonObject listObj && listObj.TryGetPropertyValue("data", out var dataNode) && dataNode is JsonArray array)

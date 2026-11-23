@@ -190,6 +190,10 @@ Content-Type: application/json
 
 **总览 100**：`Calendar 31 | PcTracker 26 | Mobile 19 | QuickNotes 3 | Files 7 | Core 14`。
 
+> **参数命名 / Parameter names**：规范形态统一为 camelCase。历史 `task_id`、`file_id`、`from_time`、`event_id`、`calendar_id`、`habit_id`、`note_id`、`attachment_id`、`report_id` 继续作为 `deprecated` 兼容别名接受，单独传旧名仍可执行；工具 schema 的 `required` 只声明 camelCase。同一次调用同时传入两种写法但值不同时返回 `400`，避免静默择一。
+>
+> Canonical MCP arguments are camelCase. The legacy snake_case names listed above remain accepted as deprecated aliases, while the schema `required` list exposes only camelCase. Passing both spellings with different values returns `400`.
+
 | 模块 | 工具数 | 常用 20 选 |
 |---|---|---|
 | Calendar | 31 | `get_events`, `get_tasks`, `get_calendar_layers`, `search_calendar_events`, `get_calendars` |
@@ -582,13 +586,13 @@ async def get_reports(start: str, end: str, page: int = 1, pageSize: int = 20) -
 ```
 
 #### `get_report` — Single report.
-- **API**: `GET /calendar/reports/{id}`
-- **参数**: `id`
+- **API**: `GET /calendar/reports/{reportId}`
+- **参数**: `reportId`
 - **返回**: `ReportArtifact`
 
 **签名 / Signature**
 ```python
-async def get_report(id) -> Any: ...
+async def get_report(reportId: str) -> Any: ...
 ```
 
 **返回示例 / Success**
@@ -719,13 +723,13 @@ async def get_tasks(page: int = 1, pageSize: int = 20, status?: str) -> Any: ...
 ```
 
 #### `get_task_segments` — Segments for task.
-- **API**: `GET /calendar/tasks/{id}/segments`
-- **参数**: `id`
+- **API**: `GET /calendar/tasks/{taskId}/segments`
+- **参数**: `taskId`
 - **返回**: `TaskExecutionSegment[]`
 
 **签名 / Signature**
 ```python
-async def get_task_segments(id) -> Any: ...
+async def get_task_segments(taskId: str) -> Any: ...
 ```
 
 **返回示例 / Success**
@@ -926,13 +930,13 @@ async def get_outlook_local_data_preview(page: int = 1, pageSize: int = 20) -> A
 ```
 
 #### `get_event_by_id` — Single event via id.
-- **API**: `GET /calendar/events/{id} (or filtered list)`
-- **参数**: `id`
+- **API**: `GET /calendar/events/{eventId} (or filtered list)`
+- **参数**: `eventId`
 - **返回**: `Event`
 
 **签名 / Signature**
 ```python
-async def get_event_by_id(id) -> Any: ...
+async def get_event_by_id(eventId: str) -> Any: ...
 ```
 
 **返回示例 / Success**
@@ -956,13 +960,13 @@ async def get_event_by_id(id) -> Any: ...
 ```
 
 #### `get_task_by_id` — Single task.
-- **API**: `GET /calendar/tasks/{id} (or filtered list)`
-- **参数**: `id`
+- **API**: `GET /calendar/tasks/{taskId} (or filtered list)`
+- **参数**: `taskId`
 - **返回**: `Task`
 
 **签名 / Signature**
 ```python
-async def get_task_by_id(id) -> Any: ...
+async def get_task_by_id(taskId: str) -> Any: ...
 ```
 
 **返回示例 / Success**
@@ -986,13 +990,13 @@ async def get_task_by_id(id) -> Any: ...
 ```
 
 #### `get_habit_occurrences` — Habit occurrences.
-- **API**: `GET /calendar/habits/{id}/occurrences?start&end`
-- **参数**: `id,start,end`
+- **API**: `GET /calendar/habits/{habitId}/occurrences?start&end`
+- **参数**: `habitId,start,end`
 - **返回**: `Occurrence[]`
 
 **签名 / Signature**
 ```python
-async def get_habit_occurrences(habit_id: str, start: str, end: str) -> Any: ...
+async def get_habit_occurrences(habitId: str, start: str, end: str) -> Any: ...
 ```
 
 **返回示例 / Success**
@@ -1041,13 +1045,13 @@ async def get_schedule_preview(taskIds?) -> Any: ...
 ```
 
 #### `get_calendar_by_id` — Single calendar.
-- **API**: `GET /calendar/calendars/{id} (filtered)`
-- **参数**: `id`
+- **API**: `GET /calendar/calendars (filtered by calendarId)`
+- **参数**: `calendarId`
 - **返回**: `Calendar`
 
 **签名 / Signature**
 ```python
-async def get_calendar_by_id(id) -> Any: ...
+async def get_calendar_by_id(calendarId: str) -> Any: ...
 ```
 
 **返回示例 / Success**
@@ -1067,13 +1071,13 @@ async def get_calendar_by_id(id) -> Any: ...
 ```
 
 #### `get_task_checklist` — Checklist.
-- **API**: `GET /calendar/tasks/{id}/checklist`
-- **参数**: `id`
+- **API**: `GET /calendar/tasks/{taskId}/checklist`
+- **参数**: `taskId`
 - **返回**: `ChecklistItem[]`
 
 **签名 / Signature**
 ```python
-async def get_task_checklist(id) -> Any: ...
+async def get_task_checklist(taskId: str) -> Any: ...
 ```
 
 **返回示例 / Success**
@@ -2444,13 +2448,13 @@ async def get_quick_notes(page: int = 1, pageSize: int = 20, q: str, status?: st
 ```
 
 #### `get_quick_note` — Single note.
-- **API**: `GET /quick-notes/{id}`
-- **参数**: `id`
+- **API**: `GET /quick-notes/{noteId}`
+- **参数**: `noteId`
 - **返回**: `QuickNoteDetailDto`
 
 **签名 / Signature**
 ```python
-async def get_quick_note(id) -> Any: ...
+async def get_quick_note(noteId: str) -> Any: ...
 ```
 
 **返回示例 / Success**
@@ -2474,13 +2478,13 @@ async def get_quick_note(id) -> Any: ...
 ```
 
 #### `get_quick_note_attachment_meta` — Attachment meta only, no binary.
-- **API**: `GET /quick-notes/attachments/{id}/download (meta)`
-- **参数**: `id`
+- **API**: `GET /quick-notes/attachments/{attachmentId}/download (meta)`
+- **参数**: `attachmentId`
 - **返回**: `metadata`
 
 **签名 / Signature**
 ```python
-async def get_quick_note_attachment_meta(id) -> Any: ...
+async def get_quick_note_attachment_meta(attachmentId: str) -> Any: ...
 ```
 
 **返回示例 / Success**
@@ -2561,13 +2565,13 @@ async def get_files(page: int = 1, pageSize: int = 20) -> Any: ...
 ```
 
 #### `get_file` — Single file.
-- **API**: `GET /files/items/{id}`
-- **参数**: `id`
+- **API**: `GET /files/items/{fileId}`
+- **参数**: `fileId`
 - **返回**: `FileItemDto`
 
 **签名 / Signature**
 ```python
-async def get_file(id) -> Any: ...
+async def get_file(fileId: str) -> Any: ...
 ```
 
 **返回示例 / Success**
@@ -2626,8 +2630,8 @@ async def search_files(page: int = 1, pageSize: int = 20, q: str) -> Any: ...
 ```
 
 #### `read_file_text` — Read file content as text.
-- **API**: `GET /files/items/{id}/extracted-text?maxBytes`
-- **参数**: `id, maxBytes`（默认 65536，封顶 1048576）
+- **API**: `GET /files/items/{fileId}/extracted-text?maxBytes`
+- **参数**: `fileId, maxBytes`（默认 65536，封顶 1048576）
 - **返回**: `OneDriveTextDto`（`content` / `mimeType` / `size` / `truncated`）
 
 服务端**瞬态下载**后按类型抽取：文本直读 UTF-8；docx / pptx 走内置 zip+XML；
@@ -2637,7 +2641,7 @@ pdf 等在配置 Tika 时增强，未配置返回明确的「不支持」错误�
 
 **签名 / Signature**
 ```python
-async def read_file_text(file_id: str, maxBytes: int = 65536) -> Any: ...
+async def read_file_text(fileId: str, maxBytes: int = 65536) -> Any: ...
 ```
 
 **返回示例 / Success**
@@ -2695,13 +2699,13 @@ async def get_file_suggestions(page: int = 1, pageSize: int = 20) -> Any: ...
 ```
 
 #### `get_file_open_link` — Open link (redacted by default).
-- **API**: `GET /files/items/{id}/open-link`
-- **参数**: `id`
+- **API**: `GET /files/items/{fileId}/open-link`
+- **参数**: `fileId`
 - **返回**: `{openLink}`
 
 **签名 / Signature**
 ```python
-async def get_file_open_link(id) -> Any: ...
+async def get_file_open_link(fileId: str) -> Any: ...
 ```
 
 **返回示例 / Success**
@@ -2906,12 +2910,12 @@ async def get_ai_status(-) -> Any: ...
 
 #### `get_ai_requests` — AI requests.
 - **API**: `GET /ai/requests?from&to&module&status`
-- **参数**: `from,to?,module?,status?,page/pageSize`
+- **参数**: `fromTime,to?,module?,status?,page/pageSize`
 - **返回**: `PagedResult<AiRequest>`
 
 **签名 / Signature**
 ```python
-async def get_ai_requests(from_time: Optional[str] = None, to: Optional[str] = None, module: Optional[str] = None, status: Optional[str] = None, page: int = 1, pageSize: int = 20) -> Any: ...
+async def get_ai_requests(fromTime: Optional[str] = None, to: Optional[str] = None, module: Optional[str] = None, status: Optional[str] = None, page: int = 1, pageSize: int = 20) -> Any: ...
 ```
 
 **返回示例 / Success**
@@ -2939,12 +2943,12 @@ async def get_ai_requests(from_time: Optional[str] = None, to: Optional[str] = N
 
 #### `get_ai_usage_summary` — AI usage summary.
 - **API**: `GET /ai/usage/summary?from&to`
-- **参数**: `from,to?`
+- **参数**: `fromTime,to?`
 - **返回**: `{totalRequests,tokens,cost}`
 
 **签名 / Signature**
 ```python
-async def get_ai_usage_summary(from,to?) -> Any: ...
+async def get_ai_usage_summary(fromTime: str, to: Optional[str] = None) -> Any: ...
 ```
 
 **返回示例 / Success**
@@ -3527,6 +3531,7 @@ A: 所有聚合按 `timezone` 切天，默认为 `Asia/Shanghai`。传入 `timez
 | v4.0 | 2026-09-01 | MCP Server 集成进 Pim.Api（.NET 8）进程内：`/mcp` Streamable HTTP + `--mcp-stdio`，151 工具契约与 Python 版等价；Python 独立服务退役（源码保留作行为基准） |
 | v3.1 | 2026-09-01 | 修复 mcp>=2.0 兼容（构造参数/HTTP app/请求头获取适配，--check/stdio/HTTP 三种模式可用，issue #179）+ 生产部署模板（systemd + OpenResty `/mcp` 反代，issue #178）|
 | v5.0 | 2026-09-20 | 文件模块 v2（P4）：新增 `read_file_text`（元数据搜索之外的内容级读取，交 Hermes 现取现抽）；退役 `get_file_versions`/`get_file_trash`/`index_file`（WebDAV 与内容索引线随 OneDrive 切换取消）→ 149 工具（读 100 / 写 49）；Python 参考服务同步 |
+| v5.1 | 2026-11-23 | MCP 参数统一为 camelCase；`task_id`/`file_id`/`from_time` 等旧名保留为 `deprecated` 兼容别名，双写法冲突值返回 400；`required` 仅声明 camelCase（WO-R01-CAMEL / #460） |
 
 ---
 
