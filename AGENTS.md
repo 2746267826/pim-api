@@ -41,7 +41,12 @@ This repository contains the API, MCP and Web application. Keep `master` runnabl
 - Branches use the `{agent}-{os}/{topic}` prefix (e.g. `antigravity-linux/location-fix`): `agent` is the developer's agent name, `os` is `win` or `linux`, `topic` is a short kebab-case summary. Branches opened automatically by tooling (e.g. `task/<n>`) do not follow this scheme.
 - Do not modify `.github/workflows/*` unless the task is specifically about CI/release automation or the user explicitly asks for it. If a workflow change is unavoidable, explain why before editing it.
 - After opening or updating a PR, wait for triggered GitHub Actions checks and confirm they pass before calling the task complete. If no workflow triggers because of path filters, state that explicitly.
-- Local commands help you verify before pushing; they are not a required pre-CI ritual. Backend changes: `dotnet test Pim.sln`. Contract changes require re-exporting `contract/openapi.json` in the same PR. CI owns the complete required checks — do not claim a branch is complete based on stale output or with verification failing; document unrelated failures explicitly instead.
+- Local commands help you verify before pushing; they are not a required pre-CI ritual. Contract changes require re-exporting `contract/openapi.json` in the same PR. CI owns the complete required checks — do not claim a branch is complete based on stale output or with verification failing; document unrelated failures explicitly instead.
+- **Local test budget (hard constraint on the shared host)**: `build-api` already runs `dotnet test Pim.sln` against a real `postgres:16` service container with the full migration chain, so a full local run adds no evidence and has repeatedly exhausted this 18 GB shared host (3 Gradle daemons + a full `dotnet test` + a throwaway PostgreSQL at once → swap thrashing, whole box unresponsive, production services unreachable). Therefore:
+  - Run only the single test project/class that covers your change, e.g. `dotnet test tests/Pim.UnitTests/Pim.UnitTests.csproj --filter "<TestClass>"`. **Never** run `dotnet test Pim.sln` as verification.
+  - Do not start a build/test in more than one repository at a time on this host.
+  - Acceptance evidence is the CI run link (`CI Gate` + `build-api` logs). A local pass is not a substitute for a green CI run.
+  - If you must reproduce a CI-only failure locally, say so in the PR and stop after the single failing test.
 
 ## Pull Request Descriptions Feed The Release Changelog
 
