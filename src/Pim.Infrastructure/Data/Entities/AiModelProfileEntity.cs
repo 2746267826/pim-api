@@ -34,4 +34,5 @@ public sealed class AiModelRuntimeEntity
     [Column("text_model_id")] public Guid? TextModelId { get; set; }
     [Column("vision_model_id")] public Guid? VisionModelId { get; set; }
     [Column("transcription_model_id")] public Guid? TranscriptionModelId { get; set; }
+    [Column("auto_note_processing_enabled")] public bool AutoNoteProcessingEnabled { get; set; }
 }

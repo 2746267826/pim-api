@@ -27,10 +27,10 @@ public sealed record SaveAiModelRequest(string Name, string BaseUrl, string Mode
 }
 
 public sealed record AiModelSettingsDto(Guid Revision, bool Enabled, Guid? TextModelId,
-    Guid? VisionModelId, Guid? TranscriptionModelId);
+    Guid? VisionModelId, Guid? TranscriptionModelId, bool AutoNoteProcessingEnabled = false);
 
 public sealed record SaveAiModelSettingsRequest(Guid ExpectedRevision, bool Enabled, Guid? TextModelId,
-    Guid? VisionModelId, Guid? TranscriptionModelId);
+    Guid? VisionModelId, Guid? TranscriptionModelId, bool? AutoNoteProcessingEnabled = null);
 
 public sealed record AiTextCallRequest(Guid ClientRequestId, Guid ExpectedUserId, string Prompt, string? SystemPrompt = null,
     Guid? ModelId = null)

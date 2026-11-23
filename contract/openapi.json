@@ -1899,6 +1899,9 @@
       "AiModelSettingsDto": {
         "additionalProperties": false,
         "properties": {
+          "autoNoteProcessingEnabled": {
+            "type": "boolean"
+          },
           "enabled": {
             "type": "boolean"
           },
@@ -17734,6 +17737,9 @@
             "nullable": true,
             "type": "string"
           },
+          "awaitingAsr": {
+            "type": "boolean"
+          },
           "backgroundProcessingAvailable": {
             "type": "boolean"
           },
@@ -18437,6 +18443,251 @@
           "timestamp"
         ],
         "type": "object"
+      },
+      "NoteProcessingArtifactDto": {
+        "additionalProperties": false,
+        "properties": {
+          "artifactId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "headVersionId": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/NoteDerivedArtifactKind"
+          }
+        },
+        "required": [
+          "artifactId",
+          "kind"
+        ],
+        "type": "object"
+      },
+      "NoteProcessingChainDto": {
+        "additionalProperties": false,
+        "properties": {
+          "completedItems": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "errors": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "failedItems": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "hasResult": {
+            "type": "boolean"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/NoteProcessingTaskKind"
+          },
+          "phase": {
+            "nullable": true,
+            "type": "string"
+          },
+          "revision": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/NoteProcessingChainState"
+          },
+          "taskCreated": {
+            "type": "boolean"
+          },
+          "taskId": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          },
+          "totalItems": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "waitingReason": {
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "required": [
+          "completedItems",
+          "errors",
+          "failedItems",
+          "hasResult",
+          "kind",
+          "state",
+          "taskCreated",
+          "totalItems"
+        ],
+        "type": "object"
+      },
+      "NoteProcessingChainState": {
+        "enum": [
+          "NotApplicable",
+          "WaitingForMaterial",
+          "WaitingForAsr",
+          "PendingStart",
+          "Queued",
+          "Running",
+          "Succeeded",
+          "NeedsAttention",
+          "Stopped"
+        ],
+        "type": "string"
+      },
+      "NoteProcessingIssueDto": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "task": {
+            "$ref": "#/components/schemas/NoteProcessingTaskKind"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "NoteProcessingState": {
+        "enum": [
+          "WaitingForMaterial",
+          "PendingProcessing",
+          "Processing",
+          "PartiallyCompleted",
+          "Completed",
+          "NeedsAttention"
+        ],
+        "type": "string"
+      },
+      "NoteProcessingStatusDto": {
+        "additionalProperties": false,
+        "properties": {
+          "artifacts": {
+            "items": {
+              "$ref": "#/components/schemas/NoteProcessingArtifactDto"
+            },
+            "type": "array"
+          },
+          "asr": {
+            "$ref": "#/components/schemas/NoteProcessingChainDto"
+          },
+          "autoProcessingEnabled": {
+            "type": "boolean"
+          },
+          "autoStarted": {
+            "type": "boolean"
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "derived": {
+            "$ref": "#/components/schemas/NoteProcessingChainDto"
+          },
+          "incrementalScopeSupported": {
+            "type": "boolean"
+          },
+          "issues": {
+            "items": {
+              "$ref": "#/components/schemas/NoteProcessingIssueDto"
+            },
+            "type": "array"
+          },
+          "manualStartAvailable": {
+            "type": "boolean"
+          },
+          "noteId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "pendingReason": {
+            "nullable": true,
+            "type": "string"
+          },
+          "processingId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "scope": {
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/NoteProcessingState"
+          },
+          "updatedAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "versionId": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "artifacts",
+          "asr",
+          "autoProcessingEnabled",
+          "autoStarted",
+          "createdAt",
+          "derived",
+          "incrementalScopeSupported",
+          "issues",
+          "manualStartAvailable",
+          "noteId",
+          "processingId",
+          "scope",
+          "state",
+          "updatedAt",
+          "versionId"
+        ],
+        "type": "object"
+      },
+      "NoteProcessingStatusDtoApiResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "data": {
+            "$ref": "#/components/schemas/NoteProcessingStatusDto"
+          },
+          "message": {
+            "type": "string"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
+        "type": "object"
+      },
+      "NoteProcessingTaskKind": {
+        "enum": [
+          "Asr",
+          "Derived"
+        ],
+        "type": "string"
       },
       "NoteTaskSuggestionDto": {
         "additionalProperties": false,
@@ -22396,6 +22647,10 @@
       "SaveAiModelSettingsRequest": {
         "additionalProperties": false,
         "properties": {
+          "autoNoteProcessingEnabled": {
+            "nullable": true,
+            "type": "boolean"
+          },
           "enabled": {
             "type": "boolean"
           },
@@ -23312,6 +23567,24 @@
           "consent",
           "expectedUserId",
           "taskId",
+          "versionId"
+        ],
+        "type": "object"
+      },
+      "StartNoteProcessingRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "noteId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "versionId": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "noteId",
           "versionId"
         ],
         "type": "object"
@@ -43571,6 +43844,164 @@
         ],
         "tags": [
           "Native note derived artifacts"
+        ]
+      }
+    },
+    "/api/v1/native-notes/processing": {
+      "get": {
+        "parameters": [
+          {
+            "in": "query",
+            "name": "noteId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "versionId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NoteProcessingStatusDtoApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "404": {
+            "description": "Not Found"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Native note processing"
+        ]
+      }
+    },
+    "/api/v1/native-notes/processing/start": {
+      "post": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StartNoteProcessingRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NoteProcessingStatusDtoApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "409": {
+            "description": "Conflict"
+          },
+          "413": {
+            "description": "Content Too Large"
+          },
+          "503": {
+            "description": "Service Unavailable"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Native note processing"
+        ]
+      }
+    },
+    "/api/v1/native-notes/processing/{processingId}": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "processingId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NoteProcessingStatusDtoApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "404": {
+            "description": "Not Found"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Native note processing"
         ]
       }
     },

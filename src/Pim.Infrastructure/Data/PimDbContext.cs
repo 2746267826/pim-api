@@ -256,6 +256,7 @@ public class PimDbContext : DbContext
         });
         modelBuilder.Entity<AiModelRuntimeEntity>(e =>
         {
+            e.Property(a => a.AutoNoteProcessingEnabled).HasDefaultValue(false);
             e.Property(a => a.Revision).IsConcurrencyToken();
             e.HasOne<AiModelProfileEntity>().WithMany().HasForeignKey(a => a.TextModelId).OnDelete(DeleteBehavior.Restrict);
             e.HasOne<AiModelProfileEntity>().WithMany().HasForeignKey(a => a.VisionModelId).OnDelete(DeleteBehavior.Restrict);

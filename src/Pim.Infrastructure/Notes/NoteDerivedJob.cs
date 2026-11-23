@@ -47,6 +47,7 @@ public sealed class NoteDerivedJob(
     NoteDerivedStore tasks,
     NoteMaterialUploadStore materials,
     NoteAsrTaskStore asrTasks,
+    NoteDerivedSnapshotBuilder snapshots,
     PimDbContext db,
     AiTextCallService calls,
     ILogger<NoteDerivedJob> logger)
@@ -64,6 +65,11 @@ public sealed class NoteDerivedJob(
         {
             ct.ThrowIfCancellationRequested();
             var state = await tasks.ReadTaskAsync(owner, taskId, ct);
+            if (state.AwaitingAsr)
+            {
+                if (!await MaterializeAsrInputsAsync(owner, taskId, ct)) return;
+                state = await tasks.ReadTaskAsync(owner, taskId, ct);
+            }
             if (state.Blocked) return;
             if (state.StopRequested && state.Steps.All(x => x.Current.Status != "Running"))
             {
@@ -161,6 +167,49 @@ public sealed class NoteDerivedJob(
                     "材料或检查点读写中断，结果无法确认；任务已停止且不会自动重发", "Unknown", ct);
                 return;
             }
+        }
+    }
+
+    private async Task<bool> MaterializeAsrInputsAsync(Guid owner, Guid taskId,
+        CancellationToken ct)
+    {
+        try
+        {
+            var state = await tasks.ReadTaskAsync(owner, taskId, ct);
+            if (!state.AwaitingAsr || state.StopRequested || state.Request.AsrTaskId is null)
+                return false;
+            var version = await materials.GetAsync(owner, state.Request.VersionId, ct);
+            var built = await snapshots.BuildAsync(owner, version, state.InputSha256,
+                state.ManifestSha256, state.Request.AsrTaskId, waitForAsr: true, ct);
+            if (built.AwaitingAsr) return false;
+            var plan = new NoteDerivedPlanner().Build(built.Snapshot);
+            await tasks.UpdateTaskAsync(owner, taskId, current =>
+            {
+                if (!current.AwaitingAsr || current.StopRequested) return;
+                current.Plan = plan;
+                current.Coverage = plan.InitialCoverage;
+                current.Issues = plan.InitialCoverage.Issues.ToList();
+                current.Steps = plan.Steps.Select(step => new NoteDerivedStepState
+                {
+                    Key = step.Key,
+                    Kind = step.Kind,
+                    DependsOn = step.DependsOn,
+                    Images = step.Images,
+                    InputCharacters = step.InputCharacters,
+                    Attempts = [new()]
+                }).ToList();
+                current.Blocked = plan.Steps.Count == 0 ||
+                    plan.InitialCoverage.Issues.Count > 0;
+                current.AwaitingAsr = false;
+            }, ct);
+            return true;
+        }
+        catch (Exception error) when (error is DomainException or IOException or
+            System.Text.Json.JsonException or InvalidDataException)
+        {
+            logger.LogWarning("Derived task {TaskId} could not materialize ASR inputs ({ErrorType})",
+                taskId, error.GetType().Name);
+            return false;
         }
     }
 

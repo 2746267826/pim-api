@@ -74,9 +74,16 @@ public static class NoteMaterialEndpoints
             .WithMetadata(new RequestSizeLimitAttribute(NoteMaterialUploadOptions.PartSizeBytes))
             .Produces<ApiResponse<string>>().Produces(401).Produces<ApiResponse<string>>(400)
             .Produces<ApiResponse<string>>(404).Produces<ApiResponse<string>>(409).Produces<ApiResponse<string>>(413);
-        group.MapPost("/versions/{versionId:guid}/complete", async (Guid versionId, NoteMaterialUploadStore store,
+        group.MapPost("/versions/{versionId:guid}/complete", async (Guid versionId,
+            NoteMaterialUploadStore store, NoteProcessingService processing,
             ICurrentUserService user, CancellationToken ct) =>
-            Results.Ok(ApiResponse<NoteMaterialUploadDto>.Ok(await store.CompleteAsync(UserId(user), versionId, ct))))
+        {
+            var owner = UserId(user);
+            var completed = await store.CompleteAsync(owner, versionId, ct);
+            if (completed.Phase == "Uploaded" && completed.IsCurrent)
+                _ = await processing.TryAutoStartAfterCompletionAsync(owner, versionId, ct);
+            return Results.Ok(ApiResponse<NoteMaterialUploadDto>.Ok(completed));
+        })
             .Produces<ApiResponse<NoteMaterialUploadDto>>().Produces(401).Produces<ApiResponse<string>>(400)
             .Produces<ApiResponse<string>>(404).Produces<ApiResponse<string>>(409);
         group.MapDelete("/versions/{versionId:guid}/files/{fileIndex:int}/parts/{partIndex:int}", async (

@@ -9,6 +9,7 @@ import { aiApi, type NoteAsrTask } from '../api'
 import { createAiRequestId } from '../request-id'
 import { NoteAsrStartPanel } from '../note-asr-start-panel'
 import { NoteAsrOwnerTasks } from '../note-asr-owner-tasks'
+import { NoteProcessingPanel } from '../note-processing/note-processing-panel'
 import {
   noteDerivedApi,
   type NoteDerivedArtifact,
@@ -240,6 +241,10 @@ function Workspace({ ownerId, serverBinding, role }: { ownerId: string; serverBi
                 {sources.data.total > 20 && <div className="flex gap-2"><Button size="sm" disabled={sourcePage === 0} onClick={() => setSourcePage((page) => page - 20)}>上一页材料</Button><Button size="sm" disabled={sourcePage + 20 >= sources.data.total} onClick={() => setSourcePage((page) => page + 20)}>下一页材料</Button></div>}
               </>}
         </Card>
+
+        {source && <NoteProcessingPanel key={`processing-${source.versionId}`} ownerId={ownerId}
+          serverBinding={serverBinding} noteId={source.noteId} versionId={source.versionId}
+          onChanged={() => refresh()} />}
 
         {source && source.recordings > 0 && <section ref={asrSection} tabIndex={-1} aria-label="录音转写" className="space-y-3 rounded-ctl border border-primary/20 bg-primary/5 p-4 outline-none sm:p-5">
           <div><h2 className="text-base font-semibold text-text-1">{reusableAsr ? '已有成功转写' : '1 · 先完成录音转写'}</h2><p className="mt-1 text-sm text-text-3">{reusableAsr ? '已选用完整成功结果，可直接继续整理；如需其他结果可在任务列表中切换。' : activeAsr ? '当前转写完成后即可复用；暂不需要重复启动。' : failedAsr ? '查看失败任务，重试或重新转写；只有完整成功的结果可用于整理。' : '完成转写后，可选择成功结果用于笔记整理。'}</p></div>

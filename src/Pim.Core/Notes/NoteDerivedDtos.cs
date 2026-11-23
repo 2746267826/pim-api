@@ -193,7 +193,8 @@ public sealed record NoteDerivedTaskDto(
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt,
     bool StopRequested,
-    bool BackgroundProcessingAvailable = false);
+    bool BackgroundProcessingAvailable = false,
+    bool AwaitingAsr = false);
 
 public sealed record NoteDerivedVersionSummaryDto(
     Guid VersionId,

@@ -20,7 +20,7 @@ public sealed class NoteDerivedStore(IOptions<NoteMaterialUploadOptions> options
     private string Root => Path.Combine(Path.GetFullPath(options.Value.StorageRoot), "derived");
 
     internal async Task<NoteDerivedTaskState> CreateTaskAsync(Guid owner, StartNoteDerivedTaskRequest request,
-        NoteDerivedPlan plan, string fingerprint, CancellationToken ct)
+        NoteDerivedPlan plan, string fingerprint, CancellationToken ct, bool awaitingAsr = false)
     {
         await using var lease = await LockAsync(owner, ct);
         var existing = await TryReadTaskAsync(owner, request.TaskId, ct);
@@ -66,6 +66,7 @@ public sealed class NoteDerivedStore(IOptions<NoteMaterialUploadOptions> options
             ManifestSha256 = plan.Input.ManifestSha256,
             CreatedAt = now,
             UpdatedAt = now,
+            AwaitingAsr = awaitingAsr,
             Blocked = plan.Steps.Count == 0 || plan.InitialCoverage.Issues.Count > 0,
             Plan = plan,
             Coverage = plan.InitialCoverage,
@@ -402,6 +403,8 @@ public sealed class NoteDerivedStore(IOptions<NoteMaterialUploadOptions> options
 
     internal static string DescribePhase(NoteDerivedTaskState state)
     {
+        if (state.AwaitingAsr && state.StopRequested) return "Stopped";
+        if (state.AwaitingAsr) return "WaitingForAsr";
         if (state.Blocked) return "Blocked";
         if (state.Steps.Count > 0 && state.Steps.All(x => x.Current.Status == "Succeeded")) return "Succeeded";
         if (state.StopRequested) return "Stopped";
@@ -411,8 +414,9 @@ public sealed class NoteDerivedStore(IOptions<NoteMaterialUploadOptions> options
     }
 
     internal static bool IsActive(NoteDerivedTaskState state) =>
-        !state.Blocked && state.Steps.Any(x => x.Current.Status == "Running" ||
-            !state.StopRequested && x.Current.Status == "Queued");
+        !state.StopRequested && (state.AwaitingAsr || !state.Blocked && state.Steps.Any(x =>
+            x.Current.Status == "Running" ||
+            !state.StopRequested && x.Current.Status == "Queued"));
 
     internal static NoteDerivedTaskDto DescribeTask(NoteDerivedTaskState state) => new(
         state.Request.TaskId,
@@ -435,7 +439,8 @@ public sealed class NoteDerivedStore(IOptions<NoteMaterialUploadOptions> options
         state.Plan.PlanVersion,
         state.CreatedAt,
         state.UpdatedAt,
-        state.StopRequested);
+        state.StopRequested,
+        AwaitingAsr: state.AwaitingAsr);
 
     internal static NoteDerivedStepDto DescribeStep(NoteDerivedStepState step) => new(
         step.Key,

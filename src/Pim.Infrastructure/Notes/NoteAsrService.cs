@@ -24,9 +24,13 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
         && !string.IsNullOrWhiteSpace(configuration.GetConnectionString("DefaultConnection"));
     private NoteAsrTaskDto Describe(NoteAsrState state) => NoteAsrTaskStore.Describe(state) with
     { BackgroundProcessingAvailable = BackgroundProcessingAvailable };
-    public async Task<NoteAsrTaskDto> StartAsync(StartNoteAsrRequest request, CancellationToken ct)
+    public Task<NoteAsrTaskDto> StartAsync(StartNoteAsrRequest request, CancellationToken ct) =>
+        StartForOwnerAsync(Owner, request, ct);
+
+    internal async Task<NoteAsrTaskDto> StartForOwnerAsync(Guid owner,
+        StartNoteAsrRequest request, CancellationToken ct)
     {
-        var owner = await RequireActiveOwnerAsync(ct);
+        await RequireActiveOwnerAsync(owner, ct);
         if (request.ExpectedUserId != owner) throw new DomainException(40301, "账号已改变，请重新核对材料和目标");
         if (request.TaskId == Guid.Empty || request.VersionId == Guid.Empty) throw new DomainException(40001, "任务或版本标识无效");
         if ((request.ParentTaskId is null) != string.IsNullOrWhiteSpace(request.ReprocessReason) ||
@@ -50,6 +54,49 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
             resolved?.Consent, resolved?.ExecutionMode, samplesPerCall, ct);
         await EnsureAttemptAsync(owner, state, ct);
         return Describe(await tasks.ReadAsync(owner, request.TaskId, ct));
+    }
+
+    /// <summary>
+    /// Resolves the high-level account defaults and current route snapshot without issuing a call.
+    /// Cloud routes require the default transcription model and its fixed consent snapshot; local
+    /// routes only require the current local model identity. Missing or invalid targets are rejected
+    /// before any child task is persisted.
+    /// </summary>
+    internal async Task<StartNoteAsrRequest> BuildDefaultRequestForProcessingAsync(Guid owner,
+        NoteMaterialVersionDto version, CancellationToken ct)
+    {
+        var taskId = NoteProcessingIdentity.Task(owner, version.Upload.VersionId,
+            NoteProcessingTaskKind.Asr);
+        var config = await db.NoteAsrRouteConfigs.AsNoTracking()
+            .SingleOrDefaultAsync(x => x.OwnerId == owner, ct);
+        if (config is null)
+        {
+            var (consent, _) = await DefaultCloudConsentAsync(owner, ct);
+            return new(taskId, owner, version.Upload.VersionId, consent);
+        }
+
+        var route = config.DefaultRoute.Trim();
+        if (!NoteAsrRoute.Known(route))
+            throw new DomainException(40901, "账号当前转写路由无效，材料保持待发起");
+        var routeConsent = new NoteAsrRouteConsent(route, config.Revision,
+            config.ConsentVersion, true, NoteAsrExecutionMode.Realtime);
+        if (route == NoteAsrRoute.Local)
+        {
+            if (string.IsNullOrWhiteSpace(config.LocalModelId))
+                throw new DomainException(40901, "账号当前本机转写路由缺少模型，材料保持待发起");
+            return new(taskId, owner, version.Upload.VersionId, null, "auto", routeConsent);
+        }
+
+        var (cloudConsent, descriptor) = await DefaultCloudConsentAsync(owner, ct);
+        var isMultimodal = descriptor.Id == MimoMultimodalPreset.PresetId;
+        if (route == NoteAsrRoute.CloudMultimodal && !isMultimodal)
+            throw new DomainException(40901,
+                "账号当前多模态路由缺少 MiMo 多模态默认模型，材料保持待发起");
+        if (route == NoteAsrRoute.CloudAsr && isMultimodal)
+            throw new DomainException(40901,
+                "账号当前专用云端 ASR 路由不能使用多模态默认模型，材料保持待发起");
+        return new(taskId, owner, version.Upload.VersionId, cloudConsent, "auto",
+            routeConsent);
     }
     public async Task<IReadOnlyList<NoteAsrTaskDto>> ListAsync(CancellationToken ct)
     {
@@ -370,9 +417,14 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
     private async Task<Guid> RequireActiveOwnerAsync(CancellationToken ct)
     {
         var owner = Owner;
+        await RequireActiveOwnerAsync(owner, ct);
+        return owner;
+    }
+
+    private async Task RequireActiveOwnerAsync(Guid owner, CancellationToken ct)
+    {
         if (!await db.Users.AsNoTracking().AnyAsync(x => x.Id == owner && x.IsActive, ct))
             throw new DomainException(40301, "账号已停用，不能创建或查看ASR任务");
-        return owner;
     }
     private async Task<NoteAsrState> ReconcileAsync(Guid owner, Guid id, CancellationToken ct)
     {
@@ -432,6 +484,28 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
         if (attempt is null) return [];
         // One route-aware acceptance rule shared with claim, complete and repair.
         return await routing.AcceptedEvidenceAsync(owner, attempt, state, ct);
+    }
+
+    private async Task<(AiAsrDestinationConsent Consent, AiAsrPresetDto Descriptor)>
+        DefaultCloudConsentAsync(Guid owner, CancellationToken ct)
+    {
+        var runtime = await db.AiModelRuntime.AsNoTracking().SingleOrDefaultAsync(ct);
+        if (runtime is null || !runtime.Enabled)
+            throw new DomainException(40901, "AI 服务未启用，材料保持待发起");
+        if (runtime.TranscriptionModelId is not { } modelId)
+            throw new DomainException(40901, "账号默认语音转写模型未配置，材料保持待发起");
+        var model = await db.AiModelProfiles.AsNoTracking()
+            .SingleOrDefaultAsync(x => x.Id == modelId, ct)
+            ?? throw new DomainException(40901, "账号默认语音转写模型不存在，材料保持待发起");
+        var preset = presets.Resolve(model.AsrPresetId);
+        preset.ValidateModel(model.Model);
+        var descriptor = preset.Descriptor;
+        var endpoint = AiAsrPresetRegistry.OperationEndpoint(
+            preset.NormalizeEndpoint(model.BaseUrl), descriptor);
+        var consent = new AiAsrDestinationConsent(model.Id, model.Revision, endpoint,
+            descriptor.Id, descriptor.Version, true);
+        _ = await ValidateDestinationAsync(consent, "auto", ct);
+        return (consent, descriptor);
     }
 
     private async Task<AiAsrPresetDto> ValidateDestinationAsync(AiAsrDestinationConsent? consent, string language, CancellationToken ct)

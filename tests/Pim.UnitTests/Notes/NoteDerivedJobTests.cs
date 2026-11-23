@@ -206,6 +206,7 @@ public sealed class NoteDerivedJobTests : IAsyncLifetime
             scope.ServiceProvider.GetRequiredService<NoteDerivedStore>(),
             scope.ServiceProvider.GetRequiredService<NoteMaterialUploadStore>(),
             scope.ServiceProvider.GetRequiredService<NoteAsrTaskStore>(),
+            scope.ServiceProvider.GetRequiredService<NoteDerivedSnapshotBuilder>(),
             scope.ServiceProvider.GetRequiredService<PimDbContext>(),
             scope.ServiceProvider.GetRequiredService<AiTextCallService>(),
             NullLogger<NoteDerivedJob>.Instance);

@@ -17,6 +17,7 @@ public sealed class NoteDerivedService(
     NoteDerivedJob job,
     NoteMaterialUploadStore materials,
     NoteAsrTaskStore asrTasks,
+    NoteDerivedSnapshotBuilder snapshots,
     PimDbContext db,
     ICurrentUserService user,
     ISecretProtector secrets,
@@ -29,9 +30,14 @@ public sealed class NoteDerivedService(
 
     public NoteDerivedLimitsDto Limits => NoteDerivedLimits.Describe();
 
-    public async Task<NoteDerivedTaskDto> StartAsync(StartNoteDerivedTaskRequest request, CancellationToken ct)
+    public Task<NoteDerivedTaskDto> StartAsync(StartNoteDerivedTaskRequest request,
+        CancellationToken ct) =>
+        StartForOwnerAsync(Owner, request, waitForAsr: false, ct);
+
+    internal async Task<NoteDerivedTaskDto> StartForOwnerAsync(Guid owner,
+        StartNoteDerivedTaskRequest request, bool waitForAsr, CancellationToken ct)
     {
-        var owner = await RequireActiveOwnerAsync(ct);
+        await RequireActiveOwnerAsync(owner, ct);
         if (request.TaskId == Guid.Empty || request.VersionId == Guid.Empty)
             throw Invalid("派生任务或材料版本标识无效");
         if (request.ExpectedUserId != owner)
@@ -56,10 +62,31 @@ public sealed class NoteDerivedService(
 
         var hasImages = version.Upload.Files.Any(x => x.Kind is "Photo" or "InkPreview");
         await ValidateDestinationAsync(request.Consent, hasImages, ct);
-        var snapshot = await BuildSnapshotAsync(owner, version, inputSha, manifestSha, request.AsrTaskId, ct);
+        var built = await snapshots.BuildAsync(owner, version, inputSha, manifestSha,
+            request.AsrTaskId, waitForAsr, ct);
+        var snapshot = built.Snapshot;
         var plan = new NoteDerivedPlanner().Build(snapshot);
-        var state = await store.CreateTaskAsync(owner, request, plan, fingerprint, ct);
+        var state = await store.CreateTaskAsync(owner, request, plan, fingerprint, ct,
+            built.AwaitingAsr);
         return await DescribeAsync(state, ct);
+    }
+
+    internal async Task<NoteDerivedGenerationConsent> ResolveDefaultConsentForProcessingAsync(
+        Guid owner, NoteMaterialVersionDto version, CancellationToken ct)
+    {
+        var runtime = await db.AiModelRuntime.AsNoTracking().SingleOrDefaultAsync(ct);
+        if (runtime is null || !runtime.Enabled)
+            throw Conflict("AI 服务未启用，无法使用账号默认模型整理笔记");
+        if (runtime.TextModelId is not { } modelId)
+            throw Conflict("账号默认文本模型未配置，无法整理笔记");
+        var profile = await db.AiModelProfiles.AsNoTracking()
+            .SingleOrDefaultAsync(x => x.Id == modelId, ct)
+            ?? throw Conflict("账号默认文本模型不存在，无法整理笔记");
+        var hasImages = version.Upload.Files.Any(x => x.Kind is "Photo" or "InkPreview");
+        var consent = new NoteDerivedGenerationConsent(profile.Id, profile.Revision,
+            profile.BaseUrl, true);
+        await ValidateDestinationAsync(consent, hasImages, ct);
+        return consent;
     }
 
     public async Task<IReadOnlyList<NoteDerivedTaskDto>> ListAsync(Guid? noteId, CancellationToken ct)
@@ -569,9 +596,14 @@ public sealed class NoteDerivedService(
     private async Task<Guid> RequireActiveOwnerAsync(CancellationToken ct)
     {
         var owner = Owner;
+        await RequireActiveOwnerAsync(owner, ct);
+        return owner;
+    }
+
+    private async Task RequireActiveOwnerAsync(Guid owner, CancellationToken ct)
+    {
         if (!await db.Users.AsNoTracking().AnyAsync(x => x.Id == owner && x.IsActive, ct))
             throw new DomainException(40301, "账号已停用，不能创建或查看派生稿任务");
-        return owner;
     }
 
     private bool CredentialAvailable(string protectedValue)
