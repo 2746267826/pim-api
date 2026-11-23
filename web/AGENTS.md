@@ -18,7 +18,7 @@
 ## 构建与验证
 
 - 依赖：`npm ci`
-- 可选本地帮助：`npm run lint`、`npm run test`、`npm run build`。CI 拥有完整必需检查，不要求先本机跑一遍再开 PR。
+- 可选本地帮助：`npm run lint`、`npm run test`、`npm run build`。CI 拥有完整必需检查，不要求先本机跑一遍再开 PR。若确需本地验证，只跑覆盖改动的用例（`npm run test -- <pattern>`）；同一时刻只允许一个仓在本机构建/测试（共享主机 18 GB，并发构建曾打满内存与 swap、整机失联）。
 - UI 可见改动的本地验证建议：`scripts/verify-pitfalls.mjs`、`qa-screenshots.mjs`、`qa-three-states.mjs` 依赖测试凭据与运行环境（可能读取 `.env`），只对已知/受控环境使用；不得指向未知或生产端点。若使用替代的聚焦验证（如隔离 fixture 的确定性浏览器脚本），在 PR 测试小节如实说明覆盖与限制，不冒充真实云端或实机验收。
 - `web-version.json` 由 `web/scripts/ci/write-web-version.sh` 生成；改逻辑要同步 `test-write-web-version.sh`。
 
