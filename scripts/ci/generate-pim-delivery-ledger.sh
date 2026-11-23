@@ -45,6 +45,7 @@ function decision_for(id) {
   if (id == "O04") return "原决议：跳过 OPPO 笔记动画和字体"
   if (id == "Q02") return "原决议：当前不做全量备份与导出"
   if (id == "B07") return "原决议：图片移动不做，采用复制、剪切、粘贴"
+  if (id == "E03") return "原决议：不做通用文档附件，保留 Markdown、照片、手写和录音"
   if (id == "C14") return "原决议：并入 C12，由直接采集 Opus/Ogg 取代独立 WAV 转换"
   return "按交付包确认范围执行"
 }
@@ -52,6 +53,7 @@ function next_for(id, mark) {
   if (id == "B15" || id == "O04" || id == "Q02") return "保留原决议，记录边界，不排入当前实施"
   if (id == "C21") return "保留暂缓决议，不排入当前实施"
   if (id == "B07") return "实现图片块操作，移动按复制/剪切/粘贴验收"
+  if (id == "E03") return "保留原决议，不排入通用文档附件实施"
   if (id == "C14") return "随 C12 验收 Opus/Ogg 链路，不单独实现 WAV 转换"
   return state_for(mark)
 }
@@ -122,6 +124,6 @@ END {
   print "- API/Web 同仓的接口或状态形状变化必须同步导出并规范化 `contract/openapi.json`，再刷新客户端生成契约。"
   print "- Android 和 Windows 只从已合并 API 契约对应提交刷新，客户端 PR、CI、发布版本和实际流程单独记账。"
   print "- 每个批次必须记录工单范围、依赖提交、验收场景、实际命令或设备流程、PR、CI 和未验证边界。"
-  print "- B15、图片移动、C21、O04、Q02 沿用交付包原决议。它们不会被误写成已完成，除非用户重新批准范围。"
+  print "- B15、图片移动、C21、E03、O04、Q02 沿用交付包原决议。它们不会被误写成已完成，除非用户重新批准范围。"
 }
 ' "$source_table" > "$output_file"
