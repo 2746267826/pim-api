@@ -8,6 +8,65 @@ public static class McpToolInputPolicy
 {
     private static readonly string[] TaskStatuses = ["NEEDS-ACTION", "IN-PROCESS", "COMPLETED", "CANCELLED"];
 
+    /// <summary>
+    /// Legacy tool-specific aliases kept for backward compatibility. The embedded
+    /// contract advertises the camelCase name as required and marks the snake_case
+    /// name deprecated; normalization happens before validation so legacy-only calls
+    /// still execute.
+    /// </summary>
+    private static readonly IReadOnlyDictionary<string, (string Canonical, string Legacy)> ParameterAliases =
+        new Dictionary<string, (string Canonical, string Legacy)>(StringComparer.Ordinal)
+        {
+            ["get_report"] = ("reportId", "report_id"),
+            ["get_task_segments"] = ("taskId", "task_id"),
+            ["get_event_by_id"] = ("eventId", "event_id"),
+            ["get_task_by_id"] = ("taskId", "task_id"),
+            ["get_habit_occurrences"] = ("habitId", "habit_id"),
+            ["get_calendar_by_id"] = ("calendarId", "calendar_id"),
+            ["get_task_checklist"] = ("taskId", "task_id"),
+            ["get_quick_note"] = ("noteId", "note_id"),
+            ["get_quick_note_attachment_meta"] = ("attachmentId", "attachment_id"),
+            ["get_file"] = ("fileId", "file_id"),
+            ["read_file_text"] = ("fileId", "file_id"),
+            ["get_file_open_link"] = ("fileId", "file_id"),
+            ["get_ai_requests"] = ("fromTime", "from_time"),
+            ["get_ai_usage_summary"] = ("fromTime", "from_time"),
+        };
+
+    /// <summary>
+    /// Collapses a legacy snake_case argument into its canonical camelCase name.
+    /// Equal duplicate values are accepted; conflicting values are rejected instead
+    /// of silently preferring one spelling.
+    /// </summary>
+    public static JsonObject? NormalizeAliases(string toolName, JsonObject args)
+    {
+        if (!ParameterAliases.TryGetValue(toolName, out var alias))
+            return null;
+
+        args.TryGetPropertyValue(alias.Legacy, out var legacyNode);
+        if (legacyNode is null)
+        {
+            args.Remove(alias.Legacy);
+            return null;
+        }
+
+        if (!args.TryGetPropertyValue(alias.Canonical, out var canonicalNode) || canonicalNode is null)
+        {
+            args.Remove(alias.Legacy);
+            args[alias.Canonical] = legacyNode.DeepClone();
+            return null;
+        }
+
+        if (!JsonNode.DeepEquals(canonicalNode, legacyNode))
+        {
+            return Error(
+                $"{alias.Canonical} and {alias.Legacy} cannot both be provided with different values");
+        }
+
+        args.Remove(alias.Legacy);
+        return null;
+    }
+
     public static JsonObject? Apply(string toolName, JsonObject args)
     {
         if (toolName == "get_tasks" && args["status"] is { } status)
