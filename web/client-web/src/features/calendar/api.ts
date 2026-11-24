@@ -96,7 +96,7 @@ function buildTasksQuery(params: TasksPagedParams): string {
   if (params.inbox !== undefined) q.set('inbox', String(params.inbox))
   if (params.search) q.set('search', params.search)
   if (params.calendarId) q.set('calendarId', params.calendarId)
-  if (params.status) q.set('status', params.status)
+  for (const status of params.status ?? []) q.append('status', status)
   if (params.priority !== undefined) q.set('priority', String(params.priority))
   if (params.plannedFrom) q.set('plannedFrom', params.plannedFrom)
   if (params.plannedTo) q.set('plannedTo', params.plannedTo)

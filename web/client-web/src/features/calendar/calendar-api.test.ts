@@ -4,7 +4,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { clearTokens } from '@/api/client'
 import { setApiBase } from '@/lib/apiBase'
-import { calendarsApi, eventsApi } from './api'
+import { calendarsApi, eventsApi, tasksApi } from './api'
+import { TASK_STATUS } from './types'
 
 const BASE = 'http://192.0.2.10:5858'
 let calls: { url: string; method: string; body: unknown }[] = []
@@ -89,5 +90,26 @@ describe('calendar 域真实请求形状', () => {
       method: 'DELETE',
       url: `${BASE}/api/v1/calendar/events/ev-1`,
     })
+  })
+
+  it('tasksApi.listPaged：多选状态展开为重复 status 参数，空数组不发送状态', async () => {
+    await tasksApi.listPaged({
+      status: [TASK_STATUS.needsAction, TASK_STATUS.inProcess, TASK_STATUS.needsAction],
+      page: 1,
+      pageSize: 50,
+    })
+    const selected = new URL(calls.at(-1)!.url).searchParams
+    expect(selected.getAll('status')).toEqual([
+      TASK_STATUS.needsAction,
+      TASK_STATUS.inProcess,
+      TASK_STATUS.needsAction,
+    ])
+    expect(selected.get('page')).toBe('1')
+    expect(selected.get('pageSize')).toBe('50')
+
+    await tasksApi.listPaged({ status: [], page: 1 })
+    const unfiltered = new URL(calls.at(-1)!.url).searchParams
+    expect(unfiltered.has('status')).toBe(false)
+    expect(unfiltered.get('page')).toBe('1')
   })
 })

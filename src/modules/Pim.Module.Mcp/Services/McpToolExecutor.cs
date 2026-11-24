@@ -429,6 +429,16 @@ public sealed class McpToolExecutor
             var (srcName, queryName) = SplitRename(entry);
             if (!args.TryGetPropertyValue(srcName, out var node) || node is null)
                 continue;
+            if (node is JsonArray array)
+            {
+                foreach (var item in array)
+                {
+                    var itemValue = item is null ? null : ToQueryString(item);
+                    if (itemValue is not null)
+                        queryParts.Add($"{Uri.EscapeDataString(queryName)}={Uri.EscapeDataString(itemValue)}");
+                }
+                continue;
+            }
             var value = ToQueryString(node);
             if (value is null)
                 continue;

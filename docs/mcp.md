@@ -682,13 +682,13 @@ async def get_events(start: str, end: str, redactUrls: bool = True, page: int = 
 ```
 
 #### `get_tasks` — List tasks.
-- **API**: `GET /calendar/tasks?status&calendarId`
-- **参数**: `status?,calendarId?,page/pageSize`
-- **返回**: `Task[]`
+- **API**: `GET /calendar/tasks?status&status&calendarId`（重复 `status` 即 OR 集合 / repeated `status` means OR）
+- **参数**: `statuses?: string[]`（当前口径；元素为 `NEEDS-ACTION` / `IN-PROCESS` / `COMPLETED` / `CANCELLED`，空数组表示不筛选，重复值去重，任意非法值整单 400）；`status?: string`（旧单值调用兼容，禁止与 `statuses` 同时使用）；`calendarId?,page/pageSize`
+- **返回**: `PagedResult<TaskResponse>`
 
 **签名 / Signature**
 ```python
-async def get_tasks(page: int = 1, pageSize: int = 20, status?: str) -> Any: ...
+async def get_tasks(page: int = 1, pageSize: int = 20, statuses?: list[str] = None) -> Any: ...
 ```
 
 **返回示例 / Success**

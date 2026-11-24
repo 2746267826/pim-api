@@ -132,7 +132,7 @@ public static class McpToolTable
             S("get_report", "GET", "/api/v1/calendar/reports/{reportId}", req: R("reportId")),
             S("get_calendars", "GET", "/api/v1/calendar/calendars"),
             S("get_events", "GET", "/api/v1/calendar/events", Q("start", "end", "calendarId", "page", "pageSize"), redact: true),
-            S("get_tasks", "GET", "/api/v1/calendar/tasks", Q("status", "calendarId", "page", "pageSize")),
+            S("get_tasks", "GET", "/api/v1/calendar/tasks", Q("status", "statuses=status", "calendarId", "page", "pageSize")),
             S("get_task_segments", "GET", "/api/v1/calendar/tasks/{taskId}/segments", req: R("taskId")),
             S("get_recycle_bin", "GET", "/api/v1/calendar/recycle-bin", Q("type", "start=deletedFrom", "end=deletedTo", "page", "pageSize")),
             S("preview_recycle_bin_restore", "POST", "/api/v1/calendar/recycle-bin/{type}/{id}/restore-preview", body: true),

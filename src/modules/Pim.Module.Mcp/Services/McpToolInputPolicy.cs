@@ -69,12 +69,8 @@ public static class McpToolInputPolicy
 
     public static JsonObject? Apply(string toolName, JsonObject args)
     {
-        if (toolName == "get_tasks" && args["status"] is { } status)
-        {
-            if (status.GetValueKind() != JsonValueKind.String
-                || !TaskStatuses.Contains(status.GetValue<string>(), StringComparer.Ordinal))
-                return Error("status must be one of NEEDS-ACTION, IN-PROCESS, COMPLETED, CANCELLED (one value only; comma-separated values are not supported)");
-        }
+        if (toolName == "get_tasks" && ValidateTaskStatusFilter(args) is { } statusError)
+            return statusError;
 
         if (toolName is "get_events" or "get_tasks")
         {
@@ -110,6 +106,63 @@ public static class McpToolInputPolicy
             if (resource.GetValueKind() != JsonValueKind.String || resource.GetValue<string>() is not ("tree" or "appRule"))
                 return Error("resourceType must be tree or appRule; use appRule for an id returned by create_category");
         }
+
+        return null;
+    }
+
+    /// <summary>
+    /// R04：MCP <c>get_tasks</c> 对外提供 <c>statuses</c> 字符串数组（OR），同时保留
+    /// <c>status</c> 单值参数兼容旧调用。两者同时出现即整单 400；空数组合法且表示
+    /// 不筛选；重复值去重；空元素、未知值、大小写不符或带前后空格一律整单 400。
+    /// </summary>
+    private static JsonObject? ValidateTaskStatusFilter(JsonObject args)
+    {
+        var hasStatus = args.TryGetPropertyValue("status", out var statusNode) && statusNode is not null;
+        var hasStatuses = args.TryGetPropertyValue("statuses", out var statusesNode) && statusesNode is not null;
+
+        if (hasStatus && hasStatuses)
+            return Error("status and statuses cannot both be provided; use statuses for multiple values or status for one value");
+
+        if (hasStatus)
+        {
+            if (statusNode!.GetValueKind() != JsonValueKind.String
+                || !TaskStatuses.Contains(statusNode.GetValue<string>(), StringComparer.Ordinal))
+            {
+                return Error(
+                    "status must be one of NEEDS-ACTION, IN-PROCESS, COMPLETED, CANCELLED; "
+                    + "for multiple statuses use the statuses array");
+            }
+
+            return null;
+        }
+
+        if (!hasStatuses)
+            return null;
+
+        if (statusesNode!.GetValueKind() != JsonValueKind.Array)
+            return Error("statuses must be an array of supported task statuses");
+
+        var values = new List<string>();
+        foreach (var item in statusesNode.AsArray())
+        {
+            if (item is null || item.GetValueKind() != JsonValueKind.String)
+                return Error("statuses must contain only supported task status strings");
+
+            var value = item.GetValue<string>();
+            if (string.IsNullOrWhiteSpace(value)
+                || !TaskStatuses.Contains(value, StringComparer.Ordinal))
+            {
+                return Error(
+                    "statuses must contain only NEEDS-ACTION, IN-PROCESS, COMPLETED, CANCELLED; "
+                    + "blank, unknown, lowercase, or padded values are rejected");
+            }
+
+            values.Add(value);
+        }
+
+        var distinct = values.Distinct(StringComparer.Ordinal).ToArray();
+        if (distinct.Length != values.Count)
+            args["statuses"] = new JsonArray(distinct.Select(value => (JsonNode?)JsonValue.Create(value)).ToArray());
 
         return null;
     }

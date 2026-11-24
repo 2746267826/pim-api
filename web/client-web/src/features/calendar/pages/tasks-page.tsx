@@ -9,41 +9,36 @@ import { TaskEditorDialog } from '../components/task-editor-dialog'
 import { TaskSegmentsDialog } from '../components/task-segments-dialog'
 import { TaskDetailDialog } from '../components/entity-detail-dialogs'
 import { DueText } from '../components/due-text'
+import { TaskStatusFilter } from '../components/task-status-filter'
 import { TASK_STATUS } from '../types'
-import type { TaskResponse } from '../types'
+import type { TaskResponse, TaskStatus } from '../types'
 import { dayEndIso, dayStartIso, formatDurationC, formatTime } from '@/lib/datetime'
 import { celebrateOnce } from '@/lib/celebrate'
 import { CountUp } from '@/components/motion/primitives'
 import { Button, Card, Checkbox, Chip, EmptyState, Input, PageHeader, Select, Skeleton, StatusBadge } from '@/components/ui'
 import { cn } from '@/lib/utils'
 
-type QuickFilter = 'all' | 'inbox' | 'due-today' | 'planned-today' | 'in-process' | 'high' | 'completed'
+type QuickFilter = 'all' | 'inbox' | 'due-today' | 'planned-today' | 'high'
 
 const QUICK_OPTIONS: { value: QuickFilter; label: string }[] = [
   { value: 'all', label: '全部' },
   { value: 'inbox', label: '收集箱' },
   { value: 'due-today', label: '今日截止' },
   { value: 'planned-today', label: '今日已安排' },
-  { value: 'in-process', label: '进行中' },
   { value: 'high', label: '高优先' },
-  { value: 'completed', label: '已完成' },
 ]
 
-function quickToParams(filter: QuickFilter): { inbox?: boolean; status?: string; priority?: number; dueFrom?: string; dueTo?: string; plannedFrom?: string; plannedTo?: string } {
+function quickToParams(filter: QuickFilter): { inbox?: boolean; priority?: number; dueFrom?: string; dueTo?: string; plannedFrom?: string; plannedTo?: string } {
   const now = new Date()
   switch (filter) {
     case 'inbox':
       return { inbox: true }
-    case 'completed':
-      return { status: TASK_STATUS.completed }
     case 'high':
       return { priority: 9 }
     case 'due-today':
       return { dueFrom: dayStartIso(now), dueTo: dayEndIso(now) }
     case 'planned-today':
       return { plannedFrom: dayStartIso(now), plannedTo: dayEndIso(now) }
-    case 'in-process':
-      return { status: TASK_STATUS.inProcess }
     default:
       return {}
   }
@@ -61,6 +56,7 @@ export function TasksPage() {
   const taskBookId = params.get('taskBookId') ?? undefined
 
   const [quick, setQuick] = useState<QuickFilter>('all')
+  const [statuses, setStatuses] = useState<TaskStatus[]>([])
   const [search, setSearch] = useState('')
   const [page, setPage] = useState(1)
   const [selected, setSelected] = useState<Set<string>>(new Set())
@@ -78,11 +74,12 @@ export function TasksPage() {
   const query = useMemo(
     () => ({
       ...quickToParams(quick),
+      status: statuses.length > 0 ? statuses : undefined,
       search: search || undefined,
       page,
       pageSize: 100,
     }),
-    [quick, search, page],
+    [quick, statuses, search, page],
   )
   const tasksQuery = useTasksPaged(query)
   const data = useMemo(() => {
@@ -198,6 +195,16 @@ export function TasksPage() {
             placeholder="全部任务本"
           />
         </div>
+      </div>
+
+      <div className="mb-3">
+        <TaskStatusFilter
+          selected={statuses}
+          onChange={(next) => {
+            setStatuses(next)
+            setPage(1)
+          }}
+        />
       </div>
 
       <div className="flex min-h-0 flex-1 gap-4">

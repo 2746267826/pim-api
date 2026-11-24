@@ -541,7 +541,7 @@
   },
   {
     "name": "get_tasks",
-    "description": "List tasks. Returns PagedResult<TaskResponse>, default page=1/pageSize=20. status accepts exactly one of NEEDS-ACTION, IN-PROCESS, COMPLETED, CANCELLED; comma-separated or unknown values are rejected, never interpreted as an empty result.",
+    "description": "List tasks. Returns PagedResult<TaskResponse>, default page=1/pageSize=20. statuses is an array of NEEDS-ACTION, IN-PROCESS, COMPLETED, CANCELLED and filters with OR semantics; an empty array means no status filter, duplicates are ignored, and any unknown/blank/lowercase/padded value rejects the whole call. status is a deprecated single-value alias; never send both status and statuses.",
     "inputSchema": {
       "properties": {
         "status": {
@@ -561,7 +561,30 @@
           ],
           "default": null,
           "title": "Status",
-          "description": "One supported status only. Omit/null for all statuses. Multiple values are not supported."
+          "deprecated": true,
+          "description": "Deprecated: use statuses for multi-select. One supported status only; do not combine with statuses."
+        },
+        "statuses": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "NEEDS-ACTION",
+                  "IN-PROCESS",
+                  "COMPLETED",
+                  "CANCELLED"
+                ]
+              }
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Statuses",
+          "description": "Multiple task statuses combined with OR. Empty array or null means no status filter; duplicates are deduplicated. Every element must be an exact supported value."
         },
         "calendarId": {
           "anyOf": [
