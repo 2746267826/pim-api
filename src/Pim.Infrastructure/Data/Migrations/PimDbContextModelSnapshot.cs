@@ -1899,6 +1899,33 @@ namespace Pim.Infrastructure.Data.Migrations
                     b.ToTable("note_asr_route_configs");
                 });
 
+            modelBuilder.Entity("Pim.Infrastructure.Data.Entities.NoteProcessingPreferenceEntity", b =>
+                {
+                    b.Property<Guid>("OwnerId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("owner_id");
+
+                    b.Property<bool>("AutoNoteProcessingEnabled")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false)
+                        .HasColumnName("auto_note_processing_enabled");
+
+                    b.Property<Guid>("Revision")
+                        .IsConcurrencyToken()
+                        .HasColumnType("uuid")
+                        .HasColumnName("revision");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("OwnerId");
+
+                    b.ToTable("note_processing_preferences");
+                });
+
             modelBuilder.Entity("Pim.Infrastructure.Data.Entities.NoteAsrSegmentEvidenceEntity", b =>
                 {
                     b.Property<Guid>("Id")

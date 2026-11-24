@@ -219,6 +219,7 @@ function Section({ label, children }: { label: string; children: React.ReactNode
 /* ── /settings/ai AI 设置 ─────────────────────────────────── */
 
 export { AiSettingsPage } from '@/features/ai/ai-settings-page'
+export { NoteProcessingSettingsPage } from '@/features/ai/note-processing/note-processing-settings-page'
 
 /* ── /settings/mcp MCP 设置 ───────────────────────────────── */
 

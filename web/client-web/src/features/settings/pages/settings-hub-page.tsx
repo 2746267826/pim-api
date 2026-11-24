@@ -84,6 +84,7 @@ const SECTIONS: SettingSection[] = [
   {
     label: '智能与自动化',
     cards: [
+      { to: '/settings/note-processing', title: '笔记处理', description: '结束后的自动处理与状态偏好', icon: Bot },
       { to: '/settings/ai?tab=asr', title: 'AI 与 ASR', description: 'ASR 转写、模型与调用记录', icon: Bot, adminOnly: true },
       { to: '/settings/mcp', title: 'MCP 连接', description: '客户端、令牌与工具权限', icon: Plug },
     ],

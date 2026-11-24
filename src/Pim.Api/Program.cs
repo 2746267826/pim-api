@@ -129,6 +129,8 @@ builder.Services.AddOptions<Pim.Infrastructure.Notes.NoteMaterialUploadOptions>(
 builder.Services.AddSingleton<Pim.Infrastructure.Notes.NoteMaterialUploadStore>();
 builder.Services.AddSingleton<Pim.Infrastructure.Notes.NoteAsrTaskStore>();
 builder.Services.AddSingleton<Pim.Infrastructure.Notes.NoteDerivedStore>();
+builder.Services.AddSingleton<Pim.Infrastructure.Notes.NoteProcessingStore>();
+builder.Services.AddScoped<Pim.Infrastructure.Notes.NoteDerivedSnapshotBuilder>();
 builder.Services.AddScoped<Pim.Infrastructure.Notes.NoteAsrService>();
 builder.Services.AddScoped<Pim.Infrastructure.Notes.NoteAsrReprocessService>();
 builder.Services.Configure<Pim.Infrastructure.Notes.NoteAsrRoutingOptions>(builder.Configuration.GetSection("NativeNotes:Routing"));
@@ -143,6 +145,9 @@ builder.Services.AddScoped<Pim.Infrastructure.Ai.Asr.Mimo.IMimoBatchHandleSink, 
 builder.Services.AddSingleton<Pim.Infrastructure.Ai.Asr.Mimo.IMimoBatchClientFactory,
     Pim.Infrastructure.Ai.Asr.Mimo.MimoBatchClientFactory>();
 builder.Services.AddScoped<Pim.Infrastructure.Notes.NoteDerivedService>();
+builder.Services.AddScoped<Pim.Infrastructure.Notes.NoteProcessingService>();
+builder.Services.AddScoped<Pim.Infrastructure.Notes.NoteProcessingPreferencesService>();
+builder.Services.AddScoped<Pim.Infrastructure.Notes.NoteProcessingDispatchJob>();
 builder.Services.AddScoped<Pim.Infrastructure.Notes.NoteAsrJob>();
 builder.Services.AddScoped<Pim.Infrastructure.Notes.NoteDerivedJob>();
 builder.Services.AddAggregateResultCaching();
@@ -455,6 +460,7 @@ app.MapNoteAsrBatchSubmissionEndpoints();
 app.MapNoteAsrReprocessEndpoints();
 app.MapNoteAsrRoutingEndpoints();
 app.MapNoteDerivedEndpoints();
+app.MapNoteProcessingEndpoints();
 app.MapClientShell();
 app.MapTileEndpoints();
 
@@ -495,6 +501,8 @@ else
             "ai-asr-job-dispatch", job => job.RunAsync(CancellationToken.None), Cron.Minutely);
         RecurringJob.AddOrUpdate<Pim.Infrastructure.Notes.NoteDerivedDispatchJob>(
             "native-note-derived-dispatch", job => job.RunAsync(CancellationToken.None), Cron.Minutely);
+        RecurringJob.AddOrUpdate<Pim.Infrastructure.Notes.NoteProcessingDispatchJob>(
+            "native-note-processing-dispatch", job => job.RunAsync(CancellationToken.None), Cron.Minutely);
 
         RecurringJob.AddOrUpdate<HeartbeatStaleInspectionJob>(
             "heartbeat-stale-inspection",

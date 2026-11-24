@@ -671,7 +671,43 @@ public sealed class NoteAsrRoutingService(PimDbContext db, ICurrentUserService u
         if (attempt.State is "Succeeded" or "Failed" or "Cancelled")
             return DescribeAttempt(attempt);
         var now = DateTimeOffset.UtcNow;
-        var affected = await db.NoteAsrAttempts
+        if (!db.Database.IsRelational())
+        {
+            var tracked = await db.NoteAsrAttempts.SingleAsync(x =>
+                x.Id == attemptId && x.OwnerId == owner, ct);
+            if (tracked.State is "Succeeded" or "Failed" or "Cancelled")
+                return DescribeAttempt(tracked);
+            tracked.StopRequested = true;
+            if (tracked.State != "Leased") tracked.State = "Unknown";
+            tracked.LastErrorCode = "stop_requested";
+            tracked.LastErrorMessage =
+                "已请求停止；执行端须通过续租读取停止标记并回执，未确认前不视为已停止";
+            tracked.UpdatedAt = now;
+            await db.SaveChangesAsync(ct);
+            return DescribeAttempt(tracked);
+        }
+        var affected = await StopAttemptUpdateAsync(owner, attemptId, now, ct);
+        if (affected == 0)
+        {
+            var current = await db.NoteAsrAttempts.AsNoTracking()
+                .SingleOrDefaultAsync(x => x.Id == attemptId && x.OwnerId == owner, ct);
+            if (current is null) throw new DomainException(40401, "转写 attempt 不存在");
+            if (current.State is "Succeeded" or "Failed" or "Cancelled")
+                return DescribeAttempt(current);
+            // The row may have changed again between the update and the read; retry once so a
+            // stop racing a non-terminal transition is still applied.
+            await StopAttemptUpdateAsync(owner, attemptId, now, ct);
+            current = await db.NoteAsrAttempts.AsNoTracking()
+                .SingleAsync(x => x.Id == attemptId && x.OwnerId == owner, ct);
+            return DescribeAttempt(current);
+        }
+        return DescribeAttempt(await db.NoteAsrAttempts.AsNoTracking()
+            .SingleAsync(x => x.Id == attemptId && x.OwnerId == owner, ct));
+    }
+
+    private Task<int> StopAttemptUpdateAsync(Guid owner, Guid attemptId, DateTimeOffset now,
+        CancellationToken ct) =>
+        db.NoteAsrAttempts
             .Where(x => x.Id == attemptId && x.OwnerId == owner &&
                 x.State != "Succeeded" && x.State != "Failed" && x.State != "Cancelled")
             .ExecuteUpdateAsync(setters => setters
@@ -681,10 +717,6 @@ public sealed class NoteAsrRoutingService(PimDbContext db, ICurrentUserService u
                 .SetProperty(x => x.LastErrorMessage,
                     "已请求停止；执行端须通过续租读取停止标记并回执，未确认前不视为已停止")
                 .SetProperty(x => x.UpdatedAt, now), ct);
-        if (affected == 0) throw new DomainException(40901, "attempt 已终态，停止请求未覆盖原结果");
-        return DescribeAttempt(await db.NoteAsrAttempts.AsNoTracking()
-            .SingleAsync(x => x.Id == attemptId && x.OwnerId == owner, ct));
-    }
 
     public async Task<NoteAsrLeaseDto> RenewLeaseAsync(Guid leaseId, NoteAsrLeaseHeartbeatRequest request, CancellationToken ct)
     {
