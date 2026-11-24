@@ -96,15 +96,15 @@ function Workspace({ ownerId, serverBinding }: { ownerId: string; serverBinding:
     changeInternalNavigation(() => setParams({ note: returnNoteId }, { replace: true }))
   }, [changeInternalNavigation, params, returnNoteId, setParams])
 
-  const assertSessionActive = useCallback(() => {
+  const sessionIsActive = useCallback(() => {
     const session = sessionRef.current
-    if (!session || session.ownerId !== ownerId || session.serverBinding !== serverBinding ||
-        session.controller.signal.aborted) {
-      const error = new Error('笔记工作区会话已切换，已停止旧请求')
-      error.name = 'AbortError'
-      throw error
-    }
+    return Boolean(session && session.ownerId === ownerId && session.serverBinding === serverBinding &&
+      !session.controller.signal.aborted)
   }, [ownerId, serverBinding])
+
+  const assertSessionActive = useCallback(() => {
+    if (!sessionIsActive()) throw sessionChangedError()
+  }, [sessionIsActive])
 
   useEffect(() => {
     const controller = new AbortController()
@@ -211,12 +211,19 @@ function Workspace({ ownerId, serverBinding }: { ownerId: string; serverBinding:
   const legacyCount = quickNotes.data?.totalCount ?? 0
   const refreshIssue = refreshIssueState.noteId === selectedNoteId ? refreshIssueState.failed : EMPTY_REFRESH_ISSUE
 
+  function blockNavigationWhilePromoting() {
+    if (!promoteInFlightRef.current) return false
+    setMessage('正在提交版本选择，请等待服务器确认；完成前不能切换笔记。')
+    return true
+  }
+
   function confirmDiscardEditor(reason: string) {
     if (!editorDirty) return true
     return window.confirm(`${DIRTY_DRAFT_NOTICE}\n\n${reason}`)
   }
 
   function beginNew(initial?: NoteEditorSeed): boolean {
+    if (blockNavigationWhilePromoting()) return false
     if (!confirmDiscardEditor(initial?.blocks ? '继续将用笔记包内容替换当前编辑器。' : '继续将切换到一份新的空白材料。')) return false
     setEditorDirty(false)
     setSeed(initial ?? { noteId: createMaterialId(), title: '', body: '' })
@@ -227,7 +234,7 @@ function Workspace({ ownerId, serverBinding }: { ownerId: string; serverBinding:
   }
 
   async function importPackage(file: File | undefined) {
-    if (!file || packageBusy) return
+    if (!file || packageBusy || blockNavigationWhilePromoting()) return
     setError('')
     setMessage('')
     try {
@@ -254,11 +261,13 @@ function Workspace({ ownerId, serverBinding }: { ownerId: string; serverBinding:
   }
 
   async function beginLegacyCopy(item: QuickNoteListItem) {
-    if (legacyBusy || !confirmDiscardEditor('继续将读取旧闪念并替换当前编辑内容。')) return
+    if (legacyBusy || blockNavigationWhilePromoting() ||
+        !confirmDiscardEditor('继续将读取旧闪念并替换当前编辑内容。')) return
     setLegacyBusy(item.id)
     setError('')
     try {
       const detail = await quickNotesApi.get(item.id)
+      assertSessionActive()
       const text = legacyQuickNotePlainText(detail.contentMarkdown)
       beginNew({
         noteId: createMaterialId(),
@@ -267,6 +276,7 @@ function Workspace({ ownerId, serverBinding }: { ownerId: string; serverBinding:
         legacyNotice: `${LEGACY_QUICK_NOTE_NOTICE} 原闪念 ${item.id} 未删除，也没有被标记为“已迁移”。`,
       })
     } catch (failure) {
+      if (isAbortError(failure) || !sessionIsActive()) return
       setError(`旧闪念读取失败：${errorText(failure)}`)
     } finally {
       setLegacyBusy('')
@@ -278,7 +288,7 @@ function Workspace({ ownerId, serverBinding }: { ownerId: string; serverBinding:
   }
 
   function openProcessing(action: 'transcribe' | 'organize') {
-    if (!selectedSource || editorDirty) return
+    if (!selectedSource || editorDirty || blockNavigationWhilePromoting()) return
     try {
       sessionStorage.setItem(returnVersionStorageKey(ownerId, serverBinding), selectedSource.noteId)
     } catch {
@@ -294,6 +304,7 @@ function Workspace({ ownerId, serverBinding }: { ownerId: string; serverBinding:
 
   function openNote(noteId: string) {
     if (noteId === selectedNoteId && !seed) return
+    if (blockNavigationWhilePromoting()) return
     if (!confirmDiscardEditor('继续将打开另一篇笔记。')) return
     setEditorDirty(false)
     setSeed(null)
@@ -303,6 +314,7 @@ function Workspace({ ownerId, serverBinding }: { ownerId: string; serverBinding:
   }
 
   function openVersionId(versionId: string) {
+    if (blockNavigationWhilePromoting()) return
     if (!confirmDiscardEditor('继续查看另一版笔记。')) return
     setEditorDirty(false)
     setSeed(null)
@@ -310,14 +322,20 @@ function Workspace({ ownerId, serverBinding }: { ownerId: string; serverBinding:
   }
 
   async function saved(upload: NoteMaterialUpload) {
+    if (!sessionIsActive()) return
     setEditorDirty(false)
     setSeed(null)
     setMessage('固定材料版本已保存。页面正在回读实际服务端版本与当前选用状态。')
-    await Promise.all([
-      qc.invalidateQueries({ queryKey: ['native-notes', ownerId, serverBinding] }),
-      qc.invalidateQueries({ queryKey: ['native-note-material'] }),
-    ])
-    changeInternalNavigation(() => setParams({ note: upload.noteId }))
+    try {
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ['native-notes', ownerId, serverBinding] }),
+        qc.invalidateQueries({ queryKey: ['native-note-material'] }),
+      ])
+      assertSessionActive()
+      changeInternalNavigation(() => setParams({ note: upload.noteId }))
+    } catch (failure) {
+      if (!isAbortError(failure) && sessionIsActive()) setError(`版本已保存，但页面未能回到该笔记：${errorText(failure)}`)
+    }
   }
 
   async function refreshVersionState(): Promise<string[]> {
@@ -339,6 +357,9 @@ function Workspace({ ownerId, serverBinding }: { ownerId: string; serverBinding:
   }
 
   async function promoteVersion(versionId: string): Promise<PromoteVersionOutcome> {
+    if (!sessionIsActive()) {
+      return { status: 'failed', message: '账号或服务器已切换，本次版本选择未提交；请在新会话中重新读取。' }
+    }
     const expectedCurrentVersionId =
       selectedCurrent.data?.upload.currentVersionId ?? selectedCurrent.data?.upload.versionId ?? null
     if (promoteInFlightRef.current) {
@@ -351,18 +372,29 @@ function Workspace({ ownerId, serverBinding }: { ownerId: string; serverBinding:
     setError('')
     try {
       const upload = await requestApi.promote(versionId, expectedCurrentVersionId, getSessionSignal())
+      assertSessionActive()
+      setRefreshIssueState({ noteId: selectedNoteId, failed: [] })
+      const failed = await refreshVersionState()
+      assertSessionActive()
       setError('')
       setMessage('已采用所选内容，服务器已将它设为当前版本；另一份内容仍保留在版本历史中。')
-      setRefreshIssueState({ noteId: selectedNoteId, failed: [] })
-      await refreshVersionState()
       changeInternalNavigation(() => setParams({ note: upload.noteId }))
       return {
         status: 'adopted',
-        message: '已采用所选内容。另一份版本仍保留在版本历史中，可随时回看。',
+        message: failed.length > 0
+          ? `已采用所选内容；未能重新读取${failed.join('、')}。另一份版本仍保留在版本历史中，请刷新核对当前状态。`
+          : '已采用所选内容。另一份版本仍保留在版本历史中，可随时回看。',
       }
     } catch (failure) {
+      if (isAbortError(failure) || !sessionIsActive()) {
+        return {
+          status: 'failed',
+          message: '账号或服务器已切换，本次版本选择已停止；未确认是否生效，请在新会话中重新读取。',
+        }
+      }
       if (failure instanceof ApiError && failure.status === 409) {
         const failed = await refreshVersionState()
+        assertSessionActive()
         if (failed.length > 0) {
           return {
             status: 'stale',
@@ -374,9 +406,13 @@ function Workspace({ ownerId, serverBinding }: { ownerId: string; serverBinding:
           message: '服务器拒绝了本次版本选择；已重新读取当前内容和冲突候选，请按最新状态重新选择。',
         }
       }
+      const failed = await refreshVersionState()
+      assertSessionActive()
       return {
         status: 'failed',
-        message: `${errorText(failure)}。未确认本次选择是否成功，请刷新核对后再选择。`,
+        message: failed.length > 0
+          ? `${errorText(failure)}。未确认本次选择是否成功，请刷新核对后再选择；未能重新读取${failed.join('、')}，已隐藏冲突候选。`
+          : `${errorText(failure)}。未确认本次选择是否成功，请刷新核对后再选择；已重新读取当前版本和冲突候选。`,
       }
     } finally {
       promoteInFlightRef.current = false
@@ -387,6 +423,7 @@ function Workspace({ ownerId, serverBinding }: { ownerId: string; serverBinding:
 
   function openCurrentVersion() {
     if (!selectedVersionId) return
+    if (blockNavigationWhilePromoting()) return
     if (!confirmDiscardEditor('继续回到服务器当前版本。')) return
     setEditorDirty(false)
     setSeed(null)
@@ -399,7 +436,7 @@ function Workspace({ ownerId, serverBinding }: { ownerId: string; serverBinding:
       return
     }
     setError('')
-    setMessage('已保留服务器当前版本；冲突候选仍保留在版本历史中，可稍后处理。')
+    setMessage('已收起冲突选择，未提交版本变更；冲突候选仍保留在版本历史中，可稍后处理。')
     if (selectedVersionId) {
       changeInternalNavigation(() => setParams({ note: selectedNoteId }))
     }
@@ -520,7 +557,10 @@ function Workspace({ ownerId, serverBinding }: { ownerId: string; serverBinding:
             promotingVersionId={promotingVersionId}
             onOpenVersion={openVersionId}
             onOpenCurrent={openCurrentVersion}
-            onRefresh={() => void refreshVersionState()}
+            onRefresh={() => {
+              if (blockNavigationWhilePromoting()) return
+              void refreshVersionState()
+            }}
             onCancelConflict={cancelConflictSelection}
             onPromote={promoteVersion}
           />
@@ -552,6 +592,16 @@ function errorText(error: unknown) {
 
 function refreshFailed(result: PromiseSettledResult<{ isError: boolean }>) {
   return result.status === 'rejected' || result.value.isError
+}
+
+function isAbortError(error: unknown) {
+  return error instanceof Error && error.name === 'AbortError'
+}
+
+function sessionChangedError() {
+  const error = new Error('笔记工作区会话已切换，已停止旧请求')
+  error.name = 'AbortError'
+  return error
 }
 
 function returnVersionStorageKey(ownerId: string, serverBinding: string) {

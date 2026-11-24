@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { NAV_GROUPS } from '@/app/nav'
 import { ApiError } from '@/api/client'
 import { DataCenterPage } from './data-center-page'
@@ -26,12 +27,22 @@ const queryState = vi.hoisted(() => ({
 
 vi.mock('../queries', () => ({
   useDataCenterQuery: () => queryState,
+  calendarExtraKeys: {
+    dataCenterScope: () => ['calendar', 'data-center', 'synthetic-owner', 'synthetic-server'],
+  },
 }))
 vi.mock('../api', () => ({ dataCenterApi: dataCenterApiMock }))
 vi.mock('@/features/operations/api', () => ({ auditApi: auditApiMock }))
 vi.mock('@/features/auth/auth-context', () => ({
   useAuth: () => ({ user: { id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' } }),
 }))
+
+let client: QueryClient
+
+function renderPage() {
+  client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } })
+  return render(<QueryClientProvider client={client}><DataCenterPage /></QueryClientProvider>)
+}
 
 beforeEach(() => {
   queryState.data = undefined
@@ -45,7 +56,10 @@ beforeEach(() => {
   auditApiMock.timeline.mockResolvedValue({ items: [] })
 })
 
-afterEach(() => cleanup())
+afterEach(() => {
+  cleanup()
+  client?.clear()
+})
 
 describe('DataCenterPage', () => {
   it('is exposed in the normal navigation and renders owner-scoped objects', async () => {
@@ -67,7 +81,7 @@ describe('DataCenterPage', () => {
       pageSize: 50,
       totalCount: 1,
     }
-    render(<DataCenterPage />)
+    renderPage()
 
     expect(screen.getByRole('heading', { name: '数据中心' })).toBeTruthy()
     expect(await screen.findByText('学习率实验')).toBeTruthy()
@@ -77,18 +91,18 @@ describe('DataCenterPage', () => {
 
   it('distinguishes an empty result from loading and from a failed read', async () => {
     queryState.data = { items: [], page: 1, pageSize: 50, totalCount: 0 }
-    const { rerender } = render(<DataCenterPage />)
+    const { rerender } = renderPage()
     expect(screen.getByText('没有符合条件的对象')).toBeTruthy()
 
     queryState.data = undefined
     queryState.isLoading = true
-    rerender(<DataCenterPage />)
+    rerender(<QueryClientProvider client={client}><DataCenterPage /></QueryClientProvider>)
     expect(screen.queryByText('没有符合条件的对象')).toBeNull()
 
     queryState.isLoading = false
     queryState.isError = true
     queryState.error = new ApiError('当前账号无权读取数据中心', 40301, 403)
-    rerender(<DataCenterPage />)
+    rerender(<QueryClientProvider client={client}><DataCenterPage /></QueryClientProvider>)
     expect(screen.getByText('数据中心读取失败')).toBeTruthy()
     expect(screen.getByText(/当前账号无权读取数据中心/)).toBeTruthy()
 
@@ -128,7 +142,7 @@ describe('DataCenterPage', () => {
           createdAt: '2026-11-01T10:05:00Z',
         }],
       })
-    render(<DataCenterPage />)
+    renderPage()
 
     await userEvent.click(await screen.findByRole('button', { name: '详情' }))
     expect(await screen.findByText('审计历史读取失败')).toBeTruthy()
@@ -157,7 +171,7 @@ describe('DataCenterPage', () => {
       totalCount: 1,
     }
     dataCenterApiMock.restorePreview.mockRejectedValue(new ApiError('恢复预览服务不可用', 50302, 503))
-    render(<DataCenterPage />)
+    renderPage()
 
     await userEvent.click(await screen.findByRole('button', { name: '详情' }))
     await userEvent.click(screen.getByRole('button', { name: '恢复预览' }))

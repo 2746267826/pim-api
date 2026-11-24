@@ -107,7 +107,7 @@ export function NoteVersionPanel({
             每个版本都保留在服务器上。历史版本只读；发生真实冲突时，请明确选择继续使用哪一份内容。
           </p>
         </div>
-        <Button size="sm" variant="ghost" aria-label="刷新版本历史" onClick={onRefresh}>
+        <Button size="sm" variant="ghost" aria-label="刷新版本历史" disabled={promoteInFlight} onClick={onRefresh}>
           <RefreshCw className="size-3.5" aria-hidden /> 刷新
         </Button>
       </div>
@@ -117,7 +117,7 @@ export function NoteVersionPanel({
       {refreshIssue.length > 0 && (
         <InlineAlert tone="warn" title="冲突状态未完成刷新">
           {refreshIssue.join('、')}未能重新读取。为避免在旧数据上继续选择，已隐藏冲突候选。
-          <Button className="mt-2" size="sm" variant="secondary" onClick={onRefresh}>
+          <Button className="mt-2" size="sm" variant="secondary" disabled={promoteInFlight} onClick={onRefresh}>
             重新读取并核对
           </Button>
         </InlineAlert>
@@ -163,7 +163,7 @@ export function NoteVersionPanel({
       ) : refreshIssue.length === 0 && current && conflictVersions.length > 0 ? (
         <div className="flex flex-wrap items-center gap-2 rounded-ctl border border-warn-border bg-warn-soft px-3 py-2 text-xs text-warn">
           <AlertTriangle className="size-4 shrink-0" aria-hidden />
-          <span className="mr-auto">还有 {conflictVersions.length} 个冲突候选待处理；当前版本没有改变。</span>
+          <span className="mr-auto">还有 {conflictVersions.length} 个冲突候选待处理；查看后可明确选择或稍后处理。</span>
           <Button size="sm" variant="secondary" onClick={() => setDismissedConflictKey('')}>查看冲突</Button>
         </div>
       ) : null}

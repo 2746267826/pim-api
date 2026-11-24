@@ -596,10 +596,15 @@ describe('NativeNotesPage', () => {
     page()
     await userEvent.click(await screen.findByText('课堂笔记').then((node) => node.closest('button')!))
     await screen.findByRole('heading', { name: '发现内容冲突' })
+    const currentCalls = nativeApi.current.mock.calls.length
+    const versionCalls = nativeApi.versions.mock.calls.length
 
     await userEvent.click(screen.getByRole('button', { name: '采用这份内容' }))
 
     expect(await screen.findByText(/未确认本次选择是否成功，请刷新核对后再选择/)).toBeTruthy()
+    await waitFor(() => expect(nativeApi.current.mock.calls.length).toBeGreaterThan(currentCalls))
+    await waitFor(() => expect(nativeApi.versions.mock.calls.length).toBeGreaterThan(versionCalls))
+    expect(screen.getByText(/已重新读取当前版本和冲突候选/)).toBeTruthy()
     expect(screen.queryByText(/当前版本没有改变/)).toBeNull()
     expect(screen.queryByText(/已采用所选内容/)).toBeNull()
   })
@@ -634,6 +639,72 @@ describe('NativeNotesPage', () => {
     })
     expect((await screen.findAllByText(/已采用所选内容/)).length).toBeGreaterThan(0)
     expect(screen.queryByText(/已保留服务器当前版本/)).toBeNull()
+  })
+
+  it('keeps the current note selected while a promote request is in flight', async () => {
+    nativeApi.notes.mockResolvedValue({ total: 1, offset: 0, items: [{ ...source, hasConflict: true }] })
+    nativeApi.versions.mockResolvedValue([material.upload, conflictMaterial.upload])
+    let resolvePromote!: (value: NoteMaterialUpload) => void
+    nativeApi.promote.mockImplementationOnce(() => new Promise<NoteMaterialUpload>((resolve) => {
+      resolvePromote = resolve
+    }))
+    page()
+    await userEvent.click(await screen.findByText('课堂笔记').then((node) => node.closest('button')!))
+    await screen.findByRole('heading', { name: '发现内容冲突' })
+    const initialSearch = testRouter.state.location.search
+
+    await userEvent.click(screen.getByRole('button', { name: '采用这份内容' }))
+    await waitFor(() => expect(nativeApi.promote).toHaveBeenCalledOnce())
+    await userEvent.click(screen.getByRole('button', { name: /新建笔记/ }))
+
+    expect(await screen.findByText(/正在提交版本选择/)).toBeTruthy()
+    expect(testRouter.state.location.search).toBe(initialSearch)
+    expect(screen.queryByRole('heading', { name: '新建笔记' })).toBeNull()
+
+    resolvePromote({
+      ...material.upload,
+      versionId: conflictVersionId,
+      currentVersionId: conflictVersionId,
+      isCurrent: true,
+      hasConflict: false,
+    })
+    expect((await screen.findAllByText(/已采用所选内容/)).length).toBeGreaterThan(0)
+  })
+
+  it('aborts an in-flight promote and ignores its late success after the account changes', async () => {
+    nativeApi.notes.mockResolvedValue({ total: 1, offset: 0, items: [{ ...source, hasConflict: true }] })
+    nativeApi.versions.mockResolvedValue([material.upload, conflictMaterial.upload])
+    let resolvePromote!: (value: NoteMaterialUpload) => void
+    nativeApi.promote.mockImplementationOnce(() => new Promise<NoteMaterialUpload>((resolve) => {
+      resolvePromote = resolve
+    }))
+    const view = page()
+    await userEvent.click(await screen.findByText('课堂笔记').then((node) => node.closest('button')!))
+    await screen.findByRole('heading', { name: '发现内容冲突' })
+
+    await userEvent.click(screen.getByRole('button', { name: '采用这份内容' }))
+    await waitFor(() => expect(nativeApi.promote).toHaveBeenCalledOnce())
+    const signal = nativeApi.promote.mock.calls[0]?.[2] as AbortSignal
+
+    await testRouter.navigate('/native-notes')
+    authState.userId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+    view.rerender(<RouterProvider key={authState.userId} router={testRouter} />)
+    await waitFor(() => expect(signal.aborted).toBe(true))
+    expect(await screen.findByText('课堂笔记')).toBeTruthy()
+
+    resolvePromote({
+      ...material.upload,
+      versionId: conflictVersionId,
+      currentVersionId: conflictVersionId,
+      isCurrent: true,
+      hasConflict: false,
+    })
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(testRouter.state.location.search).toBe('')
+    expect(screen.queryByText(/已采用所选内容/)).toBeNull()
+    expect(screen.getByText('课堂笔记')).toBeTruthy()
   })
 
   it('keeps candidate adoption disabled until its safe summary is loaded', async () => {
@@ -833,6 +904,37 @@ describe('NativeNotesPage', () => {
     expect(await screen.findByRole('list', { name: '版本历史列表' })).toBeTruthy()
     expect(screen.getByText('历史版')).toBeTruthy()
     expect(screen.queryByText('版本历史读取失败')).toBeNull()
+  })
+
+  it('distinguishes pending, failed and truly empty history when current fails first', async () => {
+    nativeApi.current.mockRejectedValueOnce(new ApiError('当前版本首次读取失败', 50301, 503))
+    let resolveVersions!: (value: NoteMaterialUpload[]) => void
+    nativeApi.versions.mockImplementationOnce(() => new Promise((resolve) => {
+      resolveVersions = resolve
+    }))
+    page()
+    await userEvent.click(await screen.findByText('课堂笔记').then((node) => node.closest('button')!))
+
+    await waitFor(() => expect(nativeApi.versions).toHaveBeenCalledOnce())
+    expect((await screen.findAllByText('当前版本读取失败')).length).toBeGreaterThan(0)
+    expect(screen.queryByText('还没有历史版本。')).toBeNull()
+    expect(screen.queryByText('版本历史读取失败')).toBeNull()
+
+    resolveVersions([])
+    expect(await screen.findByText('还没有历史版本。')).toBeTruthy()
+    expect(screen.getByText('0 个版本 · 0 个冲突候选')).toBeTruthy()
+  })
+
+  it('shows history read failure rather than an empty list when current fails first', async () => {
+    nativeApi.current.mockRejectedValueOnce(new ApiError('当前版本首次读取失败', 50301, 503))
+    nativeApi.versions.mockRejectedValueOnce(new ApiError('历史版本首次读取失败', 50302, 503))
+    page()
+    await userEvent.click(await screen.findByText('课堂笔记').then((node) => node.closest('button')!))
+
+    expect((await screen.findAllByText('当前版本读取失败')).length).toBeGreaterThan(0)
+    expect(await screen.findByText('版本历史读取失败')).toBeTruthy()
+    expect(screen.getByText(/历史版本首次读取失败/)).toBeTruthy()
+    expect(screen.queryByText('还没有历史版本。')).toBeNull()
   })
 
   it('keeps the loaded version history visible when refreshing the current version fails', async () => {

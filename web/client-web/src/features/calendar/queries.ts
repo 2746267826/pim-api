@@ -333,8 +333,10 @@ export const calendarExtraKeys = {
   aiSuggestions: ['calendar', 'ai-placeholders', 'suggested'] as const,
   outlookSettings: ['calendar', 'outlook', 'settings'] as const,
   outlookBatches: ['calendar', 'outlook', 'batches'] as const,
+  dataCenterScope: (ownerId: string, serverBinding: string) =>
+    ['calendar', 'data-center', ownerId, serverBinding] as const,
   dataCenter: (ownerId: string, serverBinding: string, params: Record<string, unknown>) =>
-    ['calendar', 'data-center', ownerId, serverBinding, params] as const,
+    [...calendarExtraKeys.dataCenterScope(ownerId, serverBinding), params] as const,
 }
 
 export function useReminders() {
@@ -503,10 +505,12 @@ export function useDataCenterQuery(
   ownerId: string,
   serverBinding: string,
   params: components['schemas']['DataCenterQueryRequest'],
+  assertActive?: () => void,
 ) {
   return useQuery({
     queryKey: calendarExtraKeys.dataCenter(ownerId, serverBinding, params),
-    queryFn: ({ signal }) => import('./api').then((m) => m.dataCenterApi.query(params, { signal })),
+    queryFn: ({ signal }) =>
+      import('./api').then((m) => m.dataCenterApi.query(params, { signal, assertActive })),
     enabled: Boolean(ownerId),
   })
 }

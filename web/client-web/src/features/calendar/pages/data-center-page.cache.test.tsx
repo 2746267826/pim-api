@@ -31,11 +31,15 @@ let client: QueryClient
 function resultForCurrentBinding() {
   const owner = authState.userId || 'logged-out'
   const server = getApiBase() || window.location.origin
+  return resultWithTitle(`${owner}@${server}`)
+}
+
+function resultWithTitle(title: string) {
   return {
     items: [{
       objectType: 'task',
       objectId: '11111111-1111-4111-8111-111111111111',
-      title: `${owner}@${server}`,
+      title,
       source: 'manual',
       status: 'Active',
       startsAt: '2026-11-01T10:00:00Z',
@@ -85,6 +89,8 @@ describe('DataCenterPage cache isolation', () => {
     const firstTitle = `${firstOwner}@${window.location.origin}`
     const view = renderPage()
     expect(await screen.findByText(firstTitle)).toBeTruthy()
+    const firstAssertActive = dataCenterApiMock.query.mock.calls[0]?.[1]?.assertActive as (() => void) | undefined
+    expect(firstAssertActive).toBeTypeOf('function')
 
     let resolveSecond!: (value: ReturnType<typeof resultForCurrentBinding>) => void
     dataCenterApiMock.query.mockImplementationOnce(() => new Promise((resolve) => {
@@ -128,6 +134,71 @@ describe('DataCenterPage cache isolation', () => {
     expect(await screen.findByText('没有符合条件的对象')).toBeTruthy()
   })
 
+  it('aborts an in-flight list request when the account switches', async () => {
+    const firstTitle = `${authState.userId}@${window.location.origin}`
+    let resolveFirst!: (value: ReturnType<typeof resultWithTitle>) => void
+    dataCenterApiMock.query.mockImplementationOnce(() => new Promise((resolve) => {
+      resolveFirst = resolve
+    }))
+    const view = renderPage()
+    await waitFor(() => expect(dataCenterApiMock.query).toHaveBeenCalledOnce())
+    const signal = dataCenterApiMock.query.mock.calls[0]?.[1]?.signal as AbortSignal
+
+    authState.userId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+    view.rerender(<QueryClientProvider client={client}><DataCenterPage /></QueryClientProvider>)
+    await waitFor(() => expect(signal.aborted).toBe(true))
+
+    resolveFirst(resultWithTitle(firstTitle))
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(screen.queryByText(firstTitle)).toBeNull()
+    expect(await screen.findByText(`${authState.userId}@${window.location.origin}`)).toBeTruthy()
+  })
+
+  it('aborts an in-flight list request when the server changes', async () => {
+    const firstTitle = `${authState.userId}@${window.location.origin}`
+    let resolveFirst!: (value: ReturnType<typeof resultWithTitle>) => void
+    dataCenterApiMock.query.mockImplementationOnce(() => new Promise((resolve) => {
+      resolveFirst = resolve
+    }))
+    renderPage()
+    await waitFor(() => expect(dataCenterApiMock.query).toHaveBeenCalledOnce())
+    const signal = dataCenterApiMock.query.mock.calls[0]?.[1]?.signal as AbortSignal
+
+    setApiBase('https://server-b.synthetic.invalid')
+    await waitFor(() => expect(signal.aborted).toBe(true))
+
+    resolveFirst(resultWithTitle(firstTitle))
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(screen.queryByText(firstTitle)).toBeNull()
+    expect(await screen.findByText(`${authState.userId}@https://server-b.synthetic.invalid`)).toBeTruthy()
+  })
+
+  it('aborts an in-flight list request on logout', async () => {
+    const firstTitle = `${authState.userId}@${window.location.origin}`
+    let resolveFirst!: (value: ReturnType<typeof resultWithTitle>) => void
+    dataCenterApiMock.query.mockImplementationOnce(() => new Promise((resolve) => {
+      resolveFirst = resolve
+    }))
+    const view = renderPage()
+    await waitFor(() => expect(dataCenterApiMock.query).toHaveBeenCalledOnce())
+    const signal = dataCenterApiMock.query.mock.calls[0]?.[1]?.signal as AbortSignal
+
+    authState.userId = ''
+    view.rerender(<QueryClientProvider client={client}><DataCenterPage /></QueryClientProvider>)
+    await waitFor(() => expect(signal.aborted).toBe(true))
+
+    resolveFirst(resultWithTitle(firstTitle))
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(screen.queryByText(firstTitle)).toBeNull()
+    expect(await screen.findByText('没有符合条件的对象')).toBeTruthy()
+  })
+
   it('does not download a late audit export after the server changes', async () => {
     let resolveExport!: (value: { fileName: string; contentType: string; content: string }) => void
     dataCenterApiMock.auditExport.mockImplementationOnce(() => new Promise((resolve) => {
@@ -151,6 +222,33 @@ describe('DataCenterPage cache isolation', () => {
     expect(createUrl).not.toHaveBeenCalled()
     expect(anchorClick).not.toHaveBeenCalled()
     expect(screen.queryByText('审计导出已下载')).toBeNull()
+  })
+
+  it('does not download a late audit export after the account changes', async () => {
+    let resolveExport!: (value: { fileName: string; contentType: string; content: string }) => void
+    dataCenterApiMock.auditExport.mockImplementationOnce(() => new Promise((resolve) => {
+      resolveExport = resolve
+    }))
+    const createUrl = vi.mocked(URL.createObjectURL)
+    const anchorClick = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined)
+    const view = renderPage()
+    expect(await screen.findByText(`${authState.userId}@${window.location.origin}`)).toBeTruthy()
+
+    await userEvent.click(screen.getByRole('button', { name: /导出审计/ }))
+    await waitFor(() => expect(dataCenterApiMock.auditExport).toHaveBeenCalledOnce())
+    const signal = dataCenterApiMock.auditExport.mock.calls[0]?.[1]?.signal as AbortSignal
+
+    authState.userId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+    view.rerender(<QueryClientProvider client={client}><DataCenterPage /></QueryClientProvider>)
+    await waitFor(() => expect(signal.aborted).toBe(true))
+    resolveExport({ fileName: 'old-account-audit.json', contentType: 'application/json', content: '{"owner":"old"}' })
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(createUrl).not.toHaveBeenCalled()
+    expect(anchorClick).not.toHaveBeenCalled()
+    expect(screen.queryByText('审计导出已下载')).toBeNull()
+    expect(await screen.findByText(`${authState.userId}@${window.location.origin}`)).toBeTruthy()
   })
 
   it('clears an open detail and ignores a late audit timeline response after the account changes', async () => {
@@ -242,5 +340,96 @@ describe('DataCenterPage cache isolation', () => {
     expect(screen.queryByText('旧服务器恢复预览')).toBeNull()
     await waitFor(() => expect(screen.queryByText('对象详情')).toBeNull())
     expect(await screen.findByText(`待恢复版本@${authState.userId}@https://server-b.synthetic.invalid`)).toBeTruthy()
+  })
+
+  it('ignores a late audit timeline response after the server changes', async () => {
+    let resolveTimeline!: (value: { items: Array<Record<string, unknown>> }) => void
+    auditApiMock.timeline.mockImplementationOnce(() => new Promise((resolve) => {
+      resolveTimeline = resolve
+    }))
+    renderPage()
+    expect(await screen.findByText(`${authState.userId}@${window.location.origin}`)).toBeTruthy()
+
+    await userEvent.click(screen.getByRole('button', { name: '详情' }))
+    await waitFor(() => expect(auditApiMock.timeline).toHaveBeenCalledOnce())
+    const signal = auditApiMock.timeline.mock.calls[0]?.[2]?.signal as AbortSignal
+    expect(screen.getByText('对象详情')).toBeTruthy()
+
+    setApiBase('https://server-b.synthetic.invalid')
+    await waitFor(() => expect(signal.aborted).toBe(true))
+    resolveTimeline({
+      items: [{
+        id: '99999999-9999-4999-8999-999999999999',
+        objectType: 'task',
+        objectId: '11111111-1111-4111-8111-111111111111',
+        confirmationId: null,
+        source: 'manual',
+        actor: '旧服务器审计',
+        beforeJson: '{}',
+        afterJson: '{}',
+        changedFieldsJson: '["title"]',
+        createdAt: '2026-11-01T10:05:00Z',
+      }],
+    })
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(screen.queryByText('旧服务器审计')).toBeNull()
+    await waitFor(() => expect(screen.queryByText('对象详情')).toBeNull())
+    expect(await screen.findByText(`${authState.userId}@https://server-b.synthetic.invalid`)).toBeTruthy()
+  })
+
+  it('does not show a late restore preview after the account changes', async () => {
+    dataCenterApiMock.query.mockImplementation(async () => {
+      const owner = authState.userId || 'logged-out'
+      const server = getApiBase() || window.location.origin
+      return {
+        items: [{
+          objectType: 'audit-version',
+          objectId: '88888888-8888-4888-8888-888888888888',
+          title: `待恢复版本@${owner}@${server}`,
+          source: 'manual',
+          status: 'Active',
+          startsAt: '2026-11-01T10:00:00Z',
+          endsAt: null,
+          summary: '',
+        }],
+        page: 1,
+        pageSize: 50,
+        totalCount: 1,
+      }
+    })
+    let resolvePreview!: (value: {
+      summary: string
+      changedFields: string[]
+      beforeJson: string | null
+      afterJson: string | null
+    }) => void
+    dataCenterApiMock.restorePreview.mockImplementationOnce(() => new Promise((resolve) => {
+      resolvePreview = resolve
+    }))
+    const view = renderPage()
+    expect(await screen.findByText(`待恢复版本@${authState.userId}@${window.location.origin}`)).toBeTruthy()
+
+    await userEvent.click(screen.getByRole('button', { name: '详情' }))
+    await userEvent.click(await screen.findByRole('button', { name: '恢复预览' }))
+    await waitFor(() => expect(dataCenterApiMock.restorePreview).toHaveBeenCalledOnce())
+    const signal = dataCenterApiMock.restorePreview.mock.calls[0]?.[1]?.signal as AbortSignal
+
+    authState.userId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+    view.rerender(<QueryClientProvider client={client}><DataCenterPage /></QueryClientProvider>)
+    await waitFor(() => expect(signal.aborted).toBe(true))
+    resolvePreview({
+      summary: '旧账号恢复预览',
+      changedFields: ['title'],
+      beforeJson: '{}',
+      afterJson: '{}',
+    })
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(screen.queryByText('旧账号恢复预览')).toBeNull()
+    await waitFor(() => expect(screen.queryByText('对象详情')).toBeNull())
+    expect(await screen.findByText(`待恢复版本@${authState.userId}@${window.location.origin}`)).toBeTruthy()
   })
 })

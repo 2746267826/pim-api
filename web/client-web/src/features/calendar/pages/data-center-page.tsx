@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Download, History, ScrollText } from 'lucide-react'
+import { useQueryClient } from '@tanstack/react-query'
 import { dataCenterApi } from '../api'
-import { useDataCenterQuery } from '../queries'
+import { calendarExtraKeys, useDataCenterQuery } from '../queries'
 import type { DataCenterItem } from '../types'
 import { auditApi, type AuditVersionItem } from '@/features/operations/api'
 import { DiffTable } from '@/features/operations/components/diff-table'
@@ -49,6 +50,7 @@ export function DataCenterPage() {
 }
 
 function DataCenterWorkspace({ ownerId, serverBinding }: { ownerId: string; serverBinding: string }) {
+  const qc = useQueryClient()
   const [search, setSearch] = useState('')
   const [objectType, setObjectType] = useState('')
   const [page, setPage] = useState(1)
@@ -70,6 +72,16 @@ function DataCenterWorkspace({ ownerId, serverBinding }: { ownerId: string; serv
     return () => {
       if (sessionRef.current?.controller === controller) sessionRef.current = null
       controller.abort()
+      void qc.cancelQueries({ queryKey: calendarExtraKeys.dataCenterScope(ownerId, serverBinding) })
+    }
+  }, [ownerId, qc, serverBinding])
+
+  const assertDataCenterSession = useCallback(() => {
+    const session = sessionRef.current
+    if (!session) return
+    if (session.ownerId !== ownerId || session.serverBinding !== serverBinding ||
+        session.controller.signal.aborted) {
+      throw sessionChangedError()
     }
   }, [ownerId, serverBinding])
 
@@ -78,7 +90,12 @@ function DataCenterWorkspace({ ownerId, serverBinding }: { ownerId: string; serv
   }
 
   const params = useMemo(() => ({ search: search || undefined, objectType: objectType || undefined, pendingOnly: false, page, pageSize: 50 }), [search, objectType, page])
-  const { data, isLoading, isFetching, isError, error, refetch } = useDataCenterQuery(ownerId, serverBinding, params)
+  const { data, isLoading, isFetching, isError, error, refetch } = useDataCenterQuery(
+    ownerId,
+    serverBinding,
+    params,
+    assertDataCenterSession,
+  )
 
   async function exportAudit() {
     const session = sessionRef.current
