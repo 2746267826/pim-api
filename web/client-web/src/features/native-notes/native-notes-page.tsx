@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useInfiniteQuery, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useBlocker, useNavigate, useSearchParams } from 'react-router'
 import {
   ArrowRight,
@@ -11,6 +11,7 @@ import {
   Upload,
 } from 'lucide-react'
 import { Button, Card, EmptyState, InlineAlert, Input, PageHeader, Skeleton, StatusBadge } from '@/components/ui'
+import { ApiError } from '@/api/client'
 import { getApiBase } from '@/lib/apiBase'
 import { formatTime } from '@/lib/datetime'
 import { useAuth } from '@/features/auth/auth-context'
@@ -21,6 +22,8 @@ import { bindNativeNotesApi } from './api'
 import { createMaterialId, type NoteMaterialUpload } from './material-model'
 import { assertAndroidNotePackageSize, importAndroidNotePackage } from './material-package'
 import { NoteEditorPane, type NoteEditorSeed } from './note-material-editor'
+import { NoteVersionPanel, type ConflictMaterialState, type PromoteVersionOutcome } from './note-version-panel'
+import { versionShortId } from './version-model'
 import {
   LEGACY_QUICK_NOTE_NOTICE,
   legacyQuickNotePlainText,
@@ -30,6 +33,8 @@ import {
 function currentBinding() {
   return getApiBase() || window.location.origin
 }
+
+const EMPTY_NOTE_VERSIONS: NoteMaterialUpload[] = []
 
 export function NativeNotesPage() {
   const { user } = useAuth()
@@ -172,7 +177,32 @@ function Workspace({ ownerId, serverBinding }: { ownerId: string; serverBinding:
     return query ? library.filter((item) => item.title.toLocaleLowerCase().includes(query)) : library
   }, [library, search])
   const selectedSource = selectedCurrent.data?.upload
-  const selectedNoteVersions = selectedVersions.data ?? []
+  const selectedNoteVersions = selectedVersions.data ?? EMPTY_NOTE_VERSIONS
+  const conflictVersions = useMemo(
+    () => selectedNoteVersions.filter((version) =>
+      !version.isCurrent && (version.hasConflict || version.phase === 'Conflict')),
+    [selectedNoteVersions],
+  )
+  const conflictMaterialQueries = useQueries({
+    queries: conflictVersions.map((version) => ({
+      queryKey: ['native-notes', ownerId, serverBinding, 'conflict-material', version.versionId],
+      queryFn: ({ signal }: { signal: AbortSignal }) => requestApi.version(version.versionId, signal),
+      enabled: Boolean(selectedNoteId),
+      staleTime: 5_000,
+    })),
+  })
+  const conflictMaterials = useMemo(() => {
+    const result: Record<string, ConflictMaterialState> = {}
+    conflictVersions.forEach((version, index) => {
+      const query = conflictMaterialQueries[index]
+      result[version.versionId] = {
+        material: query?.data,
+        loading: query?.isPending ?? true,
+        error: query?.error ?? undefined,
+      }
+    })
+    return result
+  }, [conflictMaterialQueries, conflictVersions])
   const legacyCount = quickNotes.data?.totalCount ?? 0
 
   function confirmDiscardEditor(reason: string) {
@@ -284,6 +314,60 @@ function Workspace({ ownerId, serverBinding }: { ownerId: string; serverBinding:
     changeInternalNavigation(() => setParams({ note: upload.noteId }))
   }
 
+  async function refreshVersionState() {
+    await Promise.all([
+      selectedCurrent.refetch(),
+      selectedVersions.refetch(),
+      sources.refetch(),
+      qc.invalidateQueries({ queryKey: ['native-note-material', ownerId, serverBinding] }),
+      qc.invalidateQueries({ queryKey: ['native-note-material-hydrated', ownerId, serverBinding] }),
+    ])
+  }
+
+  async function promoteVersion(versionId: string): Promise<PromoteVersionOutcome> {
+    const expectedCurrentVersionId =
+      selectedCurrent.data?.upload.currentVersionId ?? selectedCurrent.data?.upload.versionId ?? null
+    try {
+      const upload = await requestApi.promote(versionId, expectedCurrentVersionId, getSessionSignal())
+      setError('')
+      setMessage('已采用所选内容，服务器已将它设为当前版本；另一份内容仍保留在版本历史中。')
+      await refreshVersionState()
+      changeInternalNavigation(() => setParams({ note: upload.noteId }))
+      return {
+        status: 'adopted',
+        message: '已采用所选内容。另一份版本仍保留在版本历史中，可随时回看。',
+      }
+    } catch (failure) {
+      if (failure instanceof ApiError && failure.status === 409) {
+        await refreshVersionState()
+        return {
+          status: 'stale',
+          message: '服务器当前版本已变化，已重新读取当前内容和冲突候选；当前版本没有改变，请重新选择。',
+        }
+      }
+      return {
+        status: 'failed',
+        message: `${errorText(failure)}。当前版本没有改变，请刷新核对后再选择。`,
+      }
+    }
+  }
+
+  function openCurrentVersion() {
+    if (!selectedVersionId) return
+    if (!confirmDiscardEditor('继续回到服务器当前版本。')) return
+    setEditorDirty(false)
+    setSeed(null)
+    changeInternalNavigation(() => setParams({ note: selectedNoteId }))
+  }
+
+  function cancelConflictSelection() {
+    setError('')
+    setMessage('已保留服务器当前版本；冲突候选仍保留在版本历史中，可稍后处理。')
+    if (selectedVersionId) {
+      changeInternalNavigation(() => setParams({ note: selectedNoteId }))
+    }
+  }
+
   return <div className="space-y-4">
     <PageHeader
       title="笔记库"
@@ -322,12 +406,14 @@ function Workspace({ ownerId, serverBinding }: { ownerId: string; serverBinding:
                       <span className="grid size-8 shrink-0 place-items-center rounded-ctl bg-surface-2 text-primary"><BookOpenText className="size-4" aria-hidden /></span>
                       <span className="min-w-0 flex-1">
                         <span className="block truncate text-sm font-medium text-text-1">{item.title}</span>
-                        <span className="mt-1 block text-[11px] text-text-4">点击打开当前版本</span>
+                        <span className="mt-1 block text-[11px] text-text-4">
+                          当前版本 <span className="mono">{versionShortId(item.currentVersionId)}</span> · 点击打开
+                        </span>
                       </span>
                       <ArrowRight className="mt-1 size-4 shrink-0 text-text-4" aria-hidden />
                     </div>
                     <div className="mt-3 flex flex-wrap gap-1.5">
-                      {item.hasConflict && <StatusBadge tone="warn" dot={false}>冲突候选</StatusBadge>}
+                      {item.hasConflict && <StatusBadge tone="warn" dot={false}>有待处理冲突</StatusBadge>}
                       {!item.hasConflict && <StatusBadge tone="ok" dot={false}>当前版</StatusBadge>}
                     </div>
                   </button>)}</div>}
@@ -380,32 +466,25 @@ function Workspace({ ownerId, serverBinding }: { ownerId: string; serverBinding:
             </Button>}
           {editorDirty && <p className="w-full text-xs text-text-3">请先保存当前编辑，再开始处理；未保存内容不会发送。</p>}
         </section>}
-        {selectedNoteId && <details className="mb-4 min-w-0 rounded-card border border-border bg-bg p-3 shadow-card">
-          <summary className="cursor-pointer text-sm font-semibold text-text-1">版本历史{selectedVersions.data ? ` · ${selectedVersions.data.length} 个版本` : ''}</summary>
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div>
-              <h2 className="text-sm font-semibold text-text-1">历史与冲突版本</h2>
-              <p className="mt-1 text-xs text-text-3">历史版本仅供阅读；只有当前版本允许续写。冲突候选需明确设为当前版本后才能编辑。</p>
-            </div>
-            {selectedVersions.isPending && <span className="text-[11px] text-text-4">正在读取…</span>}
-          </div>
-          {selectedVersions.isError && <InlineAlert className="mt-3" tone="crit">版本历史读取失败：{errorText(selectedVersions.error)}</InlineAlert>}
-          <div className="mt-3 flex flex-wrap gap-2">
-            {selectedNoteVersions.map((version) => <button
-              key={version.versionId}
-              type="button"
-              aria-label={`查看版本 ${formatTime(version.createdAt)}${version.isCurrent ? ' 当前版' : ' 历史版'}${version.hasConflict ? ' 冲突候选' : ''}`}
-              onClick={() => openVersionId(version.versionId)}
-              className="rounded-ctl border border-border bg-bg px-3 py-2 text-left text-xs text-text-2 hover:border-border-strong"
-            >
-              <span className="block">{formatTime(version.createdAt)}</span>
-              <span className="mt-1 flex flex-wrap gap-1">
-                <StatusBadge tone={version.isCurrent ? 'ok' : 'neutral'} dot={false}>{version.isCurrent ? '当前版' : '历史版'}</StatusBadge>
-                {version.hasConflict && <StatusBadge tone="warn" dot={false}>冲突候选</StatusBadge>}
-              </span>
-            </button>)}
-          </div>
-        </details>}
+        {selectedNoteId && <div className="mb-4 min-w-0">
+          <NoteVersionPanel
+            key={selectedNoteId}
+            noteId={selectedNoteId}
+            versions={selectedNoteVersions}
+            versionsLoading={selectedVersions.isPending && !selectedCurrent.isError}
+            versionsError={selectedVersions.error ?? selectedCurrent.error}
+            current={selectedCurrent.data}
+            currentLoading={selectedCurrent.isPending}
+            currentError={selectedCurrent.error}
+            selectedVersionId={selectedVersionId}
+            conflictMaterials={conflictMaterials}
+            onOpenVersion={openVersionId}
+            onOpenCurrent={openCurrentVersion}
+            onRefresh={() => void refreshVersionState()}
+            onCancelConflict={cancelConflictSelection}
+            onPromote={promoteVersion}
+          />
+        </div>}
         {selectedNoteId && !selectedVersionId && selectedCurrent.isPending
           ? <Card className="p-6"><Skeleton className="h-8 w-2/3" /><Skeleton className="mt-4 h-56" /><p className="mt-3 text-xs text-text-3">正在读取当前版本…</p></Card>
           : selectedNoteId && !selectedVersionId && selectedCurrent.isError
@@ -418,6 +497,7 @@ function Workspace({ ownerId, serverBinding }: { ownerId: string; serverBinding:
               seed={seed ?? undefined}
               onDirtyChange={setEditorDirty}
               onSaved={(upload) => void saved(upload)}
+              onStaleCurrent={() => void refreshVersionState()}
             />}
       </div>
     </div>

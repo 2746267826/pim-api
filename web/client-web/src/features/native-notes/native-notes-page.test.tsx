@@ -5,6 +5,7 @@ import userEvent from '@testing-library/user-event'
 import { createMemoryRouter, RouterProvider, useNavigate } from 'react-router'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { NAV_GROUPS } from '@/app/nav'
+import { ApiError } from '@/api/client'
 import { setApiBase } from '@/lib/apiBase'
 import { NativeNotesPage } from './native-notes-page'
 import { buildMaterialBundle, type NoteMaterialUpload, type NoteMaterialVersion } from './material-model'
@@ -204,6 +205,13 @@ beforeEach(() => {
     phase: 'Uploaded',
     isCurrent: true,
   }))
+  nativeApi.promote.mockImplementation(async (id: string) => ({
+    ...material.upload,
+    versionId: id,
+    currentVersionId: id,
+    isCurrent: true,
+    hasConflict: false,
+  }))
   quickApi.list.mockResolvedValue({
     items: [{
       id: '44444444-4444-4444-8444-444444444444',
@@ -253,6 +261,8 @@ describe('NativeNotesPage', () => {
     const collection = NAV_GROUPS.find((group) => group.label === '收集')
     expect(collection?.items).toContainEqual(expect.objectContaining({ to: '/native-notes', label: '笔记' }))
     expect(collection?.items.some((item) => item.to === '/quick-notes')).toBe(false)
+    const governance = NAV_GROUPS.find((group) => group.label === '治理')
+    expect(governance?.items).toContainEqual(expect.objectContaining({ to: '/data-center', label: '数据中心' }))
   })
 
   it('keeps daily note actions primary and labels offline restore as optional', async () => {
@@ -437,6 +447,9 @@ describe('NativeNotesPage', () => {
     expect(await screen.findByRole('heading', { name: '继续写这篇笔记' })).toBeTruthy()
     expect((screen.getByLabelText('笔记标题') as HTMLInputElement).value).toBe('课堂笔记')
     expect((screen.getByLabelText('正文块 1') as HTMLTextAreaElement).value).toContain('保留原文')
+    expect(screen.getByText('当前载入版本 ID')).toBeTruthy()
+    expect(screen.getByText('本次保存编号')).toBeTruthy()
+    expect(screen.getByText('本次保存来源版本')).toBeTruthy()
     expect(nativeApi.version).toHaveBeenCalledWith(versionId, expect.any(AbortSignal))
     expect(client.getQueryData([
       'native-note-material',
@@ -478,22 +491,95 @@ describe('NativeNotesPage', () => {
     expect((screen.getByLabelText('正文块 1') as HTMLTextAreaElement).value).toBe('旧标题\n旧内容 保留')
   })
 
-  it('opens a conflict candidate without silently promoting it to the current version', async () => {
+  it('shows both conflict sides with version ids and only promotes after an explicit choice', async () => {
     nativeApi.notes.mockResolvedValue({ total: 1, offset: 0, items: [{ ...source, hasConflict: true }] })
     nativeApi.versions.mockResolvedValue([material.upload, conflictMaterial.upload])
     page()
     await userEvent.click(await screen.findByText('课堂笔记').then((node) => node.closest('button')!))
-    const history = screen.getByText(/版本历史 · 2 个版本/).closest('details')
-    expect(history?.open).toBe(false)
-    await userEvent.click(screen.getByText(/版本历史 · 2 个版本/))
-    expect(history?.open).toBe(true)
+
+    expect(await screen.findByRole('heading', { name: '版本与保存编号' })).toBeTruthy()
+    expect(await screen.findByRole('heading', { name: '发现内容冲突' })).toBeTruthy()
+    expect(screen.getAllByText(versionId).length).toBeGreaterThan(0)
+    expect(screen.getAllByText(conflictVersionId).length).toBeGreaterThan(0)
+    expect(screen.getByText('服务器当前内容')).toBeTruthy()
+    expect(screen.getByText('另一端保存的内容')).toBeTruthy()
+    expect(screen.getByText(/冲突候选笔记/)).toBeTruthy()
+    expect(nativeApi.promote).not.toHaveBeenCalled()
+
+    await userEvent.click(screen.getByRole('button', { name: '采用这份内容' }))
+    await waitFor(() => expect(nativeApi.promote).toHaveBeenCalledWith(conflictVersionId, versionId, expect.any(AbortSignal)))
+    expect((await screen.findAllByText(/已采用所选内容/)).length).toBeGreaterThan(0)
+  })
+
+  it('lets a user cancel a conflict without changing the current version', async () => {
+    nativeApi.notes.mockResolvedValue({ total: 1, offset: 0, items: [{ ...source, hasConflict: true }] })
+    nativeApi.versions.mockResolvedValue([material.upload, conflictMaterial.upload])
+    page()
+    await userEvent.click(await screen.findByText('课堂笔记').then((node) => node.closest('button')!))
+
+    await screen.findByRole('heading', { name: '发现内容冲突' })
+    await userEvent.click(screen.getByRole('button', { name: '保留当前内容' }))
+
+    expect(nativeApi.promote).not.toHaveBeenCalled()
+    expect(await screen.findByText(/还有 1 个冲突候选待处理/)).toBeTruthy()
+    expect(screen.getByRole('button', { name: '查看冲突' })).toBeTruthy()
+    await userEvent.click(screen.getByRole('button', { name: '查看冲突' }))
+    expect(await screen.findByRole('heading', { name: '发现内容冲突' })).toBeTruthy()
+  })
+
+  it('refreshes both sides and explains a stale version choice instead of pretending success', async () => {
+    nativeApi.notes.mockResolvedValue({ total: 1, offset: 0, items: [{ ...source, hasConflict: true }] })
+    nativeApi.versions.mockResolvedValue([material.upload, conflictMaterial.upload])
+    nativeApi.promote.mockRejectedValue(new ApiError('服务器当前版本已变化', 40901, 409))
+    page()
+    await userEvent.click(await screen.findByText('课堂笔记').then((node) => node.closest('button')!))
+
+    await screen.findByRole('heading', { name: '发现内容冲突' })
+    const currentCalls = nativeApi.current.mock.calls.length
+    const versionCalls = nativeApi.versions.mock.calls.length
+    await userEvent.click(screen.getByRole('button', { name: '采用这份内容' }))
+
+    expect(await screen.findByText(/服务器当前版本已变化，已重新读取当前内容和冲突候选/)).toBeTruthy()
+    await waitFor(() => expect(nativeApi.current.mock.calls.length).toBeGreaterThan(currentCalls))
+    await waitFor(() => expect(nativeApi.versions.mock.calls.length).toBeGreaterThan(versionCalls))
+    expect(screen.getByRole('heading', { name: '发现内容冲突' })).toBeTruthy()
+    expect(screen.queryByText(/已采用所选内容/)).toBeNull()
+  })
+
+  it('opens a conflict candidate for reading without silently promoting it to the current version', async () => {
+    nativeApi.notes.mockResolvedValue({ total: 1, offset: 0, items: [{ ...source, hasConflict: true }] })
+    nativeApi.versions.mockResolvedValue([material.upload, conflictMaterial.upload])
+    page()
+    await userEvent.click(await screen.findByText('课堂笔记').then((node) => node.closest('button')!))
     await userEvent.click(await screen.findByRole('button', { name: /查看版本 .*冲突候选/ }))
 
     await waitFor(() => expect(nativeApi.version).toHaveBeenCalledWith(conflictVersionId, expect.any(AbortSignal)))
     expect((await screen.findByLabelText('笔记标题') as HTMLInputElement).value).toBe('冲突候选笔记')
     expect(screen.getByText(/这是一份历史版本，仅供查看/)).toBeTruthy()
+    expect((screen.getByLabelText('笔记标题') as HTMLInputElement).disabled).toBe(true)
+    expect((screen.getByLabelText('确认保存到当前服务器') as HTMLInputElement).disabled).toBe(true)
     expect(screen.getByRole('button', { name: '明确设为当前版本' })).toBeTruthy()
     expect(nativeApi.promote).not.toHaveBeenCalled()
+  })
+
+  it('shows version history read errors without hiding the editable current version', async () => {
+    nativeApi.versions.mockRejectedValue(new ApiError('当前账号无权读取此笔记', 40301, 403))
+    page()
+    await userEvent.click(await screen.findByText('课堂笔记').then((node) => node.closest('button')!))
+
+    expect(await screen.findByText('版本历史读取失败')).toBeTruthy()
+    expect(screen.getByText(/当前账号无权读取此笔记/)).toBeTruthy()
+    expect(screen.getByRole('heading', { name: '继续写这篇笔记' })).toBeTruthy()
+    expect((screen.getByLabelText('笔记标题') as HTMLInputElement).disabled).toBe(false)
+  })
+
+  it('shows an explicit empty version history instead of a blank panel', async () => {
+    nativeApi.versions.mockResolvedValue([])
+    page()
+    await userEvent.click(await screen.findByText('课堂笔记').then((node) => node.closest('button')!))
+
+    expect(await screen.findByText('还没有历史版本。')).toBeTruthy()
+    expect(screen.getByText('0 个版本 · 0 个冲突候选')).toBeTruthy()
   })
 
   it('publishes a new noteId through Begin, binary parts, and complete without generated-contract changes', async () => {

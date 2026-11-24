@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Camera, Download, ImagePlus, PenLine, Plus, RotateCcw, Save, Trash2 } from 'lucide-react'
 import { Button, Card, InlineAlert, Input, Label, PageHeader, Skeleton, StatusBadge, Textarea } from '@/components/ui'
+import { ApiError } from '@/api/client'
 import {
   buildMaterialBundle,
   createMaterialId,
@@ -34,6 +35,7 @@ export interface NoteEditorPaneProps {
   seed?: NoteEditorSeed
   onDirtyChange?: (dirty: boolean) => void
   onSaved: (upload: NoteMaterialUpload) => void
+  onStaleCurrent?: () => void
 }
 
 interface LoadedEditorProps {
@@ -53,6 +55,7 @@ interface LoadedEditorProps {
   api: NativeNotesClient
   onDirtyChange?: (dirty: boolean) => void
   onSaved: (upload: NoteMaterialUpload) => void
+  onStaleCurrent?: () => void
 }
 
 export function NoteEditorPane({
@@ -63,6 +66,7 @@ export function NoteEditorPane({
   seed,
   onDirtyChange,
   onSaved,
+  onStaleCurrent,
 }: NoteEditorPaneProps) {
   const material = useQuery({
     queryKey: ['native-note-material', ownerId, serverBinding, versionId],
@@ -102,6 +106,7 @@ export function NoteEditorPane({
       api={api}
       onDirtyChange={onDirtyChange}
       onSaved={onSaved}
+      onStaleCurrent={onStaleCurrent}
     />
   }
 
@@ -133,6 +138,7 @@ export function NoteEditorPane({
     api={api}
     onDirtyChange={onDirtyChange}
     onSaved={onSaved}
+    onStaleCurrent={onStaleCurrent}
   />
 }
 
@@ -163,6 +169,7 @@ function LoadedEditor({
   api,
   onDirtyChange,
   onSaved,
+  onStaleCurrent,
 }: LoadedEditorProps) {
   const [title, setTitle] = useState(initialTitle)
   const [blocks, setBlocks] = useState<MaterialDraftBlock[]>(initialBlocks)
@@ -407,7 +414,12 @@ function LoadedEditor({
       onSaved(upload)
     } catch (failure) {
       if (!isUploadSessionActive(session)) return
-      setError(`${errorText(failure)}。当前选用版本没有改变。`)
+      if (failure instanceof ApiError && failure.status === 409) {
+        setError('另一端已更新当前版本，页面正在刷新版本历史。当前选用版本没有改变，请重新查看后再选择。')
+        onStaleCurrent?.()
+      } else {
+        setError(`${errorText(failure)}。当前选用版本没有改变。`)
+      }
     } finally {
       if (isUploadSessionActive(session)) setPromoting(false)
     }
@@ -479,6 +491,26 @@ function LoadedEditor({
     <div className="space-y-4 p-5">
       {legacyNotice && <InlineAlert tone="warn" title="旧闪念兼容副本">{legacyNotice}</InlineAlert>}
       {lockedReason && <InlineAlert tone={!isCurrent ? 'warn' : 'info'}>{lockedReason}</InlineAlert>}
+      <section className="rounded-ctl border border-border bg-surface p-3" aria-labelledby="note-save-identity">
+        <div className="flex flex-wrap items-center gap-2">
+          <h2 id="note-save-identity" className="text-xs font-semibold text-text-1">本次保存回执</h2>
+          <StatusBadge tone={isCurrent ? 'ok' : 'warn'} dot={false}>{isCurrent ? '可编辑' : '只读历史版本'}</StatusBadge>
+          <StatusBadge className="ml-auto" tone="neutral" dot={false}>修订 {revision}</StatusBadge>
+        </div>
+        <dl className="mt-2 grid gap-x-4 gap-y-1 text-[11px] leading-5 sm:grid-cols-[8rem_minmax(0,1fr)]">
+          <dt className="text-text-4">笔记 ID</dt>
+          <dd className="mono break-all text-text-2">{noteId}</dd>
+          <dt className="text-text-4">当前载入版本 ID</dt>
+          <dd className="mono break-all text-text-2">{baseVersionId ?? '尚未保存'}</dd>
+          <dt className="text-text-4">本次保存编号</dt>
+          <dd className="mono break-all text-text-2">{versionId}</dd>
+          <dt className="text-text-4">本次保存来源版本</dt>
+          <dd className="mono break-all text-text-2">{baseVersionId ?? '新建笔记'}</dd>
+        </dl>
+        <p className="mt-2 text-[11px] leading-5 text-text-3">
+          保存编号在提交后由服务器固定为版本 ID；历史版本只读，不能覆盖当前版本。
+        </p>
+      </section>
       <div>
         <Label htmlFor="native-note-title">笔记标题</Label>
         <Input id="native-note-title" aria-label="笔记标题" className="mt-1" maxLength={500} value={title}
@@ -604,12 +636,7 @@ function LoadedEditor({
           {frozen && <Button size="sm" variant="ghost" disabled={busy} onClick={createBlankVersion}><RotateCcw className="size-4" aria-hidden />重新开始保存</Button>}
         </div>
         {baseVersionId && <p className="mt-2">原始材料包下载上限为 128 MiB。</p>}
-        <div className="mt-3 space-y-1 rounded-ctl bg-surface p-3 font-mono">
-          <p className="break-all">笔记 ID：{noteId}</p>
-          <p className="break-all">本次保存编号：{versionId}</p>
-          <p className="break-all">来源版本：{baseVersionId ?? '新建笔记'}</p>
-          <p>正文、照片、手写和已有录音材料保持在同一顺序。</p>
-        </div>
+        <p className="mt-2">正文、照片、手写和已有录音材料保持在同一顺序。</p>
       </details>
     </div>
   </Card>

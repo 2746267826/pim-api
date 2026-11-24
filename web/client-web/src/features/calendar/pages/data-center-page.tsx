@@ -30,6 +30,7 @@ export function DataCenterPage() {
   const [search, setSearch] = useState('')
   const [objectType, setObjectType] = useState('')
   const [page, setPage] = useState(1)
+  const [actionError, setActionError] = useState('')
   const [detail, setDetail] = useState<{ item: DataCenterItem } | null>(null)
   const [auditVersions, setAuditVersions] = useState<AuditVersionItem[] | null>(null)
   const [showAllVersions, setShowAllVersions] = useState(false)
@@ -37,12 +38,17 @@ export function DataCenterPage() {
   const [previewLoading, setPreviewLoading] = useState(false)
 
   const params = useMemo(() => ({ search: search || undefined, objectType: objectType || undefined, pendingOnly: false, page, pageSize: 50 }), [search, objectType, page])
-  const { data, isLoading, isFetching } = useDataCenterQuery(params)
+  const { data, isLoading, isFetching, isError, error, refetch } = useDataCenterQuery(params)
 
   async function exportAudit() {
-    const res = await dataCenterApi.auditExport()
-    downloadJson(res.fileName, res.content)
-    notifySuccess('审计导出已下载')
+    setActionError('')
+    try {
+      const res = await dataCenterApi.auditExport()
+      downloadJson(res.fileName, res.content)
+      notifySuccess('审计导出已下载')
+    } catch (failure) {
+      setActionError(`审计导出失败：${errorText(failure)}`)
+    }
   }
 
   /* 详情抽屉打开时拉取该对象的审计版本（应用内写路径才会产生；空=未经应用内修改） */
@@ -88,6 +94,8 @@ export function DataCenterPage() {
         }
       />
 
+      {actionError && <InlineAlert className="mb-3" tone="crit" title="操作未完成">{actionError}</InlineAlert>}
+
       {/* 筛选栏 */}
       <div className="mb-3 flex flex-wrap items-center gap-2">
         <Input className="w-56" placeholder="搜索标题/描述/位置…" value={search} onChange={(e) => { setSearch(e.target.value); setPage(1) }} />
@@ -104,6 +112,16 @@ export function DataCenterPage() {
       <Card className="overflow-x-auto">
         {isLoading ? (
           <div className="space-y-2 p-4">{Array.from({ length: 6 }, (_, i) => <Skeleton key={i} className="h-10" />)}</div>
+        ) : isError ? (
+          <div className="p-4">
+            <InlineAlert tone="crit" title="数据中心读取失败">
+              <p>{errorText(error)}</p>
+              <p className="mt-1 text-xs">可以重试；如果当前账号没有读取权限，请联系管理员核对。</p>
+              <Button className="mt-2" variant="secondary" size="sm" loading={isFetching} onClick={() => void refetch()}>
+                重新读取
+              </Button>
+            </InlineAlert>
+          </div>
         ) : (data?.items?.length ?? 0) === 0 ? (
           <EmptyState title="没有符合条件的对象" />
         ) : (
@@ -260,4 +278,8 @@ function DetailRow({ label, value, mono }: { label: string; value: string; mono?
       <span className={cn('min-w-0 break-all text-text-1', mono && 'mono')}>{value}</span>
     </div>
   )
+}
+
+function errorText(error: unknown) {
+  return error instanceof Error ? error.message : '请求失败，请重试'
 }
