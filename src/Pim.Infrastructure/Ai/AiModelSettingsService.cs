@@ -84,13 +84,16 @@ public sealed class AiModelSettingsService(PimDbContext db, ISecretProtector sec
             throw Invalid("API地址不能夹带密钥，请将凭据仅填写在API Key字段");
         if (await db.AiModelProfiles.AnyAsync(x => x.NormalizedName == normalized && x.Id != row.Id, ct))
             throw new DomainException(40901, "已有同名模型配置");
+        AiProviderConnectionEntity? dedicatedConnection = null;
         row.Name = name; row.NormalizedName = normalized; row.BaseUrl = endpoint; row.Model = model;
         row.Enabled = request.Enabled; row.Capabilities = capabilities; row.TimeoutSeconds = request.TimeoutSeconds;
         if (request.ProviderConnectionId is { } connectionId)
             row.ProviderConnectionId = connectionId;
         else if (id is null && row.ProviderConnectionId is null && usageLimits is not null)
-            row.ProviderConnectionId = (await usageLimits.CreateDedicatedConnectionForModelAsync(
-                name, row.Id, ct)).Id;
+        {
+            dedicatedConnection = await usageLimits.CreateDedicatedConnectionForModelAsync(name, row.Id, ct);
+            row.ProviderConnectionId = dedicatedConnection.Id;
+        }
         row.AsrPresetId = presetId;
         row.AsrBatchBaseUrl = batchBaseUrl;
         if (request.AsrPrompt is not null)
@@ -98,8 +101,16 @@ public sealed class AiModelSettingsService(PimDbContext db, ISecretProtector sec
         row.MaxOutputTokens = request.MaxOutputTokens; row.Revision = Guid.NewGuid(); row.UpdatedAt = DateTimeOffset.UtcNow;
         if (key is not null) row.ApiKeySecret = secrets.Protect(key);
         try { await db.SaveChangesAsync(ct); }
-        catch (DbUpdateConcurrencyException) { throw Conflict(); }
-        catch (DbUpdateException error) when (IsConflict(error)) { throw Conflict(); }
+        catch (DbUpdateConcurrencyException)
+        {
+            DetachAfterFailedSave(row, dedicatedConnection);
+            throw Conflict();
+        }
+        catch (DbUpdateException error) when (IsConflict(error))
+        {
+            DetachAfterFailedSave(row, dedicatedConnection);
+            throw Conflict();
+        }
         return Map(row);
     }
 
@@ -172,6 +183,17 @@ public sealed class AiModelSettingsService(PimDbContext db, ISecretProtector sec
     private static AiModelSettingsDto Map(AiModelRuntimeEntity row) => new(row.Revision, row.Enabled,
         row.TextModelId, row.VisionModelId, row.TranscriptionModelId);
     private static DomainException Invalid(string message) => new(40001, message);
+    private void DetachAfterFailedSave(AiModelProfileEntity row, AiProviderConnectionEntity? dedicatedConnection)
+    {
+        db.Entry(row).State = EntityState.Detached;
+        if (dedicatedConnection is null) return;
+        foreach (var entry in db.ChangeTracker.Entries<AiUsageLimitRuleEntity>()
+                     .Where(x => x.State == EntityState.Added &&
+                                 x.Entity.ConnectionId == dedicatedConnection.Id).ToArray())
+            entry.State = EntityState.Detached;
+        db.Entry(dedicatedConnection).State = EntityState.Detached;
+    }
+
     private static bool IsConflict(DbUpdateException error) => error.InnerException is PostgresException
         { SqlState: PostgresErrorCodes.UniqueViolation or PostgresErrorCodes.ForeignKeyViolation };
     private static DomainException Conflict() => new(40901, "配置已被修改、名称重复或仍被引用，请刷新核对后再保存");

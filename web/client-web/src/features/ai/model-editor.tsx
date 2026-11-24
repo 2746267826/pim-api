@@ -2,13 +2,20 @@ import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Button, Dialog, DialogBody, DialogContent, DialogFooter, DialogHeader, Input, Label, Select } from '@/components/ui'
 import { notifyError } from '@/lib/notify'
-import { aiApi, type AsrPreset, type Capability, type Model, type SaveModel } from './api'
+import { aiApi, type AiProviderConnection, type AsrPreset, type Capability, type Model, type SaveModel } from './api'
 import { asrAudioLimitLabel, asrModelOptionLabel, isMimoPro } from './asr-model-guidance'
 
 export const capabilityNames: Record<Capability, string> = { Text: '文本', Vision: '视觉', Transcription: '语音转写' }
 export const capabilities: Capability[] = ['Text', 'Vision', 'Transcription']
 
-export function ModelEditor({ model, save, close, initialAsr = false }: { model: Model | null; save: (body: SaveModel) => Promise<unknown>; close: () => void; initialAsr?: boolean }) {
+export function ModelEditor({ model, save, close, initialAsr = false, connections, connectionsLoading = false }: {
+  model: Model | null
+  save: (body: SaveModel) => Promise<unknown>
+  close: () => void
+  initialAsr?: boolean
+  connections?: AiProviderConnection[]
+  connectionsLoading?: boolean
+}) {
   const [name, setName] = useState(model?.name ?? '')
   const [baseUrl, setBaseUrl] = useState(model?.baseUrl ?? '')
   const [modelId, setModelId] = useState(model?.model ?? '')
@@ -18,6 +25,7 @@ export function ModelEditor({ model, save, close, initialAsr = false }: { model:
   const [presetId, setPresetId] = useState(model?.asrPresetId ?? '')
   const [batchBaseUrl, setBatchBaseUrl] = useState(model?.asrBatchBaseUrl ?? '')
   const [prompt, setPrompt] = useState(model?.asrPrompt ?? '')
+  const [providerConnectionId, setProviderConnectionId] = useState(model?.providerConnectionId ?? '')
   const [timeout, setTimeoutValue] = useState(model?.timeoutSeconds ?? 60)
   const [tokens, setTokens] = useState(model?.maxOutputTokens ?? 1024)
   const [saving, setSaving] = useState(false)
@@ -51,6 +59,7 @@ export function ModelEditor({ model, save, close, initialAsr = false }: { model:
         setSaving(true)
         void save({ name, baseUrl, model: modelId, enabled, capabilities: caps, timeoutSeconds: timeout, maxOutputTokens: tokens,
           apiKey: key || null, expectedRevision: model?.revision ?? null,
+          providerConnectionId: providerConnectionId || null,
           ...(asr ? { asrPresetId: presetId } : {}),
           ...(multimodal ? { asrBatchBaseUrl: batchBaseUrl.trim() || null, asrPrompt: editedPrompt } : {}) })
           .then(() => { setKey(''); close() })
@@ -72,6 +81,14 @@ export function ModelEditor({ model, save, close, initialAsr = false }: { model:
           <div><Label htmlFor="ai-model-identifier">模型标识</Label>{asr && preset && preset.models.length > 1 ? <Select id="ai-model-identifier" ariaLabel="模型标识" value={modelId} options={preset.models.map((value) => ({ value, label: asrModelOptionLabel(value) }))} onValueChange={setModelId} />
             : <Input id="ai-model-identifier" required maxLength={128} value={modelId} readOnly={asr} onChange={(e) => setModelId(e.target.value)} placeholder="服务商提供的模型 ID" />}
             {asr && isMimoPro(modelId) && <p role="alert" className="mt-1 text-xs leading-5 text-warn">MiMo Pro 不推荐用于长音频；课堂录音等长材料请优先使用推荐的长音频模型 Flash。</p>}</div>
+          {connections && <div><Label htmlFor="ai-model-connection">AI服务连接</Label>
+            <Select id="ai-model-connection" ariaLabel="AI服务连接" value={providerConnectionId}
+              disabled={saving || connectionsLoading}
+              options={[{ value: '', label: model ? '保留当前连接' : '自动创建独立连接' },
+                ...connections.map((connection) => ({ value: connection.id, label: `${connection.name} · ${connection.modelCount} 个模型` }))]}
+              onValueChange={setProviderConnectionId} />
+            <p className="mt-1 text-xs text-text-3">{connectionsLoading ? '正在读取连接配置…' : connections.length ? '同一连接下的文字、视觉和 ASR 调用共享用量限制。' : '暂无共享连接，留空会为新模型自动创建独立连接；也可先在统计页新建连接。'}</p>
+          </div>}
           <div><Label htmlFor="ai-model-key">API Key{model?.hasApiKey ? '（已保存）' : ''}</Label><Input id="ai-model-key" required={keyRequired} type="password" autoComplete="new-password" maxLength={4096} value={key} onChange={(e) => setKey(e.target.value)} />
             <p className="mt-1 text-xs text-text-3">{endpointChanged ? 'API 地址已变化，必须重新输入 API Key；不会沿用旧地址的凭据。' : '保存后不再回显；地址不变时编辑可留空保留原凭据。无鉴权的本地服务可填写非空占位值。'}</p></div>
           {multimodal && <div className="space-y-2 rounded-ctl border border-border p-3">

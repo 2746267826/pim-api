@@ -27,7 +27,10 @@ public sealed class AiSdkTextCallTests : IDisposable
     private readonly Wire _wire = new();
     private readonly AiTextCallGate _gate = new();
     private AiModelSettingsService Settings => new(_db, _secrets);
+    private AiUsageLimitService UsageLimits => new(_db, _owner);
     private AiTextCallService Caller => new(_db, _secrets, new AiProfileChatClientFactory(_wire), _owner, _gate);
+    private AiTextCallService LimitedCaller => new(_db, _secrets, new AiProfileChatClientFactory(_wire),
+        _owner, _gate, usageLimits: UsageLimits);
 
     public AiSdkTextCallTests() => _db = new(_options);
     private async Task<AiModelDto> Model(int timeout = 60, AiModelCapability[]? capabilities = null) =>
@@ -117,6 +120,28 @@ public sealed class AiSdkTextCallTests : IDisposable
         var conflict = await Assert.ThrowsAsync<DomainException>(() => Caller.CallAsync(request with { Prompt = "另一份输入" }, default));
         Assert.Equal(40901, conflict.ErrorCode); Assert.Equal(1, _wire.Calls);
         Assert.Equal(result.LogId, (await Caller.GetAsync(request.ClientRequestId, default)).LogId);
+    }
+
+    [Fact]
+    public async Task UsageLimitAllowsTextProviderAfterItsPersistedPlaceholder()
+    {
+        var settings = new AiModelSettingsService(_db, _secrets, usageLimits: UsageLimits);
+        var model = await settings.SaveAsync(null, new("限额文字模型", "https://fixture.invalid/v1",
+            "fixture-model", true, [AiModelCapability.Text], 60, 123, Key), default);
+        var profile = await _db.AiModelProfiles.AsNoTracking().SingleAsync(x => x.Id == model.Id);
+        var limit = await UsageLimits.GetRuleAsync(profile.ProviderConnectionId!.Value, default);
+        await UsageLimits.SaveRuleAsync(profile.ProviderConnectionId.Value,
+            new(limit.Revision, true, AiUsageLimitPeriods.Month, 80, 100, null, null,
+                "Asia/Shanghai"), default);
+        var current = await settings.GetSettingsAsync(default);
+        await settings.SaveSettingsAsync(new(current.Revision, true, model.Id, null, null), default);
+
+        var result = await LimitedCaller.CallAsync(Request(model: model.Id), default);
+
+        Assert.Equal(AiRequestStatus.Succeeded, result.Status);
+        Assert.Equal(1, _wire.Calls);
+        Assert.Equal(model.Id, (await _db.AiRequestLogs.AsNoTracking()
+            .SingleAsync(x => x.Id == result.LogId)).ModelProfileId);
     }
 
     [Fact]

@@ -29,6 +29,45 @@ public sealed class AiAsrUrlSourceTests
     private const long Mib = 1024L * 1024L;
 
     [Fact]
+    public async Task UsageLimitAllowsUrlAsrProviderAfterItsPersistedPlaceholder()
+    {
+        var handler = new CountingHandler((_, _) => Task.FromResult(JsonResponse(new
+        {
+            choices = new[]
+            {
+                new { message = new { content = "synthetic transcript" }, finish_reason = "stop" }
+            },
+            usage = new
+            {
+                prompt_tokens = 10,
+                completion_tokens = 4,
+                total_tokens = 14,
+                prompt_tokens_details = new { audio_tokens = 5 }
+            }
+        })));
+        var fixture = await FixtureAsync("https://api.synthetic.invalid/v1/");
+        var (preset, registry) = Registry(() => new HttpClient(handler)
+        {
+            Timeout = Timeout.InfiniteTimeSpan
+        });
+        var sourceUrl = "https://audio.example.test/private/limited.wav?sig=UL";
+        var fetcher = new StaticFetcher(Download(sourceUrl, BuildWave(8_000)));
+        var limits = await EnableUsageLimitAsync(fixture);
+        var result = await Service(fixture, registry, fetcher, limits)
+            .CallUrlAsync(Request(fixture, preset.Descriptor), CancellationToken.None);
+
+        var resultRow = await fixture.Db.AiRequestLogs.AsNoTracking().SingleAsync();
+        Assert.True(result.Status == AiRequestStatus.Succeeded,
+            $"URL ASR status={result.Status}, error={result.ErrorMessage}, code={resultRow.ErrorCode}, " +
+            $"response={resultRow.ResponseRawJson}, metadata={resultRow.MetadataJson}");
+        Assert.Equal(1, handler.Calls);
+        Assert.Equal(1, fetcher.Calls);
+        var row = await fixture.Db.AiRequestLogs.AsNoTracking().SingleAsync();
+        Assert.Equal("ai.asr-url-call", row.Purpose);
+        Assert.Equal(14, row.TotalTokens);
+    }
+
+    [Fact]
     public async Task Url_mode_sends_the_original_url_to_a_real_local_provider_and_persists_preflight_only()
     {
         var calls = 0;
@@ -702,9 +741,22 @@ public sealed class AiAsrUrlSourceTests
     }
 
     private static AiAsrCallService Service(Fixture fixture, AiAsrPresetRegistry registry,
-        IRemoteAudioFetcher fetcher) =>
+        IRemoteAudioFetcher fetcher, AiUsageLimitService? usageLimits = null) =>
         new(fixture.Db, fixture.Secrets, fixture.Owner, new AiTextCallGate(), registry,
-            new AiAsrMaterialService(fixture.Db, fixture.Files, fixture.Owner, registry), fetcher);
+            new AiAsrMaterialService(fixture.Db, fixture.Files, fixture.Owner, registry), fetcher, usageLimits);
+
+    private static async Task<AiUsageLimitService> EnableUsageLimitAsync(Fixture fixture)
+    {
+        var limits = new AiUsageLimitService(fixture.Db, fixture.Owner);
+        var connection = await limits.CreateConnectionAsync("URL ASR限额连接", default);
+        fixture.Profile.ProviderConnectionId = connection.Id;
+        await fixture.Db.SaveChangesAsync();
+        var rule = await limits.GetRuleAsync(connection.Id, default);
+        await limits.SaveRuleAsync(connection.Id,
+            new(rule.Revision, true, AiUsageLimitPeriods.Month, 80, 100, null, null,
+                "Asia/Shanghai"), default);
+        return limits;
+    }
 
     private static AiAsrUrlCallRequest Request(Fixture fixture, AiAsrPresetDto preset) =>
         new(Guid.NewGuid(), fixture.Owner.UserId!.Value,

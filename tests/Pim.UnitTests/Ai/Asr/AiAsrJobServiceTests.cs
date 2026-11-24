@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.Json;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
@@ -164,6 +165,35 @@ public sealed class AiAsrJobServiceTests
         Assert.Equal("provider_timeout", timeoutStatus.Diagnostics.AbortSource);
         Assert.Equal(504, timeoutStatus.Diagnostics.UpstreamStatus);
         Assert.False(timeoutStatus.Diagnostics.OutcomeKnown);
+    }
+
+    [Fact]
+    public async Task UsageLimitAllowsAsyncAsrWorkerAfterItsPersistedQueuePlaceholder()
+    {
+        await using var fixture = await InMemoryFixture.CreateAsync();
+        var limits = new AiUsageLimitService(fixture.Db, fixture.Owner);
+        var connection = await limits.CreateConnectionAsync("异步ASR限额连接", default);
+        fixture.Profile.ProviderConnectionId = connection.Id;
+        await fixture.Db.SaveChangesAsync();
+        var rule = await limits.GetRuleAsync(connection.Id, default);
+        await limits.SaveRuleAsync(connection.Id,
+            new(rule.Revision, true, AiUsageLimitPeriods.Month, 80, 100, null, null,
+                "Asia/Shanghai"), default);
+
+        var preset = new ScriptedPreset();
+        var service = fixture.Service(fixture.Owner, preset, limits);
+        var accepted = await service.SubmitAsync(fixture.Request(), CancellationToken.None);
+        var queuedLog = await fixture.Db.AiRequestLogs.AsNoTracking()
+            .SingleAsync(x => x.Id == accepted.LogId);
+        using (var metadata = JsonDocument.Parse(queuedLog.MetadataJson))
+            Assert.False(metadata.RootElement.GetProperty("providerAttempted").GetBoolean());
+
+        await service.ProcessAsync(fixture.Owner.UserId!.Value, accepted.ClientRequestId,
+            CancellationToken.None);
+
+        var result = await service.GetAsync(accepted.ClientRequestId, CancellationToken.None);
+        Assert.Equal(AiAsrJobStatus.Succeeded, result.Status);
+        Assert.Equal(1, preset.Calls);
     }
 
     [Fact]
@@ -674,10 +704,10 @@ public sealed class AiAsrJobServiceTests
 
     private static AiAsrJobService Service(PimDbContext db, Owner owner, IFileAttachmentStore files,
         ISecretProtector secrets, AiAsrPresetRegistry registry, IAsrJobDispatcher dispatcher,
-        IServiceScopeFactory scopes) =>
+        IServiceScopeFactory scopes, AiUsageLimitService? usageLimits = null) =>
         new(db, secrets, owner, new AiTextCallGate(), registry,
             new AiAsrMaterialService(db, files, owner, registry), dispatcher, scopes,
-            NullLogger<AiAsrJobService>.Instance);
+            NullLogger<AiAsrJobService>.Instance, usageLimits);
 
     private static ServiceProvider BuildPostgresScopes(string connectionString)
     {
@@ -827,10 +857,11 @@ public sealed class AiAsrJobServiceTests
                 source._options));
         }
 
-        public AiAsrJobService Service(Owner owner, ScriptedPreset? preset = null) =>
+        public AiAsrJobService Service(Owner owner, ScriptedPreset? preset = null,
+            AiUsageLimitService? usageLimits = null) =>
             AiAsrJobServiceTests.Service(Db, owner, Files, Secrets,
                 new AiAsrPresetRegistry([preset ?? new ScriptedPreset()]), Dispatcher,
-                _scopes.GetRequiredService<IServiceScopeFactory>());
+                _scopes.GetRequiredService<IServiceScopeFactory>(), usageLimits);
 
         public AiAsrCallRequest Request(Owner? owner = null, byte[]? bytes = null) =>
             AiAsrJobServiceTests.Request(owner ?? Owner, Profile, bytes);

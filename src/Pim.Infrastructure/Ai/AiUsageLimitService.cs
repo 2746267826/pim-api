@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Data.Common;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
@@ -242,7 +243,7 @@ public sealed class AiUsageLimitService(
                     return AiUsageLimitDecision.Allow();
 
                 var scope = ResolvePeriod(rule.Period, null, now, rule.TimeZoneId);
-                var usage = await ComputeUsageAsync(lockDb, id, "", rule, scope, ct);
+                var usage = await ComputeUsageAsync(lockDb, id, "", rule, scope, key, ct);
                 if (rule.TokenLimit is { } tokenLimit && usage.TotalTokens >= tokenLimit)
                     return AiUsageLimitDecision.Deny("usage_limit_reached",
                         "本周期已记录的Token用量已达到该连接上限，未发送模型请求");
@@ -277,6 +278,11 @@ public sealed class AiUsageLimitService(
             return AiUsageLimitDecision.Deny("usage_limit_busy",
                 "该连接已有进行中的AI请求；为避免并发请求共同突破用量上限，本次未发送");
         }
+        catch (Exception error) when (error is DbUpdateException or DbException or TimeoutException)
+        {
+            return AiUsageLimitDecision.Deny("usage_limit_unavailable",
+                "AI用量限制暂时无法核对；为避免超出上限，本次未发送模型请求");
+        }
     }
 
     public async Task EndAsync(AiUsageLimitLease? lease, CancellationToken ct = default)
@@ -308,7 +314,7 @@ public sealed class AiUsageLimitService(
                 .SingleOrDefaultAsync(x => x.ConnectionId == connectionId, ct);
             if (rule is null || !rule.Enabled) return true;
             var scope = ResolvePeriod(rule.Period, null, now, rule.TimeZoneId);
-            var usage = await ComputeUsageAsync(lockDb, connectionId, "", rule, scope, ct);
+            var usage = await ComputeUsageAsync(lockDb, connectionId, "", rule, scope, null, ct);
             var tokenLevel = Level(usage.TotalTokens, rule.TokenLimit, rule.WarningPercent);
             var costLevel = Level(usage.EstimatedCost, rule.CostLimit, rule.WarningPercent);
             var highest = Highest(tokenLevel, costLevel);
@@ -376,29 +382,32 @@ public sealed class AiUsageLimitService(
 
     private async Task<AiUsageLimitUsageDto> ComputeUsageAsync(Guid connectionId, string connectionName,
         AiUsageLimitRuleEntity rule, PeriodScope scope, CancellationToken ct)
-        => await ComputeUsageAsync(db, connectionId, connectionName, rule, scope, ct);
+        => await ComputeUsageAsync(db, connectionId, connectionName, rule, scope, null, ct);
 
     private static async Task<AiUsageLimitUsageDto> ComputeUsageAsync(PimDbContext usageDb, Guid connectionId,
-        string connectionName, AiUsageLimitRuleEntity rule, PeriodScope scope, CancellationToken ct)
+        string connectionName, AiUsageLimitRuleEntity rule, PeriodScope scope, string? excludedRequestKey,
+        CancellationToken ct)
     {
         var rows = await usageDb.AiRequestLogs.AsNoTracking()
             .Where(x => x.ProviderConnectionId == connectionId && x.Status != "blocked" &&
+                        (excludedRequestKey == null || x.CorrelationId != excludedRequestKey) &&
                         (x.InitiatedAt ?? x.StartedAt) >= scope.StartsAt &&
                         (x.InitiatedAt ?? x.StartedAt) < scope.EndsAt)
-            .Select(x => new UsageRow(x.Status, x.TotalTokens, x.EstimatedCost, x.Currency))
+            .Select(x => new UsageRow(x.Status, x.TotalTokens, x.EstimatedCost, x.Currency, x.MetadataJson))
             .ToListAsync(ct);
 
-        var tokenKnown = rows.Where(x => x.TotalTokens is not null).ToList();
+        var providerRows = rows.Where(x => ProviderAttempted(x.MetadataJson) != false).ToList();
+        var tokenKnown = providerRows.Where(x => x.TotalTokens is not null).ToList();
         var totalTokens = tokenKnown.Count == 0 ? null : (long?)tokenKnown.Sum(x => (long)x.TotalTokens!);
         var costKnown = rule.Currency is null
             ? new List<UsageRow>()
-            : rows.Where(x => x.EstimatedCost is not null &&
+            : providerRows.Where(x => x.EstimatedCost is not null &&
                               string.Equals(x.Currency, rule.Currency, StringComparison.OrdinalIgnoreCase)).ToList();
         var costUsed = costKnown.Count == 0 ? null : (decimal?)costKnown.Sum(x => x.EstimatedCost!.Value);
         var running = rows.Count(x => x.Status is "running" or "preparing" or "queued" or "cancelling");
         var incomplete = rows.Count(x => x.Status is "incomplete" or "timed_out" or "cancelled");
-        var tokenUnknown = rows.Count - tokenKnown.Count;
-        var costUnknown = rows.Count - costKnown.Count;
+        var tokenUnknown = providerRows.Count - tokenKnown.Count;
+        var costUnknown = providerRows.Count - costKnown.Count;
         var tokenStatus = rule.TokenLimit is not null && tokenUnknown > 0
             ? AiUsageLimitStatuses.Unknown
             : Status(totalTokens, rule.TokenLimit, rule.WarningPercent);
@@ -409,7 +418,7 @@ public sealed class AiUsageLimitService(
         if (tokenUnknown > 0) notes.Add("部分请求未上报Token，累计仅包含已上报值");
         if (costUnknown > 0) notes.Add("部分请求未提供所选币种的EstimatedCost，累计仅包含已知金额");
         if (running > 0) notes.Add("进行中或排队请求的用量尚待确认");
-        if (rule.Currency is not null && rows.Count > costKnown.Count)
+        if (rule.Currency is not null && providerRows.Count > costKnown.Count)
             notes.Add("其他币种或缺失币种费用不计入" + rule.Currency);
         notes.Add("费用只使用调用记录中的EstimatedCost，不做模型费率估算");
 
@@ -659,6 +668,26 @@ public sealed class AiUsageLimitService(
     private static AiUsageLimitSnapshotDto EmptySnapshot() =>
         new(null, null, null, null, null, 0, 0, 0, default, default);
 
+    private static bool? ProviderAttempted(string? metadata)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(metadata ?? "{}");
+            if (!document.RootElement.TryGetProperty("providerAttempted", out var value))
+                return null;
+            return value.ValueKind switch
+            {
+                JsonValueKind.True => true,
+                JsonValueKind.False => false,
+                _ => null
+            };
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
     private static AiUsageLimitRuleEntity DefaultRule(Guid connectionId) => new()
     {
         ConnectionId = connectionId, Revision = Guid.Empty, Enabled = false,
@@ -686,5 +715,6 @@ public sealed class AiUsageLimitService(
     private static DomainException Stale() => new(40901, "用量设置已被修改，请刷新核对后再保存");
 
     private sealed record PeriodScope(string Period, string CycleKey, DateTimeOffset StartsAt, DateTimeOffset EndsAt);
-    private sealed record UsageRow(string Status, int? TotalTokens, decimal? EstimatedCost, string? Currency);
+    private sealed record UsageRow(string Status, int? TotalTokens, decimal? EstimatedCost, string? Currency,
+        string MetadataJson);
 }

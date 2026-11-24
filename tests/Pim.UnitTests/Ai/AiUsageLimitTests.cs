@@ -101,6 +101,86 @@ public sealed class AiUsageLimitTests
     }
 
     [Fact]
+    public async Task TryBegin_ExcludesItsOwnPersistedPlaceholder_ButKeepsOtherUnknownCallsFailClosed()
+    {
+        await using var db = Db();
+        var service = Service(db, new AdminUser());
+        var connection = await service.CreateConnectionAsync("占位调用连接", default);
+        await service.SaveRuleAsync(connection.Id, new(connection.Limit.Revision, true,
+            AiUsageLimitPeriods.Month, 80, 100, 10m, "CNY", "Asia/Shanghai"), default);
+
+        const string currentRequestKey = "current-placeholder";
+        db.AiRequestLogs.Add(new AiRequestLogEntity
+        {
+            Id = Guid.NewGuid(),
+            Module = "system",
+            Purpose = "ai.text-call",
+            SourceObjectType = "ai-model",
+            SourceObjectId = "synthetic",
+            Provider = "openai-compatible",
+            Model = "fixture",
+            CorrelationId = currentRequestKey,
+            Status = "running",
+            StartedAt = Now,
+            InitiatedAt = Now,
+            TotalTokens = null,
+            EstimatedCost = null,
+            ProviderConnectionId = connection.Id
+        });
+        await db.SaveChangesAsync();
+
+        var allowed = await service.TryBeginAsync(connection.Id, currentRequestKey, "ai.text-call",
+            TimeSpan.FromMinutes(1), default);
+        Assert.True(allowed.Allowed);
+        Assert.NotNull(allowed.Lease);
+        await service.EndAsync(allowed.Lease, default);
+
+        var other = await service.TryBeginAsync(connection.Id, "other-request", "ai.text-call",
+            TimeSpan.FromMinutes(1), default);
+        Assert.False(other.Allowed);
+        Assert.Equal("usage_limit_unknown", other.ErrorCode);
+    }
+
+    [Fact]
+    public async Task TryBegin_IgnoresCallsThatDidNotReachProvider()
+    {
+        await using var db = Db();
+        var service = Service(db, new AdminUser());
+        var connection = await service.CreateConnectionAsync("未触达服务商连接", default);
+        await service.SaveRuleAsync(connection.Id, new(connection.Limit.Revision, true,
+            AiUsageLimitPeriods.Month, 80, 100, null, null, "Asia/Shanghai"), default);
+        db.AiRequestLogs.AddRange(
+            new AiRequestLogEntity
+            {
+                Module = "system", Purpose = "ai.asr-call", SourceObjectType = "ai-model",
+                SourceObjectId = "synthetic", Provider = "mimo", Model = "fixture",
+                CorrelationId = "failed-before-provider", Status = "failed",
+                StartedAt = Now, InitiatedAt = Now, ProviderConnectionId = connection.Id,
+                MetadataJson = """{"providerAttempted":false}"""
+            },
+            new AiRequestLogEntity
+            {
+                Module = "system", Purpose = "ai.asr-job", SourceObjectType = "ai-model",
+                SourceObjectId = "synthetic", Provider = "mimo", Model = "fixture",
+                CorrelationId = "queued-before-provider", Status = "queued",
+                StartedAt = Now, InitiatedAt = Now, ProviderConnectionId = connection.Id,
+                MetadataJson = """{"providerAttempted":false}"""
+            });
+        await db.SaveChangesAsync();
+
+        var decision = await service.TryBeginAsync(connection.Id, "new-request", "ai.text-call",
+            TimeSpan.FromMinutes(1), default);
+
+        Assert.True(decision.Allowed);
+        await service.EndAsync(decision.Lease, default);
+        var usage = await service.GetUsageAsync(connection.Id, AiUsageLimitPeriods.Month, "2026-11", default);
+        Assert.Equal(2, usage.RequestCount);
+        Assert.Equal(1, usage.RunningRequestCount);
+        Assert.Equal(0, usage.TokenUnknownRequestCount);
+        Assert.Equal(AiUsageLimitStatuses.Unknown, usage.TokenStatus);
+    }
+
+    [Fact]
     public async Task ReminderEvents_MergeMetrics_DirectReachedSkipsWarning_AndReadsArePerAccount()
     {
         await using var db = Db();
