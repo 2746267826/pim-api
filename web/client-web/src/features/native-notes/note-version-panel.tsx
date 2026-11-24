@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react'
+import { useRef, useState, type ReactNode } from 'react'
 import { AlertTriangle, Check, History, RefreshCw } from 'lucide-react'
 import { Button, Card, InlineAlert, Skeleton, StatusBadge } from '@/components/ui'
 import { formatTime } from '@/lib/datetime'
@@ -28,6 +28,7 @@ export interface NoteVersionPanelProps {
   versions: NoteMaterialUpload[]
   versionsLoading: boolean
   versionsError: unknown
+  refreshIssue: string[]
   current: NoteMaterialVersion | undefined
   currentLoading: boolean
   currentError: unknown
@@ -45,6 +46,7 @@ export function NoteVersionPanel({
   versions,
   versionsLoading,
   versionsError,
+  refreshIssue,
   current,
   currentLoading,
   currentError,
@@ -63,17 +65,21 @@ export function NoteVersionPanel({
   const [dismissedConflictKey, setDismissedConflictKey] = useState('')
   const [busyVersionId, setBusyVersionId] = useState('')
   const [notice, setNotice] = useState<{ tone: 'ok' | 'warn' | 'crit'; text: string } | null>(null)
-  const showConflict = Boolean(current) && conflictVersions.length > 0 && dismissedConflictKey !== conflictKey
+  const busyRef = useRef(false)
+  const showConflict = refreshIssue.length === 0 && Boolean(current) &&
+    conflictVersions.length > 0 && dismissedConflictKey !== conflictKey
   const currentSummary = safeVersionSummary(current)
 
   function cancelConflict() {
+    if (busyRef.current) return
     setDismissedConflictKey(conflictKey)
     setNotice(null)
     onCancelConflict()
   }
 
   async function promote(versionId: string) {
-    if (busyVersionId) return
+    if (busyRef.current) return
+    busyRef.current = true
     setBusyVersionId(versionId)
     setNotice(null)
     try {
@@ -85,9 +91,10 @@ export function NoteVersionPanel({
     } catch (failure) {
       setNotice({
         tone: 'crit',
-        text: `${errorText(failure)}。当前版本没有改变，请刷新核对后再选择。`,
+        text: `${errorText(failure)}。未确认本次操作是否成功，请刷新核对后再选择。`,
       })
     } finally {
+      busyRef.current = false
       setBusyVersionId('')
     }
   }
@@ -109,6 +116,15 @@ export function NoteVersionPanel({
       </div>
 
       {notice && <InlineAlert tone={notice.tone} title={notice.tone === 'ok' ? '版本已更新' : '需要核对'}>{notice.text}</InlineAlert>}
+
+      {refreshIssue.length > 0 && (
+        <InlineAlert tone="warn" title="冲突状态未完成刷新">
+          {refreshIssue.join('、')}未能重新读取。为避免在旧数据上继续选择，已隐藏冲突候选。
+          <Button className="mt-2" size="sm" variant="secondary" onClick={onRefresh}>
+            重新读取并核对
+          </Button>
+        </InlineAlert>
+      )}
 
       {currentLoading ? <Skeleton className="h-20" />
         : currentError ? (
@@ -146,7 +162,7 @@ export function NoteVersionPanel({
           onAdopt={promote}
           onCancel={cancelConflict}
         />
-      ) : current && conflictVersions.length > 0 ? (
+      ) : refreshIssue.length === 0 && current && conflictVersions.length > 0 ? (
         <div className="flex flex-wrap items-center gap-2 rounded-ctl border border-warn-border bg-warn-soft px-3 py-2 text-xs text-warn">
           <AlertTriangle className="size-4 shrink-0" aria-hidden />
           <span className="mr-auto">还有 {conflictVersions.length} 个冲突候选待处理；当前版本没有改变。</span>
@@ -266,36 +282,47 @@ function ConflictComparison({
           createdAt={current?.upload.createdAt ?? null}
           summary={currentSummary}
           tone="ok"
-          action={<Button size="sm" variant="secondary" onClick={onCancel}>保留当前内容</Button>}
+          action={<Button size="sm" variant="secondary" disabled={Boolean(busyVersionId)} onClick={onCancel}>保留当前内容</Button>}
         />
         <div className="space-y-2">
           {candidates.map((candidate) => {
             const state = materials[candidate.upload.versionId]
+            const summary = safeVersionSummary(state?.material)
+            const materialReady = Boolean(summary) && !state?.loading && !state?.error
             return <ConflictSide
               key={candidate.upload.versionId}
               label="另一端保存的内容"
               versionId={candidate.upload.versionId}
               createdAt={candidate.upload.createdAt}
-              summary={safeVersionSummary(state?.material)}
+              summary={summary}
               loading={state?.loading ?? false}
               error={state?.error}
               tone="warn"
-              action={<Button
-                size="sm"
-                variant="primary"
-                loading={busyVersionId === candidate.upload.versionId}
-                disabled={Boolean(busyVersionId) && busyVersionId !== candidate.upload.versionId}
-                onClick={() => onAdopt(candidate.upload.versionId)}
-              >
-                采用这份内容
-              </Button>}
+              action={<div className="text-right">
+                <Button
+                  size="sm"
+                  variant="primary"
+                  loading={busyVersionId === candidate.upload.versionId}
+                  disabled={!materialReady || (Boolean(busyVersionId) && busyVersionId !== candidate.upload.versionId)}
+                  onClick={() => onAdopt(candidate.upload.versionId)}
+                >
+                  采用这份内容
+                </Button>
+                {!materialReady && (
+                  <p className="mt-1 text-[11px] text-text-3">
+                    {state?.loading
+                      ? '候选摘要读取中，暂不能采用。'
+                      : '候选摘要未读取，暂不能采用；请刷新核对或打开版本查看。'}
+                  </p>
+                )}
+              </div>}
             />
           })}
         </div>
       </div>
       <div className="mt-3 flex flex-wrap items-center justify-end gap-2">
         <p className="mr-auto text-[11px] text-text-3">取消不会修改任何版本；另一份内容仍保留在服务器。</p>
-        <Button size="sm" variant="ghost" onClick={onCancel}>稍后处理</Button>
+        <Button size="sm" variant="ghost" disabled={Boolean(busyVersionId)} onClick={onCancel}>稍后处理</Button>
       </div>
     </section>
   )

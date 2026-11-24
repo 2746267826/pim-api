@@ -35,6 +35,7 @@ function currentBinding() {
 }
 
 const EMPTY_NOTE_VERSIONS: NoteMaterialUpload[] = []
+const EMPTY_REFRESH_ISSUE: string[] = []
 
 export function NativeNotesPage() {
   const { user } = useAuth()
@@ -62,6 +63,7 @@ function Workspace({ ownerId, serverBinding }: { ownerId: string; serverBinding:
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
   const [editorDirty, setEditorDirty] = useState(false)
+  const [refreshIssueState, setRefreshIssueState] = useState<{ noteId: string; failed: string[] }>({ noteId: '', failed: [] })
   const [returnNoteId] = useState(() => {
     const key = returnVersionStorageKey(ownerId, serverBinding)
     try {
@@ -75,6 +77,7 @@ function Workspace({ ownerId, serverBinding }: { ownerId: string; serverBinding:
   const sessionRef = useRef<WorkspaceSession | null>(null)
   const packageInputRef = useRef<HTMLInputElement>(null)
   const sessionGenerationRef = useRef(0)
+  const promoteInFlightRef = useRef(false)
   const allowInternalNavigationRef = useRef(false)
   const selectedNoteId = params.get('note') ?? ''
   const selectedVersionId = params.get('version') ?? ''
@@ -164,7 +167,7 @@ function Workspace({ ownerId, serverBinding }: { ownerId: string; serverBinding:
   const selectedVersions = useQuery({
     queryKey: ['native-notes', ownerId, serverBinding, 'versions', selectedNoteId],
     queryFn: ({ signal }) => requestApi.versions(selectedNoteId, signal),
-    enabled: Boolean(selectedNoteId) && selectedCurrent.isSuccess,
+    enabled: Boolean(selectedNoteId),
   })
   const quickNotes = useQuery({
     queryKey: ['native-notes', ownerId, serverBinding, 'legacy-quick-notes'],
@@ -204,6 +207,7 @@ function Workspace({ ownerId, serverBinding }: { ownerId: string; serverBinding:
     return result
   }, [conflictMaterialQueries, conflictVersions])
   const legacyCount = quickNotes.data?.totalCount ?? 0
+  const refreshIssue = refreshIssueState.noteId === selectedNoteId ? refreshIssueState.failed : EMPTY_REFRESH_ISSUE
 
   function confirmDiscardEditor(reason: string) {
     if (!editorDirty) return true
@@ -314,23 +318,38 @@ function Workspace({ ownerId, serverBinding }: { ownerId: string; serverBinding:
     changeInternalNavigation(() => setParams({ note: upload.noteId }))
   }
 
-  async function refreshVersionState() {
-    await Promise.all([
+  async function refreshVersionState(): Promise<string[]> {
+    const materialQueries = conflictMaterialQueries
+    const results = await Promise.allSettled([
       selectedCurrent.refetch(),
       selectedVersions.refetch(),
-      sources.refetch(),
-      qc.invalidateQueries({ queryKey: ['native-note-material', ownerId, serverBinding] }),
-      qc.invalidateQueries({ queryKey: ['native-note-material-hydrated', ownerId, serverBinding] }),
+      ...materialQueries.map((query) => query.refetch()),
     ])
+    const failed: string[] = []
+    if (refreshFailed(results[0])) failed.push('当前版本')
+    if (refreshFailed(results[1])) failed.push('版本历史')
+    if (results.slice(2).some((result) => refreshFailed(result))) failed.push('冲突候选材料')
+    setRefreshIssueState({ noteId: selectedNoteId, failed })
+    void sources.refetch().catch(() => undefined)
+    void qc.invalidateQueries({ queryKey: ['native-note-material', ownerId, serverBinding] })
+    void qc.invalidateQueries({ queryKey: ['native-note-material-hydrated', ownerId, serverBinding] })
+    return failed
   }
 
   async function promoteVersion(versionId: string): Promise<PromoteVersionOutcome> {
     const expectedCurrentVersionId =
       selectedCurrent.data?.upload.currentVersionId ?? selectedCurrent.data?.upload.versionId ?? null
+    if (promoteInFlightRef.current) {
+      return { status: 'failed', message: '上一次版本选择仍在等待服务器确认，请勿重复提交。' }
+    }
+    promoteInFlightRef.current = true
+    setMessage('')
+    setError('')
     try {
       const upload = await requestApi.promote(versionId, expectedCurrentVersionId, getSessionSignal())
       setError('')
       setMessage('已采用所选内容，服务器已将它设为当前版本；另一份内容仍保留在版本历史中。')
+      setRefreshIssueState({ noteId: selectedNoteId, failed: [] })
       await refreshVersionState()
       changeInternalNavigation(() => setParams({ note: upload.noteId }))
       return {
@@ -339,16 +358,24 @@ function Workspace({ ownerId, serverBinding }: { ownerId: string; serverBinding:
       }
     } catch (failure) {
       if (failure instanceof ApiError && failure.status === 409) {
-        await refreshVersionState()
+        const failed = await refreshVersionState()
+        if (failed.length > 0) {
+          return {
+            status: 'stale',
+            message: `服务器拒绝了本次版本选择；未能重新读取${failed.join('、')}。为避免在旧数据上继续选择，已隐藏冲突候选，请刷新核对后重试。`,
+          }
+        }
         return {
           status: 'stale',
-          message: '服务器当前版本已变化，已重新读取当前内容和冲突候选；当前版本没有改变，请重新选择。',
+          message: '服务器拒绝了本次版本选择；已重新读取当前内容和冲突候选，请按最新状态重新选择。',
         }
       }
       return {
         status: 'failed',
-        message: `${errorText(failure)}。当前版本没有改变，请刷新核对后再选择。`,
+        message: `${errorText(failure)}。未确认本次选择是否成功，请刷新核对后再选择。`,
       }
+    } finally {
+      promoteInFlightRef.current = false
     }
   }
 
@@ -361,6 +388,10 @@ function Workspace({ ownerId, serverBinding }: { ownerId: string; serverBinding:
   }
 
   function cancelConflictSelection() {
+    if (promoteInFlightRef.current) {
+      setMessage('正在提交“采用这份内容”，请等待服务器确认；完成前不能取消。')
+      return
+    }
     setError('')
     setMessage('已保留服务器当前版本；冲突候选仍保留在版本历史中，可稍后处理。')
     if (selectedVersionId) {
@@ -471,8 +502,9 @@ function Workspace({ ownerId, serverBinding }: { ownerId: string; serverBinding:
             key={selectedNoteId}
             noteId={selectedNoteId}
             versions={selectedNoteVersions}
-            versionsLoading={selectedVersions.isPending && !selectedCurrent.isError}
+            versionsLoading={selectedVersions.isPending}
             versionsError={selectedVersions.error}
+            refreshIssue={refreshIssue}
             current={selectedCurrent.data}
             currentLoading={selectedCurrent.isPending}
             currentError={selectedCurrent.error}
@@ -506,6 +538,10 @@ function Workspace({ ownerId, serverBinding }: { ownerId: string; serverBinding:
 
 function errorText(error: unknown) {
   return error instanceof Error ? error.message : '请求失败，请刷新核对'
+}
+
+function refreshFailed(result: PromiseSettledResult<{ isError: boolean }>) {
+  return result.status === 'rejected' || result.value.isError
 }
 
 function returnVersionStorageKey(ownerId: string, serverBinding: string) {

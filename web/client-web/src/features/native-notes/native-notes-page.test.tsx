@@ -429,7 +429,7 @@ describe('NativeNotesPage', () => {
     nativeApi.downloadBundle.mockRejectedValueOnce(new Error('响应 MIME 不匹配'))
     page()
     await userEvent.click((await screen.findByText('课堂笔记')).closest('button')!)
-    const title = screen.getByLabelText('笔记标题') as HTMLInputElement
+    const title = await screen.findByLabelText('笔记标题') as HTMLInputElement
     await userEvent.clear(title)
     await userEvent.type(title, '本机稿保留')
     await userEvent.click(await screen.findByRole('button', { name: '下载完整原始材料包' }))
@@ -539,11 +539,115 @@ describe('NativeNotesPage', () => {
     const versionCalls = nativeApi.versions.mock.calls.length
     await userEvent.click(screen.getByRole('button', { name: '采用这份内容' }))
 
-    expect(await screen.findByText(/服务器当前版本已变化，已重新读取当前内容和冲突候选/)).toBeTruthy()
+    expect(await screen.findByText(/服务器拒绝了本次版本选择；已重新读取当前内容和冲突候选/)).toBeTruthy()
     await waitFor(() => expect(nativeApi.current.mock.calls.length).toBeGreaterThan(currentCalls))
     await waitFor(() => expect(nativeApi.versions.mock.calls.length).toBeGreaterThan(versionCalls))
     expect(screen.getByRole('heading', { name: '发现内容冲突' })).toBeTruthy()
     expect(screen.queryByText(/已采用所选内容/)).toBeNull()
+  })
+
+  it('hides stale conflict choices when only part of the 409 recovery can be refreshed', async () => {
+    nativeApi.notes.mockResolvedValue({ total: 1, offset: 0, items: [{ ...source, hasConflict: true }] })
+    nativeApi.versions.mockResolvedValue([material.upload, conflictMaterial.upload])
+    nativeApi.promote.mockRejectedValue(new ApiError('服务器当前版本已变化', 40901, 409))
+    page()
+    await userEvent.click(await screen.findByText('课堂笔记').then((node) => node.closest('button')!))
+    await screen.findByRole('heading', { name: '发现内容冲突' })
+
+    nativeApi.current.mockRejectedValueOnce(new ApiError('当前版本刷新失败', 50301, 503))
+    nativeApi.versions.mockRejectedValueOnce(new ApiError('版本历史刷新失败', 50302, 503))
+    nativeApi.version.mockRejectedValueOnce(new ApiError('候选材料刷新失败', 50303, 503))
+    await userEvent.click(screen.getByRole('button', { name: '采用这份内容' }))
+
+    expect(await screen.findByText(/未能重新读取当前版本、版本历史、冲突候选材料/)).toBeTruthy()
+    expect(screen.queryByRole('heading', { name: '发现内容冲突' })).toBeNull()
+    expect(screen.queryByText(/已重新读取当前内容和冲突候选/)).toBeNull()
+
+    await userEvent.click(screen.getByRole('button', { name: '重新读取并核对' }))
+    expect(await screen.findByRole('heading', { name: '发现内容冲突' })).toBeTruthy()
+  })
+
+  it('does not claim the current version is unchanged for an unconfirmed promote failure', async () => {
+    nativeApi.notes.mockResolvedValue({ total: 1, offset: 0, items: [{ ...source, hasConflict: true }] })
+    nativeApi.versions.mockResolvedValue([material.upload, conflictMaterial.upload])
+    nativeApi.promote.mockRejectedValue(new ApiError('网关在确认前超时', 50401, 504))
+    page()
+    await userEvent.click(await screen.findByText('课堂笔记').then((node) => node.closest('button')!))
+    await screen.findByRole('heading', { name: '发现内容冲突' })
+
+    await userEvent.click(screen.getByRole('button', { name: '采用这份内容' }))
+
+    expect(await screen.findByText(/未确认本次选择是否成功，请刷新核对后再选择/)).toBeTruthy()
+    expect(screen.queryByText(/当前版本没有改变/)).toBeNull()
+    expect(screen.queryByText(/已采用所选内容/)).toBeNull()
+  })
+
+  it('disables cancellation while a promote request is in flight', async () => {
+    nativeApi.notes.mockResolvedValue({ total: 1, offset: 0, items: [{ ...source, hasConflict: true }] })
+    nativeApi.versions.mockResolvedValue([material.upload, conflictMaterial.upload])
+    let resolvePromote!: (value: NoteMaterialUpload) => void
+    nativeApi.promote.mockImplementationOnce(() => new Promise<NoteMaterialUpload>((resolve) => {
+      resolvePromote = resolve
+    }))
+    page()
+    await userEvent.click(await screen.findByText('课堂笔记').then((node) => node.closest('button')!))
+    await screen.findByRole('heading', { name: '发现内容冲突' })
+
+    await userEvent.click(screen.getByRole('button', { name: '采用这份内容' }))
+    await waitFor(() => expect(nativeApi.promote).toHaveBeenCalledOnce())
+    const keepCurrent = screen.getByRole('button', { name: '保留当前内容' }) as HTMLButtonElement
+    const later = screen.getByRole('button', { name: '稍后处理' }) as HTMLButtonElement
+    expect(keepCurrent.disabled).toBe(true)
+    expect(later.disabled).toBe(true)
+    await userEvent.click(keepCurrent)
+    await userEvent.click(later)
+    expect(screen.queryByText(/已保留服务器当前版本/)).toBeNull()
+
+    resolvePromote({
+      ...material.upload,
+      versionId: conflictVersionId,
+      currentVersionId: conflictVersionId,
+      isCurrent: true,
+      hasConflict: false,
+    })
+    expect((await screen.findAllByText(/已采用所选内容/)).length).toBeGreaterThan(0)
+    expect(screen.queryByText(/已保留服务器当前版本/)).toBeNull()
+  })
+
+  it('keeps candidate adoption disabled until its safe summary is loaded', async () => {
+    nativeApi.notes.mockResolvedValue({ total: 1, offset: 0, items: [{ ...source, hasConflict: true }] })
+    nativeApi.versions.mockResolvedValue([material.upload, conflictMaterial.upload])
+    let resolveCandidate!: (value: NoteMaterialVersion) => void
+    nativeApi.version.mockImplementation((id: string) => id === conflictVersionId
+      ? new Promise<NoteMaterialVersion>((resolve) => { resolveCandidate = resolve })
+      : Promise.resolve(material))
+    page()
+    await userEvent.click(await screen.findByText('课堂笔记').then((node) => node.closest('button')!))
+    await screen.findByRole('heading', { name: '发现内容冲突' })
+
+    const adopt = screen.getByRole('button', { name: '采用这份内容' }) as HTMLButtonElement
+    expect(adopt.disabled).toBe(true)
+    expect(screen.getByText('候选摘要读取中，暂不能采用。')).toBeTruthy()
+    expect(nativeApi.promote).not.toHaveBeenCalled()
+
+    resolveCandidate(conflictMaterial)
+    await waitFor(() => expect((screen.getByRole('button', { name: '采用这份内容' }) as HTMLButtonElement).disabled).toBe(false))
+    expect(screen.getByText('冲突候选笔记')).toBeTruthy()
+  })
+
+  it('keeps candidate adoption disabled when its summary cannot be read', async () => {
+    nativeApi.notes.mockResolvedValue({ total: 1, offset: 0, items: [{ ...source, hasConflict: true }] })
+    nativeApi.versions.mockResolvedValue([material.upload, conflictMaterial.upload])
+    nativeApi.version.mockImplementation((id: string) => id === conflictVersionId
+      ? Promise.reject(new ApiError('候选材料读取失败', 50304, 503))
+      : Promise.resolve(material))
+    page()
+    await userEvent.click(await screen.findByText('课堂笔记').then((node) => node.closest('button')!))
+
+    expect(await screen.findByText('候选材料读取失败')).toBeTruthy()
+    expect((screen.getByRole('button', { name: '采用这份内容' }) as HTMLButtonElement).disabled).toBe(true)
+    expect(screen.getByText(/候选摘要未读取，暂不能采用/)).toBeTruthy()
+    expect(nativeApi.promote).not.toHaveBeenCalled()
   })
 
   it('opens a conflict candidate for reading without silently promoting it to the current version', async () => {
@@ -571,6 +675,24 @@ describe('NativeNotesPage', () => {
     expect(screen.getByText(/当前账号无权读取此笔记/)).toBeTruthy()
     expect(screen.getByRole('heading', { name: '继续写这篇笔记' })).toBeTruthy()
     expect((screen.getByLabelText('笔记标题') as HTMLInputElement).disabled).toBe(false)
+  })
+
+  it('loads version history when the first current-version read fails', async () => {
+    const historyUpload: NoteMaterialUpload = {
+      ...material.upload,
+      versionId: '77777777-7777-4777-8777-777777777777',
+      isCurrent: false,
+    }
+    nativeApi.current.mockRejectedValueOnce(new ApiError('当前版本首次读取失败', 50301, 503))
+    nativeApi.versions.mockResolvedValue([material.upload, historyUpload])
+    page()
+    await userEvent.click(await screen.findByText('课堂笔记').then((node) => node.closest('button')!))
+
+    expect((await screen.findAllByText('当前版本读取失败')).length).toBeGreaterThan(0)
+    expect(screen.getAllByText(/当前版本首次读取失败/).length).toBeGreaterThan(0)
+    expect(await screen.findByRole('list', { name: '版本历史列表' })).toBeTruthy()
+    expect(screen.getByText('历史版')).toBeTruthy()
+    expect(screen.queryByText('版本历史读取失败')).toBeNull()
   })
 
   it('keeps the loaded version history visible when refreshing the current version fails', async () => {
