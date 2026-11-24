@@ -8,6 +8,7 @@ public sealed class AiRequestLogEntity
 {
     [Column("client_request_id")] public Guid? ClientRequestId { get; set; }
     [Column("model_profile_id")] public Guid? ModelProfileId { get; set; }
+    [Column("provider_connection_id")] public Guid? ProviderConnectionId { get; set; }
     [Column("model_profile_name"), MaxLength(120)] public string? ModelProfileName { get; set; }
     [Column("model_endpoint"), MaxLength(2048)] public string? ModelEndpoint { get; set; }
     [Column("model_revision")] public Guid? ModelRevision { get; set; }
@@ -65,6 +66,14 @@ public sealed class AiRequestLogEntity
 
     [Column("started_at")]
     public DateTimeOffset StartedAt { get; set; } = DateTimeOffset.UtcNow;
+
+    /// <summary>
+    /// Stable period attribution captured when the caller first submitted the request.
+    /// Background queue claims must never overwrite it. Legacy rows leave it null and
+    /// usage queries fall back to <see cref="StartedAt"/>.
+    /// </summary>
+    [Column("initiated_at")]
+    public DateTimeOffset? InitiatedAt { get; set; }
 
     [Column("finished_at")]
     public DateTimeOffset? FinishedAt { get; set; }

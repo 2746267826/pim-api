@@ -19,7 +19,8 @@ using ChatFinishReason = Microsoft.Extensions.AI.ChatFinishReason;
 namespace Pim.Infrastructure.Ai;
 
 public sealed class AiTextCallService(PimDbContext db, ISecretProtector secrets, IAiProfileChatClientFactory clients,
-    ICurrentUserService currentUser, AiTextCallGate gate, AiVisionMaterialService? visionMaterials = null)
+    ICurrentUserService currentUser, AiTextCallGate gate, AiVisionMaterialService? visionMaterials = null,
+    AiUsageLimitService? usageLimits = null)
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     private sealed record OwnerCallScope(string SourceObjectType, string SourceObjectId, string Purpose);
@@ -121,9 +122,10 @@ public sealed class AiTextCallService(PimDbContext db, ISecretProtector secrets,
             SourceObjectId = scope?.SourceObjectId ?? selected?.ToString() ?? "default",
             Provider = "openai-compatible",
             Model = profile?.Model ?? "未选择", ModelProfileId = profile?.Id, ModelProfileName = profile?.Name,
+            ProviderConnectionId = profile?.ProviderConnectionId,
             ModelRevision = profile?.Revision, ModelEndpoint = profile?.BaseUrl,
             CorrelationId = Guid.NewGuid().ToString("N"), Status = configurationError is null ? "running" : "blocked",
-            AttemptNumber = 1, MaxAttempts = 1, StartedAt = started,
+            AttemptNumber = 1, MaxAttempts = 1, StartedAt = started, InitiatedAt = started,
             ExecutionExpiresAt = started.AddSeconds((profile?.TimeoutSeconds ?? 60) + 60),
             RequestMessagesJson = capturedMessages, InputChars = request.Prompt.Length + (request.SystemPrompt?.Length ?? 0),
             RequestPayloadJson = JsonSerializer.Serialize(new { model = profile?.Model, maxOutputTokens = profile?.MaxOutputTokens, stream = false, recordFormat }, Json),
@@ -157,62 +159,88 @@ public sealed class AiTextCallService(PimDbContext db, ISecretProtector secrets,
             return Replay(winner, fingerprint);
         }
         if (configurationError is not null) return Result(row, false);
-        if (!gate.TryEnter(vision))
-        { row.Status = "blocked"; row.ErrorCode = "busy"; row.ErrorMessage = "同时最多4个SDK调用，其中视觉最多2个，请稍后发起新调用"; return await FinishAsync(row); }
+        var activeProfile = profile!;
 
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(profile!.TimeoutSeconds));
-        using var linked = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token, ct);
-        using var wire = new AiTextWireCapture();
-        var materialsReady = !vision;
+        AiUsageLimitLease? usageLease = null;
+        var gateEntered = false;
         try
         {
-            if (vision)
+            if (!gate.TryEnter(vision))
             {
-                await visionMaterials!.StoreForOwnerAsync(userId, imageRows, images!, linked.Token);
-                materialsReady = true;
-                wire.SetImages(imageRows.Select((x, index) => new AiVisionAuditImage(x.Id,
-                    $"data:{images![index].ContentType};base64,{Convert.ToBase64String(images[index].Bytes)}")).ToArray());
-                foreach (var image in images!) messages[^1].Contents.Add(new DataContent(image.Bytes, image.ContentType));
+                row.Status = "blocked";
+                row.ErrorCode = "busy";
+                row.ErrorMessage = "同时最多4个SDK调用，其中视觉最多2个，请稍后发起新调用";
+                return await FinishAsync(row);
             }
-            using var client = clients.Create(new(profile.BaseUrl, profile.Model, key!,
-                profile.TimeoutSeconds, profile.MaxOutputTokens));
-            var response = await client.Client.GetResponseAsync(messages, new ChatOptions { MaxOutputTokens = profile.MaxOutputTokens }, linked.Token);
-            row.ResponseText = Safe(response.Text, key, out var replyRedacted);
-            var raw = response.RawRepresentation is ChatCompletion completion ? ModelReaderWriter.Write(completion).ToString()
-                : JsonSerializer.Serialize(new { response.ResponseId, response.ModelId, response.FinishReason, response.Messages, response.Usage }, Json);
-            row.ResponseRawJson = SafeJson(raw, key, out var rawRedacted);
-            row.ContentRedacted = row.ContentRedacted == true || replyRedacted || rawRedacted;
-            row.FinishReason = response.FinishReason?.Value;
-            row.PromptTokens = Count(response.Usage?.InputTokenCount); row.CompletionTokens = Count(response.Usage?.OutputTokenCount);
-            row.TotalTokens = Count(response.Usage?.TotalTokenCount);
-            // Missing usage/cost stays unknown; no invented token counts, prices or currency.
-            if (response.FinishReason == ChatFinishReason.Stop && !string.IsNullOrEmpty(response.Text)) row.Status = "succeeded";
-            else
-            { row.Status = "incomplete"; row.ErrorCode = "incomplete_output"; row.ErrorMessage = "模型未正常结束或未返回文本，请核对实际回复和结束原因"; }
-        }
-        catch (OperationCanceledException)
-        {
-            row.Status = ct.IsCancellationRequested ? "cancelled" : "timed_out";
-            row.ErrorCode = row.Status; row.ErrorMessage = ct.IsCancellationRequested ? "调用已取消，上游是否计费以其记录为准" : "模型调用超时，结果未确认；请核对记录后再发起新调用";
-            if (!materialsReady) row.ErrorMessage = "图片材料保存已取消或超时，本次未发送模型";
-        }
-        catch (ClientResultException error)
-        {
-            row.Status = "failed"; row.ErrorCode = "upstream_http_" + error.Status;
-            row.ErrorMessage = "模型服务返回HTTP " + error.Status + "，请核对配置或稍后发起新调用";
-            var body = error.GetRawResponse()?.Content?.ToString();
-            if (!string.IsNullOrEmpty(body))
+            gateEntered = true;
+
+            if (usageLimits is not null && profile?.ProviderConnectionId is { } connectionId)
             {
-                row.ResponseRawJson = SafeJson(ValidJson(body), key, out var redacted);
-                row.ContentRedacted = row.ContentRedacted == true || redacted;
+                var leaseTtl = TimeSpan.FromSeconds(activeProfile.TimeoutSeconds + 60);
+                var decision = await usageLimits.TryBeginAsync(connectionId, row.CorrelationId,
+                    row.Purpose, leaseTtl, ct);
+                if (!decision.Allowed)
+                {
+                    row.Status = "blocked";
+                    row.ErrorCode = decision.ErrorCode ?? "usage_limit_blocked";
+                    row.ErrorMessage = decision.Message ?? "AI用量限制拒绝本次调用";
+                    return await FinishAsync(row);
+                }
+                usageLease = decision.Lease;
             }
-        }
-        catch (Exception)
-        { row.Status = "failed"; row.ErrorCode = materialsReady ? "provider_error" : "image_prepare_failed";
-            row.ErrorMessage = materialsReady ? "模型连接、格式或响应大小异常；本次未自动重试，请核对调用记录" : "图片材料未能完整保存，本次未发送模型，请核对文件来源和调用记录"; }
-        finally
-        {
+
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(activeProfile.TimeoutSeconds));
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token, ct);
+            using var wire = new AiTextWireCapture();
+            var materialsReady = !vision;
             try
+            {
+                if (vision)
+                {
+                    await visionMaterials!.StoreForOwnerAsync(userId, imageRows, images!, linked.Token);
+                    materialsReady = true;
+                    wire.SetImages(imageRows.Select((x, index) => new AiVisionAuditImage(x.Id,
+                        $"data:{images![index].ContentType};base64,{Convert.ToBase64String(images[index].Bytes)}")).ToArray());
+                    foreach (var image in images!) messages[^1].Contents.Add(new DataContent(image.Bytes, image.ContentType));
+                }
+                using var client = clients.Create(new(activeProfile.BaseUrl, activeProfile.Model, key!,
+                    activeProfile.TimeoutSeconds, activeProfile.MaxOutputTokens));
+                var response = await client.Client.GetResponseAsync(messages,
+                    new ChatOptions { MaxOutputTokens = activeProfile.MaxOutputTokens }, linked.Token);
+                row.ResponseText = Safe(response.Text, key, out var replyRedacted);
+                var raw = response.RawRepresentation is ChatCompletion completion ? ModelReaderWriter.Write(completion).ToString()
+                    : JsonSerializer.Serialize(new { response.ResponseId, response.ModelId, response.FinishReason, response.Messages, response.Usage }, Json);
+                row.ResponseRawJson = SafeJson(raw, key, out var rawRedacted);
+                row.ContentRedacted = row.ContentRedacted == true || replyRedacted || rawRedacted;
+                row.FinishReason = response.FinishReason?.Value;
+                row.PromptTokens = Count(response.Usage?.InputTokenCount); row.CompletionTokens = Count(response.Usage?.OutputTokenCount);
+                row.TotalTokens = Count(response.Usage?.TotalTokenCount);
+                // Missing usage/cost stays unknown; no invented token counts, prices or currency.
+                if (response.FinishReason == ChatFinishReason.Stop && !string.IsNullOrEmpty(response.Text)) row.Status = "succeeded";
+                else
+                { row.Status = "incomplete"; row.ErrorCode = "incomplete_output"; row.ErrorMessage = "模型未正常结束或未返回文本，请核对实际回复和结束原因"; }
+            }
+            catch (OperationCanceledException)
+            {
+                row.Status = ct.IsCancellationRequested ? "cancelled" : "timed_out";
+                row.ErrorCode = row.Status; row.ErrorMessage = ct.IsCancellationRequested ? "调用已取消，上游是否计费以其记录为准" : "模型调用超时，结果未确认；请核对记录后再发起新调用";
+                if (!materialsReady) row.ErrorMessage = "图片材料保存已取消或超时，本次未发送模型";
+            }
+            catch (ClientResultException error)
+            {
+                row.Status = "failed"; row.ErrorCode = "upstream_http_" + error.Status;
+                row.ErrorMessage = "模型服务返回HTTP " + error.Status + "，请核对配置或稍后发起新调用";
+                var body = error.GetRawResponse()?.Content?.ToString();
+                if (!string.IsNullOrEmpty(body))
+                {
+                    row.ResponseRawJson = SafeJson(ValidJson(body), key, out var redacted);
+                    row.ContentRedacted = row.ContentRedacted == true || redacted;
+                }
+            }
+            catch (Exception)
+            { row.Status = "failed"; row.ErrorCode = materialsReady ? "provider_error" : "image_prepare_failed";
+                row.ErrorMessage = materialsReady ? "模型连接、格式或响应大小异常；本次未自动重试，请核对调用记录" : "图片材料未能完整保存，本次未发送模型，请核对文件来源和调用记录"; }
+            finally
             {
                 if (wire.RequestBody is { } sent)
                 {
@@ -238,9 +266,23 @@ public sealed class AiTextCallService(PimDbContext db, ISecretProtector secrets,
                     imageEncoding = vision ? "sha256-reference" : null, destinationConsent = consent,
                     imageInputsStored = vision ? imageRows.All(x => x.ObjectKey is not null) : (bool?)null }, Json);
             }
-            finally { gate.Exit(vision); }
+            try
+            {
+                return await FinishAsync(row);
+            }
+            finally
+            {
+                if (usageLease is not null)
+                {
+                    try { await usageLimits!.EndAsync(usageLease, CancellationToken.None); }
+                    catch { /* The durable TTL still expires; never mask the actual call outcome. */ }
+                }
+            }
         }
-        return await FinishAsync(row);
+        finally
+        {
+            if (gateEntered) gate.Exit(vision);
+        }
     }
 
     private async Task<AiTextCallResultDto> FinishAsync(AiRequestLogEntity row)

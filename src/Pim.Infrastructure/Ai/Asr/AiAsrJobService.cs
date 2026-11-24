@@ -7,6 +7,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Pim.Core.Ai;
 using Pim.Core.Exceptions;
+using Pim.Infrastructure.Ai;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Ai.Asr.Mimo;
 using Pim.Infrastructure.Data;
@@ -30,7 +31,8 @@ public sealed class AiAsrJobService(
     AiAsrMaterialService materials,
     IAsrJobDispatcher dispatcher,
     IServiceScopeFactory scopeFactory,
-    ILogger<AiAsrJobService> logger)
+    ILogger<AiAsrJobService> logger,
+    AiUsageLimitService? usageLimits = null)
 {
     // Measured from the #552 reproduction: 2,318 completion tokens for 507.924 seconds of audio.
     private const double EstimatedCompletionTokensPerAudioSecond = 2318d / 507.924d;
@@ -72,11 +74,13 @@ public sealed class AiAsrJobService(
             Model = prepared.Profile.Model,
             ModelProfileId = prepared.Profile.Id,
             ModelProfileName = prepared.Profile.Name,
+            ProviderConnectionId = prepared.Profile.ProviderConnectionId,
             ModelRevision = prepared.Profile.Revision,
             ModelEndpoint = prepared.Operation,
             CorrelationId = Guid.NewGuid().ToString("N"),
             Status = prepared.ConfigurationError is null ? "preparing" : "blocked",
             StartedAt = now,
+            InitiatedAt = now,
             FinishedAt = prepared.ConfigurationError is null ? null : now,
             ExecutionExpiresAt = prepared.ConfigurationError is null ? now.Add(PreparationLease) : null,
             AttemptNumber = 0,
@@ -374,6 +378,7 @@ public sealed class AiAsrJobService(
 
         if (!gate.TryEnter(asr: true)) return;
         var claimed = false;
+        AiUsageLimitLease? usageLease = null;
         try
         {
             var now = DateTimeOffset.UtcNow;
@@ -409,6 +414,23 @@ public sealed class AiAsrJobService(
                     "重新保存凭据后明确新建请求", null, false, false, false, null,
                     CancellationToken.None);
                 return;
+            }
+
+            if (usageLimits is not null && log.ProviderConnectionId is { } connectionId)
+            {
+                var decision = await usageLimits.TryBeginAsync(connectionId, log.CorrelationId,
+                    log.Purpose, TimeSpan.FromSeconds(job.TimeoutSeconds + 120), ct);
+                if (!decision.Allowed)
+                {
+                    await CompleteAsync(job, log, "blocked",
+                        decision.ErrorCode ?? "usage_limit_blocked",
+                        decision.Message ?? "AI用量限制拒绝本次调用",
+                        "usage_limit", true,
+                        "核对AI用量限制后明确新建请求", null, false, false, false, null,
+                        CancellationToken.None);
+                    return;
+                }
+                usageLease = decision.Lease;
             }
 
             var audio = new AiAsrInput(job.AudioName, job.AudioFormat, bytes, job.AudioSha256);
@@ -578,6 +600,15 @@ public sealed class AiAsrJobService(
         }
         finally
         {
+            if (usageLease is not null)
+            {
+                try { await usageLimits!.EndAsync(usageLease, CancellationToken.None); }
+                catch (Exception error)
+                {
+                    logger.LogWarning(error, "AI usage lease release failed for {ClientRequestId}",
+                        clientRequestId);
+                }
+            }
             gate.Exit(asr: true);
         }
 

@@ -9,7 +9,8 @@ using Pim.Infrastructure.Ai.Asr;
 
 namespace Pim.Infrastructure.Ai;
 
-public sealed class AiModelSettingsService(PimDbContext db, ISecretProtector secrets, AiAsrPresetRegistry? asrPresets = null)
+public sealed class AiModelSettingsService(PimDbContext db, ISecretProtector secrets,
+    AiAsrPresetRegistry? asrPresets = null, AiUsageLimitService? usageLimits = null)
 {
     public async Task<IReadOnlyList<AiModelDto>> ListAsync(CancellationToken ct) =>
         (await db.AiModelProfiles.AsNoTracking().OrderBy(x => x.Name).ToListAsync(ct)).Select(Map).ToArray();
@@ -28,6 +29,9 @@ public sealed class AiModelSettingsService(PimDbContext db, ISecretProtector sec
         var key = request.ApiKey?.Trim();
         if (key is not null && (key.Length is < 1 or > 4096 || key.Any(c => c < 33 || c > 126)))
             throw Invalid("API Key格式无效，请填写非空可打印字符");
+        if (request.ProviderConnectionId is { } requestedConnection &&
+            !await db.AiProviderConnections.AnyAsync(x => x.Id == requestedConnection, ct))
+            throw Invalid("AI服务连接不存在");
         AiModelProfileEntity row;
         if (id is { } existingId)
         {
@@ -82,6 +86,11 @@ public sealed class AiModelSettingsService(PimDbContext db, ISecretProtector sec
             throw new DomainException(40901, "已有同名模型配置");
         row.Name = name; row.NormalizedName = normalized; row.BaseUrl = endpoint; row.Model = model;
         row.Enabled = request.Enabled; row.Capabilities = capabilities; row.TimeoutSeconds = request.TimeoutSeconds;
+        if (request.ProviderConnectionId is { } connectionId)
+            row.ProviderConnectionId = connectionId;
+        else if (id is null && row.ProviderConnectionId is null && usageLimits is not null)
+            row.ProviderConnectionId = (await usageLimits.CreateDedicatedConnectionForModelAsync(
+                name, row.Id, ct)).Id;
         row.AsrPresetId = presetId;
         row.AsrBatchBaseUrl = batchBaseUrl;
         if (request.AsrPrompt is not null)
@@ -158,7 +167,8 @@ public sealed class AiModelSettingsService(PimDbContext db, ISecretProtector sec
         row.Model, row.Enabled, Enum.GetValues<AiModelCapability>().Where(v => (row.Capabilities & (1 << (int)v)) != 0).ToArray(),
         row.ApiKeySecret.Length != 0, row.TimeoutSeconds, row.MaxOutputTokens, row.CreatedAt, row.UpdatedAt,
         row.AsrPresetId, row.AsrBatchBaseUrl, row.AsrPrompt,
-        row.Capabilities == 4 ? AiAsrPromptTemplate.Normalize(row.AsrPrompt).Revision : null);
+        row.Capabilities == 4 ? AiAsrPromptTemplate.Normalize(row.AsrPrompt).Revision : null,
+        row.ProviderConnectionId);
     private static AiModelSettingsDto Map(AiModelRuntimeEntity row) => new(row.Revision, row.Enabled,
         row.TextModelId, row.VisionModelId, row.TranscriptionModelId);
     private static DomainException Invalid(string message) => new(40001, message);

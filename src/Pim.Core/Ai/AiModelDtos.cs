@@ -16,12 +16,13 @@ public static class AiModelCapabilityFlags
 public sealed record AiModelDto(Guid Id, Guid Revision, string Name, string BaseUrl, string Model,
     bool Enabled, IReadOnlyList<AiModelCapability> Capabilities, bool HasApiKey, int TimeoutSeconds,
     int MaxOutputTokens, DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt, string? AsrPresetId = null,
-    string? AsrBatchBaseUrl = null, string? AsrPrompt = null, string? AsrPromptRevision = null);
+    string? AsrBatchBaseUrl = null, string? AsrPrompt = null, string? AsrPromptRevision = null,
+    Guid? ProviderConnectionId = null);
 
 public sealed record SaveAiModelRequest(string Name, string BaseUrl, string Model, bool Enabled,
     IReadOnlyList<AiModelCapability> Capabilities, int TimeoutSeconds = 60, int MaxOutputTokens = 1024,
     string? ApiKey = null, Guid? ExpectedRevision = null, string? AsrPresetId = null,
-    string? AsrBatchBaseUrl = null, string? AsrPrompt = null)
+    string? AsrBatchBaseUrl = null, string? AsrPrompt = null, Guid? ProviderConnectionId = null)
 {
     public override string ToString() => $"SaveAiModelRequest {{ Name = {Name}, Model = {Model}, ApiKey = [protected] }}";
 }
