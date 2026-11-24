@@ -188,7 +188,9 @@ public sealed class AiTextCallService(PimDbContext db, ISecretProtector secrets,
             if (!string.IsNullOrEmpty(request.SystemPrompt))
                 snapshot.Add(new { role = "system", content = request.SystemPrompt });
             snapshot.Add(new { role = "user", content });
-            row.RequestMessagesJson = SafeJson(JsonSerializer.Serialize(snapshot, Json), null, out _);
+            row.RequestMessagesJson = SafeJson(JsonSerializer.Serialize(snapshot, Json), key,
+                out var audioRedacted);
+            row.ContentRedacted = row.ContentRedacted == true || audioRedacted;
         }
         db.AiRequestLogs.Add(row);
         try { await db.SaveChangesAsync(ct); }

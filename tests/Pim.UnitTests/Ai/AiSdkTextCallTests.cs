@@ -205,7 +205,7 @@ public sealed class AiSdkTextCallTests : IDisposable
             sourceSha, Digest(bytes), bytes.Length, _owner.UserId!.Value, noteId, versionId,
             Guid.NewGuid(), 1, 1, 5, 0, 160, "recordings/fixture.wav", bytes);
         var request = new AiTextCallRequest(Guid.NewGuid(), _owner.UserId!.Value,
-            "整理固定材料", ModelId: model.Id);
+            "整理固定材料\napi_key=" + Key, ModelId: model.Id);
         var consent = new AiVisionDestinationConsent(model.Id, model.Revision, model.BaseUrl, true);
 
         var result = await Caller.CallWithAudioForOwnerAsync(_owner.UserId!.Value, request, [audio],
@@ -226,6 +226,8 @@ public sealed class AiSdkTextCallTests : IDisposable
         var log = await _db.AiRequestLogs.AsNoTracking().SingleAsync();
         Assert.DoesNotContain(Convert.ToBase64String(bytes), log.RequestMessagesJson);
         Assert.Contains("pim-ai-audio:00001", log.RequestMessagesJson);
+        Assert.True(log.ContentRedacted);
+        Assert.DoesNotContain(Key, log.RequestMessagesJson);
         using var metadata = JsonDocument.Parse(log.MetadataJson);
         Assert.Equal(1, metadata.RootElement.GetProperty("audioInputsReferenced").GetInt32());
         Assert.Equal(sourceSha, metadata.RootElement.GetProperty("audioInputsSha256")[0].GetString());
