@@ -1,4 +1,4 @@
-import { apiDelete, apiGet, apiPost, apiPut } from '@/api/client'
+import { apiDelete, apiGet, apiPost, apiPut, type FetchOptions } from '@/api/client'
 import type { components } from '@/api/generated'
 import { normalizeHabitCadence } from '@/lib/enums'
 import type { PagedResult } from '@/api/types'
@@ -277,18 +277,19 @@ export const outlookApi = {
 /* ── 数据中心（跨对象治理） ───────────────────────────────── */
 
 export const dataCenterApi = {
-  query: (body: components['schemas']['DataCenterQueryRequest']) =>
-    apiPost<import('./types').DataCenterQueryResponse>('/api/v1/calendar/data-center/query', body),
-  auditExport: (params?: { start?: string; end?: string }) => {
+  query: (body: components['schemas']['DataCenterQueryRequest'], opts?: FetchOptions) =>
+    apiPost<import('./types').DataCenterQueryResponse>('/api/v1/calendar/data-center/query', body, opts),
+  auditExport: (params?: { start?: string; end?: string }, opts?: FetchOptions) => {
     const q = new URLSearchParams()
     if (params?.start) q.set('start', params.start)
     if (params?.end) q.set('end', params.end)
     return apiGet<{ fileName: string; contentType: string; content: string }>(
       `/api/v1/calendar/data-center/audit/export${q.toString() ? `?${q}` : ''}`,
+      opts,
     )
   },
-  restorePreview: (body: components['schemas']['DataCenterRestoreRequest']) =>
-    apiPost<import('./types').RestorePreviewResponse>('/api/v1/calendar/data-center/restore/preview', body),
+  restorePreview: (body: components['schemas']['DataCenterRestoreRequest'], opts?: FetchOptions) =>
+    apiPost<import('./types').RestorePreviewResponse>('/api/v1/calendar/data-center/restore/preview', body, opts),
   batchPreview: (body: components['schemas']['DataCenterBatchOperationRequest']) =>
     apiPost<{
       riskLevel: string

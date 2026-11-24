@@ -1,10 +1,13 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Download, History, ScrollText } from 'lucide-react'
+import { useQueryClient } from '@tanstack/react-query'
 import { dataCenterApi } from '../api'
-import { useDataCenterQuery } from '../queries'
+import { calendarExtraKeys, useDataCenterQuery } from '../queries'
 import type { DataCenterItem } from '../types'
 import { auditApi, type AuditVersionItem } from '@/features/operations/api'
 import { DiffTable } from '@/features/operations/components/diff-table'
+import { useAuth } from '@/features/auth/auth-context'
+import { getApiBase } from '@/lib/apiBase'
 import { downloadJson } from '@/lib/download'
 import { formatRange, formatTime } from '@/lib/datetime'
 import { htmlToPlainText } from '@/lib/text'
@@ -27,51 +30,176 @@ const OBJECT_TYPES = [
 
 /** 数据中心（02 §data-center：跨对象查询 + 详情 + 恢复预览 + 审计导出） */
 export function DataCenterPage() {
+  const { user } = useAuth()
+  const [serverBinding, setServerBinding] = useState(currentServerBinding)
+
+  useEffect(() => {
+    const update = () => setServerBinding(currentServerBinding())
+    window.addEventListener('pim:api-base-changed', update)
+    return () => window.removeEventListener('pim:api-base-changed', update)
+  }, [])
+
+  const ownerId = user?.id ?? ''
+  return (
+    <DataCenterWorkspace
+      key={`${ownerId}/${serverBinding}`}
+      ownerId={ownerId}
+      serverBinding={serverBinding}
+    />
+  )
+}
+
+function DataCenterWorkspace({ ownerId, serverBinding }: { ownerId: string; serverBinding: string }) {
+  const qc = useQueryClient()
   const [search, setSearch] = useState('')
   const [objectType, setObjectType] = useState('')
   const [page, setPage] = useState(1)
+  const [actionError, setActionError] = useState('')
   const [detail, setDetail] = useState<{ item: DataCenterItem } | null>(null)
   const [auditVersions, setAuditVersions] = useState<AuditVersionItem[] | null>(null)
+  const [auditError, setAuditError] = useState<unknown>(null)
+  const [auditAttempt, setAuditAttempt] = useState(0)
   const [showAllVersions, setShowAllVersions] = useState(false)
   const [preview, setPreview] = useState<{ summary: string; changedFields: string[]; beforeJson: string | null; afterJson: string | null } | null>(null)
+  const [previewError, setPreviewError] = useState('')
   const [previewLoading, setPreviewLoading] = useState(false)
+  const sessionRef = useRef<DataCenterSession | null>(null)
+  const previewRequestRef = useRef(0)
+
+  useEffect(() => {
+    const controller = new AbortController()
+    sessionRef.current = { ownerId, serverBinding, controller }
+    return () => {
+      if (sessionRef.current?.controller === controller) sessionRef.current = null
+      controller.abort()
+      void qc.cancelQueries({ queryKey: calendarExtraKeys.dataCenterScope(ownerId, serverBinding) })
+    }
+  }, [ownerId, qc, serverBinding])
+
+  const assertDataCenterSession = useCallback(() => {
+    const session = sessionRef.current
+    if (!session) return
+    if (session.ownerId !== ownerId || session.serverBinding !== serverBinding ||
+        session.controller.signal.aborted) {
+      throw sessionChangedError()
+    }
+  }, [ownerId, serverBinding])
+
+  function sessionIsActive(session: DataCenterSession) {
+    return sessionRef.current === session && !session.controller.signal.aborted
+  }
 
   const params = useMemo(() => ({ search: search || undefined, objectType: objectType || undefined, pendingOnly: false, page, pageSize: 50 }), [search, objectType, page])
-  const { data, isLoading, isFetching } = useDataCenterQuery(params)
+  const { data, isLoading, isFetching, isError, error, refetch } = useDataCenterQuery(
+    ownerId,
+    serverBinding,
+    params,
+    assertDataCenterSession,
+  )
 
   async function exportAudit() {
-    const res = await dataCenterApi.auditExport()
-    downloadJson(res.fileName, res.content)
-    notifySuccess('审计导出已下载')
+    const session = sessionRef.current
+    if (!session) return
+    setActionError('')
+    try {
+      const res = await dataCenterApi.auditExport(undefined, {
+        signal: session.controller.signal,
+        assertActive: () => {
+          if (!sessionIsActive(session)) throw sessionChangedError()
+        },
+      })
+      if (!sessionIsActive(session)) return
+      downloadJson(res.fileName, res.content)
+      notifySuccess('审计导出已下载')
+    } catch (failure) {
+      if (isAbortError(failure) || !sessionIsActive(session)) return
+      setActionError(`审计导出失败：${errorText(failure)}`)
+    }
   }
 
   /* 详情抽屉打开时拉取该对象的审计版本（应用内写路径才会产生；空=未经应用内修改） */
   useEffect(() => {
     if (!detail) return
+    const session = sessionRef.current
+    if (!session) return
+    const controller = new AbortController()
     let cancelled = false
     setAuditVersions(null)
+    setAuditError(null)
     setShowAllVersions(false)
+    const stillActive = () =>
+      !cancelled && sessionRef.current === session && !session.controller.signal.aborted
     auditApi
-      .timeline(detail.item.objectType, detail.item.objectId)
-      .then((res) => !cancelled && setAuditVersions(res.items))
-      .catch(() => !cancelled && setAuditVersions([]))
+      .timeline(detail.item.objectType, detail.item.objectId, {
+        signal: controller.signal,
+        assertActive: () => {
+          if (!stillActive()) throw sessionChangedError()
+        },
+      })
+      .then((res) => {
+        if (stillActive()) setAuditVersions(res.items)
+      })
+      .catch((failure) => {
+        if (!stillActive() || isAbortError(failure)) return
+        setAuditVersions([])
+        setAuditError(failure)
+      })
     return () => {
       cancelled = true
+      controller.abort()
     }
-  }, [detail])
+  }, [auditAttempt, detail])
 
   async function openRestorePreview(objectType: string, objectId: string) {
+    const session = sessionRef.current
+    if (!session) return
+    const requestId = ++previewRequestRef.current
+    setPreviewError('')
+    setPreview(null)
     if (objectType !== 'audit-version') {
       setPreview({ summary: '该对象类型支持从回收站恢复（设置 → 回收站）。', changedFields: [], beforeJson: null, afterJson: null })
       return
     }
     setPreviewLoading(true)
+    const stillActive = () =>
+      sessionRef.current === session &&
+      requestId === previewRequestRef.current &&
+      !session.controller.signal.aborted
     try {
-      const res = await dataCenterApi.restorePreview({ auditVersionId: objectId, reason: '数据中心版本恢复预览' })
+      const res = await dataCenterApi.restorePreview(
+        { auditVersionId: objectId, reason: '数据中心版本恢复预览' },
+        {
+          signal: session.controller.signal,
+          assertActive: () => {
+            if (!stillActive()) throw sessionChangedError()
+          },
+        },
+      )
+      if (!stillActive()) return
       setPreview({ summary: res.summary, changedFields: res.changedFields, beforeJson: res.beforeJson, afterJson: res.afterJson })
+    } catch (failure) {
+      if (!stillActive() || isAbortError(failure)) return
+      setPreviewError(`恢复预览失败：${errorText(failure)}`)
     } finally {
-      setPreviewLoading(false)
+      if (stillActive()) setPreviewLoading(false)
     }
+  }
+
+  function openDetail(item: DataCenterItem) {
+    previewRequestRef.current += 1
+    setPreview(null)
+    setPreviewError('')
+    setPreviewLoading(false)
+    setAuditAttempt(0)
+    setDetail({ item })
+  }
+
+  function closeDetail() {
+    previewRequestRef.current += 1
+    setDetail(null)
+    setPreview(null)
+    setPreviewError('')
+    setPreviewLoading(false)
   }
 
   const totalPages = Math.max(1, Math.ceil((data?.totalCount ?? 0) / 50))
@@ -87,6 +215,8 @@ export function DataCenterPage() {
           </Button>
         }
       />
+
+      {actionError && <InlineAlert className="mb-3" tone="crit" title="操作未完成">{actionError}</InlineAlert>}
 
       {/* 筛选栏 */}
       <div className="mb-3 flex flex-wrap items-center gap-2">
@@ -104,6 +234,16 @@ export function DataCenterPage() {
       <Card className="overflow-x-auto">
         {isLoading ? (
           <div className="space-y-2 p-4">{Array.from({ length: 6 }, (_, i) => <Skeleton key={i} className="h-10" />)}</div>
+        ) : isError ? (
+          <div className="p-4">
+            <InlineAlert tone="crit" title="数据中心读取失败">
+              <p>{errorText(error)}</p>
+              <p className="mt-1 text-xs">可以重试；如果当前账号没有读取权限，请联系管理员核对。</p>
+              <Button className="mt-2" variant="secondary" size="sm" loading={isFetching} onClick={() => void refetch()}>
+                重新读取
+              </Button>
+            </InlineAlert>
+          </div>
         ) : (data?.items?.length ?? 0) === 0 ? (
           <EmptyState title="没有符合条件的对象" />
         ) : (
@@ -130,7 +270,7 @@ export function DataCenterPage() {
                   <td className="px-4 py-2.5"><StatusBadge tone={item.status === 'Active' ? 'ok' : 'neutral'} dot={false}>{item.status}</StatusBadge></td>
                   <td className="tnum px-4 py-2.5 text-text-3">{item.startsAt ? formatRange(item.startsAt, item.endsAt ?? item.startsAt).split(' ~ ')[0] : '—'}</td>
                   <td className="px-4 py-2.5 text-right">
-                    <Button variant="ghost" size="sm" onClick={() => setDetail({ item })}>
+                    <Button variant="ghost" size="sm" onClick={() => openDetail(item)}>
                       详情
                     </Button>
                   </td>
@@ -151,7 +291,7 @@ export function DataCenterPage() {
       )}
 
       {/* 对象详情抽屉：键值网格 + 摘要正文 + 审计历史 + 恢复预览（规格 02 §data-center 对象详情面板） */}
-      <Drawer open={detail != null} onOpenChange={(o) => !o && setDetail(null)}>
+      <Drawer open={detail != null} onOpenChange={(o) => !o && closeDetail()}>
         <DrawerContent side="right">
           <DrawerHeader title="对象详情" description={detail ? `${detail.item.objectType} · ${detail.item.title}` : undefined} />
           <DrawerBody className="space-y-4">
@@ -182,13 +322,22 @@ export function DataCenterPage() {
                     <span className="flex items-center gap-1.5 text-[13px] font-medium text-text-1">
                       <ScrollText className="size-3.5 text-text-3" aria-hidden /> 审计历史
                     </span>
-                    {auditVersions == null ? (
+                    {auditError ? (
+                      <StatusBadge tone="crit" dot={false}>读取失败</StatusBadge>
+                    ) : auditVersions == null ? (
                       <span className="text-xs text-text-4">加载中…</span>
                     ) : (
                       <span className="tnum text-xs text-text-4">{auditVersions.length} 个版本</span>
                     )}
                   </div>
-                  {auditVersions != null && auditVersions.length > 0 && (
+                  {auditError ? (
+                    <InlineAlert className="mt-2" tone="crit" title="审计历史读取失败">
+                      <p>{errorText(auditError)}</p>
+                      <Button className="mt-2" variant="secondary" size="sm" onClick={() => setAuditAttempt((attempt) => attempt + 1)}>
+                        重新读取审计
+                      </Button>
+                    </InlineAlert>
+                  ) : auditVersions != null && auditVersions.length > 0 && (
                     <>
                       <ul className="mt-2 space-y-1.5">
                         {(showAllVersions ? [...auditVersions].reverse() : [...auditVersions].reverse().slice(0, 8)).map((v) => {
@@ -216,7 +365,7 @@ export function DataCenterPage() {
                       )}
                     </>
                   )}
-                  {auditVersions != null && auditVersions.length === 0 && (
+                  {!auditError && auditVersions != null && auditVersions.length === 0 && (
                     <p className="mt-1.5 text-xs text-text-4">该对象未经应用内修改（如 Outlook 同步直接写入），没有审计版本。</p>
                   )}
                 </div>
@@ -229,6 +378,20 @@ export function DataCenterPage() {
                 >
                   <History className="size-4" aria-hidden /> 恢复预览
                 </Button>
+                {previewError && (
+                  <InlineAlert tone="crit" title="恢复预览失败">
+                    {previewError}
+                    <Button
+                      className="mt-2"
+                      variant="secondary"
+                      size="sm"
+                      loading={previewLoading}
+                      onClick={() => void openRestorePreview(detail.item.objectType, detail.item.objectId)}
+                    >
+                      重新预览
+                    </Button>
+                  </InlineAlert>
+                )}
                 {preview && (
                   <div className="space-y-3">
                     <InlineAlert tone={preview.changedFields.length > 0 ? 'warn' : 'info'} title="恢复预览">
@@ -260,4 +423,28 @@ function DetailRow({ label, value, mono }: { label: string; value: string; mono?
       <span className={cn('min-w-0 break-all text-text-1', mono && 'mono')}>{value}</span>
     </div>
   )
+}
+
+function errorText(error: unknown) {
+  return error instanceof Error ? error.message : '请求失败，请重试'
+}
+
+interface DataCenterSession {
+  ownerId: string
+  serverBinding: string
+  controller: AbortController
+}
+
+function sessionChangedError() {
+  const error = new Error('数据中心会话已切换，已停止旧请求')
+  error.name = 'AbortError'
+  return error
+}
+
+function isAbortError(error: unknown) {
+  return error instanceof Error && error.name === 'AbortError'
+}
+
+function currentServerBinding() {
+  return getApiBase() || window.location.origin
 }

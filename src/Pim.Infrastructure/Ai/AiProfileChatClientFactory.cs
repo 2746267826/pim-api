@@ -4,6 +4,7 @@ using OpenAI.Chat;
 using System.ClientModel;
 using System.ClientModel.Primitives;
 using System.Text.Json.Nodes;
+using Pim.Core.Ai;
 
 namespace Pim.Infrastructure.Ai;
 
@@ -41,11 +42,15 @@ public sealed class AiTextWireCapture : IDisposable
     public bool RequestRejected { get; private set; }
     public bool ProviderAttempted { get; private set; }
     private IReadOnlyList<AiVisionAuditImage>? _images;
+    private readonly IReadOnlyList<AiAudioContextInput>? _audio;
     private Func<byte[], string>? _requestAudit;
     private long _requestLimitBytes = 8 * 1024 * 1024;
     public long MaxRequestBytes => _requestAudit is not null ? _requestLimitBytes
+        : _audio is not null ? 16 * 1024 * 1024
         : _images is null ? 2 * 1024 * 1024 : 12 * 1024 * 1024;
-    public AiTextWireCapture(IReadOnlyList<AiVisionAuditImage>? images = null) { _images = images; Slot.Value = this; }
+    public AiTextWireCapture(IReadOnlyList<AiVisionAuditImage>? images = null,
+        IReadOnlyList<AiAudioContextInput>? audio = null)
+    { _images = images; _audio = audio; Slot.Value = this; }
     public void SetImages(IReadOnlyList<AiVisionAuditImage> images) => _images = images;
     public void SetAsrAudit(Func<byte[], string> audit, long maxRequestBytes = 8L * 1024 * 1024)
     {
@@ -60,6 +65,25 @@ public sealed class AiTextWireCapture : IDisposable
             try { RequestBody = _requestAudit(bytes); }
             catch (Exception error) when (error is InvalidDataException or System.Text.Json.JsonException or InvalidOperationException or ArgumentException)
             { RequestRejected = true; throw new InvalidDataException("ASR请求与固定输入不一致，本次未发送", error); }
+            return;
+        }
+        if (_audio is not null)
+        {
+            var audioBody = JsonNode.Parse(bytes)!;
+            var audioParts = audioBody["messages"]!.AsArray().SelectMany(m => m?["content"] is JsonArray content
+                ? content.OfType<JsonObject>() : Enumerable.Empty<JsonObject>())
+                .Where(p => p["type"]?.GetValue<string>() == "input_audio").ToArray();
+            if (audioParts.Length != _audio.Count) RejectAudio();
+            for (var index = 0; index < audioParts.Length; index++)
+            {
+                var input = audioParts[index]["input_audio"] as JsonObject;
+                var data = input?["data"]?.GetValue<string>();
+                var expected = Convert.ToBase64String(_audio[index].Bytes);
+                if (data != expected && data != $"data:{_audio[index].ContentType};base64,{expected}") RejectAudio();
+                if (input?["format"] is JsonNode format && format.GetValue<string>() != "wav") RejectAudio();
+                input!["data"] = $"pim-ai-audio:{index + 1:D5}";
+            }
+            RequestBody = audioBody.ToJsonString();
             return;
         }
         if (_images is null) { RequestBody = System.Text.Encoding.UTF8.GetString(bytes); return; }
@@ -78,6 +102,11 @@ public sealed class AiTextWireCapture : IDisposable
         RequestBody = body.ToJsonString();
     }
     private void Reject() { RequestRejected = true; throw new InvalidDataException("SDK图片清单与固定材料不一致，本次未发送模型"); }
+    private void RejectAudio()
+    {
+        RequestRejected = true;
+        throw new InvalidDataException("SDK音频清单与固定材料不一致，本次未发送模型");
+    }
     public void Attempt() => ProviderAttempted = true;
     public void Response(byte[] bytes) => ResponseBody = System.Text.Encoding.UTF8.GetString(bytes);
     public void TooLarge() => ResponseTooLarge = true;

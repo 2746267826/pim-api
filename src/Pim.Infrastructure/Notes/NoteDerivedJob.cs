@@ -3,6 +3,7 @@ using System.Text;
 using Hangfire;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using Pim.Core.Ai;
 using Pim.Core.Exceptions;
 using Pim.Core.Notes;
@@ -50,6 +51,7 @@ public sealed class NoteDerivedJob(
     NoteDerivedSnapshotBuilder snapshots,
     PimDbContext db,
     AiTextCallService calls,
+    IOptions<NoteDerivedAudioContextOptions> audioContext,
     ILogger<NoteDerivedJob> logger)
 {
     private static readonly TimeSpan UnknownWithoutReceiptAfter = TimeSpan.FromMinutes(15);
@@ -505,7 +507,9 @@ public sealed class NoteDerivedJob(
                 return PreparedCall.Failed(Issue("record_input_too_large",
                     $"完整记录输入 {prompt.Length} 字符，超过 SDK 实际上限 {NoteDerivedLimits.MaxSynthesisInputChars}；未截断且不会发送",
                     step.Key));
-            return PreparedCall.Text(prompt, prompt.Length);
+            var audio = await LoadAudioContextAsync(state, step.Key, ct);
+            if (audio.Issue is not null) return PreparedCall.Failed(audio.Issue);
+            return PreparedCall.Text(prompt, prompt.Length, audio.Items);
         }
 
         var record = state.Steps.Single(x => x.Kind == NoteDerivedStepKind.RecordSynthesis);
@@ -540,7 +544,67 @@ public sealed class NoteDerivedJob(
             return PreparedCall.Failed(Issue("analysis_input_too_large",
                 $"独立分析输入 {analysis.Length} 字符，超过 SDK 实际上限 {NoteDerivedLimits.MaxSynthesisInputChars}；未截断且不会发送",
                 step.Key));
-        return PreparedCall.Text(analysis, analysis.Length);
+        var audioContext = await LoadAudioContextAsync(state, step.Key, ct);
+        if (audioContext.Issue is not null) return PreparedCall.Failed(audioContext.Issue);
+        return PreparedCall.Text(analysis, analysis.Length, audioContext.Items);
+    }
+
+    private async Task<AudioCheck> LoadAudioContextAsync(NoteDerivedTaskState state, string stepKey,
+        CancellationToken ct)
+    {
+        var planned = state.Plan.Input.Audio;
+        if (planned.Count == 0) return new([], null);
+        var denied = await AudioContextDeniedAsync(state, stepKey, ct);
+        if (denied is not null) return new([], denied);
+
+        var items = new List<AiAudioContextInput>(planned.Count);
+        long total = 0;
+        foreach (var audio in planned.OrderBy(x => x.Ordinal))
+        {
+            byte[] bytes;
+            try
+            {
+                bytes = await materials.ReadAudioSliceAsync(state.Owner, state.Request.VersionId,
+                    audio.FileIndex, audio.SourceOffsetSamples, audio.Samples, ct);
+            }
+            catch (Exception error) when (error is DomainException or IOException or InvalidDataException)
+            {
+                return new([], Issue("audio_context_unreadable",
+                    "无法读取固定原始录音片段，未发送音频上下文：" + error.Message,
+                    stepKey, audio.Path));
+            }
+            if (bytes.Length != audio.SizeBytes)
+                return new([], Issue("audio_context_changed",
+                    "固定原始录音片段实际大小与计划不一致，未发送音频上下文",
+                    stepKey, audio.Path));
+            var digest = Digest(bytes);
+            total = checked(total + bytes.Length);
+            if (total > NoteDerivedAudioContext.MaxBytes)
+                return new([], Issue("audio_context_too_large",
+                    $"原始录音上下文合计 {total} 字节，超过单次 {NoteDerivedAudioContext.MaxBytes} 字节上限；未截断、未发送",
+                    stepKey, audio.Path));
+            items.Add(new AiAudioContextInput(audio.Name, "audio/wav", audio.SourceSha256,
+                digest, bytes.Length, state.Owner, state.NoteId, state.Request.VersionId,
+                audio.RecordingId, audio.RecordingSegment, audio.ChunkIndex, audio.FileIndex,
+                audio.SourceOffsetSamples, audio.Samples, audio.Path, bytes));
+        }
+        return new(items, null);
+    }
+
+    private async Task<NoteDerivedIssueDto?> AudioContextDeniedAsync(NoteDerivedTaskState state,
+        string stepKey, CancellationToken ct)
+    {
+        var configured = audioContext.Value;
+        if (configured.ModelIds.Length == 0 && configured.ModelNames.Length == 0)
+            return Issue("audio_context_not_allowed",
+                "当前服务端未授权该派生模型接收原始录音；未发送音频上下文", stepKey);
+        var modelId = state.Request.Consent.ModelId;
+        var profile = await db.AiModelProfiles.AsNoTracking()
+            .SingleOrDefaultAsync(x => x.Id == modelId, ct);
+        if (profile is null || !configured.IsAllowed(profile.Id, profile.Model, profile.Name))
+            return Issue("audio_context_not_allowed",
+                "派生模型已不在服务端原始录音白名单；未发送音频上下文", stepKey);
+        return null;
     }
 
     private async Task<AiTextCallResultDto> SendAsync(Guid owner, NoteDerivedTaskState state,
@@ -558,9 +622,13 @@ public sealed class NoteDerivedJob(
         var text = new AiTextCallRequest(requestId, owner, prepared.Prompt!, ModelId: consent.ModelId);
         var purpose = step.Kind == NoteDerivedStepKind.RecordSynthesis
             ? NoteDerivedPrompts.RecordPurpose : NoteDerivedPrompts.AnalysisPurpose;
-        return await calls.CallForOwnerAsync(owner, text,
-            new AiVisionDestinationConsent(consent.ModelId, consent.ModelRevision, consent.Endpoint, consent.Confirmed),
-            NoteDerivedPrompts.SourceObjectType, state.Request.TaskId.ToString("D"), purpose, ct);
+        var destination = new AiVisionDestinationConsent(consent.ModelId, consent.ModelRevision,
+            consent.Endpoint, consent.Confirmed);
+        return prepared.Audio.Count > 0
+            ? await calls.CallWithAudioForOwnerAsync(owner, text, prepared.Audio, destination,
+                NoteDerivedPrompts.SourceObjectType, state.Request.TaskId.ToString("D"), purpose, ct)
+            : await calls.CallForOwnerAsync(owner, text, destination,
+                NoteDerivedPrompts.SourceObjectType, state.Request.TaskId.ToString("D"), purpose, ct);
     }
 
     private async Task<bool> ApplyResultAsync(Guid owner, Guid taskId, string stepKey, Guid requestId,
@@ -750,8 +818,9 @@ public sealed class NoteDerivedJob(
         var completed = new HashSet<Guid>();
         if (state.Plan.Input.Transcripts.Count == 0)
         {
-            if (state.Request.AsrTaskId is not null ||
-                state.Plan.Input.AsrTaskId is not null)
+            if (state.Plan.Input.Audio.Count == 0 &&
+                (state.Request.AsrTaskId is not null ||
+                 state.Plan.Input.AsrTaskId is not null))
                 issues.Add(Issue("asr_transcripts_missing",
                     "材料绑定了 ASR 但固定派生快照没有任何成功转写；已阻断，不会以空转写继续"));
             return new(completed, issues);
@@ -1082,13 +1151,14 @@ public sealed class NoteDerivedJob(
         string? sourcePath = null) => new(code, message, sourcePath, StepKey: stepKey);
 
     private sealed record PreparedCall(string? Prompt, IReadOnlyList<AiVisionImageRequest> Images,
-        int InputCharacters, NoteDerivedIssueDto? Issue)
+        IReadOnlyList<AiAudioContextInput> Audio, int InputCharacters, NoteDerivedIssueDto? Issue)
     {
         internal static PreparedCall Vision(string prompt, IReadOnlyList<AiVisionImageRequest> images,
-            int inputCharacters) => new(prompt, images, inputCharacters, null);
-        internal static PreparedCall Text(string prompt, int inputCharacters) =>
-            new(prompt, [], inputCharacters, null);
-        internal static PreparedCall Failed(NoteDerivedIssueDto issue) => new(null, [], 0, issue);
+            int inputCharacters) => new(prompt, images, [], inputCharacters, null);
+        internal static PreparedCall Text(string prompt, int inputCharacters,
+            IReadOnlyList<AiAudioContextInput>? audio = null) =>
+            new(prompt, [], audio ?? [], inputCharacters, null);
+        internal static PreparedCall Failed(NoteDerivedIssueDto issue) => new(null, [], [], 0, issue);
     }
 
     private sealed record SourceCheck(IReadOnlyList<NoteDerivedIssueDto> Issues,
@@ -1099,5 +1169,7 @@ public sealed class NoteDerivedJob(
     private sealed record ActualImageCheck(IReadOnlyList<NoteDerivedActualImage> Images,
         IReadOnlyList<NoteDerivedIssueDto> Issues);
     private sealed record EvidenceCheck(IReadOnlyList<NoteDerivedEvidence> Items,
+        NoteDerivedIssueDto? Issue);
+    private sealed record AudioCheck(IReadOnlyList<AiAudioContextInput> Items,
         NoteDerivedIssueDto? Issue);
 }
