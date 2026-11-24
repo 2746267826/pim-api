@@ -93,6 +93,12 @@ export type NoteAsrReprocessRoute = components['schemas']['NoteAsrReprocessRoute
 export type CallItem = components['schemas']['AiRequestLogListItemDto']
 export type CallDetail = components['schemas']['AiRequestLogDetailDto']
 export type Usage = components['schemas']['AiUsageSummaryDto']
+export type AiProviderConnection = components['schemas']['AiProviderConnectionDto']
+export type SaveAiProviderConnection = components['schemas']['SaveAiProviderConnectionRequest']
+export type AiUsageLimitRule = components['schemas']['AiUsageLimitRuleDto']
+export type SaveAiUsageLimitRule = components['schemas']['SaveAiUsageLimitRuleRequest']
+export type AiUsageLimitUsage = components['schemas']['AiUsageLimitUsageDto']
+export type AiUsageReminder = components['schemas']['AiUsageReminderDto']
 
 export const aiApi = {
   noteAsrSources: (offset: number, signal?: AbortSignal) => apiGet<NoteAsrSources>(`/api/v1/native-notes/asr-tasks/sources?offset=${offset}&limit=20`, { signal }),
@@ -150,6 +156,31 @@ export const aiApi = {
     : apiPost<Model>('/api/v1/ai/models', body),
   removeModel: (model: Model) => apiDelete<boolean>(`/api/v1/ai/models/${encodeURIComponent(model.id)}?revision=${encodeURIComponent(model.revision)}`),
   saveSettings: (body: SaveSettings) => apiPut<ModelSettings>('/api/v1/ai/model-settings', body),
+  connections: (signal?: AbortSignal) => apiGet<AiProviderConnection[]>('/api/v1/ai/connections', { signal }),
+  createConnection: (body: SaveAiProviderConnection) => apiPost<AiProviderConnection>('/api/v1/ai/connections', body),
+  updateConnection: (id: string, body: SaveAiProviderConnection) =>
+    apiPut<AiProviderConnection>(`/api/v1/ai/connections/${encodeURIComponent(id)}`, body),
+  connectionUsageLimit: (id: string, signal?: AbortSignal) =>
+    apiGet<AiUsageLimitRule>(`/api/v1/ai/connections/${encodeURIComponent(id)}/usage-limit`, { signal }),
+  saveConnectionUsageLimit: (id: string, body: SaveAiUsageLimitRule) =>
+    apiPut<AiUsageLimitRule>(`/api/v1/ai/connections/${encodeURIComponent(id)}/usage-limit`, body),
+  connectionUsage: (id: string, period?: string, cycleKey?: string, signal?: AbortSignal) => {
+    const query = new URLSearchParams()
+    if (period) query.set('period', period)
+    if (cycleKey) query.set('cycleKey', cycleKey)
+    const suffix = query.toString() ? `?${query.toString()}` : ''
+    return apiGet<AiUsageLimitUsage>(`/api/v1/ai/connections/${encodeURIComponent(id)}/usage${suffix}`, { signal })
+  },
+  usageReminders: (options: { connectionId?: string; unreadOnly?: boolean; limit?: number } = {}, signal?: AbortSignal) => {
+    const query = new URLSearchParams()
+    if (options.connectionId) query.set('connectionId', options.connectionId)
+    if (options.unreadOnly !== undefined) query.set('unreadOnly', String(options.unreadOnly))
+    if (options.limit !== undefined) query.set('limit', String(options.limit))
+    const suffix = query.toString() ? `?${query.toString()}` : ''
+    return apiGet<AiUsageReminder[]>(`/api/v1/ai/usage-reminders${suffix}`, { signal })
+  },
+  markUsageReminderRead: (id: string) =>
+    apiPost<boolean>(`/api/v1/ai/usage-reminders/${encodeURIComponent(id)}/read`, {}),
   call: (body: CallRequest, signal: AbortSignal) => apiPost<CallResult>('/api/v1/ai/text-calls', body, { signal }),
   lookup: (id: string) => apiGet<CallResult>(`/api/v1/ai/text-calls/${encodeURIComponent(id)}`),
   visionCall: (body: VisionRequest, signal: AbortSignal) => apiPost<CallResult>('/api/v1/ai/vision-calls', body, { signal }),

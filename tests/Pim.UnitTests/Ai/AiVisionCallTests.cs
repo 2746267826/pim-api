@@ -27,22 +27,45 @@ public sealed class AiVisionCallTests : IDisposable
     private readonly ISecretProtector _secrets = new DataProtectionSecretProtector(new EphemeralDataProtectionProvider());
     private readonly AiTextCallGate _gate = new();
     private AiModelSettingsService Settings => new(_db, _secrets);
+    private AiUsageLimitService UsageLimits => new(_db, _user);
     private AiVisionMaterialService Materials => new(_db, _files, _user);
     private AiTextCallService Caller(bool dropImages = false) => new(_db, _secrets,
         dropImages ? new DropFactory(new AiProfileChatClientFactory(_wire)) : new AiProfileChatClientFactory(_wire), _user, _gate, Materials);
+    private AiTextCallService LimitedCaller() => new(_db, _secrets,
+        new AiProfileChatClientFactory(_wire), _user, _gate, Materials, UsageLimits);
 
     internal static readonly byte[] FirstPng = Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAFklEQVR4nGP8oKHBwMDAxMDAwMDAAAAP8gFEwVJxKAAAAABJRU5ErkJggg==");
     // A different valid opaque fixture; this is not a user attachment.
     internal static readonly byte[] SecondPng = Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAFklEQVR4nGPUCPjAwMDAxMDAwMDAAAAQQgFsd1MS4gAAAABJRU5ErkJggg==");
-    private async Task<AiVisionCallRequest> Request(int timeout = 60)
+    private async Task<AiVisionCallRequest> Request(int timeout = 60, bool useUsageLimits = false)
     {
-        var model = await Settings.SaveAsync(null, new("视觉" + Guid.NewGuid(), "https://synthetic-provider.invalid/v1", "fixture-vision", true,
+        var settings = useUsageLimits
+            ? new AiModelSettingsService(_db, _secrets, usageLimits: UsageLimits)
+            : Settings;
+        var model = await settings.SaveAsync(null, new("视觉" + Guid.NewGuid(), "https://synthetic-provider.invalid/v1", "fixture-vision", true,
             [AiModelCapability.Vision], timeout, 123, "synthetic-model-key"), default);
-        var runtime = await Settings.GetSettingsAsync(default);
-        await Settings.SaveSettingsAsync(new(runtime.Revision, true, null, model.Id, null), default);
+        var runtime = await settings.GetSettingsAsync(default);
+        await settings.SaveSettingsAsync(new(runtime.Revision, true, null, model.Id, null), default);
         return new(Guid.NewGuid(), _user.UserId!.Value, "  完整正文\npassword=普通内容  ", 2,
             [new("照片.png", "image/png", Convert.ToBase64String(FirstPng)), new("手写.png", "image/png", Convert.ToBase64String(SecondPng))],
             new(model.Id, model.Revision, model.BaseUrl, true), "结合全部图片回答");
+    }
+
+    [Fact]
+    public async Task UsageLimitAllowsVisionProviderAfterItsPersistedPlaceholder()
+    {
+        var request = await Request(useUsageLimits: true);
+        var profile = await _db.AiModelProfiles.AsNoTracking().SingleAsync(x => x.Id == request.Consent.ModelId);
+        var limit = await UsageLimits.GetRuleAsync(profile.ProviderConnectionId!.Value, default);
+        await UsageLimits.SaveRuleAsync(profile.ProviderConnectionId.Value,
+            new(limit.Revision, true, AiUsageLimitPeriods.Month, 80, 100, null, null,
+                "Asia/Shanghai"), default);
+
+        var result = await LimitedCaller().CallVisionAsync(request, default);
+
+        Assert.Equal(AiRequestStatus.Succeeded, result.Status);
+        Assert.Equal(1, _wire.Calls);
+        Assert.Equal(2, _files.Writes);
     }
 
     [Fact]

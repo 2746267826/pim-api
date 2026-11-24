@@ -15,6 +15,7 @@ import { NoteAsrTasks } from './note-asr-tasks'
 import { isMimoPro } from './asr-model-guidance'
 import { AsrResultInsights } from './asr-result-insights'
 import { NoteAsrRoutingView } from './note-asr-routing-view'
+import { AiUsageLimits } from './ai-usage-limits'
 
 const states = { Queued: '排队中', Cancelling: '取消中', Succeeded: '成功', Failed: '失败', Blocked: '未执行', TimedOut: '超时', FailedValidation: '结构不符', Running: '进行中', Cancelled: '已取消', Incomplete: '未完整/未确认' }
 const pageTabs = ['models', 'asr', 'history', 'usage'] as const
@@ -53,6 +54,7 @@ function Workspace({ userId }: { userId: string }) {
   const [detailId, setDetailId] = useState<string | null>(null)
   const models = useQuery({ queryKey: [...prefix, 'models'], queryFn: ({ signal }) => aiApi.models(signal) })
   const settings = useQuery({ queryKey: [...prefix, 'settings'], queryFn: ({ signal }) => aiApi.settings(signal) })
+  const connections = useQuery({ queryKey: [...prefix, 'connections'], queryFn: ({ signal }) => aiApi.connections(signal) })
   const presets = useQuery({ queryKey: ['ai-asr-presets'], queryFn: ({ signal }) => aiApi.asrPresets(signal), enabled: tab === 'asr' })
   const refresh = () => qc.invalidateQueries({ queryKey: prefix })
   useEffect(() => () => {
@@ -113,8 +115,10 @@ function Workspace({ userId }: { userId: string }) {
         </>}
     </div>
     {tab === 'history' && <History prefix={prefix} showDetail={setDetailId} />}
-    {tab === 'usage' && <Statistics prefix={prefix} />}
-    {editing !== undefined && <ModelEditor key={editing?.id ?? (creatingAsr ? 'new-asr' : 'new')} model={editing} initialAsr={creatingAsr && editing === null} close={() => setEditing(undefined)} save={async (body) => { const result = await aiApi.saveModel(editing?.id, body); await refresh(); notifySuccess('模型已保存'); return result }} />}
+    {tab === 'usage' && <div className="space-y-4"><AiUsageLimits userId={userId} /><Statistics prefix={prefix} /></div>}
+    {editing !== undefined && <ModelEditor key={editing?.id ?? (creatingAsr ? 'new-asr' : 'new')} model={editing}
+      connections={connections.data ?? []} connectionsLoading={connections.isLoading}
+      initialAsr={creatingAsr && editing === null} close={() => setEditing(undefined)} save={async (body) => { const result = await aiApi.saveModel(editing?.id, body); await refresh(); notifySuccess('模型已保存'); return result }} />}
     <Dialog open={deleting != null} onOpenChange={(open) => { if (!open && !busy) setDeleting(null) }}><DialogContent showClose={!busy}>
       <DialogHeader title="删除模型配置" description="已有调用记录保留；默认模型需先切换或清空。" /><DialogBody><p className="text-sm text-text-2">确认删除“{deleting?.name}”？</p></DialogBody>
       <DialogFooter><Button variant="secondary" disabled={busy} onClick={() => setDeleting(null)}>取消</Button><Button variant="primary" loading={busy} onClick={() => {

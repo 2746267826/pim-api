@@ -1,5 +1,6 @@
 using Microsoft.OpenApi.Any;
 using Microsoft.OpenApi.Models;
+using Pim.Core.Ai;
 using Pim.Module.Calendar.Entities;
 using Swashbuckle.AspNetCore.SwaggerGen;
 
@@ -40,6 +41,13 @@ public sealed class StrictValueSetsSchemaFilter : ISchemaFilter
         // MobileUsageIngestService emits these exact wire values for 202 responses only.
         // Both are declared optional on MobileUsageIngestResult; terminal replays omit them.
         ["MobileUsageIngestResult.ProcessingState"] = ["in-flight", "retry-scheduled"],
+
+        // AiUsageLimitService.ValidatePeriod accepts exactly these two values (others → 40001).
+        // Response period values are service-generated and therefore from the same closed set.
+        ["SaveAiUsageLimitRuleRequest.Period"] = AiUsageLimitPeriods.All,
+        ["AiUsageLimitRuleDto.Period"] = AiUsageLimitPeriods.All,
+        ["AiUsageLimitUsageDto.Period"] = AiUsageLimitPeriods.All,
+        ["AiUsageReminderDto.Period"] = AiUsageLimitPeriods.All,
     };
 
     /// <summary>

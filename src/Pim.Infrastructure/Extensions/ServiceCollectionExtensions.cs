@@ -50,6 +50,11 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IAiSchemaRegistry, AiSchemaRegistry>();
         services.AddSingleton<IAiChatClientFactory, AiChatClientFactory>();
         services.AddScoped<AiModelSettingsService>();
+        services.AddScoped<AiUsageLimitService>(sp => new AiUsageLimitService(
+            sp.GetRequiredService<PimDbContext>(),
+            sp.GetRequiredService<ICurrentUserService>(),
+            sp.GetService<TimeProvider>(),
+            sp.GetRequiredService<DbContextOptions<PimDbContext>>()));
         services.AddSingleton<IAiAsrPreset, MimoAsrPreset>();
         services.AddSingleton<IAiAsrPreset>(sp => new Pim.Infrastructure.Ai.Asr.Mimo.MimoMultimodalPreset(
             _ => sp.GetRequiredService<IHttpClientFactory>().CreateClient(AiProfileChatClientFactory.ClientName)));

@@ -10,6 +10,7 @@ public sealed class AiModelProfileEntity
     [Column("revision")] public Guid Revision { get; set; } = Guid.NewGuid();
     [Column("name"), MaxLength(120)] public string Name { get; set; } = "";
     [Column("normalized_name"), MaxLength(120)] public string NormalizedName { get; set; } = "";
+    [Column("provider_connection_id")] public Guid? ProviderConnectionId { get; set; }
     [Column("base_url"), MaxLength(2048)] public string BaseUrl { get; set; } = "";
     [Column("model"), MaxLength(128)] public string Model { get; set; } = "";
     [Column("enabled")] public bool Enabled { get; set; }

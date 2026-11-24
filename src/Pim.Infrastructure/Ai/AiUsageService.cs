@@ -117,7 +117,9 @@ public sealed class AiUsageService(PimDbContext db, IOptions<AiOptions> options)
             l.ModelEndpoint,
             l.ModelRevision,
             l.FinishReason,
-            l.ContentRedacted);
+            l.ContentRedacted,
+            l.ProviderConnectionId,
+            l.InitiatedAt);
     }
 
     public async Task<AiUsageSummaryDto> GetUsageSummaryAsync(
