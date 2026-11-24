@@ -1,9 +1,11 @@
+using System.Data.Common;
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using Npgsql;
 using Pim.Infrastructure.Auth;
@@ -26,6 +28,10 @@ namespace Pim.UnitTests.Api;
 /// 在持锁期间提交撤销/改密，然后才释放锁。
 ///   - 修复前：两个端点不取锁，会抢在撤销提交之前读旧值 → 返回 200（逃逸）→ 用例红；
 ///   - 修复后：端点阻塞在锁上，释放后**重读** → 令牌已撤销 / 口令哈希已变 → 401 → 用例绿。
+///
+/// 引导注册的两条用例额外用 EF <see cref="DbCommandInterceptor"/> 观察端点是否**实际执行**
+/// <c>pg_advisory_xact_lock(引导键)</c>：这一步先于数据库锁等待，避免在 CI 满载时把
+/// “请求尚未调度到锁命令”误判成“实现没有加锁”。观察窗口只做死锁保护，不作为阻塞证据。
 /// 无库环境（PIM_TEST_CONN 未设置或不可达）显式 Skip，不是静默通过。
 /// </summary>
 [Trait("DataSource", "RealDb")]
@@ -34,7 +40,9 @@ public sealed class AuthSessionRaceRealDbTests
     private const string Password = "password123";
 
     private static WebApplicationFactory<Program> CreateFactory(
-        string connectionString, bool allowPublicRegistration = false)
+        string connectionString,
+        bool allowPublicRegistration = false,
+        DbCommandInterceptor? interceptor = null)
         => new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
         {
             b.UseSetting("DisableHangfire", "true").UseSetting("Database:Migrations:FailFast", "false");
@@ -44,9 +52,85 @@ public sealed class AuthSessionRaceRealDbTests
             {
                 var descriptor = services.SingleOrDefault(d => d.ServiceType == typeof(DbContextOptions<PimDbContext>));
                 if (descriptor is not null) services.Remove(descriptor);
-                services.AddDbContext<PimDbContext>(o => o.UseNpgsql(connectionString));
+                services.AddDbContext<PimDbContext>(o =>
+                {
+                    o.UseNpgsql(connectionString);
+                    if (interceptor is not null) o.AddInterceptors(interceptor);
+                });
             });
         });
+
+    /// <summary>
+    /// 观察端点的引导锁命令：只有命令文本命中 <c>pg_advisory_xact_lock</c> 且参数等于期望键时
+    /// 才发出信号。测试用它作为「请求已经进入真实锁路径」的可观测屏障，不依赖
+    /// <c>pg_locks</c> 轮询窗口，也不依赖固定延迟。
+    /// </summary>
+    private sealed class AdvisoryLockAttemptObserver : DbCommandInterceptor
+    {
+        private readonly long _key;
+        private TaskCompletionSource<long> _attempted = NewSignal();
+
+        public AdvisoryLockAttemptObserver(long key) => _key = key;
+
+        public Task<long> Attempted => Volatile.Read(ref _attempted).Task;
+
+        /// <summary>丢弃宿主启动期间的命令观察结果，只观察测试真正要断言的请求。</summary>
+        public void Arm() => Interlocked.Exchange(ref _attempted, NewSignal());
+
+        public override InterceptionResult<int> NonQueryExecuting(
+            DbCommand command, CommandEventData eventData, InterceptionResult<int> result)
+        {
+            Observe(command);
+            return result;
+        }
+
+        public override ValueTask<InterceptionResult<int>> NonQueryExecutingAsync(
+            DbCommand command,
+            CommandEventData eventData,
+            InterceptionResult<int> result,
+            CancellationToken cancellationToken = default)
+        {
+            Observe(command);
+            return new(result);
+        }
+
+        public override InterceptionResult<DbDataReader> ReaderExecuting(
+            DbCommand command, CommandEventData eventData, InterceptionResult<DbDataReader> result)
+        {
+            Observe(command);
+            return result;
+        }
+
+        public override ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(
+            DbCommand command,
+            CommandEventData eventData,
+            InterceptionResult<DbDataReader> result,
+            CancellationToken cancellationToken = default)
+        {
+            Observe(command);
+            return new(result);
+        }
+
+        private void Observe(DbCommand command)
+        {
+            if (!command.CommandText.Contains("pg_advisory_xact_lock", StringComparison.OrdinalIgnoreCase))
+                return;
+
+            foreach (DbParameter parameter in command.Parameters)
+            {
+                if (parameter.Value is not null &&
+                    parameter.Value != DBNull.Value &&
+                    Convert.ToInt64(parameter.Value, System.Globalization.CultureInfo.InvariantCulture) == _key)
+                {
+                    Volatile.Read(ref _attempted).TrySetResult(_key);
+                    return;
+                }
+            }
+        }
+
+        private static TaskCompletionSource<long> NewSignal()
+            => new(TaskCreationOptions.RunContinuationsAsynchronously);
+    }
 
     private static async Task<(Guid UserId, string RefreshToken)> RegisterAsync(HttpClient client, string username)
     {
@@ -144,6 +228,35 @@ public sealed class AuthSessionRaceRealDbTests
         return Convert.ToInt32(await command.ExecuteScalarAsync());
     }
 
+    /// <summary>在不阻塞的前提下确认 blocker 仍持有引导锁。</summary>
+    private static async Task<bool> TryAcquireBootstrapLockAsync(string connectionString, long key)
+    {
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync();
+        await using var tx = await connection.BeginTransactionAsync();
+        await using var command = new NpgsqlCommand(
+            "SELECT pg_try_advisory_xact_lock(@key)", connection, tx);
+        command.Parameters.AddWithValue("key", key);
+        var acquired = (bool)(await command.ExecuteScalarAsync())!;
+        await tx.RollbackAsync();
+        return acquired;
+    }
+
+    /// <summary>
+    /// 先打一发必然 400 的注册请求，把路由、JSON 绑定、EF 查询等首次请求开销挡在
+    /// 锁观察窗口之外。载荷只在参数校验阶段失败，不写库，也不改变空库引导语义。
+    /// </summary>
+    private static async Task WarmUpRegistrationRouteAsync(HttpClient client)
+    {
+        var response = await client.PostAsJsonAsync("/api/v1/auth/register", new
+        {
+            username = "warmup",
+            email = "warmup@example.com",
+            password = "short"
+        });
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
     /// <summary>用原始 SQL 模拟「另一个请求刚刚完成了引导并提交」。</summary>
     private static async Task InsertUserAsync(
         NpgsqlConnection connection, NpgsqlTransaction tx, string username, string role)
@@ -172,13 +285,16 @@ public sealed class AuthSessionRaceRealDbTests
     {
         RealDbTestConnection.SkipIfUnavailable();
         await using var temp = await TempMigrationDatabase.CreateAsync("auth-race-boot-closed");
-        using var factory = CreateFactory(temp.ConnectionString); // 开关缺省＝关闭
+        var lockObserver = new AdvisoryLockAttemptObserver(AdvisoryLock.BootstrapRegistrationKey);
+        using var factory = CreateFactory(temp.ConnectionString, interceptor: lockObserver); // 开关缺省＝关闭
         var anon = factory.CreateClient();
+        await WarmUpRegistrationRouteAsync(anon);
 
         await using var blocker = new NpgsqlConnection(temp.ConnectionString);
         await blocker.OpenAsync();
         await using var tx = await LockKeyAsync(blocker, AdvisoryLock.BootstrapRegistrationKey);
 
+        lockObserver.Arm();
         var registerTask = anon.PostAsJsonAsync("/api/v1/auth/register", new
         {
             username = "latecomer",
@@ -186,9 +302,7 @@ public sealed class AuthSessionRaceRealDbTests
             password = Password
         });
 
-        Assert.True(
-            await WaitForBlockedOnKeyAsync(temp.ConnectionString, AdvisoryLock.BootstrapRegistrationKey, TimeSpan.FromSeconds(15)),
-            "并发首注册没有阻塞在引导锁上：库非空时的注册可以绕过关闭判定");
+        await AwaitBootstrapLockAttemptAsync(temp.ConnectionString, lockObserver, registerTask);
 
         // 另一个请求刚刚完成引导并提交
         await InsertUserAsync(blocker, tx, "first-admin", "admin");
@@ -210,13 +324,17 @@ public sealed class AuthSessionRaceRealDbTests
     {
         RealDbTestConnection.SkipIfUnavailable();
         await using var temp = await TempMigrationDatabase.CreateAsync("auth-race-boot-open");
-        using var factory = CreateFactory(temp.ConnectionString, allowPublicRegistration: true);
+        var lockObserver = new AdvisoryLockAttemptObserver(AdvisoryLock.BootstrapRegistrationKey);
+        using var factory = CreateFactory(
+            temp.ConnectionString, allowPublicRegistration: true, interceptor: lockObserver);
         var anon = factory.CreateClient();
+        await WarmUpRegistrationRouteAsync(anon);
 
         await using var blocker = new NpgsqlConnection(temp.ConnectionString);
         await blocker.OpenAsync();
         await using var tx = await LockKeyAsync(blocker, AdvisoryLock.BootstrapRegistrationKey);
 
+        lockObserver.Arm();
         var registerTask = anon.PostAsJsonAsync("/api/v1/auth/register", new
         {
             username = "latecomer",
@@ -224,9 +342,7 @@ public sealed class AuthSessionRaceRealDbTests
             password = Password
         });
 
-        Assert.True(
-            await WaitForBlockedOnKeyAsync(temp.ConnectionString, AdvisoryLock.BootstrapRegistrationKey, TimeSpan.FromSeconds(15)),
-            "并发首注册没有阻塞在引导锁上");
+        await AwaitBootstrapLockAttemptAsync(temp.ConnectionString, lockObserver, registerTask);
 
         await InsertUserAsync(blocker, tx, "first-admin", "admin");
         await tx.CommitAsync();
@@ -236,6 +352,35 @@ public sealed class AuthSessionRaceRealDbTests
         using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
         Assert.Equal("user", doc.RootElement.GetProperty("data").GetProperty("user").GetProperty("role").GetString());
         Assert.Equal(2, await CountUsersAsync(temp.ConnectionString));
+    }
+
+    /// <summary>
+    /// 等到注册端点**实际执行**引导锁命令；此时 blocker 仍持有同一把锁，因此该命令必然等待。
+    /// 超时只作为死锁保护，不作为“已阻塞”的证据。
+    /// </summary>
+    private static async Task AwaitBootstrapLockAttemptAsync(
+        string connectionString,
+        AdvisoryLockAttemptObserver observer,
+        Task<HttpResponseMessage> registerTask)
+    {
+        var first = await Task.WhenAny(observer.Attempted, registerTask)
+            .WaitAsync(TimeSpan.FromSeconds(15));
+        if (first == registerTask)
+        {
+            var response = await registerTask;
+            Assert.Fail(
+                $"注册请求在进入引导锁前已完成：HTTP {(int)response.StatusCode} " +
+                await response.Content.ReadAsStringAsync());
+        }
+
+        var attemptedKey = await observer.Attempted;
+        Assert.Equal(AdvisoryLock.BootstrapRegistrationKey, attemptedKey);
+        Assert.False(
+            await TryAcquireBootstrapLockAsync(connectionString, AdvisoryLock.BootstrapRegistrationKey),
+            "端点已执行引导锁命令，但 blocker 并未持有该锁");
+        Assert.False(
+            registerTask.IsCompleted,
+            "注册请求在引导锁仍被占用时已经完成：端点没有等待引导锁");
     }
 
     [SkippableFact]
