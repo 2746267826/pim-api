@@ -15,7 +15,8 @@ using Pim.Infrastructure.Data.Entities;
 
 namespace Pim.Infrastructure.Notes;
 
-public sealed class NoteAsrDispatchJob(NoteAsrTaskStore tasks, IBackgroundJobClient jobs, ILogger<NoteAsrDispatchJob> logger)
+public sealed class NoteAsrDispatchJob(NoteAsrTaskStore tasks, NoteAsrService asr,
+    IBackgroundJobClient jobs, ILogger<NoteAsrDispatchJob> logger)
 {
     [AutomaticRetry(Attempts = 0)]
     public async Task RunAsync(CancellationToken ct)
@@ -26,6 +27,9 @@ public sealed class NoteAsrDispatchJob(NoteAsrTaskStore tasks, IBackgroundJobCli
             try
             {
                 var state = await tasks.ReadAsync(owner, id, ct);
+                if (state.Route is not null)
+                    state = await asr.EnsureAttemptForOwnerAsync(owner, id,
+                        state.Request.VersionId, ct);
                 if (!NoteAsrTaskStore.Active(state)) continue;
                 using var lease = tasks.TryRunLease(owner, id);
                 if (lease is not null) jobs.Enqueue<NoteAsrJob>(job => job.RunAsync(owner, id, CancellationToken.None));
@@ -56,8 +60,14 @@ public sealed class NoteAsrJob(NoteAsrTaskStore tasks, NoteMaterialUploadStore m
             var state = await tasks.ReadAsync(owner, id, ct);
             if (!NoteAsrTaskStore.CloudPipeline(state)) return;
             if (state.Route is not null && state.AttemptId is null) return;
-            if (state.AttemptId is { } routedAttempt && await db.NoteAsrBatchJobs.AsNoTracking()
-                    .AnyAsync(x => x.OwnerId == owner && x.AttemptId == routedAttempt, ct))
+            if (state.AttemptId is { } routedAttempt)
+            {
+                var attempt = await db.NoteAsrAttempts.AsNoTracking()
+                    .SingleOrDefaultAsync(x => x.Id == routedAttempt && x.OwnerId == owner, ct);
+                if (attempt is null || !CanDispatchAttempt(attempt, owner, id, state)) return;
+            }
+            if (state.AttemptId is { } routedAttemptId && await db.NoteAsrBatchJobs.AsNoTracking()
+                    .AnyAsync(x => x.OwnerId == owner && x.AttemptId == routedAttemptId, ct))
                 return;
             var step = state.Steps.FirstOrDefault(x => x.Current.Status == "Running")
                 ?? (!state.StopRequested ? state.Steps.FirstOrDefault(x => x.Current.Status == "Queued") : null);
@@ -262,6 +272,10 @@ public sealed class NoteAsrJob(NoteAsrTaskStore tasks, NoteMaterialUploadStore m
         var routedAttempt = await db.NoteAsrAttempts.AsNoTracking().SingleOrDefaultAsync(x =>
             x.Id == rootState.AttemptId && x.OwnerId == owner, ct)
             ?? throw new DomainException(40901, "ASR 执行快照不存在");
+        if (!CanDispatchAttempt(routedAttempt, owner, taskId, rootState))
+            return new(NoteAsrAdaptiveOutcome.ConfigurationRejected,
+                ReasonCode: "attempt_not_dispatchable",
+                Reason: "ASR 执行快照已停止或处于不可执行状态");
         if (string.IsNullOrWhiteSpace(routedAttempt.PromptRendered) ||
             string.IsNullOrWhiteSpace(routedAttempt.PromptSha256) ||
             string.IsNullOrWhiteSpace(routedAttempt.PromptRevision) ||
@@ -317,6 +331,16 @@ public sealed class NoteAsrJob(NoteAsrTaskStore tasks, NoteMaterialUploadStore m
             attempt.LogId = logId ?? attempt.LogId;
         }, linked.Token);
     }
+
+    private static bool CanDispatchAttempt(NoteAsrAttemptEntity attempt, Guid owner, Guid taskId,
+        NoteAsrState state) =>
+        attempt.OwnerId == owner &&
+        attempt.TaskId == taskId &&
+        attempt.VersionId == state.Request.VersionId &&
+        attempt.InputSha256 == state.InputSha256 &&
+        attempt.Route == state.Route &&
+        !attempt.StopRequested &&
+        attempt.State is ("Queued" or "Running");
 
     private async Task RecordAdaptiveSuccessAsync(Guid owner, Guid taskId, NoteAsrState state,
         NoteAsrStep step, NoteAsrAdaptiveRun run, CancellationToken ct)

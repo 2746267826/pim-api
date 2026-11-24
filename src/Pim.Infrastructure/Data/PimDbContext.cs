@@ -74,6 +74,7 @@ public class PimDbContext : DbContext
     public DbSet<AiModelProfileEntity> AiModelProfiles => Set<AiModelProfileEntity>();
     public DbSet<AiModelRuntimeEntity> AiModelRuntime => Set<AiModelRuntimeEntity>();
     public DbSet<NoteAsrRouteConfigEntity> NoteAsrRouteConfigs => Set<NoteAsrRouteConfigEntity>();
+    public DbSet<NoteProcessingPreferenceEntity> NoteProcessingPreferences => Set<NoteProcessingPreferenceEntity>();
     public DbSet<NoteAsrNodeEntity> NoteAsrNodes => Set<NoteAsrNodeEntity>();
     public DbSet<NoteAsrResourceDecisionEntity> NoteAsrResourceDecisions => Set<NoteAsrResourceDecisionEntity>();
     public DbSet<NoteAsrAttemptEntity> NoteAsrAttempts => Set<NoteAsrAttemptEntity>();
@@ -261,8 +262,14 @@ public class PimDbContext : DbContext
             e.HasOne<AiModelProfileEntity>().WithMany().HasForeignKey(a => a.VisionModelId).OnDelete(DeleteBehavior.Restrict);
             e.HasOne<AiModelProfileEntity>().WithMany().HasForeignKey(a => a.TranscriptionModelId).OnDelete(DeleteBehavior.Restrict);
         });
-
         modelBuilder.Entity<NoteAsrRouteConfigEntity>(e => e.Property(x => x.Revision).IsConcurrencyToken());
+        modelBuilder.Entity<NoteProcessingPreferenceEntity>(e =>
+        {
+            e.HasKey(x => x.OwnerId);
+            e.Property(x => x.Revision).IsConcurrencyToken();
+            e.Property(x => x.AutoNoteProcessingEnabled).HasDefaultValue(false);
+        });
+
         modelBuilder.Entity<NoteAsrNodeEntity>(e =>
         {
             e.HasIndex(x => new { x.OwnerId, x.NodeId }).IsUnique();

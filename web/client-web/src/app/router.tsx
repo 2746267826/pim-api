@@ -61,6 +61,7 @@ const AiSettingsPage = lazyPage(settingsPages, 'AiSettingsPage')
 const CalendarDataManagerPage = lazyPage(settingsPages, 'CalendarDataManagerPage')
 const DataReliabilityPage = lazyPage(settingsPages, 'DataReliabilityPage')
 const McpSettingsPage = lazyPage(settingsPages, 'McpSettingsPage')
+const NoteProcessingSettingsPage = lazyPage(settingsPages, 'NoteProcessingSettingsPage')
 const PcDetailQueryPage = lazyPage(settingsPages, 'PcDetailQueryPage')
 const RecycleBinPage = lazyPage(settingsPages, 'RecycleBinPage')
 const AccountSecurityPage = lazyPage(() => import('@/features/settings/pages/account-security-page'), 'AccountSecurityPage')
@@ -127,6 +128,7 @@ export const router = createBrowserRouter([
           { path: 'settings/google', element: <GoogleDrivePage /> },
           { path: 'settings/data-reliability', element: <DataReliabilityPage /> },
           { path: 'settings/account', element: <AccountSecurityPage /> },
+          { path: 'settings/note-processing', element: <NoteProcessingSettingsPage /> },
           { path: 'settings/sync', element: <Navigate to="/settings/microsoft?tab=outlook" replace /> },
           {
             // AI 网关与用户管理为 Admin 专属（ai/admin 组 Roles="admin"），提前拦截避免 403 噪音

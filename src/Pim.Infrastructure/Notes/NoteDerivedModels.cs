@@ -98,6 +98,7 @@ internal sealed class NoteDerivedTaskState
     public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
     public bool StopRequested { get; set; }
     public bool Blocked { get; set; }
+    public bool AwaitingAsr { get; set; }
     public NoteDerivedPlan Plan { get; set; } = null!;
     public NoteDerivedCoverageDto Coverage { get; set; } = EmptyCoverage();
     public List<NoteDerivedIssueDto> Issues { get; set; } = [];

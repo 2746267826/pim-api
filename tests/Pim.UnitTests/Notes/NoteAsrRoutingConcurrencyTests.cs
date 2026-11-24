@@ -1,6 +1,9 @@
+using System.Data.Common;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Options;
+using Npgsql;
 using System.Text.Json;
 using Pim.Core.Ai;
 using Pim.Core.Exceptions;
@@ -916,6 +919,76 @@ public sealed class NoteAsrRoutingConcurrencyTests
         await CleanupAsync(owner);
     }
 
+    [SkippableTheory]
+    [InlineData("Succeeded")]
+    [InlineData("Failed")]
+    [InlineData("Cancelled")]
+    public async Task Task_stop_reads_back_terminal_attempt_when_cas_loses_to_completion(
+        string terminalState)
+    {
+        Skip.If(string.IsNullOrWhiteSpace(ConnectionString), "PIM_ASR516_PG is not configured");
+        var owner = Guid.NewGuid();
+        var nodeId = Guid.NewGuid();
+        var attemptId = await SeedAsync(owner, nodeId, Guid.NewGuid());
+        Guid taskId;
+        await using (var seedView = NewDb(owner))
+            taskId = (await seedView.NoteAsrAttempts.AsNoTracking()
+                .SingleAsync(x => x.Id == attemptId)).TaskId;
+        var terminalUpdatedAt = new DateTimeOffset(2026, 1, 2, 3, 4, 5, TimeSpan.Zero);
+
+        // Hold an uncommitted terminal transition so the stop request reads the old row,
+        // then blocks on its CAS until that terminal state becomes visible.
+        await using var terminalConnection = new NpgsqlConnection(ConnectionString);
+        await terminalConnection.OpenAsync();
+        await using var terminalTransaction = await terminalConnection.BeginTransactionAsync();
+        await using (var terminal = new NpgsqlCommand("""
+            UPDATE note_asr_attempts
+            SET state = @terminal_state, stop_requested = false, updated_at = @updated_at
+            WHERE owner_id = @owner_id AND id = @attempt_id
+            """, terminalConnection, terminalTransaction))
+        {
+            terminal.Parameters.AddWithValue("terminal_state", terminalState);
+            terminal.Parameters.AddWithValue("updated_at", terminalUpdatedAt);
+            terminal.Parameters.AddWithValue("owner_id", owner);
+            terminal.Parameters.AddWithValue("attempt_id", attemptId);
+            Assert.Equal(1, await terminal.ExecuteNonQueryAsync());
+        }
+
+        var interceptor = new BlockingAttemptStopInterceptor();
+        var stop = Task.Run(async () =>
+        {
+            await using var db = NewDb(owner, interceptor);
+            var options = Options.Create(new NoteMaterialUploadOptions { StorageRoot = StorageRoot });
+            return await NewNoteService(db, owner, new NoteMaterialUploadStore(options),
+                new NoteAsrTaskStore(options)).StopAsync(taskId, CancellationToken.None);
+        });
+        try
+        {
+            await interceptor.Blocked.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            await terminalTransaction.CommitAsync();
+            interceptor.Release.TrySetResult();
+            var stopped = await stop;
+            Assert.NotNull(stopped);
+            Assert.True(stopped.StopRequested);
+        }
+        finally
+        {
+            interceptor.Release.TrySetResult();
+        }
+
+        await using var check = NewDb(owner);
+        var attempt = await check.NoteAsrAttempts.AsNoTracking()
+            .SingleAsync(x => x.Id == attemptId);
+        Assert.Equal(terminalState, attempt.State);
+        Assert.False(attempt.StopRequested);
+        Assert.Equal(terminalUpdatedAt, attempt.UpdatedAt);
+        Assert.Equal(0, await check.NoteAsrLeases.CountAsync(x => x.AttemptId == attemptId));
+        Assert.Equal(0, await check.NoteAsrAckReceipts.CountAsync(x => x.AttemptId == attemptId));
+        Assert.Equal(0, await check.NoteAsrSegmentEvidence.CountAsync(x => x.AttemptId == attemptId));
+        Assert.Equal(0, await check.AiRequestLogs.CountAsync(x => x.UserId == owner));
+        await CleanupAsync(owner);
+    }
+
     [SkippableFact]
     public async Task Exact_duplicate_ack_repairs_a_missing_task_projection()
     {
@@ -1642,10 +1715,14 @@ public sealed class NoteAsrRoutingConcurrencyTests
         ModelRevision = "r1", ModelVerified = true, CapabilitiesJson = "[]", LastHeartbeatAt = now
     };
 
-    private static PimDbContext NewDb(Guid owner, bool retryOnFailure = false) => new(
-        new DbContextOptionsBuilder<PimDbContext>().UseNpgsql(ConnectionString!,
-            npgsql => { if (retryOnFailure) npgsql.EnableRetryOnFailure(3); }).Options,
-        new FixedUser(owner));
+    private static PimDbContext NewDb(Guid owner, DbCommandInterceptor? interceptor = null,
+        bool retryOnFailure = false)
+    {
+        var builder = new DbContextOptionsBuilder<PimDbContext>().UseNpgsql(ConnectionString!,
+            npgsql => { if (retryOnFailure) npgsql.EnableRetryOnFailure(3); });
+        if (interceptor is not null) builder.AddInterceptors(interceptor);
+        return new PimDbContext(builder.Options, new FixedUser(owner));
+    }
 
     private static NoteAsrRoutingService NewService(PimDbContext db, Guid owner,
         AiAsrPresetRegistry? presets = null)
@@ -1700,6 +1777,30 @@ public sealed class NoteAsrRoutingConcurrencyTests
     {
         public string Protect(string value) => value;
         public string Unprotect(string protectedValue) => protectedValue;
+    }
+
+    private sealed class BlockingAttemptStopInterceptor : DbCommandInterceptor
+    {
+        private int _triggered;
+        public TaskCompletionSource Blocked { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Release { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public override async ValueTask<InterceptionResult<int>> NonQueryExecutingAsync(
+            DbCommand command, CommandEventData eventData, InterceptionResult<int> result,
+            CancellationToken cancellationToken = default)
+        {
+            if (Volatile.Read(ref _triggered) == 0 &&
+                command.CommandText.Contains("note_asr_attempts", StringComparison.OrdinalIgnoreCase) &&
+                command.CommandText.Contains("stop_requested", StringComparison.OrdinalIgnoreCase) &&
+                Interlocked.CompareExchange(ref _triggered, 1, 0) == 0)
+            {
+                Blocked.TrySetResult();
+                await Release.Task.WaitAsync(cancellationToken);
+            }
+            return result;
+        }
     }
 
     private sealed class UnusedChatClientFactory : IAiProfileChatClientFactory

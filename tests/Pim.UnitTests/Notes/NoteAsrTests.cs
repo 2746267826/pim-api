@@ -434,7 +434,10 @@ public sealed class NoteAsrTests : IAsyncLifetime
         var fixture = NoteMaterialUploadStoreTests.Fixture.Create(); await Upload(fixture);
         var task = await Data<NoteAsrTaskDto>(await _client.PostAsJsonAsync(Route, Start(fixture)));
         var jobs = new RecordedJobs();
-        var dispatch = new NoteAsrDispatchJob(_factory.Services.GetRequiredService<NoteAsrTaskStore>(), jobs,
+        using var scope = _factory.Services.CreateScope();
+        var dispatch = new NoteAsrDispatchJob(
+            scope.ServiceProvider.GetRequiredService<NoteAsrTaskStore>(),
+            scope.ServiceProvider.GetRequiredService<NoteAsrService>(), jobs,
             Microsoft.Extensions.Logging.Abstractions.NullLogger<NoteAsrDispatchJob>.Instance);
         await dispatch.RunAsync(default);
         var job = Assert.Single(jobs.Items); Assert.Equal(typeof(NoteAsrJob), job.Type);
