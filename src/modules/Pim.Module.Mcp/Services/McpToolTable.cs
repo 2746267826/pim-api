@@ -129,23 +129,23 @@ public static class McpToolTable
             S("get_reminders", "GET", "/api/v1/calendar/reminders"),
             S("get_reminder_delivery_log", "GET", "/api/v1/calendar/reminders/delivery-log", localPageTrunc: true),
             S("get_reports", "GET", "/api/v1/calendar/reports", localPageTrunc: true),
-            S("get_report", "GET", "/api/v1/calendar/reports/{report_id}"),
+            S("get_report", "GET", "/api/v1/calendar/reports/{reportId}", req: R("reportId")),
             S("get_calendars", "GET", "/api/v1/calendar/calendars"),
             S("get_events", "GET", "/api/v1/calendar/events", Q("start", "end", "calendarId", "page", "pageSize"), redact: true),
             S("get_tasks", "GET", "/api/v1/calendar/tasks", Q("status", "calendarId", "page", "pageSize")),
-            S("get_task_segments", "GET", "/api/v1/calendar/tasks/{task_id}/segments"),
+            S("get_task_segments", "GET", "/api/v1/calendar/tasks/{taskId}/segments", req: R("taskId")),
             S("get_recycle_bin", "GET", "/api/v1/calendar/recycle-bin", Q("type", "start=deletedFrom", "end=deletedTo", "page", "pageSize")),
             S("preview_recycle_bin_restore", "POST", "/api/v1/calendar/recycle-bin/{type}/{id}/restore-preview", body: true),
             S("get_export_ics", "GET", "/api/v1/calendar/export-ics", kind: McpToolKind.ExportIcs),
             S("get_outlook_settings", "GET", "/api/v1/calendar/outlook/settings"),
             S("get_outlook_sync_batches", "GET", "/api/v1/calendar/outlook/sync/batches", Q("page", "pageSize")),
             S("get_outlook_local_data_preview", "GET", "/api/v1/calendar/outlook/local-data/preview"),
-            S("get_event_by_id", "GET", "/api/v1/calendar/events/{event_id}", kind: McpToolKind.EventById),
-            S("get_task_by_id", "GET", "/api/v1/calendar/tasks/{task_id}", kind: McpToolKind.TaskById),
-            S("get_habit_occurrences", "GET", "/api/v1/calendar/habits/{habit_id}/occurrences", Q("start", "end"), kind: McpToolKind.HabitOccurrences),
+            S("get_event_by_id", "GET", "/api/v1/calendar/events/{eventId}", req: R("eventId"), kind: McpToolKind.EventById),
+            S("get_task_by_id", "GET", "/api/v1/calendar/tasks/{taskId}", req: R("taskId"), kind: McpToolKind.TaskById),
+            S("get_habit_occurrences", "GET", "/api/v1/calendar/habits/{habitId}/occurrences", Q("start", "end"), req: R("habitId", "start", "end"), kind: McpToolKind.HabitOccurrences),
             S("get_schedule_preview", "POST", "/api/v1/calendar/schedule", body: true, kind: McpToolKind.SchedulePreview),
-            S("get_calendar_by_id", "GET", "/api/v1/calendar/calendars", kind: McpToolKind.CalendarById),
-            S("get_task_checklist", "GET", "/api/v1/calendar/tasks/{task_id}/checklist", kind: McpToolKind.TaskChecklist),
+            S("get_calendar_by_id", "GET", "/api/v1/calendar/calendars", req: R("calendarId"), kind: McpToolKind.CalendarById),
+            S("get_task_checklist", "GET", "/api/v1/calendar/tasks/{taskId}/checklist", req: R("taskId"), kind: McpToolKind.TaskChecklist),
             S("search_calendar_events", "GET", "/api/v1/calendar/events", Q("q=search", "start", "end", "page", "pageSize"), kind: McpToolKind.SearchEvents),
             S("search_calendar_tasks", "GET", "/api/v1/calendar/tasks", Q("q=search", "start", "end", "page", "pageSize"), kind: McpToolKind.SearchTasks),
 
@@ -204,17 +204,17 @@ public static class McpToolTable
 
             // ===================== QuickNotes reads (3) =====================
             S("get_quick_notes", "GET", "/api/v1/quick-notes", Q("status", "search", "page", "pageSize")),
-            S("get_quick_note", "GET", "/api/v1/quick-notes/{note_id}"),
-            S("get_quick_note_attachment_meta", "GET", "/api/v1/quick-notes/attachments/{attachment_id}/download", kind: McpToolKind.AttachmentMeta),
+            S("get_quick_note", "GET", "/api/v1/quick-notes/{noteId}", req: R("noteId")),
+            S("get_quick_note_attachment_meta", "GET", "/api/v1/quick-notes/attachments/{attachmentId}/download", req: R("attachmentId"), kind: McpToolKind.AttachmentMeta),
 
             // ===================== Files reads (8) =====================
             S("get_file_providers", "GET", "/api/v1/files/providers"),
             S("get_files", "GET", "/api/v1/files/items", Q("folderId=path", "page", "pageSize"), redact: true),
-            S("get_file", "GET", "/api/v1/files/items/{file_id}"),
+            S("get_file", "GET", "/api/v1/files/items/{fileId}", req: R("fileId")),
             S("search_files", "GET", "/api/v1/files/search", Q("q", "page", "pageSize")),
-            S("read_file_text", "GET", "/api/v1/files/items/{file_id}/extracted-text", Q("maxBytes")),
+            S("read_file_text", "GET", "/api/v1/files/items/{fileId}/extracted-text", Q("maxBytes"), req: R("fileId")),
             S("get_file_suggestions", "GET", "/api/v1/files/suggestions", Q("page", "pageSize")),
-            S("get_file_open_link", "GET", "/api/v1/files/items/{file_id}/open-link", kind: McpToolKind.FileOpenLink),
+            S("get_file_open_link", "GET", "/api/v1/files/items/{fileId}/open-link", req: R("fileId"), kind: McpToolKind.FileOpenLink),
 
             // ===================== Core/Infra reads (14) =====================
             S("get_today_sections", "GET", "/api/v1/today/sections", Q("date", "timezone")),
@@ -224,8 +224,8 @@ public static class McpToolTable
             S("get_system_health", "GET", "/health", kind: McpToolKind.Health),
             S("get_status_summary", "GET", "/api/v1/status/summary"),
             S("get_ai_status", "GET", "/api/v1/ai/status"),
-            S("get_ai_requests", "GET", "/api/v1/ai/requests", Q("from_time=from", "to", "module", "status", "page", "pageSize")),
-            S("get_ai_usage_summary", "GET", "/api/v1/ai/usage/summary", Q("from_time=from", "to")),
+            S("get_ai_requests", "GET", "/api/v1/ai/requests", Q("fromTime=from", "to", "module", "status", "page", "pageSize")),
+            S("get_ai_usage_summary", "GET", "/api/v1/ai/usage/summary", Q("fromTime=from", "to"), req: R("fromTime")),
             S("get_audit_timeline", "GET", "/api/v1/operations/audit/{objectType}/{objectId}"),
             S("get_audit_export", "GET", "/api/v1/operations/audit/export", Q("start", "end")),
             S("get_confirmations_pending", "GET", "/api/v1/operations/confirmations/pending"),
@@ -318,6 +318,7 @@ public static class McpToolTable
         bool localPage = false,
         bool localPageTrunc = false,
         bool dateSpan = false,
+        string[]? req = null,
         bool noBody = false,
         McpToolKind kind = McpToolKind.None)
         => new()
@@ -332,6 +333,7 @@ public static class McpToolTable
             LocalPagination = localPage,
             LocalPaginationTruncation = localPageTrunc,
             DateSpanConversion = dateSpan,
+            Required = req ?? Array.Empty<string>(),
             Kind = kind,
         };
 

@@ -144,6 +144,202 @@ public sealed class McpToolExecutorTests : IDisposable
 
     private static JsonElement Json(string raw) => JsonDocument.Parse(raw).RootElement.Clone();
 
+    public sealed record ParameterAliasCase(
+        string Tool,
+        string Canonical,
+        string Legacy,
+        string Value,
+        string Method,
+        string Path,
+        string? ExpectedQuery,
+        string ExtraArgsJson = "{}",
+        string ResponseJson = "{\"code\":0,\"data\":{}}");
+
+    public static TheoryData<ParameterAliasCase> ParameterAliasCases => new()
+    {
+        new("get_report", "reportId", "report_id", "r1", "GET", "/api/v1/calendar/reports/r1", null),
+        new("get_task_segments", "taskId", "task_id", "t1", "GET", "/api/v1/calendar/tasks/t1/segments", null),
+        new("get_event_by_id", "eventId", "event_id", "e1", "GET", "/api/v1/calendar/events/e1", null),
+        new("get_task_by_id", "taskId", "task_id", "t1", "GET", "/api/v1/calendar/tasks/t1", null),
+        new(
+            "get_habit_occurrences",
+            "habitId",
+            "habit_id",
+            "h1",
+            "GET",
+            "/api/v1/calendar/habits/h1/occurrences",
+            "start=2026-09-01&end=2026-09-02",
+            "{\"start\":\"2026-09-01\",\"end\":\"2026-09-02\"}"),
+        new(
+            "get_calendar_by_id",
+            "calendarId",
+            "calendar_id",
+            "cal-2",
+            "GET",
+            "/api/v1/calendar/calendars",
+            null,
+            ResponseJson: "{\"code\":0,\"data\":[{\"id\":\"cal-1\"},{\"id\":\"cal-2\"}]}"),
+        new("get_task_checklist", "taskId", "task_id", "t1", "GET", "/api/v1/calendar/tasks/t1/checklist", null),
+        new("get_quick_note", "noteId", "note_id", "n1", "GET", "/api/v1/quick-notes/n1", null),
+        new(
+            "get_quick_note_attachment_meta",
+            "attachmentId",
+            "attachment_id",
+            "a1",
+            "HEAD",
+            "/api/v1/quick-notes/attachments/a1/download",
+            null),
+        new("get_file", "fileId", "file_id", "f1", "GET", "/api/v1/files/items/f1", null),
+        new("read_file_text", "fileId", "file_id", "f1", "GET", "/api/v1/files/items/f1/extracted-text", null),
+        new("get_file_open_link", "fileId", "file_id", "f1", "GET", "/api/v1/files/items/f1/open-link", null),
+        new(
+            "get_ai_requests",
+            "fromTime",
+            "from_time",
+            "2026-09-01T00:00:00Z",
+            "GET",
+            "/api/v1/ai/requests",
+            "from=2026-09-01T00%3A00%3A00Z"),
+        new(
+            "get_ai_usage_summary",
+            "fromTime",
+            "from_time",
+            "2026-09-01T00:00:00Z",
+            "GET",
+            "/api/v1/ai/usage/summary",
+            "from=2026-09-01T00%3A00%3A00Z"),
+    };
+
+    [Theory]
+    [MemberData(nameof(ParameterAliasCases))]
+    public async Task CamelCaseParameter_DispatchesToRestEndpoint(ParameterAliasCase testCase)
+        => await AssertParameterAliasDispatches(testCase, useLegacy: false);
+
+    [Theory]
+    [MemberData(nameof(ParameterAliasCases))]
+    public async Task LegacySnakeCaseParameter_RemainsCallableAsDeprecatedAlias(ParameterAliasCase testCase)
+        => await AssertParameterAliasDispatches(testCase, useLegacy: true);
+
+    private async Task AssertParameterAliasDispatches(ParameterAliasCase testCase, bool useLegacy)
+    {
+        CreateExecutor();
+        _routes[$"{testCase.Method} {testCase.Path}"] = new(200, testCase.ResponseJson);
+
+        var args = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(testCase.ExtraArgsJson)!;
+        args[useLegacy ? testCase.Legacy : testCase.Canonical] = Json($"\"{testCase.Value}\"");
+
+        var result = await CallTool(testCase.Tool, args);
+
+        Assert.Equal(0, result!["code"]!.GetValue<int>());
+        var request = Assert.Single(_requests);
+        Assert.Equal(testCase.Method, request.Method);
+        Assert.Equal(testCase.Path, request.Path);
+        Assert.Contains($"Bearer ", request.Auth ?? string.Empty);
+        if (testCase.ExpectedQuery is null)
+            Assert.True(string.IsNullOrEmpty(request.Query), $"{testCase.Tool}: unexpected query {request.Query}");
+        else
+            Assert.Contains(testCase.ExpectedQuery, request.Query);
+
+        Assert.DoesNotContain(testCase.Legacy, request.Query ?? string.Empty);
+        Assert.DoesNotContain(testCase.Legacy, request.Body ?? string.Empty);
+    }
+
+    [Fact]
+    public async Task ConflictingCamelAndSnakeAliases_AreRejectedBeforeDispatch()
+    {
+        CreateExecutor();
+
+        var result = await CallTool("get_task_checklist", new Dictionary<string, JsonElement>
+        {
+            ["taskId"] = Json("\"task-camel\""),
+            ["task_id"] = Json("\"task-legacy\""),
+        });
+
+        Assert.Equal(400, result!["code"]!.GetValue<int>());
+        Assert.Contains("different values", result!["error"]!.GetValue<string>());
+        Assert.Empty(_requests);
+    }
+
+    [Fact]
+    public async Task MatchingCamelAndSnakeAliases_AreCollapsedBeforeDispatch()
+    {
+        CreateExecutor();
+        _routes["GET /api/v1/calendar/tasks/t1/checklist"] = new(200, "{\"code\":0,\"data\":[]}");
+
+        var result = await CallTool("get_task_checklist", new Dictionary<string, JsonElement>
+        {
+            ["taskId"] = Json("\"t1\""),
+            ["task_id"] = Json("\"t1\""),
+        });
+
+        Assert.Equal(0, result!["code"]!.GetValue<int>());
+        var request = Assert.Single(_requests);
+        Assert.Equal("/api/v1/calendar/tasks/t1/checklist", request.Path);
+        Assert.True(string.IsNullOrEmpty(request.Query));
+    }
+
+    public static TheoryData<string> HabitRangeParams => new() { "start", "end" };
+
+    [Theory]
+    [MemberData(nameof(HabitRangeParams))]
+    public async Task HabitOccurrences_MissingCanonicalRangeParam_Returns400BeforeDispatch(string missing)
+    {
+        CreateExecutor();
+        var args = new Dictionary<string, JsonElement>
+        {
+            ["habitId"] = Json("\"h1\""),
+        };
+        AddOtherHabitRangeParam(args, missing);
+
+        var result = await CallTool("get_habit_occurrences", args);
+
+        Assert.Equal(400, result!["code"]!.GetValue<int>());
+        Assert.Equal($"{missing} is required", result["error"]!.GetValue<string>());
+        Assert.Empty(_requests);
+    }
+
+    [Theory]
+    [MemberData(nameof(HabitRangeParams))]
+    public async Task HabitOccurrences_MissingLegacyRangeParam_Returns400BeforeAuthentication(string missing)
+    {
+        CreateExecutor(http: false, stdioToken: null);
+        var args = new Dictionary<string, JsonElement>
+        {
+            ["habit_id"] = Json("\"h1\""),
+        };
+        AddOtherHabitRangeParam(args, missing);
+
+        var result = await CallTool("get_habit_occurrences", args);
+
+        Assert.Equal(400, result!["code"]!.GetValue<int>());
+        Assert.Equal($"{missing} is required", result["error"]!.GetValue<string>());
+        Assert.Empty(_requests);
+    }
+
+    [Fact]
+    public async Task HabitOccurrences_ConflictingHabitIdAliases_AreRejectedBeforeDispatch()
+    {
+        CreateExecutor();
+
+        var result = await CallTool("get_habit_occurrences", new Dictionary<string, JsonElement>
+        {
+            ["habitId"] = Json("\"habit-camel\""),
+            ["habit_id"] = Json("\"habit-legacy\""),
+            ["start"] = Json("\"2026-09-01\""),
+            ["end"] = Json("\"2026-09-02\""),
+        });
+
+        Assert.Equal(400, result!["code"]!.GetValue<int>());
+        Assert.Contains("different values", result["error"]!.GetValue<string>());
+        Assert.Empty(_requests);
+    }
+
+    private static void AddOtherHabitRangeParam(Dictionary<string, JsonElement> args, string missing)
+    {
+        var other = missing == "start" ? "end" : "start";
+        args[other] = Json(other == "start" ? "\"2026-09-01\"" : "\"2026-09-02\"");
+    }
+
     // ---------- validation ----------
 
     [Fact]

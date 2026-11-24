@@ -145,6 +145,26 @@ public sealed class McpProtocolIntegrationTests : IClassFixture<WebApplicationFa
     }
 
     [Fact]
+    public async Task ToolsList_AdvertisesCamelCaseRequiredWithDeprecatedSnakeAlias()
+    {
+        using var client = CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "pim_mcp_dummy");
+        var response = await client.SendAsync(JsonRpc("tools/list", new { }));
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        using var body = ReadJsonFromResponse(response);
+        var tool = body.RootElement.GetProperty("result").GetProperty("tools").EnumerateArray()
+            .Single(t => t.GetProperty("name").GetString() == "get_task_by_id");
+
+        var schema = tool.GetProperty("inputSchema");
+        var properties = schema.GetProperty("properties");
+        Assert.True(properties.TryGetProperty("taskId", out var canonical));
+        Assert.Equal("string", canonical.GetProperty("type").GetString());
+        Assert.True(properties.TryGetProperty("task_id", out var legacy));
+        Assert.True(legacy.GetProperty("deprecated").GetBoolean());
+        Assert.Equal(["taskId"], schema.GetProperty("required").EnumerateArray().Select(x => x.GetString()));
+    }
+
+    [Fact]
     public async Task ToolsCall_WithDummyToken_Returns401ToolResult()
     {
         using var client = CreateClient();
