@@ -167,7 +167,7 @@ internal sealed class NoteTaskSuggestionService(
         {
             var entity = await RequireSuggestionAsync(owner, id, ct);
             RequireDraft(entity);
-            ValidateEditableFields(request, entity.Kind);
+            var eventTimes = ValidateEditableFields(request, entity.Kind);
             if (entity.Revision != request.ExpectedRevision)
                 throw new DomainException(40901, "任务建议已被修改，请刷新后重试");
 
@@ -185,8 +185,8 @@ internal sealed class NoteTaskSuggestionService(
             else
             {
                 entity.Due = null;
-                entity.StartAt = request.Start?.ToUniversalTime();
-                entity.EndAt = request.End?.ToUniversalTime();
+                entity.StartAt = eventTimes.Start;
+                entity.EndAt = eventTimes.End;
                 entity.TimeZoneId = string.IsNullOrWhiteSpace(request.TimeZoneId)
                     ? null : request.TimeZoneId.Trim();
             }
@@ -261,7 +261,8 @@ internal sealed class NoteTaskSuggestionService(
 
                 if (entity.Kind == NoteTaskSuggestionKinds.Event)
                     ValidateEventRange(entity);
-                var fingerprint = ItemFingerprint(entity);
+                var eventCalendarId = await ResolveFingerprintCalendarIdAsync(entity, ct);
+                var fingerprint = ItemFingerprint(entity, eventCalendarId);
                 var duplicate = await FindConfirmedDuplicateAsync(owner, entity, fingerprint, ct);
                 if (duplicate is not null)
                     throw DuplicateSuggestion(duplicate);
@@ -291,7 +292,7 @@ internal sealed class NoteTaskSuggestionService(
                 else
                 {
                     var created = await calendar.CreateEventAsync(new CreateEventRequest(
-                        entity.CalendarId ?? Guid.Empty,
+                        eventCalendarId!.Value,
                         entity.Title,
                         entity.Description,
                         null,
@@ -334,8 +335,9 @@ internal sealed class NoteTaskSuggestionService(
                 return Map(stored);
             if (stored is not null)
             {
+                var eventCalendarId = await ResolveFingerprintCalendarIdAsync(stored, ct);
                 var duplicate = await FindConfirmedDuplicateAsync(
-                    owner, stored, ItemFingerprint(stored), ct);
+                    owner, stored, ItemFingerprint(stored, eventCalendarId), ct);
                 if (duplicate is not null && duplicate.Id != id)
                     throw DuplicateSuggestion(duplicate);
             }
@@ -496,7 +498,17 @@ internal sealed class NoteTaskSuggestionService(
             throw new DomainException(40001, "目标日历不存在");
     }
 
-    private static void ValidateEditableFields(
+    private async Task<Guid?> ResolveFingerprintCalendarIdAsync(
+        NoteTaskSuggestionEntity entity, CancellationToken ct)
+    {
+        if (entity.Kind != NoteTaskSuggestionKinds.Event)
+            return entity.CalendarId;
+        if (entity.CalendarId is { } calendarId && calendarId != Guid.Empty)
+            return calendarId;
+        return await calendar.GetOrCreateDefaultEventCalendarIdAsync(ct);
+    }
+
+    private static (DateTimeOffset? Start, DateTimeOffset? End) ValidateEditableFields(
         UpdateNoteTaskSuggestionRequest request, string kind)
     {
         if (string.IsNullOrWhiteSpace(request.Title) || request.Title.Trim().Length > 255)
@@ -506,22 +518,46 @@ internal sealed class NoteTaskSuggestionService(
                 $"建议描述不能超过 {NoteTaskSuggestionPrompt.MaxDescriptionCharacters} 字");
         if (request.Priority is not (1 or 5 or 9))
             throw new DomainException(40001, "建议优先级只能是 1（低）、5（中）或 9（高）");
-        if (request.TimeZoneId?.Trim().Length > 100)
+        var timeZoneId = request.TimeZoneId?.Trim();
+        if (timeZoneId is { Length: > 100 })
             throw new DomainException(40001, "日程时区不能超过 100 字");
 
         if (kind == NoteTaskSuggestionKinds.Task)
         {
-            if (request.Start.HasValue || request.End.HasValue)
+            if (!string.IsNullOrWhiteSpace(timeZoneId))
+                throw new DomainException(40001, "任务建议不能携带时区");
+            if (request.Start.HasValue || request.End.HasValue ||
+                request.StartRaw is not null || request.EndRaw is not null)
                 throw new DomainException(40001, "任务建议不能携带 start/end；需要日程时间时请改用事件建议");
-            return;
+            return (null, null);
         }
 
+        if (!string.IsNullOrWhiteSpace(timeZoneId) &&
+            !NoteTaskSuggestionTimeZone.IsIana(timeZoneId))
+            throw new DomainException(40001, "日程时区必须是有效的 IANA 时区");
         if (request.Due.HasValue)
             throw new DomainException(40001, "日程建议必须用 start/end 表示时间，不能使用 due");
-        if (request.Start.HasValue != request.End.HasValue)
+        var hasStart = request.Start.HasValue || request.StartRaw is not null;
+        var hasEnd = request.End.HasValue || request.EndRaw is not null;
+        if (hasStart != hasEnd)
             throw new DomainException(40001, "日程建议 start 和 end 必须同时提供或同时为空");
-        if (request.Start is { } start && request.End is { } end && end <= start)
+
+        var start = ResolveEventTime(request.StartRaw, request.Start, timeZoneId, "开始时间");
+        var end = ResolveEventTime(request.EndRaw, request.End, timeZoneId, "结束时间");
+        if (start is { } startValue && end is { } endValue && endValue <= startValue)
             throw new DomainException(40001, "日程结束时间必须晚于开始时间");
+        return (start, end);
+    }
+
+    private static DateTimeOffset? ResolveEventTime(
+        string? raw, DateTimeOffset? fallback, string? timeZoneId, string label)
+    {
+        if (raw is null)
+            return fallback?.ToUniversalTime();
+        if (!NoteTaskSuggestionTimeZone.TryConvertToUtc(
+                raw, timeZoneId, out var value, out var error))
+            throw new DomainException(40001, $"{label}{error}");
+        return value;
     }
 
     private static void ValidateEventRange(NoteTaskSuggestionEntity entity)
@@ -556,37 +592,38 @@ internal sealed class NoteTaskSuggestionService(
             .FirstOrDefaultAsync(ct);
 
     private static DomainException DuplicateSuggestion(NoteTaskSuggestionEntity original)
-    {
-        var target = original.Kind == NoteTaskSuggestionKinds.Event
-            ? original.EventId
-            : original.TaskId;
-        return new DomainException(40901,
-            "同一笔记中已确认相同的事项目标；未重复创建，原对象为 " +
-            (target?.ToString() ?? original.Id.ToString()));
-    }
+        => new(40901, "同一笔记中已确认相同的事项；本次未重复创建。");
 
-    internal static string ItemFingerprint(NoteTaskSuggestionEntity entity)
+    internal static string ItemFingerprint(
+        NoteTaskSuggestionEntity entity, Guid? resolvedCalendarId = null)
     {
-        var payload = string.Join('|',
-            "v2",
-            FingerprintPart(entity.UserId.ToString("D")),
-            FingerprintPart(entity.NoteId.ToString("D")),
-            FingerprintPart(entity.ArtifactId.ToString("D")),
-            FingerprintPart(entity.ArtifactVersionId.ToString("D")),
-            FingerprintPart(entity.SourceContentSha256),
-            FingerprintPart(entity.SourceInputSha256),
-            FingerprintPart(entity.SourceManifestSha256),
-            FingerprintPart(entity.SourceGenerationTaskId?.ToString("D")),
-            FingerprintPart(entity.Kind),
-            FingerprintPart(entity.Title.Trim()),
-            FingerprintPart(entity.Description?.Trim()),
-            entity.Priority.ToString(CultureInfo.InvariantCulture),
-            UnixSeconds(entity.Due),
-            UnixSeconds(entity.StartAt),
-            UnixSeconds(entity.EndAt),
-            FingerprintPart(entity.TimeZoneId?.Trim()),
-            FingerprintPart(entity.TaskBookId?.ToString("D")),
-            FingerprintPart(entity.CalendarId?.ToString("D")));
+        var calendarId = entity.Kind == NoteTaskSuggestionKinds.Event
+            ? resolvedCalendarId ?? entity.CalendarId
+            : entity.CalendarId;
+        var payload = entity.Kind == NoteTaskSuggestionKinds.Event
+            ? string.Join('|',
+                "event-v1",
+                FingerprintPart(entity.UserId.ToString("D")),
+                FingerprintPart(entity.NoteId.ToString("D")),
+                FingerprintPart(entity.Kind),
+                FingerprintPart(entity.Title.Trim()),
+                UnixSeconds(entity.StartAt),
+                UnixSeconds(entity.EndAt),
+                FingerprintPart(calendarId?.ToString("D")))
+            : string.Join('|',
+                "v3",
+                FingerprintPart(entity.UserId.ToString("D")),
+                FingerprintPart(entity.NoteId.ToString("D")),
+                FingerprintPart(entity.Kind),
+                FingerprintPart(entity.Title.Trim()),
+                FingerprintPart(entity.Description?.Trim()),
+                entity.Priority.ToString(CultureInfo.InvariantCulture),
+                UnixSeconds(entity.Due),
+                UnixSeconds(entity.StartAt),
+                UnixSeconds(entity.EndAt),
+                FingerprintPart(entity.TimeZoneId?.Trim()),
+                FingerprintPart(entity.TaskBookId?.ToString("D")),
+                FingerprintPart(calendarId?.ToString("D")));
         return Hash(payload);
     }
 

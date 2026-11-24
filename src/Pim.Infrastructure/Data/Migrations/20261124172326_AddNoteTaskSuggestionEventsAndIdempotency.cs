@@ -52,25 +52,16 @@ namespace Pim.Infrastructure.Data.Migrations
                 nullable: true);
 
             // Existing confirmed suggestions predate the durable item fingerprint. Backfill
-            // only the earliest row per stable source/content identity so the new unique index
-            // can be created even if a note already contains historical duplicates.
+            // only the earliest row per stable item identity so the new unique index can be
+            // created even if a note already contains historical duplicates.
             migrationBuilder.Sql("""
                 WITH candidate_rows AS (
                     SELECT
                         id,
                         concat_ws('|',
-                            'v2',
+                            'v3',
                             encode(convert_to(user_id::text, 'UTF8'), 'hex'),
                             encode(convert_to(note_id::text, 'UTF8'), 'hex'),
-                            encode(convert_to(artifact_id::text, 'UTF8'), 'hex'),
-                            encode(convert_to(artifact_version_id::text, 'UTF8'), 'hex'),
-                            encode(convert_to(COALESCE(source_content_sha256, '-'), 'UTF8'), 'hex'),
-                            encode(convert_to(COALESCE(source_input_sha256, '-'), 'UTF8'), 'hex'),
-                            encode(convert_to(COALESCE(source_manifest_sha256, '-'), 'UTF8'), 'hex'),
-                            CASE
-                                WHEN source_generation_task_id IS NULL THEN '-'
-                                ELSE encode(convert_to(source_generation_task_id::text, 'UTF8'), 'hex')
-                            END,
                             encode(convert_to(COALESCE(kind, 'Task'), 'UTF8'), 'hex'),
                             encode(convert_to(btrim(title), 'UTF8'), 'hex'),
                             CASE

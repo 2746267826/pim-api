@@ -25531,6 +25531,7 @@
             "type": "string"
           },
           "timeZoneId": {
+            "maxLength": 100,
             "nullable": true,
             "type": "string"
           },

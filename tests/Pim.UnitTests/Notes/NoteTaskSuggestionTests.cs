@@ -472,6 +472,142 @@ public sealed class NoteTaskSuggestionTests
     }
 
     [SkippableFact]
+    public async Task EventUpdateRejectsInvalidTimeZoneWithoutChangingTheDraft()
+    {
+        await using var harness = await Harness.CreateAsync(
+            "test_note_task_suggestion_event_timezone_update");
+        var start = DateTimeOffset.Parse("2026-11-22T09:00:00+08:00");
+        var end = DateTimeOffset.Parse("2026-11-22T10:00:00+08:00");
+        var suggestion = await harness.CreateSuggestionAsync(
+            "校验时区日程", NoteTaskSuggestionKindDto.Event, null, start, end, "Asia/Shanghai");
+
+        var error = await Assert.ThrowsAsync<DomainException>(() => harness.Service.UpdateAsync(
+            suggestion.Id,
+            new(suggestion.Revision, "被拒绝的修订", null, 5, null, null, null,
+                start, end, "Mars/Olympus"),
+            default));
+
+        Assert.Equal(40001, error.ErrorCode);
+        var unchanged = await harness.Service.GetAsync(suggestion.Id, default);
+        Assert.Equal(suggestion.Revision, unchanged.Revision);
+        Assert.Equal("校验时区日程", unchanged.Title);
+        Assert.Equal("Asia/Shanghai", unchanged.TimeZoneId);
+
+        var updated = await harness.Service.UpdateAsync(
+            suggestion.Id,
+            new(suggestion.Revision, "有效时区日程", null, 5, null, null, null,
+                start, end, "America/New_York"),
+            default);
+        Assert.Equal("America/New_York", updated.TimeZoneId);
+        Assert.Equal(start.ToUniversalTime(), updated.Start);
+        Assert.Equal(end.ToUniversalTime(), updated.End);
+    }
+
+    [SkippableFact]
+    public async Task EventUpdateConvertsWallClockTimesUsingTheDeclaredIanaTimeZone()
+    {
+        await using var harness = await Harness.CreateAsync(
+            "test_note_task_suggestion_event_wall_clock_update");
+        var suggestion = await harness.CreateSuggestionAsync(
+            "无偏移时间日程", NoteTaskSuggestionKindDto.Event);
+
+        var updated = await harness.Service.UpdateAsync(
+            suggestion.Id,
+            new(suggestion.Revision, "无偏移时间日程", null, 5, null, null, null,
+                Start: null, End: null, TimeZoneId: "Asia/Shanghai")
+            {
+                StartRaw = "2026-11-21T19:00:00",
+                EndRaw = "2026-11-21T20:00:00"
+            },
+            default);
+
+        Assert.Equal(DateTimeOffset.Parse("2026-11-21T11:00:00Z"), updated.Start);
+        Assert.Equal(DateTimeOffset.Parse("2026-11-21T12:00:00Z"), updated.End);
+        Assert.Equal("Asia/Shanghai", updated.TimeZoneId);
+    }
+
+    [SkippableFact]
+    public async Task EventUpdateFailsClosedForMissingInvalidAndAmbiguousWallClockZones()
+    {
+        await using var harness = await Harness.CreateAsync(
+            "test_note_task_suggestion_event_wall_clock_fail_closed");
+        var suggestion = await harness.CreateSuggestionAsync(
+            "校验无偏移日程", NoteTaskSuggestionKindDto.Event);
+
+        async Task<DomainException> RejectAsync(
+            string startRaw, string endRaw, string? timeZoneId)
+        {
+            var error = await Assert.ThrowsAsync<DomainException>(() =>
+                harness.Service.UpdateAsync(
+                    suggestion.Id,
+                    new(suggestion.Revision, "校验无偏移日程", null, 5, null, null, null,
+                        Start: null, End: null, TimeZoneId: timeZoneId)
+                    {
+                        StartRaw = startRaw,
+                        EndRaw = endRaw
+                    },
+                    default));
+            Assert.Equal(40001, error.ErrorCode);
+            return error;
+        }
+
+        var missing = await RejectAsync(
+            "2026-11-21T19:00:00", "2026-11-21T20:00:00", null);
+        Assert.Contains("必须提供有效 timeZoneId", missing.Message);
+        var invalid = await RejectAsync(
+            "2026-11-21T19:00:00", "2026-11-21T20:00:00", "Mars/Olympus");
+        Assert.Contains("有效的 IANA 时区", invalid.Message);
+        var gap = await RejectAsync(
+            "2026-03-08T02:30:00", "2026-03-08T02:45:00", "America/New_York");
+        Assert.Contains("无效的夏令时本地时间", gap.Message);
+        var ambiguous = await RejectAsync(
+            "2026-11-01T01:30:00", "2026-11-01T01:45:00", "America/New_York");
+        Assert.Contains("重复的夏令时本地时间", ambiguous.Message);
+
+        var unchanged = await harness.Service.GetAsync(suggestion.Id, default);
+        Assert.Equal(suggestion.Revision, unchanged.Revision);
+        Assert.Null(unchanged.Start);
+        Assert.Null(unchanged.End);
+        Assert.Null(unchanged.TimeZoneId);
+    }
+
+    [SkippableFact]
+    public async Task EventUpdateAcceptsExplicitOffsetWithAnIndependentlyValidTimeZone()
+    {
+        await using var harness = await Harness.CreateAsync(
+            "test_note_task_suggestion_event_offset_timezone");
+        var suggestion = await harness.CreateSuggestionAsync(
+            "显式偏移日程", NoteTaskSuggestionKindDto.Event);
+
+        var updated = await harness.Service.UpdateAsync(
+            suggestion.Id,
+            new(suggestion.Revision, "显式偏移日程", null, 5, null, null, null,
+                Start: null, End: null, TimeZoneId: "America/New_York")
+            {
+                StartRaw = "2026-11-21T19:00:00+08:00",
+                EndRaw = "2026-11-21T20:00:00+08:00"
+            },
+            default);
+
+        Assert.Equal(DateTimeOffset.Parse("2026-11-21T11:00:00Z"), updated.Start);
+        Assert.Equal(DateTimeOffset.Parse("2026-11-21T12:00:00Z"), updated.End);
+        Assert.Equal("America/New_York", updated.TimeZoneId);
+
+        var invalidZone = await Assert.ThrowsAsync<DomainException>(() =>
+            harness.Service.UpdateAsync(
+                suggestion.Id,
+                new(updated.Revision, "显式偏移日程", null, 5, null, null, null,
+                    Start: null, End: null, TimeZoneId: "Mars/Olympus")
+                {
+                    StartRaw = "2026-11-21T19:00:00+08:00",
+                    EndRaw = "2026-11-21T20:00:00+08:00"
+                },
+                default));
+        Assert.Equal(40001, invalidZone.ErrorCode);
+        Assert.Contains("有效的 IANA 时区", invalidZone.Message);
+    }
+
+    [SkippableFact]
     public async Task EventConfirmationRejectsOutlookBoundCalendarWithoutCreatingAnything()
     {
         await using var harness = await Harness.CreateAsync(
@@ -524,6 +660,7 @@ public sealed class NoteTaskSuggestionTests
         var due = DateTimeOffset.Parse("2026-11-20T09:00:00+08:00");
         var first = await harness.CreateSuggestionAsync(
             "跨批次任务", NoteTaskSuggestionKindDto.Task, due);
+        harness.AdvanceSourceVersion();
         var second = await harness.CreateSuggestionAsync(
             "跨批次任务", NoteTaskSuggestionKindDto.Task, due);
 
@@ -549,6 +686,7 @@ public sealed class NoteTaskSuggestionTests
         var due = DateTimeOffset.Parse("2026-11-20T09:00:00+08:00");
         var first = await harness.CreateSuggestionAsync(
             "并发跨批次任务", NoteTaskSuggestionKindDto.Task, due);
+        harness.AdvanceSourceVersion();
         var second = await harness.CreateSuggestionAsync(
             "并发跨批次任务", NoteTaskSuggestionKindDto.Task, due);
         await using var secondDb = harness.NewContext();
@@ -589,6 +727,7 @@ public sealed class NoteTaskSuggestionTests
         var end = DateTimeOffset.Parse("2026-11-20T10:00:00+08:00");
         var first = await harness.CreateSuggestionAsync(
             "跨批次日程", NoteTaskSuggestionKindDto.Event, null, start, end, "Asia/Shanghai");
+        harness.AdvanceSourceVersion();
         var second = await harness.CreateSuggestionAsync(
             "跨批次日程", NoteTaskSuggestionKindDto.Event, null, start, end, "Asia/Shanghai");
 
@@ -616,6 +755,7 @@ public sealed class NoteTaskSuggestionTests
         var end = DateTimeOffset.Parse("2026-11-20T12:00:00+08:00");
         var first = await harness.CreateSuggestionAsync(
             "并发跨批次日程", NoteTaskSuggestionKindDto.Event, null, start, end, "Asia/Shanghai");
+        harness.AdvanceSourceVersion();
         var second = await harness.CreateSuggestionAsync(
             "并发跨批次日程", NoteTaskSuggestionKindDto.Event, null, start, end, "Asia/Shanghai");
         await using var secondDb = harness.NewContext();
@@ -639,6 +779,170 @@ public sealed class NoteTaskSuggestionTests
                 first.Id, new(Guid.NewGuid(), first.Revision), default)),
             ConfirmAsync(() => secondService.ConfirmAsync(
                 second.Id, new(Guid.NewGuid(), second.Revision), default)));
+
+        Assert.Single(outcomes, x => x is null);
+        var conflict = Assert.Single(outcomes, x => x is not null);
+        Assert.IsType<DomainException>(conflict);
+        Assert.Equal(40901, ((DomainException)conflict!).ErrorCode);
+        Assert.Equal(1, await harness.AdminDb.Set<EventEntity>().CountAsync());
+    }
+
+    [SkippableFact]
+    public async Task DefaultCalendarIsCanonicalAcrossCrossBatchEventFingerprints()
+    {
+        await using var harness = await Harness.CreateAsync(
+            "test_note_task_suggestion_default_calendar_fingerprint");
+        var defaultCalendar = new CalendarEntity
+        {
+            UserId = harness.Owner,
+            Name = "默认日历",
+            Kind = "calendar",
+            IsDefault = true
+        };
+        harness.AdminDb.Add(defaultCalendar);
+        await harness.AdminDb.SaveChangesAsync();
+
+        var start = DateTimeOffset.Parse("2026-11-25T09:00:00+08:00");
+        var end = DateTimeOffset.Parse("2026-11-25T10:00:00+08:00");
+        var first = await harness.CreateSuggestionAsync(
+            "默认日历日程", NoteTaskSuggestionKindDto.Event, null, start, end, "Asia/Shanghai");
+        harness.AdvanceSourceVersion();
+        var second = await harness.CreateSuggestionAsync(
+            "默认日历日程", NoteTaskSuggestionKindDto.Event, null, start, end, "Asia/Shanghai");
+        second = await harness.Service.UpdateAsync(
+            second.Id,
+            new(second.Revision, second.Title, second.Description, second.Priority,
+                null, null, defaultCalendar.Id, start, end, "Asia/Shanghai"),
+            default);
+
+        var confirmed = await harness.Service.ConfirmAsync(
+            first.Id, new(Guid.NewGuid(), first.Revision), default);
+        var error = await Assert.ThrowsAsync<DomainException>(() => harness.Service.ConfirmAsync(
+            second.Id, new(Guid.NewGuid(), second.Revision), default));
+
+        Assert.Equal(defaultCalendar.Id, confirmed.CalendarId);
+        Assert.Equal(40901, error.ErrorCode);
+        Assert.Contains("未重复创建", error.Message);
+        Assert.Equal(1, await harness.AdminDb.Set<EventEntity>().CountAsync());
+    }
+
+    [SkippableFact]
+    public async Task EventIdentityIgnoresDescriptionPriorityAndTimeZoneLabel()
+    {
+        await using var harness = await Harness.CreateAsync(
+            "test_note_task_suggestion_event_core_identity");
+        var start = DateTimeOffset.Parse("2026-11-26T09:00:00Z");
+        var end = DateTimeOffset.Parse("2026-11-26T10:00:00Z");
+        var first = await harness.CreateSuggestionAsync(
+            "核心身份日程", NoteTaskSuggestionKindDto.Event, null, start, end, "UTC");
+        harness.AdvanceSourceVersion();
+        var second = await harness.CreateSuggestionAsync(
+            "核心身份日程", NoteTaskSuggestionKindDto.Event, null, start, end, "Asia/Shanghai");
+        second = await harness.Service.UpdateAsync(
+            second.Id,
+            new(second.Revision, second.Title, "不同说明不应绕过幂等", 1, null, null, null,
+                start, end, "Asia/Shanghai"),
+            default);
+
+        await harness.Service.ConfirmAsync(
+            first.Id, new(Guid.NewGuid(), first.Revision), default);
+        var error = await Assert.ThrowsAsync<DomainException>(() => harness.Service.ConfirmAsync(
+            second.Id, new(Guid.NewGuid(), second.Revision), default));
+
+        Assert.Equal(40901, error.ErrorCode);
+        Assert.Equal(1, await harness.AdminDb.Set<EventEntity>().CountAsync());
+    }
+
+    [SkippableFact]
+    public async Task SameEventTimesInDifferentCalendarsRemainDistinct()
+    {
+        await using var harness = await Harness.CreateAsync(
+            "test_note_task_suggestion_event_calendar_identity");
+        var defaultCalendar = new CalendarEntity
+        {
+            UserId = harness.Owner,
+            Name = "默认日历",
+            Kind = "calendar",
+            IsDefault = true
+        };
+        var calendar = new CalendarEntity
+        {
+            UserId = harness.Owner,
+            Name = "工作日历",
+            Kind = "calendar",
+            IsDefault = false
+        };
+        harness.AdminDb.AddRange(defaultCalendar, calendar);
+        await harness.AdminDb.SaveChangesAsync();
+
+        var start = DateTimeOffset.Parse("2026-11-27T09:00:00Z");
+        var end = DateTimeOffset.Parse("2026-11-27T10:00:00Z");
+        var defaultEvent = await harness.CreateSuggestionAsync(
+            "不同日历日程", NoteTaskSuggestionKindDto.Event, null, start, end, "UTC");
+        var explicitEvent = await harness.CreateSuggestionAsync(
+            "不同日历日程", NoteTaskSuggestionKindDto.Event, null, start, end, "UTC");
+        explicitEvent = await harness.Service.UpdateAsync(
+            explicitEvent.Id,
+            new(explicitEvent.Revision, explicitEvent.Title, null, 5, null, null, calendar.Id,
+                start, end, "UTC"),
+            default);
+
+        await harness.Service.ConfirmAsync(
+            defaultEvent.Id, new(Guid.NewGuid(), defaultEvent.Revision), default);
+        var confirmed = await harness.Service.ConfirmAsync(
+            explicitEvent.Id, new(Guid.NewGuid(), explicitEvent.Revision), default);
+
+        Assert.Equal(calendar.Id, confirmed.CalendarId);
+        Assert.Equal(2, await harness.AdminDb.Set<EventEntity>().CountAsync());
+    }
+
+    [SkippableFact]
+    public async Task ConcurrentDefaultAndExplicitDefaultCalendarStillCreateOneEvent()
+    {
+        await using var harness = await Harness.CreateAsync(
+            "test_note_task_suggestion_explicit_default_event_race");
+        var defaultCalendar = new CalendarEntity
+        {
+            UserId = harness.Owner,
+            Name = "默认日历",
+            Kind = "calendar",
+            IsDefault = true
+        };
+        harness.AdminDb.Add(defaultCalendar);
+        await harness.AdminDb.SaveChangesAsync();
+
+        var start = DateTimeOffset.Parse("2026-11-28T09:00:00Z");
+        var end = DateTimeOffset.Parse("2026-11-28T10:00:00Z");
+        var implicitDefault = await harness.CreateSuggestionAsync(
+            "显式默认并发生成", NoteTaskSuggestionKindDto.Event, null, start, end, "UTC");
+        var explicitDefault = await harness.CreateSuggestionAsync(
+            "显式默认并发生成", NoteTaskSuggestionKindDto.Event, null, start, end, "UTC");
+        explicitDefault = await harness.Service.UpdateAsync(
+            explicitDefault.Id,
+            new(explicitDefault.Revision, explicitDefault.Title, null, 5, null, null,
+                defaultCalendar.Id, start, end, "UTC"),
+            default);
+        await using var secondDb = harness.NewContext();
+        var secondService = harness.NewService(secondDb);
+
+        async Task<Exception?> ConfirmAsync(Func<Task<NoteTaskSuggestionDto>> call)
+        {
+            try
+            {
+                await call();
+                return null;
+            }
+            catch (Exception error)
+            {
+                return error;
+            }
+        }
+
+        var outcomes = await Task.WhenAll(
+            ConfirmAsync(() => harness.Service.ConfirmAsync(
+                implicitDefault.Id, new(Guid.NewGuid(), implicitDefault.Revision), default)),
+            ConfirmAsync(() => secondService.ConfirmAsync(
+                explicitDefault.Id, new(Guid.NewGuid(), explicitDefault.Revision), default)));
 
         Assert.Single(outcomes, x => x is null);
         var conflict = Assert.Single(outcomes, x => x is not null);
@@ -920,6 +1224,60 @@ public sealed class NoteTaskSuggestionTests
         Assert.Throws<InvalidDataException>(() => NoteTaskSuggestionPrompt.Parse(json));
     }
 
+    [Theory]
+    [InlineData("2026-03-08T02:30:00", "America/New_York")]
+    [InlineData("2026-11-01T01:30:00", "America/New_York")]
+    public void PromptParserFailsClosedOnDstGapsAndAmbiguousWallClockTimes(
+        string localStart, string timeZoneId)
+    {
+        var json = $$"""
+            {"suggestions":[{"kind":"Event","title":"夏令时边界","priority":5,
+             "start":"{{localStart}}","end":"{{localStart.Replace(":30:00", ":45:00")}}",
+             "timeZoneId":"{{timeZoneId}}"}]}
+            """;
+
+        Assert.Throws<InvalidDataException>(() => NoteTaskSuggestionPrompt.Parse(json));
+    }
+
+    [Theory]
+    [InlineData("""{"expectedRevision":"11111111-1111-4111-8111-111111111111","title":"无偏移","priority":5,"start":"2026-11-21T19:00:00","end":"2026-11-21T20:00:00","timeZoneId":"Asia/Shanghai"}""", "2026-11-21T19:00:00", "2026-11-21T20:00:00", null)]
+    [InlineData("""{"expectedRevision":"11111111-1111-4111-8111-111111111111","title":"显式偏移","priority":5,"start":"2026-11-21T19:00:00+08:00","end":"2026-11-21T20:00:00+08:00","timeZoneId":"America/New_York"}""", "2026-11-21T19:00:00+08:00", "2026-11-21T20:00:00+08:00", "2026-11-21T11:00:00Z")]
+    public void UpdateRequestJsonPreservesWallClockAndExplicitOffsetSemantics(
+        string json, string expectedStartRaw, string expectedEndRaw, string? expectedStart)
+    {
+        var options = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+        var request = JsonSerializer.Deserialize<UpdateNoteTaskSuggestionRequest>(json, options)!;
+
+        Assert.Equal(expectedStartRaw, request.StartRaw);
+        Assert.Equal(expectedEndRaw, request.EndRaw);
+        Assert.Equal(
+            expectedStart is null ? null : DateTimeOffset.Parse(expectedStart),
+            request.Start);
+        Assert.Equal(
+            expectedStart is null ? null : DateTimeOffset.Parse(expectedStart).AddHours(1),
+            request.End);
+    }
+
+    [Fact]
+    public void UpdateRequestJsonSerializesTheContractedDateTimeShape()
+    {
+        var request = new UpdateNoteTaskSuggestionRequest(
+            Guid.Parse("11111111-1111-4111-8111-111111111111"),
+            "往返", null, 5, null, null, null,
+            DateTimeOffset.Parse("2026-11-21T11:00:00Z"),
+            DateTimeOffset.Parse("2026-11-21T12:00:00Z"),
+            "Asia/Shanghai");
+
+        var json = JsonSerializer.Serialize(
+            request, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        using var document = JsonDocument.Parse(json);
+        var root = document.RootElement;
+        Assert.Equal("2026-11-21T11:00:00+00:00", root.GetProperty("start").GetString());
+        Assert.Equal("2026-11-21T12:00:00+00:00", root.GetProperty("end").GetString());
+        Assert.False(root.TryGetProperty("startRaw", out _));
+        Assert.False(root.TryGetProperty("endRaw", out _));
+    }
+
     private sealed class Harness : IAsyncDisposable
     {
         private readonly TempMigrationDatabase _database;
@@ -1043,6 +1401,16 @@ public sealed class NoteTaskSuggestionTests
             Source.ContentSha256,
             new(Profile.Id, Profile.Revision, Profile.BaseUrl, true),
             true);
+
+        public void AdvanceSourceVersion()
+        {
+            Source.ArtifactVersionId = Guid.NewGuid();
+            Source.GenerationTaskId = Guid.NewGuid();
+            Source.ContentMarkdown += "\n\n重新整理后的同一事项仍应沿用原关联。";
+            Source.ContentSha256 = NoteTaskSuggestionService.Hash(Source.ContentMarkdown);
+            Source.InputSha256 = NoteTaskSuggestionService.Hash($"synthetic-input-{Source.ArtifactVersionId:N}");
+            Source.ManifestSha256 = NoteTaskSuggestionService.Hash($"synthetic-manifest-{Source.ArtifactVersionId:N}");
+        }
 
         public PimDbContext NewContext() => new(_options, _currentUser);
 

@@ -28,8 +28,12 @@ const api = vi.hoisted(() => ({
   confirm: vi.fn(),
   dismiss: vi.fn(),
 }))
+const calendarApi = vi.hoisted(() => ({
+  list: vi.fn(),
+}))
 vi.mock('../api', () => ({ noteDerivedApi: derived }))
 vi.mock('./api', () => ({ noteTaskSuggestionsApi: api }))
+vi.mock('@/features/calendar/api', () => ({ calendarsApi: calendarApi }))
 
 beforeAll(() => {
   if (!HTMLElement.prototype.hasPointerCapture) HTMLElement.prototype.hasPointerCapture = () => false
@@ -184,6 +188,18 @@ beforeEach(() => {
   api.list.mockResolvedValue({ total: 0, items: [] })
   api.startExtraction.mockResolvedValue(extraction)
   api.extraction.mockResolvedValue(extraction)
+  calendarApi.list.mockResolvedValue([{
+    id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    name: '默认日历',
+    color: '#3B82F6',
+    kind: 'calendar',
+    isDefault: true,
+    eventCount: 0,
+    source: 'pim',
+    outlookCalendarBindingId: null,
+    canEdit: true,
+    defaultMuted: false,
+  }])
 })
 
 afterEach(() => {
@@ -197,13 +213,13 @@ describe('NoteTaskSuggestionsPanel', () => {
     await chooseDestination()
     expect(api.startExtraction).not.toHaveBeenCalled()
     expect((screen.getByRole('button', {
-      name: '确认并提取任务建议',
+      name: '确认并提取任务与日程建议',
     }) as HTMLButtonElement).disabled).toBe(true)
 
     await userEvent.click(screen.getByRole('checkbox', {
       name: /确认将固定版本完整正文发送到所选文本模型/,
     }))
-    await userEvent.click(screen.getByRole('button', { name: '确认并提取任务建议' }))
+    await userEvent.click(screen.getByRole('button', { name: '确认并提取任务与日程建议' }))
 
     await waitFor(() => expect(api.startExtraction).toHaveBeenCalledOnce())
     expect(api.startExtraction).toHaveBeenCalledWith(expect.objectContaining({
@@ -227,7 +243,7 @@ describe('NoteTaskSuggestionsPanel', () => {
     api.startExtraction.mockRejectedValueOnce(new Error('response lost'))
     page()
     await chooseAndConfirmCharge()
-    await userEvent.click(screen.getByRole('button', { name: '确认并提取任务建议' }))
+    await userEvent.click(screen.getByRole('button', { name: '确认并提取任务与日程建议' }))
 
     expect(await screen.findByText(/已冻结请求标识/)).toBeTruthy()
     const firstRequestId = api.startExtraction.mock.calls[0]?.[0].requestId
@@ -334,7 +350,7 @@ describe('NoteTaskSuggestionsPanel', () => {
     expect(screen.queryByRole('button', { name: '编辑' })).toBeNull()
   })
 
-  it('shows event suggestions with their agenda and never offers task creation', async () => {
+  it('shows event suggestions in their IANA zone and offers editing and creation', async () => {
     api.list.mockResolvedValue({
       total: 1,
       items: [{
@@ -350,10 +366,111 @@ describe('NoteTaskSuggestionsPanel', () => {
     page()
 
     expect(await screen.findByText(/日程时间：/)).toBeTruthy()
-    expect(screen.getByText(/Asia\/Shanghai/)).toBeTruthy()
-    expect(screen.getByText('日程建议当前暂不支持在此页面创建；请使用支持日程创建的客户端。')).toBeTruthy()
+    expect(screen.getByText('日程时间：2026-11-21 19:00–20:00 · Asia/Shanghai')).toBeTruthy()
+    expect(screen.getByRole('button', { name: '编辑' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: '确认创建日程' })).toBeTruthy()
     expect(screen.queryByRole('button', { name: '确认创建任务' })).toBeNull()
-    expect(screen.queryByRole('button', { name: '编辑' })).toBeNull()
+    expect(screen.queryByText(/暂不支持/)).toBeNull()
     expect(api.confirm).not.toHaveBeenCalled()
+  })
+
+  it('saves event wall-clock edits as UTC with the declared IANA zone and target calendar', async () => {
+    const event = {
+      ...suggestion,
+      id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+      kind: 'Event' as const,
+      start: '2026-11-21T11:00:00Z',
+      end: '2026-11-21T12:00:00Z',
+      timeZoneId: 'Asia/Shanghai',
+      title: '机器学习答疑',
+    }
+    api.list.mockResolvedValue({ total: 1, items: [event] })
+    api.update.mockResolvedValue({ ...event, revision: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee' })
+    page()
+
+    await userEvent.click(await screen.findByRole('button', { name: '编辑' }))
+    expect((screen.getByLabelText('开始时间') as HTMLInputElement).value)
+      .toBe('2026-11-21T19:00')
+    expect((screen.getByLabelText('结束时间') as HTMLInputElement).value)
+      .toBe('2026-11-21T20:00')
+    expect((screen.getByLabelText('IANA 时区') as HTMLInputElement).value)
+      .toBe('Asia/Shanghai')
+
+    fireEvent.change(screen.getByLabelText('开始时间'), { target: { value: '2026-11-21T20:00' } })
+    fireEvent.change(screen.getByLabelText('结束时间'), { target: { value: '2026-11-21T21:00' } })
+    await userEvent.click(screen.getByRole('button', { name: '保存修订' }))
+
+    await waitFor(() => expect(api.update).toHaveBeenCalledOnce())
+    expect(api.update).toHaveBeenCalledWith(event.id, expect.objectContaining({
+      due: null,
+      taskBookId: null,
+      start: '2026-11-21T12:00:00.000Z',
+      end: '2026-11-21T13:00:00.000Z',
+      timeZoneId: 'Asia/Shanghai',
+    }))
+    expect(await screen.findByText(/建议已保存/)).toBeTruthy()
+  })
+
+  it('requires a valid IANA zone and rejects DST gaps before saving an event', async () => {
+    const event = {
+      ...suggestion,
+      id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+      kind: 'Event' as const,
+      start: '2026-03-08T07:30:00Z',
+      end: '2026-03-08T08:30:00Z',
+      timeZoneId: null,
+      title: '夏令时边界日程',
+    }
+    api.list.mockResolvedValue({ total: 1, items: [event] })
+    page()
+
+    expect(await screen.findByText(/时区未知/)).toBeTruthy()
+    expect((screen.getByRole('button', { name: '确认创建日程' }) as HTMLButtonElement)
+      .disabled).toBe(true)
+
+    await userEvent.click(screen.getByRole('button', { name: '编辑' }))
+    await userEvent.type(screen.getByLabelText('IANA 时区'), 'America/New_York')
+    fireEvent.change(screen.getByLabelText('开始时间'), { target: { value: '2026-03-08T02:30' } })
+    fireEvent.change(screen.getByLabelText('结束时间'), { target: { value: '2026-03-08T03:30' } })
+    await userEvent.click(screen.getByRole('button', { name: '保存修订' }))
+
+    expect(await screen.findByText(/该时间在所选时区不存在/)).toBeTruthy()
+    expect(api.update).not.toHaveBeenCalled()
+
+    fireEvent.change(screen.getByLabelText('IANA 时区'), { target: { value: 'Mars/Olympus' } })
+    await userEvent.click(screen.getByRole('button', { name: '保存修订' }))
+    expect(await screen.findByText('日程时区必须是有效的 IANA 时区。')).toBeTruthy()
+    expect(api.update).not.toHaveBeenCalled()
+  })
+
+  it('confirms an event with the frozen request id instead of creating a task', async () => {
+    const event = {
+      ...suggestion,
+      id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+      kind: 'Event' as const,
+      start: '2026-11-21T11:00:00Z',
+      end: '2026-11-21T12:00:00Z',
+      timeZoneId: 'Asia/Shanghai',
+      title: '机器学习答疑',
+    }
+    api.list.mockResolvedValue({ total: 1, items: [event] })
+    api.confirm.mockResolvedValue({
+      ...event,
+      calendarId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      eventId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+      status: 'Confirmed',
+    })
+    page()
+
+    await userEvent.click(await screen.findByRole('button', { name: '确认创建日程' }))
+    await userEvent.click(screen.getByRole('button', { name: '再次点击创建日程' }))
+
+    await waitFor(() => expect(api.confirm).toHaveBeenCalledOnce())
+    expect(api.confirm).toHaveBeenCalledWith(event.id, expect.objectContaining({
+      expectedRevision: event.revision,
+      requestId: expect.stringMatching(/^[0-9a-f-]{36}$/),
+    }))
+    expect(await screen.findByText(/已在目标日历创建日程/)).toBeTruthy()
+    expect(screen.queryByText(/创建任务/)).toBeNull()
   })
 })

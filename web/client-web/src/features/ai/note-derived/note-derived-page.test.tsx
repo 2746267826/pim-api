@@ -497,7 +497,7 @@ it('mounts task suggestions only for the selected owned artifact version', async
   derived.artifacts.mockResolvedValue([artifact])
   page(); await chooseSource()
 
-  expect(await screen.findByText('从笔记提取任务建议')).toBeTruthy()
+  expect(await screen.findByText('从笔记提取任务与日程建议')).toBeTruthy()
   await waitFor(() => expect(taskSuggestions.list).toHaveBeenCalledWith(noteId, expect.any(AbortSignal)))
   expect(derived.version).toHaveBeenCalledWith(artifactId, versionId, expect.any(AbortSignal))
 })

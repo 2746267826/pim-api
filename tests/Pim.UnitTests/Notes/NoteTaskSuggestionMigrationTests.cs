@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Npgsql;
 using Pim.Infrastructure.Data;
 using Pim.Module.NoteTaskSuggestions;
 using Pim.Module.NoteTaskSuggestions.Entities;
@@ -82,8 +83,8 @@ public sealed class NoteTaskSuggestionMigrationTests
                  'Confirmed', '{Guid.NewGuid()}', '{Guid.NewGuid()}',
                  '2026-11-01T00:00:00Z', '2026-11-01T00:00:00Z', '2026-11-01T00:00:00Z'),
                 ('{duplicateId}', '{owner}', '{extractionId}', 1, '{noteId}', '{artifactId}',
-                 '{artifactVersionId}', '{new string('b', 64)}', '{new string('c', 64)}',
-                 '{new string('d', 64)}', '历史复盘', 5, '2026-11-20T09:00:00+08:00',
+                 '{Guid.NewGuid()}', '{new string('e', 64)}', '{new string('f', 64)}',
+                 '{new string('1', 64)}', '历史复盘', 5, '2026-11-20T09:00:00+08:00',
                  'Confirmed', '{Guid.NewGuid()}', '{Guid.NewGuid()}',
                  '2026-11-01T00:01:00Z', '2026-11-01T00:01:00Z', '2026-11-01T00:01:00Z');
             """);
@@ -98,6 +99,23 @@ public sealed class NoteTaskSuggestionMigrationTests
         Assert.NotNull(rows[0].ItemFingerprint);
         Assert.Null(rows[1].ItemFingerprint);
         Assert.Equal(NoteTaskSuggestionService.ItemFingerprint(rows[0]), rows[0].ItemFingerprint);
+
+        var duplicate = await Assert.ThrowsAsync<PostgresException>(() =>
+            database.ExecuteAsync($"""
+                INSERT INTO note_task_suggestions
+                    (id, user_id, extraction_id, ordinal, note_id, artifact_id,
+                     artifact_version_id, source_content_sha256, source_input_sha256,
+                     source_manifest_sha256, title, priority, due, status, revision,
+                     item_fingerprint, created_at, updated_at, confirmed_at)
+                VALUES
+                    ('{Guid.NewGuid()}', '{owner}', '{extractionId}', 2, '{noteId}',
+                     '{Guid.NewGuid()}', '{Guid.NewGuid()}', '{new string('2', 64)}',
+                     '{new string('3', 64)}', '{new string('4', 64)}', '历史复盘', 5,
+                     '2026-11-20T09:00:00+08:00', 'Confirmed', '{Guid.NewGuid()}',
+                     '{rows[0].ItemFingerprint}', '2026-11-01T00:02:00Z',
+                     '2026-11-01T00:02:00Z', '2026-11-01T00:02:00Z');
+                """));
+        Assert.Equal(PostgresErrorCodes.UniqueViolation, duplicate.SqlState);
     }
 
     private static async Task AssertSchemaAsync(TempMigrationDatabase database)

@@ -501,6 +501,13 @@ public class CalendarService
         return calendar;
     }
 
+    /// <summary>
+    /// Resolve the same default event calendar used by <see cref="CreateEventAsync"/>.
+    /// Suggestion fingerprints need this stable id before the event is created.
+    /// </summary>
+    public async Task<Guid> GetOrCreateDefaultEventCalendarIdAsync(CancellationToken ct) =>
+        (await GetOrCreateDefaultCalendarAsync("calendar", ct)).Id;
+
     public async Task<EventResponse> UpdateEventAsync(Guid id, UpdateEventRequest request, CancellationToken ct)
         => await UpdateEventAsync(id, request, null, null, ct);
 

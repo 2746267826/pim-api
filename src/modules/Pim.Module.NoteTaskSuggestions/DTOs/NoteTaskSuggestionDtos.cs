@@ -98,6 +98,7 @@ public sealed record NoteTaskSuggestionListDto(
     int Total,
     IReadOnlyList<NoteTaskSuggestionDto> Items);
 
+[JsonConverter(typeof(UpdateNoteTaskSuggestionRequestJsonConverter))]
 public sealed record UpdateNoteTaskSuggestionRequest(
     Guid ExpectedRevision,
     [property: Required, MaxLength(255)] string Title,
@@ -108,7 +109,16 @@ public sealed record UpdateNoteTaskSuggestionRequest(
     Guid? CalendarId,
     DateTimeOffset? Start = null,
     DateTimeOffset? End = null,
-    string? TimeZoneId = null);
+    [property: MaxLength(100)] string? TimeZoneId = null)
+{
+    /// <summary>
+    /// Raw ISO-8601 text retained so a wall-clock value without an offset can be
+    /// converted with the declared IANA time zone instead of the server's local zone.
+    /// </summary>
+    [JsonIgnore] public string? StartRaw { get; init; }
+
+    [JsonIgnore] public string? EndRaw { get; init; }
+}
 
 public sealed record ConfirmNoteTaskSuggestionRequest(
     Guid RequestId,

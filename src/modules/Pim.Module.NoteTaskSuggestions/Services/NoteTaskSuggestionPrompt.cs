@@ -117,8 +117,9 @@ internal static class NoteTaskSuggestionPrompt
             var timeZoneId = OptionalString(item, "timeZoneId")?.Trim();
             if (timeZoneId is { Length: > 100 })
                 throw new InvalidDataException("任务建议 timeZoneId 不能超过 100 字");
-            if (!string.IsNullOrWhiteSpace(timeZoneId))
-                FindTimeZone(timeZoneId);
+            if (!string.IsNullOrWhiteSpace(timeZoneId) &&
+                !NoteTaskSuggestionTimeZone.IsIana(timeZoneId))
+                throw new InvalidDataException("任务建议 timeZoneId 必须是有效的 IANA 时区");
             var start = OptionalDateTimeOffset(item, "start", timeZoneId);
             var end = OptionalDateTimeOffset(item, "end", timeZoneId);
             if (start.HasValue != end.HasValue)
@@ -152,58 +153,10 @@ internal static class NoteTaskSuggestionPrompt
         if (string.IsNullOrWhiteSpace(text))
             throw new InvalidDataException($"任务建议 {property} 必须是 ISO-8601 时间或 null");
 
-        if (HasExplicitOffset(text))
-        {
-            if (!DateTimeOffset.TryParse(text, CultureInfo.InvariantCulture,
-                    DateTimeStyles.AllowWhiteSpaces, out var parsed))
-                throw new InvalidDataException($"任务建议 {property} 必须是 ISO-8601 时间或 null");
-            return parsed.ToUniversalTime();
-        }
-
-        if (string.IsNullOrWhiteSpace(timeZoneId))
-            throw new InvalidDataException(
-                $"任务建议 {property} 没有时区偏移时必须提供有效 timeZoneId");
-        if (!DateTime.TryParse(text, CultureInfo.InvariantCulture,
-                DateTimeStyles.AllowWhiteSpaces | DateTimeStyles.RoundtripKind,
-                out var localDateTime))
-            throw new InvalidDataException($"任务建议 {property} 必须是 ISO-8601 时间或 null");
-
-        var unspecified = DateTime.SpecifyKind(localDateTime, DateTimeKind.Unspecified);
-        var timeZone = FindTimeZone(timeZoneId);
-        if (timeZone.IsInvalidTime(unspecified))
-            throw new InvalidDataException($"任务建议 {property} 落在无效的夏令时本地时间");
-        return new DateTimeOffset(unspecified, timeZone.GetUtcOffset(unspecified)).ToUniversalTime();
-    }
-
-    private static TimeZoneInfo FindTimeZone(string? timeZoneId)
-    {
-        try
-        {
-            return TimeZoneInfo.FindSystemTimeZoneById(timeZoneId!);
-        }
-        catch (TimeZoneNotFoundException error)
-        {
-            throw new InvalidDataException("任务建议 timeZoneId 必须是有效的 IANA 时区", error);
-        }
-        catch (InvalidTimeZoneException error)
-        {
-            throw new InvalidDataException("任务建议 timeZoneId 必须是有效的 IANA 时区", error);
-        }
-    }
-
-    private static bool HasExplicitOffset(string text)
-    {
-        if (text.EndsWith('Z') || text.EndsWith('z'))
-            return true;
-
-        var timeStart = text.IndexOf('T');
-        if (timeStart < 0)
-            timeStart = text.IndexOf(' ');
-        if (timeStart < 0)
-            return false;
-
-        var timePart = text[(timeStart + 1)..];
-        return timePart.Contains('+') || timePart.Contains('-');
+        if (!NoteTaskSuggestionTimeZone.TryConvertToUtc(
+                text, timeZoneId, out var value, out var timeError))
+            throw new InvalidDataException($"任务建议 {property}{timeError}");
+        return value;
     }
 
     private static string RequiredString(JsonElement item, string property)

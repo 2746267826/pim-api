@@ -1,11 +1,16 @@
 using System.Net;
 using System.Net.Http.Json;
+using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.Extensions.DependencyInjection;
 using Pim.Core.Notes;
+using Pim.Infrastructure.Data;
 using Pim.Module.NoteTaskSuggestions;
 using Pim.Module.NoteTaskSuggestions.DTOs;
+using Pim.Module.NoteTaskSuggestions.Entities;
+using Pim.Module.NoteTaskSuggestions.Services;
 using Pim.UnitTests.Api;
 using Xunit;
 
@@ -97,4 +102,90 @@ public sealed class NoteTaskSuggestionEndpointsTests : IAsyncLifetime
         foreach (var field in new[] { "start", "end", "timeZoneId" })
             Assert.True(updateProperties.TryGetProperty(field, out _));
     }
+
+    [SkippableFact]
+    public async Task HttpUpdateKeepsWallClockSemanticsAndFailsClosedWithoutAnIanaZone()
+    {
+        using var factory = AuthRegistrationTestHost.Create(
+                AuthRegistrationTestHost.NewDbName("note-task-suggestion-update-http"))
+            .WithWebHostBuilder(builder => builder.UseEnvironment("Test")
+                .UseSetting("DataProtection:KeysPath", Path.Combine(_root, "keys-http")));
+
+        var session = await AuthRegistrationTestHost.SeedAndLoginAsync(
+            factory, "task-suggestion-http-update");
+        Guid suggestionId;
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
+            var extraction = new NoteTaskSuggestionExtractionEntity
+            {
+                UserId = session.UserId,
+                RequestId = Guid.NewGuid(),
+                RequestFingerprint = NoteTaskSuggestionService.Hash("http-update"),
+                NoteId = Guid.NewGuid(),
+                ArtifactId = Guid.NewGuid(),
+                ArtifactVersionId = Guid.NewGuid(),
+                SourceContentSha256 = NoteTaskSuggestionService.Hash("http-content"),
+                SourceInputSha256 = NoteTaskSuggestionService.Hash("http-input"),
+                SourceManifestSha256 = NoteTaskSuggestionService.Hash("http-manifest"),
+                SourceContentMarkdown = "http",
+                ModelProfileId = Guid.NewGuid(),
+                ModelRevision = Guid.NewGuid(),
+                ModelEndpoint = "https://synthetic.invalid/v1",
+                PromptVersion = NoteTaskSuggestionPrompt.Version
+            };
+            var suggestion = new NoteTaskSuggestionEntity
+            {
+                UserId = session.UserId,
+                ExtractionId = extraction.Id,
+                Ordinal = 0,
+                NoteId = extraction.NoteId,
+                ArtifactId = extraction.ArtifactId,
+                ArtifactVersionId = extraction.ArtifactVersionId,
+                SourceContentSha256 = extraction.SourceContentSha256,
+                SourceInputSha256 = extraction.SourceInputSha256,
+                SourceManifestSha256 = extraction.SourceManifestSha256,
+                Title = "HTTP 无偏移日程",
+                Kind = NoteTaskSuggestionKinds.Event,
+                Priority = 5,
+                Status = NoteTaskSuggestionStatuses.Draft
+            };
+            db.AddRange(extraction, suggestion);
+            await db.SaveChangesAsync();
+            suggestionId = suggestion.Id;
+        }
+
+        using var client = AuthRegistrationTestHost.Authed(factory, session.AccessToken);
+        var revisionJson = JsonDocument.Parse(await (await client.GetAsync(
+            $"{NoteTaskSuggestionEndpointPaths.Root}/{suggestionId}"))
+            .Content.ReadAsStringAsync())
+            .RootElement.GetProperty("data").GetProperty("revision").GetString();
+        var missingZone = await client.PutAsync(
+            $"{NoteTaskSuggestionEndpointPaths.Root}/{suggestionId}",
+            Json("""
+                {"expectedRevision":"__REVISION__","title":"HTTP 无偏移日程","priority":5,
+                 "start":"2026-11-21T19:00:00","end":"2026-11-21T20:00:00"}
+                """.Replace("__REVISION__", revisionJson)));
+        Assert.Equal(HttpStatusCode.BadRequest, missingZone.StatusCode);
+        var missingError = await AuthRegistrationTestHost.ReadErrorAsync(missingZone);
+        Assert.Equal(40001, missingError.Code);
+        Assert.Contains("必须提供有效 timeZoneId", missingError.Message);
+
+        var accepted = await client.PutAsync(
+            $"{NoteTaskSuggestionEndpointPaths.Root}/{suggestionId}",
+            Json("""
+                {"expectedRevision":"__REVISION__","title":"HTTP 无偏移日程","priority":5,
+                 "start":"2026-11-21T19:00:00","end":"2026-11-21T20:00:00",
+                 "timeZoneId":"Asia/Shanghai"}
+                """.Replace("__REVISION__", revisionJson)));
+        Assert.Equal(HttpStatusCode.OK, accepted.StatusCode);
+        var body = await AuthRegistrationTestHost.ReadJsonAsync(accepted);
+        var data = body.GetProperty("data");
+        Assert.Equal("2026-11-21T11:00:00+00:00", data.GetProperty("start").GetString());
+        Assert.Equal("2026-11-21T12:00:00+00:00", data.GetProperty("end").GetString());
+        Assert.Equal("Asia/Shanghai", data.GetProperty("timeZoneId").GetString());
+    }
+
+    private static StringContent Json(string value) =>
+        new(value, Encoding.UTF8, "application/json");
 }
