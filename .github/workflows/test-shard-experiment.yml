@@ -26,8 +26,9 @@ env:
 
 jobs:
   # ── 基线：不切分，跑全集，用来对照总数与总耗时 ──
+  # 慢（21 分钟），默认关闭；需要重新测基线时把 if 改成 inputs.mode == 'filter-only'
   baseline:
-    if: github.event_name == 'push' || inputs.mode == 'filter-only'
+    if: false
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -56,7 +57,7 @@ jobs:
           path: /tmp/trx/*.trx
           retention-days: 14
 
-  # ── 4 个 shard：按目录切分，各跑一部分 ──
+  # ── 5 个 shard：按实测耗时切分（Api 拆细，其余合并）──
   shard:
     if: github.event_name == 'push' || inputs.mode == 'filter-only'
     runs-on: ubuntu-latest
@@ -64,18 +65,26 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # shard-1：单个最慢的类，9.2 分钟，决定整体墙钟下限
           - name: shard-1
-            desc: 'Calendar + Auth + Today + Tiles + DataIsolation + Caching + Common + Contract'
-            filter: 'FullyQualifiedName~Pim.UnitTests.Calendar|FullyQualifiedName~Pim.UnitTests.Auth|FullyQualifiedName~Pim.UnitTests.Today|FullyQualifiedName~Pim.UnitTests.Tiles|FullyQualifiedName~Pim.UnitTests.DataIsolation|FullyQualifiedName~Pim.UnitTests.Caching|FullyQualifiedName~Pim.UnitTests.Common|FullyQualifiedName~Pim.UnitTests.Contract'
+            desc: 'Api: PcKeystatsUploadValidationE2ETests（最慢单类）'
+            filter: 'FullyQualifiedName~Pim.UnitTests.Api.PcKeystatsUploadValidationE2ETests'
+          # shard-2：Api 慢组 A（三个 ~4 分钟的 E2E 类）
           - name: shard-2
-            desc: 'Mobile + Api + Services'
-            filter: 'FullyQualifiedName~Pim.UnitTests.Mobile|FullyQualifiedName~Pim.UnitTests.Api|FullyQualifiedName~Pim.UnitTests.Services'
+            desc: 'Api: PublicRegistrationGate + AuthPasswordChange + AdminCreateUser'
+            filter: 'FullyQualifiedName~Pim.UnitTests.Api.PublicRegistrationGateE2ETests|FullyQualifiedName~Pim.UnitTests.Api.AuthPasswordChangeE2ETests|FullyQualifiedName~Pim.UnitTests.Api.AdminCreateUserE2ETests'
+          # shard-3：Api 慢组 B（四个 3-3.5 分钟的 E2E 类）
           - name: shard-3
-            desc: 'Harness + PcTracker + Files'
-            filter: 'FullyQualifiedName~Pim.UnitTests.Harness|FullyQualifiedName~Pim.UnitTests.PcTracker|FullyQualifiedName~Pim.UnitTests.Files'
+            desc: 'Api: PcTrackerEndpoints + FilesProviderErrorSurface + OneDriveContent + TaskChecklistGet'
+            filter: 'FullyQualifiedName~Pim.UnitTests.Api.PcTrackerEndpointsE2ETests|FullyQualifiedName~Pim.UnitTests.Api.FilesProviderErrorSurfaceTests|FullyQualifiedName~Pim.UnitTests.Api.OneDriveContentEndpointsE2ETests|FullyQualifiedName~Pim.UnitTests.Api.TaskChecklistGetE2ETests'
+          # shard-4：Api 其余（用 NOT 排除已分配的 8 个类）
           - name: shard-4
-            desc: 'Invariants + Ai + Mcp + Notes + Operations + Infrastructure + QuickNotes'
-            filter: 'FullyQualifiedName~Pim.UnitTests.Invariants|FullyQualifiedName~Pim.UnitTests.Ai|FullyQualifiedName~Pim.UnitTests.Mcp|FullyQualifiedName~Pim.UnitTests.Notes|FullyQualifiedName~Pim.UnitTests.Operations|FullyQualifiedName~Pim.UnitTests.Infrastructure|FullyQualifiedName~Pim.UnitTests.QuickNotes'
+            desc: 'Api 其余类（排除慢组 1/2/3）'
+            filter: 'FullyQualifiedName~Pim.UnitTests.Api&FullyQualifiedName!~PcKeystatsUploadValidationE2ETests&FullyQualifiedName!~PublicRegistrationGateE2ETests&FullyQualifiedName!~AuthPasswordChangeE2ETests&FullyQualifiedName!~AdminCreateUserE2ETests&FullyQualifiedName!~PcTrackerEndpointsE2ETests&FullyQualifiedName!~FilesProviderErrorSurfaceTests&FullyQualifiedName!~OneDriveContentEndpointsE2ETests&FullyQualifiedName!~TaskChecklistGetE2ETests'
+          # shard-5：所有非 Api 目录（Harness/Calendar/Notes/Mcp/Services… 合计仅 17 分钟累加）
+          - name: shard-5
+            desc: '非 Api 全部（Harness + Calendar + Notes + Mcp + Services + …）'
+            filter: 'FullyQualifiedName!~Pim.UnitTests.Api'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
