@@ -83,6 +83,17 @@ describe('native note version model', () => {
     expect(versionShortId(currentVersionId)).toBe('22222222')
   })
 
+  it('never labels the current version as a conflict candidate', () => {
+    const views = buildNoteVersionViews([
+      upload({ hasConflict: true, phase: 'Conflict' }),
+      upload({ versionId: conflictVersionId, isCurrent: false, hasConflict: true }),
+    ])
+
+    expect(views.map((view) => view.kind)).toEqual(['current', 'conflict'])
+    expect(views[0]).toMatchObject({ kindLabel: '当前版', canPromote: false })
+    expect(views[1]).toMatchObject({ kindLabel: '冲突候选', canPromote: true })
+  })
+
   it('builds a safe human summary from validated material', () => {
     const summary = safeVersionSummary(material(currentVersionId, [
       '## 学习率',

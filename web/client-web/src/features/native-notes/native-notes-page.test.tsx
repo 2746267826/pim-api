@@ -573,6 +573,28 @@ describe('NativeNotesPage', () => {
     expect((screen.getByLabelText('笔记标题') as HTMLInputElement).disabled).toBe(false)
   })
 
+  it('keeps the loaded version history visible when refreshing the current version fails', async () => {
+    const historyUpload: NoteMaterialUpload = {
+      ...material.upload,
+      versionId: '77777777-7777-4777-8777-777777777777',
+      isCurrent: false,
+    }
+    nativeApi.versions.mockResolvedValue([material.upload, historyUpload])
+    page()
+    await userEvent.click(await screen.findByText('课堂笔记').then((node) => node.closest('button')!))
+    expect(await screen.findByText('历史版')).toBeTruthy()
+    const versionCalls = nativeApi.versions.mock.calls.length
+
+    nativeApi.current.mockRejectedValueOnce(new ApiError('当前版本暂时不可读取', 50301, 503))
+    await userEvent.click(screen.getByRole('button', { name: '刷新版本历史' }))
+
+    expect((await screen.findAllByText('当前版本读取失败')).length).toBeGreaterThan(0)
+    await waitFor(() => expect(nativeApi.versions.mock.calls.length).toBeGreaterThan(versionCalls))
+    expect(screen.getByRole('list', { name: '版本历史列表' })).toBeTruthy()
+    expect(screen.getByText('历史版')).toBeTruthy()
+    expect(screen.queryByText('版本历史读取失败')).toBeNull()
+  })
+
   it('shows an explicit empty version history instead of a blank panel', async () => {
     nativeApi.versions.mockResolvedValue([])
     page()

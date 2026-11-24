@@ -37,8 +37,9 @@ export function buildNoteVersionViews(versions: NoteMaterialUpload[]): NoteVersi
 
 export function noteVersionKind(upload: NoteMaterialUpload): NoteVersionKind {
   if (upload.phase === 'Uploading') return 'uploading'
+  if (upload.isCurrent) return 'current'
   if (upload.hasConflict || upload.phase === 'Conflict') return 'conflict'
-  return upload.isCurrent ? 'current' : 'history'
+  return 'history'
 }
 
 export function noteVersionKindLabel(kind: NoteVersionKind): string {

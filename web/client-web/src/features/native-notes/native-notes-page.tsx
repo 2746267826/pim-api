@@ -472,7 +472,7 @@ function Workspace({ ownerId, serverBinding }: { ownerId: string; serverBinding:
             noteId={selectedNoteId}
             versions={selectedNoteVersions}
             versionsLoading={selectedVersions.isPending && !selectedCurrent.isError}
-            versionsError={selectedVersions.error ?? selectedCurrent.error}
+            versionsError={selectedVersions.error}
             current={selectedCurrent.data}
             currentLoading={selectedCurrent.isPending}
             currentError={selectedCurrent.error}
