@@ -178,6 +178,12 @@ public sealed class AiTextCallService(PimDbContext db, ISecretProtector secrets,
         }
         if (audioMode)
         {
+            var auditKey = key;
+            if (auditKey is null && profile is not null)
+            {
+                try { auditKey = secrets.Unprotect(profile.ApiKeySecret); }
+                catch (Exception error) when (error is CryptographicException or FormatException) { }
+            }
             var content = new List<object> { new { type = "text", text = request.Prompt } };
             content.AddRange(audio!.Select((_, index) => (object)new
             {
@@ -188,7 +194,7 @@ public sealed class AiTextCallService(PimDbContext db, ISecretProtector secrets,
             if (!string.IsNullOrEmpty(request.SystemPrompt))
                 snapshot.Add(new { role = "system", content = request.SystemPrompt });
             snapshot.Add(new { role = "user", content });
-            row.RequestMessagesJson = SafeJson(JsonSerializer.Serialize(snapshot, Json), key,
+            row.RequestMessagesJson = SafeJson(JsonSerializer.Serialize(snapshot, Json), auditKey,
                 out var audioRedacted);
             row.ContentRedacted = row.ContentRedacted == true || audioRedacted;
         }

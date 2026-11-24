@@ -258,6 +258,34 @@ public sealed class AiSdkTextCallTests : IDisposable
     }
 
     [Fact]
+    public async Task AudioContextAuditRedactsCredentialsWhenConfigurationBlocksSend()
+    {
+        var model = await Model(); await Enable(model); await EnsureOwnerAsync();
+        var current = await Settings.GetSettingsAsync(default);
+        await Settings.SaveSettingsAsync(new(current.Revision, false, model.Id, null, null), default);
+        var bytes = Wave(160);
+        var noteId = Guid.NewGuid();
+        var versionId = Guid.NewGuid();
+        var audio = new AiAudioContextInput("recording-fixture.wav", "audio/wav",
+            Digest([1, 2, 3]), Digest(bytes), bytes.Length, _owner.UserId!.Value, noteId, versionId,
+            Guid.NewGuid(), 1, 1, 5, 0, 160, "recordings/fixture.wav", bytes);
+        var request = new AiTextCallRequest(Guid.NewGuid(), _owner.UserId!.Value,
+            "整理固定材料\napi_key=" + Key, ModelId: model.Id);
+        var consent = new AiVisionDestinationConsent(model.Id, model.Revision, model.BaseUrl, true);
+
+        var result = await Caller.CallWithAudioForOwnerAsync(_owner.UserId!.Value, request, [audio],
+            consent, "native-note-derived-task", "synthetic-task",
+            "note.derived.record-synthesis", default);
+
+        Assert.Equal(AiRequestStatus.Blocked, result.Status);
+        Assert.Equal(0, _wire.Calls);
+        var log = await _db.AiRequestLogs.AsNoTracking().SingleAsync();
+        Assert.True(log.ContentRedacted);
+        Assert.Contains("pim-ai-audio:00001", log.RequestMessagesJson);
+        Assert.DoesNotContain(Key, log.RequestMessagesJson);
+    }
+
+    [Fact]
     public async Task DisabledCapabilitiesAndChangedActorNeverSendModelRequests()
     {
         var model = await Model();
