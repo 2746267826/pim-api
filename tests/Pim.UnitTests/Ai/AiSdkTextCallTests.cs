@@ -38,6 +38,14 @@ public sealed class AiSdkTextCallTests : IDisposable
         var current = await Settings.GetSettingsAsync(default);
         await Settings.SaveSettingsAsync(new(current.Revision, true, model.Id, null, null), default);
     }
+    private async Task EnsureOwnerAsync()
+    {
+        var owner = _owner.UserId!.Value;
+        if (await _db.Users.AsNoTracking().AnyAsync(x => x.Id == owner)) return;
+        _db.Users.Add(new UserEntity { Id = owner, Username = "synthetic-audio-owner",
+            Email = "synthetic-audio@example.invalid", Role = "admin" });
+        await _db.SaveChangesAsync();
+    }
     private AiTextCallRequest Request(string prompt = "你好\npassword=ordinary-user-data", Guid? model = null) =>
         new(Guid.NewGuid(), _owner.UserId!.Value, prompt, "请完整回答\n不要丢弃上下文", model);
 
@@ -186,6 +194,68 @@ public sealed class AiSdkTextCallTests : IDisposable
     }
 
     [Fact]
+    public async Task AudioContextSendsExactSliceAndStoresOnlyServerReferences()
+    {
+        var model = await Model(); await Enable(model); await EnsureOwnerAsync();
+        var bytes = Wave(160);
+        var sourceSha = Digest([9, 8, 7]);
+        var noteId = Guid.NewGuid();
+        var versionId = Guid.NewGuid();
+        var audio = new AiAudioContextInput("recording-fixture.wav", "audio/wav",
+            sourceSha, Digest(bytes), bytes.Length, _owner.UserId!.Value, noteId, versionId,
+            Guid.NewGuid(), 1, 1, 5, 0, 160, "recordings/fixture.wav", bytes);
+        var request = new AiTextCallRequest(Guid.NewGuid(), _owner.UserId!.Value,
+            "整理固定材料", ModelId: model.Id);
+        var consent = new AiVisionDestinationConsent(model.Id, model.Revision, model.BaseUrl, true);
+
+        var result = await Caller.CallWithAudioForOwnerAsync(_owner.UserId!.Value, request, [audio],
+            consent, "native-note-derived-task", "synthetic-task",
+            "note.derived.record-synthesis", default);
+
+        Assert.Equal(AiRequestStatus.Succeeded, result.Status);
+        Assert.Equal(1, _wire.Calls);
+        using var sent = JsonDocument.Parse(_wire.Requests.Single());
+        var content = sent.RootElement.GetProperty("messages")[
+            sent.RootElement.GetProperty("messages").GetArrayLength() - 1].GetProperty("content");
+        var input = content.EnumerateArray().Single(x => x.GetProperty("type").GetString() == "input_audio")
+            .GetProperty("input_audio");
+        var data = input.GetProperty("data").GetString();
+        Assert.True(data == Convert.ToBase64String(bytes) ||
+            data == "data:audio/wav;base64," + Convert.ToBase64String(bytes));
+
+        var log = await _db.AiRequestLogs.AsNoTracking().SingleAsync();
+        Assert.DoesNotContain(Convert.ToBase64String(bytes), log.RequestMessagesJson);
+        Assert.Contains("pim-ai-audio:00001", log.RequestMessagesJson);
+        using var metadata = JsonDocument.Parse(log.MetadataJson);
+        Assert.Equal(1, metadata.RootElement.GetProperty("audioInputsReferenced").GetInt32());
+        Assert.Equal(sourceSha, metadata.RootElement.GetProperty("audioInputsSha256")[0].GetString());
+        Assert.Equal("sha256-reference", metadata.RootElement.GetProperty("audioEncoding").GetString());
+        Assert.Equal(_owner.UserId!.Value,
+            metadata.RootElement.GetProperty("audioContextOwnerId").GetGuid());
+        Assert.Equal(noteId, metadata.RootElement.GetProperty("audioContextNoteId").GetGuid());
+        Assert.Equal(versionId,
+            metadata.RootElement.GetProperty("audioContextSourceVersionId").GetGuid());
+
+        var replay = await Caller.CallWithAudioForOwnerAsync(_owner.UserId!.Value, request, [audio],
+            consent, "native-note-derived-task", "synthetic-task",
+            "note.derived.record-synthesis", default);
+        Assert.True(replay.Replayed);
+        Assert.Equal(1, _wire.Calls);
+        var changed = audio with
+        {
+            Bytes = Wave(161),
+            SizeBytes = Wave(161).Length,
+            Sha256 = Digest(Wave(161))
+        };
+        var conflict = await Assert.ThrowsAsync<DomainException>(() =>
+            Caller.CallWithAudioForOwnerAsync(_owner.UserId!.Value, request, [changed], consent,
+                "native-note-derived-task", "synthetic-task",
+                "note.derived.record-synthesis", default));
+        Assert.Equal(40901, conflict.ErrorCode);
+        Assert.Equal(1, _wire.Calls);
+    }
+
+    [Fact]
     public async Task DisabledCapabilitiesAndChangedActorNeverSendModelRequests()
     {
         var model = await Model();
@@ -212,6 +282,27 @@ public sealed class AiSdkTextCallTests : IDisposable
 
     public void Dispose() { _db.Dispose(); _wire.Dispose(); }
     private sealed class Owner : ICurrentUserService { public Guid? UserId { get; } = Guid.NewGuid(); public string Role => "admin"; }
+
+    private static byte[] Wave(int samples)
+    {
+        var bytes = new byte[44 + samples * 2];
+        "RIFF"u8.CopyTo(bytes);
+        BitConverter.TryWriteBytes(bytes.AsSpan(4), bytes.Length - 8);
+        "WAVEfmt "u8.CopyTo(bytes.AsSpan(8));
+        BitConverter.TryWriteBytes(bytes.AsSpan(16), 16);
+        BitConverter.TryWriteBytes(bytes.AsSpan(20), (short)1);
+        BitConverter.TryWriteBytes(bytes.AsSpan(22), (short)1);
+        BitConverter.TryWriteBytes(bytes.AsSpan(24), 16_000);
+        BitConverter.TryWriteBytes(bytes.AsSpan(28), 32_000);
+        BitConverter.TryWriteBytes(bytes.AsSpan(32), (short)2);
+        BitConverter.TryWriteBytes(bytes.AsSpan(34), (short)16);
+        "data"u8.CopyTo(bytes.AsSpan(36));
+        BitConverter.TryWriteBytes(bytes.AsSpan(40), samples * 2);
+        return bytes;
+    }
+
+    private static string Digest(byte[] bytes) =>
+        Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
 
     private sealed class Wire : HttpMessageHandler, IHttpClientFactory
     {

@@ -24,7 +24,8 @@ public sealed class NoteDerivedSnapshotBuilder(
 {
     internal async Task<NoteDerivedSnapshotBuild> BuildAsync(Guid owner,
         NoteMaterialVersionDto version, string inputSha, string manifestSha,
-        Guid? asrTaskId, bool waitForAsr, bool allowIncompleteAsr, CancellationToken ct)
+        Guid? asrTaskId, bool waitForAsr, bool allowIncompleteAsr, CancellationToken ct,
+        bool allowAudioContext = false)
     {
         using var document = JsonDocument.Parse(version.InputJson);
         var input = document.RootElement;
@@ -118,6 +119,13 @@ public sealed class NoteDerivedSnapshotBuilder(
                 imageBlocks[path]));
 
         var recordings = input.GetProperty("recordings").GetArrayLength();
+        var audio = new List<NoteDerivedAudioInput>();
+        if (allowAudioContext && recordings > 0)
+        {
+            var audioBuild = await BuildAudioContextAsync(owner, version, input, ct);
+            audio.AddRange(audioBuild.Items);
+            issues.AddRange(audioBuild.Issues);
+        }
         var transcripts = new List<NoteDerivedTranscriptInput>();
         Guid? asrRevision = null;
         var awaitingAsr = false;
@@ -128,7 +136,8 @@ public sealed class NoteDerivedSnapshotBuilder(
         }
         else if (asrTaskId is null)
         {
-            issues.Add(new("asr_required", "材料包含录音，必须先完成同一固定版本的 ASR 任务"));
+            if (!allowAudioContext || audio.Count == 0)
+                issues.Add(new("asr_required", "材料包含录音，必须先完成同一固定版本的 ASR 任务"));
         }
         else
         {
@@ -140,10 +149,10 @@ public sealed class NoteDerivedSnapshotBuilder(
                 issues.Add(new("asr_source_mismatch", "ASR 任务不属于当前固定材料版本或摘要不一致"));
             var phase = NoteAsrTaskStore.Describe(asr).Phase;
             var actualSteps = asr.Steps.OrderBy(x => x.Index).ToArray();
-            if (phase != "Succeeded" && waitForAsr && sourceMatches &&
+            if (!allowAudioContext && phase != "Succeeded" && waitForAsr && sourceMatches &&
                 phase is "Queued" or "Running")
                 awaitingAsr = true;
-            else if (phase != "Succeeded" && !allowIncompleteAsr)
+            else if (!allowAudioContext && phase != "Succeeded" && !allowIncompleteAsr)
                 issues.Add(new("asr_unavailable",
                     $"ASR 当前未提供可用结果，状态为 {phase}；整理链路不会以空转写继续，请恢复 ASR 后重试"));
 
@@ -298,13 +307,112 @@ public sealed class NoteDerivedSnapshotBuilder(
                 }
             }
 
-            if (asr.Steps.Count == 0)
+            if (!allowAudioContext && asr.Steps.Count == 0)
                 issues.Add(new("asr_segment_missing", "ASR 任务没有可核对片段"));
         }
 
-        return new(new(owner, version.Upload.NoteId, version.Upload.VersionId, asrTaskId,
+        var snapshot = new NoteDerivedInputSnapshot(owner, version.Upload.NoteId,
+            version.Upload.VersionId, asrTaskId,
             asrRevision, inputSha, manifestSha, noteTitle, noteMarkdown, textBlocks, transcripts,
-            images, issues), awaitingAsr);
+            images, issues) { Audio = audio };
+        return new(snapshot, awaitingAsr);
+    }
+
+    private async Task<AudioBuild> BuildAudioContextAsync(Guid owner,
+        NoteMaterialVersionDto version, JsonElement input, CancellationToken ct)
+    {
+        var issues = new List<NoteDerivedIssueDto>();
+        var items = new List<NoteDerivedAudioInput>();
+        var files = version.Upload.Files.ToDictionary(x => x.Path, StringComparer.Ordinal);
+        var identities = new HashSet<(Guid RecordingId, int Segment, int Chunk, long Offset)>();
+        long totalBytes = 0;
+        var ordinal = 0;
+        var sliceLimitReached = false;
+        var overBudget = false;
+
+        foreach (var recording in input.GetProperty("recordings").EnumerateArray())
+        {
+            if (!Guid.TryParseExact(recording.GetProperty("id").GetString(), "D",
+                    out var recordingId) || recordingId == Guid.Empty)
+            {
+                issues.Add(new("audio_recording_invalid", "固定材料包含无效录音标识"));
+                continue;
+            }
+            foreach (var chunk in recording.GetProperty("chunks").EnumerateArray())
+            {
+                var segment = chunk.GetProperty("segment").GetInt32();
+                var chunkIndex = chunk.GetProperty("index").GetInt32();
+                var samples = chunk.GetProperty("samples").GetInt64();
+                var path = $"recordings/{recordingId:D}/s{segment:D4}-c{chunkIndex:D6}.wav";
+                if (segment <= 0 || chunkIndex <= 0 || samples <= 0 ||
+                    !files.TryGetValue(path, out var file) || file.Kind != "AudioChunk" ||
+                    file.SizeBytes != NoteDerivedAudioContext.ByteSize(samples) ||
+                    !NoteMaterialManifestValidator.IsDigest(file.Sha256))
+                {
+                    issues.Add(new("audio_context_invalid",
+                        "固定录音分片身份、样本数或 WAV 文件大小无效", path));
+                    continue;
+                }
+
+                for (long offset = 0; offset < samples; offset += NoteAsrPlan.SamplesPerCall)
+                {
+                    if (items.Count >= NoteDerivedAudioContext.MaxSlices)
+                    {
+                        sliceLimitReached = true;
+                        break;
+                    }
+                    var count = Math.Min((long)NoteAsrPlan.SamplesPerCall, samples - offset);
+                    var size = NoteDerivedAudioContext.ByteSize(count);
+                    if (!identities.Add((recordingId, segment, chunkIndex, offset)))
+                    {
+                        issues.Add(new("audio_context_duplicate",
+                            "固定录音上下文包含重复片段", path));
+                        continue;
+                    }
+                    items.Add(new(ordinal++, recordingId, segment, chunkIndex, file.Index, path,
+                        file.Sha256, offset, count, size,
+                        NoteDerivedAudioContext.Name(recordingId, segment, chunkIndex, offset, count)));
+                    totalBytes = checked(totalBytes + size);
+                    if (totalBytes > NoteDerivedAudioContext.MaxBytes)
+                    {
+                        overBudget = true;
+                        break;
+                    }
+                }
+                if (sliceLimitReached || overBudget) break;
+            }
+            if (sliceLimitReached || overBudget) break;
+        }
+
+        if (sliceLimitReached)
+            issues.Add(new("audio_context_slice_limit",
+                $"原始录音需要超过 {NoteDerivedAudioContext.MaxSlices} 个上下文片段；未截断、未发送"));
+        if (overBudget)
+            issues.Add(new("audio_context_too_large",
+                $"原始录音上下文合计超过单次 {NoteDerivedAudioContext.MaxBytes} 字节上限；未截断、未发送"));
+        if (items.Count == 0 && issues.Count == 0)
+            issues.Add(new("audio_context_unavailable",
+                "固定材料包含录音，但没有可读取的原始音频上下文；未发送音频"));
+
+        // Only read the fixed files after the metadata budget is known to be admissible.
+        if (issues.Count == 0)
+        {
+            foreach (var path in items.Select(x => x.Path).Distinct(StringComparer.Ordinal))
+            {
+                var file = files[path];
+                try
+                {
+                    _ = await materials.ReadAudioSliceAsync(owner, version.Upload.VersionId,
+                        file.Index, 0, 1, ct);
+                }
+                catch (Exception error) when (error is DomainException or IOException or InvalidDataException)
+                {
+                    issues.Add(new("audio_context_unreadable",
+                        "无法读取固定原始录音，未发送音频上下文：" + error.Message, path));
+                }
+            }
+        }
+        return new(items, NoteDerivedCoverage.DistinctIssues(issues));
     }
 
     private static string ContentType(string path) => Path.GetExtension(path).ToLowerInvariant() switch
@@ -314,4 +422,7 @@ public sealed class NoteDerivedSnapshotBuilder(
         ".webp" => "image/webp",
         _ => "application/octet-stream"
     };
+
+    private sealed record AudioBuild(IReadOnlyList<NoteDerivedAudioInput> Items,
+        IReadOnlyList<NoteDerivedIssueDto> Issues);
 }

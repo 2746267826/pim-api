@@ -310,7 +310,8 @@ internal static class NoteDerivedReceipts
         var stage = step.Kind == NoteDerivedStepKind.RecordSynthesis
             ? "RecordSynthesis"
             : "AnalysisSynthesis";
-        var expectedInput = expectedPrompt is null ? null : TextFingerprint(state, purpose, expectedPrompt);
+        var expectedInput = expectedPrompt is null ? null : TextFingerprint(state, purpose,
+            expectedPrompt, state.Plan.Input.Audio);
         var log = FindLog(step.Current.LogId, step.Current.RequestId, context);
         context.VersionsByStep.TryGetValue(step.Key, out var version);
         var expectedOutput = version?.ContentSha256 ?? step.Current.ResultSha256;
@@ -324,6 +325,7 @@ internal static class NoteDerivedReceipts
         }
 
         CheckCommonLog(local, log, state, step.Current.RequestId, purpose, "synthesis", step.Key);
+        CheckAudioWire(local, log, state, step.Key);
         if (step.Current.LogId != log.Id)
             AddIssue(local, "synthesis_log_id_mismatch",
                 "合成步骤保存的调用记录标识与实际回执不一致", stepKey: step.Key);
@@ -638,10 +640,40 @@ internal static class NoteDerivedReceipts
         }, Json));
     }
 
-    private static string TextFingerprint(NoteDerivedTaskState state, string purpose, string prompt)
+    private static string TextFingerprint(NoteDerivedTaskState state, string purpose, string prompt,
+        IReadOnlyList<NoteDerivedAudioInput>? audio = null)
     {
         var consent = new AiVisionDestinationConsent(state.Request.Consent.ModelId,
             state.Request.Consent.ModelRevision, state.Request.Consent.Endpoint, true);
+        if (audio is { Count: > 0 })
+            return Hash(JsonSerializer.Serialize(new
+            {
+                kind = "audio",
+                sourceObjectType = NoteDerivedPrompts.SourceObjectType,
+                sourceObjectId = state.Request.TaskId.ToString("D"),
+                purpose,
+                ModelId = (Guid?)state.Request.Consent.ModelId,
+                SystemPrompt = (string?)null,
+                Prompt = prompt,
+                consent,
+                audio = audio.OrderBy(x => x.Ordinal).Select(x => new
+                {
+                    x.Name,
+                    ContentType = "audio/wav",
+                    x.SourceSha256,
+                    size = x.SizeBytes,
+                    OwnerId = state.Owner,
+                    NoteId = state.NoteId,
+                    SourceVersionId = state.Request.VersionId,
+                    x.RecordingId,
+                    x.RecordingSegment,
+                    x.ChunkIndex,
+                    x.FileIndex,
+                    x.SourceOffsetSamples,
+                    x.Samples,
+                    SourcePath = x.Path
+                })
+            }, Json));
         return Hash(JsonSerializer.Serialize(new
         {
             kind = "text",
@@ -653,6 +685,68 @@ internal static class NoteDerivedReceipts
             Prompt = prompt,
             consent
         }, Json));
+    }
+
+    private static void CheckAudioWire(ICollection<NoteDerivedIssueDto> issues,
+        AiRequestLogEntity log, NoteDerivedTaskState state, string stepKey)
+    {
+        var planned = state.Plan.Input.Audio;
+        if (planned.Count == 0) return;
+        try
+        {
+            using var document = JsonDocument.Parse(log.MetadataJson);
+            var root = document.RootElement;
+            var encoding = root.TryGetProperty("audioEncoding", out var value) &&
+                value.ValueKind == JsonValueKind.String ? value.GetString() : null;
+            var referenced = root.TryGetProperty("audioInputsReferenced", out var count) &&
+                count.ValueKind == JsonValueKind.Number ? count.GetInt32() : -1;
+            var hashes = root.TryGetProperty("audioInputsSha256", out var hashValues) &&
+                hashValues.ValueKind == JsonValueKind.Array
+                ? hashValues.EnumerateArray()
+                    .Where(x => x.ValueKind == JsonValueKind.String)
+                    .Select(x => x.GetString())
+                    .ToArray()
+                : [];
+            var expected = planned.OrderBy(x => x.Ordinal).Select(x => x.SourceSha256).ToArray();
+            if (encoding != "sha256-reference" || referenced != planned.Count ||
+                hashes.Length != expected.Length || !hashes.SequenceEqual(expected))
+                AddIssue(issues, "audio_wire_incomplete",
+                    "合成回执缺少与固定录音清单一致的数量、来源摘要或审计编码证据", stepKey);
+            var owner = root.TryGetProperty("audioContextOwnerId", out var ownerValue) &&
+                ownerValue.ValueKind == JsonValueKind.String &&
+                Guid.TryParse(ownerValue.GetString(), out var parsedOwner) ? parsedOwner : Guid.Empty;
+            var note = root.TryGetProperty("audioContextNoteId", out var noteValue) &&
+                noteValue.ValueKind == JsonValueKind.String &&
+                Guid.TryParse(noteValue.GetString(), out var parsedNote) ? parsedNote : Guid.Empty;
+            var version = root.TryGetProperty("audioContextSourceVersionId", out var versionValue) &&
+                versionValue.ValueKind == JsonValueKind.String &&
+                Guid.TryParse(versionValue.GetString(), out var parsedVersion) ? parsedVersion : Guid.Empty;
+            if (owner != state.Owner || note != state.NoteId ||
+                version != state.Request.VersionId)
+                AddIssue(issues, "audio_wire_identity_mismatch",
+                    "合成回执的音频上下文没有绑定当前账号、笔记和固定材料版本", stepKey);
+            if (Occurrences(log.RequestMessagesJson, "pim-ai-audio:") < planned.Count ||
+                log.RequestMessagesJson.Contains("data:audio/wav;base64,", StringComparison.Ordinal))
+                AddIssue(issues, "audio_wire_mismatch",
+                    "合成回执的请求快照没有使用服务端音频引用或包含原始音频数据", stepKey);
+        }
+        catch (JsonException)
+        {
+            AddIssue(issues, "audio_wire_incomplete",
+                "合成回执没有可核对的音频审计元数据", stepKey);
+        }
+    }
+
+    private static int Occurrences(string text, string value)
+    {
+        var count = 0;
+        var offset = 0;
+        while ((offset = text.IndexOf(value, offset, StringComparison.Ordinal)) >= 0)
+        {
+            count++;
+            offset += value.Length;
+        }
+        return count;
     }
 
     private static string EvidenceInputFingerprint(NoteDerivedTaskState state,

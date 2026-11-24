@@ -128,6 +128,10 @@ builder.Services.AddOptions<Pim.Infrastructure.Notes.NoteMaterialUploadOptions>(
     .Bind(builder.Configuration.GetSection("NativeNotes"))
     .Validate(options => options.IsValid(), "NativeNotes storage configuration is invalid")
     .ValidateOnStart();
+builder.Services.AddOptions<Pim.Infrastructure.Notes.NoteDerivedAudioContextOptions>()
+    .Bind(builder.Configuration.GetSection("NativeNotes:AudioContext"))
+    .Validate(options => options.IsValid(), "NativeNotes audio-context allowlist is invalid")
+    .ValidateOnStart();
 builder.Services.AddSingleton<Pim.Infrastructure.Notes.NoteMaterialUploadStore>();
 builder.Services.AddSingleton<Pim.Infrastructure.Notes.NoteAsrTaskStore>();
 builder.Services.AddSingleton<Pim.Infrastructure.Notes.NoteDerivedStore>();

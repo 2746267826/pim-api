@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Options;
 using Pim.Core.Ai;
 using Pim.Core.Exceptions;
 using Pim.Core.Notes;
@@ -21,7 +22,8 @@ public sealed class NoteDerivedService(
     PimDbContext db,
     ICurrentUserService user,
     ISecretProtector secrets,
-    IConfiguration configuration)
+    IConfiguration configuration,
+    IOptions<NoteDerivedAudioContextOptions> audioContext)
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     private Guid Owner => user.UserId ?? throw new DomainException(40101, "请先登录");
@@ -63,8 +65,9 @@ public sealed class NoteDerivedService(
 
         var hasImages = version.Upload.Files.Any(x => x.Kind is "Photo" or "InkPreview");
         await ValidateDestinationAsync(request.Consent, hasImages, ct);
+        var allowAudioContext = await AudioContextAllowedAsync(request.Consent, ct);
         var built = await snapshots.BuildAsync(owner, version, inputSha, manifestSha,
-            request.AsrTaskId, waitForAsr, allowIncompleteAsr, ct);
+            request.AsrTaskId, waitForAsr, allowIncompleteAsr, ct, allowAudioContext);
         var snapshot = built.Snapshot;
         var plan = new NoteDerivedPlanner().Build(snapshot);
         var state = await store.CreateTaskAsync(owner, request, plan, fingerprint, ct,
@@ -525,6 +528,16 @@ public sealed class NoteDerivedService(
             throw Conflict("派生目标配置已变化，请刷新并重新确认");
         if (!CredentialAvailable(profile.ApiKeySecret))
             throw Conflict("派生模型凭据当前不可用，请管理员重新保存");
+    }
+
+    private async Task<bool> AudioContextAllowedAsync(NoteDerivedGenerationConsent consent,
+        CancellationToken ct)
+    {
+        var configured = audioContext.Value;
+        if (configured.ModelIds.Length == 0 && configured.ModelNames.Length == 0) return false;
+        var profile = await db.AiModelProfiles.AsNoTracking()
+            .SingleOrDefaultAsync(x => x.Id == consent.ModelId, ct);
+        return profile is not null && configured.IsAllowed(profile.Id, profile.Model, profile.Name);
     }
 
     private NoteDerivedDestinationDto? TryDescribeDestination(Pim.Infrastructure.Data.Entities.AiModelProfileEntity profile)

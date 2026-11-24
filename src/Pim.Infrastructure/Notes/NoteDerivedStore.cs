@@ -425,6 +425,7 @@ public sealed class NoteDerivedStore(IOptions<NoteMaterialUploadOptions> options
         state.Request.AsrTaskId is not null &&
         !state.AwaitingAsr &&
         !state.Blocked &&
+        state.Plan?.Input.Audio.Count == 0 &&
         (state.Plan is null || state.Plan.Input.Transcripts.Count == 0);
 
     internal static NoteDerivedTaskDto DescribeTask(NoteDerivedTaskState state) => new(
