@@ -2,7 +2,6 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Camera, Download, ImagePlus, PenLine, Plus, RotateCcw, Save, Trash2 } from 'lucide-react'
 import { Button, Card, InlineAlert, Input, Label, PageHeader, Skeleton, StatusBadge, Textarea } from '@/components/ui'
-import { ApiError } from '@/api/client'
 import {
   buildMaterialBundle,
   createMaterialId,
@@ -15,6 +14,7 @@ import {
   type SupportedPhotoMime,
 } from './material-model'
 import type { NativeNotesClient } from './api'
+import type { PromoteVersionOutcome } from './note-version-panel'
 import { uploadMaterialBundle, type MaterialUploadProgress } from './upload-engine'
 import { InkCanvasEditor } from './ink-canvas-editor'
 import { exportAndroidNotePackage } from './material-package'
@@ -35,7 +35,9 @@ export interface NoteEditorPaneProps {
   seed?: NoteEditorSeed
   onDirtyChange?: (dirty: boolean) => void
   onSaved: (upload: NoteMaterialUpload) => void
-  onStaleCurrent?: () => void
+  promoteInFlight: boolean
+  promotingVersionId: string
+  onPromoteVersion: (versionId: string) => Promise<PromoteVersionOutcome>
 }
 
 interface LoadedEditorProps {
@@ -46,7 +48,6 @@ interface LoadedEditorProps {
   noteCreatedAtMillis: number
   baseVersionId: string | null
   isCurrent: boolean
-  currentVersionId: string | null
   preservedRecordings?: unknown[]
   preservedFiles?: ParsedNoteMaterial['manifestFiles']
   sourceInputJson?: string
@@ -55,7 +56,9 @@ interface LoadedEditorProps {
   api: NativeNotesClient
   onDirtyChange?: (dirty: boolean) => void
   onSaved: (upload: NoteMaterialUpload) => void
-  onStaleCurrent?: () => void
+  promoteInFlight: boolean
+  promotingVersionId: string
+  onPromoteVersion: (versionId: string) => Promise<PromoteVersionOutcome>
 }
 
 export function NoteEditorPane({
@@ -66,7 +69,9 @@ export function NoteEditorPane({
   seed,
   onDirtyChange,
   onSaved,
-  onStaleCurrent,
+  promoteInFlight,
+  promotingVersionId,
+  onPromoteVersion,
 }: NoteEditorPaneProps) {
   const material = useQuery({
     queryKey: ['native-note-material', ownerId, serverBinding, versionId],
@@ -100,13 +105,14 @@ export function NoteEditorPane({
       noteCreatedAtMillis={Date.now()}
       baseVersionId={null}
       isCurrent
-      currentVersionId={null}
       legacyNotice={seed.legacyNotice}
       serverBinding={serverBinding}
       api={api}
       onDirtyChange={onDirtyChange}
       onSaved={onSaved}
-      onStaleCurrent={onStaleCurrent}
+      promoteInFlight={promoteInFlight}
+      promotingVersionId={promotingVersionId}
+      onPromoteVersion={onPromoteVersion}
     />
   }
 
@@ -130,7 +136,6 @@ export function NoteEditorPane({
     noteCreatedAtMillis={parsed.createdAtMillis}
     baseVersionId={parsed.versionId}
     isCurrent={material.data.upload.isCurrent}
-    currentVersionId={material.data.upload.currentVersionId ?? null}
     preservedRecordings={parsed.recordingEntries}
     preservedFiles={parsed.manifestFiles}
     sourceInputJson={parsed.sourceInputJson}
@@ -138,7 +143,9 @@ export function NoteEditorPane({
     api={api}
     onDirtyChange={onDirtyChange}
     onSaved={onSaved}
-    onStaleCurrent={onStaleCurrent}
+    promoteInFlight={promoteInFlight}
+    promotingVersionId={promotingVersionId}
+    onPromoteVersion={onPromoteVersion}
   />
 }
 
@@ -160,7 +167,6 @@ function LoadedEditor({
   noteCreatedAtMillis,
   baseVersionId,
   isCurrent,
-  currentVersionId,
   preservedRecordings = [],
   preservedFiles = [],
   sourceInputJson,
@@ -169,7 +175,9 @@ function LoadedEditor({
   api,
   onDirtyChange,
   onSaved,
-  onStaleCurrent,
+  promoteInFlight,
+  promotingVersionId,
+  onPromoteVersion,
 }: LoadedEditorProps) {
   const [title, setTitle] = useState(initialTitle)
   const [blocks, setBlocks] = useState<MaterialDraftBlock[]>(initialBlocks)
@@ -179,7 +187,6 @@ function LoadedEditor({
   const [busy, setBusy] = useState(false)
   const [exporting, setExporting] = useState(false)
   const [downloading, setDownloading] = useState(false)
-  const [promoting, setPromoting] = useState(false)
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
   const [storageConsent, setStorageConsent] = useState(false)
@@ -189,7 +196,7 @@ function LoadedEditor({
   const inkEditorRef = useRef<{ id: string; ink: Record<string, unknown>; sessionId: string } | null>(null)
   const inkSessionIdRef = useRef<string | null>(null)
   const uploadSessionRef = useRef<EditorUploadSession | null>(null)
-  const editable = !busy && !exporting && !promoting && !frozen && isCurrent
+  const editable = !busy && !exporting && !frozen && isCurrent
   const editableRef = useRef(editable)
   useEffect(() => {
     editableRef.current = editable
@@ -398,30 +405,18 @@ function LoadedEditor({
   }
 
   async function promote() {
-    if (!baseVersionId || busy || promoting) return
-    let session: EditorUploadSession
-    try {
-      session = requireUploadSession()
-    } catch {
-      return
-    }
-    setPromoting(true)
+    if (!baseVersionId || busy || promoteInFlight) return
     setError('')
+    setMessage('')
     try {
-      const upload = await api.promote(baseVersionId, currentVersionId, session.controller.signal)
-      assertUploadSessionActive(session)
-      setMessage('已明确将此版本设为当前版本。')
-      onSaved(upload)
-    } catch (failure) {
-      if (!isUploadSessionActive(session)) return
-      if (failure instanceof ApiError && failure.status === 409) {
-        setError('另一端已更新当前版本，页面正在刷新版本历史。当前选用版本没有改变，请重新查看后再选择。')
-        onStaleCurrent?.()
+      const outcome = await onPromoteVersion(baseVersionId)
+      if (outcome.status === 'adopted') {
+        setMessage(outcome.message)
       } else {
-        setError(`${errorText(failure)}。当前选用版本没有改变。`)
+        setError(outcome.message)
       }
-    } finally {
-      if (isUploadSessionActive(session)) setPromoting(false)
+    } catch (failure) {
+      setError(`${errorText(failure)}。未确认本次选择是否成功，请刷新核对。`)
     }
   }
 
@@ -626,7 +621,16 @@ function LoadedEditor({
       <details className="rounded-ctl border border-border px-3 py-2 text-xs leading-5 text-text-3">
         <summary className="cursor-pointer">更多：历史材料、下载、导出与诊断</summary>
         <div className="mt-3 flex flex-wrap items-center gap-2">
-          {baseVersionId && !isCurrent && <Button size="sm" loading={promoting} onClick={() => void promote()}>明确设为当前版本</Button>}
+          {baseVersionId && !isCurrent && (
+            <Button
+              size="sm"
+              loading={promoteInFlight && promotingVersionId === baseVersionId}
+              disabled={promoteInFlight}
+              onClick={() => void promote()}
+            >
+              明确设为当前版本
+            </Button>
+          )}
           {baseVersionId && <Button size="sm" variant="secondary" disabled={downloading} loading={downloading} onClick={() => void downloadOriginalBundle()}>
             <Download className="size-4" aria-hidden />下载完整原始材料包
           </Button>}

@@ -48,6 +48,7 @@ vi.mock('@/features/auth/auth-context', () => ({
 const noteId = '11111111-1111-4111-8111-111111111111'
 const versionId = '22222222-2222-4222-8222-222222222222'
 const conflictVersionId = '99999999-9999-4999-8999-999999999999'
+const historyVersionId = '77777777-7777-4777-8777-777777777777'
 const blockId = '33333333-3333-4333-8333-333333333333'
 const source = {
   noteId,
@@ -122,6 +123,26 @@ const conflictMaterial: NoteMaterialVersion = {
     hasConflict: true,
   },
 }
+const historyInput = JSON.parse(inputJson) as {
+  id: string
+  note: { title: string }
+}
+historyInput.id = historyVersionId
+historyInput.note.title = '历史版本笔记'
+const historyManifest = JSON.parse(material.manifestJson) as { versionId: string }
+historyManifest.versionId = historyVersionId
+const historyMaterial: NoteMaterialVersion = {
+  ...material,
+  inputJson: JSON.stringify(historyInput),
+  manifestJson: JSON.stringify(historyManifest),
+  upload: {
+    ...material.upload,
+    versionId: historyVersionId,
+    currentVersionId: versionId,
+    isCurrent: false,
+    hasConflict: false,
+  },
+}
 
 let client: QueryClient
 let testRouter: ReturnType<typeof createMemoryRouter>
@@ -169,7 +190,8 @@ beforeEach(() => {
   nativeApi.notes.mockResolvedValue({ total: 1, offset: 0, items: [source] })
   nativeApi.current.mockResolvedValue({ ...material, upload: material.upload })
   nativeApi.versions.mockResolvedValue([material.upload])
-  nativeApi.version.mockImplementation(async (id: string) => id === conflictVersionId ? conflictMaterial : material)
+  nativeApi.version.mockImplementation(async (id: string) =>
+    id === conflictVersionId ? conflictMaterial : id === historyVersionId ? historyMaterial : material)
   nativeApi.begin.mockImplementation(async (body: {
     versionId: string
     noteId: string
@@ -664,6 +686,124 @@ describe('NativeNotesPage', () => {
     expect((screen.getByLabelText('确认保存到当前服务器') as HTMLInputElement).disabled).toBe(true)
     expect(screen.getByRole('button', { name: '明确设为当前版本' })).toBeTruthy()
     expect(nativeApi.promote).not.toHaveBeenCalled()
+  })
+
+  it('promotes a history version through the page handler and refreshes shared version state', async () => {
+    nativeApi.notes.mockResolvedValue({ total: 1, offset: 0, items: [{ ...source, hasConflict: true }] })
+    nativeApi.versions.mockResolvedValue([material.upload, conflictMaterial.upload, historyMaterial.upload])
+    page()
+    await userEvent.click(await screen.findByText('课堂笔记').then((node) => node.closest('button')!))
+    await userEvent.click(await screen.findByRole('button', { name: /查看版本 .*历史版/ }))
+
+    const promoteButton = await screen.findByRole('button', { name: '明确设为当前版本' })
+    const currentCalls = nativeApi.current.mock.calls.length
+    const versionCalls = nativeApi.versions.mock.calls.length
+    await userEvent.click(promoteButton)
+
+    await waitFor(() => expect(nativeApi.promote).toHaveBeenCalledWith(
+      historyVersionId,
+      versionId,
+      expect.any(AbortSignal),
+    ))
+    expect((await screen.findAllByText(/已采用所选内容/)).length).toBeGreaterThan(0)
+    await waitFor(() => expect(nativeApi.current.mock.calls.length).toBeGreaterThan(currentCalls))
+    await waitFor(() => expect(nativeApi.versions.mock.calls.length).toBeGreaterThan(versionCalls))
+    expect(testRouter.state.location.search).toBe(`?note=${noteId}`)
+  })
+
+  it('refreshes shared version state and explains a stale history promotion', async () => {
+    nativeApi.notes.mockResolvedValue({ total: 1, offset: 0, items: [{ ...source, hasConflict: true }] })
+    nativeApi.versions.mockResolvedValue([material.upload, conflictMaterial.upload, historyMaterial.upload])
+    nativeApi.promote.mockRejectedValue(new ApiError('服务器当前版本已变化', 40901, 409))
+    page()
+    await userEvent.click(await screen.findByText('课堂笔记').then((node) => node.closest('button')!))
+    await userEvent.click(await screen.findByRole('button', { name: /查看版本 .*历史版/ }))
+
+    const currentCalls = nativeApi.current.mock.calls.length
+    const versionCalls = nativeApi.versions.mock.calls.length
+    await userEvent.click(await screen.findByRole('button', { name: '明确设为当前版本' }))
+
+    expect(await screen.findByText(/服务器拒绝了本次版本选择；已重新读取当前内容和冲突候选/)).toBeTruthy()
+    await waitFor(() => expect(nativeApi.current.mock.calls.length).toBeGreaterThan(currentCalls))
+    await waitFor(() => expect(nativeApi.versions.mock.calls.length).toBeGreaterThan(versionCalls))
+    expect(screen.queryByText(/当前选用版本没有改变/)).toBeNull()
+    expect(screen.queryByText(/已明确将此版本设为当前版本/)).toBeNull()
+  })
+
+  it('does not claim a history promotion changed anything when the result is unknown', async () => {
+    nativeApi.notes.mockResolvedValue({ total: 1, offset: 0, items: [{ ...source, hasConflict: true }] })
+    nativeApi.versions.mockResolvedValue([material.upload, conflictMaterial.upload, historyMaterial.upload])
+    nativeApi.promote.mockRejectedValue(new ApiError('网关在确认前超时', 50401, 504))
+    page()
+    await userEvent.click(await screen.findByText('课堂笔记').then((node) => node.closest('button')!))
+    await userEvent.click(await screen.findByRole('button', { name: /查看版本 .*历史版/ }))
+
+    await userEvent.click(await screen.findByRole('button', { name: '明确设为当前版本' }))
+
+    expect(await screen.findByText(/未确认本次选择是否成功，请刷新核对后再选择/)).toBeTruthy()
+    expect(screen.queryByText(/当前选用版本没有改变/)).toBeNull()
+    expect(screen.queryByText(/已明确将此版本设为当前版本/)).toBeNull()
+  })
+
+  it('disables the conflict entry while a history promotion is in flight', async () => {
+    nativeApi.notes.mockResolvedValue({ total: 1, offset: 0, items: [{ ...source, hasConflict: true }] })
+    nativeApi.versions.mockResolvedValue([material.upload, conflictMaterial.upload, historyMaterial.upload])
+    let resolvePromote!: (value: NoteMaterialUpload) => void
+    nativeApi.promote.mockImplementationOnce(() => new Promise<NoteMaterialUpload>((resolve) => {
+      resolvePromote = resolve
+    }))
+    page()
+    await userEvent.click(await screen.findByText('课堂笔记').then((node) => node.closest('button')!))
+    await userEvent.click(await screen.findByRole('button', { name: /查看版本 .*历史版/ }))
+    await screen.findByRole('heading', { name: '发现内容冲突' })
+
+    const adopt = screen.getByRole('button', { name: '采用这份内容' }) as HTMLButtonElement
+    await waitFor(() => expect(adopt.disabled).toBe(false))
+    await userEvent.click(await screen.findByRole('button', { name: '明确设为当前版本' }))
+    await waitFor(() => expect(nativeApi.promote).toHaveBeenCalledOnce())
+    expect(adopt.disabled).toBe(true)
+    await userEvent.click(adopt)
+    expect(nativeApi.promote).toHaveBeenCalledOnce()
+
+    resolvePromote({
+      ...material.upload,
+      versionId: historyVersionId,
+      currentVersionId: historyVersionId,
+      isCurrent: true,
+      hasConflict: false,
+    })
+    expect((await screen.findAllByText(/已采用所选内容/)).length).toBeGreaterThan(0)
+  })
+
+  it('disables the history entry while a conflict promotion is in flight', async () => {
+    nativeApi.notes.mockResolvedValue({ total: 1, offset: 0, items: [{ ...source, hasConflict: true }] })
+    nativeApi.versions.mockResolvedValue([material.upload, conflictMaterial.upload, historyMaterial.upload])
+    let resolvePromote!: (value: NoteMaterialUpload) => void
+    nativeApi.promote.mockImplementationOnce(() => new Promise<NoteMaterialUpload>((resolve) => {
+      resolvePromote = resolve
+    }))
+    page()
+    await userEvent.click(await screen.findByText('课堂笔记').then((node) => node.closest('button')!))
+    await userEvent.click(await screen.findByRole('button', { name: /查看版本 .*历史版/ }))
+    await screen.findByRole('heading', { name: '发现内容冲突' })
+
+    const adopt = screen.getByRole('button', { name: '采用这份内容' }) as HTMLButtonElement
+    await waitFor(() => expect(adopt.disabled).toBe(false))
+    await userEvent.click(screen.getByRole('button', { name: '采用这份内容' }))
+    await waitFor(() => expect(nativeApi.promote).toHaveBeenCalledOnce())
+    const promoteFromHistory = screen.getByRole('button', { name: '明确设为当前版本' }) as HTMLButtonElement
+    expect(promoteFromHistory.disabled).toBe(true)
+    await userEvent.click(promoteFromHistory)
+    expect(nativeApi.promote).toHaveBeenCalledOnce()
+
+    resolvePromote({
+      ...material.upload,
+      versionId: conflictVersionId,
+      currentVersionId: conflictVersionId,
+      isCurrent: true,
+      hasConflict: false,
+    })
+    expect((await screen.findAllByText(/已采用所选内容/)).length).toBeGreaterThan(0)
   })
 
   it('shows version history read errors without hiding the editable current version', async () => {

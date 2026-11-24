@@ -38,9 +38,14 @@ export interface AuditRestorePreview {
 }
 
 export const auditApi = {
-  timeline: (objectType: string, objectId: string) =>
+  timeline: (
+    objectType: string,
+    objectId: string,
+    opts?: { signal?: AbortSignal; assertActive?: () => void },
+  ) =>
     apiGet<{ items: AuditVersionItem[] }>(
       `/api/v1/operations/audit/${encodeURIComponent(objectType)}/${encodeURIComponent(objectId)}`,
+      opts,
     ),
   restorePreview: (auditVersionId: string) =>
     apiPost<AuditRestorePreview>(`/api/v1/operations/audit/${auditVersionId}/restore-preview`, {}),

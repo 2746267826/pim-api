@@ -506,7 +506,7 @@ export function useDataCenterQuery(
 ) {
   return useQuery({
     queryKey: calendarExtraKeys.dataCenter(ownerId, serverBinding, params),
-    queryFn: () => import('./api').then((m) => m.dataCenterApi.query(params)),
+    queryFn: ({ signal }) => import('./api').then((m) => m.dataCenterApi.query(params, { signal })),
     enabled: Boolean(ownerId),
   })
 }

@@ -78,6 +78,8 @@ function Workspace({ ownerId, serverBinding }: { ownerId: string; serverBinding:
   const packageInputRef = useRef<HTMLInputElement>(null)
   const sessionGenerationRef = useRef(0)
   const promoteInFlightRef = useRef(false)
+  const [promoteInFlight, setPromoteInFlight] = useState(false)
+  const [promotingVersionId, setPromotingVersionId] = useState('')
   const allowInternalNavigationRef = useRef(false)
   const selectedNoteId = params.get('note') ?? ''
   const selectedVersionId = params.get('version') ?? ''
@@ -343,6 +345,8 @@ function Workspace({ ownerId, serverBinding }: { ownerId: string; serverBinding:
       return { status: 'failed', message: '上一次版本选择仍在等待服务器确认，请勿重复提交。' }
     }
     promoteInFlightRef.current = true
+    setPromoteInFlight(true)
+    setPromotingVersionId(versionId)
     setMessage('')
     setError('')
     try {
@@ -376,6 +380,8 @@ function Workspace({ ownerId, serverBinding }: { ownerId: string; serverBinding:
       }
     } finally {
       promoteInFlightRef.current = false
+      setPromoteInFlight(false)
+      setPromotingVersionId('')
     }
   }
 
@@ -510,6 +516,8 @@ function Workspace({ ownerId, serverBinding }: { ownerId: string; serverBinding:
             currentError={selectedCurrent.error}
             selectedVersionId={selectedVersionId}
             conflictMaterials={conflictMaterials}
+            promoteInFlight={promoteInFlight}
+            promotingVersionId={promotingVersionId}
             onOpenVersion={openVersionId}
             onOpenCurrent={openCurrentVersion}
             onRefresh={() => void refreshVersionState()}
@@ -529,7 +537,9 @@ function Workspace({ ownerId, serverBinding }: { ownerId: string; serverBinding:
               seed={seed ?? undefined}
               onDirtyChange={setEditorDirty}
               onSaved={(upload) => void saved(upload)}
-              onStaleCurrent={() => void refreshVersionState()}
+              promoteInFlight={promoteInFlight}
+              promotingVersionId={promotingVersionId}
+              onPromoteVersion={promoteVersion}
             />}
       </div>
     </div>

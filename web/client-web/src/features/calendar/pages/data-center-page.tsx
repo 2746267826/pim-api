@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Download, History, ScrollText } from 'lucide-react'
 import { dataCenterApi } from '../api'
 import { useDataCenterQuery } from '../queries'
@@ -31,6 +31,24 @@ const OBJECT_TYPES = [
 export function DataCenterPage() {
   const { user } = useAuth()
   const [serverBinding, setServerBinding] = useState(currentServerBinding)
+
+  useEffect(() => {
+    const update = () => setServerBinding(currentServerBinding())
+    window.addEventListener('pim:api-base-changed', update)
+    return () => window.removeEventListener('pim:api-base-changed', update)
+  }, [])
+
+  const ownerId = user?.id ?? ''
+  return (
+    <DataCenterWorkspace
+      key={`${ownerId}/${serverBinding}`}
+      ownerId={ownerId}
+      serverBinding={serverBinding}
+    />
+  )
+}
+
+function DataCenterWorkspace({ ownerId, serverBinding }: { ownerId: string; serverBinding: string }) {
   const [search, setSearch] = useState('')
   const [objectType, setObjectType] = useState('')
   const [page, setPage] = useState(1)
@@ -43,24 +61,41 @@ export function DataCenterPage() {
   const [preview, setPreview] = useState<{ summary: string; changedFields: string[]; beforeJson: string | null; afterJson: string | null } | null>(null)
   const [previewError, setPreviewError] = useState('')
   const [previewLoading, setPreviewLoading] = useState(false)
+  const sessionRef = useRef<DataCenterSession | null>(null)
+  const previewRequestRef = useRef(0)
 
   useEffect(() => {
-    const update = () => setServerBinding(currentServerBinding())
-    window.addEventListener('pim:api-base-changed', update)
-    return () => window.removeEventListener('pim:api-base-changed', update)
-  }, [])
+    const controller = new AbortController()
+    sessionRef.current = { ownerId, serverBinding, controller }
+    return () => {
+      if (sessionRef.current?.controller === controller) sessionRef.current = null
+      controller.abort()
+    }
+  }, [ownerId, serverBinding])
 
-  const ownerId = user?.id ?? ''
+  function sessionIsActive(session: DataCenterSession) {
+    return sessionRef.current === session && !session.controller.signal.aborted
+  }
+
   const params = useMemo(() => ({ search: search || undefined, objectType: objectType || undefined, pendingOnly: false, page, pageSize: 50 }), [search, objectType, page])
   const { data, isLoading, isFetching, isError, error, refetch } = useDataCenterQuery(ownerId, serverBinding, params)
 
   async function exportAudit() {
+    const session = sessionRef.current
+    if (!session) return
     setActionError('')
     try {
-      const res = await dataCenterApi.auditExport()
+      const res = await dataCenterApi.auditExport(undefined, {
+        signal: session.controller.signal,
+        assertActive: () => {
+          if (!sessionIsActive(session)) throw sessionChangedError()
+        },
+      })
+      if (!sessionIsActive(session)) return
       downloadJson(res.fileName, res.content)
       notifySuccess('审计导出已下载')
     } catch (failure) {
+      if (isAbortError(failure) || !sessionIsActive(session)) return
       setActionError(`审计导出失败：${errorText(failure)}`)
     }
   }
@@ -68,24 +103,40 @@ export function DataCenterPage() {
   /* 详情抽屉打开时拉取该对象的审计版本（应用内写路径才会产生；空=未经应用内修改） */
   useEffect(() => {
     if (!detail) return
+    const session = sessionRef.current
+    if (!session) return
+    const controller = new AbortController()
     let cancelled = false
     setAuditVersions(null)
     setAuditError(null)
     setShowAllVersions(false)
+    const stillActive = () =>
+      !cancelled && sessionRef.current === session && !session.controller.signal.aborted
     auditApi
-      .timeline(detail.item.objectType, detail.item.objectId)
-      .then((res) => !cancelled && setAuditVersions(res.items))
+      .timeline(detail.item.objectType, detail.item.objectId, {
+        signal: controller.signal,
+        assertActive: () => {
+          if (!stillActive()) throw sessionChangedError()
+        },
+      })
+      .then((res) => {
+        if (stillActive()) setAuditVersions(res.items)
+      })
       .catch((failure) => {
-        if (cancelled) return
+        if (!stillActive() || isAbortError(failure)) return
         setAuditVersions([])
         setAuditError(failure)
       })
     return () => {
       cancelled = true
+      controller.abort()
     }
   }, [auditAttempt, detail])
 
   async function openRestorePreview(objectType: string, objectId: string) {
+    const session = sessionRef.current
+    if (!session) return
+    const requestId = ++previewRequestRef.current
     setPreviewError('')
     setPreview(null)
     if (objectType !== 'audit-version') {
@@ -93,21 +144,45 @@ export function DataCenterPage() {
       return
     }
     setPreviewLoading(true)
+    const stillActive = () =>
+      sessionRef.current === session &&
+      requestId === previewRequestRef.current &&
+      !session.controller.signal.aborted
     try {
-      const res = await dataCenterApi.restorePreview({ auditVersionId: objectId, reason: '数据中心版本恢复预览' })
+      const res = await dataCenterApi.restorePreview(
+        { auditVersionId: objectId, reason: '数据中心版本恢复预览' },
+        {
+          signal: session.controller.signal,
+          assertActive: () => {
+            if (!stillActive()) throw sessionChangedError()
+          },
+        },
+      )
+      if (!stillActive()) return
       setPreview({ summary: res.summary, changedFields: res.changedFields, beforeJson: res.beforeJson, afterJson: res.afterJson })
     } catch (failure) {
+      if (!stillActive() || isAbortError(failure)) return
       setPreviewError(`恢复预览失败：${errorText(failure)}`)
     } finally {
-      setPreviewLoading(false)
+      if (stillActive()) setPreviewLoading(false)
     }
   }
 
   function openDetail(item: DataCenterItem) {
+    previewRequestRef.current += 1
     setPreview(null)
     setPreviewError('')
+    setPreviewLoading(false)
     setAuditAttempt(0)
     setDetail({ item })
+  }
+
+  function closeDetail() {
+    previewRequestRef.current += 1
+    setDetail(null)
+    setPreview(null)
+    setPreviewError('')
+    setPreviewLoading(false)
   }
 
   const totalPages = Math.max(1, Math.ceil((data?.totalCount ?? 0) / 50))
@@ -199,7 +274,7 @@ export function DataCenterPage() {
       )}
 
       {/* 对象详情抽屉：键值网格 + 摘要正文 + 审计历史 + 恢复预览（规格 02 §data-center 对象详情面板） */}
-      <Drawer open={detail != null} onOpenChange={(o) => !o && setDetail(null)}>
+      <Drawer open={detail != null} onOpenChange={(o) => !o && closeDetail()}>
         <DrawerContent side="right">
           <DrawerHeader title="对象详情" description={detail ? `${detail.item.objectType} · ${detail.item.title}` : undefined} />
           <DrawerBody className="space-y-4">
@@ -335,6 +410,22 @@ function DetailRow({ label, value, mono }: { label: string; value: string; mono?
 
 function errorText(error: unknown) {
   return error instanceof Error ? error.message : '请求失败，请重试'
+}
+
+interface DataCenterSession {
+  ownerId: string
+  serverBinding: string
+  controller: AbortController
+}
+
+function sessionChangedError() {
+  const error = new Error('数据中心会话已切换，已停止旧请求')
+  error.name = 'AbortError'
+  return error
+}
+
+function isAbortError(error: unknown) {
+  return error instanceof Error && error.name === 'AbortError'
 }
 
 function currentServerBinding() {

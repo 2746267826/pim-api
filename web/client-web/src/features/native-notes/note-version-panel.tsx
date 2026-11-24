@@ -1,4 +1,4 @@
-import { useRef, useState, type ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 import { AlertTriangle, Check, History, RefreshCw } from 'lucide-react'
 import { Button, Card, InlineAlert, Skeleton, StatusBadge } from '@/components/ui'
 import { formatTime } from '@/lib/datetime'
@@ -34,6 +34,8 @@ export interface NoteVersionPanelProps {
   currentError: unknown
   selectedVersionId: string
   conflictMaterials: Record<string, ConflictMaterialState | undefined>
+  promoteInFlight: boolean
+  promotingVersionId: string
   onOpenVersion: (versionId: string) => void
   onOpenCurrent: () => void
   onRefresh: () => void
@@ -52,6 +54,8 @@ export function NoteVersionPanel({
   currentError,
   selectedVersionId,
   conflictMaterials,
+  promoteInFlight,
+  promotingVersionId,
   onOpenVersion,
   onOpenCurrent,
   onRefresh,
@@ -63,24 +67,20 @@ export function NoteVersionPanel({
   const currentVersionId = current?.upload.currentVersionId ?? versions.find((version) => version.isCurrent)?.versionId ?? null
   const conflictKey = `${noteId}:${currentVersionId ?? 'none'}:${conflictVersions.map((view) => view.upload.versionId).join(',')}`
   const [dismissedConflictKey, setDismissedConflictKey] = useState('')
-  const [busyVersionId, setBusyVersionId] = useState('')
   const [notice, setNotice] = useState<{ tone: 'ok' | 'warn' | 'crit'; text: string } | null>(null)
-  const busyRef = useRef(false)
   const showConflict = refreshIssue.length === 0 && Boolean(current) &&
     conflictVersions.length > 0 && dismissedConflictKey !== conflictKey
   const currentSummary = safeVersionSummary(current)
 
   function cancelConflict() {
-    if (busyRef.current) return
+    if (promoteInFlight) return
     setDismissedConflictKey(conflictKey)
     setNotice(null)
     onCancelConflict()
   }
 
   async function promote(versionId: string) {
-    if (busyRef.current) return
-    busyRef.current = true
-    setBusyVersionId(versionId)
+    if (promoteInFlight) return
     setNotice(null)
     try {
       const outcome = await onPromote(versionId)
@@ -93,9 +93,6 @@ export function NoteVersionPanel({
         tone: 'crit',
         text: `${errorText(failure)}。未确认本次操作是否成功，请刷新核对后再选择。`,
       })
-    } finally {
-      busyRef.current = false
-      setBusyVersionId('')
     }
   }
 
@@ -158,7 +155,8 @@ export function NoteVersionPanel({
           currentSummary={currentSummary}
           candidates={conflictVersions}
           materials={conflictMaterials}
-          busyVersionId={busyVersionId}
+          promoteInFlight={promoteInFlight}
+          promotingVersionId={promotingVersionId}
           onAdopt={promote}
           onCancel={cancelConflict}
         />
@@ -252,7 +250,8 @@ function ConflictComparison({
   currentSummary,
   candidates,
   materials,
-  busyVersionId,
+  promoteInFlight,
+  promotingVersionId,
   onAdopt,
   onCancel,
 }: {
@@ -260,7 +259,8 @@ function ConflictComparison({
   currentSummary: SafeVersionSummary | null
   candidates: NoteVersionView[]
   materials: Record<string, ConflictMaterialState | undefined>
-  busyVersionId: string
+  promoteInFlight: boolean
+  promotingVersionId: string
   onAdopt: (versionId: string) => void
   onCancel: () => void
 }) {
@@ -282,7 +282,7 @@ function ConflictComparison({
           createdAt={current?.upload.createdAt ?? null}
           summary={currentSummary}
           tone="ok"
-          action={<Button size="sm" variant="secondary" disabled={Boolean(busyVersionId)} onClick={onCancel}>保留当前内容</Button>}
+          action={<Button size="sm" variant="secondary" disabled={promoteInFlight} onClick={onCancel}>保留当前内容</Button>}
         />
         <div className="space-y-2">
           {candidates.map((candidate) => {
@@ -302,8 +302,8 @@ function ConflictComparison({
                 <Button
                   size="sm"
                   variant="primary"
-                  loading={busyVersionId === candidate.upload.versionId}
-                  disabled={!materialReady || (Boolean(busyVersionId) && busyVersionId !== candidate.upload.versionId)}
+                  loading={promotingVersionId === candidate.upload.versionId}
+                  disabled={!materialReady || promoteInFlight}
                   onClick={() => onAdopt(candidate.upload.versionId)}
                 >
                   采用这份内容
@@ -322,7 +322,7 @@ function ConflictComparison({
       </div>
       <div className="mt-3 flex flex-wrap items-center justify-end gap-2">
         <p className="mr-auto text-[11px] text-text-3">取消不会修改任何版本；另一份内容仍保留在服务器。</p>
-        <Button size="sm" variant="ghost" disabled={Boolean(busyVersionId)} onClick={onCancel}>稍后处理</Button>
+        <Button size="sm" variant="ghost" disabled={promoteInFlight} onClick={onCancel}>稍后处理</Button>
       </div>
     </section>
   )
