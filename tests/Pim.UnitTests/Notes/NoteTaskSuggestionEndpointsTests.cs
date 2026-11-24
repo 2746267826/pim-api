@@ -88,5 +88,13 @@ public sealed class NoteTaskSuggestionEndpointsTests : IAsyncLifetime
         Assert.True(schemas.TryGetProperty(nameof(StartNoteTaskSuggestionExtractionRequest), out _));
         Assert.True(schemas.TryGetProperty(nameof(NoteTaskSuggestionDto), out _));
         Assert.True(schemas.TryGetProperty(nameof(NoteTaskSuggestionExtractionDto), out _));
+        Assert.True(schemas.TryGetProperty(nameof(NoteTaskSuggestionKindDto), out _));
+        var suggestionSchema = schemas.GetProperty(nameof(NoteTaskSuggestionDto));
+        foreach (var field in new[] { "kind", "start", "end", "timeZoneId", "eventId" })
+            Assert.True(suggestionSchema.GetProperty("properties").TryGetProperty(field, out _));
+        var updateProperties = schemas.GetProperty(nameof(UpdateNoteTaskSuggestionRequest))
+            .GetProperty("properties");
+        foreach (var field in new[] { "start", "end", "timeZoneId" })
+            Assert.True(updateProperties.TryGetProperty(field, out _));
     }
 }

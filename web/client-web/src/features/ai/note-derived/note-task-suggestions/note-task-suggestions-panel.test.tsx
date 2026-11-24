@@ -90,8 +90,11 @@ const suggestion: NoteTaskSuggestion = {
   description: '报价单需要在下午前核对。',
   dismissedAt: null,
   due: null,
+  end: null,
+  eventId: null,
   extractionId,
   id: suggestionId,
+  kind: 'Task',
   noteId,
   ordinal: 0,
   priority: 5,
@@ -100,9 +103,11 @@ const suggestion: NoteTaskSuggestion = {
   sourceGenerationTaskId: null,
   sourceInputSha256: version.inputSha256,
   sourceManifestSha256: version.manifestSha256,
+  start: null,
   status: 'Draft',
   taskBookId: null,
   taskId: null,
+  timeZoneId: null,
   title: '发送客户报价单',
   updatedAt: '2026-11-01T10:01:00Z',
   versionId,
@@ -327,5 +332,28 @@ describe('NoteTaskSuggestionsPanel', () => {
     expect(screen.getByText('已放弃')).toBeTruthy()
     expect(screen.queryByRole('button', { name: '确认创建任务' })).toBeNull()
     expect(screen.queryByRole('button', { name: '编辑' })).toBeNull()
+  })
+
+  it('shows event suggestions with their agenda and never offers task creation', async () => {
+    api.list.mockResolvedValue({
+      total: 1,
+      items: [{
+        ...suggestion,
+        id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+        kind: 'Event',
+        start: '2026-11-21T11:00:00Z',
+        end: '2026-11-21T12:00:00Z',
+        timeZoneId: 'Asia/Shanghai',
+        title: '机器学习答疑',
+      }],
+    })
+    page()
+
+    expect(await screen.findByText(/日程时间：/)).toBeTruthy()
+    expect(screen.getByText(/Asia\/Shanghai/)).toBeTruthy()
+    expect(screen.getByText('日程建议当前暂不支持在此页面创建；请使用支持日程创建的客户端。')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: '确认创建任务' })).toBeNull()
+    expect(screen.queryByRole('button', { name: '编辑' })).toBeNull()
+    expect(api.confirm).not.toHaveBeenCalled()
   })
 })

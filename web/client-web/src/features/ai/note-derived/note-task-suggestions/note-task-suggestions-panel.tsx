@@ -43,6 +43,10 @@ const statusNames: Record<string, string> = {
   Confirmed: '已创建任务',
   Dismissed: '已放弃',
 }
+const statusName = (suggestion: NoteTaskSuggestion) =>
+  suggestion.status === 'Confirmed' && suggestion.kind === 'Event'
+    ? '已创建日程'
+    : statusNames[suggestion.status] ?? suggestion.status
 const extractionNames: Record<string, string> = {
   Queued: '排队中',
   Running: '提取中',
@@ -122,7 +126,9 @@ export function NoteTaskSuggestionsPanel({
   const versionItems = suggestions.data?.items
     .filter((item) => item.versionId === versionId)
     .sort((left, right) => left.ordinal - right.ordinal) ?? []
-  const draftCount = versionItems.filter((item) => item.status === 'Draft').length
+  const taskItems = versionItems.filter((item) => item.kind === 'Task')
+  const eventItems = versionItems.filter((item) => item.kind === 'Event')
+  const draftCount = taskItems.filter((item) => item.status === 'Draft').length
   const activeExtraction = extraction.data &&
     (extraction.data.status === 'Queued' || extraction.data.status === 'Running')
   const intent = intentState.kind === 'ready' ? intentState.value : null
@@ -147,7 +153,7 @@ export function NoteTaskSuggestionsPanel({
   const extractionStatus = extraction.data?.status
   useEffect(() => {
     if (extractionStatus !== 'Succeeded') return
-    setNotice(`已固定本次笔记版本并生成 ${extraction.data?.suggestionCount ?? 0} 条建议。请逐条核对后再创建任务。`)
+    setNotice(`已固定本次笔记版本并生成 ${extraction.data?.suggestionCount ?? 0} 条建议。请逐条核对后再创建任务或日程。`)
     void qc.invalidateQueries({ queryKey: ['note-task-suggestions', userId, serverBinding, noteId] })
   }, [extraction.data?.suggestionCount, extractionStatus, noteId, qc, serverBinding, userId])
 
@@ -190,7 +196,7 @@ export function NoteTaskSuggestionsPanel({
       setIntentState({ kind: 'none' })
       setExtractionId(created.id)
       setChargeConfirmed(false)
-      setNotice('任务提取已受理。固定正文快照和服务商目标已保存；页面会轮询真实状态，不会在本机自动改用另一模型。')
+      setNotice('任务与日程提取已受理。固定正文快照和服务商目标已保存；页面会轮询真实状态，不会在本机自动改用另一模型。')
     } catch (failure) {
       setError(`${errorText(failure)}。已冻结请求标识；请使用原提取请求核对，不会自动创建第二次付费请求。`)
     } finally {
@@ -229,9 +235,9 @@ export function NoteTaskSuggestionsPanel({
           <ListChecks className="size-4" aria-hidden />
         </span>
         <div>
-          <h2 className="text-sm font-semibold text-text-1">从笔记提取任务建议</h2>
+          <h2 className="text-sm font-semibold text-text-1">从笔记提取任务与日程建议</h2>
           <p className="mt-1 max-w-2xl text-xs leading-5 text-text-3">
-            只从当前固定版本的正文提取；来源、内容摘要、文本模型和地址会在发送前冻结。建议不会自动变成任务。
+            只从当前固定版本的正文提取；来源、内容摘要、文本模型和地址会在发送前冻结。建议不会自动变成任务或日程。
           </p>
         </div>
       </div>
@@ -252,8 +258,8 @@ export function NoteTaskSuggestionsPanel({
       <InlineAlert tone="crit" title="任务建议数据未完整加载">
         {errorText(version.error ?? destinations.error ?? suggestions.error)}。已加载内容保持不变，不会自动新建请求。
       </InlineAlert>}
-    {error && <InlineAlert tone="crit" title="任务建议操作未确认">{error}</InlineAlert>}
-    {notice && <InlineAlert tone="ok" title="任务建议">{notice}</InlineAlert>}
+    {error && <InlineAlert tone="crit" title="建议操作未确认">{error}</InlineAlert>}
+    {notice && <InlineAlert tone="ok" title="任务与日程建议">{notice}</InlineAlert>}
     {intentBlocked && <InlineAlert tone="warn" title="提取入口已锁定">{intentBlocked}</InlineAlert>}
 
     <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(260px,.7fr)]">
@@ -309,14 +315,17 @@ export function NoteTaskSuggestionsPanel({
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
           <h3 className="text-sm font-semibold text-text-1">本版本建议</h3>
-          <p className="mt-1 text-xs text-text-3">共 {versionItems.length} 条，待处理 {draftCount} 条；已创建任务与放弃记录保留历史。</p>
+          <p className="mt-1 text-xs text-text-3">
+            共 {versionItems.length} 条，其中任务 {taskItems.length} 条、日程 {eventItems.length} 条；
+            待处理任务 {draftCount} 条，已创建与放弃记录保留历史。
+          </p>
         </div>
         <StatusBadge tone={draftCount ? 'warn' : 'neutral'}>{draftCount} 条待确认</StatusBadge>
       </div>
       {suggestions.isPending
         ? <Skeleton className="h-24" />
         : !versionItems.length
-          ? <EmptyState size="sm" title="还没有任务建议" description="明确确认费用后提取；模型只会生成候选，不会直接写入任务。" />
+          ? <EmptyState size="sm" title="还没有任务或日程建议" description="明确确认费用后提取；模型只会生成候选，不会直接写入任务或日程。" />
           : <div className="space-y-3">{versionItems.map((suggestion) => (
               <SuggestionRow key={`${suggestion.id}/${suggestion.revision}`}
                 suggestion={suggestion} userId={userId} serverBinding={serverBinding}
@@ -369,6 +378,7 @@ function SuggestionRow({
   const confirmBlocked = confirmIntent.kind === 'blocked' ? confirmIntent.message : ''
   const confirmLocked = Boolean(frozenConfirm) || Boolean(confirmBlocked)
   const draft = suggestion.status === 'Draft'
+  const isTask = suggestion.kind === 'Task'
 
   useEffect(() => {
     setTitle(suggestion.title)
@@ -414,7 +424,7 @@ function SuggestionRow({
     setError('')
     try {
       await noteTaskSuggestionsApi.dismiss(suggestion.id, { expectedRevision: suggestion.revision })
-      await onChanged('建议已放弃；不会创建任务，历史记录保留。')
+      await onChanged('建议已放弃；不会创建任务或日程，历史记录保留。')
     } catch (failure) {
       setError(`${errorText(failure)}。页面不会把失败当成功；请刷新核对当前状态。`)
     } finally {
@@ -488,28 +498,36 @@ function SuggestionRow({
           : <>
               <div className="flex flex-wrap items-center gap-2">
                 <span className="text-sm font-medium text-text-1">{suggestion.title}</span>
-                <StatusBadge tone={statusTone(suggestion.status)}>{statusNames[suggestion.status] ?? suggestion.status}</StatusBadge>
+                <StatusBadge tone={statusTone(suggestion.status)}>{statusName(suggestion)}</StatusBadge>
+                <StatusBadge tone="neutral" size="xs">{isTask ? '任务' : '日程'}</StatusBadge>
                 <StatusBadge tone="neutral" size="xs">优先级 {priorityLabel(suggestion.priority)}</StatusBadge>
                 {suggestion.due && <span className="text-xs text-text-3">截止 {toLocalInputValue(suggestion.due).replace('T', ' ')}</span>}
               </div>
               {suggestion.description && <p className="mt-1 whitespace-pre-wrap text-xs leading-5 text-text-2">{suggestion.description}</p>}
               {suggestion.taskId && <p className="mt-1 break-all font-mono text-[11px] text-text-4">任务 ID：{suggestion.taskId}</p>}
+              {suggestion.eventId && <p className="mt-1 break-all font-mono text-[11px] text-text-4">日程 ID：{suggestion.eventId}</p>}
+              {!isTask && <p className="mt-1 text-xs text-text-3">
+                日程时间：{eventRangeLabel(suggestion)}
+              </p>}
               <p className="mt-1 text-[11px] text-text-4">
                 来源摘要 {suggestion.sourceContentSha256.slice(0, 12)}… · 修订 {suggestion.revision.slice(0, 8)}…
               </p>
             </>}
       </div>
       {!editing && draft && <div className="flex flex-wrap gap-2">
-        <Button size="sm" onClick={() => setEditing(true)} disabled={Boolean(busy) || confirmLocked}>编辑</Button>
+        {isTask && <Button size="sm" onClick={() => setEditing(true)} disabled={Boolean(busy) || confirmLocked}>编辑</Button>}
         <TwoStepButton size="sm" variant="danger-soft" disabled={Boolean(busy) || confirmLocked}
           onConfirm={dismiss} armLabel="再次点击确认放弃">放弃</TwoStepButton>
-        <TwoStepButton size="sm" variant="primary"
-          disabled={Boolean(busy) || Boolean(confirmBlocked)}
-          onConfirm={confirm} armLabel={frozenConfirm ? '按原请求再次确认' : '再次点击创建任务'}>
-          {frozenConfirm ? '重试未确认的创建' : '确认创建任务'}
-        </TwoStepButton>
+        {isTask && <TwoStepButton size="sm" variant="primary"
+            disabled={Boolean(busy) || Boolean(confirmBlocked)}
+            onConfirm={confirm} armLabel={frozenConfirm ? '按原请求再次确认' : '再次点击创建任务'}>
+            {frozenConfirm ? '重试未确认的创建' : '确认创建任务'}
+          </TwoStepButton>}
       </div>}
     </div>
+    {!editing && draft && !isTask && <InlineAlert tone="info" className="mt-3">
+      日程建议当前暂不支持在此页面创建；请使用支持日程创建的客户端。
+    </InlineAlert>}
     {editing && <div className="mt-3 flex flex-wrap justify-end gap-2">
       <Button size="sm" variant="ghost" disabled={Boolean(busy)} onClick={() => setEditing(false)}>取消</Button>
       <Button size="sm" variant="primary" loading={busy === 'save'} onClick={() => void save()}>保存修订</Button>
@@ -521,4 +539,14 @@ function SuggestionRow({
 
 function priorityLabel(value: number) {
   return value === 1 ? '低' : value === 9 ? '高' : '中'
+}
+
+function eventRangeLabel(suggestion: NoteTaskSuggestion) {
+  const start = suggestion.start
+    ? toLocalInputValue(suggestion.start).replace('T', ' ')
+    : '待补开始时间'
+  const end = suggestion.end
+    ? toLocalInputValue(suggestion.end).replace('T', ' ')
+    : '待补结束时间'
+  return `${start} – ${end}${suggestion.timeZoneId ? `（${suggestion.timeZoneId}）` : ''}`
 }

@@ -13,6 +13,13 @@ public enum NoteTaskSuggestionStatusDto
 }
 
 [JsonConverter(typeof(JsonStringEnumConverter))]
+public enum NoteTaskSuggestionKindDto
+{
+    Task,
+    Event
+}
+
+[JsonConverter(typeof(JsonStringEnumConverter))]
 public enum NoteTaskSuggestionExtractionStatusDto
 {
     Queued,
@@ -69,14 +76,19 @@ public sealed record NoteTaskSuggestionDto(
     string SourceManifestSha256,
     Guid? SourceGenerationTaskId,
     string Title,
+    NoteTaskSuggestionKindDto Kind,
     string? Description,
     int Priority,
     DateTimeOffset? Due,
+    DateTimeOffset? Start,
+    DateTimeOffset? End,
+    string? TimeZoneId,
     Guid? TaskBookId,
     Guid? CalendarId,
     NoteTaskSuggestionStatusDto Status,
     Guid Revision,
     Guid? TaskId,
+    Guid? EventId,
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt,
     DateTimeOffset? ConfirmedAt,
@@ -93,7 +105,10 @@ public sealed record UpdateNoteTaskSuggestionRequest(
     int Priority,
     DateTimeOffset? Due,
     Guid? TaskBookId,
-    Guid? CalendarId);
+    Guid? CalendarId,
+    DateTimeOffset? Start = null,
+    DateTimeOffset? End = null,
+    string? TimeZoneId = null);
 
 public sealed record ConfirmNoteTaskSuggestionRequest(
     Guid RequestId,

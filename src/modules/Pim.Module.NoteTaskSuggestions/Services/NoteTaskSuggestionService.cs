@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -157,23 +158,38 @@ internal sealed class NoteTaskSuggestionService(
         return Map(entity);
     }
 
-    public Task<NoteTaskSuggestionDto> UpdateAsync(
+    public async Task<NoteTaskSuggestionDto> UpdateAsync(
         Guid id, UpdateNoteTaskSuggestionRequest request, CancellationToken ct)
     {
-        ValidateEditableFields(request);
-        return AdvisoryLock.RunAsync(db, Key(id), async () =>
+        var owner = Owner;
+        var noteId = await RequireNoteIdAsync(owner, id, ct);
+        return await AdvisoryLock.RunAsync(db, NoteKey(noteId), async () =>
         {
-            var owner = Owner;
             var entity = await RequireSuggestionAsync(owner, id, ct);
             RequireDraft(entity);
+            ValidateEditableFields(request, entity.Kind);
             if (entity.Revision != request.ExpectedRevision)
                 throw new DomainException(40901, "任务建议已被修改，请刷新后重试");
 
-            await ValidateTaskReferencesAsync(owner, request.CalendarId, request.TaskBookId, ct);
+            await ValidateReferencesAsync(owner, entity.Kind, request.CalendarId, request.TaskBookId, ct);
             entity.Title = request.Title.Trim();
             entity.Description = string.IsNullOrWhiteSpace(request.Description) ? null : request.Description.Trim();
             entity.Priority = request.Priority;
-            entity.Due = request.Due?.ToUniversalTime();
+            if (entity.Kind == NoteTaskSuggestionKinds.Task)
+            {
+                entity.Due = request.Due?.ToUniversalTime();
+                entity.StartAt = null;
+                entity.EndAt = null;
+                entity.TimeZoneId = null;
+            }
+            else
+            {
+                entity.Due = null;
+                entity.StartAt = request.Start?.ToUniversalTime();
+                entity.EndAt = request.End?.ToUniversalTime();
+                entity.TimeZoneId = string.IsNullOrWhiteSpace(request.TimeZoneId)
+                    ? null : request.TimeZoneId.Trim();
+            }
             entity.TaskBookId = request.TaskBookId;
             entity.CalendarId = request.CalendarId;
             entity.Revision = Guid.NewGuid();
@@ -183,11 +199,13 @@ internal sealed class NoteTaskSuggestionService(
         }, ct);
     }
 
-    public Task<NoteTaskSuggestionDto> DismissAsync(
+    public async Task<NoteTaskSuggestionDto> DismissAsync(
         Guid id, DismissNoteTaskSuggestionRequest request, CancellationToken ct)
-        => AdvisoryLock.RunAsync(db, Key(id), async () =>
+    {
+        var owner = Owner;
+        var noteId = await RequireNoteIdAsync(owner, id, ct);
+        return await AdvisoryLock.RunAsync(db, NoteKey(noteId), async () =>
         {
-            var owner = Owner;
             var entity = await RequireSuggestionAsync(owner, id, ct);
             if (entity.Status == NoteTaskSuggestionStatuses.Dismissed)
                 return Map(entity);
@@ -203,34 +221,36 @@ internal sealed class NoteTaskSuggestionService(
             await db.SaveChangesAsync(ct);
             return Map(entity);
         }, ct);
+    }
 
-    public Task<NoteTaskSuggestionDto> ConfirmAsync(
+    public async Task<NoteTaskSuggestionDto> ConfirmAsync(
         Guid id, ConfirmNoteTaskSuggestionRequest request, CancellationToken ct)
     {
         if (request.RequestId == Guid.Empty)
             throw new DomainException(40001, "确认请求标识不能为空");
 
         var owner = Owner;
-        return ConfirmCoreAsync(owner, id, request, ct);
+        var noteId = await RequireNoteIdAsync(owner, id, ct);
+        return await ConfirmCoreAsync(owner, noteId, id, request, ct);
     }
 
     private async Task<NoteTaskSuggestionDto> ConfirmCoreAsync(
-        Guid owner, Guid id, ConfirmNoteTaskSuggestionRequest request, CancellationToken ct)
+        Guid owner, Guid noteId, Guid id, ConfirmNoteTaskSuggestionRequest request, CancellationToken ct)
     {
         try
         {
-            return await AdvisoryLock.RunAsync(db, Key(id), async () =>
+            return await AdvisoryLock.RunAsync(db, NoteKey(noteId), async () =>
             {
                 var entity = await RequireSuggestionAsync(owner, id, ct);
 
                 if (entity.Status == NoteTaskSuggestionStatuses.Confirmed)
                 {
-                    if (entity.ConfirmRequestId == request.RequestId && entity.TaskId is { } existingTaskId &&
-                        await db.Set<TaskEntity>().AnyAsync(x => x.Id == existingTaskId && x.UserId == owner, ct))
+                    if (entity.ConfirmRequestId == request.RequestId &&
+                        await OriginalObjectExistsAsync(owner, entity, ct))
                     {
                         return Map(entity);
                     }
-                    throw new DomainException(40901, "任务建议已经确认；原任务标识不可替换");
+                    throw new DomainException(40901, "任务建议已经确认；原对象标识不可替换");
                 }
                 RequireDraft(entity);
                 if (entity.Revision != request.ExpectedRevision)
@@ -239,29 +259,61 @@ internal sealed class NoteTaskSuggestionService(
                         x.UserId == owner && x.ConfirmRequestId == request.RequestId && x.Id != id, ct))
                     throw new DomainException(40901, "确认请求标识已绑定另一条任务建议，原结果保留");
 
-                var task = await calendar.CreateTaskAsync(new CreateTaskRequest(
-                    entity.CalendarId,
-                    entity.Title,
-                    entity.Description,
-                    entity.Priority,
-                    null,
-                    null,
-                    entity.Due,
-                    null,
-                    null,
-                    null,
-                    entity.TaskBookId,
-                    null), ct);
+                if (entity.Kind == NoteTaskSuggestionKinds.Event)
+                    ValidateEventRange(entity);
+                var fingerprint = ItemFingerprint(entity);
+                var duplicate = await FindConfirmedDuplicateAsync(owner, entity, fingerprint, ct);
+                if (duplicate is not null)
+                    throw DuplicateSuggestion(duplicate);
 
-                var storedTask = await db.Set<TaskEntity>()
-                    .SingleAsync(x => x.Id == task.Id && x.UserId == owner, ct);
-                storedTask.Source = "note-task-suggestion";
-                storedTask.UpdatedAt = timeProvider.GetUtcNow();
+                if (entity.Kind == NoteTaskSuggestionKinds.Task)
+                {
+                    var task = await calendar.CreateTaskAsync(new CreateTaskRequest(
+                        entity.CalendarId,
+                        entity.Title,
+                        entity.Description,
+                        entity.Priority,
+                        null,
+                        null,
+                        entity.Due,
+                        null,
+                        null,
+                        null,
+                        entity.TaskBookId,
+                        null), ct);
+
+                    var storedTask = await db.Set<TaskEntity>()
+                        .SingleAsync(x => x.Id == task.Id && x.UserId == owner, ct);
+                    storedTask.Source = "note-task-suggestion";
+                    storedTask.UpdatedAt = timeProvider.GetUtcNow();
+                    entity.TaskId = task.Id;
+                }
+                else
+                {
+                    var created = await calendar.CreateEventAsync(new CreateEventRequest(
+                        entity.CalendarId ?? Guid.Empty,
+                        entity.Title,
+                        entity.Description,
+                        null,
+                        entity.StartAt!.Value,
+                        entity.EndAt!.Value,
+                        null,
+                        IsAllDay: false,
+                        TimeZoneId: entity.TimeZoneId), ct);
+
+                    var storedEvent = await db.Set<EventEntity>()
+                        .Include(x => x.Calendar)
+                        .SingleAsync(x => x.Id == created.Id && x.Calendar.UserId == owner, ct);
+                    storedEvent.Source = "note-suggestion";
+                    storedEvent.UpdatedAt = timeProvider.GetUtcNow();
+                    entity.EventId = created.Id;
+                    entity.CalendarId = created.CalendarId;
+                }
 
                 var now = timeProvider.GetUtcNow();
                 entity.Status = NoteTaskSuggestionStatuses.Confirmed;
                 entity.ConfirmRequestId = request.RequestId;
-                entity.TaskId = task.Id;
+                entity.ItemFingerprint = fingerprint;
                 entity.ConfirmedAt = now;
                 entity.UpdatedAt = now;
                 entity.Revision = Guid.NewGuid();
@@ -275,6 +327,18 @@ internal sealed class NoteTaskSuggestionService(
             if (await db.Set<NoteTaskSuggestionEntity>().AsNoTracking().AnyAsync(x =>
                     x.UserId == owner && x.ConfirmRequestId == request.RequestId && x.Id != id, ct))
                 throw new DomainException(40901, "确认请求标识已绑定另一条任务建议，原结果保留");
+            var stored = await db.Set<NoteTaskSuggestionEntity>().AsNoTracking()
+                .SingleOrDefaultAsync(x => x.Id == id && x.UserId == owner, ct);
+            if (stored is { Status: NoteTaskSuggestionStatuses.Confirmed } &&
+                stored.ConfirmRequestId == request.RequestId)
+                return Map(stored);
+            if (stored is not null)
+            {
+                var duplicate = await FindConfirmedDuplicateAsync(
+                    owner, stored, ItemFingerprint(stored), ct);
+                if (duplicate is not null && duplicate.Id != id)
+                    throw DuplicateSuggestion(duplicate);
+            }
             throw;
         }
     }
@@ -292,14 +356,19 @@ internal sealed class NoteTaskSuggestionService(
             entity.SourceManifestSha256,
             entity.SourceGenerationTaskId,
             entity.Title,
+            Enum.Parse<NoteTaskSuggestionKindDto>(entity.Kind),
             entity.Description,
             entity.Priority,
             entity.Due,
+            entity.StartAt,
+            entity.EndAt,
+            entity.TimeZoneId,
             entity.TaskBookId,
             entity.CalendarId,
             Enum.Parse<NoteTaskSuggestionStatusDto>(entity.Status),
             entity.Revision,
             entity.TaskId,
+            entity.EventId,
             entity.CreatedAt,
             entity.UpdatedAt,
             entity.ConfirmedAt,
@@ -337,6 +406,13 @@ internal sealed class NoteTaskSuggestionService(
         await db.Set<NoteTaskSuggestionEntity>()
             .Include(x => x.Extraction)
             .SingleOrDefaultAsync(x => x.Id == id && x.UserId == owner, ct)
+        ?? throw new DomainException(40401, "任务建议不存在");
+
+    private async Task<Guid> RequireNoteIdAsync(Guid owner, Guid id, CancellationToken ct) =>
+        await db.Set<NoteTaskSuggestionEntity>().AsNoTracking()
+            .Where(x => x.Id == id && x.UserId == owner)
+            .Select(x => (Guid?)x.NoteId)
+            .SingleOrDefaultAsync(ct)
         ?? throw new DomainException(40401, "任务建议不存在");
 
     private async Task<NoteTaskSuggestionExtractionEntity?> FindExtractionByRequestAsync(
@@ -401,16 +477,126 @@ internal sealed class NoteTaskSuggestionService(
             throw new DomainException(40001, "目标任务本不存在");
     }
 
-    private static void ValidateEditableFields(UpdateNoteTaskSuggestionRequest request)
+    private async Task ValidateReferencesAsync(
+        Guid owner, string kind, Guid? calendarId, Guid? taskBookId, CancellationToken ct)
+    {
+        if (kind == NoteTaskSuggestionKinds.Task)
+        {
+            await ValidateTaskReferencesAsync(owner, calendarId, taskBookId, ct);
+            return;
+        }
+
+        if (taskBookId is not null)
+            throw new DomainException(40001, "日程建议不能指定任务本");
+        if (calendarId is not { } targetCalendar || targetCalendar == Guid.Empty)
+            return;
+
+        if (!await db.Set<CalendarEntity>().AsNoTracking()
+                .AnyAsync(x => x.Id == targetCalendar && x.UserId == owner, ct))
+            throw new DomainException(40001, "目标日历不存在");
+    }
+
+    private static void ValidateEditableFields(
+        UpdateNoteTaskSuggestionRequest request, string kind)
     {
         if (string.IsNullOrWhiteSpace(request.Title) || request.Title.Trim().Length > 255)
-            throw new DomainException(40001, "任务标题必须为 1-255 字");
+            throw new DomainException(40001, "建议标题必须为 1-255 字");
         if (request.Description is { Length: > NoteTaskSuggestionPrompt.MaxDescriptionCharacters })
             throw new DomainException(40001,
-                $"任务描述不能超过 {NoteTaskSuggestionPrompt.MaxDescriptionCharacters} 字");
+                $"建议描述不能超过 {NoteTaskSuggestionPrompt.MaxDescriptionCharacters} 字");
         if (request.Priority is not (1 or 5 or 9))
-            throw new DomainException(40001, "任务优先级只能是 1（低）、5（中）或 9（高）");
+            throw new DomainException(40001, "建议优先级只能是 1（低）、5（中）或 9（高）");
+        if (request.TimeZoneId?.Trim().Length > 100)
+            throw new DomainException(40001, "日程时区不能超过 100 字");
+
+        if (kind == NoteTaskSuggestionKinds.Task)
+        {
+            if (request.Start.HasValue || request.End.HasValue)
+                throw new DomainException(40001, "任务建议不能携带 start/end；需要日程时间时请改用事件建议");
+            return;
+        }
+
+        if (request.Due.HasValue)
+            throw new DomainException(40001, "日程建议必须用 start/end 表示时间，不能使用 due");
+        if (request.Start.HasValue != request.End.HasValue)
+            throw new DomainException(40001, "日程建议 start 和 end 必须同时提供或同时为空");
+        if (request.Start is { } start && request.End is { } end && end <= start)
+            throw new DomainException(40001, "日程结束时间必须晚于开始时间");
     }
+
+    private static void ValidateEventRange(NoteTaskSuggestionEntity entity)
+    {
+        if (entity.StartAt is not { } start || entity.EndAt is not { } end)
+            throw new DomainException(40001, "日程建议缺少开始或结束时间，请先补全后再确认");
+        if (end <= start)
+            throw new DomainException(40001, "日程结束时间必须晚于开始时间");
+    }
+
+    private async Task<bool> OriginalObjectExistsAsync(
+        Guid owner, NoteTaskSuggestionEntity entity, CancellationToken ct)
+    {
+        if (entity.Kind == NoteTaskSuggestionKinds.Event)
+            return entity.EventId is { } eventId &&
+                await db.Set<EventEntity>().AsNoTracking()
+                    .AnyAsync(x => x.Id == eventId && x.Calendar.UserId == owner, ct);
+        return entity.TaskId is { } taskId &&
+            await db.Set<TaskEntity>().AsNoTracking()
+                .AnyAsync(x => x.Id == taskId && x.UserId == owner, ct);
+    }
+
+    private Task<NoteTaskSuggestionEntity?> FindConfirmedDuplicateAsync(
+        Guid owner, NoteTaskSuggestionEntity entity, string fingerprint, CancellationToken ct) =>
+        db.Set<NoteTaskSuggestionEntity>().AsNoTracking()
+            .Where(x => x.UserId == owner && x.NoteId == entity.NoteId &&
+                x.Id != entity.Id && x.Status == NoteTaskSuggestionStatuses.Confirmed &&
+                x.ItemFingerprint == fingerprint)
+            .OrderBy(x => x.ConfirmedAt)
+            .ThenBy(x => x.CreatedAt)
+            .ThenBy(x => x.Id)
+            .FirstOrDefaultAsync(ct);
+
+    private static DomainException DuplicateSuggestion(NoteTaskSuggestionEntity original)
+    {
+        var target = original.Kind == NoteTaskSuggestionKinds.Event
+            ? original.EventId
+            : original.TaskId;
+        return new DomainException(40901,
+            "同一笔记中已确认相同的事项目标；未重复创建，原对象为 " +
+            (target?.ToString() ?? original.Id.ToString()));
+    }
+
+    internal static string ItemFingerprint(NoteTaskSuggestionEntity entity)
+    {
+        var payload = string.Join('|',
+            "v2",
+            FingerprintPart(entity.UserId.ToString("D")),
+            FingerprintPart(entity.NoteId.ToString("D")),
+            FingerprintPart(entity.ArtifactId.ToString("D")),
+            FingerprintPart(entity.ArtifactVersionId.ToString("D")),
+            FingerprintPart(entity.SourceContentSha256),
+            FingerprintPart(entity.SourceInputSha256),
+            FingerprintPart(entity.SourceManifestSha256),
+            FingerprintPart(entity.SourceGenerationTaskId?.ToString("D")),
+            FingerprintPart(entity.Kind),
+            FingerprintPart(entity.Title.Trim()),
+            FingerprintPart(entity.Description?.Trim()),
+            entity.Priority.ToString(CultureInfo.InvariantCulture),
+            UnixSeconds(entity.Due),
+            UnixSeconds(entity.StartAt),
+            UnixSeconds(entity.EndAt),
+            FingerprintPart(entity.TimeZoneId?.Trim()),
+            FingerprintPart(entity.TaskBookId?.ToString("D")),
+            FingerprintPart(entity.CalendarId?.ToString("D")));
+        return Hash(payload);
+    }
+
+    private static string UnixSeconds(DateTimeOffset? value) =>
+        value?.ToUnixTimeSeconds().ToString(CultureInfo.InvariantCulture) ?? "-";
+
+    private static string FingerprintPart(string? value) =>
+        value is null
+            ? "-"
+            : Convert.ToHexString(Encoding.UTF8.GetBytes(value)).ToLowerInvariant();
 
     private static void RequireDraft(NoteTaskSuggestionEntity entity)
     {
@@ -447,6 +633,8 @@ internal sealed class NoteTaskSuggestionService(
             if (!Uri.IsHexDigit(character)) return false;
         return true;
     }
+
+    internal static long NoteKey(Guid noteId) => Key(noteId);
 
     internal static long Key(Guid id) =>
         BitConverter.ToInt64(id.ToByteArray(), 0) ^ 0x4E4F544553554747L;

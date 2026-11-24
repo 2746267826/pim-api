@@ -1899,33 +1899,6 @@ namespace Pim.Infrastructure.Data.Migrations
                     b.ToTable("note_asr_route_configs");
                 });
 
-            modelBuilder.Entity("Pim.Infrastructure.Data.Entities.NoteProcessingPreferenceEntity", b =>
-                {
-                    b.Property<Guid>("OwnerId")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid")
-                        .HasColumnName("owner_id");
-
-                    b.Property<bool>("AutoNoteProcessingEnabled")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("boolean")
-                        .HasDefaultValue(false)
-                        .HasColumnName("auto_note_processing_enabled");
-
-                    b.Property<Guid>("Revision")
-                        .IsConcurrencyToken()
-                        .HasColumnType("uuid")
-                        .HasColumnName("revision");
-
-                    b.Property<DateTimeOffset>("UpdatedAt")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("updated_at");
-
-                    b.HasKey("OwnerId");
-
-                    b.ToTable("note_processing_preferences");
-                });
-
             modelBuilder.Entity("Pim.Infrastructure.Data.Entities.NoteAsrSegmentEvidenceEntity", b =>
                 {
                     b.Property<Guid>("Id")
@@ -2034,6 +2007,33 @@ namespace Pim.Infrastructure.Data.Migrations
                         .IsUnique();
 
                     b.ToTable("note_asr_segment_evidence");
+                });
+
+            modelBuilder.Entity("Pim.Infrastructure.Data.Entities.NoteProcessingPreferenceEntity", b =>
+                {
+                    b.Property<Guid>("OwnerId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("owner_id");
+
+                    b.Property<bool>("AutoNoteProcessingEnabled")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false)
+                        .HasColumnName("auto_note_processing_enabled");
+
+                    b.Property<Guid>("Revision")
+                        .IsConcurrencyToken()
+                        .HasColumnType("uuid")
+                        .HasColumnName("revision");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("OwnerId");
+
+                    b.ToTable("note_processing_preferences");
                 });
 
             modelBuilder.Entity("Pim.Infrastructure.Data.Entities.OperationConfirmationEntity", b =>
@@ -6644,9 +6644,30 @@ namespace Pim.Infrastructure.Data.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("due");
 
+                    b.Property<DateTimeOffset?>("EndAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("end_at");
+
+                    b.Property<Guid?>("EventId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("event_id");
+
                     b.Property<Guid>("ExtractionId")
                         .HasColumnType("uuid")
                         .HasColumnName("extraction_id");
+
+                    b.Property<string>("ItemFingerprint")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("item_fingerprint");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasDefaultValue("Task")
+                        .HasColumnName("kind");
 
                     b.Property<Guid>("NoteId")
                         .HasColumnType("uuid")
@@ -6687,6 +6708,10 @@ namespace Pim.Infrastructure.Data.Migrations
                         .HasColumnType("character varying(64)")
                         .HasColumnName("source_manifest_sha256");
 
+                    b.Property<DateTimeOffset?>("StartAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("start_at");
+
                     b.Property<string>("Status")
                         .IsRequired()
                         .HasMaxLength(32)
@@ -6700,6 +6725,11 @@ namespace Pim.Infrastructure.Data.Migrations
                     b.Property<Guid?>("TaskId")
                         .HasColumnType("uuid")
                         .HasColumnName("task_id");
+
+                    b.Property<string>("TimeZoneId")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("time_zone_id");
 
                     b.Property<string>("Title")
                         .IsRequired()
@@ -6717,6 +6747,10 @@ namespace Pim.Infrastructure.Data.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("EventId")
+                        .IsUnique()
+                        .HasFilter("\"event_id\" IS NOT NULL");
+
                     b.HasIndex("ExtractionId");
 
                     b.HasIndex("TaskId")
@@ -6729,6 +6763,11 @@ namespace Pim.Infrastructure.Data.Migrations
 
                     b.HasIndex("UserId", "ExtractionId", "Ordinal")
                         .IsUnique();
+
+                    b.HasIndex("UserId", "NoteId", "ItemFingerprint")
+                        .IsUnique()
+                        .HasDatabaseName("IX_note_task_suggestions_note_fingerprint_confirmed")
+                        .HasFilter("\"status\" = 'Confirmed' AND \"item_fingerprint\" IS NOT NULL");
 
                     b.HasIndex("UserId", "NoteId", "Status", "UpdatedAt");
 

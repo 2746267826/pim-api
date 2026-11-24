@@ -175,6 +175,37 @@ public sealed class NoteTaskSuggestionTests
     }
 
     [SkippableFact]
+    public async Task ExtractionJobPersistsTaskAndEventFieldsWithoutUsingDueForEvents()
+    {
+        await using var harness = await Harness.CreateAsync("test_note_task_suggestion_event_job");
+        var extraction = await harness.Service.StartExtractionAsync(harness.Request(), default);
+        harness.Wire.Reply = """
+            {"suggestions":[
+              {"kind":"Task","title":"回写会议纪要","description":null,"priority":5,"due":"2026-11-20T09:00:00+08:00"},
+              {"kind":"Event","title":"机器学习答疑","description":"线上答疑","priority":5,"due":null,
+               "start":"2026-11-21T19:00:00+08:00","end":"2026-11-21T20:00:00+08:00",
+               "timeZoneId":"Asia/Shanghai"}
+            ]}
+            """;
+
+        await harness.Job.RunAsync(harness.Owner, extraction.Id, default);
+
+        harness.Db.ChangeTracker.Clear();
+        var suggestions = await harness.AdminDb.Set<NoteTaskSuggestionEntity>().AsNoTracking()
+            .Where(x => x.ExtractionId == extraction.Id)
+            .OrderBy(x => x.Ordinal)
+            .ToListAsync();
+        Assert.Equal(["Task", "Event"], suggestions.Select(x => x.Kind));
+        Assert.NotNull(suggestions[0].Due);
+        Assert.Null(suggestions[0].StartAt);
+        Assert.Null(suggestions[0].EndAt);
+        Assert.Null(suggestions[1].Due);
+        Assert.Equal(DateTimeOffset.Parse("2026-11-21T11:00:00Z"), suggestions[1].StartAt);
+        Assert.Equal(DateTimeOffset.Parse("2026-11-21T12:00:00Z"), suggestions[1].EndAt);
+        Assert.Equal("Asia/Shanghai", suggestions[1].TimeZoneId);
+    }
+
+    [SkippableFact]
     public async Task ExtractionJobFailsClosedOnInvalidModelOutput()
     {
         await using var harness = await Harness.CreateAsync("test_note_task_suggestion_invalid_output");
@@ -369,6 +400,281 @@ public sealed class NoteTaskSuggestionTests
     }
 
     [SkippableFact]
+    public async Task ConfirmEventCreatesOneCalendarEventAndReplaysSameRequest()
+    {
+        await using var harness = await Harness.CreateAsync("test_note_task_suggestion_event_confirm");
+        var start = DateTimeOffset.Parse("2026-11-21T19:00:00+08:00");
+        var end = DateTimeOffset.Parse("2026-11-21T20:00:00+08:00");
+        var suggestion = await harness.CreateSuggestionAsync(
+            "机器学习答疑", NoteTaskSuggestionKindDto.Event, null, start, end, "Asia/Shanghai");
+        var confirm = new ConfirmNoteTaskSuggestionRequest(Guid.NewGuid(), suggestion.Revision);
+
+        Assert.Equal(NoteTaskSuggestionKindDto.Event, suggestion.Kind);
+        Assert.Null(suggestion.Due);
+        Assert.Null(suggestion.TaskId);
+        var first = await harness.Service.ConfirmAsync(suggestion.Id, confirm, default);
+        var replay = await harness.Service.ConfirmAsync(suggestion.Id, confirm, default);
+
+        Assert.Equal(NoteTaskSuggestionStatusDto.Confirmed, first.Status);
+        Assert.Equal(first.EventId, replay.EventId);
+        Assert.NotNull(first.EventId);
+        Assert.Null(first.TaskId);
+        var evt = await harness.AdminDb.Set<EventEntity>().SingleAsync();
+        Assert.Equal(first.EventId, evt.Id);
+        Assert.Equal("note-suggestion", evt.Source);
+        Assert.Equal("机器学习答疑", evt.Title);
+        Assert.Equal(start.ToUniversalTime(), evt.DtStart);
+        Assert.Equal(end.ToUniversalTime(), evt.DtEnd);
+        Assert.Equal(evt.CalendarId, first.CalendarId);
+        Assert.Equal(0, await harness.AdminDb.Set<TaskEntity>().CountAsync());
+        Assert.Equal(1, await harness.AdminDb.Set<EventEntity>().CountAsync());
+
+        var conflict = await Assert.ThrowsAsync<DomainException>(() => harness.Service.ConfirmAsync(
+            suggestion.Id,
+            confirm with { RequestId = Guid.NewGuid(), ExpectedRevision = first.Revision },
+            default));
+        Assert.Equal(40901, conflict.ErrorCode);
+        Assert.Equal(1, await harness.AdminDb.Set<EventEntity>().CountAsync());
+    }
+
+    [SkippableFact]
+    public async Task EventDraftRequiresCompleteRangeBeforeItCanBeConfirmed()
+    {
+        await using var harness = await Harness.CreateAsync("test_note_task_suggestion_event_range");
+        var suggestion = await harness.CreateSuggestionAsync(
+            "待补时间日程", NoteTaskSuggestionKindDto.Event);
+
+        var missing = await Assert.ThrowsAsync<DomainException>(() => harness.Service.ConfirmAsync(
+            suggestion.Id, new(Guid.NewGuid(), suggestion.Revision), default));
+
+        Assert.Equal(40001, missing.ErrorCode);
+        harness.AdminDb.ChangeTracker.Clear();
+        Assert.Equal(NoteTaskSuggestionStatuses.Draft, (await harness.AdminDb
+            .Set<NoteTaskSuggestionEntity>().AsNoTracking()
+            .SingleAsync(x => x.Id == suggestion.Id)).Status);
+        Assert.Equal(0, await harness.AdminDb.Set<EventEntity>().CountAsync());
+        Assert.Equal(0, await harness.AdminDb.Set<TaskEntity>().CountAsync());
+
+        var start = DateTimeOffset.Parse("2026-11-22T09:00:00+08:00");
+        var end = DateTimeOffset.Parse("2026-11-22T10:00:00+08:00");
+        var updated = await harness.Service.UpdateAsync(suggestion.Id,
+            new(suggestion.Revision, "待补时间日程", null, 5, null, null, null,
+                start, end, "Asia/Shanghai"), default);
+        var confirmed = await harness.Service.ConfirmAsync(
+            suggestion.Id, new(Guid.NewGuid(), updated.Revision), default);
+
+        Assert.Equal(NoteTaskSuggestionStatusDto.Confirmed, confirmed.Status);
+        Assert.NotNull(confirmed.EventId);
+        Assert.Equal(start.ToUniversalTime(), confirmed.Start);
+        Assert.Equal(end.ToUniversalTime(), confirmed.End);
+        Assert.Equal("Asia/Shanghai", confirmed.TimeZoneId);
+        Assert.Equal(1, await harness.AdminDb.Set<EventEntity>().CountAsync());
+    }
+
+    [SkippableFact]
+    public async Task EventConfirmationRejectsOutlookBoundCalendarWithoutCreatingAnything()
+    {
+        await using var harness = await Harness.CreateAsync(
+            "test_note_task_suggestion_event_outlook");
+        var calendar = new CalendarEntity
+        {
+            UserId = harness.Owner,
+            Name = "Outlook 日历",
+            Kind = "calendar",
+            IsDefault = false
+        };
+        var connection = new OutlookConnectionEntity { UserId = harness.Owner };
+        harness.AdminDb.AddRange(calendar, connection);
+        await harness.AdminDb.SaveChangesAsync();
+        harness.AdminDb.Add(new OutlookCalendarBindingEntity
+        {
+            ConnectionId = connection.Id,
+            PimCalendarId = calendar.Id,
+            GraphCalendarId = "synthetic-outlook-calendar",
+            Name = "Outlook 日历",
+            CanEdit = true
+        });
+        await harness.AdminDb.SaveChangesAsync();
+
+        var start = DateTimeOffset.Parse("2026-11-23T09:00:00+08:00");
+        var end = DateTimeOffset.Parse("2026-11-23T10:00:00+08:00");
+        var suggestion = await harness.CreateSuggestionAsync(
+            "Outlook 禁止直写", NoteTaskSuggestionKindDto.Event, null, start, end);
+        var updated = await harness.Service.UpdateAsync(suggestion.Id,
+            new(suggestion.Revision, suggestion.Title, null, 5, null, null, calendar.Id,
+                start, end, null), default);
+
+        var error = await Assert.ThrowsAsync<DomainException>(() => harness.Service.ConfirmAsync(
+            suggestion.Id, new(Guid.NewGuid(), updated.Revision), default));
+
+        Assert.Equal(02009, error.ErrorCode);
+        harness.AdminDb.ChangeTracker.Clear();
+        Assert.Equal(NoteTaskSuggestionStatuses.Draft, (await harness.AdminDb
+            .Set<NoteTaskSuggestionEntity>().AsNoTracking()
+            .SingleAsync(x => x.Id == suggestion.Id)).Status);
+        Assert.Equal(0, await harness.AdminDb.Set<EventEntity>().CountAsync());
+        Assert.Equal(0, await harness.AdminDb.Set<TaskEntity>().CountAsync());
+    }
+
+    [SkippableFact]
+    public async Task CrossBatchTaskWithStableFingerprintConflictsWithoutCreatingAnotherTask()
+    {
+        await using var harness = await Harness.CreateAsync(
+            "test_note_task_suggestion_cross_batch_task");
+        var due = DateTimeOffset.Parse("2026-11-20T09:00:00+08:00");
+        var first = await harness.CreateSuggestionAsync(
+            "跨批次任务", NoteTaskSuggestionKindDto.Task, due);
+        var second = await harness.CreateSuggestionAsync(
+            "跨批次任务", NoteTaskSuggestionKindDto.Task, due);
+
+        await harness.Service.ConfirmAsync(
+            first.Id, new(Guid.NewGuid(), first.Revision), default);
+        var error = await Assert.ThrowsAsync<DomainException>(() => harness.Service.ConfirmAsync(
+            second.Id, new(Guid.NewGuid(), second.Revision), default));
+
+        Assert.Equal(40901, error.ErrorCode);
+        Assert.Contains("未重复创建", error.Message);
+        Assert.Equal(1, await harness.AdminDb.Set<TaskEntity>().CountAsync());
+        harness.AdminDb.ChangeTracker.Clear();
+        Assert.Equal(NoteTaskSuggestionStatuses.Draft, (await harness.AdminDb
+            .Set<NoteTaskSuggestionEntity>().AsNoTracking()
+            .SingleAsync(x => x.Id == second.Id)).Status);
+    }
+
+    [SkippableFact]
+    public async Task ConcurrentCrossBatchSameItemCreatesOnlyOneTask()
+    {
+        await using var harness = await Harness.CreateAsync(
+            "test_note_task_suggestion_cross_batch_task_race");
+        var due = DateTimeOffset.Parse("2026-11-20T09:00:00+08:00");
+        var first = await harness.CreateSuggestionAsync(
+            "并发跨批次任务", NoteTaskSuggestionKindDto.Task, due);
+        var second = await harness.CreateSuggestionAsync(
+            "并发跨批次任务", NoteTaskSuggestionKindDto.Task, due);
+        await using var secondDb = harness.NewContext();
+        var secondService = harness.NewService(secondDb);
+
+        async Task<Exception?> ConfirmAsync(Func<Task<NoteTaskSuggestionDto>> call)
+        {
+            try
+            {
+                await call();
+                return null;
+            }
+            catch (Exception error)
+            {
+                return error;
+            }
+        }
+
+        var outcomes = await Task.WhenAll(
+            ConfirmAsync(() => harness.Service.ConfirmAsync(
+                first.Id, new(Guid.NewGuid(), first.Revision), default)),
+            ConfirmAsync(() => secondService.ConfirmAsync(
+                second.Id, new(Guid.NewGuid(), second.Revision), default)));
+
+        Assert.Single(outcomes, x => x is null);
+        var conflict = Assert.Single(outcomes, x => x is not null);
+        Assert.IsType<DomainException>(conflict);
+        Assert.Equal(40901, ((DomainException)conflict!).ErrorCode);
+        Assert.Equal(1, await harness.AdminDb.Set<TaskEntity>().CountAsync());
+    }
+
+    [SkippableFact]
+    public async Task CrossBatchEventWithStableFingerprintConflictsWithoutCreatingAnotherEvent()
+    {
+        await using var harness = await Harness.CreateAsync(
+            "test_note_task_suggestion_cross_batch_event");
+        var start = DateTimeOffset.Parse("2026-11-20T09:00:00+08:00");
+        var end = DateTimeOffset.Parse("2026-11-20T10:00:00+08:00");
+        var first = await harness.CreateSuggestionAsync(
+            "跨批次日程", NoteTaskSuggestionKindDto.Event, null, start, end, "Asia/Shanghai");
+        var second = await harness.CreateSuggestionAsync(
+            "跨批次日程", NoteTaskSuggestionKindDto.Event, null, start, end, "Asia/Shanghai");
+
+        await harness.Service.ConfirmAsync(
+            first.Id, new(Guid.NewGuid(), first.Revision), default);
+        var error = await Assert.ThrowsAsync<DomainException>(() => harness.Service.ConfirmAsync(
+            second.Id, new(Guid.NewGuid(), second.Revision), default));
+
+        Assert.Equal(40901, error.ErrorCode);
+        Assert.Contains("未重复创建", error.Message);
+        Assert.Equal(1, await harness.AdminDb.Set<EventEntity>().CountAsync());
+        Assert.Equal(0, await harness.AdminDb.Set<TaskEntity>().CountAsync());
+        harness.AdminDb.ChangeTracker.Clear();
+        Assert.Equal(NoteTaskSuggestionStatuses.Draft, (await harness.AdminDb
+            .Set<NoteTaskSuggestionEntity>().AsNoTracking()
+            .SingleAsync(x => x.Id == second.Id)).Status);
+    }
+
+    [SkippableFact]
+    public async Task ConcurrentCrossBatchSameEventCreatesOnlyOneEvent()
+    {
+        await using var harness = await Harness.CreateAsync(
+            "test_note_task_suggestion_cross_batch_event_race");
+        var start = DateTimeOffset.Parse("2026-11-20T11:00:00+08:00");
+        var end = DateTimeOffset.Parse("2026-11-20T12:00:00+08:00");
+        var first = await harness.CreateSuggestionAsync(
+            "并发跨批次日程", NoteTaskSuggestionKindDto.Event, null, start, end, "Asia/Shanghai");
+        var second = await harness.CreateSuggestionAsync(
+            "并发跨批次日程", NoteTaskSuggestionKindDto.Event, null, start, end, "Asia/Shanghai");
+        await using var secondDb = harness.NewContext();
+        var secondService = harness.NewService(secondDb);
+
+        async Task<Exception?> ConfirmAsync(Func<Task<NoteTaskSuggestionDto>> call)
+        {
+            try
+            {
+                await call();
+                return null;
+            }
+            catch (Exception error)
+            {
+                return error;
+            }
+        }
+
+        var outcomes = await Task.WhenAll(
+            ConfirmAsync(() => harness.Service.ConfirmAsync(
+                first.Id, new(Guid.NewGuid(), first.Revision), default)),
+            ConfirmAsync(() => secondService.ConfirmAsync(
+                second.Id, new(Guid.NewGuid(), second.Revision), default)));
+
+        Assert.Single(outcomes, x => x is null);
+        var conflict = Assert.Single(outcomes, x => x is not null);
+        Assert.IsType<DomainException>(conflict);
+        Assert.Equal(40901, ((DomainException)conflict!).ErrorCode);
+        Assert.Equal(1, await harness.AdminDb.Set<EventEntity>().CountAsync());
+    }
+
+    [SkippableFact]
+    public async Task SameTitleIsStillDistinctAcrossKindsAndEventTimes()
+    {
+        await using var harness = await Harness.CreateAsync(
+            "test_note_task_suggestion_distinct_items");
+        var firstStart = DateTimeOffset.Parse("2026-11-24T09:00:00+08:00");
+        var firstEnd = DateTimeOffset.Parse("2026-11-24T10:00:00+08:00");
+        var secondStart = DateTimeOffset.Parse("2026-11-24T11:00:00+08:00");
+        var secondEnd = DateTimeOffset.Parse("2026-11-24T12:00:00+08:00");
+        var due = DateTimeOffset.Parse("2026-11-24T09:00:00+08:00");
+        var task = await harness.CreateSuggestionAsync(
+            "同名事项", NoteTaskSuggestionKindDto.Task, due);
+        var firstEvent = await harness.CreateSuggestionAsync(
+            "同名事项", NoteTaskSuggestionKindDto.Event, null, firstStart, firstEnd);
+        var secondEvent = await harness.CreateSuggestionAsync(
+            "同名事项", NoteTaskSuggestionKindDto.Event, null, secondStart, secondEnd);
+
+        await harness.Service.ConfirmAsync(task.Id, new(Guid.NewGuid(), task.Revision), default);
+        await harness.Service.ConfirmAsync(
+            firstEvent.Id, new(Guid.NewGuid(), firstEvent.Revision), default);
+        await harness.Service.ConfirmAsync(
+            secondEvent.Id, new(Guid.NewGuid(), secondEvent.Revision), default);
+
+        Assert.Equal(1, await harness.AdminDb.Set<TaskEntity>().CountAsync());
+        Assert.Equal(2, await harness.AdminDb.Set<EventEntity>().CountAsync());
+    }
+
+    [SkippableFact]
     public async Task ConcurrentSameConfirmCreatesOneTask()
     {
         await using var harness = await Harness.CreateAsync("test_note_task_suggestion_confirm_race");
@@ -533,6 +839,87 @@ public sealed class NoteTaskSuggestionTests
         Assert.Throws<InvalidDataException>(() => NoteTaskSuggestionPrompt.Parse(json));
     }
 
+    [Fact]
+    public void PromptParserKeepsTaskAndEventKindsSeparate()
+    {
+        var drafts = NoteTaskSuggestionPrompt.Parse("""
+            {"suggestions":[
+              {"kind":"Task","title":"写测试","description":null,"priority":9,"due":"2026-11-20T09:00:00+08:00"},
+              {"kind":"Event","title":"答疑","description":null,"priority":5,"due":null,
+               "start":"2026-11-21T19:00:00+08:00","end":"2026-11-21T20:00:00+08:00",
+               "timeZoneId":"Asia/Shanghai"}
+            ]}
+            """);
+
+        Assert.Equal(NoteTaskSuggestionKindDto.Task, drafts[0].Kind);
+        Assert.NotNull(drafts[0].Due);
+        Assert.Null(drafts[0].Start);
+        Assert.Null(drafts[0].End);
+        Assert.Equal(NoteTaskSuggestionKindDto.Event, drafts[1].Kind);
+        Assert.Null(drafts[1].Due);
+        Assert.Equal(DateTimeOffset.Parse("2026-11-21T11:00:00Z"), drafts[1].Start);
+        Assert.Equal(DateTimeOffset.Parse("2026-11-21T12:00:00Z"), drafts[1].End);
+        Assert.Equal("Asia/Shanghai", drafts[1].TimeZoneId);
+    }
+
+    [Fact]
+    public void PromptParserConvertsWallClockEventTimesUsingTheDeclaredTimeZone()
+    {
+        var draft = Assert.Single(NoteTaskSuggestionPrompt.Parse("""
+            {"suggestions":[{"kind":"Event","title":"无偏移时间","description":null,"priority":5,
+             "due":null,"start":"2026-11-21T19:00:00","end":"2026-11-21T20:00:00",
+             "timeZoneId":"Asia/Shanghai"}]}
+            """));
+
+        Assert.Equal(DateTimeOffset.Parse("2026-11-21T11:00:00Z"), draft.Start);
+        Assert.Equal(DateTimeOffset.Parse("2026-11-21T12:00:00Z"), draft.End);
+    }
+
+    [Fact]
+    public void PromptParserTreatsLegacyTaskOutputWithoutKindAsTask()
+    {
+        var draft = Assert.Single(NoteTaskSuggestionPrompt.Parse("""
+            {"suggestions":[{"title":"旧格式","description":null,"priority":5,"due":null}]}
+            """));
+
+        Assert.Equal(NoteTaskSuggestionKindDto.Task, draft.Kind);
+        Assert.Null(draft.Start);
+        Assert.Null(draft.End);
+    }
+
+    [Theory]
+    [InlineData("""
+        {"suggestions":[{"kind":"Event","title":"倒序","priority":5,"due":null,
+         "start":"2026-11-21T20:00:00+08:00","end":"2026-11-21T19:00:00+08:00"}]}
+        """)]
+    [InlineData("""
+        {"suggestions":[{"kind":"Event","title":"只写截止","priority":5,
+         "due":"2026-11-21T19:00:00+08:00","start":null,"end":null}]}
+        """)]
+    [InlineData("""
+        {"suggestions":[{"kind":"Event","title":"半段时间","priority":5,"due":null,
+         "start":"2026-11-21T19:00:00+08:00","end":null}]}
+        """)]
+    public void PromptParserRejectsInvalidEventTiming(string json)
+    {
+        Assert.Throws<InvalidDataException>(() => NoteTaskSuggestionPrompt.Parse(json));
+    }
+
+    [Theory]
+    [InlineData("""
+        {"suggestions":[{"kind":"Event","title":"缺少时区","priority":5,
+         "start":"2026-11-21T19:00:00","end":"2026-11-21T20:00:00"}]}
+        """)]
+    [InlineData("""
+        {"suggestions":[{"kind":"Event","title":"错误时区","priority":5,
+         "start":"2026-11-21T19:00:00","end":"2026-11-21T20:00:00",
+         "timeZoneId":"Mars/Olympus"}]}
+        """)]
+    public void PromptParserRejectsWallClockTimesWithoutAValidTimeZone(string json)
+    {
+        Assert.Throws<InvalidDataException>(() => NoteTaskSuggestionPrompt.Parse(json));
+    }
+
     private sealed class Harness : IAsyncDisposable
     {
         private readonly TempMigrationDatabase _database;
@@ -669,21 +1056,31 @@ public sealed class NoteTaskSuggestionTests
             NullLogger<NoteTaskSuggestionService>.Instance,
             dispatchAvailable ? new RecordingJobs() : null);
 
-        public async Task<NoteTaskSuggestionDto> CreateSuggestionAsync(string title = "先写测试")
+        public async Task<NoteTaskSuggestionDto> CreateSuggestionAsync(
+            string title = "先写测试",
+            NoteTaskSuggestionKindDto kind = NoteTaskSuggestionKindDto.Task,
+            DateTimeOffset? due = null,
+            DateTimeOffset? start = null,
+            DateTimeOffset? end = null,
+            string? timeZoneId = null)
         {
             var extraction = await Service.StartExtractionAsync(Request(), default);
+            var payload = new Dictionary<string, object?>
+            {
+                ["kind"] = kind.ToString(),
+                ["title"] = title,
+                ["description"] = "覆盖真实 PostgreSQL",
+                ["priority"] = 9,
+                ["due"] = kind == NoteTaskSuggestionKindDto.Task
+                    ? due ?? DateTimeOffset.Parse("2026-11-02T01:00:00Z")
+                    : null,
+                ["start"] = kind == NoteTaskSuggestionKindDto.Event ? start : null,
+                ["end"] = kind == NoteTaskSuggestionKindDto.Event ? end : null,
+                ["timeZoneId"] = kind == NoteTaskSuggestionKindDto.Event ? timeZoneId : null
+            };
             Wire.Reply = JsonSerializer.Serialize(new
             {
-                suggestions = new[]
-                {
-                    new
-                    {
-                        title,
-                        description = (string?)"覆盖真实 PostgreSQL",
-                        priority = 9,
-                        due = "2026-11-02T01:00:00Z"
-                    }
-                }
+                suggestions = new[] { payload }
             });
             await Job.RunAsync(Owner, extraction.Id, default);
             Db.ChangeTracker.Clear();

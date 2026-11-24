@@ -176,9 +176,13 @@ internal sealed class NoteTaskSuggestionExtractionJob(
                     SourceManifestSha256 = extraction.SourceManifestSha256,
                     SourceGenerationTaskId = extraction.SourceGenerationTaskId,
                     Title = draft.Title,
+                    Kind = draft.Kind.ToString(),
                     Description = draft.Description,
                     Priority = draft.Priority,
                     Due = draft.Due,
+                    StartAt = draft.Start,
+                    EndAt = draft.End,
+                    TimeZoneId = draft.TimeZoneId,
                     Status = NoteTaskSuggestionStatuses.Draft,
                     CreatedAt = now,
                     UpdatedAt = now
