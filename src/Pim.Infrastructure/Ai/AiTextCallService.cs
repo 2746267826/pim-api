@@ -180,7 +180,7 @@ public sealed class AiTextCallService(PimDbContext db, ISecretProtector secrets,
             ErrorCode = configurationError is null ? null : "configuration_unavailable",
             FinishedAt = configurationError is null ? null : started,
             MetadataJson = JsonSerializer.Serialize(new { recordFormat, transportRetries = 0, requestBodyCaptured = false,
-                providerAttempted = configurationError is not null ? false : (bool?)null,
+                providerAttempted = false,
                 imageEncoding = vision ? "sha256-reference" : null,
                 audioEncoding = audioMode ? "sha256-reference" : null,
                 audioInputsReferenced = audio?.Count,
@@ -239,6 +239,7 @@ public sealed class AiTextCallService(PimDbContext db, ISecretProtector secrets,
 
         AiUsageLimitLease? usageLease = null;
         var gateEntered = false;
+        var providerAttemptMarked = false;
         try
         {
             if (!gate.TryEnter(vision))
@@ -269,6 +270,11 @@ public sealed class AiTextCallService(PimDbContext db, ISecretProtector secrets,
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(activeProfile.TimeoutSeconds));
             using var linked = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token, ct);
             using var wire = new AiTextWireCapture(audio: audio);
+            wire.AttemptMarker = async token =>
+            {
+                await AiProviderAttemptMarker.MarkAsync(db, row, token);
+                providerAttemptMarked = true;
+            };
             var materialsReady = !vision;
             try
             {
@@ -351,7 +357,8 @@ public sealed class AiTextCallService(PimDbContext db, ISecretProtector secrets,
                 }
                 row.MetadataJson = JsonSerializer.Serialize(new { recordFormat, transportRetries = 0,
                     requestBodyCaptured = wire.RequestBody is not null, responseBodyComplete = wire.ResponseBody is not null,
-                    responseTooLarge = wire.ResponseTooLarge, providerAttempted = wire.ProviderAttempted,
+                    responseTooLarge = wire.ResponseTooLarge,
+                    providerAttempted = providerAttemptMarked || wire.ProviderAttempted,
                     imageEncoding = vision ? "sha256-reference" : null, destinationConsent = consent,
                     imageInputsStored = vision ? imageRows.All(x => x.ObjectKey is not null) : (bool?)null,
                     audioEncoding = audioMode ? "sha256-reference" : null,

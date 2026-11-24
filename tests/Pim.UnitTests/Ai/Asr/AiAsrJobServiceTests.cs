@@ -181,6 +181,16 @@ public sealed class AiAsrJobServiceTests
                 "Asia/Shanghai"), default);
 
         var preset = new ScriptedPreset();
+        var markerObservedBeforeProvider = false;
+        preset.OnCall = async () =>
+        {
+            var providerJob = await fixture.Db.AiAsrJobs.AsNoTracking().SingleAsync();
+            var providerLog = await fixture.Db.AiRequestLogs.AsNoTracking().SingleAsync();
+            Assert.True(providerJob.ProviderAttempted);
+            using var metadata = JsonDocument.Parse(providerLog.MetadataJson);
+            Assert.True(metadata.RootElement.GetProperty("providerAttempted").GetBoolean());
+            markerObservedBeforeProvider = true;
+        };
         var service = fixture.Service(fixture.Owner, preset, limits);
         var accepted = await service.SubmitAsync(fixture.Request(), CancellationToken.None);
         var queuedLog = await fixture.Db.AiRequestLogs.AsNoTracking()
@@ -193,7 +203,94 @@ public sealed class AiAsrJobServiceTests
 
         var result = await service.GetAsync(accepted.ClientRequestId, CancellationToken.None);
         Assert.Equal(AiAsrJobStatus.Succeeded, result.Status);
+        Assert.True(markerObservedBeforeProvider);
         Assert.Equal(1, preset.Calls);
+    }
+
+    [Fact]
+    public async Task UsageLimitRejectionReleasesAsyncAsrGate()
+    {
+        await using var fixture = await InMemoryFixture.CreateAsync();
+        var limits = new AiUsageLimitService(fixture.Db, fixture.Owner);
+        var connection = await limits.CreateConnectionAsync("异步ASR门禁连接", default);
+        fixture.Profile.ProviderConnectionId = connection.Id;
+        await fixture.Db.SaveChangesAsync();
+        var rule = await limits.GetRuleAsync(connection.Id, default);
+        await limits.SaveRuleAsync(connection.Id,
+            new(rule.Revision, true, AiUsageLimitPeriods.Month, 80, 100, null, null,
+                "Asia/Shanghai"), default);
+
+        var preset = new ScriptedPreset();
+        var gate = new AiTextCallGate();
+        var service = fixture.Service(fixture.Owner, preset, limits, gate);
+        var accepted = await service.SubmitAsync(fixture.Request(), CancellationToken.None);
+        fixture.Db.AiRequestLogs.Add(new AiRequestLogEntity
+        {
+            UserId = fixture.Owner.UserId,
+            Purpose = "ai.asr-job",
+            ProviderConnectionId = connection.Id,
+            Status = "succeeded",
+            StartedAt = DateTimeOffset.UtcNow,
+            InitiatedAt = DateTimeOffset.UtcNow,
+            CorrelationId = Guid.NewGuid().ToString("N"),
+            MetadataJson = """{"providerAttempted":true}""",
+            TotalTokens = 100
+        });
+        await fixture.Db.SaveChangesAsync();
+        Assert.True(gate.TryEnter(asr: true));
+
+        await service.ProcessAsync(fixture.Owner.UserId!.Value, accepted.ClientRequestId,
+            CancellationToken.None);
+
+        var result = await service.GetAsync(accepted.ClientRequestId, CancellationToken.None);
+        Assert.Equal(AiAsrJobStatus.Blocked, result.Status);
+        Assert.Equal("usage_limit_reached", result.ErrorCode);
+        Assert.Equal(0, preset.Calls);
+        Assert.True(gate.TryEnter(asr: true));
+        gate.Exit(asr: true);
+        gate.Exit(asr: true);
+    }
+
+    [Fact]
+    public async Task ExpiredRunningJobRecoveryCountsAsProviderAttemptedAndFailsClosed()
+    {
+        await using var fixture = await InMemoryFixture.CreateAsync();
+        var limits = new AiUsageLimitService(fixture.Db, fixture.Owner);
+        var connection = await limits.CreateConnectionAsync("异步恢复连接", default);
+        fixture.Profile.ProviderConnectionId = connection.Id;
+        await fixture.Db.SaveChangesAsync();
+        var rule = await limits.GetRuleAsync(connection.Id, default);
+        await limits.SaveRuleAsync(connection.Id,
+            new(rule.Revision, true, AiUsageLimitPeriods.Month, 80, 100, null, null,
+                "Asia/Shanghai"), default);
+        var service = fixture.Service(fixture.Owner, new ScriptedPreset(), limits);
+        var accepted = await service.SubmitAsync(fixture.Request(), CancellationToken.None);
+        var job = await fixture.Db.AiAsrJobs.SingleAsync();
+        var log = await fixture.Db.AiRequestLogs.SingleAsync(x => x.Id == accepted.LogId);
+        var startedAt = DateTimeOffset.UtcNow.AddMinutes(-5);
+        job.Status = "running";
+        job.StartedAt = startedAt;
+        job.ExecutionExpiresAt = DateTimeOffset.UtcNow.AddMinutes(-1);
+        job.ProviderAttempted = false;
+        log.Status = "running";
+        log.StartedAt = startedAt;
+        log.ExecutionExpiresAt = job.ExecutionExpiresAt;
+        log.MetadataJson = """{"providerAttempted":false}""";
+        await fixture.Db.SaveChangesAsync();
+
+        await AiAsrJobRecovery.RecoverExpiredAsync(fixture.Db, CancellationToken.None);
+
+        var recoveredJob = await fixture.Db.AiAsrJobs.AsNoTracking().SingleAsync();
+        var recoveredLog = await fixture.Db.AiRequestLogs.AsNoTracking()
+            .SingleAsync(x => x.Id == accepted.LogId);
+        Assert.Equal("incomplete", recoveredJob.Status);
+        Assert.True(recoveredJob.ProviderAttempted);
+        using (var metadata = JsonDocument.Parse(recoveredLog.MetadataJson))
+            Assert.True(metadata.RootElement.GetProperty("providerAttempted").GetBoolean());
+        var decision = await limits.TryBeginAsync(connection.Id, "after-async-recovery",
+            "ai.text-call", TimeSpan.FromMinutes(1), default);
+        Assert.False(decision.Allowed);
+        Assert.Equal("usage_limit_unknown", decision.ErrorCode);
     }
 
     [Fact]
@@ -715,8 +812,9 @@ public sealed class AiAsrJobServiceTests
 
     private static AiAsrJobService Service(PimDbContext db, Owner owner, IFileAttachmentStore files,
         ISecretProtector secrets, AiAsrPresetRegistry registry, IAsrJobDispatcher dispatcher,
-        IServiceScopeFactory scopes, AiUsageLimitService? usageLimits = null) =>
-        new(db, secrets, owner, new AiTextCallGate(), registry,
+        IServiceScopeFactory scopes, AiUsageLimitService? usageLimits = null,
+        AiTextCallGate? gate = null) =>
+        new(db, secrets, owner, gate ?? new AiTextCallGate(), registry,
             new AiAsrMaterialService(db, files, owner, registry), dispatcher, scopes,
             NullLogger<AiAsrJobService>.Instance, usageLimits);
 
@@ -869,10 +967,10 @@ public sealed class AiAsrJobServiceTests
         }
 
         public AiAsrJobService Service(Owner owner, ScriptedPreset? preset = null,
-            AiUsageLimitService? usageLimits = null) =>
+            AiUsageLimitService? usageLimits = null, AiTextCallGate? gate = null) =>
             AiAsrJobServiceTests.Service(Db, owner, Files, Secrets,
                 new AiAsrPresetRegistry([preset ?? new ScriptedPreset()]), Dispatcher,
-                _scopes.GetRequiredService<IServiceScopeFactory>(), usageLimits);
+                _scopes.GetRequiredService<IServiceScopeFactory>(), usageLimits, gate);
 
         public AiAsrCallRequest Request(Owner? owner = null, byte[]? bytes = null) =>
             AiAsrJobServiceTests.Request(owner ?? Owner, Profile, bytes);
@@ -915,6 +1013,7 @@ public sealed class AiAsrJobServiceTests
         public TaskCompletionSource? Release { get; init; }
         public bool IgnoreCancellation { get; init; }
         public bool BlockUntilCancelled { get; init; }
+        public Func<Task>? OnCall { get; set; }
 
         public string NormalizeEndpoint(string value) =>
             value.EndsWith('/') ? value : value + "/";
@@ -931,6 +1030,7 @@ public sealed class AiAsrJobServiceTests
             AiAsrInput audio, string language, CancellationToken ct,
             AiAsrPromptSnapshot? prompt = null)
         {
+            if (OnCall is not null) await OnCall();
             Calls++;
             LastConnection = connection;
             AiTextWireCapture.Current?.Attempt();

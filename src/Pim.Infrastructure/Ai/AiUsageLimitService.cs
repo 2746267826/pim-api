@@ -396,7 +396,7 @@ public sealed class AiUsageLimitService(
             .Select(x => new UsageRow(x.Status, x.TotalTokens, x.EstimatedCost, x.Currency, x.MetadataJson))
             .ToListAsync(ct);
 
-        var providerRows = rows.Where(x => ProviderAttempted(x.MetadataJson) != false).ToList();
+        var providerRows = rows.Where(WasProviderAttempted).ToList();
         var tokenKnown = providerRows.Where(x => x.TotalTokens is not null).ToList();
         var totalTokens = tokenKnown.Count == 0 ? null : (long?)tokenKnown.Sum(x => (long)x.TotalTokens!);
         var costKnown = rule.Currency is null
@@ -689,6 +689,10 @@ public sealed class AiUsageLimitService(
             return null;
         }
     }
+
+    private static bool WasProviderAttempted(UsageRow row) =>
+        row.Status is "succeeded" or "incomplete" or "timed_out" ||
+        ProviderAttempted(row.MetadataJson) != false;
 
     private static AiUsageLimitRuleEntity DefaultRule(Guid connectionId) => new()
     {

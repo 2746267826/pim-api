@@ -31,21 +31,34 @@ public sealed class AiAsrUrlSourceTests
     [Fact]
     public async Task UsageLimitAllowsUrlAsrProviderAfterItsPersistedPlaceholder()
     {
-        var handler = new CountingHandler((_, _) => Task.FromResult(JsonResponse(new
-        {
-            choices = new[]
-            {
-                new { message = new { content = "synthetic transcript" }, finish_reason = "stop" }
-            },
-            usage = new
-            {
-                prompt_tokens = 10,
-                completion_tokens = 4,
-                total_tokens = 14,
-                prompt_tokens_details = new { audio_tokens = 5 }
-            }
-        })));
         var fixture = await FixtureAsync("https://api.synthetic.invalid/v1/");
+        var markerObservedBeforeSend = false;
+        var countingHandler = new CountingHandler(async (_, _) =>
+        {
+            var providerRow = await fixture.Db.AiRequestLogs.AsNoTracking()
+                .SingleAsync(x => x.Status == "running");
+            using var metadata = JsonDocument.Parse(providerRow.MetadataJson);
+            Assert.True(metadata.RootElement.GetProperty("providerAttempted").GetBoolean());
+            markerObservedBeforeSend = true;
+            return JsonResponse(new
+            {
+                choices = new[]
+                {
+                    new { message = new { content = "synthetic transcript" }, finish_reason = "stop" }
+                },
+                usage = new
+                {
+                    prompt_tokens = 10,
+                    completion_tokens = 4,
+                    total_tokens = 14,
+                    prompt_tokens_details = new { audio_tokens = 5 }
+                }
+            });
+        });
+        var handler = new AiTextResponseLimitHandler
+        {
+            InnerHandler = countingHandler
+        };
         var (preset, registry) = Registry(() => new HttpClient(handler)
         {
             Timeout = Timeout.InfiniteTimeSpan
@@ -60,7 +73,8 @@ public sealed class AiAsrUrlSourceTests
         Assert.True(result.Status == AiRequestStatus.Succeeded,
             $"URL ASR status={result.Status}, error={result.ErrorMessage}, code={resultRow.ErrorCode}, " +
             $"response={resultRow.ResponseRawJson}, metadata={resultRow.MetadataJson}");
-        Assert.Equal(1, handler.Calls);
+        Assert.True(markerObservedBeforeSend);
+        Assert.Equal(1, countingHandler.Calls);
         Assert.Equal(1, fetcher.Calls);
         var row = await fixture.Db.AiRequestLogs.AsNoTracking().SingleAsync();
         Assert.Equal("ai.asr-url-call", row.Purpose);
@@ -109,6 +123,7 @@ public sealed class AiAsrUrlSourceTests
         await fixture.Db.SaveChangesAsync();
 
         var gate = new AiTextCallGate();
+        Assert.True(gate.TryEnter(asr: true));
         var service = Service(fixture, registry, fetcher, limits, gate);
         var blocked = await service.CallUrlAsync(Request(fixture, preset.Descriptor), CancellationToken.None);
         Assert.Equal(AiRequestStatus.Blocked, blocked.Status);
@@ -117,6 +132,9 @@ public sealed class AiAsrUrlSourceTests
                 .SingleAsync(x => x.Id == blocked.LogId)).ErrorCode);
         Assert.Equal(0, handler.Calls);
         Assert.Equal(0, fetcher.Calls);
+        Assert.True(gate.TryEnter(asr: true));
+        gate.Exit(asr: true);
+        gate.Exit(asr: true);
 
         var current = await limits.GetRuleAsync(connectionId, default);
         await limits.SaveRuleAsync(connectionId,
@@ -162,7 +180,11 @@ public sealed class AiAsrUrlSourceTests
         var sourceUrl = "https://audio.example.test/private/take.wav?sig=XZ&opaque=Q7";
         var fixture = await FixtureAsync(new Uri(provider.Urls.Single()).AbsoluteUri.TrimEnd('/') + "/v1/");
         using var presetHandler = new HttpClientHandler { AllowAutoRedirect = false };
-        var (preset, registry) = Registry(() => new HttpClient(presetHandler)
+        using var productionHandler = new AiTextResponseLimitHandler
+        {
+            InnerHandler = presetHandler
+        };
+        var (preset, registry) = Registry(() => new HttpClient(productionHandler)
         {
             Timeout = Timeout.InfiniteTimeSpan
         });
@@ -678,6 +700,8 @@ public sealed class AiAsrUrlSourceTests
         Assert.Equal("incomplete", final.Status);
         Assert.Equal("outcome_unknown", final.ErrorCode);
         Assert.Null(final.ResponseText);
+        using (var metadata = JsonDocument.Parse(final.MetadataJson))
+            Assert.True(metadata.RootElement.GetProperty("providerAttempted").GetBoolean());
 
         var replay = await service.CallUrlAsync(request, CancellationToken.None);
         Assert.True(replay.Replayed);

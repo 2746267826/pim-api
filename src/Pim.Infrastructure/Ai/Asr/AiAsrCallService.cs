@@ -186,7 +186,7 @@ public sealed class AiAsrCallService(PimDbContext db, ISecretProtector secrets, 
             promptSha256 = prompt.Sha256,
             sourceTransport = "public-https-provider-fetch"
         }, Json);
-        row.MetadataJson = UrlMetadata(null, false, null, false, false, null, false);
+        row.MetadataJson = UrlMetadata(null, false, false, false, false, null, false);
         db.AiRequestLogs.Add(row);
         try
         {
@@ -222,9 +222,15 @@ public sealed class AiAsrCallService(PimDbContext db, ISecretProtector secrets, 
         int? upstreamStatus = null;
         AiUsageLimitLease? usageLease = null;
         using var callerScope = AiProviderCircuitBreaker.EnterCallerScope(ct);
+        var providerAttemptMarked = false;
         using var total = new CancellationTokenSource(operationBudget);
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(total.Token, ct);
         using var wire = new AiTextWireCapture();
+        wire.AttemptMarker = async token =>
+        {
+            await AiProviderAttemptMarker.MarkAsync(db, row, token);
+            providerAttemptMarked = true;
+        };
         double? reportedSeconds = null;
         try
         {
@@ -413,7 +419,7 @@ public sealed class AiAsrCallService(PimDbContext db, ISecretProtector secrets, 
                 row.ErrorMessage = SanitizeRemoteText(row.ErrorMessage, audio, out _);
                 row.ResponseRawJson = UrlResponseAudit(row);
                 row.MetadataJson = UrlMetadata(audio, storedAudio?.ObjectKey is not null,
-                    !circuitBlocked && (wire.ProviderAttempted || providerPhase),
+                    !circuitBlocked && (wire.ProviderAttempted || providerAttemptMarked || providerPhase),
                     wire.RequestBody is not null,
                     wire.ResponseBody is not null, reportedSeconds, wire.ResponseTooLarge,
                     abortSource, outcomeKnown, upstreamStatus);
@@ -552,7 +558,7 @@ public sealed class AiAsrCallService(PimDbContext db, ISecretProtector secrets, 
                 model = profile.Model, endpoint = operation, language = request.Language,
                 promptRevision = prompt.Revision, promptSha256 = prompt.Sha256,
                 promptTemplateRevision = prompt.TemplateRevision, stream = false }, Json);
-            row.MetadataJson = Metadata(false, configurationError is null ? null : false, false, false, null, false);
+            row.MetadataJson = Metadata(false, false, false, false, null, false);
             db.AiRequestLogs.Add(row); db.AiCallAudio.Add(storedAudio);
             try
             {
@@ -586,6 +592,12 @@ public sealed class AiAsrCallService(PimDbContext db, ISecretProtector secrets, 
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(profile.TimeoutSeconds));
             using var linked = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token, ct);
             using var wire = new AiTextWireCapture();
+            var providerAttemptMarked = false;
+            wire.AttemptMarker = async token =>
+            {
+                await AiProviderAttemptMarker.MarkAsync(db, row, token);
+                providerAttemptMarked = true;
+            };
             var prepared = false;
             var abortSource = "none";
             var outcomeKnown = false;
@@ -755,7 +767,8 @@ public sealed class AiAsrCallService(PimDbContext db, ISecretProtector secrets, 
                         abortSource = "response_too_large";
                         outcomeKnown = false;
                     }
-                    row.MetadataJson = Metadata(storedAudio.ObjectKey is not null, wire.ProviderAttempted, wire.RequestBody is not null,
+                    row.MetadataJson = Metadata(storedAudio.ObjectKey is not null,
+                        wire.ProviderAttempted || providerAttemptMarked, wire.RequestBody is not null,
                         wire.ResponseBody is not null, reportedSeconds, wire.ResponseTooLarge,
                         abortSource, outcomeKnown, upstreamStatus);
                     result = await FinishAsync(row);
