@@ -57,7 +57,7 @@ public sealed class McpBugJourneyTests(ITestOutputHelper output)
         }
         var bad = await setup.Call("get_tasks", new { status = "NEEDS-ACTION,IN-PROCESS" }, error: true);
         Assert.Equal(400, bad.GetProperty("code").GetInt32());
-        Assert.Contains("one value only", bad.GetProperty("error").GetString());
+        Assert.Contains("statuses", bad.GetProperty("error").GetString());
         var first = (await setup.Call("get_tasks", new { })).GetProperty("data");
         Assert.Equal(25, first.GetProperty("totalCount").GetInt32());
         Assert.Equal(20, first.GetProperty("items").GetArrayLength());
@@ -66,7 +66,34 @@ public sealed class McpBugJourneyTests(ITestOutputHelper output)
         var selected = (await setup.Call("get_tasks", new { status = "NEEDS-ACTION" })).GetProperty("data");
         Assert.Equal(13, selected.GetProperty("totalCount").GetInt32());
         Assert.Equal(13, selected.GetProperty("items").GetArrayLength());
-        output.WriteLine("25 own tasks read as 20 + 5, another owner's task excluded. Single status read 13; comma-separated status returned an MCP error, not a false totalCount=0.");
+        var multi = (await setup.Call("get_tasks", new
+        {
+            statuses = new[] { "NEEDS-ACTION", "IN-PROCESS", "NEEDS-ACTION" },
+            pageSize = 100,
+        })).GetProperty("data");
+        Assert.Equal(25, multi.GetProperty("totalCount").GetInt32());
+        Assert.Equal(25, multi.GetProperty("items").GetArrayLength());
+        var empty = (await setup.Call("get_tasks", new { statuses = Array.Empty<string>() })).GetProperty("data");
+        Assert.Equal(25, empty.GetProperty("totalCount").GetInt32());
+        foreach (var invalid in new[]
+                 {
+                     new { statuses = new[] { "NEEDS-ACTION", "UNKNOWN" } },
+                     new { statuses = new[] { "NEEDS-ACTION", "" } },
+                     new { statuses = new[] { "needs-action" } },
+                     new { statuses = new[] { " NEEDS-ACTION " } },
+                 })
+        {
+            var rejected = await setup.Call("get_tasks", invalid, error: true);
+            Assert.Equal(400, rejected.GetProperty("code").GetInt32());
+            Assert.DoesNotContain("totalCount", rejected.GetRawText());
+        }
+        var conflict = await setup.Call("get_tasks", new
+        {
+            status = "NEEDS-ACTION",
+            statuses = new[] { "IN-PROCESS" },
+        }, error: true);
+        Assert.Equal(400, conflict.GetProperty("code").GetInt32());
+        output.WriteLine("25 own tasks read as 20 + 5, another owner's task excluded. Single status read 13; statuses OR read 25 with duplicates deduplicated; empty array read 25; invalid arrays and status+statuses returned MCP 400 before dispatch.");
     }
 
     [Fact]
@@ -100,6 +127,23 @@ public sealed class McpBugJourneyTests(ITestOutputHelper output)
             Assert.Equal(status, Assert.Single(page.GetProperty("items").EnumerateArray()).GetProperty("status").GetString());
         }
 
+        var multi = await Success(await setup.Rest.GetAsync(
+            "/api/v1/calendar/tasks?pageSize=100&status=NEEDS-ACTION&status=COMPLETED&status=NEEDS-ACTION"));
+        Assert.Equal(2, multi.GetProperty("totalCount").GetInt32());
+        Assert.Equal(
+            new[] { "NEEDS-ACTION", "COMPLETED" },
+            multi.GetProperty("items").EnumerateArray()
+                .Select(x => x.GetProperty("status").GetString())
+                .ToArray());
+
+        using (var mixed = await setup.Rest.GetAsync(
+                   "/api/v1/calendar/tasks?pageSize=100&status=NEEDS-ACTION&status="))
+        {
+            Assert.Equal(HttpStatusCode.BadRequest, mixed.StatusCode);
+            var body = await AuthRegistrationTestHost.ReadJsonAsync(mixed);
+            Assert.Equal(2057, body.GetProperty("code").GetInt32());
+        }
+
         foreach (var suffix in new[] { "", "&status=", "&status=%20%20" })
         {
             var page = await Success(await setup.Rest.GetAsync($"/api/v1/calendar/tasks?pageSize=100{suffix}"));
@@ -111,7 +155,7 @@ public sealed class McpBugJourneyTests(ITestOutputHelper output)
         Assert.Equal(4, legacy.GetArrayLength());
         using var reread = setup.Factory.Services.CreateScope();
         Assert.Equal(5, await reread.ServiceProvider.GetRequiredService<PimDbContext>().Set<TaskEntity>().CountAsync());
-        output.WriteLine("REST rejected comma-separated, unknown, lowercase and padded statuses with HTTP 400/code 2057 instead of false emptiness. All four valid single statuses, unfiltered/blank paged reads, legacy arrays and user isolation remained intact; no rows were mutated.");
+        output.WriteLine("REST rejected comma-separated, unknown, lowercase, padded and empty-mixed statuses with HTTP 400/code 2057 instead of false emptiness. Repeated status produced an OR union with duplicates ignored; all four valid single statuses, unfiltered/blank paged reads, legacy arrays and user isolation remained intact; no rows were mutated.");
     }
 
     [Fact]

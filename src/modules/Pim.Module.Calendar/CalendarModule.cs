@@ -754,10 +754,11 @@ public class CalendarModule : IModule
 
         // Tasks
         group.MapGet("/tasks", async (
+            HttpRequest request,
             [FromQuery] bool? inbox,
             [FromQuery] string? search,
             [FromQuery] Guid? calendarId,
-            [FromQuery] string? status,
+            [FromQuery] string[]? status,
             [FromQuery] int? priority,
             [FromQuery] DateTimeOffset? plannedFrom,
             [FromQuery] DateTimeOffset? plannedTo,
@@ -768,7 +769,7 @@ public class CalendarModule : IModule
             [FromServices] CalendarService svc,
             CancellationToken ct) =>
         {
-            if (string.IsNullOrWhiteSpace(search) && calendarId is null && status is null && priority is null
+            if (string.IsNullOrWhiteSpace(search) && calendarId is null && !request.Query.ContainsKey("status") && priority is null
                 && plannedFrom is null && plannedTo is null && dueFrom is null && dueTo is null
                 && page is null && pageSize is null)
             {

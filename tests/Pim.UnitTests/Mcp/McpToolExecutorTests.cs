@@ -633,6 +633,25 @@ public sealed class McpToolExecutorTests : IDisposable
     }
 
     [Fact]
+    public async Task GetTasks_StatusesArrayExpandsToRepeatedStatusQuery()
+    {
+        CreateExecutor();
+        _routes["GET /api/v1/calendar/tasks"] = new(200, "{\"code\":0,\"data\":{\"items\":[],\"totalCount\":0}}");
+        await CallTool("get_tasks", new Dictionary<string, JsonElement>
+        {
+            ["statuses"] = Json("[\"NEEDS-ACTION\",\"IN-PROCESS\",\"NEEDS-ACTION\"]"),
+            ["page"] = Json("2"),
+            ["pageSize"] = Json("10"),
+        });
+
+        var request = Assert.Single(_requests);
+        Assert.Equal(
+            "?status=NEEDS-ACTION&status=IN-PROCESS&page=2&pageSize=10",
+            request.Query);
+        Assert.DoesNotContain("statuses=", request.Query);
+    }
+
+    [Fact]
     public async Task CreateEvent_PostBody()
     {
         CreateExecutor(withWritePermission: true);

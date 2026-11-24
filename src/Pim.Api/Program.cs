@@ -106,6 +106,8 @@ builder.Services.AddSwaggerGen(c =>
     c.OperationFilter<Pim.Api.Infrastructure.OpenApi.NoteAsrBatchFormOperationFilter>();
     // issue #539：202 处理响应携带 Retry-After 头，minimal API 的 Produces 表达不了响应头。
     c.OperationFilter<Pim.Api.Infrastructure.OpenApi.MobileProcessingResponseOperationFilter>();
+    // R04：任务列表的重复 status 查询参数（OR 集合 + 四值 enum）超出 Swashbuckle 推断能力。
+    c.OperationFilter<Pim.Api.Infrastructure.OpenApi.TaskStatusQueryOperationFilter>();
     c.DocumentFilter<Pim.Api.Infrastructure.OpenApi.SecuritySchemesDocumentFilter>();
 });
 

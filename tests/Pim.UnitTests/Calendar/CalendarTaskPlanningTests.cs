@@ -96,7 +96,7 @@ public class CalendarTaskPlanningTests
             inbox: null,
             search: "Alpha",
             calendarId: null,
-            status: "NEEDS-ACTION",
+            statuses: ["NEEDS-ACTION"],
             priority: 1,
             plannedFrom: null,
             plannedTo: null,
@@ -116,10 +116,18 @@ public class CalendarTaskPlanningTests
         await using var db = CreateDb();
         var service = CreateCalendarService(db);
 
-        foreach (var status in new[] { "NEEDS-ACTION,IN-PROCESS", "UNKNOWN", "needs-action", " NEEDS-ACTION " })
+        foreach (var statuses in new[]
+                 {
+                     new[] { "NEEDS-ACTION,IN-PROCESS" },
+                     new[] { "UNKNOWN" },
+                     new[] { "needs-action" },
+                     new[] { " NEEDS-ACTION " },
+                     new[] { "NEEDS-ACTION", "" },
+                     new[] { "NEEDS-ACTION", "UNKNOWN" },
+                 })
         {
             var error = await Assert.ThrowsAsync<DomainException>(() => service.GetTasksPagedAsync(
-                null, null, null, status, null, null, null, null, null));
+                null, null, null, statuses, null, null, null, null, null));
             Assert.Equal(CalendarService.InvalidTaskStatusErrorCode, error.ErrorCode);
             Assert.Contains("NEEDS-ACTION", error.Message);
         }
@@ -135,12 +143,91 @@ public class CalendarTaskPlanningTests
         await db.SaveChangesAsync();
         var service = CreateCalendarService(db);
 
-        foreach (var status in new string?[] { null, "", "  " })
+        foreach (var statuses in new IReadOnlyList<string>?[]
+                 {
+                     null,
+                     Array.Empty<string>(),
+                     [""],
+                     ["  "],
+                 })
         {
-            var page = await service.GetTasksPagedAsync(null, null, null, status, null, null, null, null, null);
+            var page = await service.GetTasksPagedAsync(null, null, null, statuses, null, null, null, null, null);
             Assert.Equal(2, page.TotalCount);
             Assert.Equal(2, page.Items.Count);
         }
+    }
+
+    [Fact]
+    public async Task GetTasksPagedAsync_MultiStatusUsesOrDeduplicatesAndKeepsOwnerAndStableOrder()
+    {
+        await using var db = CreateDb();
+        var sameDue = new DateTimeOffset(2026, 11, 24, 8, 0, 0, TimeSpan.Zero);
+        var ids = new[]
+        {
+            Guid.Parse("00000000-0000-0000-0000-000000000003"),
+            Guid.Parse("00000000-0000-0000-0000-000000000001"),
+            Guid.Parse("00000000-0000-0000-0000-000000000002"),
+        };
+        db.Set<TaskEntity>().AddRange(
+            new TaskEntity { Id = ids[0], UserId = UserId, Uid = "c@pim", Title = "Cancelled", Status = "CANCELLED", Due = sameDue },
+            new TaskEntity { Id = ids[1], UserId = UserId, Uid = "a@pim", Title = "Open", Status = "NEEDS-ACTION", Due = sameDue },
+            new TaskEntity { Id = ids[2], UserId = UserId, Uid = "b@pim", Title = "Done", Status = "COMPLETED", Due = sameDue },
+            new TaskEntity { Uid = "other@pim", Title = "Other owner", Status = "NEEDS-ACTION", Due = sameDue, UserId = Guid.NewGuid() });
+        await db.SaveChangesAsync();
+        var service = CreateCalendarService(db);
+
+        var page = await service.GetTasksPagedAsync(
+            null,
+            null,
+            null,
+            ["NEEDS-ACTION", "COMPLETED", "NEEDS-ACTION"],
+            null,
+            null,
+            null,
+            null,
+            null,
+            page: 1,
+            pageSize: 10);
+
+        Assert.Equal(2, page.TotalCount);
+        Assert.Equal(new[] { "Open", "Done" }, page.Items.Select(t => t.Title).ToArray());
+        Assert.DoesNotContain(page.Items, t => t.Title == "Other owner" || t.Title == "Cancelled");
+    }
+
+    [Fact]
+    public async Task GetTasksPagedAsync_UsesTaskIdAsFinalStablePagingKey()
+    {
+        await using var db = CreateDb();
+        var due = new DateTimeOffset(2026, 11, 24, 8, 0, 0, TimeSpan.Zero);
+        var ids = new[]
+        {
+            Guid.Parse("00000000-0000-0000-0000-000000000003"),
+            Guid.Parse("00000000-0000-0000-0000-000000000001"),
+            Guid.Parse("00000000-0000-0000-0000-000000000002"),
+        };
+        foreach (var id in ids)
+            db.Set<TaskEntity>().Add(new TaskEntity
+            {
+                Id = id,
+                UserId = UserId,
+                Uid = $"{id}@pim",
+                Title = id.ToString(),
+                Status = "NEEDS-ACTION",
+                Due = due,
+                SortOrder = 0,
+            });
+        await db.SaveChangesAsync();
+        var service = CreateCalendarService(db);
+
+        var first = await service.GetTasksPagedAsync(
+            null, null, null, ["NEEDS-ACTION"], null, null, null, null, null,
+            page: 1, pageSize: 2);
+        var second = await service.GetTasksPagedAsync(
+            null, null, null, ["NEEDS-ACTION"], null, null, null, null, null,
+            page: 2, pageSize: 2);
+
+        Assert.Equal(new[] { ids[1], ids[2] }, first.Items.Select(t => t.Id).ToArray());
+        Assert.Equal(new[] { ids[0] }, second.Items.Select(t => t.Id).ToArray());
     }
 
     [Fact]
