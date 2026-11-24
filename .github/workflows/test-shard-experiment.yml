@@ -7,6 +7,9 @@ name: Test Shard Experiment
 #   filter-only  不起 PG、不做 schema 初始化，只验证「按 filter 切分后总数是否等于全集」
 #   full         照搬 build-api 的完整准备（PG + 迁移 + 运行时初始化器）并真跑
 on:
+  push:
+    # 只在实验分支上触发；不写 master，避免影响正常流程
+    branches: [xiaoi-linux/test-shard-experiment]
   workflow_dispatch:
     inputs:
       mode:
@@ -24,7 +27,7 @@ env:
 jobs:
   # ── 基线：不切分，跑全集，用来对照总数与总耗时 ──
   baseline:
-    if: inputs.mode == 'filter-only'
+    if: github.event_name == 'push' || inputs.mode == 'filter-only'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -42,7 +45,7 @@ jobs:
 
   # ── 4 个 shard：按目录切分，各跑一部分 ──
   shard:
-    if: inputs.mode == 'filter-only'
+    if: github.event_name == 'push' || inputs.mode == 'filter-only'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
