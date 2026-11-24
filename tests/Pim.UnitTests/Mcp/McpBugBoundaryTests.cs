@@ -16,7 +16,7 @@ public sealed class McpBugBoundaryTests
     {
         var error = McpToolInputPolicy.Apply("get_tasks", new JsonObject { ["status"] = status });
         Assert.Equal(400, error!["code"]!.GetValue<int>());
-        Assert.Contains("one value only", error["error"]!.GetValue<string>());
+        Assert.Contains("statuses", error["error"]!.GetValue<string>());
     }
 
     [Fact]
@@ -26,8 +26,51 @@ public sealed class McpBugBoundaryTests
         var statuses = schema.GetProperty("properties").GetProperty("status").GetProperty("anyOf")[0]
             .GetProperty("enum").EnumerateArray().Select(x => x.GetString()).ToArray();
         Assert.Equal(TaskStatuses.All, statuses);
+        var multi = schema.GetProperty("properties").GetProperty("statuses").GetProperty("anyOf")[0]
+            .GetProperty("items").GetProperty("enum").EnumerateArray().Select(x => x.GetString()).ToArray();
+        Assert.Equal(TaskStatuses.All, multi);
         foreach (var status in TaskStatuses.All)
             Assert.Null(McpToolInputPolicy.Apply("get_tasks", new JsonObject { ["status"] = status }));
+        foreach (var status in TaskStatuses.All)
+            Assert.Null(McpToolInputPolicy.Apply("get_tasks", new JsonObject
+            {
+                ["statuses"] = new JsonArray(status),
+            }));
+    }
+
+    [Fact]
+    public void TaskStatuses_DeduplicatesInPlaceAndEmptyArrayMeansUnfiltered()
+    {
+        var args = new JsonObject
+        {
+            ["statuses"] = new JsonArray("NEEDS-ACTION", "IN-PROCESS", "NEEDS-ACTION"),
+        };
+        Assert.Null(McpToolInputPolicy.Apply("get_tasks", args));
+        Assert.Equal(
+            new[] { "NEEDS-ACTION", "IN-PROCESS" },
+            args["statuses"]!.AsArray().Select(x => x!.GetValue<string>()).ToArray());
+
+        Assert.Null(McpToolInputPolicy.Apply("get_tasks", new JsonObject { ["statuses"] = new JsonArray() }));
+    }
+
+    [Theory]
+    [InlineData("{\"status\":\"NEEDS-ACTION\",\"statuses\":[\"IN-PROCESS\"]}")]
+    [InlineData("{\"statuses\":\"NEEDS-ACTION\"}")]
+    [InlineData("{\"statuses\":[\"NEEDS-ACTION\",\"UNKNOWN\"]}")]
+    [InlineData("{\"statuses\":[\"NEEDS-ACTION\",\"\"]}")]
+    [InlineData("{\"statuses\":[\"NEEDS-ACTION\",\" in-process \"]}")]
+    [InlineData("{\"statuses\":[1]}")]
+    [InlineData("{\"statuses\":[null]}")]
+    public void TaskStatuses_InvalidShapesRejectWholeCall(string json)
+        => Assert.Equal(400, McpToolInputPolicy.Apply("get_tasks", JsonNode.Parse(json)!.AsObject())!["code"]!.GetValue<int>());
+
+    [Fact]
+    public void TaskStatuses_CommaSeparatedSingleValueIsNotSplit()
+    {
+        var error = McpToolInputPolicy.Apply(
+            "get_tasks",
+            new JsonObject { ["statuses"] = new JsonArray("NEEDS-ACTION,IN-PROCESS") });
+        Assert.Equal(400, error!["code"]!.GetValue<int>());
     }
 
     [Theory]

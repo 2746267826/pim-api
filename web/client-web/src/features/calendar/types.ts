@@ -1,5 +1,5 @@
 import type { PagedResult } from '@/api/types'
-import type { components } from '@/api/generated'
+import type { components, paths } from '@/api/generated'
 import type { HabitCadence } from '@/lib/enums'
 
 /* ── 日历本 / 任务本 ─────────────────────────────────────── */
@@ -465,7 +465,8 @@ export interface TasksPagedParams {
   inbox?: boolean
   search?: string
   calendarId?: string
-  status?: string
+  /** 生成契约：重复 status 查询参数，服务端按 OR 组合。 */
+  status?: NonNullable<paths['/api/v1/calendar/tasks']['get']['parameters']['query']>['status']
   priority?: number
   plannedFrom?: string
   plannedTo?: string

@@ -32250,11 +32250,22 @@
             }
           },
           {
+            "description": "任务状态筛选。重复该参数表示 OR 集合（例如 status=NEEDS-ACTION&status=IN-PROCESS）；逗号分隔不合法。空值/省略表示不筛选，重复状态去重，任意非法值整单 400（02057）。Repeat status to filter by multiple statuses (OR). Comma-separated values are rejected; empty/omitted means no status filter; duplicates are ignored; any invalid value fails the whole request with 400 (02057).",
             "in": "query",
             "name": "status",
             "schema": {
-              "type": "string"
-            }
+              "items": {
+                "enum": [
+                  "NEEDS-ACTION",
+                  "IN-PROCESS",
+                  "COMPLETED",
+                  "CANCELLED"
+                ],
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "style": "form"
           },
           {
             "in": "query",

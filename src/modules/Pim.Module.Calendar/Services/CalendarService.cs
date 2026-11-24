@@ -1036,7 +1036,7 @@ public class CalendarService
         bool? inbox,
         string? search,
         Guid? calendarId,
-        string? status,
+        IReadOnlyList<string>? statuses,
         int? priority,
         DateTimeOffset? plannedFrom,
         DateTimeOffset? plannedTo,
@@ -1046,8 +1046,7 @@ public class CalendarService
         int pageSize = 50,
         CancellationToken ct = default)
     {
-        if (!string.IsNullOrWhiteSpace(status))
-            ValidateTaskStatus(status);
+        var statusFilter = NormalizeTaskStatusFilter(statuses);
 
         page = Math.Max(1, page);
         pageSize = Math.Clamp(pageSize, 1, 100);
@@ -1061,8 +1060,8 @@ public class CalendarService
             query = query.Where(t => t.Title.Contains(search));
         if (calendarId.HasValue)
             query = query.Where(t => t.CalendarId == calendarId.Value);
-        if (!string.IsNullOrWhiteSpace(status))
-            query = query.Where(t => t.Status == status);
+        if (statusFilter.Count > 0)
+            query = query.Where(t => statusFilter.Contains(t.Status));
         if (priority.HasValue)
             query = query.Where(t => t.Priority == priority.Value);
         if (plannedFrom.HasValue)
@@ -1081,6 +1080,7 @@ public class CalendarService
             .ThenBy(t => t.Due == null)
             .ThenBy(t => t.Due)
             .ThenBy(t => t.SortOrder)
+            .ThenBy(t => t.Id)
             .Skip((page - 1) * pageSize)
             .Take(pageSize)
             .ToListAsync(ct);
@@ -1631,6 +1631,32 @@ public class CalendarService
                 InvalidTaskStatusErrorCode,
                 $"任务状态 '{status}' 无效；允许值：{string.Join(", ", TaskStatuses.All)}");
         }
+    }
+
+    /// <summary>
+    /// R04：任务状态筛选支持 OR 多选。空集合/全空值保持历史「不筛选」；一旦混入
+    /// 空元素或任意非法值，整单以 02057 拒绝，绝不部分执行。重复值静默去重。
+    /// 大小写与前后空格保持严格匹配，不做 trim。
+    /// </summary>
+    private static IReadOnlyList<string> NormalizeTaskStatusFilter(IReadOnlyList<string>? statuses)
+    {
+        if (statuses is null || statuses.Count == 0)
+            return Array.Empty<string>();
+
+        var nonBlank = statuses.Where(s => !string.IsNullOrWhiteSpace(s)).ToList();
+        if (nonBlank.Count == 0)
+            return Array.Empty<string>();
+        if (nonBlank.Count != statuses.Count)
+        {
+            throw new DomainException(
+                InvalidTaskStatusErrorCode,
+                $"任务状态筛选不能混用空值与有效状态；允许值：{string.Join(", ", TaskStatuses.All)}");
+        }
+
+        foreach (var status in nonBlank)
+            ValidateTaskStatus(status);
+
+        return nonBlank.Distinct(StringComparer.Ordinal).ToArray();
     }
 
     /// <summary>

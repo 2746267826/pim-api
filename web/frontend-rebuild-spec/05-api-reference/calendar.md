@@ -320,7 +320,7 @@
   | inbox | boolean | 否 | 按收件箱标记过滤（`inbox=true` / `false`） |
   | search | string | 否 | 标题包含匹配 |
   | calendarId | string(uuid) | 否 | 按日历过滤 |
-  | status | string | 否 | 精确匹配任务状态 |
+  | status | string[]（重复查询参数） | 否 | 任务状态 OR 筛选；重复 `status` 表示多选，逗号不分隔，空值/省略不筛选，重复值去重，非法值整单 400/02057 |
   | priority | integer | 否 | 精确匹配优先级 |
   | plannedFrom / plannedTo | string(DateTimeOffset) | 否 | 计划开始（DtStart）范围 |
   | dueFrom / dueTo | string(DateTimeOffset) | 否 | 截止（Due）范围 |
@@ -329,7 +329,7 @@
 - Body：无
 - 响应 data（双态行为，判据：除 inbox 外，search/calendarId/status/priority/plannedFrom/plannedTo/dueFrom/dueTo/page/pageSize 全部缺省，`CalendarModule.cs:495-497`）：
   - 全缺省（可仅带 inbox）→ 旧版全量：data = `TaskResponse[]`（按 SortOrder 升序，`CalendarService.cs:932-942`）。InboxPanel 发送 `/calendar/tasks`，useExhibitionData 发送 `/calendar/tasks?inbox=false`，均命中此分支。
-  - 任一筛选/分页参数出现 → data = `PagedResult<TaskResponse>`（`CalendarService.cs:944-1000`；排序：未完成在前 → Due 非空在前 → Due 升序 → SortOrder）。
+  - 任一筛选/分页参数出现 → data = `PagedResult<TaskResponse>`（`CalendarService.cs:944-1000`；排序：未完成在前 → Due 非空在前 → Due 升序 → SortOrder → 任务 ID 作为最终稳定键）。
   - TaskResponse 字段展开（后端 DTO `CalendarDtos.cs:181-191`，映射 `CalendarService.cs:1391-1397`；前端类型 `types/index.ts:109-127`）：
     | 字段 | 类型 | 说明 |
     | --- | --- | --- |
