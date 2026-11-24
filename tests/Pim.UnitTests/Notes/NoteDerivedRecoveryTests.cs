@@ -9,6 +9,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using Pim.Core.Ai;
 using Pim.Core.Common;
 using Pim.Core.Notes;
@@ -647,6 +648,7 @@ public sealed class NoteDerivedRecoveryTests : IAsyncLifetime
             scope.ServiceProvider.GetRequiredService<NoteDerivedSnapshotBuilder>(),
             scope.ServiceProvider.GetRequiredService<PimDbContext>(),
             scope.ServiceProvider.GetRequiredService<AiTextCallService>(),
+            Options.Create(new NoteDerivedAudioContextOptions()),
             NullLogger<NoteDerivedJob>.Instance);
         await job.RunAsync(_owner, taskId, default);
     }

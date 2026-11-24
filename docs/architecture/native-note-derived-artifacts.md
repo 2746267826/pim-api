@@ -82,6 +82,16 @@ canonical contract 现为 `e38d1991b372174a3a4bac10df0a35eee90de92d268a5f1d35762
 
 上传容量的既有边界保持不变：照片 32 MiB、手写派生图 40 MiB，并保留既有 WebP 上传能力。上传接受不等于当前 SDK 能直接推理；在本切片限制内，超过 4 MiB 的单图、WebP 或总图数/总量超限资料必须被明确标为不可处理/缺口，由后续独立能力扩展解决，不能在本切片静默转码或降级。
 
+### 3.2.1 原始录音上下文最小切片
+
+2026-11-24 的后端切片允许整理请求携带固定材料中的原始 WAV，但保持显式白名单和严格上限：
+
+- 只有 `NativeNotes:AudioContext:ModelIds` 或 `ModelNames` 命中的模型配置才允许接收原始录音；两个列表默认均为空，未配置时继续要求同版本 ASR，现有纯文本、无录音和 ASR 转写路径不变。
+- 音频只从固定材料版本中已提交的 `AudioChunk` 读取，按 owner、note、version、file index、录音/分片身份、偏移、样本数和文件 SHA-256 绑定；提示词只列录音身份和摘要，不下发任意路径或令牌。
+- 每次 provider 调用最多 8 MiB、5,000 个上下文片段，并按现有 60 秒 `SamplesPerCall` 切片。超限明确阻断为 `audio_context_too_large` 或 `audio_context_slice_limit`，不截断、不转码、不发送部分音频。
+- 音频字节不写入任务 JSON、请求快照或日志；审计只保存 `pim-ai-audio:{index}` 引用、源摘要、数量及 owner/note/version 身份。任务执行前会重新校验模型仍在该白名单，失败时保留阻断状态。
+- 该切片未实现 H03 已确认的长音频自动分批、批次汇总、总结/概览/标题/标签产物，也未接入或验证真实第三方多模态 provider、真实 Hangfire 多进程、Web/Android/Windows 设备流程。上述能力仍为 `NOT-VERIFIED` / `BLOCKED`，不能据此宣称完整 H03。
+
 ### 3.3 成功、部分与未知
 
 每个必需来源必须有且仅有一个可审计的解析结果：

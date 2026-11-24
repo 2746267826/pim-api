@@ -114,4 +114,42 @@ public sealed class NoteDerivedPlanTests
             x => x.Code.Contains("duplicate", StringComparison.Ordinal));
         Assert.Equal(2, plan.InitialCoverage.TranscriptSegments);
     }
+
+    [Fact]
+    public void AudioContextIsAStableControlledSourceAndDoesNotRequireTranscripts()
+    {
+        var material = NoteDerivedFixture.CreateMaterial();
+        var sourcePath = $"recordings/{material.RecordingId:D}/s0001-c000001.wav";
+        var audio = new NoteDerivedAudioInput(0, material.RecordingId, 1, 1, 5, sourcePath,
+            NoteDerivedFixture.Digest([4, 5, 6]), 0, 160, 364,
+            $"recording-{material.RecordingId:D}-s0001-c000001-o000000000000-n160.wav");
+        var snapshot = NoteDerivedFixture.Snapshot(material) with { Audio = [audio] };
+
+        var plan = new NoteDerivedPlanner().Build(snapshot);
+        var record = NoteDerivedPrompts.Record(snapshot, []);
+
+        Assert.DoesNotContain(plan.InitialCoverage.Issues,
+            issue => issue.Code.Contains("asr", StringComparison.Ordinal) ||
+                issue.Code.StartsWith("audio_", StringComparison.Ordinal));
+        Assert.Contains("服务端固定原始录音上下文", record, StringComparison.Ordinal);
+        Assert.Contains(audio.SourceSha256, record, StringComparison.Ordinal);
+        Assert.DoesNotContain(sourcePath, record, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AudioContextOverTheSingleCallBudgetBlocksWithoutTruncation()
+    {
+        var material = NoteDerivedFixture.CreateMaterial();
+        var audio = new NoteDerivedAudioInput(0, material.RecordingId, 1, 1, 5,
+            $"recordings/{material.RecordingId:D}/s0001-c000001.wav",
+            NoteDerivedFixture.Digest([4, 5, 6]), 0, NoteDerivedAudioContext.MaxBytes / 2,
+            NoteDerivedAudioContext.ByteSize(NoteDerivedAudioContext.MaxBytes / 2), "recording-over-limit.wav");
+        var snapshot = NoteDerivedFixture.Snapshot(material) with { Audio = [audio] };
+
+        var plan = new NoteDerivedPlanner().Build(snapshot);
+
+        Assert.Contains(plan.InitialCoverage.Issues, issue => issue.Code == "audio_context_too_large");
+        Assert.Contains("未截断", plan.InitialCoverage.Issues
+            .Single(issue => issue.Code == "audio_context_too_large").Message, StringComparison.Ordinal);
+    }
 }

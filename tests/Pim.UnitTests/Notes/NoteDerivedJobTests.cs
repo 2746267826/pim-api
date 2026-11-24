@@ -7,15 +7,19 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using Pim.Core.Ai;
 using Pim.Core.Common;
 using Pim.Core.Notes;
 using Pim.Infrastructure.Ai;
+using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
 using Pim.Infrastructure.Notes;
+using Pim.Infrastructure.Secrets;
 using Pim.UnitTests.Api;
 using Xunit;
 
@@ -36,6 +40,8 @@ public sealed class NoteDerivedJobTests : IAsyncLifetime
     private NoteDerivedGenerationConsent _consent = null!;
     private AiAsrDestinationConsent _asrConsent = null!;
     private readonly List<string> _visionBodies = [];
+    private readonly List<string> _recordBodies = [];
+    private readonly List<string> _analysisBodies = [];
     private string? _recordRecordingPrompt;
     private string? _recordAnalysisPrompt;
     private int _calls;
@@ -54,11 +60,6 @@ public sealed class NoteDerivedJobTests : IAsyncLifetime
             var messages = root.GetProperty("messages");
             var content = messages[messages.GetArrayLength() - 1].GetProperty("content");
             if (content.ValueKind == JsonValueKind.Array &&
-                content.EnumerateArray().Any(part => part.TryGetProperty("input_audio", out _)))
-            {
-                return Completion(call, "Successful ASR transcript for derived fixture");
-            }
-            if (content.ValueKind == JsonValueKind.Array &&
                 content.EnumerateArray().Any(part => part.TryGetProperty("image_url", out _)))
             {
                 lock (_visionBodies) _visionBodies.Add(root.GetRawText());
@@ -68,9 +69,19 @@ public sealed class NoteDerivedJobTests : IAsyncLifetime
             var prompt = PromptText(content);
             if (prompt.Contains("独立分析器", StringComparison.Ordinal))
             {
+                lock (_analysisBodies) _analysisBodies.Add(root.GetRawText());
                 _recordAnalysisPrompt = prompt;
                 return Completion(call, "## 独立分析\n\n保留完整记录版本引用并给出独立判断。");
             }
+            if (prompt.Contains("完整记录整理器", StringComparison.Ordinal))
+            {
+                lock (_recordBodies) _recordBodies.Add(root.GetRawText());
+                _recordRecordingPrompt = prompt;
+                return Completion(call, "## 完整记录\n\n全部 Markdown、ASR 与图片证据均已纳入。");
+            }
+            if (content.ValueKind == JsonValueKind.Array &&
+                content.EnumerateArray().Any(part => part.TryGetProperty("input_audio", out _)))
+                return Completion(call, "Successful ASR transcript for derived fixture");
             _recordRecordingPrompt = prompt;
             return Completion(call, "## 完整记录\n\n全部 Markdown、ASR 与图片证据均已纳入。");
         });
@@ -199,17 +210,157 @@ public sealed class NoteDerivedJobTests : IAsyncLifetime
         Assert.Equal(calls, _calls);
     }
 
-    private async Task Run(Guid taskId)
+    [Fact]
+    public async Task AllowlistedDerivedCallCarriesTheExactFixedAudioSliceWithoutAsr()
     {
+        var material = NoteDerivedFixture.CreateMaterial();
+        var materials = _factory.Services.GetRequiredService<NoteMaterialUploadStore>();
+        await NoteDerivedFixture.UploadAsync(materials, _owner, material);
+
+        var allowlist = new NoteDerivedAudioContextOptions { ModelNames = ["derived-model"] };
+        var task = await StartWithAudioContextAsync(material, allowlist);
+
+        Assert.Equal("Queued", task.Phase);
+        Assert.DoesNotContain(task.Issues, issue => issue.Code == "asr_required");
+        Assert.Equal(3, task.Steps.Count);
+
+        await Run(task.TaskId, allowlist);
         using var scope = _factory.Services.CreateScope();
-        var job = new NoteDerivedJob(
+        var completed = NoteDerivedStore.DescribeTask(
+            await scope.ServiceProvider.GetRequiredService<NoteDerivedStore>()
+                .ReadTaskAsync(_owner, task.TaskId, default));
+        Assert.Equal("Succeeded", completed.Phase);
+        Assert.True(completed.Coverage.Complete, JsonSerializer.Serialize(completed.Coverage));
+        Assert.Equal(0, completed.Coverage.TranscriptSegments);
+
+        var recordBody = Assert.Single(_recordBodies);
+        using var record = JsonDocument.Parse(recordBody);
+        var recordMessages = record.RootElement.GetProperty("messages");
+        var recordContent = recordMessages[recordMessages.GetArrayLength() - 1].GetProperty("content");
+        var audio = recordContent.EnumerateArray()
+            .Single(part => part.GetProperty("type").GetString() == "input_audio")
+            .GetProperty("input_audio");
+        var sent = audio.GetProperty("data").GetString();
+        Assert.True(sent == Convert.ToBase64String(material.Content[5]) ||
+            sent == "data:audio/wav;base64," + Convert.ToBase64String(material.Content[5]));
+
+        var analysisBody = Assert.Single(_analysisBodies);
+        using var analysis = JsonDocument.Parse(analysisBody);
+        var analysisMessages = analysis.RootElement.GetProperty("messages");
+        var analysisContent = analysisMessages[analysisMessages.GetArrayLength() - 1]
+            .GetProperty("content");
+        var analysisAudio = analysisContent.EnumerateArray()
+            .Single(part => part.GetProperty("type").GetString() == "input_audio")
+            .GetProperty("input_audio").GetProperty("data").GetString();
+        Assert.True(analysisAudio == Convert.ToBase64String(material.Content[5]) ||
+            analysisAudio == "data:audio/wav;base64," + Convert.ToBase64String(material.Content[5]));
+
+        var receipt = await CreateJob(scope.ServiceProvider, allowlist)
+            .ReceiptAsync(_owner, task.TaskId, default);
+        Assert.True(receipt.Complete, JsonSerializer.Serialize(receipt.Issues));
+        Assert.Equal(0, receipt.Sources.Count(x => x.Kind == NoteDerivedSourceKind.TranscriptSegment));
+
+        using var verificationScope = _factory.Services.CreateScope();
+        var db = verificationScope.ServiceProvider.GetRequiredService<PimDbContext>();
+        var audioLogs = await db.AiRequestLogs.AsNoTracking()
+            .Where(x => x.UserId == _owner &&
+                (x.Purpose == NoteDerivedPrompts.RecordPurpose ||
+                 x.Purpose == NoteDerivedPrompts.AnalysisPurpose))
+            .ToListAsync();
+        Assert.Equal(2, audioLogs.Count);
+        Assert.All(audioLogs, log => Assert.Contains("pim-ai-audio:", log.RequestMessagesJson,
+            StringComparison.Ordinal));
+        Assert.All(audioLogs, log => Assert.DoesNotContain(Convert.ToBase64String(material.Content[5]),
+            log.RequestPayloadJson, StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task JobRevalidatesTheAudioAllowlistBeforeSending()
+    {
+        var material = NoteDerivedFixture.CreateMaterial();
+        var materials = _factory.Services.GetRequiredService<NoteMaterialUploadStore>();
+        await NoteDerivedFixture.UploadAsync(materials, _owner, material);
+        var task = await StartWithAudioContextAsync(material,
+            new NoteDerivedAudioContextOptions { ModelNames = ["derived-model"] });
+
+        await Run(task.TaskId);
+
+        using var scope = _factory.Services.CreateScope();
+        var state = await scope.ServiceProvider.GetRequiredService<NoteDerivedStore>()
+            .ReadTaskAsync(_owner, task.TaskId, default);
+        Assert.True(state.StopRequested);
+        Assert.Contains(state.Steps, step =>
+            step.Current.ErrorCode == "audio_context_not_allowed");
+        Assert.Empty(_recordBodies);
+        Assert.Empty(_analysisBodies);
+        var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
+        Assert.False(await db.AiRequestLogs.AsNoTracking().AnyAsync(x => x.UserId == _owner &&
+            (x.Purpose == NoteDerivedPrompts.RecordPurpose ||
+             x.Purpose == NoteDerivedPrompts.AnalysisPurpose)));
+    }
+
+    [Fact]
+    public async Task UnlistedDerivedModelKeepsTheExistingAsrRequirement()
+    {
+        var material = NoteDerivedFixture.CreateMaterial();
+        var materials = _factory.Services.GetRequiredService<NoteMaterialUploadStore>();
+        await NoteDerivedFixture.UploadAsync(materials, _owner, material);
+
+        using var scope = _factory.Services.CreateScope();
+        var service = new NoteDerivedService(
             scope.ServiceProvider.GetRequiredService<NoteDerivedStore>(),
-            scope.ServiceProvider.GetRequiredService<NoteMaterialUploadStore>(),
+            scope.ServiceProvider.GetRequiredService<NoteDerivedJob>(),
+            materials,
             scope.ServiceProvider.GetRequiredService<NoteAsrTaskStore>(),
             scope.ServiceProvider.GetRequiredService<NoteDerivedSnapshotBuilder>(),
             scope.ServiceProvider.GetRequiredService<PimDbContext>(),
-            scope.ServiceProvider.GetRequiredService<AiTextCallService>(),
-            NullLogger<NoteDerivedJob>.Instance);
+            scope.ServiceProvider.GetRequiredService<ICurrentUserService>(),
+            scope.ServiceProvider.GetRequiredService<ISecretProtector>(),
+            scope.ServiceProvider.GetRequiredService<IConfiguration>(),
+            Options.Create(new NoteDerivedAudioContextOptions()));
+        var task = await service.StartForOwnerAsync(_owner,
+            new StartNoteDerivedTaskRequest(Guid.NewGuid(), _owner, material.VersionId, null, _consent),
+            waitForAsr: false, allowIncompleteAsr: false, default);
+
+        Assert.Equal("Blocked", task.Phase);
+        Assert.Contains(task.Issues, issue => issue.Code == "asr_required");
+    }
+
+    private NoteDerivedJob CreateJob(IServiceProvider services,
+        NoteDerivedAudioContextOptions? audioContext = null) => new(
+        services.GetRequiredService<NoteDerivedStore>(),
+        services.GetRequiredService<NoteMaterialUploadStore>(),
+        services.GetRequiredService<NoteAsrTaskStore>(),
+        services.GetRequiredService<NoteDerivedSnapshotBuilder>(),
+        services.GetRequiredService<PimDbContext>(),
+        services.GetRequiredService<AiTextCallService>(),
+        Options.Create(audioContext ?? new NoteDerivedAudioContextOptions()),
+        NullLogger<NoteDerivedJob>.Instance);
+
+    private async Task<NoteDerivedTaskDto> StartWithAudioContextAsync(
+        NoteDerivedFixture.Material material, NoteDerivedAudioContextOptions audioContext)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var service = new NoteDerivedService(
+            scope.ServiceProvider.GetRequiredService<NoteDerivedStore>(),
+            scope.ServiceProvider.GetRequiredService<NoteDerivedJob>(),
+            _factory.Services.GetRequiredService<NoteMaterialUploadStore>(),
+            scope.ServiceProvider.GetRequiredService<NoteAsrTaskStore>(),
+            scope.ServiceProvider.GetRequiredService<NoteDerivedSnapshotBuilder>(),
+            scope.ServiceProvider.GetRequiredService<PimDbContext>(),
+            scope.ServiceProvider.GetRequiredService<ICurrentUserService>(),
+            scope.ServiceProvider.GetRequiredService<ISecretProtector>(),
+            scope.ServiceProvider.GetRequiredService<IConfiguration>(),
+            Options.Create(audioContext));
+        return await service.StartForOwnerAsync(_owner,
+            new StartNoteDerivedTaskRequest(Guid.NewGuid(), _owner, material.VersionId, null, _consent),
+            waitForAsr: false, allowIncompleteAsr: false, default);
+    }
+
+    private async Task Run(Guid taskId, NoteDerivedAudioContextOptions? audioContext = null)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var job = CreateJob(scope.ServiceProvider, audioContext);
         await job.RunAsync(_owner, taskId, default);
     }
 
