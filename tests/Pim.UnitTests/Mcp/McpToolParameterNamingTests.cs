@@ -5,19 +5,21 @@ using Xunit;
 namespace Pim.UnitTests.Mcp;
 
 /// <summary>
-/// WO-R01-CAMEL / issue #460: camelCase is the canonical MCP parameter shape.
-/// Legacy snake_case names stay callable as deprecated aliases, but only the
-/// camelCase names are advertised as required.
+/// R01: camelCase is the only supported MCP argument shape. The 14 snake_case
+/// aliases that #573 normalized for compatibility are removed without a
+/// compatibility window: the contract no longer advertises them, and the executor
+/// rejects them with 400 plus the camelCase replacement. <c>get_tasks.status</c>
+/// remains a separate deprecated single-value alias (not snake_case).
 /// </summary>
 public sealed class McpToolParameterNamingTests
 {
-    private sealed record AliasExpectation(
+    private sealed record RemovedAlias(
         string Tool,
         string Canonical,
         string Legacy,
         bool CanonicalRequired);
 
-    private static readonly AliasExpectation[] ExpectedAliases =
+    private static readonly RemovedAlias[] RemovedAliases =
     [
         new("get_report", "reportId", "report_id", true),
         new("get_task_segments", "taskId", "task_id", true),
@@ -33,7 +35,6 @@ public sealed class McpToolParameterNamingTests
         new("get_file_open_link", "fileId", "file_id", true),
         new("get_ai_requests", "fromTime", "from_time", false),
         new("get_ai_usage_summary", "fromTime", "from_time", true),
-        new("get_tasks", "statuses", "status", false),
     ];
 
     [Fact]
@@ -48,12 +49,6 @@ public sealed class McpToolParameterNamingTests
 
             foreach (var property in properties.EnumerateObject())
             {
-                if (property.Value.TryGetProperty("deprecated", out var deprecated)
-                    && deprecated.ValueKind == System.Text.Json.JsonValueKind.True)
-                {
-                    continue;
-                }
-
                 if (!Regex.IsMatch(property.Name, "^[a-z][a-zA-Z0-9]*$"))
                     violations.Add($"{tool.Name}.{property.Name}");
             }
@@ -61,16 +56,16 @@ public sealed class McpToolParameterNamingTests
 
         Assert.True(
             violations.Count == 0,
-            "以下非兼容参数不是 camelCase：" + Environment.NewLine + string.Join(Environment.NewLine, violations));
+            "以下参数不是 camelCase：" + Environment.NewLine + string.Join(Environment.NewLine, violations));
     }
 
     [Fact]
-    public void Contract_LegacyAliasesAreDeprecatedOptionalAndDocumented()
+    public void Contract_DoesNotAdvertiseRemovedSnakeCaseAliases()
     {
         var byName = McpToolExecutor.ToolContract.ToDictionary(t => t.Name, StringComparer.Ordinal);
         var failures = new List<string>();
 
-        foreach (var expected in ExpectedAliases)
+        foreach (var expected in RemovedAliases)
         {
             if (!byName.TryGetValue(expected.Tool, out var tool))
             {
@@ -84,20 +79,11 @@ public sealed class McpToolParameterNamingTests
                 continue;
             }
 
-            if (!properties.TryGetProperty(expected.Canonical, out var canonical))
+            if (!properties.TryGetProperty(expected.Canonical, out _))
                 failures.Add($"{expected.Tool}: canonical property {expected.Canonical} missing");
 
-            if (!properties.TryGetProperty(expected.Legacy, out var legacy))
-            {
-                failures.Add($"{expected.Tool}: deprecated alias {expected.Legacy} missing");
-                continue;
-            }
-
-            if (!legacy.TryGetProperty("deprecated", out var deprecated)
-                || deprecated.ValueKind != System.Text.Json.JsonValueKind.True)
-            {
-                failures.Add($"{expected.Tool}.{expected.Legacy}: deprecated=true missing");
-            }
+            if (properties.TryGetProperty(expected.Legacy, out _))
+                failures.Add($"{expected.Tool}: removed alias {expected.Legacy} is still advertised");
 
             var required = tool.InputSchema.TryGetProperty("required", out var requiredNode)
                 && requiredNode.ValueKind == System.Text.Json.JsonValueKind.Array
@@ -111,27 +97,74 @@ public sealed class McpToolParameterNamingTests
             if (!expected.CanonicalRequired && required.Contains(expected.Canonical))
                 failures.Add($"{expected.Tool}: {expected.Canonical} must remain optional");
 
-            if (!tool.Description.Contains(expected.Legacy, StringComparison.Ordinal)
-                || !tool.Description.Contains("deprecated", StringComparison.OrdinalIgnoreCase))
+            if (tool.Description.Contains(expected.Legacy, StringComparison.Ordinal)
+                || tool.Description.Contains("Deprecated compatibility alias", StringComparison.OrdinalIgnoreCase))
             {
-                failures.Add($"{expected.Tool}: description does not document deprecated alias {expected.Legacy}");
+                failures.Add($"{expected.Tool}: description still documents removed alias {expected.Legacy}");
             }
         }
 
-        var deprecatedProperties = McpToolExecutor.ToolContract
-            .SelectMany(tool => tool.InputSchema.TryGetProperty("properties", out var properties)
-                ? properties.EnumerateObject()
-                    .Where(property => property.Value.TryGetProperty("deprecated", out var deprecated)
-                        && deprecated.ValueKind == System.Text.Json.JsonValueKind.True)
-                    .Select(property => $"{tool.Name}.{property.Name}")
+        Assert.True(
+            failures.Count == 0,
+            "MCP 契约仍声明已删除的 snake_case 别名：" + Environment.NewLine + string.Join(Environment.NewLine, failures));
+    }
+
+    [Fact]
+    public void Contract_HasNoSnakeCaseOrUnexpectedDeprecatedProperties()
+    {
+        var properties = McpToolExecutor.ToolContract
+            .SelectMany(tool => tool.InputSchema.TryGetProperty("properties", out var props)
+                ? props.EnumerateObject().Select(property => (Tool: tool.Name, Property: property))
                 : [])
             .ToList();
 
-        Assert.Equal(ExpectedAliases.Length, deprecatedProperties.Count);
+        var snakeCase = properties
+            .Where(p => p.Property.Name.Contains('_'))
+            .Select(p => $"{p.Tool}.{p.Property.Name}")
+            .OrderBy(name => name, StringComparer.Ordinal)
+            .ToList();
 
-        Assert.True(
-            failures.Count == 0,
-            "MCP 兼容别名契约不符合要求：" + Environment.NewLine + string.Join(Environment.NewLine, failures));
+        Assert.Empty(snakeCase);
+
+        // status 是 get_tasks 的单值筛选别名，不是 R01 的 snake_case 兼容层；
+        // 除它之外不应再有 deprecated 参数。
+        var deprecated = properties
+            .Where(p => p.Property.Value.TryGetProperty("deprecated", out var value)
+                && value.ValueKind == System.Text.Json.JsonValueKind.True)
+            .Select(p => $"{p.Tool}.{p.Property.Name}")
+            .OrderBy(name => name, StringComparer.Ordinal);
+
+        Assert.Equal(new[] { "get_tasks.status" }, deprecated);
+    }
+
+    [Theory]
+    [InlineData("report_id", "reportId")]
+    [InlineData("task_id", "taskId")]
+    [InlineData("event_id", "eventId")]
+    [InlineData("habit_id", "habitId")]
+    [InlineData("calendar_id", "calendarId")]
+    [InlineData("note_id", "noteId")]
+    [InlineData("attachment_id", "attachmentId")]
+    [InlineData("file_id", "fileId")]
+    [InlineData("from_time", "fromTime")]
+    public void RemovedAlias_IsRejectedWithCamelCaseReplacement(string legacy, string canonical)
+    {
+        var error = McpToolInputPolicy.RejectLegacyAliases([legacy]);
+
+        Assert.Equal(400, error!["code"]!.GetValue<int>());
+        var message = error["error"]!.GetValue<string>();
+        Assert.Contains(legacy, message);
+        Assert.Contains(canonical, message);
+    }
+
+    [Fact]
+    public void RemovedAliases_CoverAll14ParameterPairs()
+    {
+        Assert.Equal(14, RemovedAliases.Length);
+        Assert.Equal(9, RemovedAliases.Select(alias => alias.Legacy).Distinct(StringComparer.Ordinal).Count());
+        Assert.Equal(
+            RemovedAliases.Select(alias => alias.Tool).Distinct(StringComparer.Ordinal).Count(),
+            RemovedAliases.Length);
     }
 
     [Fact]

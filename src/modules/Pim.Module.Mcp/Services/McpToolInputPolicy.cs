@@ -9,61 +9,39 @@ public static class McpToolInputPolicy
     private static readonly string[] TaskStatuses = ["NEEDS-ACTION", "IN-PROCESS", "COMPLETED", "CANCELLED"];
 
     /// <summary>
-    /// Legacy tool-specific aliases kept for backward compatibility. The embedded
-    /// contract advertises the camelCase name as required and marks the snake_case
-    /// name deprecated; normalization happens before validation so legacy-only calls
-    /// still execute.
+    /// R01 removed snake_case aliases. They have no compatibility window: any call
+    /// that still uses one is rejected before path/query/JSON/multipart mapping and
+    /// told the canonical camelCase name. The MCP contract no longer advertises them.
     /// </summary>
-    private static readonly IReadOnlyDictionary<string, (string Canonical, string Legacy)> ParameterAliases =
-        new Dictionary<string, (string Canonical, string Legacy)>(StringComparer.Ordinal)
+    private static readonly IReadOnlyDictionary<string, string> RemovedLegacyAliases =
+        new Dictionary<string, string>(StringComparer.Ordinal)
         {
-            ["get_report"] = ("reportId", "report_id"),
-            ["get_task_segments"] = ("taskId", "task_id"),
-            ["get_event_by_id"] = ("eventId", "event_id"),
-            ["get_task_by_id"] = ("taskId", "task_id"),
-            ["get_habit_occurrences"] = ("habitId", "habit_id"),
-            ["get_calendar_by_id"] = ("calendarId", "calendar_id"),
-            ["get_task_checklist"] = ("taskId", "task_id"),
-            ["get_quick_note"] = ("noteId", "note_id"),
-            ["get_quick_note_attachment_meta"] = ("attachmentId", "attachment_id"),
-            ["get_file"] = ("fileId", "file_id"),
-            ["read_file_text"] = ("fileId", "file_id"),
-            ["get_file_open_link"] = ("fileId", "file_id"),
-            ["get_ai_requests"] = ("fromTime", "from_time"),
-            ["get_ai_usage_summary"] = ("fromTime", "from_time"),
+            ["report_id"] = "reportId",
+            ["task_id"] = "taskId",
+            ["event_id"] = "eventId",
+            ["habit_id"] = "habitId",
+            ["calendar_id"] = "calendarId",
+            ["note_id"] = "noteId",
+            ["attachment_id"] = "attachmentId",
+            ["file_id"] = "fileId",
+            ["from_time"] = "fromTime",
         };
 
     /// <summary>
-    /// Collapses a legacy snake_case argument into its canonical camelCase name.
-    /// Equal duplicate values are accepted; conflicting values are rejected instead
-    /// of silently preferring one spelling.
+    /// Rejects removed snake_case aliases instead of normalizing them. This runs on the
+    /// raw argument names so a null-valued legacy key cannot slip through as "absent".
     /// </summary>
-    public static JsonObject? NormalizeAliases(string toolName, JsonObject args)
+    public static JsonObject? RejectLegacyAliases(IEnumerable<string>? argumentNames)
     {
-        if (!ParameterAliases.TryGetValue(toolName, out var alias))
+        if (argumentNames is null)
             return null;
 
-        args.TryGetPropertyValue(alias.Legacy, out var legacyNode);
-        if (legacyNode is null)
+        foreach (var name in argumentNames)
         {
-            args.Remove(alias.Legacy);
-            return null;
+            if (RemovedLegacyAliases.TryGetValue(name, out var canonical))
+                return Error($"{name} is no longer supported; use {canonical} instead");
         }
 
-        if (!args.TryGetPropertyValue(alias.Canonical, out var canonicalNode) || canonicalNode is null)
-        {
-            args.Remove(alias.Legacy);
-            args[alias.Canonical] = legacyNode.DeepClone();
-            return null;
-        }
-
-        if (!JsonNode.DeepEquals(canonicalNode, legacyNode))
-        {
-            return Error(
-                $"{alias.Canonical} and {alias.Legacy} cannot both be provided with different values");
-        }
-
-        args.Remove(alias.Legacy);
         return null;
     }
 
