@@ -10,9 +10,9 @@
 | 交付包 | `PIM功能确认-最终交付-20261122.zip`，SHA-256 `b488a01e6f317a2735f387a918787204791fb32a38ad9ce064a07166f4b8a864` |
 | pim-api | `origin/master@de816d05e90d72a64e94d8324aec6109f0c81f56`（PR #583 H03 切片、PR #577 版本界面已合并）；盘点时 post-merge CI `45500775356` pending，#583 merge run `45500066575` 仍在运行 |
 | pim-android | `origin/master@a1b0b7a7a6e7c677451271a8a4edb423ba92f3af`（PR #82 处理状态、PR #89 C04 实时状态、PR #91 L05 日历均已合并）；PR #89 合并后 master CI `45502883654` 成功；PR #91 合并后 master CI `45503862102` 在本次核对时仍为 `in_progress` |
-| pim-windows | `origin/master@d120a88af9296a944644ecd6afbba3716258ea2c`（PR #52 鼠标手写合并；此前 PR #55 R04 契约快照）；post-merge CI `45501052948` 成功 |
+| pim-windows | `origin/master@f278996a8ab95f8476b3304703aa9ff2970a850d`（PR #57 R04 原生多选合并；此前 PR #52 鼠标手写）；PR #57 head `bd45e21e8f32fe0b516dcf273f8dc754e079287b` required CI `45511045329` 全绿；合并后 CI `45511644639` 成功 |
 | 状态口径 | `PASS`：当前 head 且适用平台完整验收；`FAIL`：确认缺口仍存在或实现未合并；`NOT-VERIFIED`：实现存在但当前 head 无完整验收；`BLOCKED`：缺产品裁决/外部前提；`APPROVED-EXCEPTION`：交付包明确跳过或替代。 |
-| 本轮 PASS | **0**。Android PR #89 合并后 CI `45502883654` 成功，PR #91 合并后 CI `45503862102` 尚未完成；R01/R04/H03/C04/L05/Android #82/Windows #52 的代码或自动化结果只证明实现边界，不能替代真实设备或用户流程。 |
+| 本轮 PASS | **0**。Android PR #89 合并后 CI `45502883654` 成功，PR #91 合并后 CI `45503862102` 尚未完成；Windows PR #57 的 required CI `45511045329` 全绿但仅覆盖自动化。R01/R04/H03/C04/L05/Android #82/Windows #52/#57 的代码或自动化结果只证明实现边界，不能替代真实设备或用户流程。 |
 
 > 关键防回归规则：不把旧 PR head、旧 CI、demo、历史源码审计或客户端契约快照当作当前 head 的 PASS；`NOT-VERIFIED` 不是通过。`pim-android` 本地工作区存在其他 Agent 的未提交产品改动，本台账只认 `origin/master@a1b0b7a7a6e7c677451271a8a4edb423ba92f3af`，未使用该工作区未提交内容作为证据。
 
@@ -57,7 +57,7 @@
 | Q07 | 产品语义冲突 | Q07 要求 `Uploaded` 与 `Conflict` 都清理本机持久副本；Android 冲突保护要求保留双方完整材料与本机原件 | 用户裁决 Conflict 终态是否清理；决定前不实现 Android 清理，不销项 |
 | H03-AC10 | 实现缺口 | PR #583 只交付 8 MiB/5,000 片内受控音频切片；长音频自动分批、批次汇总与完整总结链路未实现，真实多模态 provider/Hangfire 多进程也未验 | 补齐分批/汇总设计、实现、真实多模态 provider 与长音频预算验收 |
 | R01 | 实现与确认规则冲突 | `mcp-tools.json` 仍声明 14 个 deprecated snake_case 别名，`McpToolInputPolicy.NormalizeAliases` 仍接受旧名；用户确认要求直接拒绝、无兼容期 | 删除别名与兼容期，14 个旧参数全部 400；再用外部独立 MCP 客户端复验 |
-| R04 | 客户端入口缺失 | REST 重复 `status`、MCP `statuses` 和 Web 多选已合并；Android/Windows 仅同步契约，没有独立多选 UI；外部独立 MCP 客户端未执行 | Android/Windows 增加多选入口；外部 MCP 复验，并记录客户端版本与请求日志 |
+| R04 | Android 客户端入口缺失；Windows 真实桌面与外部 MCP 未验 | REST 重复 `status`、MCP `statuses` 和 Web 多选已合并；Windows PR #57 已合并原生复选多选与聚焦自动化，但真实 Windows 桌面人工操作未执行；Android 仍仅同步契约，无独立多选 UI；外部独立 MCP 客户端未执行 | Android 增加多选入口；在真实 Windows 桌面操作多选；外部 MCP 复验，并记录客户端版本与请求日志 |
 | J09 | 开放 PR 未收口 | PR #585 分支 DIRTY、run `45490267103` 失败；当前 master 没有 J09 能力 | 修复 CI、真实 PostgreSQL 迁移并发与 provider 费用字段，再评审合并 |
 | Z01 | 方向冲突且已合并 | 当前 master `de816d05` 仍让普通用户看到数据中心、版本历史、版本 ID/保存编号；PR #577 已合并且明确增加这些展示，不能作为 Z01 实现 | 按 Z01 已确认的普通用户替代入口重做；管理员入口保留，普通用户隐藏版本/审计 |
 | M05 | 原生页面缺口 | Windows 有原生日历/任务窗口和 PR #49 的托盘入口，但没有原生「今日」页；`MainShellWindow` 的今日仍指向 Web `/today` | 实现并接入原生今日页，再在真实 Windows 桌面执行登录/刷新/新建/完成任务验收 |
@@ -67,7 +67,7 @@
 | 顺序 | 工单 | 仓库/PR | 目标 | 完成判据 |
 | ---: | --- | --- | --- | --- |
 | 1 | WO-R01-ALIAS-REMOVAL | pim-api #573 已合并 | 删除旧 snake_case 兼容层 | 14 个旧名全部 400 且带替代参数；新 camelCase 路径/查询/JSON/multipart 全覆盖；无 deprecated 别名 |
-| 2 | WO-R04-CLIENTS-EXTERNAL | pim-api #576、Android #90、Windows #55 已合并/仅契约 | 补 Android/Windows 多选 UI 与外部 MCP 验收 | 三端独立多选；空/重复/非法/冲突规则一致；外部 MCP 记录客户端版本与请求日志 |
+| 2 | WO-R04-CLIENTS-EXTERNAL | pim-api #576、Android #90 仅契约、Windows #57 多选已合并 | 补 Android 多选 UI、Windows 真实桌面操作与外部 MCP 验收 | 三端独立多选；空/重复/非法/冲突规则一致；Windows 真实桌面通过；外部 MCP 记录客户端版本与请求日志 |
 | 3 | WO-Z02-CROSS-DEVICE | pim-api #572、pim-android #82、pim-windows #50 已合并 | 真实 provider、Hangfire 多进程、浏览器、Android/Windows 换端 | 同一 note/version 在服务端、Android、Windows、Web 显示同一处理状态并可恢复 |
 | 4 | WO-H03-LONG-AUDIO | pim-api #583 已合并切片 | 补长音频自动分批/汇总与真实多模态 provider | H03-AC10 实现；超限分批、汇总、失败重试和真实 provider 验收通过 |
 | 5 | WO-J09-USAGE-LIMITS | pim-api #585（open，DIRTY，CI failed） | 修复并收口连接级用量限制 | PR 绿；真实 PostgreSQL 迁移/并发；真实 provider 费用与 Web 管理验收通过 |
@@ -328,7 +328,7 @@
 | R01 | API/MCP | 14 个 snake_case 参数统一为 camelCase 并拒绝旧名；路径/查询/JSON/multipart 全覆盖；缺参/冲突返回 400 与替代参数。 | PR #573 已合并 canonical camelCase，但仍保留 deprecated 旧名：`mcp-tools.json` 声明 14 个别名，`McpToolInputPolicy.NormalizeAliases` 接受并改写旧参数，违反“直接拒绝、不保留兼容期”的最终确认；外部独立 MCP 客户端未验证。 | MCP schema/工具表/执行器与外部 MCP 客户端 | API/MCP Agent | pim-api #573（merged acdd5354；当前 master de816d05 仍保留别名） | PR #573；MCP 91/91、全 MCP 205/205、隔离 API 14/14 只覆盖别名兼容路径；当前 master 源码确认 `deprecated` 别名与 `NormalizeAliases` 仍在；外部 MCP 未验。 | FAIL | 先删除 14 个旧名声明与 `NormalizeAliases` 兼容层，确保旧参数 400 且返回替代参数；再补外部独立 MCP 客户端复验。 |
 | R02 | API/MCP；Web | 按交付包 R02 的最终确认完成「事件时区可判定（#450）」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | MCP 只有部分查询区间校验；事件本地时间/解析状态、全天日期、重复区间和 REST 查询契约仍不完整。 | MCP 契约、OpenAPI、日历/任务/Outlook/native-note 服务 | API/MCP Agent | 待创建 | 交付包 R02 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | FAIL | 补齐确认缺口后新建 PR，并在当前 head 做端到端复验。 |
 | R03 | API/MCP | 按交付包 R03 的最终确认完成「create_event 能写回 Outlook（#458）」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | MCP 写入仍只支持本地日历；Outlook 写回只有 REST，缺少 MCP 映射、幂等账本和安全恢复。 | MCP 契约、OpenAPI、日历/任务/Outlook/native-note 服务 | API/MCP Agent | 待创建 | 交付包 R03 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | FAIL | 补齐确认缺口后新建 PR，并在当前 head 做端到端复验。 |
-| R04 | API/MCP；Web；Android；Windows | REST 重复 status 为 OR、MCP statuses 数组、Web/Android/Windows 多选；空/重复/非法/冲突规则一致，非法整单 400/02057。 | PR #576 已合并 REST OR 多选、MCP statuses、Web 多选与整单 400/02057；Android/Windows 只同步了契约（Android #90、Windows #55），没有独立多选 UI：Android 无状态筛选入口，Windows 仍是单值下拉。外部独立 MCP 客户端未验证。 | 任务 REST/MCP 契约、Web/Android/Windows 多选入口 | API/MCP Agent；Android/Windows Agent | pim-api #576（merged cb96fc30）；Android #90 / Windows #55 仅契约 | PR #576；REST 19/19、MCP 14/14、Chromium 通过；Android 当前 master 无状态多选，Windows `TaskStatusFilterBox` 仍为单值 ComboBox；外部 MCP 未验。 | FAIL | 补 Android/Windows 多选 UI 和外部 MCP 客户端验收；契约同步不记功能完成。 |
+| R04 | API/MCP；Web；Android；Windows | REST 重复 status 为 OR、MCP statuses 数组、Web/Android/Windows 多选；空/重复/非法/冲突规则一致，非法整单 400/02057。 | PR #576 已合并 REST OR 多选、MCP statuses、Web 多选与整单 400/02057；Windows PR #57 已合并原生复选多选，默认全部状态、去重后发送重复 `status`，并在请求前拒绝非法/混合/冲突输入，真实 Windows 桌面人工操作未执行；Android 仍只同步契约（#90），无状态多选入口。外部独立 MCP 客户端未验证。 | 任务 REST/MCP 契约、Web/Android/Windows 多选入口 | API/MCP Agent；Android/Windows Agent | pim-api #576（merged cb96fc30）；Windows #57（merged f278996a，head bd45e21e）；Android #90 仅契约 | PR #576；REST 19/19、MCP 14/14、Chromium 通过。Windows #57 required CI `45511045329` 全绿（`CI Gate`、`contract-freshness`、`contract-generated`、`build-windows`、`build-shell-windows`、`test-client-core`、`test-client-app`、CodeQL 等；`release` skipped），合并后 CI `45511644639` 成功；PR 自述本地聚焦 17/17，契约 1,298,395 B / `c33efcb7…`；无 review 记录。Windows 真实桌面多选与外部 MCP 未验；Android 当前 master 无状态多选。 | FAIL | 补 Android 多选 UI；在真实 Windows 桌面操作多选；补外部 MCP 客户端验收并记录客户端版本与请求日志。 |
 | R05 | API/MCP | 按交付包 R05 的最终确认完成「MCP 可读写笔记」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 生产 MCP 仍只有 quicknotes；native-note 聚合读取、整包上传、处理/结果/采用/生命周期工具均未实现。 | MCP 契约、OpenAPI、日历/任务/Outlook/native-note 服务 | API/MCP Agent | 待创建 | 交付包 R05 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | FAIL | 补齐确认缺口后新建 PR，并在当前 head 做端到端复验。 |
 
 ### Z 反向要求
