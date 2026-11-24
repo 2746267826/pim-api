@@ -9,20 +9,20 @@
 | 盘点时间 | 2026-11-25（Asia/Shanghai） |
 | 交付包 | `PIM功能确认-最终交付-20261122.zip`，SHA-256 `b488a01e6f317a2735f387a918787204791fb32a38ad9ce064a07166f4b8a864` |
 | pim-api | `origin/master@de816d05e90d72a64e94d8324aec6109f0c81f56`（PR #583 H03 切片、PR #577 版本界面已合并）；盘点时 post-merge CI `45500775356` pending，#583 merge run `45500066575` 仍在运行 |
-| pim-android | `origin/master@a1b0b7a7a6e7c677451271a8a4edb423ba92f3af`（PR #82 处理状态、PR #91 L05 日历均已合并）；PR #91 合并后 master CI `45503862102` 在本次更新时仍未完成 |
+| pim-android | `origin/master@a1b0b7a7a6e7c677451271a8a4edb423ba92f3af`（PR #82 处理状态、PR #89 C04 实时状态、PR #91 L05 日历均已合并）；PR #89 合并后 master CI `45502883654` 成功；PR #91 合并后 master CI `45503862102` 在本次核对时仍为 `in_progress` |
 | pim-windows | `origin/master@d120a88af9296a944644ecd6afbba3716258ea2c`（PR #52 鼠标手写合并；此前 PR #55 R04 契约快照）；post-merge CI `45501052948` 成功 |
 | 状态口径 | `PASS`：当前 head 且适用平台完整验收；`FAIL`：确认缺口仍存在或实现未合并；`NOT-VERIFIED`：实现存在但当前 head 无完整验收；`BLOCKED`：缺产品裁决/外部前提；`APPROVED-EXCEPTION`：交付包明确跳过或替代。 |
-| 本轮 PASS | **0**。三仓 latest post-merge CI 均未在本快照完成；R01/R04/H03/Android #82/Windows #52 的代码或自动化结果只证明实现边界，不能替代真实用户流程。 |
+| 本轮 PASS | **0**。Android PR #89 合并后 CI `45502883654` 成功，PR #91 合并后 CI `45503862102` 尚未完成；R01/R04/H03/C04/L05/Android #82/Windows #52 的代码或自动化结果只证明实现边界，不能替代真实设备或用户流程。 |
 
-> 关键防回归规则：不把旧 PR head、旧 CI、demo、历史源码审计或客户端契约快照当作当前 head 的 PASS；`NOT-VERIFIED` 不是通过。`pim-android` 本地工作区存在其他 Agent 的未提交产品改动，本台账只认 `origin/master@b6c2c9f2`，未使用该工作区未提交内容作为证据。
+> 关键防回归规则：不把旧 PR head、旧 CI、demo、历史源码审计或客户端契约快照当作当前 head 的 PASS；`NOT-VERIFIED` 不是通过。`pim-android` 本地工作区存在其他 Agent 的未提交产品改动，本台账只认 `origin/master@a1b0b7a7a6e7c677451271a8a4edb423ba92f3af`，未使用该工作区未提交内容作为证据。
 
 ## 状态汇总
 
 | 状态 | 数量 | 编号 |
 | --- | ---: | --- |
 | PASS | 0 | 无 |
-| FAIL | 87 | A01 A02 A03 A04 A05 A06 A07 A08 A09 B07 C04 C12 C13 C16 C17 C18 C19 C20 D04 D05 E01 E02 F02 F03 F04 F06 F08 F09 F10 G01 G02 G04 G06 G07 G08 G09 G10 G12 G13 H01 H02 H03 H04 H05 H07 H08 H09 H10 H11 I03 I04 J01 J05 J06 J08 J09 K02 K03 K04 L01 L07 L08 L10 L11 L13 M02 M03 M05 M06 N01 O02 O03 O05 O06 P01 P05 Q03 Q04 Q05 Q06 Q08 R01 R02 R03 R04 R05 Z01 |
-| NOT-VERIFIED | 65 | A10 B01 B02 B03 B04 B05 B06 B08 B09 B10 B11 B12 B13 B14 B16 C01 C02 C03 C05 C06 C07 C08 C09 C10 C11 C15 C22 D01 D02 D03 D06 D07 D08 F01 F05 F07 F11 G03 G05 G11 H06 I01 I02 J02 J03 J04 J07 K01 L02 L03 L04 L05 L06 L09 L12 L14 M01 M04 N02 N03 O01 P02 P03 P04 Z02 |
+| FAIL | 86 | A01 A02 A03 A04 A05 A06 A07 A08 A09 B07 C12 C13 C16 C17 C18 C19 C20 D04 D05 E01 E02 F02 F03 F04 F06 F08 F09 F10 G01 G02 G04 G06 G07 G08 G09 G10 G12 G13 H01 H02 H03 H04 H05 H07 H08 H09 H10 H11 I03 I04 J01 J05 J06 J08 J09 K02 K03 K04 L01 L07 L08 L10 L11 L13 M02 M03 M05 M06 N01 O02 O03 O05 O06 P01 P05 Q03 Q04 Q05 Q06 Q08 R01 R02 R03 R04 R05 Z01 |
+| NOT-VERIFIED | 66 | A10 B01 B02 B03 B04 B05 B06 B08 B09 B10 B11 B12 B13 B14 B16 C01 C02 C03 C04 C05 C06 C07 C08 C09 C10 C11 C15 C22 D01 D02 D03 D06 D07 D08 F01 F05 F07 F11 G03 G05 G11 H06 I01 I02 J02 J03 J04 J07 K01 L02 L03 L04 L05 L06 L09 L12 L14 M01 M04 N02 N03 O01 P02 P03 P04 Z02 |
 | BLOCKED | 2 | Q01 Q07 |
 | APPROVED-EXCEPTION | 6 | B15 C14 C21 E03 O04 Q02 |
 | **合计** | **160** | A–R、Z |
@@ -31,7 +31,7 @@
 | --- | ---: | ---: | ---: | ---: | ---: |
 | A 笔记列表与组织 | 0 | 9 | 1 | 0 | 0 |
 | B 编辑器 | 0 | 1 | 14 | 0 | 1 |
-| C 录音 | 0 | 8 | 12 | 0 | 2 |
+| C 录音 | 0 | 7 | 13 | 0 | 2 |
 | D 手写 | 0 | 2 | 6 | 0 | 0 |
 | E 材料与文件输入 | 0 | 2 | 0 | 0 | 1 |
 | F 上传与同步 | 0 | 7 | 4 | 0 | 0 |
@@ -71,8 +71,8 @@
 | 3 | WO-Z02-CROSS-DEVICE | pim-api #572、pim-android #82、pim-windows #50 已合并 | 真实 provider、Hangfire 多进程、浏览器、Android/Windows 换端 | 同一 note/version 在服务端、Android、Windows、Web 显示同一处理状态并可恢复 |
 | 4 | WO-H03-LONG-AUDIO | pim-api #583 已合并切片 | 补长音频自动分批/汇总与真实多模态 provider | H03-AC10 实现；超限分批、汇总、失败重试和真实 provider 验收通过 |
 | 5 | WO-J09-USAGE-LIMITS | pim-api #585（open，DIRTY，CI failed） | 修复并收口连接级用量限制 | PR 绿；真实 PostgreSQL 迁移/并发；真实 provider 费用与 Web 管理验收通过 |
-| 6 | WO-L05-ANDROID-CALENDAR | pim-android #91 已合并（`a1b0b7a7`），#88 仍为 draft/conflicting | 日/周/月原生日历 | 等待合并后 master CI 完成，再做真机导航、时区/DST/重复、分页和编辑/删除验收 |
-| 7 | WO-C04-ANDROID-LIVE | pim-android #89（draft） | Android 16 实况胶囊与锁屏隐私 | 真机胶囊/锁屏/权限拒绝通过；停止/暂停仍绑定原会话 |
+| 6 | WO-L05-ANDROID-CALENDAR | pim-android #91 已合并（head `174018ff`，merge `a1b0b7a7`），required CI `45500259546` 成功；#88 仍为 draft/conflicting | 日/周/月原生日历 | 合并后 master CI `45503862102` 完成后，再做真机导航、真实 API/大数据、时区/DST/重复、OEM 与编辑/删除验收 |
+| 7 | WO-C04-ANDROID-LIVE | pim-android #89 已合并（head `a0a980c0`，merge `629e4c5`）；required CI `45500141959` 与合并后 CI `45502883654` 成功 | Android 16 实况胶囊与锁屏隐私 | Android 16 QPR1+ 实机胶囊/锁屏/拒绝权限通过；停止/暂停仍绑定原会话 |
 | 8 | WO-D08-WINDOWS-DESKTOP | pim-windows #52 已合并 `d120a88` | 物理 Windows 验收鼠标手写 | 真实桌面连续绘制、选择/整组移动、撤销重做、复制粘贴、删除、DPI/多屏通过 |
 | 9 | WO-M06-WINDOWS-SHELL | pim-windows #53（open，仅热键子项） | 热键子项 + 旧壳清理拆分 | 热键合并；旧 MainShellWindow/WebView/安装器清理另单完成 |
 | 10 | WO-Z01-USER-FACING | pim-api #577 已合并，方向不符 | 重做普通用户隐藏版本/审计 | 普通用户无数据中心/版本 ID/审计字段；真实冲突仅比较内容；管理员入口保留；浏览器验收通过 |
@@ -126,7 +126,7 @@
 | C01 | Android；Windows（Web 仅查看/回放） | 按交付包 C01 的最终确认完成「手动开始、结束录音」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：安卓编辑页左下角「开始录音」开始；「本篇录音」面板「停止这次录音」、通知「结束录音」、右上角「结束」都能停。Windows 笔记窗口有开始/停止按钮；Web 不能录音。；当前 head 未发现该编号的完成变更。 | Android/Windows 录音服务、Opus/Ogg 编解码、设备权限 | Android/Windows Agent | 待创建 | 交付包 C01 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | NOT-VERIFIED | 在当前 head 重跑端到端验收；旧 CI/旧 PR head 不计 PASS。 |
 | C02 | Android；Windows（Web 仅查看/回放） | 按交付包 C02 的最终确认完成「暂停/继续」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：安卓悬浮条、通知、录音面板都能暂停/继续，暂停时真的停麦并释放唤醒锁。Windows 录音服务只有开始/停止，没有暂停；Web 无录音。；当前 head 未发现该编号的完成变更。 | Android/Windows 录音服务、Opus/Ogg 编解码、设备权限 | Android/Windows Agent | 待创建 | 交付包 C02 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | NOT-VERIFIED | 在当前 head 重跑端到端验收；旧 CI/旧 PR head 不计 PASS。 |
 | C03 | Android；Windows（Web 仅查看/回放） | 按交付包 C03 的最终确认完成「锁屏、切换应用后继续录音（前台服务）」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：录音是 microphone 类型前台服务，从最近任务划掉也不停（stopWithTask=false），录音时持有 CPU 唤醒锁，离开编辑页不停。OPPO/ColorOS 后台会不会杀，需实测。；当前 head 未发现该编号的完成变更。 | Android/Windows 录音服务、Opus/Ogg 编解码、设备权限 | Android/Windows Agent | 待创建 | 交付包 C03 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | NOT-VERIFIED | 在当前 head 重跑端到端验收；旧 CI/旧 PR head 不计 PASS。 |
-| C04 | Android；Windows（Web 仅查看/回放） | Android 后台录音持续显示状态；Android 16 支持时显示实况胶囊；锁屏不泄露笔记标题/ID；停止/暂停仍绑定原录音会话。 | Android 8–15 已有静默常驻通知；PR #89（draft）增加 Android 16 promoted ongoing 胶囊，尚未合并。 | Android/Windows 录音服务、Opus/Ogg 编解码、设备权限 | Android/Windows Agent | pim-android #89（draft） | PR #89 draft；PR 描述中的自动化/模拟器 CI；真实 Android 16 胶囊、锁屏与权限拒绝未验。 | FAIL | 完成 draft #89 审查并合并；补 Android 16 真机锁屏/胶囊/拒绝权限验收。 |
+| C04 | Android；Windows（Web 仅查看/回放） | Android 后台录音持续显示状态；Android 16 支持时显示实况胶囊；锁屏不泄露笔记标题/ID；停止/暂停仍绑定原录音会话。 | Android 8–15 保持低优先级静默常驻通知；PR #89 已合并，Android 16 QPR1+ 且系统允许时增加 promoted ongoing 实况胶囊，锁屏公开版本只显示通用状态、时长和段号，不暴露笔记标题/ID、session ID、token 或 GraphEventId；停止/暂停/结束仍绑定原录音会话。 | Android/Windows 录音服务、Opus/Ogg 编解码、设备权限 | Android/Windows Agent | pim-android #89（merged，head `a0a980c0`，merge `629e4c5`） | PR #89 最终 head required CI `45500141959` 全绿；合并后 master CI `45502883654` 全绿；JVM/emulator 自动化不证明 Android 16 QPR1+ 实机策略、胶囊视觉、锁屏渲染与通知拒绝权限。 | NOT-VERIFIED | 在 Android 16 QPR1+ 真机验证实况胶囊、锁屏隐私与拒绝权限；自动化 CI 不得写成真机 PASS。 |
 | C05 | Android；Windows（Web 仅查看/回放） | 按交付包 C05 的最终确认完成「通知里可暂停/停止」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：通知里有「暂停/继续」和「结束录音」两个按钮，按录音 ID 绑定，旧通知的按钮控制不了后来的录音。；当前 head 未发现该编号的完成变更。 | Android/Windows 录音服务、Opus/Ogg 编解码、设备权限 | Android/Windows Agent | 待创建 | 交付包 C05 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | NOT-VERIFIED | 在当前 head 重跑端到端验收；旧 CI/旧 PR head 不计 PASS。 |
 | C06 | Android；Windows（Web 仅查看/回放） | 按交付包 C06 的最终确认完成「实时波形，由真实音频驱动」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：波形用麦克风每次读到的真实 PCM 峰值，保留最近 32 个值画 12 根柱（32×20dp），暂停时清空。按线性幅度画，小声说话柱子可能很矮，观感需实测。Windows 只有「实际输入峰值 xx%」文字；Web 无。；当前 head 未发现该编号的完成变更。 | Android/Windows 录音服务、Opus/Ogg 编解码、设备权限 | Android/Windows Agent | 待创建 | 交付包 C06 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | NOT-VERIFIED | 在当前 head 重跑端到端验收；旧 CI/旧 PR head 不计 PASS。 |
 | C07 | Android；Windows（Web 仅查看/回放） | 按交付包 C07 的最终确认完成「录音控制缩小成左下角悬浮条，不占大位置」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：录音时左下角是小胶囊（波形 + 时长 + 段号 + 暂停键），右边是插入按钮，正文底部留 88dp 不被挡；没在录音时同一位置是「开始录音」小胶囊。；当前 head 未发现该编号的完成变更。 | Android/Windows 录音服务、Opus/Ogg 编解码、设备权限 | Android/Windows Agent | 待创建 | 交付包 C07 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | NOT-VERIFIED | 在当前 head 重跑端到端验收；旧 CI/旧 PR head 不计 PASS。 |
@@ -257,7 +257,7 @@
 | L02 | Android（API/Web 契约衔接） | 按交付包 L02 的最终确认完成「守护（采集）程序放进客户端，一个安装入口」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：安卓的定位/使用采集服务和笔记、录音在同一个 com.pim.app 里；Windows 托盘采集（Tracker、浏览器桥、KeyStats、心跳）和原生笔记在同一个 Pim.Client.App.exe，一个安装包。安卓旧的 PimDaemonService/StatusActivity 没在清单注册，是死代码，不影响使用；当前 head 未发现该编号的完成变更。 | Android 原生 UI、权限、API 生成契约 | Android Agent | 待创建 | 交付包 L02 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | NOT-VERIFIED | 在当前 head 重跑端到端验收；旧 CI/旧 PR head 不计 PASS。 |
 | L03 | Android（API/Web 契约衔接） | 按交付包 L03 的最终确认完成「今日原生页」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：安卓「今日」默认是原生 Compose 页：新任务/新日程按钮、今日焦点、今日设备使用、今日任务（到期或开始在今天的，筛 8 条、显示 6 条）、未来 7 天日程（显示前 6 条）；旧 WebView 版只有点「打开旧版完整今日」才出现。缺口：顶部一排「待传总数/定位待传/本轮拒绝/死信保留」采集芯片；今日任务只在前 100 条任务里筛；当前 head 未发现该编号的完成变更。 | Android 原生 UI、权限、API 生成契约 | Android Agent | 待创建 | 交付包 L03 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | NOT-VERIFIED | 在当前 head 重跑端到端验收；旧 CI/旧 PR head 不计 PASS。 |
 | L04 | Android（API/Web 契约衔接） | 按交付包 L04 的最终确认完成「任务原生页」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：安卓原生任务页能用：搜索、新建/编辑/删除、任务本、勾选完成、计时开始/暂停/停止，都直接调服务端。入口藏在「更多 → 工作台 → 任务」三层下（今日页「查看全部任务」可直达），一次最多读 100 条，没有翻页；当前 head 未发现该编号的完成变更。 | Android 原生 UI、权限、API 生成契约 | Android Agent | 待创建 | 交付包 L04 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | NOT-VERIFIED | 在当前 head 重跑端到端验收；旧 CI/旧 PR head 不计 PASS。 |
-| L05 | Android（API/Web 契约衔接） | Android 原生日/周/月视图、日期导航、分页事件读取、时区/DST/重复日程和本地日期展示。 | PR #91 已合并；修复半开范围、月末钳制、月格进入日视图、宽屏周视图、offset 时间解析，并按服务端 `totalPages` 读取超过原 20 页边界的事件。 | Android 原生 UI、权限、API 生成契约 | Android Agent | pim-android #91（merged，head `174018ff`，merge `a1b0b7a7`）；#88（draft/conflicting，`139fec4`） | CI `45500259546` 的 required jobs 全部成功；新增第 21 页回归已覆盖。合并后 master CI `45503862102` 盘点时未完成；真机/真实 API/真实大数据、物理时区和 OEM 仍未验。 | NOT-VERIFIED | 等待合并后 master CI 完成，再在真机验证日/周/月导航、时区/DST/重复日程、分页和编辑/删除。 |
+| L05 | Android（API/Web 契约衔接） | Android 原生日/周/月视图、日期导航、分页事件读取、时区/DST/重复日程和本地日期展示。 | PR #91 已合并；修复半开范围、月末钳制、月格进入日视图、宽屏周视图、offset 时间解析，并按服务端 `totalPages` 读取超过原 20 页边界的事件。 | Android 原生 UI、权限、API 生成契约 | Android Agent | pim-android #91（merged，head `174018ff`，merge `a1b0b7a7`）；#88（draft/conflicting，`139fec4`） | required CI `45500259546` 的 required jobs 全部成功；新增第 21 页回归已覆盖。合并后 master CI `45503862102` 于本次核对时仍为 `in_progress`；真机/真实 API/真实大数据、物理时区和 OEM 仍未验。 | NOT-VERIFIED | 待合并后 master CI `45503862102` 完成后，在真机验证日/周/月导航、真实 API 大数据、时区/DST/重复日程、OEM 和编辑/删除。 |
 | L06 | Android（API/Web 契约衔接） | 按交付包 L06 的最终确认完成「提醒原生页」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：安卓原生提醒页列出服务端提醒，可「延后」「忽略」；卡片直接显示 status、riskLevel、ISO 时间和「关联 对象类型 · 对象 ID」等原始字段，没翻成人话；当前 head 未发现该编号的完成变更。 | Android 原生 UI、权限、API 生成契约 | Android Agent | 待创建 | 交付包 L06 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | NOT-VERIFIED | 在当前 head 重跑端到端验收；旧 CI/旧 PR head 不计 PASS。 |
 | L07 | Android（API/Web 契约衔接） | 按交付包 L07 的最终确认完成「文件原生页」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：安卓没有文件页：导航里没有「文件」，客户端接口清单里也没有任何文件系统端点（只有笔记材料的 files/{fileIndex}）；文件只能去 Web 看；当前 head 未发现该编号的完成变更。 | Android 原生 UI、权限、API 生成契约 | Android Agent | 待创建 | 交付包 L07 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | FAIL | 补齐确认缺口后新建 PR，并在当前 head 做端到端复验。 |
 | L08 | Android（API/Web 契约衔接） | 按交付包 L08 的最终确认完成「设置原生页（账户、服务器、AI、同步）」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：安卓设置页有服务器地址、登录、检查更新，但十几个分区大多是定位采集、保活、日志诊断；没有 AI 设置，没有笔记上传/同步设置；唯一的「自动同步仅限非流量网络」开关只管采集数据，笔记上传不受它控制，任何网络都会传；当前 head 未发现该编号的完成变更。 | Android 原生 UI、权限、API 生成契约 | Android Agent | 待创建 | 交付包 L08 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | FAIL | 补齐确认缺口后新建 PR，并在当前 head 做端到端复验。 |
