@@ -1,0 +1,92 @@
+name: Test Shard Experiment
+
+# 实验性 workflow：验证把 build-api 的测试拆成多个 shard 是否可行。
+# 完全独立于 ci.yml，只在手动触发时运行，不参与 PR 门禁。
+#
+# 两个模式：
+#   filter-only  不起 PG、不做 schema 初始化，只验证「按 filter 切分后总数是否等于全集」
+#   full         照搬 build-api 的完整准备（PG + 迁移 + 运行时初始化器）并真跑
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'filter-only (快速验证切分) 或 full (带库真跑)'
+        required: true
+        default: 'filter-only'
+        type: choice
+        options:
+          - filter-only
+          - full
+
+env:
+  DOTNET_VERSION: '8.0.x'
+
+jobs:
+  # ── 基线：不切分，跑全集，用来对照总数与总耗时 ──
+  baseline:
+    if: inputs.mode == 'filter-only'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+      - name: Restore
+        run: dotnet restore Pim.sln --runtime linux-x64
+      - name: Baseline full test (no filter)
+        run: |
+          set +e
+          dotnet test Pim.sln --configuration Release --no-restore --logger "console;verbosity=minimal" 2>&1 | tee /tmp/baseline.log
+          echo "=== 汇总 ==="
+          grep -E 'Passed!|Failed!|Total tests|Passed:|Failed:' /tmp/baseline.log | tail -5
+
+  # ── 4 个 shard：按目录切分，各跑一部分 ──
+  shard:
+    if: inputs.mode == 'filter-only'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: shard-1
+            desc: 'Calendar + Auth + Today + Tiles + DataIsolation + Caching + Common + Contract'
+            filter: 'FullyQualifiedName~Pim.UnitTests.Calendar|FullyQualifiedName~Pim.UnitTests.Auth|FullyQualifiedName~Pim.UnitTests.Today|FullyQualifiedName~Pim.UnitTests.Tiles|FullyQualifiedName~Pim.UnitTests.DataIsolation|FullyQualifiedName~Pim.UnitTests.Caching|FullyQualifiedName~Pim.UnitTests.Common|FullyQualifiedName~Pim.UnitTests.Contract'
+          - name: shard-2
+            desc: 'Mobile + Api + Services'
+            filter: 'FullyQualifiedName~Pim.UnitTests.Mobile|FullyQualifiedName~Pim.UnitTests.Api|FullyQualifiedName~Pim.UnitTests.Services'
+          - name: shard-3
+            desc: 'Harness + PcTracker + Files'
+            filter: 'FullyQualifiedName~Pim.UnitTests.Harness|FullyQualifiedName~Pim.UnitTests.PcTracker|FullyQualifiedName~Pim.UnitTests.Files'
+          - name: shard-4
+            desc: 'Invariants + Ai + Mcp + Notes + Operations + Infrastructure + QuickNotes'
+            filter: 'FullyQualifiedName~Pim.UnitTests.Invariants|FullyQualifiedName~Pim.UnitTests.Ai|FullyQualifiedName~Pim.UnitTests.Mcp|FullyQualifiedName~Pim.UnitTests.Notes|FullyQualifiedName~Pim.UnitTests.Operations|FullyQualifiedName~Pim.UnitTests.Infrastructure|FullyQualifiedName~Pim.UnitTests.QuickNotes'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+      - name: Restore
+        run: dotnet restore Pim.sln --runtime linux-x64
+      - name: '${{ matrix.name }} — ${{ matrix.desc }}'
+        env:
+          # matrix.filter 是本文件内硬编码常量，非外部输入，无注入风险
+          SHARD_FILTER: ${{ matrix.filter }}
+          SHARD_NAME: ${{ matrix.name }}
+        run: |
+          set +e
+          START=$(date +%s)
+          dotnet test Pim.sln --configuration Release --no-restore \
+            --filter "$SHARD_FILTER" \
+            --logger "console;verbosity=minimal" 2>&1 | tee "/tmp/${SHARD_NAME}.log"
+          RC=$?
+          END=$(date +%s)
+          echo "=== ${SHARD_NAME} 耗时: $((END-START)) 秒 ==="
+          grep -E 'Passed!|Failed!|Total tests|Passed:|Failed:|Skipped:' "/tmp/${SHARD_NAME}.log" | tail -5
+          exit $RC
+      - name: 'Upload ${{ matrix.name }} log'
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: shard-log-${{ matrix.name }}
+          path: /tmp/${{ matrix.name }}.log
+          retention-days: 7
