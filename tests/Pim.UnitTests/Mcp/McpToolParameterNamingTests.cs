@@ -33,6 +33,7 @@ public sealed class McpToolParameterNamingTests
         new("get_file_open_link", "fileId", "file_id", true),
         new("get_ai_requests", "fromTime", "from_time", false),
         new("get_ai_usage_summary", "fromTime", "from_time", true),
+        new("get_tasks", "statuses", "status", false),
     ];
 
     [Fact]
