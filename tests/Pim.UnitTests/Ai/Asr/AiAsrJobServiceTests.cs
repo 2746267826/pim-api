@@ -680,6 +680,14 @@ public sealed class AiAsrJobServiceTests
         var running = worker.ProcessAsync(owner.UserId!.Value, accepted.ClientRequestId,
             CancellationToken.None);
         await preset.Entered!.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        await using (var observed = new PimDbContext(PostgresOptions(database.ConnectionString)))
+        {
+            var observedJob = await observed.AiAsrJobs.AsNoTracking().SingleAsync();
+            var observedLog = await observed.AiRequestLogs.AsNoTracking().SingleAsync();
+            Assert.True(observedJob.ProviderAttempted);
+            using var metadata = JsonDocument.Parse(observedLog.MetadataJson);
+            Assert.True(metadata.RootElement.GetProperty("providerAttempted").GetBoolean());
+        }
         await using (var expire = new PimDbContext(PostgresOptions(database.ConnectionString)))
         {
             await expire.AiAsrJobs.ExecuteUpdateAsync(update => update
@@ -699,6 +707,9 @@ public sealed class AiAsrJobServiceTests
         var log = await check.AiRequestLogs.AsNoTracking().SingleAsync();
         Assert.Equal(job.Status, log.Status);
         Assert.True(job.Status is "succeeded" or "incomplete", job.Status);
+        Assert.True(job.ProviderAttempted);
+        using (var metadata = JsonDocument.Parse(log.MetadataJson))
+            Assert.True(metadata.RootElement.GetProperty("providerAttempted").GetBoolean());
         Assert.Equal(1, preset.Calls);
     }
 

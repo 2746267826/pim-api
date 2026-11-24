@@ -673,6 +673,8 @@ public sealed class AiUsageLimitService(
         try
         {
             using var document = JsonDocument.Parse(metadata ?? "{}");
+            if (document.RootElement.ValueKind != JsonValueKind.Object)
+                return null;
             if (!document.RootElement.TryGetProperty("providerAttempted", out var value))
                 return null;
             return value.ValueKind switch
@@ -682,7 +684,7 @@ public sealed class AiUsageLimitService(
                 _ => null
             };
         }
-        catch (JsonException)
+        catch (Exception error) when (error is JsonException or InvalidOperationException)
         {
             return null;
         }

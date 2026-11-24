@@ -37,12 +37,14 @@ INSERT INTO ai_request_logs
 VALUES
     ('{{matchedLogId:D}}', 'system', 'ai.text-call', 'ai-model', 'legacy',
      'openai-compatible', 'legacy-model', 'legacy-matched', 'succeeded', 1, 1, now(),
-     '[]'::jsonb, '{}'::jsonb, '{}'::jsonb, '[]'::jsonb, 0, 0, 'input-hash', 'output-hash',
-     '{}'::jsonb, '{{profileId:D}}'),
+     jsonb_build_array(), jsonb_build_object(), jsonb_build_object(),
+     jsonb_build_array(), 0, 0, 'input-hash', 'output-hash',
+     jsonb_build_object(), '{{profileId:D}}'),
     ('{{orphanLogId:D}}', 'system', 'ai.text-call', 'ai-model', 'legacy-orphan',
      'openai-compatible', 'legacy-model', 'legacy-orphan', 'succeeded', 1, 1, now(),
-     '[]'::jsonb, '{}'::jsonb, '{}'::jsonb, '[]'::jsonb, 0, 0, 'input-hash-2', 'output-hash-2',
-     '{}'::jsonb, NULL);
+     jsonb_build_array(), jsonb_build_object(), jsonb_build_object(),
+     jsonb_build_array(), 0, 0, 'input-hash-2', 'output-hash-2',
+     jsonb_build_object(), NULL);
 """);
 
         await database.MigrateAsync();

@@ -448,12 +448,14 @@ public sealed class AiAsrJobService(
             string? parsedResponse = null;
             double? reportedSeconds = null;
             var providerPhase = false;
+            bool ProviderAttempted() => job.ProviderAttempted || wire.ProviderAttempted || providerPhase;
             try
             {
                 providerPhase = true;
+                if (!await MarkProviderAttemptedAsync(job, log)) return;
                 var response = await preset.TranscribeAsync(connection, audio, job.Language,
                     execution.Token, prompt);
-                job.ProviderAttempted = wire.ProviderAttempted || providerPhase;
+                job.ProviderAttempted = ProviderAttempted();
                 log.ResponseText = Safe(response.Text, key, out var redacted);
                 parsedResponse = SafeJson(ValidJson(response.RawJson), key, out var rawRedacted);
                 log.ResponseRawJson = parsedResponse;
@@ -478,7 +480,7 @@ public sealed class AiAsrJobService(
                 await CompleteAsync(job, log, status, code, message,
                     succeeded ? "none" : outputLimited ? "output_limit" : "provider_incomplete",
                     succeeded || outputLimited, next, wire.ResponseBody,
-                    wire.ResponseTooLarge, wire.ProviderAttempted,
+                    wire.ResponseTooLarge, ProviderAttempted(),
                     wire.ResponseBody is not null, reportedSeconds, CancellationToken.None);
                 return;
             }
@@ -492,7 +494,7 @@ public sealed class AiAsrJobService(
                         "用户已取消；若服务商已开始处理，结果可能仍被计费，必须核对调用记录",
                         "user_cancelled", false,
                         "保留原请求标识并核对服务商记录；不要自动重发",
-                        wire.ResponseBody, wire.ResponseTooLarge, wire.ProviderAttempted,
+                        wire.ResponseBody, wire.ResponseTooLarge, ProviderAttempted(),
                         wire.ResponseBody is not null, reportedSeconds, CancellationToken.None);
                 }
                 else if (deadline.IsCancellationRequested)
@@ -500,7 +502,7 @@ public sealed class AiAsrJobService(
                     await CompleteAsync(job, log, "timed_out", "worker_timeout_outcome_unknown",
                         "ASR后台执行超时，服务商结果未确认", "worker_timeout", false,
                         "核对服务商记录或改用 Batch；不要自动重发", wire.ResponseBody,
-                        wire.ResponseTooLarge, wire.ProviderAttempted, wire.ResponseBody is not null,
+                        wire.ResponseTooLarge, ProviderAttempted(), wire.ResponseBody is not null,
                         reportedSeconds, CancellationToken.None);
                 }
                 else
@@ -508,7 +510,7 @@ public sealed class AiAsrJobService(
                     await CompleteAsync(job, log, "incomplete", "worker_shutdown_outcome_unknown",
                         "执行进程中断，服务商结果未确认", "worker_shutdown", false,
                         "重启后核对调用记录；任务不会自动重发", wire.ResponseBody,
-                        wire.ResponseTooLarge, wire.ProviderAttempted, wire.ResponseBody is not null,
+                        wire.ResponseTooLarge, ProviderAttempted(), wire.ResponseBody is not null,
                         reportedSeconds, CancellationToken.None);
                 }
                 return;
@@ -521,7 +523,7 @@ public sealed class AiAsrJobService(
                         "ASR服务商请求超时未返回完整结果，结果未确认",
                         "provider_timeout", false,
                         "确认ASR模型超时设置，或改用 Batch/更短音频；不要自动重发",
-                        wire.ResponseBody, wire.ResponseTooLarge, wire.ProviderAttempted,
+                        wire.ResponseBody, wire.ResponseTooLarge, ProviderAttempted(),
                         wire.ResponseBody is not null, reportedSeconds, CancellationToken.None,
                         upstreamStatus: error.StatusCode);
                     return;
@@ -531,7 +533,7 @@ public sealed class AiAsrJobService(
                     "ASR服务返回HTTP " + error.StatusCode + "，本次未自动重试",
                     "upstream_http", known,
                     UpstreamNextAction(error.StatusCode), wire.ResponseBody,
-                    wire.ResponseTooLarge, wire.ProviderAttempted, wire.ResponseBody is not null,
+                    wire.ResponseTooLarge, ProviderAttempted(), wire.ResponseBody is not null,
                     reportedSeconds, CancellationToken.None, upstreamStatus: error.StatusCode);
                 return;
             }
@@ -543,7 +545,7 @@ public sealed class AiAsrJobService(
                         "ASR服务商请求超时未返回完整结果，结果未确认",
                         "provider_timeout", false,
                         "确认ASR模型超时设置，或改用 Batch/更短音频；不要自动重发",
-                        wire.ResponseBody, wire.ResponseTooLarge, wire.ProviderAttempted,
+                        wire.ResponseBody, wire.ResponseTooLarge, ProviderAttempted(),
                         wire.ResponseBody is not null, reportedSeconds, CancellationToken.None,
                         upstreamStatus: error.Status);
                     return;
@@ -551,7 +553,7 @@ public sealed class AiAsrJobService(
                 await CompleteAsync(job, log, "failed", "upstream_http_" + error.Status,
                     "ASR服务返回HTTP " + error.Status + "，本次未自动重试", "upstream_http",
                     error.Status is >= 400 and < 500, UpstreamNextAction(error.Status),
-                    wire.ResponseBody, wire.ResponseTooLarge, wire.ProviderAttempted,
+                    wire.ResponseBody, wire.ResponseTooLarge, ProviderAttempted(),
                     wire.ResponseBody is not null, reportedSeconds, CancellationToken.None,
                     upstreamStatus: error.Status);
                 return;
@@ -563,17 +565,17 @@ public sealed class AiAsrJobService(
                     await CompleteAsync(job, log, "timed_out", "provider_timeout_outcome_unknown",
                         "ASR服务商请求超时，结果未确认", "provider_timeout", false,
                         "确认ASR模型超时设置，或改用 Batch/更短音频；不要自动重发",
-                        wire.ResponseBody, wire.ResponseTooLarge, wire.ProviderAttempted,
+                        wire.ResponseBody, wire.ResponseTooLarge, ProviderAttempted(),
                         wire.ResponseBody is not null, reportedSeconds, CancellationToken.None,
                         upstreamStatus: 504);
                 }
                 else
                 {
-                    var known = !wire.ProviderAttempted;
+                    var known = !ProviderAttempted();
                     await CompleteAsync(job, log, "failed", "provider_" + error.ErrorCode,
                         Clip(error.Message, 2000), "provider_error", known,
                         known ? "修正请求或配置后明确新建请求" : "核对服务商记录后明确新建请求",
-                        wire.ResponseBody, wire.ResponseTooLarge, wire.ProviderAttempted,
+                        wire.ResponseBody, wire.ResponseTooLarge, ProviderAttempted(),
                         wire.ResponseBody is not null, reportedSeconds, CancellationToken.None);
                 }
                 return;
@@ -588,7 +590,7 @@ public sealed class AiAsrJobService(
                         : "ASR连接或响应异常，服务商结果未确认",
                     wire.RequestRejected ? "request_rejected" : "provider_error",
                     wire.RequestRejected, "核对调用记录后明确新建请求", wire.ResponseBody,
-                    wire.ResponseTooLarge, wire.ProviderAttempted, wire.ResponseBody is not null,
+                    wire.ResponseTooLarge, ProviderAttempted(), wire.ResponseBody is not null,
                     reportedSeconds, CancellationToken.None);
                 return;
             }
@@ -873,6 +875,78 @@ public sealed class AiAsrJobService(
         await db.SaveChangesAsync(ct);
     }
 
+    private async Task<bool> MarkProviderAttemptedAsync(AiAsrJobEntity job,
+        AiRequestLogEntity log)
+    {
+        var marked = false;
+        string? metadata = null;
+        if (db.Database.IsRelational())
+        {
+            await ExecuteAtomicAsync(async () =>
+            {
+                var currentLog = await db.AiRequestLogs.AsNoTracking().SingleOrDefaultAsync(x =>
+                    x.Id == log.Id && x.UserId == job.OwnerId, CancellationToken.None);
+                if (currentLog is null || currentLog.Status is not ("running" or "cancelling")) return;
+
+                metadata = SetProviderAttemptedMetadata(currentLog.MetadataJson, true);
+                var jobUpdated = await db.AiAsrJobs.Where(x => x.Id == job.Id &&
+                        x.OwnerId == job.OwnerId &&
+                        (x.Status == "running" || x.Status == "cancelling"))
+                    .ExecuteUpdateAsync(update => update.SetProperty(x => x.ProviderAttempted, true),
+                        CancellationToken.None);
+                if (jobUpdated == 0) return;
+
+                var logUpdated = await db.AiRequestLogs.Where(x => x.Id == log.Id &&
+                        x.UserId == job.OwnerId &&
+                        (x.Status == "running" || x.Status == "cancelling"))
+                    .ExecuteUpdateAsync(update => update.SetProperty(x => x.MetadataJson, metadata),
+                        CancellationToken.None);
+                if (logUpdated != 1)
+                    throw new InvalidOperationException(
+                        "ASR provider marker lost its running audit row; refusing an unmarked provider call");
+                marked = true;
+            }, CancellationToken.None);
+        }
+        else
+        {
+            var currentJob = await db.AiAsrJobs.SingleOrDefaultAsync(x => x.Id == job.Id &&
+                x.OwnerId == job.OwnerId, CancellationToken.None);
+            var currentLog = await db.AiRequestLogs.SingleOrDefaultAsync(x =>
+                x.Id == log.Id && x.UserId == job.OwnerId, CancellationToken.None);
+            if (currentJob is null || currentLog is null ||
+                currentJob.Status is not ("running" or "cancelling") ||
+                currentLog.Status is not ("running" or "cancelling"))
+                return false;
+
+            metadata = SetProviderAttemptedMetadata(currentLog.MetadataJson, true);
+            currentJob.ProviderAttempted = true;
+            currentLog.MetadataJson = metadata;
+            await db.SaveChangesAsync(CancellationToken.None);
+            marked = true;
+        }
+
+        if (!marked) return false;
+        job.ProviderAttempted = true;
+        log.MetadataJson = metadata ?? SetProviderAttemptedMetadata(log.MetadataJson, true);
+        return true;
+    }
+
+    internal static string SetProviderAttemptedMetadata(string? metadata, bool attempted)
+    {
+        JsonObject root;
+        try
+        {
+            root = JsonNode.Parse(string.IsNullOrWhiteSpace(metadata) ? "{}" : metadata)
+                as JsonObject ?? new JsonObject();
+        }
+        catch (JsonException)
+        {
+            root = new JsonObject();
+        }
+        root["providerAttempted"] = attempted;
+        return root.ToJsonString(Json);
+    }
+
     private async Task CompleteAsync(AiAsrJobEntity job, AiRequestLogEntity log, string status,
         string? errorCode, string? errorMessage, string abortSource, bool outcomeKnown,
         string? nextAction, string? responseBody, bool responseTooLarge,
@@ -887,10 +961,11 @@ public sealed class AiAsrJobService(
             job.GatewayEvidenceSource = current.GatewayEvidenceSource ?? job.GatewayEvidenceSource;
             job.GatewayObservedAt = current.GatewayObservedAt ?? job.GatewayObservedAt;
             var cancelArrivedLate = current.Status == "cancelling" && status == "succeeded";
+            var attempted = current.ProviderAttempted || job.ProviderAttempted || providerAttempted;
             job.Status = status;
             job.AbortSource = cancelArrivedLate ? "user_cancel_late" : abortSource;
             job.OutcomeKnown = outcomeKnown;
-            job.ProviderAttempted = providerAttempted;
+            job.ProviderAttempted = attempted;
             job.ResponseBodyComplete = responseBodyComplete && !responseTooLarge;
             job.UpstreamStatus = upstreamStatus;
             job.ErrorCode = errorCode;
@@ -913,7 +988,7 @@ public sealed class AiAsrJobService(
                 log.ResponseRawJson = AiAsrCallService.ComposeResponseAudit(
                     log.ResponseText is null ? null : log.ResponseRawJson, wireJson);
             }
-            log.MetadataJson = JobMetadata(job, providerAttempted, log.ResponseRawJson is not "{}",
+            log.MetadataJson = JobMetadata(job, attempted, log.ResponseRawJson is not "{}",
                 log.RequestPayloadJson is not "{}", responseTooLarge, reportedSeconds);
         }
 

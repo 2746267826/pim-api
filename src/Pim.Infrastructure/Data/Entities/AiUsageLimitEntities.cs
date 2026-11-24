@@ -1,5 +1,6 @@
 using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
+using Pim.Core.Data;
 
 namespace Pim.Infrastructure.Data.Entities;
 
@@ -57,7 +58,7 @@ public sealed class AiUsageReminderEventEntity
 }
 
 [Table("ai_usage_reminder_event_reads")]
-public sealed class AiUsageReminderEventReadEntity
+public sealed class AiUsageReminderEventReadEntity : IUserOwnedEntity
 {
     [Key, Column("id")] public Guid Id { get; set; } = Guid.NewGuid();
     [Column("event_id")] public Guid EventId { get; set; }

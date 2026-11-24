@@ -202,6 +202,7 @@ public sealed class AiAsrCallService(PimDbContext db, ISecretProtector secrets, 
         }
 
         if (configurationError is not null) return UrlResult(row, false);
+        var gateEntered = false;
         if (!gate.TryEnter(asr: true))
         {
             row.Status = "blocked";
@@ -209,6 +210,7 @@ public sealed class AiAsrCallService(PimDbContext db, ISecretProtector secrets, 
             row.ErrorMessage = "ASR并发已达上限，请稍后明确新建URL调用";
             return await FinishUrlAsync(row);
         }
+        gateEntered = true;
 
         AiAsrInput? audio = null;
         AiCallAudioEntity? storedAudio = null;
@@ -406,23 +408,17 @@ public sealed class AiAsrCallService(PimDbContext db, ISecretProtector secrets, 
             }
             finally
             {
-                gate.Exit(asr: true);
+                if (usageLease is not null)
+                {
+                    try { await usageLimits!.EndAsync(usageLease, CancellationToken.None); }
+                    catch { /* The durable TTL still expires; never mask the actual call outcome. */ }
+                }
+                if (gateEntered) gate.Exit(asr: true);
             }
         }
-        try
-        {
-            var result = await FinishUrlAsync(row);
-            if (callerCancelled) ct.ThrowIfCancellationRequested();
-            return result;
-        }
-        finally
-        {
-            if (usageLease is not null)
-            {
-                try { await usageLimits!.EndAsync(usageLease, CancellationToken.None); }
-                catch { /* The durable TTL still expires; never mask the actual call outcome. */ }
-            }
-        }
+        var result = await FinishUrlAsync(row);
+        if (callerCancelled) ct.ThrowIfCancellationRequested();
+        return result;
 
         string UrlMetadata(AiAsrInput? fetched, bool audioStored, bool? attempted,
             bool requestCaptured, bool responseComplete, double? seconds, bool tooLarge,
@@ -583,6 +579,7 @@ public sealed class AiAsrCallService(PimDbContext db, ISecretProtector secrets, 
             int? upstreamStatus = null;
             double? reportedSeconds = null;
             string? parsedResponse = null;
+            AiTextCallResultDto? result = null;
             try
             {
                 await materials.StoreForOwnerAsync(owner, storedAudio, audio, linked.Token); prepared = true;
@@ -739,21 +736,18 @@ public sealed class AiAsrCallService(PimDbContext db, ISecretProtector secrets, 
                     row.MetadataJson = Metadata(storedAudio.ObjectKey is not null, wire.ProviderAttempted, wire.RequestBody is not null,
                         wire.ResponseBody is not null, reportedSeconds, wire.ResponseTooLarge,
                         abortSource, outcomeKnown, upstreamStatus);
+                    result = await FinishAsync(row);
                 }
-                finally { gate.Exit(asr: true); gateEntered = false; }
-            }
-            try
-            {
-                return await FinishAsync(row);
-            }
-            finally
-            {
-                if (usageLease is not null)
+                finally
                 {
-                    try { await usageLimits!.EndAsync(usageLease, CancellationToken.None); }
-                    catch { /* The durable TTL still expires; never mask the actual call outcome. */ }
+                    if (usageLease is not null)
+                    {
+                        try { await usageLimits!.EndAsync(usageLease, CancellationToken.None); }
+                        catch { /* The durable TTL still expires; never mask the actual call outcome. */ }
+                    }
                 }
             }
+            return result!;
         }
         finally { if (gateEntered) gate.Exit(asr: true); }
 

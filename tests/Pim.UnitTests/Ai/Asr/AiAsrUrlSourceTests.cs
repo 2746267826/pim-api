@@ -68,6 +68,68 @@ public sealed class AiAsrUrlSourceTests
     }
 
     [Fact]
+    public async Task UsageLimitRejectionReleasesUrlAsrGate()
+    {
+        var handler = new CountingHandler((_, _) => Task.FromResult(JsonResponse(new
+        {
+            choices = new[]
+            {
+                new { message = new { content = "synthetic transcript" }, finish_reason = "stop" }
+            },
+            usage = new
+            {
+                prompt_tokens = 10,
+                completion_tokens = 4,
+                total_tokens = 14,
+                prompt_tokens_details = new { audio_tokens = 5 }
+            }
+        })));
+        var fixture = await FixtureAsync("https://api.synthetic.invalid/v1/");
+        var (preset, registry) = Registry(() => new HttpClient(handler)
+        {
+            Timeout = Timeout.InfiniteTimeSpan
+        });
+        var sourceUrl = "https://audio.example.test/private/limited-gate.wav?sig=UG";
+        var fetcher = new StaticFetcher(Download(sourceUrl, BuildWave(8_000)));
+        var limits = await EnableUsageLimitAsync(fixture);
+        var connectionId = fixture.Profile.ProviderConnectionId!.Value;
+        var limit = await limits.GetRuleAsync(connectionId, default);
+        fixture.Db.AiRequestLogs.Add(new AiRequestLogEntity
+        {
+            UserId = fixture.Owner.UserId,
+            Purpose = "ai.asr-url-call",
+            ProviderConnectionId = connectionId,
+            Status = "succeeded",
+            StartedAt = DateTimeOffset.UtcNow,
+            InitiatedAt = DateTimeOffset.UtcNow,
+            CorrelationId = Guid.NewGuid().ToString("N"),
+            MetadataJson = "{\"providerAttempted\":true}",
+            TotalTokens = 100
+        });
+        await fixture.Db.SaveChangesAsync();
+
+        var gate = new AiTextCallGate();
+        var service = Service(fixture, registry, fetcher, limits, gate);
+        var blocked = await service.CallUrlAsync(Request(fixture, preset.Descriptor), CancellationToken.None);
+        Assert.Equal(AiRequestStatus.Blocked, blocked.Status);
+        Assert.Equal("usage_limit_reached",
+            (await fixture.Db.AiRequestLogs.AsNoTracking()
+                .SingleAsync(x => x.Id == blocked.LogId)).ErrorCode);
+        Assert.Equal(0, handler.Calls);
+        Assert.Equal(0, fetcher.Calls);
+
+        var current = await limits.GetRuleAsync(connectionId, default);
+        await limits.SaveRuleAsync(connectionId,
+            new(current.Revision, false, current.Period, current.WarningPercent,
+                current.TokenLimit, current.CostLimit, current.Currency, current.TimeZoneId), default);
+
+        var allowed = await service.CallUrlAsync(Request(fixture, preset.Descriptor), CancellationToken.None);
+        Assert.Equal(AiRequestStatus.Succeeded, allowed.Status);
+        Assert.Equal(1, handler.Calls);
+        Assert.Equal(1, fetcher.Calls);
+    }
+
+    [Fact]
     public async Task Url_mode_sends_the_original_url_to_a_real_local_provider_and_persists_preflight_only()
     {
         var calls = 0;
@@ -741,8 +803,9 @@ public sealed class AiAsrUrlSourceTests
     }
 
     private static AiAsrCallService Service(Fixture fixture, AiAsrPresetRegistry registry,
-        IRemoteAudioFetcher fetcher, AiUsageLimitService? usageLimits = null) =>
-        new(fixture.Db, fixture.Secrets, fixture.Owner, new AiTextCallGate(), registry,
+        IRemoteAudioFetcher fetcher, AiUsageLimitService? usageLimits = null,
+        AiTextCallGate? gate = null) =>
+        new(fixture.Db, fixture.Secrets, fixture.Owner, gate ?? new AiTextCallGate(), registry,
             new AiAsrMaterialService(fixture.Db, fixture.Files, fixture.Owner, registry), fetcher, usageLimits);
 
     private static async Task<AiUsageLimitService> EnableUsageLimitAsync(Fixture fixture)

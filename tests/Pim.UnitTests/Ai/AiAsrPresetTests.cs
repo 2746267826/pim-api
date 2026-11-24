@@ -76,6 +76,46 @@ public sealed class AiAsrPresetTests : IDisposable
             .SingleAsync(x => x.Id == result.LogId)).TotalTokens);
     }
 
+    [Fact]
+    public async Task UsageLimitRejectionReleasesSynchronousAsrGate()
+    {
+        var (request, model) = await Setup(useUsageLimits: true);
+        var profile = await _db.AiModelProfiles.AsNoTracking().SingleAsync(x => x.Id == model.Id);
+        var connectionId = profile.ProviderConnectionId!.Value;
+        var limit = await UsageLimits.GetRuleAsync(connectionId, default);
+        await UsageLimits.SaveRuleAsync(connectionId,
+            new(limit.Revision, true, AiUsageLimitPeriods.Month, 80, 100, null, null,
+                "Asia/Shanghai"), default);
+        _db.AiRequestLogs.Add(new AiRequestLogEntity
+        {
+            UserId = _owner.UserId,
+            Purpose = "ai.asr-call",
+            ProviderConnectionId = connectionId,
+            Status = "succeeded",
+            StartedAt = DateTimeOffset.UtcNow,
+            InitiatedAt = DateTimeOffset.UtcNow,
+            CorrelationId = Guid.NewGuid().ToString("N"),
+            MetadataJson = "{\"providerAttempted\":true}",
+            TotalTokens = 100
+        });
+        await _db.SaveChangesAsync();
+
+        var blocked = await LimitedCaller.CallAsync(request, default);
+        Assert.Equal(AiRequestStatus.Blocked, blocked.Status);
+        Assert.Equal("usage_limit_reached",
+            (await _db.AiRequestLogs.AsNoTracking().SingleAsync(x => x.Id == blocked.LogId)).ErrorCode);
+        Assert.Equal(0, _wire.Calls);
+
+        var current = await UsageLimits.GetRuleAsync(connectionId, default);
+        await UsageLimits.SaveRuleAsync(connectionId,
+            new(current.Revision, false, current.Period, current.WarningPercent,
+                current.TokenLimit, current.CostLimit, current.Currency, current.TimeZoneId), default);
+
+        var allowed = await LimitedCaller.CallAsync(request with { ClientRequestId = Guid.NewGuid() }, default);
+        Assert.Equal(AiRequestStatus.Succeeded, allowed.Status);
+        Assert.Equal(1, _wire.Calls);
+    }
+
     [Theory]
     [InlineData("auto", "wav")]
     [InlineData("zh", "wav")]

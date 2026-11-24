@@ -181,6 +181,26 @@ public sealed class AiUsageLimitTests
     }
 
     [Fact]
+    public async Task TryBegin_TreatsNonObjectProviderMetadataAsUnknown()
+    {
+        await using var db = Db();
+        var service = Service(db, new AdminUser());
+        var connection = await service.CreateConnectionAsync("异常元数据连接", default);
+        await service.SaveRuleAsync(connection.Id, new(connection.Limit.Revision, true,
+            AiUsageLimitPeriods.Month, 80, 100, null, null, "Asia/Shanghai"), default);
+        var row = Log(connection.Id, Now, null, null);
+        row.MetadataJson = "[]";
+        db.AiRequestLogs.Add(row);
+        await db.SaveChangesAsync();
+
+        var decision = await service.TryBeginAsync(connection.Id, "non-object-metadata", "ai.text-call",
+            TimeSpan.FromMinutes(1), default);
+
+        Assert.False(decision.Allowed);
+        Assert.Equal("usage_limit_unknown", decision.ErrorCode);
+    }
+
+    [Fact]
     public async Task ReminderEvents_MergeMetrics_DirectReachedSkipsWarning_AndReadsArePerAccount()
     {
         await using var db = Db();
