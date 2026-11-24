@@ -39,9 +39,22 @@ jobs:
       - name: Baseline full test (no filter)
         run: |
           set +e
-          dotnet test Pim.sln --configuration Release --no-restore --logger "console;verbosity=minimal" 2>&1 | tee /tmp/baseline.log
+          mkdir -p /tmp/trx
+          dotnet test Pim.sln --configuration Release --no-restore \
+            --logger "console;verbosity=minimal" \
+            --logger "trx;LogFileName=baseline.trx" \
+            --results-directory /tmp/trx 2>&1 | tee /tmp/baseline.log
           echo "=== 汇总 ==="
           grep -E 'Passed!|Failed!|Total tests|Passed:|Failed:' /tmp/baseline.log | tail -5
+          echo "=== TRX 文件 ==="
+          ls -la /tmp/trx/ 2>/dev/null
+      - name: Upload baseline TRX
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: baseline-trx
+          path: /tmp/trx/*.trx
+          retention-days: 14
 
   # ── 4 个 shard：按目录切分，各跑一部分 ──
   shard:
