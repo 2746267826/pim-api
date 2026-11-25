@@ -195,17 +195,37 @@ public class CalendarService
         DateTimeOffset start, DateTimeOffset end, CancellationToken ct)
     {
         var minValidDate = DateTimeOffset.MinValue.AddYears(100);
+        var (allDayStartDate, allDayEndDateExclusive) = EventQueryContract.GetAllDayDateCandidateWindow(start, end);
         var entities = await _db.Set<EventEntity>()
             .Where(e => e.Calendar.UserId == UserId
-                        && e.DtStart > minValidDate
-                        && e.DtEnd > minValidDate
-                        && ((e.DtStart < end && e.DtEnd > start) || !string.IsNullOrEmpty(e.RRule) || e.IsException))
+                        && (
+                            (e.IsAllDay
+                             && (
+                                 (e.AllDayStartDate != null
+                                  && e.AllDayEndDateExclusive != null
+                                  && ((e.AllDayEndDateExclusive > allDayStartDate
+                                       && e.AllDayStartDate < allDayEndDateExclusive)
+                                      || !string.IsNullOrEmpty(e.RRule)
+                                      || e.IsException))
+                                 || ((e.AllDayStartDate == null || e.AllDayEndDateExclusive == null)
+                                     && ((e.DtStart < end && e.DtEnd > start)
+                                         || !string.IsNullOrEmpty(e.RRule)
+                                         || e.IsException))))
+                            || (!e.IsAllDay
+                                && e.DtStart > minValidDate
+                                && e.DtEnd > minValidDate
+                                && ((e.DtStart < end && e.DtEnd > start)
+                                    || !string.IsNullOrEmpty(e.RRule)
+                                    || e.IsException))
+                        ))
             .AsNoTracking()
             .ToListAsync(ct);
 
         var expanded = _recurrence.ExpandEventsV2(entities, start, end);
 
         return expanded
+            .GroupBy(x => x.OccurrenceId)
+            .Select(g => g.First())
             .OrderBy(x => x.OccurrenceStart)
             .Select(EventResponseMapper.MapExpanded)
             .ToList();
@@ -214,7 +234,7 @@ public class CalendarService
     public async Task<PagedResult<EventResponse>> GetEventsPagedAsync(
         string? search, Guid? calendarId,
         DateTimeOffset? start, DateTimeOffset? end,
-        int page = 1, int pageSize = 50,
+        int page = 1, int pageSize = 20,
         CancellationToken ct = default)
     {
         page = Math.Max(1, page);
@@ -222,15 +242,37 @@ public class CalendarService
         var minValidDate = DateTimeOffset.MinValue.AddYears(100);
         var hasWindow = start.HasValue && end.HasValue;
         var query = _db.Set<EventEntity>()
-            .Where(e => e.Calendar.UserId == UserId
-                        && e.DtStart > minValidDate
-                        && e.DtEnd > minValidDate);
+            .Where(e => e.Calendar.UserId == UserId);
 
         if (hasWindow)
         {
             var s = start!.Value;
             var e2 = end!.Value;
-            query = query.Where(e => ((e.DtStart < e2 && e.DtEnd > s) || !string.IsNullOrEmpty(e.RRule) || e.IsException));
+            var (allDayStartDate, allDayEndDateExclusive) = EventQueryContract.GetAllDayDateCandidateWindow(s, e2);
+            query = query.Where(e =>
+                (e.IsAllDay
+                 && ((e.AllDayStartDate != null
+                      && e.AllDayEndDateExclusive != null
+                      && ((e.AllDayEndDateExclusive > allDayStartDate
+                           && e.AllDayStartDate < allDayEndDateExclusive)
+                          || !string.IsNullOrEmpty(e.RRule)
+                          || e.IsException))
+                     || ((e.AllDayStartDate == null || e.AllDayEndDateExclusive == null)
+                         && ((e.DtStart < e2 && e.DtEnd > s)
+                             || !string.IsNullOrEmpty(e.RRule)
+                             || e.IsException))))
+                || (!e.IsAllDay
+                    && e.DtStart > minValidDate
+                    && e.DtEnd > minValidDate
+                    && ((e.DtStart < e2 && e.DtEnd > s)
+                        || !string.IsNullOrEmpty(e.RRule)
+                        || e.IsException)));
+        }
+        else
+        {
+            query = query.Where(e => e.IsAllDay
+                                     || (e.DtStart > minValidDate
+                                         && e.DtEnd > minValidDate));
         }
 
         if (!string.IsNullOrEmpty(search))
@@ -244,11 +286,16 @@ public class CalendarService
         var rangeEnd = end ?? DateTimeOffset.MaxValue;
         var expanded = _recurrence.ExpandEventsV2(entities, rangeStart, rangeEnd);
 
-        var totalCount = expanded.Count;
+        var distinct = expanded
+            .GroupBy(x => x.OccurrenceId)
+            .Select(g => g.First())
+            .ToList();
+
+        var totalCount = distinct.Count;
         var totalPages = (int)Math.Ceiling(totalCount / (double)pageSize);
 
-        var items = expanded
-            .OrderByDescending(x => x.OccurrenceStart)
+        var items = distinct
+            .OrderBy(x => x.OccurrenceStart)
             .ThenBy(x => x.OccurrenceId)
             .Skip((page - 1) * pageSize)
             .Take(pageSize)
@@ -273,7 +320,15 @@ public class CalendarService
         if (hasOutlookBinding)
             throw new DomainException(02009, "Microsoft 日历的日程必须通过确认写回流程创建。");
 
-        var (normalizedStart, normalizedEnd) = NormalizeAndValidateEventRange(request.DtStart, request.DtEnd);
+        var (normalizedStart, normalizedEnd, allDayStart, allDayEnd) = NormalizeEventTimes(
+            request.IsAllDay,
+            request.DtStart,
+            request.DtEnd,
+            request.AllDayStartDate,
+            request.AllDayEndDateExclusive,
+            request.TimeZoneId,
+            existing: null);
+        var normalizedTimeZone = NormalizeEventTimeZone(request.TimeZoneId);
 
         var isHtml = string.Equals(request.DescriptionFormat, "html", StringComparison.OrdinalIgnoreCase);
         if (isHtml)
@@ -305,7 +360,10 @@ public class CalendarService
             DtEnd = normalizedEnd,
             RRule = request.RRule,
             IsAllDay = request.IsAllDay,
-            TimeZoneId = request.TimeZoneId
+            AllDayStartDate = allDayStart,
+            AllDayEndDateExclusive = allDayEnd,
+            TimeZoneId = normalizedTimeZone.Id,
+            SourceTimeZoneId = normalizedTimeZone.SourceId
         };
 
         ApplyUnifiedFields(entity, request);
@@ -411,6 +469,28 @@ public class CalendarService
                 continue;
             }
 
+            var normalizedTimeZone = NormalizeEventTimeZone(item.SourceTimeZoneId);
+            var resolvedTimeZone = EventTimeZoneResolver.Resolve(
+                normalizedTimeZone.Id,
+                normalizedTimeZone.SourceId);
+            var importStart = item.Start;
+            var importEnd = item.End;
+            if (item.IsAllDay
+                && item.AllDayStartDate is { } allDayStartDate
+                && item.AllDayEndDateExclusive is { } allDayEndDate
+                )
+            {
+                var importZone = resolvedTimeZone.Zone ?? EventTimeZoneResolver.DisplayZone;
+                importStart = EventTimeZoneResolver.StartOfLocalDate(
+                    allDayStartDate,
+                    importZone,
+                    importZone.GetUtcOffset(allDayStartDate.ToDateTime(TimeOnly.MinValue)));
+                importEnd = EventTimeZoneResolver.StartOfLocalDate(
+                    allDayEndDate,
+                    importZone,
+                    importZone.GetUtcOffset(allDayEndDate.ToDateTime(TimeOnly.MinValue)));
+            }
+
             _db.Set<EventEntity>().Add(new EventEntity
             {
                 CalendarId = calendar.Id,
@@ -419,12 +499,14 @@ public class CalendarService
                 Title = Truncate(item.Title, 255) ?? string.Empty,
                 Description = item.Description,
                 Location = Truncate(item.Location, 500),
-                DtStart = item.Start,
-                DtEnd = item.End,
+                DtStart = importStart,
+                DtEnd = importEnd,
                 RRule = item.RRule,
                 IsAllDay = item.IsAllDay,
-                TimeZoneId = Truncate(item.SourceTimeZoneId, 100),
-                SourceTimeZoneId = Truncate(item.SourceTimeZoneId, 100),
+                AllDayStartDate = item.IsAllDay ? item.AllDayStartDate : null,
+                AllDayEndDateExclusive = item.IsAllDay ? item.AllDayEndDateExclusive : null,
+                TimeZoneId = normalizedTimeZone.Id,
+                SourceTimeZoneId = normalizedTimeZone.SourceId,
                 Source = "outlook-ics",
                 SourceIcsComponent = item.SourceIcsComponent,
                 ExternalMetadataJson = item.ExternalMetadataJson,
@@ -544,7 +626,28 @@ public class CalendarService
                 throw new DomainException(02009, "目标日历为 Microsoft 日历，移动操作必须通过确认写回流程。");
         }
 
-        var (normalizedStart, normalizedEnd) = NormalizeAndValidateEventRange(request.DtStart, request.DtEnd);
+        var requestedIsAllDay = request.IsAllDay ?? entity.IsAllDay;
+        if (!requestedIsAllDay
+            && (request.AllDayStartDate is not null || request.AllDayEndDateExclusive is not null))
+            throw new DomainException(02009, "非全天事件不能提供 allDayStartDate/allDayEndDateExclusive。");
+
+        var effectiveTimeZone = request.TimeZoneId
+            ?? entity.TimeZoneId
+            ?? entity.SourceTimeZoneId
+            ?? entity.OriginalStartTimeZone;
+        var (normalizedStart, normalizedEnd, allDayStart, allDayEnd) = NormalizeEventTimes(
+            requestedIsAllDay,
+            request.DtStart,
+            request.DtEnd,
+            request.AllDayStartDate,
+            request.AllDayEndDateExclusive,
+            effectiveTimeZone,
+            entity);
+        var normalizedTimeZone = request.TimeZoneId is null
+            ? NormalizeEventTimeZone(
+                entity.TimeZoneId,
+                entity.SourceTimeZoneId ?? entity.OriginalStartTimeZone)
+            : NormalizeEventTimeZone(request.TimeZoneId, request.TimeZoneId);
 
         var isHtml = string.Equals(request.DescriptionFormat, "html", StringComparison.OrdinalIgnoreCase);
         if (isHtml)
@@ -584,8 +687,8 @@ public class CalendarService
                 entity.Location = request.Location;
                 entity.DtStart = normalizedStart;
                 entity.DtEnd = normalizedEnd;
-                if (request.IsAllDay.HasValue) entity.IsAllDay = request.IsAllDay.Value;
-                if (request.TimeZoneId is not null) entity.TimeZoneId = request.TimeZoneId;
+                ApplyAllDayFields(entity, requestedIsAllDay, allDayStart, allDayEnd);
+                ApplyTimeZoneFields(entity, normalizedTimeZone.Id, normalizedTimeZone.SourceId);
                 entity.UpdatedAt = _timeProvider.GetUtcNow();
                 ApplyUnifiedFields(entity, request);
                 if (!string.IsNullOrEmpty(request.RecurrenceId))
@@ -623,8 +726,8 @@ public class CalendarService
                     existingException.Location = request.Location;
                     existingException.DtStart = normalizedStart;
                     existingException.DtEnd = normalizedEnd;
-                    if (request.IsAllDay.HasValue) existingException.IsAllDay = request.IsAllDay.Value;
-                    if (request.TimeZoneId is not null) existingException.TimeZoneId = request.TimeZoneId;
+                    ApplyAllDayFields(existingException, requestedIsAllDay, allDayStart, allDayEnd);
+                    ApplyTimeZoneFields(existingException, normalizedTimeZone.Id, normalizedTimeZone.SourceId);
                     existingException.UpdatedAt = _timeProvider.GetUtcNow();
                     ApplyUnifiedFields(existingException, request);
                     existingException.RecurrenceId = request.RecurrenceId;
@@ -645,8 +748,11 @@ public class CalendarService
                     Location = request.Location,
                     DtStart = normalizedStart,
                     DtEnd = normalizedEnd,
-                    IsAllDay = request.IsAllDay ?? entity.IsAllDay,
-                    TimeZoneId = request.TimeZoneId ?? entity.TimeZoneId,
+                    IsAllDay = requestedIsAllDay,
+                    AllDayStartDate = allDayStart,
+                    AllDayEndDateExclusive = allDayEnd,
+                    TimeZoneId = normalizedTimeZone.Id,
+                    SourceTimeZoneId = normalizedTimeZone.SourceId,
                     IsException = true,
                     IsSeriesMaster = false,
                     SeriesMasterId = entity.Id,
@@ -701,10 +807,8 @@ public class CalendarService
                     masterEntity.DtEnd = normalizedEnd;
             }
             masterEntity.RRule = request.RRule;
-            if (request.IsAllDay.HasValue)
-                masterEntity.IsAllDay = request.IsAllDay.Value;
-            if (request.TimeZoneId is not null)
-                masterEntity.TimeZoneId = request.TimeZoneId;
+            ApplyAllDayFields(masterEntity, requestedIsAllDay, allDayStart, allDayEnd);
+            ApplyTimeZoneFields(masterEntity, normalizedTimeZone.Id, normalizedTimeZone.SourceId);
             masterEntity.UpdatedAt = _timeProvider.GetUtcNow();
 
             ApplyUnifiedFields(masterEntity, request);
@@ -739,10 +843,8 @@ public class CalendarService
         entity.DtEnd = normalizedEnd;
 
         entity.RRule = request.RRule;
-        if (request.IsAllDay.HasValue)
-            entity.IsAllDay = request.IsAllDay.Value;
-        if (request.TimeZoneId is not null)
-            entity.TimeZoneId = request.TimeZoneId;
+        ApplyAllDayFields(entity, requestedIsAllDay, allDayStart, allDayEnd);
+        ApplyTimeZoneFields(entity, normalizedTimeZone.Id, normalizedTimeZone.SourceId);
         entity.UpdatedAt = _timeProvider.GetUtcNow();
 
         ApplyUnifiedFields(entity, request);
@@ -789,11 +891,24 @@ public class CalendarService
         DateTimeOffset start, DateTimeOffset end, CancellationToken ct)
     {
         var minValidDate = DateTimeOffset.MinValue.AddYears(100);
+        var (allDayStartDate, allDayEndDateExclusive) = EventQueryContract.GetAllDayDateCandidateWindow(start, end);
         return await _db.Set<EventEntity>()
             .Where(e => e.Calendar.UserId == UserId
-                        && e.DtStart > minValidDate
-                        && e.DtEnd > minValidDate
-                        && e.DtStart < end && e.DtEnd > start)
+                        && (
+                            (e.IsAllDay
+                             && ((e.AllDayStartDate != null
+                                  && e.AllDayEndDateExclusive != null
+                                  && e.AllDayEndDateExclusive > allDayStartDate
+                                  && e.AllDayStartDate < allDayEndDateExclusive)
+                                 || ((e.AllDayStartDate == null || e.AllDayEndDateExclusive == null)
+                                     && e.DtStart < end
+                                     && e.DtEnd > start)))
+                            || (!e.IsAllDay
+                                && e.DtStart > minValidDate
+                                && e.DtEnd > minValidDate
+                                && e.DtStart < end
+                                && e.DtEnd > start)
+                        ))
             .OrderBy(e => e.DtStart)
             .ToListAsync(ct);
     }
@@ -1508,14 +1623,134 @@ public class CalendarService
         await _db.SaveChangesAsync(ct);
     }
 
-    private static (DateTimeOffset Start, DateTimeOffset End) NormalizeAndValidateEventRange(
-        DateTimeOffset start, DateTimeOffset end)
+    private static (
+        DateTimeOffset Start,
+        DateTimeOffset End,
+        DateOnly? AllDayStart,
+        DateOnly? AllDayEnd) NormalizeEventTimes(
+        bool isAllDay,
+        DateTimeOffset start,
+        DateTimeOffset end,
+        DateOnly? allDayStart,
+        DateOnly? allDayEnd,
+        string? timeZoneId,
+        EventEntity? existing)
     {
-        var normalizedStart = start.ToUniversalTime();
-        var normalizedEnd = end.ToUniversalTime();
-        if (normalizedEnd <= normalizedStart)
-            throw new DomainException(02010, "结束时间必须晚于开始时间");
-        return (normalizedStart, normalizedEnd);
+        if (!isAllDay)
+        {
+            var startUtc = start.ToUniversalTime();
+            var endUtc = end.ToUniversalTime();
+            if (endUtc <= startUtc)
+                throw new DomainException(02010, "结束时间必须晚于开始时间");
+            return (startUtc, endUtc, null, null);
+        }
+
+        var existingHasAllDayDates = existing is
+            { IsAllDay: true, AllDayStartDate: not null, AllDayEndDateExclusive: not null }
+            && (allDayStart ?? existing.AllDayStartDate) == existing.AllDayStartDate
+            && (allDayEnd ?? existing.AllDayEndDateExclusive) == existing.AllDayEndDateExclusive;
+        var preserveExistingBounds = existingHasAllDayDates
+            && SameResolvedTimeZone(timeZoneId, existing!)
+            && SameInstant(start, existing!.DtStart)
+            && SameInstant(end, existing.DtEnd);
+
+        DateOnly startDate;
+        DateOnly endDate;
+        if (allDayStart.HasValue || allDayEnd.HasValue)
+        {
+            if (!allDayStart.HasValue || !allDayEnd.HasValue)
+                throw new DomainException(02009, "全天事件必须同时提供 allDayStartDate 与 allDayEndDateExclusive。");
+            startDate = allDayStart.Value;
+            endDate = allDayEnd.Value;
+        }
+        else if (existingHasAllDayDates)
+        {
+            startDate = existing!.AllDayStartDate!.Value;
+            endDate = existing.AllDayEndDateExclusive!.Value;
+        }
+        else if (existing is { IsAllDay: true, AllDayStartDate: null, AllDayEndDateExclusive: null }
+                 && !allDayStart.HasValue
+                 && !allDayEnd.HasValue
+                 && SameResolvedTimeZone(timeZoneId, existing)
+                 && SameInstant(start, existing.DtStart)
+                 && SameInstant(end, existing.DtEnd))
+        {
+            return (existing.DtStart, existing.DtEnd, null, null);
+        }
+        else
+        {
+            throw new DomainException(02009, "全天事件必须提供 allDayStartDate 与 allDayEndDateExclusive；服务端不从 dtStart/dtEnd 推断日期。");
+        }
+
+        if (endDate <= startDate)
+            throw new DomainException(02009, "全天事件的排他结束日期必须晚于开始日期。");
+
+        if (preserveExistingBounds)
+            return (existing!.DtStart, existing.DtEnd, startDate, endDate);
+
+        var resolvedZone = EventTimeZoneResolver.Resolve(
+            timeZoneId,
+            existing?.SourceTimeZoneId,
+            existing?.OriginalStartTimeZone).Zone ?? EventTimeZoneResolver.DisplayZone;
+        var normalizedStart = EventTimeZoneResolver.StartOfLocalDate(
+            startDate, resolvedZone, resolvedZone.GetUtcOffset(startDate.ToDateTime(TimeOnly.MinValue)));
+        var normalizedEnd = EventTimeZoneResolver.StartOfLocalDate(
+            endDate, resolvedZone, resolvedZone.GetUtcOffset(endDate.ToDateTime(TimeOnly.MinValue)));
+        return (normalizedStart, normalizedEnd, startDate, endDate);
+    }
+
+    private static bool SameInstant(DateTimeOffset value, DateTimeOffset? existing)
+        => existing.HasValue && existing.Value.UtcDateTime == value.UtcDateTime;
+
+    private static bool SameResolvedTimeZone(string? requested, EventEntity existing)
+    {
+        var requestedZone = EventTimeZoneResolver.Resolve(requested, requested);
+        var existingZone = EventTimeZoneResolver.Resolve(
+            existing.TimeZoneId,
+            existing.SourceTimeZoneId,
+            existing.OriginalStartTimeZone);
+        if (requestedZone.Id is not null && existingZone.Id is not null)
+            return string.Equals(requestedZone.Id, existingZone.Id, StringComparison.Ordinal);
+        return string.Equals(requestedZone.SourceId, existingZone.SourceId, StringComparison.Ordinal);
+    }
+
+    private static (string? Id, string? SourceId) NormalizeEventTimeZone(
+        string? raw,
+        string? sourceId = null)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            if (string.IsNullOrWhiteSpace(sourceId))
+                return (null, null);
+            raw = sourceId;
+        }
+
+        var source = sourceId ?? raw;
+        if (source.Length > 100)
+            throw new DomainException(02009, "TimeZoneId/sourceTimeZoneId 长度不能超过 100 个字符。");
+
+        var resolved = EventTimeZoneResolver.Resolve(raw, source);
+        return (resolved.Id, source);
+    }
+
+    private static void ApplyAllDayFields(
+        EventEntity entity,
+        bool isAllDay,
+        DateOnly? start,
+        DateOnly? end)
+    {
+        entity.IsAllDay = isAllDay;
+        entity.AllDayStartDate = isAllDay ? start : null;
+        entity.AllDayEndDateExclusive = isAllDay ? end : null;
+    }
+
+    private static void ApplyTimeZoneFields(
+        EventEntity entity,
+        string? timeZoneId,
+        string? sourceTimeZoneId)
+    {
+        entity.TimeZoneId = timeZoneId;
+        entity.SourceTimeZoneId = sourceTimeZoneId;
     }
 
     private async Task ValidatePimFileReferencesAsync(

@@ -1,6 +1,7 @@
 using Ical.Net.CalendarComponents;
 using Ical.Net.DataTypes;
 using Ical.Net.Serialization;
+using Pim.Core.Exceptions;
 using Pim.Module.Calendar.Entities;
 using IcalCalendar = Ical.Net.Calendar;
 
@@ -11,18 +12,58 @@ public class IcsService
     public string ExportEvents(IEnumerable<EventEntity> events)
     {
         var calendar = new IcalCalendar();
-        calendar.AddTimeZone(new VTimeZone("Asia/Shanghai"));
+        var timeZoneIds = new HashSet<string>(StringComparer.Ordinal);
 
         foreach (var evt in events)
         {
+            if (evt.IsAllDay
+                && (!evt.AllDayStartDate.HasValue || !evt.AllDayEndDateExclusive.HasValue
+                    || evt.AllDayEndDateExclusive <= evt.AllDayStartDate))
+            {
+                throw new DomainException(
+                    02009,
+                    $"全天事件缺少有效的独立日期范围，无法导出：UID={evt.Uid}, ID={evt.Id}。");
+            }
+
+            var isAllDay = evt.IsAllDay;
+            CalDateTime start;
+            CalDateTime end;
+            if (isAllDay)
+            {
+                start = new CalDateTime(evt.AllDayStartDate!.Value);
+                end = new CalDateTime(evt.AllDayEndDateExclusive!.Value);
+            }
+            else
+            {
+                var resolved = EventTimeZoneResolver.Resolve(
+                    evt.TimeZoneId,
+                    evt.SourceTimeZoneId,
+                    evt.OriginalStartTimeZone);
+                if (resolved.IsResolved && resolved.Id is not null && resolved.Id != "UTC")
+                {
+                    start = new CalDateTime(
+                        TimeZoneInfo.ConvertTime(evt.DtStart, resolved.Zone!).DateTime,
+                        resolved.Id);
+                    end = new CalDateTime(
+                        TimeZoneInfo.ConvertTime(evt.DtEnd, resolved.Zone!).DateTime,
+                        resolved.Id);
+                    timeZoneIds.Add(resolved.Id);
+                }
+                else
+                {
+                    start = new CalDateTime(evt.DtStart.UtcDateTime);
+                    end = new CalDateTime(evt.DtEnd.UtcDateTime);
+                }
+            }
+
             var calEvent = new CalendarEvent
             {
                 Uid = evt.Uid,
                 Summary = evt.Title,
                 Description = evt.Description,
                 Location = evt.Location,
-                Start = new CalDateTime(evt.DtStart.UtcDateTime),
-                End = new CalDateTime(evt.DtEnd.UtcDateTime),
+                Start = start,
+                End = end,
                 DtStamp = new CalDateTime(evt.DtStamp.UtcDateTime),
                 Status = evt.Status
             };
@@ -34,6 +75,9 @@ public class IcsService
 
             calendar.Events.Add(calEvent);
         }
+
+        foreach (var timeZoneId in timeZoneIds.OrderBy(id => id, StringComparer.Ordinal))
+            calendar.AddTimeZone(new VTimeZone(timeZoneId));
 
         var serializer = new CalendarSerializer();
         return serializer.SerializeToString(calendar)!;

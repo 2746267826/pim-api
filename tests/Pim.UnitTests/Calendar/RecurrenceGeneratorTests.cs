@@ -280,15 +280,16 @@ public class RecurrenceGeneratorTests
     }
 
     [Fact]
-    public void VeryFarWindow_CappedTo730Days()
+    public void VeryFarFiniteWindow_IsNotTruncated()
     {
         var start = new DateTimeOffset(2026, 1, 1, 9, 0, 0, TimeSpan.Zero);
         var master = Master("FREQ=DAILY", start, start.AddHours(1));
         var rangeStart = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
         var rangeEnd = rangeStart.AddDays(2000); // >730
         var result = Expand(master, rangeStart, rangeEnd);
-        // Capped to 730 days => capped to 500 due to occurrence limit
-        Assert.Equal(500, result.Count);
-        Assert.True(result.Last().OccurrenceStart < rangeStart.AddDays(730));
+        // Finite windows are not capped to the 730-day safety window; R02 only
+        // caps unbounded history and enforces the per-series expansion budget.
+        Assert.Equal(2000, result.Count);
+        Assert.Equal(rangeStart.AddDays(1999).AddHours(9), result.Last().OccurrenceStart);
     }
 }

@@ -53,7 +53,18 @@ public sealed class OutlookEventWriteService
             throw new DomainException(02009, "Client operation ID is required.");
 
         if (request.Draft is not null)
-            request = request with { Draft = EventFieldValidator.ValidateAndNormalize(request.Draft) };
+            request = request with
+            {
+                Draft = EventFieldValidator.ValidateAndNormalize(
+                    request.Draft,
+                    requireAllDayDates: request.Operation != "update")
+            };
+        if (request.Operation == "create"
+            && request.Draft is { IsAllDay: true } createDraft
+            && (!createDraft.AllDayStartDate.HasValue || !createDraft.AllDayEndDateExclusive.HasValue))
+        {
+            throw new DomainException(02009, "新建全天事件必须提供 allDayStartDate 与 allDayEndDateExclusive。");
+        }
 
         var connection = await _db.Set<OutlookConnectionEntity>()
             .FirstOrDefaultAsync(c => c.UserId == userId, ct)

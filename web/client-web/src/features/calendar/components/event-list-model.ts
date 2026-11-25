@@ -10,10 +10,13 @@
  */
 import type { EventResponse, LayerItem } from '../types'
 import { isRepeatedEvent } from '../rrule'
+import {
+  CALENDAR_DISPLAY_TIME_ZONE,
+  formatInstantInZone,
+  toCalendarAxisValue,
+} from '../event-timezone'
 
 /** 业务日墙钟时区偏移：+08:00（与时间线/日历页同一口径） */
-export const CST_OFFSET_MS = 8 * 3600_000
-
 export interface ListRowItem {
   key: string
   kind: 'event' | 'layer'
@@ -23,6 +26,7 @@ export interface ListRowItem {
   startMs: number
   endMs: number | null
   allDay: boolean
+  dayOverride?: 'unknown'
   cancelled: boolean
   repeated: boolean
   color: string
@@ -46,17 +50,22 @@ export interface BuildListOptions {
   layerToggles?: Record<string, boolean>
 }
 
-/** UTC 毫秒 → +08:00 墙钟毫秒偏移下的 Date（配合 timeZone:'UTC' 取墙钟字段） */
+/** Calendar-axis milliseconds already encode Beijing wall time as UTC fields. */
 function wallDate(ms: number): Date {
-  return new Date(ms + CST_OFFSET_MS)
+  return new Date(ms)
 }
 
 /** 墙钟 HH:mm（时区无关：直接取偏移后的 UTC 字段） */
 export function wallClockTime(iso: string | null | undefined): string {
   if (!iso) return ''
-  const ms = Date.parse(iso)
-  if (Number.isNaN(ms)) return ''
-  return wallDate(ms).toISOString().slice(11, 16)
+  return formatInstantInZone(iso, CALENDAR_DISPLAY_TIME_ZONE).slice(11, 16)
+}
+
+function parseCalendarWallTime(value: string | null | undefined): number | null {
+  if (!value) return null
+  const axisValue = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(value) ? value : `${value}Z`
+  const parsed = Date.parse(axisValue)
+  return Number.isNaN(parsed) ? null : parsed
 }
 
 /** 业务日 → 星期X / 2026年9月28日（Intl UTC，避免浏览器时区漂移） */
@@ -85,7 +94,14 @@ export function buildEventListSections(
 
   for (const ev of events ?? []) {
     if (opts.calendarId && ev.calendarId !== opts.calendarId) continue
-    const startMs = Date.parse(ev.dtStart)
+    const allDay = Boolean(ev.isAllDay)
+    const hasAllDayDates = Boolean(ev.allDayStartDate && ev.allDayEndDateExclusive)
+    const missingAllDayDates = allDay && !hasAllDayDates
+    const startMs = missingAllDayDates
+      ? Number.MAX_SAFE_INTEGER
+      : allDay
+        ? Date.parse(`${ev.allDayStartDate}T00:00:00.000Z`)
+        : parseCalendarWallTime(ev.displayLocalStart) ?? Date.parse(toCalendarAxisValue(ev.dtStart))
     if (Number.isNaN(startMs)) continue
     rows.push({
       key: `event:${ev.id}:${ev.recurrenceId ?? ''}`,
@@ -93,8 +109,13 @@ export function buildEventListSections(
       layer: null,
       title: ev.title || '（无标题）',
       startMs,
-      endMs: Date.parse(ev.dtEnd) || null,
-      allDay: Boolean(ev.isAllDay),
+      endMs: allDay && ev.allDayEndDateExclusive
+        ? Date.parse(`${ev.allDayEndDateExclusive}T00:00:00.000Z`)
+        : missingAllDayDates
+          ? null
+          : parseCalendarWallTime(ev.displayLocalEnd) ?? Date.parse(toCalendarAxisValue(ev.dtEnd)),
+      allDay,
+      ...(missingAllDayDates ? { dayOverride: 'unknown' as const } : {}),
       cancelled: Boolean(ev.isCancelled ?? ev.status === 'Cancelled'),
       repeated: isRepeatedEvent(ev),
       color: '#3B82F6',
@@ -104,7 +125,7 @@ export function buildEventListSections(
 
   for (const item of layerItems ?? []) {
     if (toggles && toggles[item.layer] === false) continue
-    const startMs = Date.parse(item.startsAt)
+    const startMs = Date.parse(toCalendarAxisValue(item.startsAt))
     if (Number.isNaN(startMs)) continue
     rows.push({
       key: `layer:${item.id}`,
@@ -112,7 +133,7 @@ export function buildEventListSections(
       layer: item.layer,
       title: item.title,
       startMs,
-      endMs: Date.parse(item.endsAt) || null,
+      endMs: Date.parse(toCalendarAxisValue(item.endsAt)) || null,
       allDay: false,
       cancelled: item.status === 'Cancelled',
       repeated: false,
@@ -124,11 +145,15 @@ export function buildEventListSections(
 
   const sections = new Map<string, ListRowItem[]>()
   for (const row of rows) {
-    const day = wallDate(row.startMs).toISOString().slice(0, 10)
+    const day = row.dayOverride ?? wallDate(row.startMs).toISOString().slice(0, 10)
     const bucket = sections.get(day)
     if (bucket) bucket.push(row)
     else sections.set(day, [row])
   }
 
-  return [...sections.entries()].map(([day, items]) => ({ day, ...dayLabels(day), items }))
+  return [...sections.entries()].map(([day, items]) => ({
+    day,
+    ...(day === 'unknown' ? { weekdayLabel: '', dateLabel: '日期未知' } : dayLabels(day)),
+    items,
+  }))
 }

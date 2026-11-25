@@ -48,7 +48,9 @@ public sealed record OutlookEventDraft(
     string? OnlineMeetingProvider,
     string? OnlineMeetingUrl,
     string? ExternalLink,
-    IReadOnlyList<EventAttachmentReferenceDto>? AttachmentReferences);
+    IReadOnlyList<EventAttachmentReferenceDto>? AttachmentReferences,
+    DateOnly? AllDayStartDate = null,
+    DateOnly? AllDayEndDateExclusive = null);
 
 public sealed record OutlookWriteRequest(
     string Operation,

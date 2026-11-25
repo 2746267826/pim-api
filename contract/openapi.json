@@ -6076,6 +6076,16 @@
       "CreateEventRequest": {
         "additionalProperties": false,
         "properties": {
+          "allDayEndDateExclusive": {
+            "format": "date",
+            "nullable": true,
+            "type": "string"
+          },
+          "allDayStartDate": {
+            "format": "date",
+            "nullable": true,
+            "type": "string"
+          },
           "attachmentReferences": {
             "items": {
               "$ref": "#/components/schemas/EventAttachmentReferenceDto"
@@ -8664,6 +8674,16 @@
       "EventResponse": {
         "additionalProperties": false,
         "properties": {
+          "allDayEndDateExclusive": {
+            "format": "date",
+            "nullable": true,
+            "type": "string"
+          },
+          "allDayStartDate": {
+            "format": "date",
+            "nullable": true,
+            "type": "string"
+          },
           "attachmentReferences": {
             "items": {
               "$ref": "#/components/schemas/EventAttachmentReferenceDto"
@@ -8694,6 +8714,18 @@
             "type": "string"
           },
           "descriptionFormat": {
+            "nullable": true,
+            "type": "string"
+          },
+          "displayLocalEnd": {
+            "nullable": true,
+            "type": "string"
+          },
+          "displayLocalStart": {
+            "nullable": true,
+            "type": "string"
+          },
+          "displayTimeZoneId": {
             "nullable": true,
             "type": "string"
           },
@@ -8743,6 +8775,14 @@
           },
           "isSeriesMaster": {
             "type": "boolean"
+          },
+          "localEnd": {
+            "nullable": true,
+            "type": "string"
+          },
+          "localStart": {
+            "nullable": true,
+            "type": "string"
           },
           "location": {
             "nullable": true,
@@ -8828,6 +8868,18 @@
             "type": "string"
           },
           "timeZoneId": {
+            "nullable": true,
+            "type": "string"
+          },
+          "timeZoneIdType": {
+            "nullable": true,
+            "type": "string"
+          },
+          "timeZoneResolution": {
+            "nullable": true,
+            "type": "string"
+          },
+          "timeZoneSourceType": {
             "nullable": true,
             "type": "string"
           },
@@ -25821,6 +25873,16 @@
       "UpdateEventRequest": {
         "additionalProperties": false,
         "properties": {
+          "allDayEndDateExclusive": {
+            "format": "date",
+            "nullable": true,
+            "type": "string"
+          },
+          "allDayStartDate": {
+            "format": "date",
+            "nullable": true,
+            "type": "string"
+          },
           "attachmentReferences": {
             "items": {
               "$ref": "#/components/schemas/EventAttachmentReferenceDto"
@@ -30077,6 +30139,7 @@
           {
             "in": "query",
             "name": "start",
+            "required": true,
             "schema": {
               "format": "date-time",
               "type": "string"
@@ -30085,6 +30148,7 @@
           {
             "in": "query",
             "name": "end",
+            "required": true,
             "schema": {
               "format": "date-time",
               "type": "string"
@@ -30632,6 +30696,16 @@
               }
             },
             "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
           },
           "401": {
             "description": "Unauthorized"
