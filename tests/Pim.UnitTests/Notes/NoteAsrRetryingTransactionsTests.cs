@@ -8,6 +8,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Options;
 using Npgsql;
 using Pim.Core.Ai;
+using Pim.Core.Exceptions;
 using Pim.Core.Notes;
 using Pim.Infrastructure.Ai;
 using Pim.Infrastructure.Ai.Asr;
