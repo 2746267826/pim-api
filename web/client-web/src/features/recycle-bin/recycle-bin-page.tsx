@@ -97,6 +97,7 @@ export function RecycleBinPage() {
   })
 
   const pageItems = list.data?.items ?? []
+  const allCount = list.data?.groups.reduce((sum, group) => sum + group.totalCount, 0) ?? 0
   const itemsByKey = useMemo(
     () => new Map(pageItems.map((item) => [itemKey(item), item])),
     [pageItems],
@@ -181,7 +182,7 @@ export function RecycleBinPage() {
       <div className="flex flex-wrap items-center gap-2">
         <div className="flex flex-wrap gap-1.5" aria-label="回收站领域筛选">
           <Chip active={domain === 'all'} onClick={() => { setDomain('all'); setPage(1); setSelected(new Set()) }}>
-            全部 {list.data?.totalCount ?? 0}
+            全部 {allCount}
           </Chip>
           {DOMAINS.map((value) => (
             <Chip
