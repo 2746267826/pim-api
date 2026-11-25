@@ -28,11 +28,12 @@ const languageNames: Record<string, string> = { auto: '自动识别', zh: '中�
  * Ordinary-user ASR start entry. It consumes only the public destination
  * catalog and per-account routing config; it never reads admin model settings.
  */
-export function NoteAsrStartPanel({ userId, serverBinding, versionId, onCreated }: {
+export function NoteAsrStartPanel({ userId, serverBinding, versionId, onCreated, showVersionDetails = true }: {
   userId: string
   serverBinding: string
   versionId: string
   onCreated?: (task: NoteAsrTask) => void
+  showVersionDetails?: boolean
 }) {
   const qc = useQueryClient()
   const [route, setRoute] = useState<'default' | 'local' | 'cloud'>('default')
@@ -377,14 +378,19 @@ export function NoteAsrStartPanel({ userId, serverBinding, versionId, onCreated 
   return <Card className="min-w-0 space-y-3 p-4 sm:p-5">
     <div>
       <h3 className="text-sm font-semibold text-text-1">启动录音转写</h3>
-      <p className="mt-1 break-words text-xs text-text-3">只为当前固定材料版本创建新任务。本机不可用时保持排队且不会自动改用云端；云端执行必须单独确认出域与费用。旧任务和结果不会覆盖。</p>
+      <p className="mt-1 break-words text-xs text-text-3">
+        {showVersionDetails
+          ? '只为当前固定材料版本创建新任务。'
+          : '只为这篇笔记的当前内容创建新任务。'}
+        本机不可用时保持排队且不会自动改用云端；云端执行必须单独确认出域与费用。旧任务和结果不会覆盖。
+      </p>
     </div>
     <div role="group" aria-label="本次转写执行位置、目标与费用" className="space-y-2 rounded-ctl border border-border bg-surface p-3 text-xs leading-5 text-text-2">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <span className="font-medium text-text-1">当前执行位置</span>
         <StatusBadge size="xs" dot={false} tone={effectiveRoute === 'cloud' ? 'warn' : localConfigured ? 'ok' : 'warn'}>{executionLabel}</StatusBadge>
       </div>
-      <p>发送范围：当前固定版本的全部录音。</p>
+      <p>发送范围：{showVersionDetails ? '当前固定版本' : '这篇笔记当前内容'}的全部录音。</p>
       {effectiveRoute === 'cloud' && savedDestination && <>
         <p className="break-words">目标：{savedDestination.displayName} · {savedDestination.model}</p>
         <p className="font-medium text-warn">音频将离开本机；服务商可能按成功请求或 Token 收取现金费用。</p>
@@ -443,18 +449,24 @@ export function NoteAsrStartPanel({ userId, serverBinding, versionId, onCreated 
       <p className="mt-2 break-all font-mono">{savedDestination.endpoint}</p>
     </details>}
     {intent ? <div className="space-y-2 rounded-ctl border border-warn-border bg-warn-soft p-3 text-xs text-text-2">
-      <p className="break-all">已冻结原任务标识：<span className="font-mono">{intent.taskId}</span>。目标与原因不可在核对前静默更改。</p>
+      <p className="break-all">{showVersionDetails
+        ? <>已冻结原任务标识：<span className="font-mono">{intent.taskId}</span>。目标与原因不可在核对前静默更改。</>
+        : '已有一次转写提交尚未确认；目标与范围在核对前不可更改。'}</p>
       <div className="flex flex-wrap gap-2">
-        <Button size="sm" loading={busy} onClick={() => void reconcile()}>核对原任务</Button>
-        <Button size="sm" variant="secondary" disabled={busy} onClick={() => void submit(intent)}>按原标识保存</Button>
+        <Button size="sm" loading={busy} onClick={() => void reconcile()}>{showVersionDetails ? '核对原任务' : '核对原提交'}</Button>
+        <Button size="sm" variant="secondary" disabled={busy} onClick={() => void submit(intent)}>{showVersionDetails ? '按原标识保存' : '继续原提交'}</Button>
       </div>
     </div> : batchIntent ? <div className="space-y-2 rounded-ctl border border-warn-border bg-warn-soft p-3 text-xs text-text-2">
-      <p className="break-all">已冻结 Batch 任务标识：<span className="font-mono">{batchIntent.taskId}</span>。准备成功不会清空标识；目标、整批范围与 24h 窗口在核对前不可更改。</p>
+      <p className="break-all">{showVersionDetails
+        ? <>已冻结 Batch 任务标识：<span className="font-mono">{batchIntent.taskId}</span>。准备成功不会清空标识；目标、整批范围与 24h 窗口在核对前不可更改。</>
+        : '已有一次 Batch 提交尚未确认；目标、整批范围与 24h 窗口在核对前不可更改。'}</p>
       <p>{batchIntent.phase === 'prepare' ? '阶段：等待核对/创建准备任务（尚未提交 Batch）' : '阶段：已准备，等待/核对 Batch 提交'}</p>
       <div className="flex flex-wrap gap-2">
-        <Button size="sm" loading={busy} onClick={() => void reconcileBatch()}>核对原 Batch 任务</Button>
+        <Button size="sm" loading={busy} onClick={() => void reconcileBatch()}>{showVersionDetails ? '核对原 Batch 任务' : '核对原 Batch 提交'}</Button>
         <Button size="sm" variant="secondary" disabled={busy} onClick={() => void submitBatchIntent(batchIntent)}>
-          {batchIntent.phase === 'prepare' ? '按原标识准备并提交 Batch' : '按原标识重新提交 Batch'}
+          {batchIntent.phase === 'prepare'
+            ? showVersionDetails ? '按原标识准备并提交 Batch' : '准备并提交原 Batch'
+            : showVersionDetails ? '按原标识重新提交 Batch' : '重新提交原 Batch'}
         </Button>
       </div>
     </div> : <>
@@ -462,10 +474,10 @@ export function NoteAsrStartPanel({ userId, serverBinding, versionId, onCreated 
         <Checkbox ariaLabel="确认创建录音转写任务" checked={confirmed} disabled={!targetReady || busy || Boolean(blockedIntent)}
           onCheckedChange={(value) => { setConfirmed(value); if (!value) setBatchConfirmed(false) }} />
         <span>{batchReady
-          ? '确认将上述当前固定版本全部录音发送至上方所列 MiMo 多模态目标作为整批请求，理解闲时调度、长等待、可能仅部分成功与现金费用'
+          ? `确认将上述${showVersionDetails ? '当前固定版本' : '这篇笔记当前内容'}全部录音发送至上方所列 MiMo 多模态目标作为整批请求，理解闲时调度、长等待、可能仅部分成功与现金费用`
           : effectiveRoute === 'local'
           ? '确认按上方执行位置创建本机转写任务；音频不发送云端，本机不可用时只排队'
-          : '确认将上述当前固定版本全部录音发送至上方所列云端目标，理解音频出域与可能产生的服务商费用'}</span>
+          : `确认将上述${showVersionDetails ? '当前固定版本' : '这篇笔记当前内容'}全部录音发送至上方所列云端目标，理解音频出域与可能产生的服务商费用`}</span>
       </label>
       {batchReady && <label className="flex items-start gap-2 text-xs text-text-2">
         <Checkbox ariaLabel="确认Batch整批范围与现金计费" checked={batchConfirmed} disabled={!confirmed || busy || Boolean(blockedIntent)}

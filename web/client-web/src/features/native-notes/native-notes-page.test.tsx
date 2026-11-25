@@ -4,7 +4,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import userEvent from '@testing-library/user-event'
 import { createMemoryRouter, RouterProvider, useNavigate } from 'react-router'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { NAV_GROUPS } from '@/app/nav'
+import { navGroupsForRole } from '@/app/nav'
 import { ApiError } from '@/api/client'
 import { setApiBase } from '@/lib/apiBase'
 import { NativeNotesPage } from './native-notes-page'
@@ -29,7 +29,10 @@ const quickApi = vi.hoisted(() => ({
   list: vi.fn(),
   get: vi.fn(),
 }))
-const authState = vi.hoisted(() => ({ userId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' }))
+const authState = vi.hoisted(() => ({
+  userId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+  role: 'admin' as 'admin' | 'user',
+}))
 vi.mock('./api', () => ({
   bindNativeNotesApi: () => nativeApi,
 }))
@@ -40,7 +43,7 @@ vi.mock('@/features/auth/auth-context', () => ({
       id: authState.userId,
       username: 'synthetic',
       displayName: '合成用户',
-      role: 'user',
+      role: authState.role,
     },
   }),
 }))
@@ -183,6 +186,7 @@ function page(initialEntry = '/native-notes') {
 beforeEach(() => {
   vi.resetAllMocks()
   authState.userId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+  authState.role = 'admin'
   Object.defineProperties(URL, {
     createObjectURL: { configurable: true, value: vi.fn(() => 'blob:synthetic-note-image') },
     revokeObjectURL: { configurable: true, value: vi.fn() },
@@ -278,13 +282,14 @@ async function consentToStorage() {
 }
 
 describe('NativeNotesPage', () => {
-  it('keeps notes as the sole collection navigation entry', () => {
-    page()
-    const collection = NAV_GROUPS.find((group) => group.label === '收集')
+  it('keeps notes as the sole collection entry and hides admin governance from ordinary users', () => {
+    const collection = navGroupsForRole('user').find((group) => group.label === '收集')
     expect(collection?.items).toContainEqual(expect.objectContaining({ to: '/native-notes', label: '笔记' }))
     expect(collection?.items.some((item) => item.to === '/quick-notes')).toBe(false)
-    const governance = NAV_GROUPS.find((group) => group.label === '治理')
-    expect(governance?.items).toContainEqual(expect.objectContaining({ to: '/data-center', label: '数据中心' }))
+    const ordinaryGovernance = navGroupsForRole('user').find((group) => group.label === '治理')
+    expect(ordinaryGovernance?.items.some((item) => item.to === '/data-center')).toBe(false)
+    const adminGovernance = navGroupsForRole('admin').find((group) => group.label === '治理')
+    expect(adminGovernance?.items).toContainEqual(expect.objectContaining({ to: '/data-center', label: '数据中心' }))
   })
 
   it('keeps daily note actions primary and labels offline restore as optional', async () => {
@@ -326,6 +331,17 @@ describe('NativeNotesPage', () => {
 
     expect(screen.getByText('处理页')).toBeTruthy()
     expect(testRouter.state.location.search).toBe(`?noteId=${noteId}&versionId=${versionId}&action=transcribe`)
+  })
+
+  it('does not expose a version id when ordinary users open processing', async () => {
+    authState.role = 'user'
+    nativeApi.current.mockResolvedValue({ ...material, inputJson: JSON.stringify({ ...JSON.parse(inputJson), recordings: [{ id: 'recording' }] }) })
+    page()
+    await userEvent.click(await screen.findByText('课堂笔记').then((node) => node.closest('button')!))
+    await userEvent.click(await screen.findByRole('button', { name: '转写录音' }))
+
+    expect(screen.getByText('处理页')).toBeTruthy()
+    expect(testRouter.state.location.search).toBe(`?noteId=${noteId}&action=transcribe`)
   })
 
   it('opens organization directly for text and image notes', async () => {
@@ -513,7 +529,7 @@ describe('NativeNotesPage', () => {
     expect((screen.getByLabelText('正文块 1') as HTMLTextAreaElement).value).toBe('旧标题\n旧内容 保留')
   })
 
-  it('shows both conflict sides with version ids and only promotes after an explicit choice', async () => {
+  it('shows both conflict sides for admins and only promotes after an explicit choice', async () => {
     nativeApi.notes.mockResolvedValue({ total: 1, offset: 0, items: [{ ...source, hasConflict: true }] })
     nativeApi.versions.mockResolvedValue([material.upload, conflictMaterial.upload])
     page()
@@ -524,13 +540,64 @@ describe('NativeNotesPage', () => {
     expect(screen.getAllByText(versionId).length).toBeGreaterThan(0)
     expect(screen.getAllByText(conflictVersionId).length).toBeGreaterThan(0)
     expect(screen.getByText('服务器当前内容')).toBeTruthy()
-    expect(screen.getByText('另一端保存的内容')).toBeTruthy()
+    expect(screen.getByText('此设备的改动')).toBeTruthy()
     expect(screen.getByText(/冲突候选笔记/)).toBeTruthy()
     expect(nativeApi.promote).not.toHaveBeenCalled()
 
     await userEvent.click(screen.getByRole('button', { name: '采用这份内容' }))
     await waitFor(() => expect(nativeApi.promote).toHaveBeenCalledWith(conflictVersionId, versionId, expect.any(AbortSignal)))
     expect((await screen.findAllByText(/已采用所选内容/)).length).toBeGreaterThan(0)
+  })
+
+  it('hides version history and internal save identifiers from ordinary users', async () => {
+    authState.role = 'user'
+    page()
+    expect(await screen.findByText('已同步')).toBeTruthy()
+    expect(screen.queryByText('当前版')).toBeNull()
+    await userEvent.click(await screen.findByText('课堂笔记').then((node) => node.closest('button')!))
+
+    expect(await screen.findByRole('heading', { name: '继续写这篇笔记' })).toBeTruthy()
+    expect(screen.getByText('正文已同步')).toBeTruthy()
+    expect(screen.queryByRole('heading', { name: '版本与保存编号' })).toBeNull()
+    expect(screen.queryByText('版本历史')).toBeNull()
+    expect(screen.queryByText('当前载入版本 ID')).toBeNull()
+    expect(screen.queryByText('本次保存编号')).toBeNull()
+    expect(screen.queryByText('本次保存来源版本')).toBeNull()
+    expect(screen.queryByText(versionId)).toBeNull()
+    expect(screen.queryByRole('button', { name: '下载完整原始材料包' })).toBeNull()
+  })
+
+  it('does not let ordinary users open an arbitrary saved version by URL', async () => {
+    authState.role = 'user'
+    page(`/native-notes?note=${noteId}&version=${historyVersionId}`)
+
+    expect(await screen.findByRole('heading', { name: '继续写这篇笔记' })).toBeTruthy()
+    await waitFor(() => expect(testRouter.state.location.search).toBe(`?note=${noteId}`))
+    expect((screen.getByLabelText('笔记标题') as HTMLInputElement).value).toBe('课堂笔记')
+    expect(screen.queryByText('历史版本笔记')).toBeNull()
+    expect(screen.queryByText(historyVersionId)).toBeNull()
+  })
+
+  it('shows ordinary conflict content without exposing internal version codes', async () => {
+    authState.role = 'user'
+    nativeApi.notes.mockResolvedValue({ total: 1, offset: 0, items: [{ ...source, hasConflict: true }] })
+    nativeApi.versions.mockResolvedValue([material.upload, conflictMaterial.upload])
+    page()
+    await userEvent.click(await screen.findByText('课堂笔记').then((node) => node.closest('button')!))
+
+    expect(await screen.findByRole('heading', { name: '发现内容冲突' })).toBeTruthy()
+    expect(screen.getByText('服务器当前内容')).toBeTruthy()
+    expect(screen.getByText('此设备的改动')).toBeTruthy()
+    expect(screen.getByText(/冲突候选笔记/)).toBeTruthy()
+    expect(screen.queryByText(versionId)).toBeNull()
+    expect(screen.queryByText(conflictVersionId)).toBeNull()
+    expect(screen.queryByText('版本 ID')).toBeNull()
+    expect(screen.queryByText(/版本历史/)).toBeNull()
+
+    await userEvent.click(screen.getByRole('button', { name: '采用这份内容' }))
+    await waitFor(() => expect(nativeApi.promote).toHaveBeenCalledWith(conflictVersionId, versionId, expect.any(AbortSignal)))
+    expect((await screen.findAllByText(/已采用这份内容/)).length).toBeGreaterThan(0)
+    expect(screen.queryByText(/版本历史/)).toBeNull()
   })
 
   it('lets a user cancel a conflict without changing the current version', async () => {
@@ -720,7 +787,7 @@ describe('NativeNotesPage', () => {
 
     const adopt = screen.getByRole('button', { name: '采用这份内容' }) as HTMLButtonElement
     expect(adopt.disabled).toBe(true)
-    expect(screen.getByText('候选摘要读取中，暂不能采用。')).toBeTruthy()
+    expect(screen.getByText('另一份内容读取中，暂不能采用。')).toBeTruthy()
     expect(nativeApi.promote).not.toHaveBeenCalled()
 
     resolveCandidate(conflictMaterial)
@@ -739,7 +806,7 @@ describe('NativeNotesPage', () => {
 
     expect(await screen.findByText('候选材料读取失败')).toBeTruthy()
     expect((screen.getByRole('button', { name: '采用这份内容' }) as HTMLButtonElement).disabled).toBe(true)
-    expect(screen.getByText(/候选摘要未读取，暂不能采用/)).toBeTruthy()
+    expect(screen.getByText(/内容暂未读取，暂不能采用/)).toBeTruthy()
     expect(nativeApi.promote).not.toHaveBeenCalled()
   })
 

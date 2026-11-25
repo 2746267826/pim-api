@@ -203,7 +203,7 @@ describe('Android golden consumer canonical native-note reading', () => {
     await waitFor(() => expect(nativeApi.complete).toHaveBeenCalledOnce())
     expect(nativeApi.clone).toHaveBeenCalledOnce()
     expect(nativeApi.uploadPart).toHaveBeenCalled()
-    expect(await screen.findByText(/新版本已完整保存/)).toBeTruthy()
+    expect(await screen.findByText(/正文已同步/)).toBeTruthy()
 
     const [sourceVersionId, request] = nativeApi.clone.mock.calls[0] as [string, {
       expectedCurrentVersionId: string

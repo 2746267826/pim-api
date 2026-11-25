@@ -136,7 +136,7 @@ const extraction: NoteTaskSuggestionExtraction = {
 
 let client: QueryClient
 
-function page() {
+function page(showTechnicalDetails = true) {
   client = new QueryClient({
     defaultOptions: {
       queries: { retry: false, gcTime: 0 },
@@ -151,6 +151,7 @@ function page() {
         noteId={noteId}
         artifactId={artifactId}
         versionId={versionId}
+        showTechnicalDetails={showTechnicalDetails}
       />
     </QueryClientProvider>,
   )
@@ -187,6 +188,26 @@ afterEach(() => {
 })
 
 describe('NoteTaskSuggestionsPanel', () => {
+  it('hides frozen digests, task ids and revisions from ordinary users', async () => {
+    const taskId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd'
+    api.list.mockResolvedValue({ total: 1, items: [{ ...suggestion, taskId }] })
+    page(false)
+
+    expect(await screen.findByText('任务建议')).toBeTruthy()
+    expect(screen.getByText(/只从当前内容的正文提取/)).toBeTruthy()
+    expect(screen.getByRole('checkbox', {
+      name: /确认将当前完整正文发送到所选文本模型/,
+    })).toBeTruthy()
+    expect(screen.queryByText(/固定内容 SHA-256/)).toBeNull()
+    expect(screen.queryByText(/固定提示/)).toBeNull()
+    expect(screen.queryByText(/本版本建议/)).toBeNull()
+    expect(screen.queryByText(/任务 ID/)).toBeNull()
+    expect(screen.queryByText(/来源摘要/)).toBeNull()
+    expect(screen.queryByText(new RegExp(taskId))).toBeNull()
+    expect(screen.queryByText(new RegExp(suggestionRevision.slice(0, 8)))).toBeNull()
+    expect(screen.queryByText(new RegExp(contentSha256.slice(0, 12)))).toBeNull()
+  })
+
   it('does not request extraction before explicit charge consent and freezes the owned artifact digest', async () => {
     page()
     await chooseDestination()

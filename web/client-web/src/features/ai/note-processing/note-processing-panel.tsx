@@ -48,7 +48,7 @@ function chainTone(value: string) {
   return 'neutral' as const
 }
 
-function ChainCard({ chain }: { chain: NoteProcessingChain }) {
+function ChainCard({ chain, showVersionDetails }: { chain: NoteProcessingChain; showVersionDetails: boolean }) {
   const title = chain.kind === 'Asr' ? 'ASR 转写' : '多模态整理'
   return <div className="min-w-0 rounded-ctl border border-border bg-bg p-3">
     <div className="flex flex-wrap items-center justify-between gap-2">
@@ -57,7 +57,7 @@ function ChainCard({ chain }: { chain: NoteProcessingChain }) {
     </div>
     <p className="mt-2 text-xs text-text-3">
       {chain.state === 'NotApplicable'
-        ? '该固定版本没有录音，不创建空 ASR 任务。'
+        ? showVersionDetails ? '该固定版本没有录音，不创建空 ASR 任务。' : '当前内容没有录音，无需创建转写任务。'
         : chain.taskCreated
           ? `${chain.completedItems} / ${chain.totalItems} 项完成${chain.failedItems ? ` · ${chain.failedItems} 项未完成` : ''}`
           : chain.waitingReason ?? '任务尚未创建'}
@@ -68,11 +68,12 @@ function ChainCard({ chain }: { chain: NoteProcessingChain }) {
   </div>
 }
 
-export function NoteProcessingPanel({ ownerId, serverBinding, noteId, versionId, onChanged }: {
+export function NoteProcessingPanel({ ownerId, serverBinding, noteId, versionId, showVersionDetails, onChanged }: {
   ownerId: string
   serverBinding: string
   noteId: string
   versionId: string
+  showVersionDetails: boolean
   onChanged?: () => void
 }) {
   const qc = useQueryClient()
@@ -128,7 +129,7 @@ export function NoteProcessingPanel({ ownerId, serverBinding, noteId, versionId,
           <Chip>{value.autoProcessingEnabled ? '自动处理已开启' : '自动处理已关闭'}</Chip>
         </div>
         <p className="mt-1 text-xs leading-5 text-text-3">
-          固定版本的全材料处理状态；两份结果均保留原稿，失败不会自动重发。
+          {showVersionDetails ? '固定版本的全材料处理状态' : '当前内容的处理状态'}；两份结果均保留原稿，失败不会自动重发。
           {value.autoStarted ? ' 本次由材料完成事件自动发起。' : ''}
         </p>
       </div>
@@ -146,15 +147,17 @@ export function NoteProcessingPanel({ ownerId, serverBinding, noteId, versionId,
     {actionError && <InlineAlert tone="crit" title="发起未完成">{actionError}</InlineAlert>}
 
     <div className="grid gap-3 md:grid-cols-2">
-      <ChainCard chain={value.asr} />
-      <ChainCard chain={value.derived} />
+      <ChainCard chain={value.asr} showVersionDetails={showVersionDetails} />
+      <ChainCard chain={value.derived} showVersionDetails={showVersionDetails} />
     </div>
 
     {value.artifacts.length > 0 && <div className="rounded-ctl border border-border p-3">
       <p className="text-xs font-medium text-text-2">现有结果</p>
       <div className="mt-2 flex flex-wrap gap-2">
         {value.artifacts.map((artifact) => <Chip key={artifact.artifactId}>
-          {kindLabels[artifact.kind] ?? artifact.kind} · {artifact.headVersionId ? '已有选用版本' : '仅生成待选版本'}
+          {kindLabels[artifact.kind] ?? artifact.kind} · {artifact.headVersionId
+            ? showVersionDetails ? '已有选用版本' : '已采用'
+            : showVersionDetails ? '仅生成待选版本' : '有新结果待采用'}
         </Chip>)}
       </div>
     </div>}
@@ -164,7 +167,7 @@ export function NoteProcessingPanel({ ownerId, serverBinding, noteId, versionId,
     </ul>}
 
     <p className="text-xs leading-5 text-text-3">
-      当前仅覆盖该固定版本的全量材料
+      {showVersionDetails ? '当前仅覆盖该固定版本的全量材料' : '当前仅覆盖这篇笔记的全量材料'}
       {value.incrementalScopeSupported ? '；增量范围已支持。' : '；后续增量处理范围尚未实现，不会伪装成全量已覆盖。'}
       {value.updatedAt ? ` · 更新于 ${formatTime(value.updatedAt)}` : ''}
     </p>

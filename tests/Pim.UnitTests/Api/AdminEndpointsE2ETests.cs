@@ -183,6 +183,30 @@ public class AdminEndpointsE2ETests
         Assert.Equal(40041, body.GetProperty("code").GetInt32());
     }
 
+    [Fact]
+    public async Task OperationsAudit_IsAdminOnly()
+    {
+        using var factory = CreateFactory($"z01-audit-authz-{Guid.NewGuid()}");
+        var anon = factory.CreateClient();
+        var admin = await RegisterAsync(anon, "audit-admin");
+        var ordinary = await RegisterAsync(anon, "audit-user");
+        var objectId = Guid.NewGuid();
+        var path = $"/api/v1/operations/audit/event/{objectId}";
+
+        var adminClient = Authed(factory, admin.AccessToken!);
+        Assert.Equal(HttpStatusCode.OK, (await adminClient.GetAsync(path)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await adminClient.GetAsync("/api/v1/operations/audit/export")).StatusCode);
+
+        var ordinaryClient = Authed(factory, ordinary.AccessToken!);
+        Assert.Equal(HttpStatusCode.Forbidden, (await ordinaryClient.GetAsync(path)).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await ordinaryClient.GetAsync("/api/v1/operations/audit/export")).StatusCode);
+        var restorePath = $"/api/v1/operations/audit/{Guid.NewGuid()}/restore-preview";
+        Assert.Equal(HttpStatusCode.Forbidden, (await ordinaryClient.PostAsync(restorePath, null)).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await anon.GetAsync(path)).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await anon.GetAsync("/api/v1/operations/audit/export")).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await anon.PostAsync(restorePath, null)).StatusCode);
+    }
+
     private static string GetUserId(JsonElement listResponse, string username)
     {
         foreach (var u in listResponse.GetProperty("data").EnumerateArray())

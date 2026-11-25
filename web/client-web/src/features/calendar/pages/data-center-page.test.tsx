@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { NAV_GROUPS } from '@/app/nav'
+import { navGroupsForRole } from '@/app/nav'
 import { ApiError } from '@/api/client'
 import { DataCenterPage } from './data-center-page'
 
@@ -34,7 +34,7 @@ vi.mock('../queries', () => ({
 vi.mock('../api', () => ({ dataCenterApi: dataCenterApiMock }))
 vi.mock('@/features/operations/api', () => ({ auditApi: auditApiMock }))
 vi.mock('@/features/auth/auth-context', () => ({
-  useAuth: () => ({ user: { id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' } }),
+  useAuth: () => ({ user: { id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', role: 'admin' } }),
 }))
 
 let client: QueryClient
@@ -62,9 +62,11 @@ afterEach(() => {
 })
 
 describe('DataCenterPage', () => {
-  it('is exposed in the normal navigation and renders owner-scoped objects', async () => {
-    const governance = NAV_GROUPS.find((group) => group.label === '治理')
-    expect(governance?.items).toContainEqual(expect.objectContaining({ to: '/data-center', label: '数据中心' }))
+  it('is exposed only to admins and renders owner-scoped objects', async () => {
+    const adminGovernance = navGroupsForRole('admin').find((group) => group.label === '治理')
+    expect(adminGovernance?.items).toContainEqual(expect.objectContaining({ to: '/data-center', label: '数据中心' }))
+    const ordinaryGovernance = navGroupsForRole('user').find((group) => group.label === '治理')
+    expect(ordinaryGovernance?.items.some((item) => item.to === '/data-center')).toBe(false)
 
     queryState.data = {
       items: [{

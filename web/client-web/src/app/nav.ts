@@ -24,6 +24,8 @@ export interface NavItem {
   icon: LucideIcon
   /** 右侧 1 字符徽标位（P1 起接入计数） */
   badgeChar?: string
+  /** 管理/运维入口；普通用户不显示，路由层仍需独立守卫 */
+  adminOnly?: boolean
 }
 
 export interface NavGroup {
@@ -62,7 +64,7 @@ export const NAV_GROUPS: NavGroup[] = [
   {
     label: '治理',
     items: [
-      { to: '/data-center', label: '数据中心', icon: Database },
+      { to: '/data-center', label: '数据中心', icon: Database, adminOnly: true },
       { to: '/reminders', label: '提醒', icon: Bell },
       { to: '/reports', label: '报告', icon: FileText },
       { to: '/habits', label: '习惯', icon: Repeat },
@@ -73,6 +75,16 @@ export const NAV_GROUPS: NavGroup[] = [
     items: [{ to: '/settings', label: '设置', icon: Settings }],
   },
 ]
+
+/** 按当前角色过滤导航；隐藏不等于授权，路由与 API 仍需各自校验。 */
+export function navGroupsForRole(role: string | null | undefined): NavGroup[] {
+  return NAV_GROUPS
+    .map((group) => ({
+      ...group,
+      items: group.items.filter((item) => !item.adminOnly || role === 'admin'),
+    }))
+    .filter((group) => group.items.length > 0)
+}
 
 /** 当前路径命中的导航项（最长前缀匹配，避免 /pc-tracker 与其子页同时高亮） */
 export function activeNavPath(pathname: string): string | null {

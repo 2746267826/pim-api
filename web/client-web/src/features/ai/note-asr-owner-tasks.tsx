@@ -17,12 +17,13 @@ function stateTone(phase: string) {
 }
 
 /** Ordinary-owner ASR task list and detail. It uses only public note ASR APIs. */
-export function NoteAsrOwnerTasks({ userId, serverBinding, versionId, selectedTaskId, onSelect }: {
+export function NoteAsrOwnerTasks({ userId, serverBinding, versionId, selectedTaskId, onSelect, showVersionDetails = true }: {
   userId: string
   serverBinding: string
   versionId: string
   selectedTaskId: string
   onSelect: (taskId: string) => void
+  showVersionDetails?: boolean
 }) {
   const prefix = ['ai', userId, serverBinding, 'note-asr-owner']
   const tasks = useQuery({
@@ -43,12 +44,12 @@ export function NoteAsrOwnerTasks({ userId, serverBinding, versionId, selectedTa
     <summary className="cursor-pointer text-sm font-medium text-text-2">更多：转写任务与恢复{versionTasks.length ? ` · ${versionTasks.length} 项` : ''}</summary>
     <div className="mt-3 min-w-0 space-y-3 p-1">
       <div>
-        <h3 className="text-sm font-semibold text-text-1">本版本录音转写任务</h3>
+        <h3 className="text-sm font-semibold text-text-1">{showVersionDetails ? '本版本录音转写任务' : '录音转写任务'}</h3>
         <p className="mt-1 break-words text-xs text-text-3">每个任务保留独立错误、分片结果和重处理历史；旧结果不会被新任务覆盖。</p>
       </div>
     {tasks.isPending ? <Skeleton className="h-16" />
       : tasks.isError ? <p role="alert" className="text-sm text-text-2">任务读取失败，请刷新核对；页面不会自动重发。</p>
-        : !versionTasks.length ? <p className="text-sm text-text-3">该材料版本还没有转写任务。</p>
+        : !versionTasks.length ? <p className="text-sm text-text-3">{showVersionDetails ? '该材料版本还没有转写任务。' : '这篇笔记还没有转写任务。'}</p>
           : <div className="space-y-2">{versionTasks.map((task) => <TaskRow key={task.taskId} task={task} selected={task.taskId === selected} onSelect={onSelect} />)}</div>}
     {selected && <TaskDetail key={`${serverBinding}/${selected}`} id={selected} userId={userId} serverBinding={serverBinding}
       prefix={prefix} />}

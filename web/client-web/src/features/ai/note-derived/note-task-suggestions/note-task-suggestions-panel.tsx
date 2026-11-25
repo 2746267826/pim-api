@@ -73,6 +73,7 @@ export function NoteTaskSuggestionsPanel({
   noteId,
   artifactId,
   versionId,
+  showTechnicalDetails = true,
   className,
   onTaskCreated,
 }: {
@@ -81,6 +82,7 @@ export function NoteTaskSuggestionsPanel({
   noteId: string
   artifactId: string
   versionId: string
+  showTechnicalDetails?: boolean
   className?: string
   onTaskCreated?: (suggestion: NoteTaskSuggestion) => void
 }) {
@@ -147,9 +149,11 @@ export function NoteTaskSuggestionsPanel({
   const extractionStatus = extraction.data?.status
   useEffect(() => {
     if (extractionStatus !== 'Succeeded') return
-    setNotice(`已固定本次笔记版本并生成 ${extraction.data?.suggestionCount ?? 0} 条建议。请逐条核对后再创建任务。`)
+    setNotice(showTechnicalDetails
+      ? `已固定本次笔记版本并生成 ${extraction.data?.suggestionCount ?? 0} 条建议。请逐条核对后再创建任务。`
+      : `已生成 ${extraction.data?.suggestionCount ?? 0} 条任务建议。请逐条核对后再创建任务。`)
     void qc.invalidateQueries({ queryKey: ['note-task-suggestions', userId, serverBinding, noteId] })
-  }, [extraction.data?.suggestionCount, extractionStatus, noteId, qc, serverBinding, userId])
+  }, [extraction.data?.suggestionCount, extractionStatus, noteId, qc, serverBinding, showTechnicalDetails, userId])
 
   const sourceReady = Boolean(version.data)
   const canExtract = Boolean(
@@ -190,7 +194,9 @@ export function NoteTaskSuggestionsPanel({
       setIntentState({ kind: 'none' })
       setExtractionId(created.id)
       setChargeConfirmed(false)
-      setNotice('任务提取已受理。固定正文快照和服务商目标已保存；页面会轮询真实状态，不会在本机自动改用另一模型。')
+      setNotice(showTechnicalDetails
+        ? '任务提取已受理。固定正文快照和服务商目标已保存；页面会轮询真实状态，不会在本机自动改用另一模型。'
+        : '任务提取已受理。本次正文和服务商目标已保存；页面会轮询真实状态，不会自动改用另一模型。')
     } catch (failure) {
       setError(`${errorText(failure)}。已冻结请求标识；请使用原提取请求核对，不会自动创建第二次付费请求。`)
     } finally {
@@ -231,7 +237,9 @@ export function NoteTaskSuggestionsPanel({
         <div>
           <h2 className="text-sm font-semibold text-text-1">从笔记提取任务建议</h2>
           <p className="mt-1 max-w-2xl text-xs leading-5 text-text-3">
-            只从当前固定版本的正文提取；来源、内容摘要、文本模型和地址会在发送前冻结。建议不会自动变成任务。
+            {showTechnicalDetails
+              ? '只从当前固定版本的正文提取；来源、内容摘要、文本模型和地址会在发送前冻结。建议不会自动变成任务。'
+              : '只从当前内容的正文提取；文本模型和发送地址会在发送前确认。建议不会自动变成任务。'}
           </p>
         </div>
       </div>
@@ -262,7 +270,11 @@ export function NoteTaskSuggestionsPanel({
         {destinations.isPending || version.isPending
           ? <Skeleton className="h-9" />
           : !sourceReady
-            ? <InlineAlert tone="warn">当前材料版本没有可核对的派生正文摘要，暂时不能提取任务建议。</InlineAlert>
+            ? <InlineAlert tone="warn">
+                {showTechnicalDetails
+                  ? '当前材料版本没有可核对的派生正文摘要，暂时不能提取任务建议。'
+                  : '当前内容暂时无法核对，不能提取任务建议。'}
+              </InlineAlert>
             : !textDestinations.length
               ? <InlineAlert tone="warn">暂无可用的共享文本模型目标。普通账号不能读取或配置管理员凭据。</InlineAlert>
               : <Select id="note-task-suggestion-destination" ariaLabel="文本模型目标"
@@ -273,7 +285,7 @@ export function NoteTaskSuggestionsPanel({
                     value: destinationKey(item),
                     label: `${item.displayName} · ${item.model}`,
                   }))} className="w-full" />}
-        {version.data && <p className="break-all font-mono text-[11px] leading-5 text-text-4">
+        {version.data && showTechnicalDetails && <p className="break-all font-mono text-[11px] leading-5 text-text-4">
           固定内容 SHA-256：{version.data.contentSha256}
         </p>}
       </div>
@@ -285,7 +297,9 @@ export function NoteTaskSuggestionsPanel({
               Boolean(intent) || Boolean(intentBlocked)}
             onCheckedChange={setChargeConfirmed} />
           <label htmlFor="note-task-suggestion-charge" className="text-xs leading-5 text-text-2">
-            确认将固定版本完整正文发送到所选文本模型，并确认整批可能产生现金费用。
+            {showTechnicalDetails
+              ? '确认将固定版本完整正文发送到所选文本模型，并确认整批可能产生现金费用。'
+              : '确认将当前完整正文发送到所选文本模型，并确认整批可能产生现金费用。'}
           </label>
         </div>
         <Button className="w-full" variant="primary"
@@ -300,7 +314,7 @@ export function NoteTaskSuggestionsPanel({
       </div>
     </div>
 
-    {extraction.data && <ExtractionState extraction={extraction.data} />}
+    {extraction.data && <ExtractionState extraction={extraction.data} showTechnicalDetails={showTechnicalDetails} />}
     {extraction.isError && <InlineAlert tone="warn" title="提取状态读取失败">
       {errorText(extraction.error)}。现有建议仍可读取；不会自动重新发送模型请求。
     </InlineAlert>}
@@ -308,7 +322,7 @@ export function NoteTaskSuggestionsPanel({
     <div className="space-y-3 border-t border-border pt-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
-          <h3 className="text-sm font-semibold text-text-1">本版本建议</h3>
+          <h3 className="text-sm font-semibold text-text-1">{showTechnicalDetails ? '本版本建议' : '任务建议'}</h3>
           <p className="mt-1 text-xs text-text-3">共 {versionItems.length} 条，待处理 {draftCount} 条；已创建任务与放弃记录保留历史。</p>
         </div>
         <StatusBadge tone={draftCount ? 'warn' : 'neutral'}>{draftCount} 条待确认</StatusBadge>
@@ -320,6 +334,7 @@ export function NoteTaskSuggestionsPanel({
           : <div className="space-y-3">{versionItems.map((suggestion) => (
               <SuggestionRow key={`${suggestion.id}/${suggestion.revision}`}
                 suggestion={suggestion} userId={userId} serverBinding={serverBinding}
+                showTechnicalDetails={showTechnicalDetails}
                 onChanged={async (message, created) => {
                   setNotice(message)
                   if (created) onTaskCreated?.(created)
@@ -330,14 +345,19 @@ export function NoteTaskSuggestionsPanel({
   </Card>
 }
 
-function ExtractionState({ extraction }: { extraction: NoteTaskSuggestionExtraction }) {
+function ExtractionState({ extraction, showTechnicalDetails }: {
+  extraction: NoteTaskSuggestionExtraction
+  showTechnicalDetails: boolean
+}) {
   return <div className="flex flex-wrap items-center justify-between gap-2 rounded-ctl border border-border bg-surface px-3 py-2.5 text-xs text-text-2">
     <span>
-      <span className="font-medium">提取记录</span> · 尝试 {extraction.attemptCount} 次 ·
-      固定提示 {extraction.promptVersion}
+      <span className="font-medium">提取记录</span> · 尝试 {extraction.attemptCount} 次
+      {showTechnicalDetails && <> · 固定提示 {extraction.promptVersion}</>}
     </span>
     <span className="flex items-center gap-2">
-      {extraction.errorCode && <span className="font-mono text-[11px] text-crit">{extraction.errorCode}</span>}
+      {showTechnicalDetails && extraction.errorCode && (
+        <span className="font-mono text-[11px] text-crit">{extraction.errorCode}</span>
+      )}
       <StatusBadge tone={extractionTone(extraction.status)}>{extractionNames[extraction.status] ?? extraction.status}</StatusBadge>
     </span>
     {extraction.errorMessage && <span className="w-full text-crit">{extraction.errorMessage}</span>}
@@ -348,11 +368,13 @@ function SuggestionRow({
   suggestion,
   userId,
   serverBinding,
+  showTechnicalDetails,
   onChanged,
 }: {
   suggestion: NoteTaskSuggestion
   userId: string
   serverBinding: string
+  showTechnicalDetails: boolean
   onChanged: (message: string, created?: NoteTaskSuggestion) => Promise<void>
 }) {
   const [editing, setEditing] = useState(false)
@@ -401,9 +423,13 @@ function SuggestionRow({
         clearConfirmIntent(userId, serverBinding, suggestion.id, confirmIntent.value.requestId)
       }
       setEditing(false)
-      await onChanged(`建议已按原修订保存；后续确认将使用新修订 ${updated.revision}。`)
+      await onChanged(showTechnicalDetails
+        ? `建议已按原修订保存；后续确认将使用新修订 ${updated.revision}。`
+        : '任务建议已保存；后续确认会使用最新内容。')
     } catch (failure) {
-      setError(`${errorText(failure)}。服务器记录未在本机改写，请刷新后重新核对修订。`)
+      setError(showTechnicalDetails
+        ? `${errorText(failure)}。服务器记录未在本机改写，请刷新后重新核对修订。`
+        : `${errorText(failure)}。服务器记录未在本机改写，请刷新后重新核对。`)
     } finally {
       setBusy('')
     }
@@ -447,11 +473,17 @@ function SuggestionRow({
       clearConfirmIntent(userId, serverBinding, suggestion.id, requestId)
       await onChanged(
         confirmed.calendarId
-          ? `已在既有任务系统创建任务 ${confirmed.taskId}，目标日历保持不变。`
-          : `已在既有任务系统创建收件箱任务 ${confirmed.taskId}。`,
+          ? showTechnicalDetails
+            ? `已在既有任务系统创建任务 ${confirmed.taskId}，目标日历保持不变。`
+            : '已在既有任务系统创建任务，目标日历保持不变。'
+          : showTechnicalDetails
+            ? `已在既有任务系统创建收件箱任务 ${confirmed.taskId}。`
+            : '已在既有任务系统创建收件箱任务。',
         confirmed)
     } catch (failure) {
-      setError(`${errorText(failure)}。确认请求标识已冻结；重试只复用 ${requestId}，不会新建第二个任务。`)
+      setError(showTechnicalDetails
+        ? `${errorText(failure)}。确认请求标识已冻结；重试只复用 ${requestId}，不会新建第二个任务。`
+        : `${errorText(failure)}。本次确认状态已保留；重试不会新建第二个任务。`)
     } finally {
       setBusy('')
     }
@@ -493,10 +525,14 @@ function SuggestionRow({
                 {suggestion.due && <span className="text-xs text-text-3">截止 {toLocalInputValue(suggestion.due).replace('T', ' ')}</span>}
               </div>
               {suggestion.description && <p className="mt-1 whitespace-pre-wrap text-xs leading-5 text-text-2">{suggestion.description}</p>}
-              {suggestion.taskId && <p className="mt-1 break-all font-mono text-[11px] text-text-4">任务 ID：{suggestion.taskId}</p>}
-              <p className="mt-1 text-[11px] text-text-4">
-                来源摘要 {suggestion.sourceContentSha256.slice(0, 12)}… · 修订 {suggestion.revision.slice(0, 8)}…
-              </p>
+              {showTechnicalDetails && suggestion.taskId && (
+                <p className="mt-1 break-all font-mono text-[11px] text-text-4">任务 ID：{suggestion.taskId}</p>
+              )}
+              {showTechnicalDetails && (
+                <p className="mt-1 text-[11px] text-text-4">
+                  来源摘要 {suggestion.sourceContentSha256.slice(0, 12)}… · 修订 {suggestion.revision.slice(0, 8)}…
+                </p>
+              )}
             </>}
       </div>
       {!editing && draft && <div className="flex flex-wrap gap-2">
@@ -512,7 +548,9 @@ function SuggestionRow({
     </div>
     {editing && <div className="mt-3 flex flex-wrap justify-end gap-2">
       <Button size="sm" variant="ghost" disabled={Boolean(busy)} onClick={() => setEditing(false)}>取消</Button>
-      <Button size="sm" variant="primary" loading={busy === 'save'} onClick={() => void save()}>保存修订</Button>
+      <Button size="sm" variant="primary" loading={busy === 'save'} onClick={() => void save()}>
+        {showTechnicalDetails ? '保存修订' : '保存修改'}
+      </Button>
     </div>}
     {confirmBlocked && <InlineAlert tone="warn" className="mt-3">{confirmBlocked}</InlineAlert>}
     {error && <InlineAlert tone="crit" className="mt-3">{error}</InlineAlert>}

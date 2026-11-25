@@ -7,7 +7,7 @@ import { CalendarBooksManager } from '@/features/calendar/components/calendar-bo
 import { getApiBase } from '@/lib/apiBase'
 import { HEALTH_LABEL, normalizeHealthStatus } from '@/lib/enums'
 import { cn } from '@/lib/utils'
-import { NAV_GROUPS, activeNavPath, type NavItem } from '../nav'
+import { activeNavPath, navGroupsForRole, type NavItem } from '../nav'
 
 /** 当前生效的 API 地址（跟随 pim:api-base-changed 事件刷新） */
 function useCurrentApiBase(): string {
@@ -148,6 +148,7 @@ function SidebarContent({
   const navigate = useNavigate()
   const { pathname } = useLocation()
   const active = activeNavPath(pathname)
+  const groups = navGroupsForRole(user?.role)
 
   return (
     <div className="flex h-full flex-col">
@@ -176,7 +177,7 @@ function SidebarContent({
 
       {/* 导航（overflow-x-hidden：折叠态下不产生横向滚动条） */}
       <nav className={cn('flex-1 overflow-y-auto overflow-x-hidden pb-2', compact ? 'px-2' : 'px-4')}>
-        {NAV_GROUPS.map((group) => (
+        {groups.map((group) => (
           <div key={group.label} className="mb-1">
             {!compact && (
               <div className="px-2.5 pt-3 pb-1 text-xs font-medium text-text-3">{group.label}</div>
