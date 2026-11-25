@@ -125,6 +125,7 @@ check "CI release job 持有共享发布锁" .github/workflows/ci.yml 'group: pi
 check "发布守卫正式版不重发" scripts/ci/release-publish-guard.sh 'formal-exists'
 check "发布守卫重跑只认当前 master HEAD" scripts/ci/release-publish-guard.sh 'commits/master'
 check "发布守卫 API 错误 fail-closed" scripts/ci/release-publish-guard.sh '不把 API 错误当成『不存在』'
+check "跳过发布有可见 summary" .github/workflows/ci.yml 'Release publication skipped'
 check "发布 step 受 publish 守卫控制" .github/workflows/ci.yml "steps.existing.outputs.publish == 'true'"
 check "镜像 :latest 由守卫决定" .github/workflows/build-docker.yml 'image-latest-guard.sh'
 check "镜像守卫使用本次 commit sha" .github/workflows/build-docker.yml 'SHA: ${{ github.sha }}'

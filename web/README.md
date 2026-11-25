@@ -69,7 +69,7 @@ npm run build            # tsc + vite build → dist/（即 web/client-web/dist�
 
 `npm run build` 生成 `client-web/dist/`；合仓后由仓库根流水线负责打包、发布与镜像同步，`web/` 不再单独推包或触发 API 发版。
 
-产物内仍包含 `web-version.json`（字段 `version` / `gitSha` / `builtAt`(UTC)），由 `web/scripts/ci/write-web-version.sh` 生成。`version` 是仓根 `VERSION` 的显示版本，与本次构建注入的 `VITE_DISPLAY_VERSION` 同源；`gitSha` 与 `VITE_GIT_SHA` 同源。`VITE_APP_VERSION` 仍是机器 CalVer，只用于产物版本/更新判断，不写入 `web-version.json` 的 `version`。
+产物内仍包含 `web-version.json`（字段 `version` / `gitSha` / `builtAt`(UTC)），由 `web/scripts/ci/write-web-version.sh` 生成。`version` 是仓根 `VERSION` 的显示版本，与本次构建注入的 `VITE_DISPLAY_VERSION` 同源；`gitSha` 与 `VITE_GIT_SHA` 同源。`VITE_APP_VERSION` 仍是机器 CalVer，不写入 `web-version.json` 的 `version`。
 
 ### Android（Capacitor 8）
 
