@@ -407,6 +407,7 @@ public sealed class AiUsageLimitTests
         await using var db = Open(database.ConnectionString);
         var row = Log(Guid.NewGuid(), Now, null, null, status: "queued", metadataJson: "[]");
         row.UserId = Guid.NewGuid();
+        row.ProviderConnectionId = null;
         db.AiRequestLogs.Add(row);
         await db.SaveChangesAsync();
 
