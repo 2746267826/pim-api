@@ -4,25 +4,27 @@ name: Release (promote)
 #
 # 这个 workflow 只做一件事：把「带着新版本号的那次构建」提升成正式版。
 #
-#   1. 校验版本号（x.y.z 且必须大于 master 上 VERSION 的值）与发行说明
+#   1. 校验版本号（x.y.z；正常模式必须大于 master 上 VERSION，恢复模式必须
+#      等于 master 上 VERSION）与发行说明
 #      （说明必须引用真实并已合并的 PR —— 防编造，见 scripts/ci/validate-release-notes.sh）
 #   2. 开一条只改 VERSION 的 PR，然后自动合并（PR 门禁照走，不绕过保护）
 #   3. 等这次 master 构建跑完 —— 它按常规发出一条 pre-release（带全部资产）
-#   4. 把那条 pre-release 改判为正式版，正文换成给人看的说明
+#   4. 在共享发布锁内重新校验来源，再把那条 pre-release 改判为正式版
 #
 # 为什么不在本 workflow 里重新构建：正式版必须是「已经过完 CI 的那次构建」。
 # 二次构建会得到另一个产物，等于发了一个没被测过的包。pre-release 里的资产
 # 就是那次构建的产物，直接提升即可。
 #
-# 为什么自动发布（ci.yml）全是 pre-release：GitHub 的 /releases/latest 天生
-# 跳过 pre-release，所以客户端更新检查永远只看到正式版；开发期几十个 dev 版本
-# 不会给用户推"有新版本"。
+# 为什么拆成 prepare / apply 两个 job：prepare 要等 PR 合并和 master 构建，
+# 可能长达数小时，不能一直持有发布锁；否则 ci.yml 的 release job 永远拿不到锁，
+# 等待中的 pre-release 发不出来（死锁）。只有最后几秒的 apply 作业进入
+# concurrency group `pim-release-mutation`，与 ci.yml 的 release job 串行。
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Display version, e.g. 1.1.0 (must be greater than VERSION on master)'
+        description: 'Display version, e.g. 1.1.0 (normal mode: greater than VERSION on master; promote_tag mode: equal to it)'
         required: true
         type: string
       notes:
@@ -40,14 +42,18 @@ permissions:
   pull-requests: write
   actions: read
 
+# 同一时间只跑一条 release 流程。注意这不是与 ci.yml 共享的发布锁：
+# 这里要等数小时，真正的短锁在 apply job 上。
 concurrency:
   group: release-promote
   cancel-in-progress: false
 
 jobs:
-  promote:
+  prepare:
     runs-on: ubuntu-latest
     timeout-minutes: 180
+    outputs:
+      tag: ${{ steps.selected.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -64,16 +70,11 @@ jobs:
           PROMOTE_TAG: ${{ inputs.promote_tag }}
         run: |
           set -euo pipefail
-          if [[ -z "$PROMOTE_TAG" && -z "$RELEASE_TOKEN" ]]; then
-            echo "::error::缺少 secret PIM_RELEASE_TOKEN：改版本号要开 PR 并自动合并，必须有一个能触发 workflow 的令牌。"
-            echo "::error::GITHUB_TOKEN 触发的 push/pull_request 不会启动 workflow，PR 永远等不到 CI Gate。"
-            echo "::error::请创建 fine-grained PAT（仅本仓：Contents=RW、Pull requests=RW、Actions=R）或 GitHub App 令牌，存为 secret PIM_RELEASE_TOKEN 后重跑。"
+          # 这个 workflow 会改 VERSION、开 PR、把 tag 指到 latest。workflow_dispatch
+          # 允许从任意分支/ref 触发，必须先把入口钉在 master，避免从旧分支提升。
+          if [[ "${GITHUB_REF:-}" != "refs/heads/master" ]]; then
+            echo "::error::release.yml 只能基于 master 触发（当前 ref=${GITHUB_REF:-<empty>}）"
             exit 1
-          fi
-
-          if [[ -n "$PROMOTE_TAG" ]]; then
-            echo "恢复模式：只提升已存在的 pre-release ${PROMOTE_TAG}（不改版本号、不等构建）"
-            exit 0
           fi
 
           if ! [[ "$VERSION_INPUT" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
@@ -81,6 +82,28 @@ jobs:
             exit 1
           fi
           CURRENT="$(head -n 1 VERSION | tr -d '\r' | tr -d '[:space:]')"
+
+          if [[ -n "$PROMOTE_TAG" ]]; then
+            if [[ ! "$PROMOTE_TAG" =~ ^[a-z0-9-]+-v[0-9]{2}\.[0-9]{2}\.[0-9]+$ ]]; then
+              echo "::error::promote_tag 格式不对（收到 '${PROMOTE_TAG}'，应形如 api-v26.11.1234）"
+              exit 1
+            fi
+            if [[ "$VERSION_INPUT" != "$CURRENT" ]]; then
+              echo "::error::恢复模式下 master 上的 VERSION 已是 '${CURRENT}'，不是目标 '${VERSION_INPUT}'。"
+              echo "::error::先把 VERSION bump 合并进 master，或换用正常发版模式；不允许把旧版 tag 提升成 latest。"
+              exit 1
+            fi
+            echo "恢复模式：校验通过后只提升已存在的 pre-release ${PROMOTE_TAG}（不改版本号、不等构建）"
+            exit 0
+          fi
+
+          if [[ -z "$RELEASE_TOKEN" ]]; then
+            echo "::error::缺少 secret PIM_RELEASE_TOKEN：改版本号要开 PR 并自动合并，必须有一个能触发 workflow 的令牌。"
+            echo "::error::GITHUB_TOKEN 触发的 push/pull_request 不会启动 workflow，PR 永远等不到 CI Gate。"
+            echo "::error::请创建 fine-grained PAT（仅本仓：Contents=RW、Pull requests=RW、Actions=R）或 GitHub App 令牌，存为 secret PIM_RELEASE_TOKEN 后重跑。"
+            exit 1
+          fi
+
           if [[ "$VERSION_INPUT" == "$CURRENT" ]]; then
             echo "::error::版本号没变（master 上已是 ${CURRENT}）；要发新版请改成一个更大的号"
             exit 1
@@ -124,33 +147,48 @@ jobs:
           git push -u origin "$BRANCH" || git push -u origin "$BRANCH" --force
 
           PR_NUM="$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number // empty')"
+          # PR 正文保持仓内约定的四双语小节 + 需求验收映射，发布说明抽取脚本
+          # 按这些小节取内容。已有 PR 也重写一次，避免旧模板缺章节。
+          {
+            echo "## 技术修改 / Technical changes"
+            echo ""
+            echo "- Bump \`VERSION\` to \`${V}\` (display version only; machine version stays CalVer)."
+            echo "- 只改显示版本号文件；机器版本（CalVer + versionCode）不变。"
+            echo ""
+            echo "## 功能变化 / Feature changes"
+            echo ""
+            echo "- 版本号显示为 v${V}。"
+            echo ""
+            echo "## 如何体验 / How to try it"
+            echo ""
+            echo "- 打开 Web 界面，页脚与「设置 → 关于」显示 v${V}。"
+            echo "- 打开 \`/api/version\`，\`webVersion\` 显示 v${V}。"
+            echo ""
+            echo "## 测试 / Tests"
+            echo ""
+            echo "- 由本仓 CI 在本 PR 与合并提交上运行。"
+            echo "- 显示版本注入：本 PR（仅改 \`VERSION\`）由 CI \`web-build\` 校验 bundle 里的显示版本；\`build-docker\` 镜像 smoke（\`/web-version.json\`、\`/api/version\`、bundle）在合并后的 master 构建中执行（\`FORCE_ON_VERSION\` 强制全量重建），实际结果以对应 CI 日志为准。"
+            echo "- 正式版提升：NOT-VERIFIED（由 \`release.yml\` 实际运行后产生证据，本 PR 创建时尚不可知）。"
+            echo ""
+            echo "## 需求与验收映射 / Requirement & Acceptance Mapping"
+            echo ""
+            echo "| 需求 / Requirement | 验收标准 / Acceptance criteria | 证据 / Evidence | 状态 / Status |"
+            echo "| --- | --- | --- | --- |"
+            echo "| 显示版本 bump 到 v${V} | 仓根 \`VERSION\` 为 \`${V}\` | 本 PR 的 \`VERSION\` diff | PASS（由 release workflow 写入） |"
+            echo "| 前端 bundle 注入 v${V} | PR \`web-build\` 的 dist/assets 含 \`${V}\` | CI \`web-build\` 的 Verify display version injection | NOT-VERIFIED（本 PR 的 CI 尚未运行） |"
+            echo "| 镜像/页脚/设置注入 v${V} | 镜像内 \`web-version.json\`、\`/api/version.webVersion\`、前端 bundle 都含 \`${V}\` | 合并后的 master 构建：\`build-docker\` 真实镜像 smoke | NOT-VERIFIED（要等本 PR 合并后的 master 构建） |"
+            echo "| 正式版提升为 v${V} | pre-release 变为正式版并成为 latest，且不回退旧 CalVer | \`release.yml\` 的 Validate promote target + Promote 步骤 | NOT-VERIFIED（尚未实际运行 release） |"
+            echo "| 旧 CI 重跑不降级 | 正式版 tag 保持 formal；旧 run 不补发/刷新过期 release | CI \`Guard existing formal release\` + 共享 \`pim-release-mutation\` 锁 | NOT-VERIFIED（需真实重跑验证） |"
+            echo ""
+            echo "---"
+            echo ""
+            echo "由 release workflow 自动创建；合并后会把该次构建提升为正式版。"
+          } > "$RUNNER_TEMP/pr-body.md"
+
           if [[ -n "$PR_NUM" ]]; then
             echo "复用已存在的 PR #${PR_NUM}"
+            gh pr edit "$PR_NUM" --body-file "$RUNNER_TEMP/pr-body.md"
           else
-            # PR 正文保持仓内约定的双语小节，发布说明抽取脚本按这些小节取内容。
-            {
-              echo "## 技术修改 / Technical changes"
-              echo ""
-              echo "- Bump \`VERSION\` to \`${V}\` (display version only; machine version stays CalVer)."
-              echo "- 只改显示版本号文件；机器版本（CalVer + versionCode）不变。"
-              echo ""
-              echo "## 功能变化 / Feature changes"
-              echo ""
-              echo "- 版本号显示为 v${V}。"
-              echo ""
-              echo "## 如何体验 / How to try it"
-              echo ""
-              echo "- 打开 Web 界面，页脚与「设置 → 关于」显示 v${V}。"
-              echo ""
-              echo "## 测试 / Tests"
-              echo ""
-              echo "- 由本仓 CI 在本 PR 与合并提交上运行；正式版只提升已通过 CI 的那次构建。"
-              echo ""
-              echo "---"
-              echo ""
-              echo "由 release workflow 自动创建；合并后会把该次构建提升为正式版。"
-            } > "$RUNNER_TEMP/pr-body.md"
-
             PR_URL="$(gh pr create --base master --head "$BRANCH" \
               --title "chore(release): v${V} / 正式版 v${V}" \
               --body-file "$RUNNER_TEMP/pr-body.md")"
@@ -266,15 +304,79 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "待提升的 pre-release：${TAG}"
 
+      - name: Select promote tag
+        id: selected
+        env:
+          PROMOTE_TAG: ${{ inputs.promote_tag }}
+          DISCOVERED_TAG: ${{ steps.rel.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$PROMOTE_TAG" ]]; then
+            TAG="$PROMOTE_TAG"
+          else
+            TAG="$DISCOVERED_TAG"
+          fi
+          if [[ -z "$TAG" ]]; then
+            echo "::error::没有可提升的 tag（正常路径没找到构建产物 release，promote_tag 也为空）"
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "apply 阶段将提升：${TAG}"
+
+  # ── 短锁内的最终校验 + 提升 ────────────────────────────────────────────
+  # prepare 可能等几小时，不能占用发布锁；apply 只做最后一步，先同步到当前
+  # master，再重新做来源校验。ci.yml 的 release job 使用同一个 concurrency
+  # group，因此不会出现「刚提升完又被旧 CI 重跑改回 pre-release」的竞态。
+  apply:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: pim-release-mutation
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.PIM_RELEASE_TOKEN || github.token }}
+
+      # workflow_dispatch 的 checkout 是触发时的 master；bump PR 合并后
+      # tag 的 squash commit 是它的后代。必须同步到当前 master，否则
+      # 「tag commit 在当前历史里」会把正常发版误判成失败。
+      - name: Sync to current master
+        run: |
+          set -euo pipefail
+          git fetch --prune origin master
+          git checkout -B master origin/master
+          echo "validate HEAD: $(git rev-parse HEAD)"
+          echo "master VERSION: $(head -n 1 VERSION | tr -d '\r' | tr -d '[:space:]')"
+
+      # ── 来源证明：tag / commit / VERSION / CI run / 资产 / latest ────────
+      # 正常路径和 promote_tag 恢复路径都走这里。只凭 tag 名字提升等于相信
+      # 调用方；这里用 release、tag ref、git 历史、CI run、台账和当前 latest
+      # 交叉验证。历史 formal/pre-release 不会因为「曾经发过」就被当成可提升。
+      - name: Validate promote target
+        id: target
+        env:
+          GH_TOKEN: ${{ secrets.PIM_RELEASE_TOKEN || github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          V: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          bash scripts/ci/validate-promote-target.sh \
+            --repo "$GITHUB_REPOSITORY" \
+            --tag "$TAG" \
+            --version "$V"
+
       # ── 提升为正式版 ──────────────────────────────────────────────────
       - name: Promote to formal release
         id: promote
         env:
           # 提升只改 release 元数据，不需要触发任何 workflow，用内置令牌即可。
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ inputs.promote_tag != '' && inputs.promote_tag || steps.rel.outputs.tag }}
+          TAG: ${{ steps.target.outputs.tag }}
           V: ${{ inputs.version }}
-          RUN_ID: ${{ steps.build.outputs.run_id }}
+          RUN_ID: ${{ steps.target.outputs.run_id }}
           NOTES: ${{ inputs.notes }}
         run: |
           set -euo pipefail
@@ -283,22 +385,20 @@ jobs:
             exit 1
           fi
 
-          IS_PRE="$(gh release view "$TAG" --json isPrerelease --jq .isPrerelease)"
+          IS_PRE="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isPrerelease --jq .isPrerelease)"
           # 必须用 databaseId（REST 数字 id）。`--json id` 给的是 GraphQL 节点 id
-          # （RE_kwDO...），拼进 REST 路径会 404 —— 真踩过，提升看起来成功、其实
-          # latest 没改，用户侧更新检查还指着上一个正式版。
-          RELEASE_ID="$(gh release view "$TAG" --json databaseId --jq .databaseId)"
+          # （RE_kwDO...），拼进 REST 路径会 404 —— 提升看起来成功、latest 却没改。
+          RELEASE_ID="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json databaseId --jq .databaseId)"
           if ! [[ "$RELEASE_ID" =~ ^[0-9]+$ ]]; then
             echo "::error::拿不到 release 的数字 id（收到 '${RELEASE_ID}'），无法设置 make_latest"
             exit 1
           fi
-
-          if [[ "$IS_PRE" != "true" ]]; then
-            # 幂等重跑：正文不再改，但仍确保 latest 指向它（上一次可能就是卡在这里）。
-            echo "::notice::${TAG} 已经是正式版；仍确认 make_latest 指向它"
-            gh api -X PATCH "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" -f make_latest=true >/dev/null
-            echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-            exit 0
+          if [[ "$IS_PRE" == "true" ]]; then
+            echo "提升 ${TAG}：pre-release → 正式版"
+          else
+            # 重入：上次可能已经改判成功、只是 make_latest 没跑完。不要提前退出，
+            # 继续把正文/title/latest 收敛到目标状态。
+            echo "::notice::${TAG} 已经是正式版，本次重入只收敛正文与 latest"
           fi
 
           printf '%s\n' "$NOTES" > "$RUNNER_TEMP/notes.md"
@@ -308,6 +408,7 @@ jobs:
             echo ""
             echo "---"
             echo ""
+            echo "显示版本 / display version: \`${V}\`"
             echo "内部版本 / internal: \`${TAG}\`"
             if [[ -n "$RUN_ID" ]]; then
               echo "构建运行 / build run: [${RUN_ID}](${RUN_URL})"
@@ -315,21 +416,38 @@ jobs:
             echo "构建产物即本正式版的全部资产（不是二次构建）。"
           } > "$RUNNER_TEMP/final-notes.md"
 
-          gh release edit "$TAG" \
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" \
             --prerelease=false \
             --title "PIM API v${V} (${TAG})" \
             --notes-file "$RUNNER_TEMP/final-notes.md"
 
           # make_latest 显式设置：/releases/latest 是客户端更新检查的入口，不能靠猜。
-          RELEASE_ID="$(gh release view "$TAG" --json id --jq .id)"
           gh api -X PATCH "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" -f make_latest=true >/dev/null
-          echo "✅ 正式版：${TAG}（显示版本 v${V}）"
+
+          # 不把「命令没报错」当成成功：重新读回 release 与 /releases/latest。
+          FINAL_JSON="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}")"
+          FINAL_ID="$(jq -r '.id // empty' <<<"$FINAL_JSON")"
+          FINAL_PRE="$(jq -r 'if has("prerelease") then .prerelease else "missing" end' <<<"$FINAL_JSON")"
+          FINAL_DRAFT="$(jq -r 'if has("draft") then .draft else "missing" end' <<<"$FINAL_JSON")"
+          if [[ "$FINAL_ID" != "$RELEASE_ID" || "$FINAL_PRE" != "false" || "$FINAL_DRAFT" != "false" ]]; then
+            echo "::error::提升后回读不一致：id=${FINAL_ID}/${RELEASE_ID} prerelease=${FINAL_PRE} draft=${FINAL_DRAFT}"
+            exit 1
+          fi
+
+          LATEST_JSON="$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest")"
+          LATEST_ID="$(jq -r '.id // empty' <<<"$LATEST_JSON")"
+          LATEST_TAG="$(jq -r '.tag_name // empty' <<<"$LATEST_JSON")"
+          if [[ "$LATEST_ID" != "$RELEASE_ID" || "$LATEST_TAG" != "$TAG" ]]; then
+            echo "::error::make_latest 未收敛：/releases/latest 是 ${LATEST_TAG}（id=${LATEST_ID}），期望 ${TAG}（id=${RELEASE_ID}）"
+            exit 1
+          fi
+          echo "✅ 正式版：${TAG}（显示版本 v${V}），/releases/latest 已确认指向它"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
       - name: Write release summary
         if: always()
         env:
-          TAG: ${{ inputs.promote_tag != '' && inputs.promote_tag || steps.rel.outputs.tag }}
+          TAG: ${{ steps.target.outputs.tag }}
           V: ${{ inputs.version }}
         run: |
           {
@@ -341,5 +459,5 @@ jobs:
             echo "| 提升的 release | \`${TAG:-未产出}\` |"
             echo "| 结果 | ${{ job.status }} |"
             echo ""
-            echo "> /releases/latest 现在指向这条正式版；开发期的 pre-release 不进更新检查。"
+            echo "> 只有回读确认 /releases/latest 指向本 tag 才算提升成功；开发期的 pre-release 不进更新检查。"
           } >> "$GITHUB_STEP_SUMMARY"

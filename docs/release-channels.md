@@ -15,8 +15,12 @@
 dev 构建也不会出现"版本回退"。`versionCode = 100000 + run_number` 单调递增，
 客户端永远不会把正式版判成比 dev 版旧。
 
-显示号由 CI 注入：前端用 `VITE_DISPLAY_VERSION`，本地 `npm run dev` 没注入时
-回落成 `0.0.0-local`（不再写死一个看起来像真版本的号）。
+显示号由 CI 注入：前端用 `VITE_DISPLAY_VERSION`；Docker 的 `web-build` 阶段用
+同一个值写 `/app/wwwroot/web-version.json` 与镜像标签 `org.pim.web-version`。
+本地 `npm run dev` 没注入时回落成 `0.0.0-local`（不再写死一个看起来像真版本的号）。
+`build-docker` 的 smoke 会从运行中的容器 GET `/web-version.json` 和
+`/api/version`，断言 `version` / `webVersion` 都是目标显示版本，并检查前端
+bundle 里确实出现该版本号。
 
 ## 自动发布 = dev 版（pre-release）
 
@@ -45,6 +49,40 @@ gh workflow run release.yml \
   -f notes="$(cat notes.md)" \
   -f promote_tag=api-v26.11.1234
 ```
+
+`release.yml` 只能从 master 触发。`promote_tag` 不是「给个 tag 就提升」：
+`scripts/ci/validate-promote-target.sh` 会同时校验
+
+- tag 指向的 commit 在当前 checkout 的 master 历史里，且当前 `VERSION` 与
+  tag commit 的 `VERSION` 都等于输入的显示版本；
+- release 的 `targetCommitish` 精确等于 tag commit（分支名不算）；
+- tag 里的 run number 对应一次成功的 master push 构建，run 的 `headSha`
+  就是 tag commit；
+- 四个 release 资产齐全，`pim-web-version.json` 的 `version` 等于目标显示版本、
+  `apiVersion` 等于 tag 的机器 CalVer；
+- 目标 tag 比当前 `/releases/latest` 新（同显示版本的旧 CalVer 会被拒绝），
+  且目标显示版本不低于 latest 的显示版本。
+
+因此只有「新流水线烘出显示版本、且没有把 latest 指回旧构建」的 build 可提升。
+旧流水线产出的历史 formal/pre-release（台账 `version` 还是机器号、或
+`targetCommitish` 不是 commit sha）会按 fail-closed 拒绝，不会被误当成可重入对象。
+同一个新 build 的正式版可以重入：提升步骤不会提前退出，而是继续收敛正文/title
+与 `make_latest`，最后回读 `/releases/latest` 确认收敛。
+
+`release.yml` 拆成 `prepare` / `apply` 两个 job：`prepare` 可以等 PR 合并和
+master 构建数小时，但不持有发布锁；`apply` 只做最终校验与提升，并与 `ci.yml`
+的 release job 共用 `pim-release-mutation` concurrency group。这样不会出现
+「CI 自动发布与正式版提升并发」或「prepare 持锁等待、CI 发不出 pre-release」
+这两种竞态。
+
+CI 自动发布前的守卫（`scripts/ci/release-publish-guard.sh`）会拒绝：
+正式版被旧 run 改写、重跑旧 commit 时补发/刷新过期 pre-release、以及把
+API 错误当成「release 不存在」。可变的 `:latest` 镜像 tag 也只在本次 commit
+仍是当前 master HEAD 时才移动（`image-latest-guard.sh`），旧 run 重跑不会
+把生产默认拉取的镜像指回旧构建。
+
+边界：GitHub 重跑使用的是**触发时那版 workflow 定义**，本变更之前的历史 run
+不会被新守卫回溯保护；不要重跑历史 run。需要补发时从当前 master 新建 run。
 
 `release.yml` 依次做四件事：
 

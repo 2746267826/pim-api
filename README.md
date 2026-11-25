@@ -42,9 +42,9 @@ docker compose --env-file .env.prod -f docker-compose.prod.yml ps
 | 位置 | 内容 |
 | --- | --- |
 | 接口 | `GET /api/version` 的 `webVersion` / `webSha` / `webBuiltAt`（读取镜像内版本文件） |
-| 镜像内文件 | `/app/wwwroot/web-version.json`，字段 `version` / `gitSha` / `builtAt` |
-| Release 资产 | `pim-web-version.json`，原样转录镜像内三字段，另含 `apiVersion` |
-| 镜像标签 | `org.pim.api-version` / `org.pim.web-version` / `org.pim.web-sha` |
+| 镜像内文件 | `/app/wwwroot/web-version.json`，字段 `version`（显示版本）/ `gitSha` / `builtAt` |
+| Release 资产 | `pim-web-version.json`，原样转录镜像内三字段，另含 `apiVersion`（机器版本） |
+| 镜像标签 | `org.pim.api-version`（机器版本）/ `org.pim.web-version`（显示版本）/ `org.pim.web-sha` |
 
 版本与 SHA 由同一次构建注入。Web 的 SHA 现在指本仓提交，不再指旧 pim-web 仓。
 Web 构建、契约类型检查、镜像内容检查、启动健康检查和实际 HTTP SPA 响应检查都必须通过。
