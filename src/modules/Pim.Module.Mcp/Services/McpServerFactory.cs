@@ -11,7 +11,7 @@ namespace Pim.Module.Mcp.Services;
 /// <summary>
 /// Builds the in-process MCP server on the official Microsoft <c>ModelContextProtocol</c>
 /// SDK. The tool registry is shared by the Streamable HTTP transport (/mcp) and the
-/// stdio transport (--mcp-stdio); tools/list serves the embedded 151-tool contract
+/// stdio transport (--mcp-stdio); tools/list serves the embedded 168-tool contract
 /// verbatim and tools/call routes through <see cref="McpToolExecutor"/>.
 /// </summary>
 public static class McpServerFactory

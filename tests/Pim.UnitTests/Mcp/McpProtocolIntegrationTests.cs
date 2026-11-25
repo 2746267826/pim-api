@@ -127,8 +127,49 @@ public sealed class McpProtocolIntegrationTests : IClassFixture<WebApplicationFa
         Assert.True(root.GetProperty("result").GetProperty("capabilities").TryGetProperty("tools", out _));
     }
 
+    /// <summary>
+    /// SDK 1.x clients used 2024-11-05; current 2.x clients negotiate 2025-11-25.
+    /// Both must initialize and list the same 168-tool catalog so older MCP hosts can
+    /// discover the native-note tools without upgrading the wire protocol first.
+    /// </summary>
+    [Theory]
+    [InlineData("2024-11-05")]
+    [InlineData("2025-11-25")]
+    public async Task Initialize_NegotiatesSdk1xAnd2xProtocolVersions_AndListsTools(string protocolVersion)
+    {
+        using var client = CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "pim_mcp_dummy");
+        var initialized = await client.SendAsync(JsonRpc("initialize", new
+        {
+            protocolVersion,
+            capabilities = new { },
+            clientInfo = new { name = "pim-protocol-matrix", version = "1.0" },
+        }));
+        Assert.Equal(HttpStatusCode.OK, initialized.StatusCode);
+        using (var body = ReadJsonFromResponse(initialized))
+        {
+            var result = body.RootElement.GetProperty("result");
+            Assert.Equal(protocolVersion,
+                result.GetProperty("protocolVersion").GetString());
+            Assert.Equal("pim-mcp-server",
+                result.GetProperty("serverInfo").GetProperty("name").GetString());
+        }
+
+        var listed = await client.SendAsync(JsonRpc("tools/list", new { }));
+        Assert.Equal(HttpStatusCode.OK, listed.StatusCode);
+        using var listBody = ReadJsonFromResponse(listed);
+        var tools = listBody.RootElement.GetProperty("result").GetProperty("tools");
+        Assert.Equal(168, tools.GetArrayLength());
+        var names = tools.EnumerateArray()
+            .Select(tool => tool.GetProperty("name").GetString())
+            .ToHashSet(StringComparer.Ordinal);
+        Assert.Contains("get_native_notes", names);
+        Assert.Contains("upload_native_note_package", names);
+        Assert.Contains("delete_native_note", names);
+    }
+
     [Fact]
-    public async Task ToolsList_ReturnsAll149Tools()
+    public async Task ToolsList_ReturnsAll168Tools()
     {
         using var client = CreateClient();
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "pim_mcp_dummy");
@@ -136,8 +177,8 @@ public sealed class McpProtocolIntegrationTests : IClassFixture<WebApplicationFa
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         using var body = ReadJsonFromResponse(response);
         var tools = body.RootElement.GetProperty("result").GetProperty("tools");
-        // WO-PC-BACKEND-20261001 AC-6.3（#379）：get_pc_aw_heatmap 随遗留端点下线，150 → 149。
-        Assert.Equal(149, tools.GetArrayLength());
+        // WO-PC-BACKEND-20261001 AC-6.3（#379）：150 → 149；R05 增加 19 个 native-note 工具。
+        Assert.Equal(168, tools.GetArrayLength());
 
         var contractNames = McpToolExecutor.ToolContract.Select(t => t.Name).ToHashSet(StringComparer.Ordinal);
         var wireNames = tools.EnumerateArray().Select(t => t.GetProperty("name").GetString()).ToHashSet(StringComparer.Ordinal);

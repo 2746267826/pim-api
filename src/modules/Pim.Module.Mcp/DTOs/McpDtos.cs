@@ -1,6 +1,6 @@
 namespace Pim.Module.Mcp.DTOs;
 
-/// <summary>One entry of the embedded 151-tool wire contract (dumped from the Python reference).</summary>
+/// <summary>One entry of the embedded 168-tool wire contract (dumped from the Python reference).</summary>
 public sealed class McpToolContract
 {
     public string Name { get; set; } = string.Empty;

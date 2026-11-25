@@ -51,10 +51,13 @@ public enum McpToolKind
 
     /// <summary>ICS export — ids falls back to calendarId; calendarId sent only when ids absent.</summary>
     ExportIcs,
+
+    /// <summary>Native-note package download — returns base64 metadata instead of parsing a ZIP as text.</summary>
+    NativeNotePackage,
 }
 
 /// <summary>
-/// HTTP mapping for one of the 151 MCP tools. This table is the in-process twin of the
+/// HTTP mapping for one of the 168 MCP tools. This table is the in-process twin of the
 /// Python tool bodies: it decides which arguments go to the query string, which go to the
 /// JSON body, which are path segments, and which extra behaviors apply.
 /// </summary>
@@ -101,7 +104,7 @@ public sealed record McpToolSpec
 }
 
 /// <summary>
-/// Static table of all 151 MCP tools (101 read + 50 write). Source of truth for the
+/// Static table of all 168 MCP tools (107 read + 61 write). Source of truth for the
 /// executor's HTTP mapping; the wire contract (name/description/inputSchema) lives in
 /// the embedded <c>mcp-tools.json</c> dumped from the Python reference.
 /// </summary>
@@ -207,6 +210,15 @@ public static class McpToolTable
             S("get_quick_note", "GET", "/api/v1/quick-notes/{noteId}", req: R("noteId")),
             S("get_quick_note_attachment_meta", "GET", "/api/v1/quick-notes/attachments/{attachmentId}/download", req: R("attachmentId"), kind: McpToolKind.AttachmentMeta),
 
+            // ===================== NativeNotes reads (7) =====================
+            S("get_native_notes", "GET", "/api/v1/native-notes/mcp/notes", Q("status", "offset", "limit")),
+            S("get_native_note", "GET", "/api/v1/native-notes/mcp/notes/{noteId}", Q("includeResults", "versionLimit"), req: R("noteId")),
+            S("get_native_note_versions", "GET", "/api/v1/native-notes/mcp/notes/{noteId}/versions", Q("limit"), req: R("noteId")),
+            S("get_native_note_results", "GET", "/api/v1/native-notes/mcp/notes/{noteId}/results", req: R("noteId")),
+            S("get_native_note_processing", "GET", "/api/v1/native-notes/mcp/notes/{noteId}/processing", Q("versionId"), req: R("noteId")),
+            S("get_native_note_package", "GET", "/api/v1/native-notes/mcp/notes/{noteId}/package", Q("versionId"), req: R("noteId"), kind: McpToolKind.NativeNotePackage),
+            S("get_native_note_suggestions", "GET", "/api/v1/native-notes/mcp/notes/{noteId}/suggestions", Q("status"), req: R("noteId")),
+
             // ===================== Files reads (8) =====================
             S("get_file_providers", "GET", "/api/v1/files/providers"),
             S("get_files", "GET", "/api/v1/files/items", Q("folderId=path", "page", "pageSize"), redact: true),
@@ -277,6 +289,20 @@ public static class McpToolTable
             W("process_quick_note", "POST", "/api/v1/quick-notes/{noteId}/process", req: R("noteId"), noBody: true),
             W("upload_quick_note_attachment", "POST", "/api/v1/quick-notes/attachments", req: R("fileContentBase64", "fileName"), multipart: true),
             W("delete_quick_note_attachment", "DELETE", "/api/v1/quick-notes/attachments/{attachmentId}", req: R("attachmentId")),
+
+            // ===================== NativeNotes writes (12) =====================
+            W("upload_native_note_package", "POST", "/api/v1/native-notes/mcp/notes/{noteId}/package", req: R("noteId", "requestId", "packageBase64")),
+            W("promote_native_note_version", "POST", "/api/v1/native-notes/mcp/notes/{noteId}/promote", req: R("noteId", "requestId", "versionId")),
+            W("cancel_native_note_upload", "POST", "/api/v1/native-notes/mcp/notes/{noteId}/cancel-upload", req: R("noteId", "requestId", "versionId")),
+            W("archive_native_note", "POST", "/api/v1/native-notes/mcp/notes/{noteId}/lifecycle/archive", req: R("noteId", "requestId")),
+            W("restore_native_note", "POST", "/api/v1/native-notes/mcp/notes/{noteId}/lifecycle/restore", req: R("noteId", "requestId")),
+            W("delete_native_note", "POST", "/api/v1/native-notes/mcp/notes/{noteId}/lifecycle/delete", req: R("noteId", "requestId")),
+            W("start_native_note_processing", "POST", "/api/v1/native-notes/mcp/notes/{noteId}/processing/start", req: R("noteId", "requestId", "versionId")),
+            W("retry_native_note_processing", "POST", "/api/v1/native-notes/mcp/notes/{noteId}/processing/retry", req: R("noteId", "requestId", "taskId", "retryId", "expectedRevision", "stepKeys", "consent")),
+            W("adopt_native_note_result", "POST", "/api/v1/native-notes/mcp/notes/{noteId}/results/{artifactId}/adopt", req: R("noteId", "artifactId", "requestId", "versionId", "expectedHeadRevision")),
+            W("extract_native_note_suggestions", "POST", "/api/v1/native-notes/mcp/notes/{noteId}/suggestions/extractions", req: R("noteId", "requestId", "artifactId", "versionId", "expectedContentSha256", "consent")),
+            W("confirm_native_note_suggestion", "POST", "/api/v1/native-notes/mcp/notes/{noteId}/suggestions/{suggestionId}/confirm", req: R("noteId", "suggestionId", "requestId", "expectedRevision")),
+            W("dismiss_native_note_suggestion", "POST", "/api/v1/native-notes/mcp/notes/{noteId}/suggestions/{suggestionId}/dismiss", req: R("noteId", "suggestionId", "requestId", "expectedRevision")),
 
             // ===================== Files writes (6) =====================
             W("upload_file", "POST", "/api/v1/files/items/upload", req: R("providerId", "path", "fileContentBase64", "fileName"), multipart: true),

@@ -131,6 +131,22 @@ public static class McpToolCatalog
         Add(tools, "quicknotes", "get_quick_note", "Get a quick note by id.");
         Add(tools, "quicknotes", "get_quick_note_attachment_meta", "Quick note attachment metadata.");
 
+        // NativeNotes 7：服务器唯一的原生笔记事实源，按当前 MCP 用户隔离。
+        Add(tools, "native-notes", "get_native_notes",
+            "List the current user's native notes with lifecycle status, revision and conflict counts. Never returns another account's notes.");
+        Add(tools, "native-notes", "get_native_note",
+            "Get one native note aggregate (current version, conflict candidates, processing, derived tasks/results) with a user-visible receipt.");
+        Add(tools, "native-notes", "get_native_note_versions",
+            "Get the current version and every conflict candidate for one native note, plus the revision required for CAS writes.");
+        Add(tools, "native-notes", "get_native_note_results",
+            "Get derived processing tasks and result artifacts for one native note, including failure/retry visibility.");
+        Add(tools, "native-notes", "get_native_note_processing",
+            "Get the high-level processing status for one native note version (or the current version when omitted).");
+        Add(tools, "native-notes", "get_native_note_package",
+            "Download a native-note material package as base64 ZIP with fileName, SHA-256 and byte length; 16 MB inline limit, use REST bundle for larger packages.");
+        Add(tools, "native-notes", "get_native_note_suggestions",
+            "List task/calendar suggestions extracted from one native note with their status and revision.");
+
         // Files 7
         Add(tools, "files", "get_file_providers", "List file providers.");
         Add(tools, "files", "get_files", "List files.");
@@ -212,6 +228,32 @@ public static class McpToolCatalog
         AddW(tools, "quicknotes", "process_quick_note", "Process a quick note (AI/rules).");
         AddW(tools, "quicknotes", "upload_quick_note_attachment", "Upload a quick note attachment.");
         AddW(tools, "quicknotes", "delete_quick_note_attachment", "Delete a quick note attachment.");
+
+        // NativeNotes 12：全部写入都要求 requestId，用于幂等重放与 requestId 冲突检测。
+        AddW(tools, "native-notes", "upload_native_note_package",
+            "Upload a complete native-note material package (base64 ZIP) and optionally promote it to current. Requires requestId; CAS via expectedCurrentVersionId/expectedRevision.");
+        AddW(tools, "native-notes", "promote_native_note_version",
+            "Explicitly choose a verified native-note material version as current; the previous head and conflict candidates stay on disk.");
+        AddW(tools, "native-notes", "cancel_native_note_upload",
+            "Cancel an unfinished (Uploading) native-note material upload; completed versions are never removed.");
+        AddW(tools, "native-notes", "archive_native_note",
+            "Archive a native note; materials and derived results remain recoverable.");
+        AddW(tools, "native-notes", "restore_native_note",
+            "Restore an archived or deleted native note to Active.");
+        AddW(tools, "native-notes", "delete_native_note",
+            "Soft-delete a native note; the note becomes read-only for mutations until restored.");
+        AddW(tools, "native-notes", "start_native_note_processing",
+            "Start the server-side high-level processing chain for one complete native-note version. Returns an explicit error when AI runtime is unavailable instead of faking success.");
+        AddW(tools, "native-notes", "retry_native_note_processing",
+            "Retry selected failed native-note processing steps with duplicate-charge acknowledgement and revision CAS.");
+        AddW(tools, "native-notes", "adopt_native_note_result",
+            "Adopt one derived result version as the artifact head with expected-head-revision CAS.");
+        AddW(tools, "native-notes", "extract_native_note_suggestions",
+            "Queue task/calendar suggestion extraction from one fixed derived result version with explicit consent.");
+        AddW(tools, "native-notes", "confirm_native_note_suggestion",
+            "Confirm a draft task/calendar suggestion and create the corresponding task or event; requestId is idempotent.");
+        AddW(tools, "native-notes", "dismiss_native_note_suggestion",
+            "Dismiss a draft task/calendar suggestion; requestId is idempotent.");
 
         // Files 5
         AddW(tools, "files", "upload_file", "Upload a file to a provider path.");
