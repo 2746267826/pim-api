@@ -207,6 +207,54 @@ public sealed class AndroidMixedMaterialInteropTests : IDisposable
         await AssertContinuationHttpAsync(client, original, fixture);
     }
 
+    [Fact]
+    public async Task TitleOnlyContinuationOfLegacyInkKeepsOriginalInkPreviewThroughRealClone()
+    {
+        // The Web client fixture is locked byte-for-byte in native-notes-canonical-bundle.test.tsx.
+        // This case isolates a title-only server clone for the same legacy ink shape.
+        var original = AndroidFixture.Load();
+        var titleOnly = AndroidFixture.Edit(original, "Canonical mixed materials标题续写", 8);
+        var legacyInkPath = original.Paths[3];
+        Assert.Equal(legacyInkPath, titleOnly.Paths[3]);
+        using (var originalInput = JsonDocument.Parse(original.Request.InputJson))
+        using (var titleOnlyInput = JsonDocument.Parse(titleOnly.Request.InputJson))
+        {
+            static string InkRaw(JsonDocument document) => document.RootElement
+                .GetProperty("note").GetProperty("blocks").EnumerateArray()
+                .Single(block => block.GetProperty("kind").GetString() == "ink")
+                .GetProperty("ink").GetRawText();
+            Assert.Equal(InkRaw(originalInput), InkRaw(titleOnlyInput));
+        }
+        using (var titleOnlyManifest = JsonDocument.Parse(titleOnly.Request.ManifestJson))
+        {
+            var inkPreview = titleOnlyManifest.RootElement.GetProperty("files").EnumerateArray()
+                .Single(file => file.GetProperty("kind").GetString() == "InkPreview");
+            Assert.Equal(legacyInkPath, inkPreview.GetProperty("path").GetString());
+        }
+
+        var owner = Guid.NewGuid();
+        var store = NewStore();
+        await store.BeginAsync(owner, original.Request);
+        await UploadAllAsync(store, owner, original);
+        await store.CompleteAsync(owner, original.Request.VersionId);
+
+        var cloned = await store.CloneAsync(owner, original.Request.VersionId,
+            new CloneNoteMaterialVersionRequest(original.Request.VersionId, titleOnly.Request));
+        Assert.Contains(cloned.Files, file => file.Path == legacyInkPath && file.Kind == "InkPreview" &&
+            file.UploadedParts.Count == file.PartCount);
+        await UploadAllAsync(store, owner, titleOnly, cloned);
+        var completed = await store.CompleteAsync(owner, titleOnly.Request.VersionId);
+        Assert.True(completed.IsCurrent);
+
+        var current = await store.GetCurrentAsync(owner, original.Request.NoteId);
+        Assert.Equal(titleOnly.Request.InputJson, current.InputJson);
+        Assert.Equal(titleOnly.Request.ManifestJson, current.ManifestJson);
+        using var currentManifest = JsonDocument.Parse(current.ManifestJson);
+        var currentInkPreview = currentManifest.RootElement.GetProperty("files").EnumerateArray()
+            .Single(file => file.GetProperty("kind").GetString() == "InkPreview");
+        Assert.Equal(legacyInkPath, currentInkPreview.GetProperty("path").GetString());
+    }
+
     private NoteMaterialUploadStore NewStore() => new(Options.Create(new NoteMaterialUploadOptions
     {
         StorageRoot = _storeRoot,
