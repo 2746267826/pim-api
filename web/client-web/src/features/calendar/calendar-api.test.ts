@@ -66,6 +66,20 @@ describe('calendar 域真实请求形状', () => {
     expect(q.get('pageSize')).toBe('100')
   })
 
+  it('eventsApi.get / tasksApi.get：搜索深链接使用稳定的对象详情端点', async () => {
+    await eventsApi.get('ev-1')
+    expect(calls.at(-1)).toMatchObject({
+      method: 'GET',
+      url: `${BASE}/api/v1/calendar/events/ev-1`,
+    })
+
+    await tasksApi.get('task-1')
+    expect(calls.at(-1)).toMatchObject({
+      method: 'GET',
+      url: `${BASE}/api/v1/calendar/tasks/task-1`,
+    })
+  })
+
   it('eventsApi.update：PUT 到带 id 的路径，scope 走查询串且正文是调用方对象', async () => {
     // 契约的 UpdateEventRequest 要求 title/calendarId/dtStart/dtEnd 必填，
     // 这里给一个契约合法的完整草稿，断言仍检查「正文原样透传」。

@@ -61,7 +61,8 @@ public class CalendarModule : IModule
         services.AddScoped<ReminderService>();
         services.AddScoped<ReportService>();
 
-        services.AddSingleton<ISearchProvider, CalendarSearchProvider>();
+        services.AddScoped<ISearchProvider, TaskSearchProvider>();
+        services.AddScoped<ISearchProvider, EventSearchProvider>();
 
         // New lightweight chain (Task 7)
         services.AddScoped<GraphCalendarClient>();
@@ -631,6 +632,16 @@ public class CalendarModule : IModule
         .Produces<ApiResponse<string>>(400)
         .Produces<ApiResponse<string>>(500);
 
+        group.MapGet("/events/{id:guid}", async (
+            Guid id,
+            [FromServices] CalendarService svc,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<EventResponse>.Ok(await svc.GetEventAsync(id, ct))))
+        .Produces<ApiResponse<EventResponse>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(404)
+        .Produces<ApiResponse<string>>(500);
+
         group.MapPost("/events", async (
             [FromBody] CreateEventRequest req,
             [FromServices] CalendarService svc, CancellationToken ct) =>
@@ -788,6 +799,16 @@ public class CalendarModule : IModule
         .Produces<ApiResponse<PagedResult<TaskResponse>>>(200)
         .Produces(401)
         .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
+
+        group.MapGet("/tasks/{id:guid}", async (
+            Guid id,
+            [FromServices] CalendarService svc,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<TaskResponse>.Ok(await svc.GetTaskAsync(id, ct))))
+        .Produces<ApiResponse<TaskResponse>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(404)
         .Produces<ApiResponse<string>>(500);
 
         group.MapPost("/tasks", async (

@@ -2461,7 +2461,7 @@
   },
   {
     "name": "search_pim",
-    "description": "Global search across PIM (events, tasks, notes, files). Returns PagedResult<SearchResult>. type comma-separated e.g. 'event,task,note,file'.",
+    "description": "Global search across PIM events, tasks and native notes. Returns GlobalSearchResult with top-level items plus domain groups; legacy type/limit remain accepted. type comma-separated e.g. 'event,task,note'; files use the separate file search tool.",
     "inputSchema": {
       "properties": {
         "q": {

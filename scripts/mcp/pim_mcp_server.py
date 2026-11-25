@@ -2406,7 +2406,7 @@ async def search_pim(
     type: Optional[str] = None,
     limit: int = 20,
 ) -> Any:
-    """Global search across PIM (events, tasks, notes, files). Returns PagedResult<SearchResult>. type comma-separated e.g. 'event,task,note,file'."""
+    """Global search across PIM events, tasks and native notes. Returns GlobalSearchResult with top-level items plus domain groups; legacy type/limit remain accepted. type comma-separated e.g. 'event,task,note'; files use the separate file search tool."""
     if limit < 1 or limit > 100:
         return {"error": "limit must be 1..100", "code": 400}
     params = _clean_params(q=q, type=type, limit=limit)

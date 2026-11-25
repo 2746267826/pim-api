@@ -38,10 +38,17 @@ internal static class AuthRegistrationTestHost
         string dbName,
         bool? allowPublicRegistration = null,
         IAuditLogService? auditLog = null)
-        => new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
+    {
+        var root = Path.Combine(
+            Path.GetTempPath(), "pim-auth-test-host", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        return new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
         {
             b.UseSetting("DisableHangfire", "true").UseSetting("Database:Migrations:FailFast", "false");
             b.UseSetting("GitHub:Repo", "invalid/invalid-test-repo-xyz");
+            b.UseSetting("DataProtection:KeysPath", Path.Combine(root, "keys"))
+                .UseSetting("NativeNotes:StorageRoot", Path.Combine(root, "native-notes"))
+                .UseSetting("ManagedStorage:Root", Path.Combine(root, "managed-storage"));
             if (allowPublicRegistration is bool allow)
                 b.UseSetting(AllowPublicRegistrationKey, allow ? "true" : "false");
             b.ConfigureServices(services =>
@@ -59,6 +66,7 @@ internal static class AuthRegistrationTestHost
                 }
             });
         });
+    }
 
     public static string NewDbName(string prefix) => $"{prefix}-{Guid.NewGuid():N}";
 

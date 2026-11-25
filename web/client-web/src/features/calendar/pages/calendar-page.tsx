@@ -12,7 +12,15 @@ import { CalendarPlus, ChevronLeft, ChevronRight, Inbox, Paintbrush } from 'luci
 import { Link } from 'react-router'
 import '../styles/calendar-skins.css'
 import { useCalendarVisibility } from '../calendar-visibility'
-import { useCalendars, useEvents, useInboxTasks, useLayers, usePlanTask, useTaskBooks } from '../queries'
+import {
+  useCalendars,
+  useEventDetail,
+  useEvents,
+  useInboxTasks,
+  useLayers,
+  usePlanTask,
+  useTaskBooks,
+} from '../queries'
 import { EventEditorDialog } from '../components/event-editor-dialog'
 import { isRepeatedEvent } from '../rrule'
 import { EventDetailDialog } from '../components/entity-detail-dialogs'
@@ -115,6 +123,7 @@ export function CalendarPage() {
   const view: CalView =
     viewParam === 'week' || viewParam === 'month' || viewParam === 'list' ? viewParam : 'timeline'
   const calendarId = params.get('calendarId') ?? undefined
+  const eventId = params.get('event') ?? null
 
   const { layerToggles, toggleLayer } = useCalendarVisibility()
   const { data: calendars = [] } = useCalendars('calendar')
@@ -132,6 +141,7 @@ export function CalendarPage() {
   }, [])
 
   const eventsQuery = useEvents(range.start, range.end, layerToggles.events)
+  const eventDetailQuery = useEventDetail(eventId)
   const layersQuery = useLayers(
     range.start,
     range.end,
@@ -165,6 +175,33 @@ export function CalendarPage() {
   const [detail, setDetail] = useState<EventResponse | null>(null)
   const [taskEditorOpen, setTaskEditorOpen] = useState(false)
   const [inboxOpen, setInboxOpen] = useState(false)
+
+  useEffect(() => {
+    if (eventDetailQuery.data) setDetail(eventDetailQuery.data)
+  }, [eventDetailQuery.data])
+
+  useEffect(() => {
+    if (!eventId || !eventDetailQuery.isError) return
+    notifyError(
+      eventDetailQuery.error instanceof Error
+        ? eventDetailQuery.error.message
+        : '日程不存在或当前账号无权访问',
+    )
+  }, [eventDetailQuery.error, eventDetailQuery.isError, eventId])
+
+  function clearEventDetailParam() {
+    if (!eventId) return
+    setParams((previous) => {
+      const next = new URLSearchParams(previous)
+      next.delete('event')
+      return next
+    }, { replace: true })
+  }
+
+  function closeEventDetail() {
+    setDetail(null)
+    clearEventDetailParam()
+  }
 
   /* 数据 → FullCalendar 事件源 */
   const fcEvents = useMemo<FcEvent[]>(() => {
@@ -777,9 +814,10 @@ export function CalendarPage() {
       <EventDetailDialog
         event={detail}
         calendarName={calendars.find((c) => c.id === detail?.calendarId)?.name}
-        onClose={() => setDetail(null)}
+        onClose={closeEventDetail}
         onEdit={(ev) => {
           setDetail(null)
+          clearEventDetailParam()
           setEventEditor({ mode: 'edit', event: ev })
         }}
       />

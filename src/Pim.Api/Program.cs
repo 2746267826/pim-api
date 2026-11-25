@@ -135,6 +135,7 @@ builder.Services.AddOptions<Pim.Infrastructure.Notes.NoteDerivedAudioContextOpti
 builder.Services.AddSingleton<Pim.Infrastructure.Notes.NoteMaterialUploadStore>();
 builder.Services.AddSingleton<Pim.Infrastructure.Notes.NoteAsrTaskStore>();
 builder.Services.AddSingleton<Pim.Infrastructure.Notes.NoteDerivedStore>();
+builder.Services.AddScoped<Pim.Core.Modules.ISearchProvider, Pim.Infrastructure.Notes.NoteSearchProvider>();
 builder.Services.AddSingleton<Pim.Infrastructure.Notes.NoteProcessingStore>();
 builder.Services.AddScoped<Pim.Infrastructure.Notes.NoteDerivedSnapshotBuilder>();
 builder.Services.AddScoped<Pim.Infrastructure.Notes.NoteAsrService>();
@@ -208,7 +209,7 @@ builder.Services.AddCors(options =>
             policy.WithOrigins(allowedOrigins)
                 .AllowAnyMethod()
                 .AllowAnyHeader()
-                .WithExposedHeaders("Content-Disposition")
+                .WithExposedHeaders("Content-Disposition", CorrelationIdMiddleware.HeaderName)
                 .AllowCredentials();
         }
         else
@@ -217,7 +218,7 @@ builder.Services.AddCors(options =>
             policy.WithOrigins("http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:5858", "http://127.0.0.1:5858")
                 .AllowAnyMethod()
                 .AllowAnyHeader()
-                .WithExposedHeaders("Content-Disposition")
+                .WithExposedHeaders("Content-Disposition", CorrelationIdMiddleware.HeaderName)
                 .AllowCredentials();
         }
     });
