@@ -808,13 +808,14 @@ public sealed class MobileLocationCorrectionServiceTests
         var legacyPage = await service.GetPointsAsync(
             request with { Cursor = legacyCursor },
             CancellationToken.None);
+        var encodedPage = firstPage.NextCursor is null
+            ? Enumerable.Empty<string>()
+            : (await service.GetPointsAsync(
+                request with { Cursor = firstPage.NextCursor },
+                CancellationToken.None)).Items.Select(point => point.Id);
         Assert.Equal(
-            firstPage.NextCursor is null
-                ? []
-                : (await service.GetPointsAsync(
-                    request with { Cursor = firstPage.NextCursor },
-                    CancellationToken.None)).Items.Select(point => point.Id),
-            legacyPage.Items.Select(point => point.Id));
+            encodedPage.ToArray(),
+            legacyPage.Items.Select(point => point.Id).ToArray());
     }
 
     [Fact]
