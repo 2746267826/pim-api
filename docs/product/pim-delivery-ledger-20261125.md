@@ -8,11 +8,11 @@
 | --- | --- |
 | 盘点时间 | 2026-11-25（Asia/Shanghai） |
 | 交付包 | `PIM功能确认-最终交付-20261122.zip`，SHA-256 `b488a01e6f317a2735f387a918787204791fb32a38ad9ce064a07166f4b8a864` |
-| pim-api | `origin/master@de816d05e90d72a64e94d8324aec6109f0c81f56`（PR #583 H03 切片、PR #577 版本界面已合并）；盘点时 post-merge CI `45500775356` pending，#583 merge run `45500066575` 仍在运行 |
+| pim-api | `origin/master@d4dd3c185dac6475ed4f94936083d67233e9c718`（PR #585 J09、PR #588 R01、PR #591 Windows R04 台账已合并）；J09 merge `65ed0935`，head `4212668`；R01 merge `667da4fc`，head `5e2768d7` |
 | pim-android | `origin/master@a1b0b7a7a6e7c677451271a8a4edb423ba92f3af`（PR #82 处理状态、PR #89 C04 实时状态、PR #91 L05 日历均已合并）；PR #89 合并后 master CI `45502883654` 成功；PR #91 合并后 master CI `45503862102` 在本次核对时仍为 `in_progress` |
 | pim-windows | `origin/master@f278996a8ab95f8476b3304703aa9ff2970a850d`（PR #57 R04 原生多选合并；此前 PR #52 鼠标手写）；PR #57 head `bd45e21e8f32fe0b516dcf273f8dc754e079287b` required CI `45511045329` 全绿；合并后 CI `45511644639` 成功 |
 | 状态口径 | `PASS`：当前 head 且适用平台完整验收；`FAIL`：确认缺口仍存在或实现未合并；`NOT-VERIFIED`：实现存在但当前 head 无完整验收；`BLOCKED`：缺产品裁决/外部前提；`APPROVED-EXCEPTION`：交付包明确跳过或替代。 |
-| 本轮 PASS | **0**。Android PR #89 合并后 CI `45502883654` 成功，PR #91 合并后 CI `45503862102` 尚未完成；Windows PR #57 的 required CI `45511045329` 全绿但仅覆盖自动化。R01/R04/H03/C04/L05/Android #82/Windows #52/#57 的代码或自动化结果只证明实现边界，不能替代真实设备或用户流程。 |
+| 本轮 PASS | **0**。J09 PR #585（head `4212668`，merge `65ed0935`）与 R01 PR #588（head `5e2768d7`，merge `667da4fc`）已合并，required `CI Gate` 均为 success；但 J09 的真实第三方 provider Token/费用、管理员浏览器闭环、真实部署与完整崩溃恢复仍 NOT-VERIFIED，R01 的外部独立 MCP 客户端仍 NOT-VERIFIED。Android #89/#91、Windows #57 的自动化全绿同样不能替代真机/真实桌面或用户流程。 |
 
 > 关键防回归规则：不把旧 PR head、旧 CI、demo、历史源码审计或客户端契约快照当作当前 head 的 PASS；`NOT-VERIFIED` 不是通过。`pim-android` 本地工作区存在其他 Agent 的未提交产品改动，本台账只认 `origin/master@a1b0b7a7a6e7c677451271a8a4edb423ba92f3af`，未使用该工作区未提交内容作为证据。
 
@@ -21,8 +21,8 @@
 | 状态 | 数量 | 编号 |
 | --- | ---: | --- |
 | PASS | 0 | 无 |
-| FAIL | 86 | A01 A02 A03 A04 A05 A06 A07 A08 A09 B07 C12 C13 C16 C17 C18 C19 C20 D04 D05 E01 E02 F02 F03 F04 F06 F08 F09 F10 G01 G02 G04 G06 G07 G08 G09 G10 G12 G13 H01 H02 H03 H04 H05 H07 H08 H09 H10 H11 I03 I04 J01 J05 J06 J08 J09 K02 K03 K04 L01 L07 L08 L10 L11 L13 M02 M03 M05 M06 N01 O02 O03 O05 O06 P01 P05 Q03 Q04 Q05 Q06 Q08 R01 R02 R03 R04 R05 Z01 |
-| NOT-VERIFIED | 66 | A10 B01 B02 B03 B04 B05 B06 B08 B09 B10 B11 B12 B13 B14 B16 C01 C02 C03 C04 C05 C06 C07 C08 C09 C10 C11 C15 C22 D01 D02 D03 D06 D07 D08 F01 F05 F07 F11 G03 G05 G11 H06 I01 I02 J02 J03 J04 J07 K01 L02 L03 L04 L05 L06 L09 L12 L14 M01 M04 N02 N03 O01 P02 P03 P04 Z02 |
+| FAIL | 84 | A01 A02 A03 A04 A05 A06 A07 A08 A09 B07 C12 C13 C16 C17 C18 C19 C20 D04 D05 E01 E02 F02 F03 F04 F06 F08 F09 F10 G01 G02 G04 G06 G07 G08 G09 G10 G12 G13 H01 H02 H03 H04 H05 H07 H08 H09 H10 H11 I03 I04 J01 J05 J06 J08 K02 K03 K04 L01 L07 L08 L10 L11 L13 M02 M03 M05 M06 N01 O02 O03 O05 O06 P01 P05 Q03 Q04 Q05 Q06 Q08 R02 R03 R04 R05 Z01 |
+| NOT-VERIFIED | 68 | A10 B01 B02 B03 B04 B05 B06 B08 B09 B10 B11 B12 B13 B14 B16 C01 C02 C03 C04 C05 C06 C07 C08 C09 C10 C11 C15 C22 D01 D02 D03 D06 D07 D08 F01 F05 F07 F11 G03 G05 G11 H06 I01 I02 J02 J03 J04 J07 J09 K01 L02 L03 L04 L05 L06 L09 L12 L14 M01 M04 N02 N03 O01 P02 P03 P04 R01 Z02 |
 | BLOCKED | 2 | Q01 Q07 |
 | APPROVED-EXCEPTION | 6 | B15 C14 C21 E03 O04 Q02 |
 | **合计** | **160** | A–R、Z |
@@ -38,7 +38,7 @@
 | G ASR 与转写 | 0 | 10 | 3 | 0 | 0 |
 | H 多模态整理 | 0 | 10 | 1 | 0 | 0 |
 | I 任务与日程建议 | 0 | 2 | 2 | 0 | 0 |
-| J AI 配置与调用 | 0 | 5 | 4 | 0 | 0 |
+| J AI 配置与调用 | 0 | 4 | 5 | 0 | 0 |
 | K 文件与云盘 | 0 | 3 | 1 | 0 | 0 |
 | L Android 原生客户端 | 0 | 6 | 8 | 0 | 0 |
 | M Windows 原生客户端 | 0 | 4 | 2 | 0 | 0 |
@@ -46,7 +46,7 @@
 | O 视觉与体验 | 0 | 4 | 1 | 0 | 1 |
 | P 采集与定位 | 0 | 2 | 3 | 0 | 0 |
 | Q 基础服务 | 0 | 5 | 0 | 2 | 1 |
-| R MCP / API | 0 | 5 | 0 | 0 | 0 |
+| R MCP / API | 0 | 4 | 1 | 0 | 0 |
 | Z 反向要求 | 0 | 1 | 1 | 0 | 0 |
 
 ## 明确阻塞
@@ -56,21 +56,19 @@
 | Q01 | 需求确认缺口 | API 已有登录、续期、管理员账号与用户隔离；Android L-P-Q 盘点明确不能按跳过处理，三端平台范围与验收尚未确认 | 用户补齐 Q01 平台范围和验收口径，再执行真实注册/登录/续期/管理员/停用流程 |
 | Q07 | 产品语义冲突 | Q07 要求 `Uploaded` 与 `Conflict` 都清理本机持久副本；Android 冲突保护要求保留双方完整材料与本机原件 | 用户裁决 Conflict 终态是否清理；决定前不实现 Android 清理，不销项 |
 | H03-AC10 | 实现缺口 | PR #583 只交付 8 MiB/5,000 片内受控音频切片；长音频自动分批、批次汇总与完整总结链路未实现，真实多模态 provider/Hangfire 多进程也未验 | 补齐分批/汇总设计、实现、真实多模态 provider 与长音频预算验收 |
-| R01 | 实现与确认规则冲突 | `mcp-tools.json` 仍声明 14 个 deprecated snake_case 别名，`McpToolInputPolicy.NormalizeAliases` 仍接受旧名；用户确认要求直接拒绝、无兼容期 | 删除别名与兼容期，14 个旧参数全部 400；再用外部独立 MCP 客户端复验 |
 | R04 | Android 客户端入口缺失；Windows 真实桌面与外部 MCP 未验 | REST 重复 `status`、MCP `statuses` 和 Web 多选已合并；Windows PR #57 已合并原生复选多选与聚焦自动化，但真实 Windows 桌面人工操作未执行；Android 仍仅同步契约，无独立多选 UI；外部独立 MCP 客户端未执行 | Android 增加多选入口；在真实 Windows 桌面操作多选；外部 MCP 复验，并记录客户端版本与请求日志 |
-| J09 | 开放 PR 未收口 | PR #585 分支 DIRTY、run `45490267103` 失败；当前 master 没有 J09 能力 | 修复 CI、真实 PostgreSQL 迁移并发与 provider 费用字段，再评审合并 |
-| Z01 | 方向冲突且已合并 | 当前 master `de816d05` 仍让普通用户看到数据中心、版本历史、版本 ID/保存编号；PR #577 已合并且明确增加这些展示，不能作为 Z01 实现 | 按 Z01 已确认的普通用户替代入口重做；管理员入口保留，普通用户隐藏版本/审计 |
+| Z01 | 方向冲突且已合并 | 当前 master `d4dd3c18` 仍让普通用户看到数据中心、版本历史、版本 ID/保存编号；PR #577 已合并且明确增加这些展示，不能作为 Z01 实现 | 按 Z01 已确认的普通用户替代入口重做；管理员入口保留，普通用户隐藏版本/审计 |
 | M05 | 原生页面缺口 | Windows 有原生日历/任务窗口和 PR #49 的托盘入口，但没有原生「今日」页；`MainShellWindow` 的今日仍指向 Web `/today` | 实现并接入原生今日页，再在真实 Windows 桌面执行登录/刷新/新建/完成任务验收 |
 
 ## 下一批可派工
 
 | 顺序 | 工单 | 仓库/PR | 目标 | 完成判据 |
 | ---: | --- | --- | --- | --- |
-| 1 | WO-R01-ALIAS-REMOVAL | pim-api #573 已合并 | 删除旧 snake_case 兼容层 | 14 个旧名全部 400 且带替代参数；新 camelCase 路径/查询/JSON/multipart 全覆盖；无 deprecated 别名 |
+| 1 | WO-R01-EXTERNAL-MCP | pim-api #588 已合并（head `5e2768d7`，merge `667da4fc`） | 补外部独立 MCP 客户端复验 | 外部客户端调用 camelCase 正常；9 个旧 snake_case 名均 400 且返回替代名；记录客户端版本与请求日志 |
 | 2 | WO-R04-CLIENTS-EXTERNAL | pim-api #576、Android #90 仅契约、Windows #57 多选已合并 | 补 Android 多选 UI、Windows 真实桌面操作与外部 MCP 验收 | 三端独立多选；空/重复/非法/冲突规则一致；Windows 真实桌面通过；外部 MCP 记录客户端版本与请求日志 |
 | 3 | WO-Z02-CROSS-DEVICE | pim-api #572、pim-android #82、pim-windows #50 已合并 | 真实 provider、Hangfire 多进程、浏览器、Android/Windows 换端 | 同一 note/version 在服务端、Android、Windows、Web 显示同一处理状态并可恢复 |
 | 4 | WO-H03-LONG-AUDIO | pim-api #583 已合并切片 | 补长音频自动分批/汇总与真实多模态 provider | H03-AC10 实现；超限分批、汇总、失败重试和真实 provider 验收通过 |
-| 5 | WO-J09-USAGE-LIMITS | pim-api #585（open，DIRTY，CI failed） | 修复并收口连接级用量限制 | PR 绿；真实 PostgreSQL 迁移/并发；真实 provider 费用与 Web 管理验收通过 |
+| 5 | WO-J09-REAL-ACCEPTANCE | pim-api #585 已合并（head `4212668`，merge `65ed0935`） | 补真实 provider、管理员浏览器、真实部署与崩溃恢复验收 | 真实 Token/费用统计和限额阻断；管理员浏览器闭环；真实部署；完整崩溃恢复；记录环境与请求日志 |
 | 6 | WO-L05-ANDROID-CALENDAR | pim-android #91 已合并（head `174018ff`，merge `a1b0b7a7`），required CI `45500259546` 成功；#88 仍为 draft/conflicting | 日/周/月原生日历 | 合并后 master CI `45503862102` 完成后，再做真机导航、真实 API/大数据、时区/DST/重复、OEM 与编辑/删除验收 |
 | 7 | WO-C04-ANDROID-LIVE | pim-android #89 已合并（head `a0a980c0`，merge `629e4c5`）；required CI `45500141959` 与合并后 CI `45502883654` 成功 | Android 16 实况胶囊与锁屏隐私 | Android 16 QPR1+ 实机胶囊/锁屏/拒绝权限通过；停止/暂停仍绑定原会话 |
 | 8 | WO-D08-WINDOWS-DESKTOP | pim-windows #52 已合并 `d120a88` | 物理 Windows 验收鼠标手写 | 真实桌面连续绘制、选择/整组移动、撤销重做、复制粘贴、删除、DPI/多屏通过 |
@@ -207,7 +205,7 @@
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | H01 | API；Web；Android；Windows | 按交付包 H01 的最终确认完成「输出一份完整记录 + 一份分析」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：后端会生成完整记录 + 独立分析两份，但不会在转写完成后自动开始，要在客户端手动发起（安卓入口藏在转写任务详情里，有空片就不出现）。按设计应由 API 转写完自动整理，客户端只呈现；当前 head 未发现该编号的完成变更。 | 多模态 provider、固定材料快照、整理/建议 DTO | API/Web + Android/Windows Agent | 待创建 | 交付包 H01 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | FAIL | 补齐确认缺口后新建 PR，并在当前 head 做端到端复验。 |
 | H02 | API；Web；Android；Windows | 按交付包 H02 的最终确认完成「参考 OPPO「笔记速览图」做可视化速览」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：没有速览图、思维导图或任何可视化。两份结果都是纯 Markdown 文字，提示词没要求出图；三个仓库搜「速览/思维导图/mindmap」无相关实现。；当前 head 未发现该编号的完成变更。 | 多模态 provider、固定材料快照、整理/建议 DTO | API/Web + Android/Windows Agent | 待创建 | 交付包 H02 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | FAIL | 补齐确认缺口后新建 PR，并在当前 head 做端到端复验。 |
-| H03 | API；Web；Android；Windows | 固定材料原始录音可进入整理上下文；长音频按确认规则自动分批并汇总；默认模型不支持音频时保留 ASR 等待/阻断。 | PR #583 已合并最小切片 `103b6d89`，当前 master `de816d05` 包含：白名单模型可读取固定 WAV 切片，8 MiB/5,000 片阻断；长音频自动分批/汇总 AC10 未实现。 | 多模态 provider、固定材料快照、整理/建议 DTO | API/Web + Android/Windows Agent | pim-api #583（merged 103b6d89；当前 master de816d05） | PR #583 head CI #45447823526 通过 AC1-AC6/AC11/AC12；post-merge run #45500066575 盘点时仍在运行；AC7-AC9 未验，AC10 长音频分批未实现。 | FAIL | 补 H03-AC10 长音频自动分批与汇总，再做真实多模态 provider 验证。 |
+| H03 | API；Web；Android；Windows | 固定材料原始录音可进入整理上下文；长音频按确认规则自动分批并汇总；默认模型不支持音频时保留 ASR 等待/阻断。 | PR #583 已合并最小切片 `103b6d89`，当前 master `d4dd3c18` 包含：白名单模型可读取固定 WAV 切片，8 MiB/5,000 片阻断；长音频自动分批/汇总 AC10 未实现。 | 多模态 provider、固定材料快照、整理/建议 DTO | API/Web + Android/Windows Agent | pim-api #583（merged 103b6d89；当前 master d4dd3c18） | PR #583 head CI #45447823526 通过 AC1-AC6/AC11/AC12；post-merge run #45500066575 盘点时仍在运行；AC7-AC9 未验，AC10 长音频分批未实现。 | FAIL | 补 H03-AC10 长音频自动分批与汇总，再做真实多模态 provider 验证。 |
 | H04 | API；Web；Android；Windows | 按交付包 H04 的最终确认完成「手动笔记、照片、手写图片一起参与分析」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：正文、照片、手写预览图都参与：图片先按批交给视觉模型提取文字，再并入记录和分析，所选模型必须带视觉能力。限制很硬：只收 PNG/JPEG，单张 ≤4 MiB，每批 ≤4 张且 ≤8 MiB，总共 ≤32 张、≤8 批。安卓照片原样保存（允许 WebP、最大 32 MiB、不压缩），只要一张不合规，整个整理任务在创建时就被阻断，不会跳过该图。大照片是否常超 4 MiB 需实测。；当前 head 未发现该编号的完成变更。 | 多模态 provider、固定材料快照、整理/建议 DTO | API/Web + Android/Windows Agent | 待创建 | 交付包 H04 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | FAIL | 补齐确认缺口后新建 PR，并在当前 head 做端到端复验。 |
 | H05 | API；Web；Android；Windows | 按交付包 H05 的最终确认完成「整理时同时生成标题，自动填到笔记标题」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：整理不生成标题，也不会自动填到笔记标题。两份提示词只要求输出记录/分析 Markdown，笔记标题只被读进来当输入；标题唯一的写入点是编辑器里手动输入，新笔记默认「未命名记录」，安卓打开整理时传入的标题是空字符串。；当前 head 未发现该编号的完成变更。 | 多模态 provider、固定材料快照、整理/建议 DTO | API/Web + Android/Windows Agent | 待创建 | 交付包 H05 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | FAIL | 补齐确认缺口后新建 PR，并在当前 head 做端到端复验。 |
 | H06 | API；Web；Android；Windows | 按交付包 H06 的最终确认完成「完整记录和分析可手动修改，再次生成不覆盖改过的内容」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：三端都能手动改两份结果并保存为「人工修订」，也都有「设为当前版本」。重新生成只追加新候选，不动当前选用版本，改过的内容不会被覆盖。小缺口：模型第一次的结果不会自动成为当前版本，要先手动选一次才能改。；当前 head 未发现该编号的完成变更。 | 多模态 provider、固定材料快照、整理/建议 DTO | API/Web + Android/Windows Agent | 待创建 | 交付包 H06 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | NOT-VERIFIED | 在当前 head 重跑端到端验收；旧 CI/旧 PR head 不计 PASS。 |
@@ -238,7 +236,7 @@
 | J06 | API；Web | 按交付包 J06 的最终确认完成「每种用途选默认模型」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：只能按「文本/视觉/语音转写」三类各选一个默认，不能按用途（整理、标题、待办、排程）分别选。更大的问题：笔记整理在 Web 和安卓都不用这个默认，每次都要从列表手动选「生成目标」，不选就点不了开始；转写另有一套默认路由（cloudModelId）；提取待办强制用默认文本模型；日历排程仍用 LiteLLM 的环境变量；当前 head 未发现该编号的完成变更。 | AI 模型/连接配置、provider 调用、审计与统计 | API/Web Agent | 待创建 | 交付包 J06 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | FAIL | 补齐确认缺口后新建 PR，并在当前 head 做端到端复验。 |
 | J07 | API；Web | 按交付包 J07 的最终确认完成「API Key 安全保存，界面不回显明文」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：API Key 用 ASP.NET DataProtection 加密后存库；接口只返回「是否已保存」，不返回密钥；Web 用密码框输入，保存后不回显；改了 API 地址必须重填 Key，地址里也不许夹带 Key；调用记录里出现的 Key 会被遮盖；设置接口只有管理员能用；当前 head 未发现该编号的完成变更。 | AI 模型/连接配置、provider 调用、审计与统计 | API/Web Agent | 待创建 | 交付包 J07 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | NOT-VERIFIED | 在当前 head 重跑端到端验收；旧 CI/旧 PR head 不计 PASS。 |
 | J08 | API；Web | 按交付包 J08 的最终确认完成「「测试连接」按钮」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：AI 模型没有「测试连接」按钮。后端的 /api/v1/ai/test 和 /api/v1/ai/health-check 只测旧 LiteLLM 那条路，Web 也没调用；新加的模型只能在「文字调用」或「音频转写」面板手动发一次真实调用来验证，可能产生费用。Web 上唯一的「测试连接」是服务器地址的；当前 head 未发现该编号的完成变更。 | AI 模型/连接配置、provider 调用、审计与统计 | API/Web Agent | 待创建 | 交付包 J08 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | FAIL | 补齐确认缺口后新建 PR，并在当前 head 做端到端复验。 |
-| J09 | API；Web | 按 AI 服务连接累计 Token/费用；日/月周期、提醒阈值、管理员已读、超限/未知用量阻断；真实 provider 与迁移验证。 | PR #585（open，DIRTY，CI 失败）实现连接级用量限制；当前 master 没有 J09 能力。 | AI 模型/连接配置、provider 调用、审计与统计 | API/Web Agent | pim-api #585（open，CI failed） | PR #585 @a7ecc87 DIRTY；run #45490267103 failed；未合并，不能作为当前能力。 | FAIL | 修复 PR #585 CI/脏分支，跑真实 PostgreSQL 迁移与 provider 费用验收后再合并。 |
+| J09 | API；Web | 按 AI 服务连接累计 Token/费用；日/月周期、提醒阈值、管理员已读、超限/未知用量阻断；真实 provider 与迁移验证。 | PR #585 已合并（head `4212668`，merge `65ed0935`）：连接级 Token/费用累计与日/月周期门禁、连接时区、提醒阈值、管理员已读、超限/未知用量阻断；文字、视觉、同步/URL ASR 与异步 ASR 共用租约，迁移回填连接与请求日志，Web 增加连接管理/用量/提醒，模型编辑器可绑定连接。CI 的 `build-api` 在真实 PostgreSQL service container 上执行迁移全链路；真实第三方 provider 的 Token/费用口径、管理员浏览器闭环、真实部署和完整崩溃恢复仍未验证。 | AI 模型/连接配置、provider 调用、审计与统计 | API/Web Agent | pim-api #585（merged；head `4212668`，merge `65ed0935`） | required CI run `45503982162`：`CI Gate` success；`build-api`、`web-build`、`build-docker` success（`build-mcp` 与 `release` skipped）。PR 自述本地 100 passed/12 skipped/0 failed；旧 run `45490267103` 属于已淘汰的旧 head，不作为当前代码失败。真实第三方 provider Token/费用、管理员浏览器闭环、真实部署与完整崩溃恢复 NOT-VERIFIED。 | NOT-VERIFIED | 在真实部署和真实 provider 上验证 Token/费用/提醒/阻断；完成管理员浏览器闭环和完整崩溃恢复，并记录 provider、版本与环境。 |
 
 ### K 文件与云盘
 
@@ -325,7 +323,7 @@
 
 | 编号 | 平台 | 验收条件（摘要） | 当前实现（2026-11-25） | 依赖 | 负责 Agent | PR/HEAD | 证据 | 状态 | 下一批/阻塞 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| R01 | API/MCP | 14 个 snake_case 参数统一为 camelCase 并拒绝旧名；路径/查询/JSON/multipart 全覆盖；缺参/冲突返回 400 与替代参数。 | PR #573 已合并 canonical camelCase，但仍保留 deprecated 旧名：`mcp-tools.json` 声明 14 个别名，`McpToolInputPolicy.NormalizeAliases` 接受并改写旧参数，违反“直接拒绝、不保留兼容期”的最终确认；外部独立 MCP 客户端未验证。 | MCP schema/工具表/执行器与外部 MCP 客户端 | API/MCP Agent | pim-api #573（merged acdd5354；当前 master de816d05 仍保留别名） | PR #573；MCP 91/91、全 MCP 205/205、隔离 API 14/14 只覆盖别名兼容路径；当前 master 源码确认 `deprecated` 别名与 `NormalizeAliases` 仍在；外部 MCP 未验。 | FAIL | 先删除 14 个旧名声明与 `NormalizeAliases` 兼容层，确保旧参数 400 且返回替代参数；再补外部独立 MCP 客户端复验。 |
+| R01 | API/MCP | 14 个 snake_case 参数统一为 camelCase 并拒绝旧名；路径/查询/JSON/multipart 全覆盖；缺参/冲突返回 400 与替代参数。 | PR #588 已合并（head `5e2768d7`，merge `667da4fc`）：移除 14 个 snake_case 兼容别名（9 个唯一旧名）；旧名在鉴权/分发前返回 400，并在 `error` 中给出 camelCase 替代名；camelCase 为唯一声明形态，149 个工具数不变，`get_tasks.status` 仍保留为独立 deprecated 单值别名。外部独立 MCP 客户端仍未验证。 | MCP schema/工具表/执行器与外部 MCP 客户端 | API/MCP Agent | pim-api #588（merged；head `5e2768d7`，merge `667da4fc`） | required CI run `45507678632`：`CI Gate` success；`build-api`、`web-build`、`build-docker` success（`build-mcp` 与 `release` skipped）。PR 自述 MCP 225 passed/0 failed；14 个旧名 400、14 个 camelCase 正常分发、JSON/multipart 与协议级测试通过。外部独立 MCP 客户端 NOT-VERIFIED。 | NOT-VERIFIED | 用外部独立 MCP 客户端调用 `tools/list`、camelCase 与 9 个旧 snake_case 名，记录客户端版本和请求日志。 |
 | R02 | API/MCP；Web | 按交付包 R02 的最终确认完成「事件时区可判定（#450）」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | MCP 只有部分查询区间校验；事件本地时间/解析状态、全天日期、重复区间和 REST 查询契约仍不完整。 | MCP 契约、OpenAPI、日历/任务/Outlook/native-note 服务 | API/MCP Agent | 待创建 | 交付包 R02 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | FAIL | 补齐确认缺口后新建 PR，并在当前 head 做端到端复验。 |
 | R03 | API/MCP | 按交付包 R03 的最终确认完成「create_event 能写回 Outlook（#458）」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | MCP 写入仍只支持本地日历；Outlook 写回只有 REST，缺少 MCP 映射、幂等账本和安全恢复。 | MCP 契约、OpenAPI、日历/任务/Outlook/native-note 服务 | API/MCP Agent | 待创建 | 交付包 R03 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | FAIL | 补齐确认缺口后新建 PR，并在当前 head 做端到端复验。 |
 | R04 | API/MCP；Web；Android；Windows | REST 重复 status 为 OR、MCP statuses 数组、Web/Android/Windows 多选；空/重复/非法/冲突规则一致，非法整单 400/02057。 | PR #576 已合并 REST OR 多选、MCP statuses、Web 多选与整单 400/02057；Windows PR #57 已合并原生复选多选，默认全部状态、去重后发送重复 `status`，并在请求前拒绝非法/混合/冲突输入，真实 Windows 桌面人工操作未执行；Android 仍只同步契约（#90），无状态多选入口。外部独立 MCP 客户端未验证。 | 任务 REST/MCP 契约、Web/Android/Windows 多选入口 | API/MCP Agent；Android/Windows Agent | pim-api #576（merged cb96fc30）；Windows #57（merged f278996a，head bd45e21e）；Android #90 仅契约 | PR #576；REST 19/19、MCP 14/14、Chromium 通过。Windows #57 required CI `45511045329` 全绿（`CI Gate`、`contract-freshness`、`contract-generated`、`build-windows`、`build-shell-windows`、`test-client-core`、`test-client-app`、CodeQL 等；`release` skipped），合并后 CI `45511644639` 成功；PR 自述本地聚焦 17/17，契约 1,298,395 B / `c33efcb7…`；无 review 记录。Windows 真实桌面多选与外部 MCP 未验；Android 当前 master 无状态多选。 | FAIL | 补 Android 多选 UI；在真实 Windows 桌面操作多选；补外部 MCP 客户端验收并记录客户端版本与请求日志。 |
@@ -335,7 +333,7 @@
 
 | 编号 | 平台 | 验收条件（摘要） | 当前实现（2026-11-25） | 依赖 | 负责 Agent | PR/HEAD | 证据 | 状态 | 下一批/阻塞 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Z01 | API；Android；Windows；Web | 普通用户不见数据中心/版本历史/版本 ID/保存编号/审计字段；真实冲突仅比较双方内容；管理员审计入口保留。 | 当前 master `de816d05` 仍让普通用户看到数据中心、版本历史、版本 ID、保存编号、来源版本和冲突版本；PR #577 已合并且明确增加“版本与保存编号”、版本历史与数据中心能力，方向与 Z01 相反，不能作为实现证据。 | 普通用户导航、版本/审计替代入口、三端文案 | API/Web + Android/Windows Agent | pim-api #577（merged de816d05，方向冲突） | 当前 `nav.ts` 普通导航仍含 `/data-center`；`native-notes-page.tsx` 仍显示“已保存版本/当前版本”；`note-version-panel.tsx` 显示版本 ID、保存编号、来源版本与版本历史；#577 CI #45438866148 只证明该反向 UI 可构建；无 Z01 替代入口或浏览器验收。 | FAIL | 按确认的普通用户替代入口重做工单：普通用户隐藏数据中心/版本历史/版本 ID/保存编号/审计字段，管理员入口保留；真实冲突仅比较内容并做浏览器验收。 |
+| Z01 | API；Android；Windows；Web | 普通用户不见数据中心/版本历史/版本 ID/保存编号/审计字段；真实冲突仅比较双方内容；管理员审计入口保留。 | 当前 master `d4dd3c18` 仍让普通用户看到数据中心、版本历史、版本 ID、保存编号、来源版本和冲突版本；PR #577 已合并且明确增加“版本与保存编号”、版本历史与数据中心能力，方向与 Z01 相反，不能作为实现证据。 | 普通用户导航、版本/审计替代入口、三端文案 | API/Web + Android/Windows Agent | pim-api #577（merged de816d05，方向冲突） | 当前 `nav.ts` 普通导航仍含 `/data-center`；`native-notes-page.tsx` 仍显示“已保存版本/当前版本”；`note-version-panel.tsx` 显示版本 ID、保存编号、来源版本与版本历史；#577 CI #45438866148 只证明该反向 UI 可构建；无 Z01 替代入口或浏览器验收。 | FAIL | 按确认的普通用户替代入口重做工单：普通用户隐藏数据中心/版本历史/版本 ID/保存编号/审计字段，管理员入口保留；真实冲突仅比较内容并做浏览器验收。 |
 | Z02 | API；Android；Windows；Web | 服务器唯一事实源；材料齐备后 API 自动双链路处理；客户端只负责输入、保全、上传和状态呈现；换端可恢复。 | API #572、Windows #50、Android #82 已合并高层编排/状态消费；H03 仅最小切片，真实 provider/Hangfire/设备流程未验证。 | API 双链路编排、材料回执、三端状态消费 | API/Web + Android/Windows Agent | pim-api #572；pim-android #82；pim-windows #50 | API #572、Windows #50、Android #82；自动化/CI 通过；真实 provider、Hangfire、浏览器、设备未验。 | NOT-VERIFIED | 补真实 provider/Hangfire 多进程/浏览器/Android/Windows 真机换端验收。 |
 
 ## 续跑协议
