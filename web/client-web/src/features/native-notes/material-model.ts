@@ -501,7 +501,7 @@ function nullishEqual(left: unknown, right: unknown): boolean {
   return (left ?? null) === (right ?? null)
 }
 
-function jsonValuesEqual(left: unknown, right: unknown): boolean {
+export function jsonValuesEqual(left: unknown, right: unknown): boolean {
   if (left === right) return true
   if (Array.isArray(left) || Array.isArray(right)) {
     return Array.isArray(left) && Array.isArray(right) &&

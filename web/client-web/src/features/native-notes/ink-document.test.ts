@@ -154,6 +154,10 @@ describe('D04 ink document', () => {
 
     expect(result.changed).toBe(true)
     expect(result.ink.strokes).toHaveLength(2)
+    expect(result.ink.strokes[0]?.points[0]).toMatchObject({ pointExtension: 'keep-start' })
+    expect(result.ink.strokes[0]?.points.at(-1)).toMatchObject({ pointExtension: 'keep-start' })
+    expect(result.ink.strokes[1]?.points[0]).toMatchObject({ pointExtension: 'keep-start' })
+    expect(result.ink.strokes[1]?.points.at(-1)).toMatchObject({ pointExtension: 'keep-end' })
     expect(result.ink.strokeStyles).toHaveLength(2)
     expect(result.ink.strokeStyles).toEqual([
       {
@@ -167,6 +171,21 @@ describe('D04 ink document', () => {
         futureStyle: { source: 'android', keep: true },
       },
     ])
+  })
+
+  it('retains style extensions when an existing stroke changes color and width', () => {
+    const ink = styleDocument()
+    const next = replaceInkStrokes(
+      ink,
+      [{ ...ink.strokes[0]!, color: BLUE_COLOR, width: 3 }],
+      [STROKE_1],
+    )
+
+    expect(next.strokeStyles).toEqual([{
+      color: BLUE_COLOR,
+      width: 3,
+      futureStyle: { source: 'android', keep: true },
+    }])
   })
 
   it.each([
@@ -251,6 +270,60 @@ describe('D04 ink document', () => {
         strokes: [{ width: 3, points: [{ x: 1, y: 1 }] }],
       },
       message: '笔画宽度与样式数组不一致',
+    },
+    {
+      name: 'empty points',
+      value: {
+        width: 320,
+        height: 240,
+        strokes: [{ points: [] }],
+      },
+      message: '笔画必须包含坐标点',
+    },
+    {
+      name: 'negative x coordinate',
+      value: {
+        width: 320,
+        height: 240,
+        strokes: [{ points: [{ x: -1, y: 1 }] }],
+      },
+      message: '笔迹坐标或压力超出 schema-v1 范围',
+    },
+    {
+      name: 'y coordinate beyond canvas',
+      value: {
+        width: 320,
+        height: 240,
+        strokes: [{ points: [{ x: 1, y: 241 }] }],
+      },
+      message: '笔迹坐标或压力超出 schema-v1 范围',
+    },
+    {
+      name: 'negative pressure',
+      value: {
+        width: 320,
+        height: 240,
+        strokes: [{ points: [{ x: 1, y: 1, pressure: -0.1 }] }],
+      },
+      message: '笔迹坐标或压力超出 schema-v1 范围',
+    },
+    {
+      name: 'stroke width below schema range',
+      value: {
+        width: 320,
+        height: 240,
+        strokes: [{ width: 0.4, points: [{ x: 1, y: 1 }] }],
+      },
+      message: '笔画宽度超出 schema-v1 范围',
+    },
+    {
+      name: 'padded color',
+      value: {
+        width: 320,
+        height: 240,
+        strokes: [{ color: ` ${RED_COLOR} `, points: [{ x: 1, y: 1 }] }],
+      },
+      message: '笔迹颜色无效',
     },
   ])('rejects $name', ({ value, message }) => {
     expect(() => parseInkDocument(value)).toThrow(message)

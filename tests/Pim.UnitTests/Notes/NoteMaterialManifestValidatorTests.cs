@@ -192,12 +192,32 @@ public sealed class NoteMaterialManifestValidatorTests
         };
         yield return new object[]
         {
+            "empty points",
+            new
+            {
+                width = 320,
+                height = 240,
+                strokes = new[] { new { points = Array.Empty<object>() } },
+            },
+        };
+        yield return new object[]
+        {
             "pressure outside range",
             new
             {
                 width = 320,
                 height = 240,
                 strokes = new[] { new { points = new[] { new { x = 1, y = 1, pressure = 1.5 } } } },
+            },
+        };
+        yield return new object[]
+        {
+            "negative pressure",
+            new
+            {
+                width = 320,
+                height = 240,
+                strokes = new[] { new { points = new[] { new { x = 1, y = 1, pressure = -0.1 } } } },
             },
         };
         yield return new object[]

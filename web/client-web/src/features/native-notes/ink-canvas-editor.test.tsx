@@ -228,6 +228,16 @@ describe('InkCanvasEditor', () => {
     expect(secondInk.strokeIds[2]).not.toBe(firstInk.strokeIds[1])
   })
 
+  it('falls back to the default brush when the stored preference is invalid', async () => {
+    localStorage.setItem(PREFERENCE_KEY, JSON.stringify({ color: '#ffffff', width: 99 }))
+    render(<InkCanvasEditor onCancel={vi.fn()} onSave={vi.fn()} />)
+
+    await userEvent.click(screen.getByRole('button', { name: '画笔' }))
+
+    expect(screen.getByRole('button', { name: '墨色' }).getAttribute('aria-pressed')).toBe('true')
+    expect(screen.getByRole('button', { name: '中' }).getAttribute('aria-pressed')).toBe('true')
+  })
+
   it('keeps per-stroke styles and identities through theme changes, save-reopen, and PNG rendering', async () => {
     stubPngCanvas()
     const onSave = vi.fn()

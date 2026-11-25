@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest'
-import { Zip, ZipDeflate, zipSync } from 'fflate'
+import { Zip, ZipDeflate, unzipSync, zipSync } from 'fflate'
 import { buildMaterialBundle, sha256Hex } from './material-model'
 import {
   assertAndroidNotePackageSize,
@@ -150,6 +150,32 @@ describe('Android schema-v1 note package', () => {
     expect(imported.blocks[2]?.kind === 'ink' && imported.blocks[2].bytes).toEqual(bundle.files.find((file) => file.kind === 'InkPreview')?.bytes)
   })
 
+  it('round-trips an exported package through unzip, note.json decode, rezip, and import', async () => {
+    const { archive } = await mixedArchive()
+    const unzipped = unzipSync(archive)
+    const note = JSON.parse(new TextDecoder().decode(unzipped['note.json'])) as {
+      blocks: Array<{ kind: string; ink?: { strokeStyles?: unknown[]; strokes?: unknown[] } }>
+    }
+    const encodedInk = note.blocks.find((block) => block.kind === 'ink')?.ink
+    expect(encodedInk?.strokeStyles).toEqual([
+      { color: '#263b85', width: 2.5, styleExtension: { keep: true } },
+    ])
+    expect(encodedInk?.strokes).toHaveLength(1)
+
+    const rezipped = zipSync(unzipped, { level: 0, mtime: new Date('1980-01-01T00:00:00Z') })
+    const imported = await importAndroidNotePackage(rezipped)
+
+    expect(imported.title).toBe('跨端混合笔记')
+    expect(imported.blocks.map((block) => block.kind)).toEqual(['markdown', 'photo', 'ink', 'markdown'])
+    expect(imported.blocks[2]).toMatchObject({
+      kind: 'ink',
+      ink: {
+        strokeIds: [inkStrokeId],
+        strokeStyles: [{ color: '#263b85', width: 2.5, styleExtension: { keep: true } }],
+      },
+    })
+  })
+
   it('reads streaming DEFLATE entries with data descriptors like Android ZipOutputStream', async () => {
     const { bundle } = await mixedArchive()
     const archive = streamingZip(bundle.files)
@@ -247,6 +273,24 @@ describe('Android schema-v1 note package', () => {
         strokes: [{ color: '#b8373c', width: 2.5, points: [{ x: 1, y: 1 }] }],
       },
       message: '笔迹颜色与样式数组不一致',
+    },
+    {
+      name: 'empty points',
+      ink: {
+        width: 320,
+        height: 240,
+        strokes: [{ points: [] }],
+      },
+      message: '笔画必须包含坐标点',
+    },
+    {
+      name: 'pressure outside range',
+      ink: {
+        width: 320,
+        height: 240,
+        strokes: [{ points: [{ x: 1, y: 1, pressure: 1.1 }] }],
+      },
+      message: '笔迹坐标或压力超出 schema-v1 范围',
     },
   ])('rejects imported ink with $name', async ({ ink, message }) => {
     const archive = await inkArchive(JSON.stringify(ink))

@@ -158,7 +158,7 @@ export function replaceInkStrokes(
   }
   const nextStyles = strokeStyles ?? strokes.map((stroke, index) => {
     const existing = ink.strokeStyles[index]
-    if (existing && existing.color === stroke.color && Math.abs(existing.width - stroke.width) <= EPSILON) {
+    if (existing) {
       return { ...existing, color: stroke.color, width: stroke.width }
     }
     return { color: stroke.color, width: stroke.width }
@@ -478,6 +478,7 @@ function interpolatePoint(start: InkPoint, end: InkPoint, amount: number): InkPo
   if (amount <= EPSILON) return start
   if (amount >= 1 - EPSILON) return end
   return {
+    ...start,
     x: start.x + (end.x - start.x) * amount,
     y: start.y + (end.y - start.y) * amount,
     pressure: start.pressure + (end.pressure - start.pressure) * amount,
@@ -503,10 +504,10 @@ function samePoints(first: InkPoint[], second: InkPoint[]) {
 }
 
 function normalizeColor(value: unknown): string {
-  if (typeof value !== 'string' || !COLOR_PATTERN.test(value.trim())) {
+  if (typeof value !== 'string' || !COLOR_PATTERN.test(value)) {
     throw new Error('笔迹颜色无效：必须使用 #RRGGBB')
   }
-  return value.trim().toLowerCase()
+  return value.toLowerCase()
 }
 
 function finiteNumber(value: unknown, label: string): number {
