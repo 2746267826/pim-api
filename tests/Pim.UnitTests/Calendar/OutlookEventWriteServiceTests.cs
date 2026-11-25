@@ -119,6 +119,89 @@ public sealed class OutlookEventWriteServiceTests
         Assert.Equal(1, batch.CreatedCount);
     }
 
+    [Fact]
+    public async Task Create_TimedEventWithIanaZone_SendsGraphWindowsZoneAndLocalWallClock()
+    {
+        await using var db = CreateDb();
+        var (_, bindingId, calendarId) = await SetupStandardAsync(db, UserId);
+        var handler = new ScriptedHttpMessageHandler();
+        handler.Enqueue(HttpStatusCode.Created, GraphEventJson);
+        var service = CreateService(db, handler);
+
+        var request = new OutlookWriteRequest(
+            "create",
+            bindingId,
+            null,
+            MakeDraft(calendarId) with
+            {
+                DtStart = new DateTimeOffset(2026, 7, 12, 13, 0, 0, TimeSpan.Zero),
+                DtEnd = new DateTimeOffset(2026, 7, 12, 14, 30, 0, TimeSpan.Zero),
+                TimeZoneId = "America/New_York",
+                RRule = "FREQ=DAILY;COUNT=3",
+            },
+            "instance",
+            OpId);
+
+        await service.ExecuteAsync(UserId, request, default);
+
+        var body = await Assert.Single(handler.Requests).Content!.ReadAsStringAsync();
+        using var json = JsonDocument.Parse(body);
+        var root = json.RootElement;
+
+        var start = root.GetProperty("start");
+        Assert.Equal("2026-07-12T09:00:00.0000000", start.GetProperty("dateTime").GetString());
+        Assert.Equal("Eastern Standard Time", start.GetProperty("timeZone").GetString());
+        var end = root.GetProperty("end");
+        Assert.Equal("2026-07-12T10:30:00.0000000", end.GetProperty("dateTime").GetString());
+        Assert.Equal("Eastern Standard Time", end.GetProperty("timeZone").GetString());
+
+        var range = root.GetProperty("recurrence").GetProperty("range");
+        Assert.Equal("2026-07-12", range.GetProperty("startDate").GetString());
+        Assert.Equal("Eastern Standard Time", range.GetProperty("recurrenceTimeZone").GetString());
+    }
+
+    [Fact]
+    public async Task Create_AllDayEventWithIndependentDates_SendsLocalDatesInsteadOfUtcShiftedDates()
+    {
+        await using var db = CreateDb();
+        var (_, bindingId, calendarId) = await SetupStandardAsync(db, UserId);
+        var handler = new ScriptedHttpMessageHandler();
+        handler.Enqueue(HttpStatusCode.Created, GraphEventJson);
+        var service = CreateService(db, handler);
+
+        // 上海 2026-07-12 00:00 的绝对时刻是 2026-07-11T16:00Z。写回必须以独立
+        // allDayStartDate/allDayEndDateExclusive 为准，不能截取 UTC 日期退成 07-11。
+        var request = new OutlookWriteRequest(
+            "create",
+            bindingId,
+            null,
+            MakeDraft(calendarId) with
+            {
+                DtStart = new DateTimeOffset(2026, 7, 12, 0, 0, 0, TimeSpan.FromHours(8)),
+                DtEnd = new DateTimeOffset(2026, 7, 13, 0, 0, 0, TimeSpan.FromHours(8)),
+                IsAllDay = true,
+                TimeZoneId = "Asia/Shanghai",
+                AllDayStartDate = new DateOnly(2026, 7, 12),
+                AllDayEndDateExclusive = new DateOnly(2026, 7, 13),
+            },
+            "instance",
+            OpId);
+
+        await service.ExecuteAsync(UserId, request, default);
+
+        var body = await Assert.Single(handler.Requests).Content!.ReadAsStringAsync();
+        using var json = JsonDocument.Parse(body);
+        var root = json.RootElement;
+
+        var start = root.GetProperty("start");
+        Assert.Equal("2026-07-12T00:00:00.0000000", start.GetProperty("dateTime").GetString());
+        Assert.Equal("China Standard Time", start.GetProperty("timeZone").GetString());
+        var end = root.GetProperty("end");
+        Assert.Equal("2026-07-13T00:00:00.0000000", end.GetProperty("dateTime").GetString());
+        Assert.Equal("China Standard Time", end.GetProperty("timeZone").GetString());
+        Assert.True(root.GetProperty("isAllDay").GetBoolean());
+    }
+
     // ---------- 工单 04：Outlook 写回链路也要能设置 PIM 原生「期间静音」 ----------
 
     [Fact]

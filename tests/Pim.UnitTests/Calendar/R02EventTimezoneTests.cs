@@ -70,6 +70,7 @@ public class R02EventTimezoneTests
         Assert.Null(json.GetProperty("timeZoneId").GetString());
         Assert.Equal("Outlook Custom Zone", json.GetProperty("sourceTimeZoneId").GetString());
         Assert.Equal("sourceOnly", json.GetProperty("timeZoneResolution").GetString());
+        Assert.Equal("unknown", json.GetProperty("timeZoneSourceType").GetString());
         Assert.Null(json.GetProperty("localStart").GetString());
         Assert.Equal("Asia/Shanghai", json.GetProperty("displayTimeZoneId").GetString());
         Assert.Equal("2026-10-19T10:00:00", json.GetProperty("displayLocalStart").GetString());
@@ -94,6 +95,7 @@ public class R02EventTimezoneTests
         Assert.Null(json.GetProperty("timeZoneId").GetString());
         Assert.Null(json.GetProperty("sourceTimeZoneId").GetString());
         Assert.Equal("unknown", json.GetProperty("timeZoneResolution").GetString());
+        Assert.Equal("unknown", json.GetProperty("timeZoneSourceType").GetString());
         Assert.Null(json.GetProperty("localStart").GetString());
         Assert.Equal("Asia/Shanghai", json.GetProperty("displayTimeZoneId").GetString());
         Assert.Equal("2026-10-19T10:00:00", json.GetProperty("displayLocalStart").GetString());

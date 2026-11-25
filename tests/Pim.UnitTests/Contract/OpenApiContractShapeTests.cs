@@ -593,4 +593,18 @@ public sealed class OpenApiContractShapeTests
         Assert.Equal("integer", retryAfter!.Schema.Type);
         Assert.Equal(1m, retryAfter.Schema.Minimum!.Value);
     }
+
+    [Fact]
+    public void CalendarEventQueryKeepsRequiredWindowAndDocumentsItsTimezoneSemantics()
+    {
+        var operation = Document.Paths["/api/v1/calendar/events"].Operations[OperationType.Get];
+        foreach (var name in new[] { "start", "end" })
+        {
+            var parameter = Assert.Single(operation.Parameters.Where(x => x.In == ParameterLocation.Query && x.Name == name));
+            Assert.True(parameter.Required, $"{name} 必须保持 required");
+            Assert.Equal("string", parameter.Schema.Type);
+            Assert.Contains("显式偏移", parameter.Description, StringComparison.Ordinal);
+            Assert.Contains("UTC", parameter.Description, StringComparison.Ordinal);
+        }
+    }
 }

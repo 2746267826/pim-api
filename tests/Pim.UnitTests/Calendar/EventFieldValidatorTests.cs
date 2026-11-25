@@ -73,6 +73,50 @@ public sealed class EventFieldValidatorTests
         Assert.Equal(source, normalized.TimeZoneId);
     }
 
+    [Theory]
+    [InlineData("Mars/Olympus")]
+    [InlineData("not-a-timezone")]
+    public void UnknownTimeZoneId_IsRejectedInsteadOfBeingStoredAsSource(string value)
+    {
+        var request = new CreateEventRequest(
+            Guid.NewGuid(), "Timed", null, null, Start, End, null,
+            TimeZoneId: value);
+
+        var exception = Assert.Throws<DomainException>(() =>
+            EventFieldValidator.ValidateAndNormalize(request));
+
+        Assert.Equal(02009, exception.ErrorCode);
+        Assert.Contains("无法解析为有效时区", exception.Message);
+    }
+
+    [Theory]
+    [InlineData("UTC")]
+    [InlineData("Asia/Shanghai")]
+    [InlineData("America/New_York")]
+    [InlineData("Eastern Standard Time")]
+    public void ResolvableIanaOrWindowsTimeZoneId_IsAccepted(string value)
+    {
+        var request = new CreateEventRequest(
+            Guid.NewGuid(), "Timed", null, null, Start, End, null,
+            TimeZoneId: value);
+
+        var normalized = EventFieldValidator.ValidateAndNormalize(request);
+
+        Assert.Equal(value, normalized.TimeZoneId);
+    }
+
+    [Fact]
+    public void BlankTimeZoneId_IsTreatedAsUnknownAndOmitted()
+    {
+        var request = new CreateEventRequest(
+            Guid.NewGuid(), "Timed", null, null, Start, End, null,
+            TimeZoneId: "   ");
+
+        var normalized = EventFieldValidator.ValidateAndNormalize(request);
+
+        Assert.Null(normalized.TimeZoneId);
+    }
+
     [Fact]
     public void OutlookDraftRejectsAllDayFieldsForTimedEvent()
     {

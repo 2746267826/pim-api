@@ -133,6 +133,31 @@ public sealed class McpToolContractTests
         foreach (var name in new[] { "allDayStartDate", "allDayEndDateExclusive" })
             Assert.True(updateEvent.InputSchema.GetProperty("properties").TryGetProperty(name, out _));
 
+        foreach (var name in new[] { "create_event", "update_event" })
+        {
+            var tool = byName[name];
+            var properties = tool.InputSchema.GetProperty("properties");
+            foreach (var field in new[] { "dtStart", "dtEnd", "timeZoneId" })
+            {
+                Assert.False(
+                    string.IsNullOrWhiteSpace(properties.GetProperty(field).GetProperty("description").GetString()),
+                    $"{name}.{field} must document its timezone contract");
+            }
+
+            Assert.Contains(
+                "explicit offset",
+                properties.GetProperty("dtStart").GetProperty("description").GetString(),
+                StringComparison.Ordinal);
+            Assert.Contains(
+                "IANA",
+                properties.GetProperty("timeZoneId").GetProperty("description").GetString(),
+                StringComparison.Ordinal);
+            Assert.Contains(
+                "never guesses",
+                tool.Description,
+                StringComparison.Ordinal);
+        }
+
         // create_mobile_goal: limitSeconds required.
         var createGoal = byName["create_mobile_goal"];
         var goalRequired = createGoal.InputSchema.GetProperty("required").EnumerateArray().Select(e => e.GetString()).ToHashSet();

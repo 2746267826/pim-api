@@ -318,6 +318,168 @@ public sealed class McpBugJourneyTests(ITestOutputHelper output)
         output.WriteLine("Local create succeeded. A synthetic Outlook binding with canEdit=true was still rejected, tool discovery explained why, and no Outlook event was written. No real Outlook account was contacted.");
     }
 
+    [Fact]
+    public async Task EventTimezone_ExplicitOffsetsIanaUnknownAndIsolationHoldAcrossRestAndMcp()
+    {
+        using var setup = await Setup.CreateAsync(writes: true);
+        var calendarId = Guid.NewGuid();
+        var prefix = $"R02-timezone-{Guid.NewGuid():N}";
+        using (var scope = setup.Factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
+            db.Add(new CalendarEntity { Id = calendarId, UserId = setup.UserId, Name = "R02 timezone" });
+            await db.SaveChangesAsync();
+        }
+
+        var missingOffset = await setup.Rest.PostAsJsonAsync("/api/v1/calendar/events", new
+        {
+            calendarId,
+            title = $"{prefix}-missing-offset",
+            dtStart = "2026-11-01T01:30:00",
+            dtEnd = "2026-11-01T02:30:00",
+        });
+        Assert.Equal(HttpStatusCode.BadRequest, missingOffset.StatusCode);
+
+        var invalidZone = await setup.Rest.PostAsJsonAsync("/api/v1/calendar/events", new
+        {
+            calendarId,
+            title = $"{prefix}-invalid-zone",
+            dtStart = "2026-11-01T05:30:00Z",
+            dtEnd = "2026-11-01T06:30:00Z",
+            timeZoneId = "Mars/Olympus",
+        });
+        Assert.Equal(HttpStatusCode.BadRequest, invalidZone.StatusCode);
+
+        var firstFold = await Success(await setup.Rest.PostAsJsonAsync("/api/v1/calendar/events", new
+        {
+            calendarId,
+            title = $"{prefix}-fold-a",
+            dtStart = "2026-11-01T01:30:00-04:00",
+            dtEnd = "2026-11-01T03:30:00-05:00",
+            timeZoneId = "America/New_York",
+        }));
+        var secondFold = await Success(await setup.Rest.PostAsJsonAsync("/api/v1/calendar/events", new
+        {
+            calendarId,
+            title = $"{prefix}-fold-b",
+            dtStart = "2026-11-01T01:30:00-05:00",
+            dtEnd = "2026-11-01T02:30:00-05:00",
+            timeZoneId = "America/New_York",
+        }));
+
+        Assert.Equal("2026-11-01T05:30:00+00:00", firstFold.GetProperty("dtStart").GetString());
+        Assert.Equal("2026-11-01T06:30:00+00:00", secondFold.GetProperty("dtStart").GetString());
+        Assert.Equal("2026-11-01T01:30:00", firstFold.GetProperty("localStart").GetString());
+        Assert.Equal(firstFold.GetProperty("localStart").GetString(), secondFold.GetProperty("localStart").GetString());
+        Assert.Equal("resolved", firstFold.GetProperty("timeZoneResolution").GetString());
+        Assert.Equal("America/New_York", firstFold.GetProperty("timeZoneId").GetString());
+
+        var unknownZone = await Success(await setup.Rest.PostAsJsonAsync("/api/v1/calendar/events", new
+        {
+            calendarId,
+            title = $"{prefix}-unknown-zone",
+            dtStart = "2026-11-05T05:30:00Z",
+            dtEnd = "2026-11-05T06:30:00Z",
+        }));
+        Assert.Equal("unknown", unknownZone.GetProperty("timeZoneResolution").GetString());
+        Assert.Equal("unknown", unknownZone.GetProperty("timeZoneSourceType").GetString());
+        Assert.Null(unknownZone.GetProperty("localStart").GetString());
+        Assert.Equal("Asia/Shanghai", unknownZone.GetProperty("displayTimeZoneId").GetString());
+
+        var allDay = await Success(await setup.Rest.PostAsJsonAsync("/api/v1/calendar/events", new
+        {
+            calendarId,
+            title = $"{prefix}-all-day",
+            dtStart = "2026-11-05T16:00:00Z",
+            dtEnd = "2026-11-06T16:00:00Z",
+            isAllDay = true,
+            allDayStartDate = "2026-11-06",
+            allDayEndDateExclusive = "2026-11-07",
+            timeZoneId = "Asia/Shanghai",
+        }));
+        Assert.Equal("2026-11-06", allDay.GetProperty("allDayStartDate").GetString());
+        Assert.Equal("2026-11-07", allDay.GetProperty("allDayEndDateExclusive").GetString());
+        Assert.Null(allDay.GetProperty("localStart").GetString());
+
+        var restPage = await Success(await setup.Rest.GetAsync(
+            $"/api/v1/calendar/events?start=2026-11-01&end=2026-11-03&search={prefix}&pageSize=100"));
+        Assert.Equal(2, restPage.GetProperty("totalCount").GetInt32());
+        Assert.Equal(
+            new[] { "2026-11-01T05:30:00+00:00", "2026-11-01T06:30:00+00:00" },
+            restPage.GetProperty("items").EnumerateArray()
+                .Select(x => x.GetProperty("dtStart").GetString())
+                .ToArray());
+
+        var mcpMissingOffset = await setup.Call("create_event", new
+        {
+            calendarId,
+            title = $"{prefix}-mcp-missing-offset",
+            dtStart = "2026-11-02T01:30:00",
+            dtEnd = "2026-11-02T02:30:00Z",
+        }, error: true);
+        Assert.Equal(400, mcpMissingOffset.GetProperty("code").GetInt32());
+        Assert.Contains("explicit UTC offset", mcpMissingOffset.GetProperty("error").GetString());
+
+        var mcpWindowsZone = await setup.Call("create_event", new
+        {
+            calendarId,
+            title = $"{prefix}-mcp-windows-zone",
+            dtStart = "2026-11-02T01:30:00Z",
+            dtEnd = "2026-11-02T02:30:00Z",
+            timeZoneId = "Eastern Standard Time",
+        }, error: true);
+        Assert.Equal(400, mcpWindowsZone.GetProperty("code").GetInt32());
+        Assert.Contains("IANA", mcpWindowsZone.GetProperty("error").GetString());
+
+        var mcpCreated = await setup.Call("create_event", new
+        {
+            calendarId,
+            title = $"{prefix}-mcp-valid",
+            dtStart = "2026-11-02T09:00:00+08:00",
+            dtEnd = "2026-11-02T10:00:00+08:00",
+            timeZoneId = "Asia/Shanghai",
+        });
+        var mcpEvent = mcpCreated.GetProperty("data");
+        Assert.Equal("2026-11-02T01:00:00+00:00", mcpEvent.GetProperty("dtStart").GetString());
+        Assert.Equal("2026-11-02T09:00:00", mcpEvent.GetProperty("localStart").GetString());
+        Assert.Equal("Asia/Shanghai", mcpEvent.GetProperty("timeZoneId").GetString());
+
+        var mcpPage = await setup.Call("get_events", new
+        {
+            start = "2026-11-02",
+            end = "2026-11-03",
+            pageSize = 100,
+        });
+        var mcpItems = mcpPage.GetProperty("data").GetProperty("items").EnumerateArray().ToList();
+        Assert.Contains(mcpItems, item =>
+            item.GetProperty("title").GetString() == $"{prefix}-mcp-valid"
+            && item.GetProperty("timeZoneResolution").GetString() == "resolved"
+            && item.GetProperty("localStart").GetString() == "2026-11-02T09:00:00");
+
+        using (var scope = setup.Factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
+            var rows = await db.Set<EventEntity>()
+                .Where(e => e.CalendarId == calendarId)
+                .ToListAsync();
+            Assert.Equal(5, rows.Count);
+            Assert.Equal(5, rows.Count(e => e.Title.StartsWith(prefix, StringComparison.Ordinal)));
+            Assert.DoesNotContain(rows, e => e.Title.EndsWith("-missing-offset", StringComparison.Ordinal));
+            Assert.DoesNotContain(rows, e => e.Title.EndsWith("-invalid-zone", StringComparison.Ordinal));
+            Assert.DoesNotContain(rows, e => e.Title.EndsWith("-mcp-windows-zone", StringComparison.Ordinal));
+        }
+
+        var otherSession = await AuthRegistrationTestHost.SeedAndLoginAsync(
+            setup.Factory,
+            $"r02-other-{Guid.NewGuid():N}"[..20]);
+        var otherRest = AuthRegistrationTestHost.Authed(setup.Factory, otherSession.AccessToken);
+        var otherPage = await Success(await otherRest.GetAsync(
+            $"/api/v1/calendar/events?start=2026-11-01&end=2026-11-08&search={prefix}&pageSize=100"));
+        Assert.Equal(0, otherPage.GetProperty("totalCount").GetInt32());
+
+        output.WriteLine("REST and MCP rejected offset-less/Windows-zone writes before persistence, kept two fold instants distinct, returned IANA/local/unknown/all-day semantics, normalized MCP writes to UTC, and isolated another account.");
+    }
+
     private static HttpRequestMessage Rpc(string method, object args)
     {
         var request = new HttpRequestMessage(HttpMethod.Post, "/mcp")
