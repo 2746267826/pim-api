@@ -229,6 +229,32 @@ public sealed class NoteTaskSuggestionTests
     }
 
     [SkippableFact]
+    public async Task RepeatedExtractionOfSameVersionSkipsAlreadyConfirmedItems()
+    {
+        await using var harness = await Harness.CreateAsync(
+            "test_note_task_suggestion_same_version_confirmed_dedupe");
+        var first = await harness.CreateSuggestionAsync("已确认事项不再生成新草稿");
+        await harness.Service.ConfirmAsync(
+            first.Id, new(Guid.NewGuid(), first.Revision), default);
+        var replay = await harness.Service.StartExtractionAsync(harness.Request(), default);
+
+        await harness.Job.RunAsync(harness.Owner, replay.Id, default);
+
+        harness.Db.ChangeTracker.Clear();
+        var storedReplay = await harness.AdminDb.Set<NoteTaskSuggestionExtractionEntity>()
+            .AsNoTracking().SingleAsync(x => x.Id == replay.Id);
+        var suggestions = await harness.AdminDb.Set<NoteTaskSuggestionEntity>().AsNoTracking()
+            .Where(x => x.NoteId == harness.Source.NoteId)
+            .ToListAsync();
+
+        Assert.Single(suggestions);
+        Assert.Equal(NoteTaskSuggestionStatuses.Confirmed, suggestions[0].Status);
+        Assert.Equal(NoteTaskSuggestionExtractionStatuses.Succeeded, storedReplay.Status);
+        Assert.Equal(0, storedReplay.SuggestionCount);
+        Assert.Equal(1, await harness.AdminDb.Set<TaskEntity>().CountAsync());
+    }
+
+    [SkippableFact]
     public async Task ExtractionJobFailsClosedOnInvalidModelOutput()
     {
         await using var harness = await Harness.CreateAsync("test_note_task_suggestion_invalid_output");

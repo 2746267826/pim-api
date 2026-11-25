@@ -5,6 +5,7 @@ using Pim.Core.Ai;
 using Pim.Core.Exceptions;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
+using Pim.Module.Calendar.Entities;
 using Pim.Module.NoteTaskSuggestions.Entities;
 using Pim.Module.NoteTaskSuggestions.Services;
 
@@ -160,13 +161,23 @@ internal sealed class NoteTaskSuggestionExtractionJob(
             }
 
             var now = timeProvider.GetUtcNow();
-            var existingDrafts = await db.Set<NoteTaskSuggestionEntity>().AsNoTracking()
+            var existingItems = await db.Set<NoteTaskSuggestionEntity>().AsNoTracking()
                 .Where(x => x.UserId == owner && x.NoteId == extraction.NoteId &&
                     x.ArtifactVersionId == extraction.ArtifactVersionId &&
-                    x.Status == NoteTaskSuggestionStatuses.Draft)
+                    (x.Status == NoteTaskSuggestionStatuses.Draft ||
+                     x.Status == NoteTaskSuggestionStatuses.Confirmed))
                 .ToListAsync(ct);
-            var seenFingerprints = existingDrafts
-                .Select(x => NoteTaskSuggestionService.ItemFingerprint(x))
+            var defaultCalendarId = await db.Set<CalendarEntity>().AsNoTracking()
+                .Where(x => x.UserId == owner && x.Kind == "calendar" && x.IsDefault)
+                .OrderBy(x => x.CreatedAt)
+                .ThenBy(x => x.Id)
+                .Select(x => (Guid?)x.Id)
+                .FirstOrDefaultAsync(ct);
+            var seenFingerprints = existingItems
+                .Select(x => x.Status == NoteTaskSuggestionStatuses.Confirmed &&
+                        x.ItemFingerprint is not null
+                    ? x.ItemFingerprint
+                    : NoteTaskSuggestionService.ItemFingerprint(x))
                 .ToHashSet(StringComparer.Ordinal);
             var ordinal = 0;
             var added = 0;
@@ -196,8 +207,16 @@ internal sealed class NoteTaskSuggestionExtractionJob(
                     CreatedAt = now,
                     UpdatedAt = now
                 };
-                if (!seenFingerprints.Add(NoteTaskSuggestionService.ItemFingerprint(entity)))
+                var fingerprints = new List<string>
+                {
+                    NoteTaskSuggestionService.ItemFingerprint(entity)
+                };
+                if (entity.Kind == NoteTaskSuggestionKinds.Event && defaultCalendarId is { } calendarId)
+                    fingerprints.Add(NoteTaskSuggestionService.ItemFingerprint(entity, calendarId));
+                if (fingerprints.Any(seenFingerprints.Contains))
                     continue;
+                foreach (var fingerprint in fingerprints)
+                    seenFingerprints.Add(fingerprint);
                 db.Set<NoteTaskSuggestionEntity>().Add(entity);
                 added++;
             }
