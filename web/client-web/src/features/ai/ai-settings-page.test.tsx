@@ -415,12 +415,22 @@ describe('AI文字调用完整页面', () => {
     expect(await screen.findByText('连接级用量限制')).toBeTruthy()
     expect(await screen.findByText('共享模型连接')).toBeTruthy()
     expect(await screen.findByText('当前周期用量')).toBeTruthy()
+    expect((screen.getByLabelText('费用上限（不可用）') as HTMLInputElement).disabled).toBe(true)
+    expect((screen.getByLabelText('费用币种（不可用）') as HTMLInputElement).disabled).toBe(true)
     expect(fixture.api.connectionUsage).toHaveBeenCalledWith(
       connections[0].id, 'month', undefined, expect.any(AbortSignal),
     )
     expect(fixture.api.usageReminders).toHaveBeenCalledWith(
       { connectionId: connections[0].id, limit: 50 }, expect.any(AbortSignal),
     )
+
+    await userEvent.type(screen.getByLabelText('Token 上限（可选）'), '500')
+    await userEvent.click(screen.getByRole('switch', { name: '启用用量限制' }))
+    await userEvent.click(screen.getByRole('button', { name: '保存用量限制' }))
+    await waitFor(() => expect(fixture.api.saveConnectionUsageLimit).toHaveBeenCalledWith(
+      connections[0].id,
+      expect.objectContaining({ tokenLimit: 500, costLimit: null, currency: null, enabled: true }),
+    ))
   })
 
   it('marks ASR readiness as undetermined while presets load or fail', async () => {

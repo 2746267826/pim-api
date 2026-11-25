@@ -1,10 +1,12 @@
 using System.Security.Cryptography;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using Pim.Core.Ai;
 using Pim.Core.Exceptions;
 using Pim.Core.Notes;
+using Pim.Infrastructure.Ai;
 using Pim.Infrastructure.Ai.Asr;
 using Pim.Infrastructure.Ai.Asr.Mimo;
 using Pim.Infrastructure.Auth;
@@ -21,11 +23,16 @@ namespace Pim.Infrastructure.Notes;
 public sealed class NoteAsrBatchService(PimDbContext db, ICurrentUserService user, NoteAsrTaskStore tasks,
     NoteMaterialUploadStore materials, INoteAsrEvidenceSink evidence, IMimoBatchHandleSink sink,
     IMimoBatchClientFactory clients, ISecretProtector secrets, IOptions<NoteAsrBatchOptions> options,
+    AiUsageLimitService usageLimits, AiTextCallGate gate,
     NoteAsrService? noteAsr = null, AiAsrPresetRegistry? presets = null)
 {
     private static readonly string[] SupportedModels = ["mimo-v2.6-pro", "mimo-v2.6-flash"];
     private static readonly TimeSpan PersistenceBudget = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan ResultImportLease = TimeSpan.FromMinutes(2);
+    private static readonly TimeSpan SubmissionAuditBudget = TimeSpan.FromHours(1);
+    internal const string AuditPurpose = "ai.asr-batch";
+    private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
+    private readonly AiTextCallGate _gate = gate;
 
     private Guid Owner => user.UserId ?? throw new DomainException(40101, "请先登录");
 
@@ -92,7 +99,10 @@ public sealed class NoteAsrBatchService(PimDbContext db, ICurrentUserService use
             .Where(x => x.OwnerId == owner && x.TaskId == attempt.TaskId && x.AttemptId == attempt.Id)
             .OrderByDescending(x => x.CreatedAt).ThenBy(x => x.Id).FirstOrDefaultAsync(ct);
         if (existingJob is not null)
+        {
+            await SyncAuditFromJobAsync(existingJob, ct);
             return Describe(existingJob);
+        }
         if (attempt.State != "Queued")
             throw new DomainException(40901, "Batch attempt 已离开待提交状态");
 
@@ -438,10 +448,17 @@ public sealed class NoteAsrBatchService(PimDbContext db, ICurrentUserService use
         if (db.Database.CurrentTransaction is not null)
             throw new InvalidOperationException("Batch submit must own its durable placeholder transaction");
 
+        var jobId = Guid.NewGuid();
+        var auditCorrelation = Guid.NewGuid().ToString("N");
+        var auditStarted = DateTimeOffset.UtcNow;
+        AiUsageLimitLease? usageLease = null;
+        var gateEntered = false;
+
         NoteAsrBatchJobEntity NewJob()
         {
             var job = new NoteAsrBatchJobEntity
             {
+                Id = jobId,
                 OwnerId = owner,
                 Model = profile.Model, BaseUrl = baseUri.AbsoluteUri, ProfileRevision = profile.Revision,
                 CredentialSecret = secrets.Protect(apiKey), ConsentRef = request.ConsentRef,
@@ -454,131 +471,462 @@ public sealed class NoteAsrBatchService(PimDbContext db, ICurrentUserService use
             return job;
         }
 
-        // The retrying execution strategy wraps only the DB-only freeze unit. It may replay this
-        // delegate after a transient/unknown commit, so every attempt rebuilds the tracked entity
-        // and relies on the owner/task unique key for exactly-once submission.
-        var frozen = await db.Database.CreateExecutionStrategy().ExecuteAsync(async () =>
-        {
-            db.ChangeTracker.Clear();
-            var candidate = NewJob();
-            await using var tx = await db.Database.BeginTransactionAsync(ct);
-            var claimedAt = DateTimeOffset.UtcNow;
-            var won = await db.NoteAsrAttempts
-                .Where(x => x.Id == attempt.Id && x.OwnerId == owner && x.TaskId == request.TaskId &&
-                            x.VersionId == attempt.VersionId && x.InputSha256 == attempt.InputSha256 &&
-                            x.Route == NoteAsrRoute.CloudMultimodal &&
-                            x.ExecutionMode == NoteAsrExecutionMode.Batch &&
-                            x.ModelId == request.ModelId && x.ModelRevision == attempt.ModelRevision &&
-                            x.ConsentVersion == request.ConsentRef && x.FencingToken == attempt.FencingToken &&
-                            x.State == "Queued" && !x.StopRequested)
-                .ExecuteUpdateAsync(update => update
-                    .SetProperty(x => x.State, "Creating")
-                    .SetProperty(x => x.UpdatedAt, claimedAt), ct);
-            if (won == 0)
-            {
-                await tx.RollbackAsync(ct);
-                var winner = await db.NoteAsrBatchJobs.AsNoTracking()
-                    .Where(x => x.OwnerId == owner && x.TaskId == attempt.TaskId && x.AttemptId == attempt.Id)
-                    .OrderByDescending(x => x.CreatedAt).ThenBy(x => x.Id).FirstOrDefaultAsync(ct);
-                if (winner is not null)
-                    return new FrozenSubmission(winner, false);
-                throw new DomainException(40901, "Batch attempt 已被并发操作占用，请刷新原记录");
-            }
-
-            db.NoteAsrBatchJobs.Add(candidate);
-            try
-            {
-                await db.SaveChangesAsync(ct);
-                await tx.CommitAsync(ct);
-                return new FrozenSubmission(candidate, true);
-            }
-            catch (DbUpdateException)
-            {
-                await tx.RollbackAsync(CancellationToken.None);
-                db.Entry(candidate).State = EntityState.Detached;
-                var winner = await db.NoteAsrBatchJobs.AsNoTracking()
-                    .Where(x => x.OwnerId == owner && x.TaskId == attempt.TaskId && x.AttemptId == attempt.Id)
-                    .OrderByDescending(x => x.CreatedAt).ThenBy(x => x.Id).FirstOrDefaultAsync(CancellationToken.None);
-                if (winner is not null)
-                    return new FrozenSubmission(winner, false);
-                throw;
-            }
-        });
-
-        var job = frozen.Job;
-        if (!frozen.Created) return Describe(job);
-
         try
         {
-            using var uploadHttp = clients.Create(baseUri, apiKey);
-            var upload = await uploadHttp.Client.UploadJsonlAsync(input.Content, input.Length, filename, ct);
-            job.InputFileId = upload.FileId;
-            job.InputExpireAt = upload.ExpireAt;
-            job.UpdatedAt = DateTimeOffset.UtcNow;
-            await SaveBoundedAsync();
-        }
-        catch (OperationCanceledException)
-        {
-            await PersistUnknownAsync(job, "batch_upload_unknown",
-                "输入文件上传期间请求取消，结果未确认；不得自动重复提交");
-            return Describe(job);
-        }
-        catch (Exception error) when (IsDefiniteRejection(error))
-        {
-            await PersistFailedAsync(job, "batch_upload_rejected",
-                "供应商明确拒绝输入文件；本次未创建 Batch，请核对配置或文件后新建 attempt");
-            return Describe(job);
-        }
-        catch (Exception error) when (IsUncertainTransport(error))
-        {
-            await PersistUnknownAsync(job, "batch_upload_unknown",
-                "输入文件上传结果未确认；不得自动重复提交");
-            return Describe(job);
-        }
+            if (!_gate.TryEnter(asr: true))
+            {
+                await WriteBlockedAuditAsync(owner, jobId, auditCorrelation, attempt, profile, baseUri,
+                    input, filename, request, "busy",
+                    "Batch并发已达上限，请稍后明确新建提交", ct);
+                throw new DomainException(50302, "Batch并发已达上限，请稍后明确新建提交");
+            }
+            gateEntered = true;
 
-        try
-        {
-            using var createHttp = clients.Create(baseUri, apiKey);
-            var outcome = await createHttp.Client.CreateBatchAsync(job.InputFileId!,
-                MimoBatchDefaults.ChatCompletionsEndpoint, $"pim-{job.Id:N}", request.CompletionWindow,
-                containsAudio: true, ct);
+            if (profile.ProviderConnectionId is not { } connectionId)
+            {
+                await WriteBlockedAuditAsync(owner, jobId, auditCorrelation, attempt, profile, baseUri,
+                    input, filename, request, "usage_limit_unbound",
+                    "Batch模型未绑定AI服务连接，无法纳入用量限制", ct);
+                throw new DomainException(40901,
+                    "Batch模型未绑定AI服务连接，无法纳入用量限制；请管理员重新保存模型后再试");
+            }
+            var decision = await usageLimits.TryBeginAsync(connectionId, auditCorrelation,
+                AuditPurpose, SubmissionAuditBudget, ct);
+            if (!decision.Allowed)
+            {
+                await WriteBlockedAuditAsync(owner, jobId, auditCorrelation, attempt, profile, baseUri,
+                    input, filename, request, decision.ErrorCode ?? "usage_limit_blocked",
+                    decision.Message ?? "AI用量限制拒绝本次调用", ct);
+                throw new DomainException(42901, decision.Message ?? "AI用量限制拒绝本次调用");
+            }
+            usageLease = decision.Lease;
+
+            // The retrying execution strategy wraps only the DB-only freeze unit. It may replay this
+            // delegate after a transient/unknown commit, so every attempt rebuilds the tracked entity
+            // and relies on the owner/task unique key for exactly-once submission.
+            var frozen = await db.Database.CreateExecutionStrategy().ExecuteAsync(async () =>
+            {
+                db.ChangeTracker.Clear();
+                var candidate = NewJob();
+                var audit = NewAuditRow(owner, jobId, auditCorrelation, attempt, profile, baseUri,
+                    input, filename, request, auditStarted);
+                await using var tx = await db.Database.BeginTransactionAsync(ct);
+                var claimedAt = DateTimeOffset.UtcNow;
+                var won = await db.NoteAsrAttempts
+                    .Where(x => x.Id == attempt.Id && x.OwnerId == owner && x.TaskId == request.TaskId &&
+                                x.VersionId == attempt.VersionId && x.InputSha256 == attempt.InputSha256 &&
+                                x.Route == NoteAsrRoute.CloudMultimodal &&
+                                x.ExecutionMode == NoteAsrExecutionMode.Batch &&
+                                x.ModelId == request.ModelId && x.ModelRevision == attempt.ModelRevision &&
+                                x.ConsentVersion == request.ConsentRef && x.FencingToken == attempt.FencingToken &&
+                                x.State == "Queued" && !x.StopRequested)
+                    .ExecuteUpdateAsync(update => update
+                        .SetProperty(x => x.State, "Creating")
+                        .SetProperty(x => x.UpdatedAt, claimedAt), ct);
+                if (won == 0)
+                {
+                    await tx.RollbackAsync(ct);
+                    var winner = await db.NoteAsrBatchJobs.AsNoTracking()
+                        .Where(x => x.OwnerId == owner && x.TaskId == attempt.TaskId && x.AttemptId == attempt.Id)
+                        .OrderByDescending(x => x.CreatedAt).ThenBy(x => x.Id).FirstOrDefaultAsync(ct);
+                    if (winner is not null)
+                        return new FrozenSubmission(winner, false);
+                    throw new DomainException(40901, "Batch attempt 已被并发操作占用，请刷新原记录");
+                }
+
+                db.NoteAsrBatchJobs.Add(candidate);
+                db.AiRequestLogs.Add(audit);
+                try
+                {
+                    await db.SaveChangesAsync(ct);
+                    await tx.CommitAsync(ct);
+                    return new FrozenSubmission(candidate, true);
+                }
+                catch (DbUpdateException)
+                {
+                    await tx.RollbackAsync(CancellationToken.None);
+                    db.Entry(candidate).State = EntityState.Detached;
+                    db.Entry(audit).State = EntityState.Detached;
+                    var winner = await db.NoteAsrBatchJobs.AsNoTracking()
+                        .Where(x => x.OwnerId == owner && x.TaskId == attempt.TaskId && x.AttemptId == attempt.Id)
+                        .OrderByDescending(x => x.CreatedAt).ThenBy(x => x.Id)
+                        .FirstOrDefaultAsync(CancellationToken.None);
+                    if (winner is not null)
+                        return new FrozenSubmission(winner, false);
+                    throw;
+                }
+            });
+
+            var job = frozen.Job;
+            if (!frozen.Created)
+            {
+                await SyncAuditFromJobAsync(job, ct);
+                return Describe(job);
+            }
+
+            var auditRow = await db.AiRequestLogs.SingleAsync(x =>
+                x.UserId == owner && x.ClientRequestId == jobId, ct);
             try
             {
-                await sink.SaveAsync(outcome, intent, CancellationToken.None);
+                await AiProviderAttemptMarker.MarkAsync(db, auditRow, ct);
             }
-            catch (Exception saveError) when (saveError is not OutOfMemoryException)
+            catch (OperationCanceledException)
             {
-                // A verified provider handle must win over a transport/request cancellation.
-                if (outcome is MimoBatchCreateOutcome.Known known)
-                    await PersistKnownAsync(job, known.Batch);
-                else
-                    await PersistUnknownAsync(job, "batch_create_unknown",
-                        "Batch 创建结果未确认；不得自动重发");
+                await PersistUnknownAsync(job, "batch_marker_unknown",
+                    "发送前的服务商尝试标记未确认；未发送请求，禁止自动重发");
+                await SyncAuditFromJobAsync(job, ct);
+                return Describe(job);
             }
-            using var readBudget = new CancellationTokenSource(PersistenceBudget);
-            return await GetAsync(job.Id, readBudget.Token);
+            catch (InvalidOperationException)
+            {
+                await PersistFailedAsync(job, "audit_guard_failed",
+                    "调用审计记录未处于可发送状态，未调用服务商");
+                await SyncAuditFromJobAsync(job, ct);
+                return Describe(job);
+            }
+
+            try
+            {
+                using var uploadHttp = clients.Create(baseUri, apiKey);
+                var upload = await uploadHttp.Client.UploadJsonlAsync(input.Content, input.Length, filename, ct);
+                job.InputFileId = upload.FileId;
+                job.InputExpireAt = upload.ExpireAt;
+                job.UpdatedAt = DateTimeOffset.UtcNow;
+                await SaveBoundedAsync();
+                await SyncAuditFromJobAsync(job, ct);
+            }
+            catch (OperationCanceledException)
+            {
+                await PersistUnknownAsync(job, "batch_upload_unknown",
+                    "输入文件上传期间请求取消，结果未确认；不得自动重复提交");
+                await SyncAuditFromJobAsync(job, ct);
+                return Describe(job);
+            }
+            catch (Exception error) when (IsDefiniteRejection(error))
+            {
+                await PersistFailedAsync(job, "batch_upload_rejected",
+                    "供应商明确拒绝输入文件；本次未创建 Batch，请核对配置或文件后新建 attempt");
+                await SyncAuditFromJobAsync(job, ct);
+                return Describe(job);
+            }
+            catch (Exception error) when (IsUncertainTransport(error))
+            {
+                await PersistUnknownAsync(job, "batch_upload_unknown",
+                    "输入文件上传结果未确认；不得自动重复提交");
+                await SyncAuditFromJobAsync(job, ct);
+                return Describe(job);
+            }
+
+            try
+            {
+                using var createHttp = clients.Create(baseUri, apiKey);
+                var outcome = await createHttp.Client.CreateBatchAsync(job.InputFileId!,
+                    MimoBatchDefaults.ChatCompletionsEndpoint, $"pim-{job.Id:N}", request.CompletionWindow,
+                    containsAudio: true, ct);
+                try
+                {
+                    await sink.SaveAsync(outcome, intent, CancellationToken.None);
+                }
+                catch (Exception saveError) when (saveError is not OutOfMemoryException)
+                {
+                    // A verified provider handle must win over a transport/request cancellation.
+                    if (outcome is MimoBatchCreateOutcome.Known known)
+                        await PersistKnownAsync(job, known.Batch);
+                    else
+                        await PersistUnknownAsync(job, "batch_create_unknown",
+                            "Batch 创建结果未确认；不得自动重发");
+                }
+                await SyncAuditFromJobAsync(job, ct);
+                using var readBudget = new CancellationTokenSource(PersistenceBudget);
+                return await GetAsync(job.Id, readBudget.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                await PersistUnknownAsync(job, "batch_create_unknown",
+                    "Batch 创建期间请求取消，结果未确认；不得自动重发");
+                await SyncAuditFromJobAsync(job, ct);
+                return Describe(job);
+            }
+            catch (Exception error) when (IsDefiniteRejection(error))
+            {
+                await PersistFailedAsync(job, "batch_create_rejected",
+                    "供应商明确拒绝创建 Batch；本次未取得 batch id，请核对后新建 attempt");
+                await SyncAuditFromJobAsync(job, ct);
+                return Describe(job);
+            }
+            catch (Exception error) when (IsUncertainTransport(error))
+            {
+                await PersistUnknownAsync(job, "batch_create_unknown",
+                    "Batch 创建结果未确认；不得自动重发，请平台侧按 attempt 人工核对");
+                await SyncAuditFromJobAsync(job, ct);
+                return Describe(job);
+            }
         }
-        catch (OperationCanceledException)
+        finally
         {
-            await PersistUnknownAsync(job, "batch_create_unknown",
-                "Batch 创建期间请求取消，结果未确认；不得自动重发");
-            return Describe(job);
-        }
-        catch (Exception error) when (IsDefiniteRejection(error))
-        {
-            await PersistFailedAsync(job, "batch_create_rejected",
-                "供应商明确拒绝创建 Batch；本次未取得 batch id，请核对后新建 attempt");
-            return Describe(job);
-        }
-        catch (Exception error) when (IsUncertainTransport(error))
-        {
-            await PersistUnknownAsync(job, "batch_create_unknown",
-                "Batch 创建结果未确认；不得自动重发，请平台侧按 attempt 人工核对");
-            return Describe(job);
+            if (usageLease is not null)
+            {
+                try { await usageLimits.EndAsync(usageLease, CancellationToken.None); }
+                catch { /* The durable TTL still expires; never mask the actual submission outcome. */ }
+            }
+            if (gateEntered) _gate.Exit(asr: true);
         }
     }
 
     private sealed record FrozenSubmission(NoteAsrBatchJobEntity Job, bool Created);
+
+    private AiRequestLogEntity NewAuditRow(Guid owner, Guid jobId, string correlation,
+        NoteAsrAttemptEntity attempt, AiModelProfileEntity profile, Uri baseUri, NoteAsrBatchJsonl input,
+        string filename, StartNoteAsrBatchRequest request, DateTimeOffset startedAt)
+    {
+        var payload = JsonSerializer.Serialize(new
+        {
+            schemaVersion = 1,
+            kind = "note-asr-batch",
+            attemptId = attempt.Id,
+            taskId = attempt.TaskId,
+            executionMode = "batch",
+            filename,
+            length = input.Length,
+            itemCount = input.CustomIds.Length,
+            completionWindow = request.CompletionWindow
+        }, Json);
+        var metadata = JsonSerializer.Serialize(new
+        {
+            providerAttempted = false,
+            batch = new { filename, length = input.Length, itemCount = input.CustomIds.Length }
+        }, Json);
+        return new AiRequestLogEntity
+        {
+            UserId = owner,
+            ClientRequestId = jobId,
+            ModelProfileId = profile.Id,
+            ProviderConnectionId = profile.ProviderConnectionId,
+            ModelProfileName = profile.Name,
+            ModelRevision = profile.Revision,
+            ModelEndpoint = baseUri.AbsoluteUri,
+            Module = "notes",
+            Purpose = AuditPurpose,
+            SourceObjectType = "note-asr-batch",
+            SourceObjectId = jobId.ToString("D"),
+            Provider = MimoMultimodalPreset.PresetId,
+            Model = profile.Model,
+            CorrelationId = correlation,
+            Status = "running",
+            AttemptNumber = 1,
+            MaxAttempts = 1,
+            StartedAt = startedAt,
+            InitiatedAt = startedAt,
+            ExecutionExpiresAt = startedAt + SubmissionAuditBudget,
+            RequestPayloadJson = payload,
+            MetadataJson = metadata
+        };
+    }
+
+    /// <summary>
+    /// Records a fail-closed refusal in the same usage ledger as provider calls. The Batch job is
+    /// never created for a blocked submission, so a synthetic job id keeps the row owner-scoped
+    /// and traceable without ever claiming a provider attempt.
+    /// </summary>
+    private async Task WriteBlockedAuditAsync(Guid owner, Guid jobId, string correlation,
+        NoteAsrAttemptEntity attempt, AiModelProfileEntity profile, Uri baseUri, NoteAsrBatchJsonl input,
+        string filename, StartNoteAsrBatchRequest request, string errorCode, string errorMessage,
+        CancellationToken ct)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var row = NewAuditRow(owner, jobId, correlation, attempt, profile, baseUri, input, filename, request, now);
+        row.Status = "blocked";
+        row.FinishedAt = now;
+        row.DurationMs = 0;
+        row.ExecutionExpiresAt = null;
+        row.ErrorCode = errorCode.Length <= 128 ? errorCode : errorCode[..128];
+        row.ErrorMessage = errorMessage.Length <= 2_000 ? errorMessage : errorMessage[..2_000];
+        db.AiRequestLogs.Add(row);
+        try
+        {
+            await db.SaveChangesAsync(ct);
+        }
+        catch (Exception error) when (error is DbUpdateException or OperationCanceledException)
+        {
+            // The refusal already happened; losing its audit row must not turn it into a send.
+            db.Entry(row).State = EntityState.Detached;
+        }
+    }
+
+    /// <summary>
+    /// Projects Batch lifecycle and reported per-item token usage into the shared
+    /// <c>ai_request_logs</c> ledger. Missing token data is preserved as unknown instead of zero so
+    /// the connection limit fails closed. A legacy row that predates this audit is created with
+    /// <c>providerAttempted=true</c> because an already submitted Batch may have reached MiMo.
+    /// </summary>
+    private async Task SyncAuditFromJobAsync(NoteAsrBatchJobEntity job, CancellationToken ct)
+    {
+        if (job.Status == "Deleted") return;
+        using var budget = new CancellationTokenSource(PersistenceBudget);
+        var now = DateTimeOffset.UtcNow;
+        var status = job.Status switch
+        {
+            "Completed" => "succeeded",
+            "Failed" => "failed",
+            "Cancelled" => "cancelled",
+            "Expired" or "Unknown" => "incomplete",
+            _ => "running"
+        };
+        var terminal = status != "running";
+        var usage = SumBatchUsage(job.ResultJson);
+        var audit = await db.AiRequestLogs.FirstOrDefaultAsync(x =>
+            x.UserId == job.OwnerId && x.ClientRequestId == job.Id && x.Purpose == AuditPurpose,
+            budget.Token);
+        if (audit is null)
+        {
+            var profile = await db.AiModelProfiles.AsNoTracking()
+                .SingleOrDefaultAsync(x => x.Revision == job.ProfileRevision, budget.Token);
+            audit = LegacyAuditRow(job, profile, status, terminal, usage);
+            db.AiRequestLogs.Add(audit);
+            try
+            {
+                await db.SaveChangesAsync(budget.Token);
+                return;
+            }
+            catch (DbUpdateException)
+            {
+                // A concurrent poll may have created the legacy row first; fall through to update it.
+                db.Entry(audit).State = EntityState.Detached;
+                audit = await db.AiRequestLogs.FirstOrDefaultAsync(x =>
+                    x.UserId == job.OwnerId && x.ClientRequestId == job.Id && x.Purpose == AuditPurpose,
+                    budget.Token);
+                if (audit is null) throw;
+            }
+        }
+
+        if (audit.Status == "blocked") return;
+        if (IsTerminalAuditStatus(audit.Status) && status == "running") return;
+        if (audit.ProviderConnectionId is null && job.ProfileRevision != Guid.Empty)
+        {
+            var profile = await db.AiModelProfiles.AsNoTracking()
+                .SingleOrDefaultAsync(x => x.Revision == job.ProfileRevision, budget.Token);
+            if (profile is not null)
+            {
+                audit.ModelProfileId = profile.Id;
+                audit.ProviderConnectionId = profile.ProviderConnectionId;
+                audit.ModelProfileName = profile.Name;
+                audit.ModelRevision = profile.Revision;
+            }
+        }
+        audit.ModelEndpoint ??= job.BaseUrl;
+        audit.Model = job.Model;
+        audit.Status = status;
+        audit.ErrorCode = job.LastErrorCode;
+        audit.ErrorMessage = job.LastErrorMessage;
+        audit.ExecutionExpiresAt = job.BatchId is not null || terminal ? null : audit.ExecutionExpiresAt;
+        audit.MetadataJson = AiAsrJobService.SetProviderAttemptedMetadata(audit.MetadataJson, true);
+        if (terminal)
+        {
+            audit.FinishedAt ??= now;
+            audit.DurationMs ??= Math.Max(0, (long)(now - audit.StartedAt).TotalMilliseconds);
+        }
+        if (usage is { } tokens)
+        {
+            audit.PromptTokens = tokens.Prompt;
+            audit.CompletionTokens = tokens.Completion;
+            audit.TotalTokens = tokens.Total;
+        }
+        await db.SaveChangesAsync(budget.Token);
+    }
+
+    private static AiRequestLogEntity LegacyAuditRow(NoteAsrBatchJobEntity job, AiModelProfileEntity? profile,
+        string status, bool terminal, BatchTokens? usage) => new()
+    {
+        UserId = job.OwnerId,
+        ClientRequestId = job.Id,
+        ModelProfileId = profile?.Id,
+        ProviderConnectionId = profile?.ProviderConnectionId,
+        ModelProfileName = profile?.Name,
+        ModelRevision = profile?.Revision ?? (job.ProfileRevision == Guid.Empty ? null : job.ProfileRevision),
+        ModelEndpoint = job.BaseUrl,
+        Module = "notes",
+        Purpose = AuditPurpose,
+        SourceObjectType = "note-asr-batch",
+        SourceObjectId = job.Id.ToString("D"),
+        Provider = MimoMultimodalPreset.PresetId,
+        Model = job.Model,
+        CorrelationId = job.Id.ToString("N"),
+        Status = status,
+        AttemptNumber = 1,
+        MaxAttempts = 1,
+        StartedAt = job.CreatedAt,
+        InitiatedAt = job.CreatedAt,
+        FinishedAt = terminal ? job.UpdatedAt : null,
+        DurationMs = terminal ? Math.Max(0, (long)(job.UpdatedAt - job.CreatedAt).TotalMilliseconds) : null,
+        ExecutionExpiresAt = terminal || job.BatchId is not null
+            ? null
+            : job.CreatedAt + SubmissionAuditBudget,
+        ErrorCode = job.LastErrorCode,
+        ErrorMessage = job.LastErrorMessage,
+        PromptTokens = usage?.Prompt,
+        CompletionTokens = usage?.Completion,
+        TotalTokens = usage?.Total,
+        MetadataJson = AiAsrJobService.SetProviderAttemptedMetadata("{}", true)
+    };
+
+    private static bool IsTerminalAuditStatus(string status) =>
+        status is "succeeded" or "failed" or "incomplete" or "timed_out" or "cancelled" or "blocked";
+
+    /// <summary>
+    /// Sums usage across every reconciled Batch item. If any item lacks a usable usage object the
+    /// whole submission stays token-unknown; a partial sum would understate billed usage.
+    /// </summary>
+    private static BatchTokens? SumBatchUsage(string? resultJson)
+    {
+        if (string.IsNullOrWhiteSpace(resultJson)) return null;
+        MimoBatchReconciliation? reconciliation;
+        try
+        {
+            reconciliation = JsonSerializer.Deserialize<MimoBatchReconciliation>(resultJson, Json);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+        if (reconciliation is null || reconciliation.Items.Count == 0) return null;
+        long prompt = 0;
+        long completion = 0;
+        long total = 0;
+        foreach (var item in reconciliation.Items)
+        {
+            if (string.IsNullOrWhiteSpace(item.RawBody)) return null;
+            try
+            {
+                using var document = JsonDocument.Parse(item.RawBody);
+                if (document.RootElement.ValueKind != JsonValueKind.Object ||
+                    !document.RootElement.TryGetProperty("usage", out var usage) ||
+                    usage.ValueKind != JsonValueKind.Object ||
+                    !TryToken(usage, "prompt_tokens", out var itemPrompt) ||
+                    !TryToken(usage, "completion_tokens", out var itemCompletion) ||
+                    !TryToken(usage, "total_tokens", out var itemTotal))
+                    return null;
+                prompt += itemPrompt;
+                completion += itemCompletion;
+                total += itemTotal;
+            }
+            catch (JsonException)
+            {
+                return null;
+            }
+        }
+        return new BatchTokens(prompt, completion, total);
+    }
+
+    private static bool TryToken(JsonElement usage, string name, out long value)
+    {
+        value = 0;
+        return usage.TryGetProperty(name, out var element) &&
+               element.ValueKind == JsonValueKind.Number &&
+               element.TryGetInt64(out value) &&
+               value >= 0;
+    }
+
+    private sealed record BatchTokens(long Prompt, long Completion, long Total);
 
     public async Task<IReadOnlyList<NoteAsrBatchJobDto>> ListAsync(CancellationToken ct)
     {
@@ -636,6 +984,7 @@ public sealed class NoteAsrBatchService(PimDbContext db, ICurrentUserService use
                 job.UpdatedAt = DateTimeOffset.UtcNow;
                 await SaveBoundedAsync();
             }
+            await SyncAuditFromJobAsync(job, CancellationToken.None);
             return Describe(job);
         }
 
@@ -664,9 +1013,11 @@ public sealed class NoteAsrBatchService(PimDbContext db, ICurrentUserService use
         {
             // Keep the terminal status and both file handles even when the caller disconnects.
             await SaveBoundedAsync();
+            await SyncAuditFromJobAsync(job, CancellationToken.None);
             throw;
         }
         await SaveBoundedAsync();
+        await SyncAuditFromJobAsync(job, CancellationToken.None);
         return Describe(job);
     }
 
@@ -701,9 +1052,11 @@ public sealed class NoteAsrBatchService(PimDbContext db, ICurrentUserService use
         catch (OperationCanceledException)
         {
             await SaveBoundedAsync();
+            await SyncAuditFromJobAsync(job, CancellationToken.None);
             throw;
         }
         await SaveBoundedAsync();
+        await SyncAuditFromJobAsync(job, CancellationToken.None);
         return Describe(job);
     }
 
@@ -717,6 +1070,7 @@ public sealed class NoteAsrBatchService(PimDbContext db, ICurrentUserService use
         if (string.IsNullOrWhiteSpace(job.BatchId) ||
             !TerminalState(job))
             throw new DomainException(40901, "仅终态 Batch 资源可删除；取消不是 DELETE，也不证明音频已删除");
+        await SyncAuditFromJobAsync(job, CancellationToken.None);
         var apiKey = ReadStoredCredential(job);
         using var http = clients.Create(new Uri(job.BaseUrl), apiKey);
         var current = new MimoBatchRef(job.BatchId!, job.StatusRaw ?? job.Status,

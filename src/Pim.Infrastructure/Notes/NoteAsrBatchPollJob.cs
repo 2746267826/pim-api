@@ -117,7 +117,12 @@ public sealed class NoteAsrBatchPollJob(
         CancellationToken ct)
     {
         var cutoff = now - settings.UnknownCreateGrace;
-        await db.NoteAsrBatchJobs
+        var staleIds = await db.NoteAsrBatchJobs.AsNoTracking()
+            .Where(x => x.BatchId == null && x.Status == "Creating" && x.UpdatedAt < cutoff)
+            .Select(x => x.Id)
+            .ToListAsync(ct);
+        if (staleIds.Count == 0) return;
+        var updated = await db.NoteAsrBatchJobs
             .Where(x => x.BatchId == null && x.Status == "Creating" && x.UpdatedAt < cutoff)
             .ExecuteUpdateAsync(update => update
                 .SetProperty(x => x.Status, "Unknown")
@@ -127,5 +132,20 @@ public sealed class NoteAsrBatchPollJob(
                     "后台轮询未发现已核验 batch id；保持 UNKNOWN 等待人工核对，禁止自动重发")
                 .SetProperty(x => x.UpdatedAt, now)
                 .SetProperty(x => x.Revision, Guid.NewGuid()), ct);
+        if (updated == 0) return;
+        // The submit row is the only usage evidence for this Batch. Close it as incomplete so a
+        // lost create response can never disappear from the connection usage ledger.
+        await db.AiRequestLogs
+            .Where(x => x.Purpose == NoteAsrBatchService.AuditPurpose &&
+                        x.ClientRequestId != null && x.Status == "running" &&
+                        db.NoteAsrBatchJobs.Any(job => job.Id == x.ClientRequestId.Value &&
+                            job.BatchId == null && job.Status == "Unknown"))
+            .ExecuteUpdateAsync(update => update
+                .SetProperty(x => x.Status, "incomplete")
+                .SetProperty(x => x.ErrorCode, "batch_create_unknown")
+                .SetProperty(x => x.ErrorMessage,
+                    "后台轮询未发现已核验 batch id；用量保持UNKNOWN，禁止自动重发")
+                .SetProperty(x => x.FinishedAt, now)
+                .SetProperty(x => x.ExecutionExpiresAt, (DateTimeOffset?)null), ct);
     }
 }

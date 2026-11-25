@@ -11,6 +11,7 @@ using Microsoft.Extensions.Options;
 using Pim.Core.Ai;
 using Pim.Core.Exceptions;
 using Pim.Core.Notes;
+using Pim.Infrastructure.Ai;
 using Pim.Infrastructure.Ai.Asr;
 using Pim.Infrastructure.Ai.Asr.Mimo;
 using Pim.Infrastructure.Auth;
@@ -540,6 +541,12 @@ public sealed class NoteAsrBatchPersistenceTests
                 .Select(x => x.ReceiptKind).SingleAsync());
             Assert.Equal("Failed", await db.NoteAsrAttempts.Where(x => x.Id == seed.AttemptId)
                 .Select(x => x.State).SingleAsync());
+            var audit = await db.AiRequestLogs.AsNoTracking().SingleAsync(x =>
+                x.UserId == seed.Owner && x.ClientRequestId == jobId &&
+                x.Purpose == NoteAsrBatchService.AuditPurpose);
+            Assert.Equal("succeeded", audit.Status);
+            // One failed item has no usage object, so the whole Batch stays token-unknown.
+            Assert.Null(audit.TotalTokens);
         }
 
         var downloadCount = factory.ContentCalls;
@@ -613,6 +620,13 @@ public sealed class NoteAsrBatchPersistenceTests
                 x.OwnerId == seed.Owner && x.AttemptId == seed.AttemptId));
             Assert.Equal("Succeeded", await db.NoteAsrAttempts.Where(x => x.Id == seed.AttemptId)
                 .Select(x => x.State).SingleAsync());
+            var audit = await db.AiRequestLogs.AsNoTracking().SingleAsync(x =>
+                x.UserId == seed.Owner && x.ClientRequestId == started.Id &&
+                x.Purpose == NoteAsrBatchService.AuditPurpose);
+            Assert.Equal("succeeded", audit.Status);
+            Assert.Equal(20, audit.PromptTokens);
+            Assert.Equal(4, audit.CompletionTokens);
+            Assert.Equal(24, audit.TotalTokens);
         }
 
         await CleanupAsync(seed.Owner);
@@ -2236,6 +2250,17 @@ public sealed class NoteAsrBatchPersistenceTests
         await db.NoteAsrAttempts.Where(x => x.OwnerId != owner).ExecuteDeleteAsync();
         var now = DateTimeOffset.UtcNow;
         var suffix = owner.ToString("N")[..8];
+        var connectionId = Guid.NewGuid();
+        await db.AiProviderConnections.AddAsync(new AiProviderConnectionEntity
+        {
+            Id = connectionId, Name = "Batch connection " + suffix,
+            NormalizedName = "BATCH-CONNECTION-" + suffix
+        });
+        await db.AiUsageLimitRules.AddAsync(new AiUsageLimitRuleEntity
+        {
+            ConnectionId = connectionId, Enabled = false, Period = AiUsageLimitPeriods.Month,
+            WarningPercent = 80, TimeZoneId = "Asia/Shanghai"
+        });
         await db.Users.AddAsync(new UserEntity
         {
             Id = owner, Username = "synthetic-" + suffix, Email = suffix + "@example.invalid",
@@ -2248,7 +2273,7 @@ public sealed class NoteAsrBatchPersistenceTests
             Model = "mimo-v2.6-pro", Enabled = true,
             Capabilities = AiModelCapabilityFlags.Transcription, AsrPresetId = MimoMultimodalPreset.PresetId,
             AsrBatchBaseUrl = Origin.AbsoluteUri, ApiKeySecret = "synthetic-key", CreatedAt = now, UpdatedAt = now,
-            MaxOutputTokens = maxOutputTokens
+            MaxOutputTokens = maxOutputTokens, ProviderConnectionId = connectionId
         };
         await db.AiModelProfiles.AddAsync(profile);
         var runtime = await db.AiModelRuntime.SingleOrDefaultAsync(x => x.Id == AiModelRuntimeEntity.SingletonId);
@@ -2512,7 +2537,8 @@ public sealed class NoteAsrBatchPersistenceTests
             {
                 AllowUnverifiedAudioBatch = allowBatch,
                 MaxJsonlBytes = checked((int)MimoBatchDefaults.MaxJsonlBytes)
-            }), noteAsr, presets ?? new AiAsrPresetRegistry([new MimoMultimodalPreset(_ => new HttpClient())]));
+            }), new AiUsageLimitService(db, new FixedUser(owner)), new AiTextCallGate(),
+            noteAsr, presets ?? new AiAsrPresetRegistry([new MimoMultimodalPreset(_ => new HttpClient())]));
 
     private static async Task CleanupAsync(Guid owner)
     {

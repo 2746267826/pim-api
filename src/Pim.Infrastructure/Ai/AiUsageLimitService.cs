@@ -12,9 +12,11 @@ using Pim.Infrastructure.Data.Entities;
 namespace Pim.Infrastructure.Ai;
 
 /// <summary>
-/// J09 connection-scoped usage limits. The only accounting facts are the already persisted
-/// <c>TotalTokens</c>, <c>EstimatedCost</c> and <c>Currency</c> on <see cref="AiRequestLogEntity"/>.
-/// This service never derives a price from a model rate or treats a missing value as zero.
+/// J09 connection-scoped usage limits. Token limits are enforced from the already persisted
+/// <c>TotalTokens</c> on <see cref="AiRequestLogEntity"/>; a missing value stays unknown and fails
+/// closed. Cost columns remain diagnostic only because provider calls do not supply a trusted
+/// <c>EstimatedCost</c>/<c>Currency</c>; this service never derives a price from a model rate or
+/// treats a missing value as zero.
 /// </summary>
 public sealed class AiUsageLimitService(
     PimDbContext db,
@@ -129,20 +131,21 @@ public sealed class AiUsageLimitService(
         if (request.WarningPercent is < 1 or > 99) throw Invalid("提前提醒比例须为1–99的整数");
         if (request.TokenLimit is <= 0) throw Invalid("Token提醒值须为正整数");
         if (request.CostLimit is <= 0) throw Invalid("费用提醒值须为正数");
-        if (request.Enabled && request.TokenLimit is null && request.CostLimit is null)
-            throw Invalid("启用提醒时至少填写Token或费用提醒值");
+        // J09 currently has no trustworthy EstimatedCost/Currency source for SDK calls.
+        // Keep the persisted columns readable for history, but refuse new cost rules so an
+        // enabled limit can never turn every future call into an unknown-usage block.
+        if (request.CostLimit is not null || !string.IsNullOrWhiteSpace(request.Currency))
+            throw Invalid("当前版本仅支持Token上限；缺少可信的EstimatedCost/Currency来源，费用上限不可用");
+        if (request.Enabled && request.TokenLimit is null)
+            throw Invalid("启用提醒时必须填写Token上限；费用上限当前不可用");
         var timeZone = ValidateTimeZone(request.TimeZoneId);
-        var currency = NormalizeCurrency(request.Currency);
-        if (request.CostLimit is not null && currency is null)
-            throw Invalid("填写费用提醒值时必须选择3位大写币种代码");
-        if (request.CostLimit is null) currency = null;
 
         rule.Enabled = request.Enabled;
         rule.Period = period;
         rule.WarningPercent = request.WarningPercent;
         rule.TokenLimit = request.TokenLimit;
-        rule.CostLimit = request.CostLimit;
-        rule.Currency = currency;
+        rule.CostLimit = null;
+        rule.Currency = null;
         rule.TimeZoneId = timeZone;
         rule.Revision = Guid.NewGuid();
         rule.UpdatedAt = Now;
@@ -238,8 +241,7 @@ public sealed class AiUsageLimitService(
             {
                 var rule = await lockDb.AiUsageLimitRules.AsNoTracking()
                     .SingleOrDefaultAsync(x => x.ConnectionId == id, ct);
-                if (rule is null || !rule.Enabled ||
-                    (rule.TokenLimit is null && rule.CostLimit is null))
+                if (rule is null || !rule.Enabled || rule.TokenLimit is null)
                     return AiUsageLimitDecision.Allow();
 
                 var scope = ResolvePeriod(rule.Period, null, now, rule.TimeZoneId);
@@ -247,15 +249,9 @@ public sealed class AiUsageLimitService(
                 if (rule.TokenLimit is { } tokenLimit && usage.TotalTokens >= tokenLimit)
                     return AiUsageLimitDecision.Deny("usage_limit_reached",
                         "本周期已记录的Token用量已达到该连接上限，未发送模型请求");
-                if (rule.CostLimit is { } costLimit && usage.EstimatedCost >= costLimit)
-                    return AiUsageLimitDecision.Deny("usage_limit_reached",
-                        "本周期已记录的费用已达到该连接上限，未发送模型请求");
                 if (rule.TokenLimit is not null && usage.TokenUnknownRequestCount > 0)
                     return AiUsageLimitDecision.Deny("usage_limit_unknown",
                         "本周期存在未上报Token的调用记录，无法确认是否低于上限；本次未发送模型请求");
-                if (rule.CostLimit is not null && usage.CostUnknownRequestCount > 0)
-                    return AiUsageLimitDecision.Deny("usage_limit_unknown",
-                        "本周期存在缺少所选币种费用的调用记录，无法确认是否低于上限；本次未发送模型请求");
 
                 await RemoveExpiredLeasesAsync(lockDb, now, ct);
                 if (await lockDb.AiUsageLimitLeases.AsNoTracking()
@@ -316,8 +312,7 @@ public sealed class AiUsageLimitService(
             var scope = ResolvePeriod(rule.Period, null, now, rule.TimeZoneId);
             var usage = await ComputeUsageAsync(lockDb, connectionId, "", rule, scope, null, ct);
             var tokenLevel = Level(usage.TotalTokens, rule.TokenLimit, rule.WarningPercent);
-            var costLevel = Level(usage.EstimatedCost, rule.CostLimit, rule.WarningPercent);
-            var highest = Highest(tokenLevel, costLevel);
+            var highest = Highest(tokenLevel, null);
             if (highest is null) return true;
 
             if (highest == AiUsageLimitLevels.Warning &&
@@ -326,7 +321,7 @@ public sealed class AiUsageLimitService(
                     x.CycleKey == usage.CycleKey && x.Level == AiUsageLimitLevels.Reached, ct))
                 return true;
 
-            var metrics = MetricsFor(highest, tokenLevel, costLevel, usage.Currency);
+            var metrics = MetricsFor(highest, tokenLevel, null, usage.Currency);
             var snapshot = Snapshot(usage);
             var existing = await lockDb.AiUsageReminderEvents.SingleOrDefaultAsync(x =>
                 x.ConnectionId == connectionId && x.Period == rule.Period &&
@@ -411,15 +406,24 @@ public sealed class AiUsageLimitService(
         var tokenStatus = rule.TokenLimit is not null && tokenUnknown > 0
             ? AiUsageLimitStatuses.Unknown
             : Status(totalTokens, rule.TokenLimit, rule.WarningPercent);
-        var costStatus = rule.CostLimit is not null && costUnknown > 0
-            ? AiUsageLimitStatuses.Unknown
-            : Status(costUsed, rule.CostLimit, rule.WarningPercent);
+        // Cost limits are intentionally unsupported until a trusted EstimatedCost/Currency
+        // source exists. Historical cost values stay visible, but never drive a block/event.
+        var costStatus = AiUsageLimitStatuses.Unsupported;
         var notes = new List<string>();
         if (tokenUnknown > 0) notes.Add("部分请求未上报Token，累计仅包含已上报值");
-        if (costUnknown > 0) notes.Add("部分请求未提供所选币种的EstimatedCost，累计仅包含已知金额");
+        if (rule.Currency is not null && costUnknown > 0)
+            notes.Add("部分请求未提供所选币种的EstimatedCost，累计仅包含已知金额");
         if (running > 0) notes.Add("进行中或排队请求的用量尚待确认");
         if (rule.Currency is not null && providerRows.Count > costKnown.Count)
             notes.Add("其他币种或缺失币种费用不计入" + rule.Currency);
+        if (rule.CostLimit is not null)
+            notes.Add(rule.TokenLimit is null
+                ? "历史费用上限已停用；当前版本缺少可信的EstimatedCost/Currency来源且未配置Token上限，该规则当前不限制调用"
+                : "历史费用上限已停用：当前版本缺少可信的EstimatedCost/Currency来源，仅按Token限制");
+        else
+            notes.Add("当前版本仅支持Token上限；费用数据只展示，不参与限制");
+        if (rule.Enabled && rule.TokenLimit is null)
+            notes.Add("已启用的规则没有Token上限，当前不会阻断新调用；请补充Token上限或关闭限制");
         notes.Add("费用只使用调用记录中的EstimatedCost，不做模型费率估算");
 
         return new AiUsageLimitUsageDto(
@@ -539,15 +543,6 @@ public sealed class AiUsageLimitService(
             : throw Invalid("周期仅支持每日或每月");
     }
 
-    private static string? NormalizeCurrency(string? value)
-    {
-        if (string.IsNullOrWhiteSpace(value)) return null;
-        var currency = value.Trim().ToUpperInvariant();
-        if (currency.Length != 3 || currency.Any(c => c is < 'A' or > 'Z'))
-            throw Invalid("币种须为3位大写字母代码，例如CNY或USD");
-        return currency;
-    }
-
     private static string CleanName(string? value)
     {
         if (string.IsNullOrWhiteSpace(value) || value.Trim().Length > 120 || value.Any(char.IsControl))
@@ -569,23 +564,10 @@ public sealed class AiUsageLimitService(
         return level ?? AiUsageLimitStatuses.Normal;
     }
 
-    private static string Status(decimal? used, decimal? limit, int warningPercent)
-    {
-        if (used is null || limit is null) return AiUsageLimitStatuses.Unknown;
-        var level = Level(used, limit, warningPercent);
-        return level ?? AiUsageLimitStatuses.Normal;
-    }
-
     private static string? Level(long? used, long? limit, int warningPercent)
         => used is null || limit is null ? null
             : used >= limit ? AiUsageLimitLevels.Reached
             : (decimal)used * 100 >= (decimal)limit * warningPercent ? AiUsageLimitLevels.Warning
-            : null;
-
-    private static string? Level(decimal? used, decimal? limit, int warningPercent)
-        => used is null || limit is null ? null
-            : used >= limit ? AiUsageLimitLevels.Reached
-            : used * 100 >= limit * warningPercent ? AiUsageLimitLevels.Warning
             : null;
 
     private static string? Highest(string? first, string? second)
