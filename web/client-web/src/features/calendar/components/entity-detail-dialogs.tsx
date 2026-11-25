@@ -9,7 +9,7 @@ import {
   InlineAlert,
   StatusBadge,
 } from '@/components/ui'
-import { formatRange, formatTime, durationToMinutes, formatDuration } from '@/lib/datetime'
+import { formatTime, durationToMinutes, formatDuration } from '@/lib/datetime'
 import { htmlToPlainText } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import { TASK_STATUS, TASK_STATUS_LABEL } from '../types'
@@ -22,6 +22,7 @@ import { currentRunSeconds, formatClock, runningSegment } from '../timer'
 import type { EventResponse, TaskResponse } from '../types'
 import { readEventRrule } from '../rrule'
 import { DueText } from './due-text'
+import { CALENDAR_DISPLAY_TIME_ZONE } from '../event-timezone'
 
 /*
  * 日程 / 任务详情弹窗（先看后改）：
@@ -150,10 +151,37 @@ export function EventDetailDialog({
           </div>
 
           <div className="mt-2">
-            <Row label="时间">
-              {event.isAllDay
-                ? `${event.dtStart.slice(0, 10)}（全天）`
-                : formatRange(event.dtStart, event.dtEnd)}
+            {event.isAllDay ? (
+              <Row label="事件当地日期">
+                {event.allDayStartDate && event.allDayEndDateExclusive
+                  ? `${event.allDayStartDate} 至 ${event.allDayEndDateExclusive}（结束日期不含）· 全天`
+                  : '全天日期未知；未从绝对时刻推断'}
+              </Row>
+            ) : (
+              <>
+                <Row label="事件当地时间">
+                  {event.timeZoneResolution === 'resolved' && event.timeZoneId && event.localStart && event.localEnd
+                    ? `${event.timeZoneId} · ${event.localStart.replace('T', ' ')}–${event.localEnd.replace('T', ' ')}`
+                    : `时区未知；按 ${event.displayTimeZoneId ?? CALENDAR_DISPLAY_TIME_ZONE} 显示 ${event.displayLocalStart?.replace('T', ' ') ?? '—'}–${event.displayLocalEnd?.replace('T', ' ') ?? '—'}`}
+                </Row>
+                <Row label="北京时间">
+                  {event.displayLocalStart && event.displayLocalEnd
+                    ? `${event.displayLocalStart.replace('T', ' ')}–${event.displayLocalEnd.replace('T', ' ')}`
+                    : <Empty />}
+                </Row>
+              </>
+            )}
+            <Row label="绝对时刻">{event.dtStart} – {event.dtEnd}</Row>
+            <Row label="时区判定">
+              {event.timeZoneResolution === 'resolved'
+                ? '已解析'
+                : event.timeZoneResolution === 'sourceOnly'
+                  ? '仅保留来源值，无法映射'
+                  : '时区未知'}
+            </Row>
+            <Row label="时区来源">
+              {[event.timeZoneId && `IANA：${event.timeZoneId}`, event.sourceTimeZoneId && `原始来源：${event.sourceTimeZoneId}`]
+                .filter(Boolean).join(' · ') || <Empty />}
             </Row>
             <Row label="时长">
               {durationMin != null ? formatDuration(durationMin * 60) : <Empty />}

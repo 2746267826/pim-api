@@ -74,7 +74,11 @@ public record CreateEventRequest(
     Guid? SeriesMasterId = null,
     string? RecurrenceId = null,
     /// <summary>该日程期间是否静音：true 静音 / false 不静音 / null（省略）未指定，生效值取所属日历本的 defaultMuted。</summary>
-    bool? IsMuted = null
+    bool? IsMuted = null,
+    /// <summary>R02：全天日期唯一来源；非全天事件必须为空。</summary>
+    DateOnly? AllDayStartDate = null,
+    /// <summary>R02：全天日期唯一来源，排他结束日期；非全天事件必须为空。</summary>
+    DateOnly? AllDayEndDateExclusive = null
 );
 
 public enum UpdateEventScope
@@ -113,7 +117,11 @@ public record UpdateEventRequest(
     Guid? SeriesMasterId = null,
     string? RecurrenceId = null,
     /// <summary>该日程期间是否静音：true 静音 / false 不静音 / null 未指定（生效值取所属日历本的 defaultMuted）。PUT 为整体替换，null 即回到未指定。</summary>
-    bool? IsMuted = null
+    bool? IsMuted = null,
+    /// <summary>R02：全天日期唯一来源；省略时保留既有值。</summary>
+    DateOnly? AllDayStartDate = null,
+    /// <summary>R02：全天日期唯一来源，排他结束日期；省略时保留既有值。</summary>
+    DateOnly? AllDayEndDateExclusive = null
 );
 
 public record EventResponse(
@@ -153,7 +161,22 @@ public record EventResponse(
     Guid? SeriesMasterId = null,
     bool IsCancelled = false,
     /// <summary>日程自身设定：true 静音 / false 不静音 / null 未指定（生效值取所属日历本的 defaultMuted）。</summary>
-    bool? IsMuted = null
+    bool? IsMuted = null,
+    DateOnly? AllDayStartDate = null,
+    DateOnly? AllDayEndDateExclusive = null,
+    /// <summary>resolved / sourceOnly / unknown。</summary>
+    string? TimeZoneResolution = null,
+    /// <summary>规范化后的 IANA ID；未知时为 null。</summary>
+    string? TimeZoneIdType = null,
+    /// <summary>来源类型：windows / iana / unknown。</summary>
+    string? TimeZoneSourceType = null,
+    /// <summary>仅 resolved 且非全天时返回，格式 yyyy-MM-ddTHH:mm:ss。</summary>
+    string? LocalStart = null,
+    /// <summary>仅 resolved 且非全天时返回，格式 yyyy-MM-ddTHH:mm:ss。</summary>
+    string? LocalEnd = null,
+    string? DisplayTimeZoneId = null,
+    string? DisplayLocalStart = null,
+    string? DisplayLocalEnd = null
 );
 
 /// <summary>

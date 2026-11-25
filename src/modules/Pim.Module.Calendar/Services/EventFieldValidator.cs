@@ -13,7 +13,9 @@ public static class EventFieldValidator
     private static readonly HashSet<string> ValidOnlineMeetingProviders = new(StringComparer.OrdinalIgnoreCase) { "teams", "zoom", "meet", "other" };
     private static readonly HashSet<string> ValidAttachmentKinds = new(StringComparer.OrdinalIgnoreCase) { "pimFile", "outlook" };
 
-    public static CreateEventRequest ValidateAndNormalize(CreateEventRequest request)
+    public static CreateEventRequest ValidateAndNormalize(
+        CreateEventRequest request,
+        bool requireAllDayDates = true)
     {
         request = NormalizeEnumStrings(request);
         ValidateEnumField(request.DescriptionFormat, ValidDescriptionFormats, "DescriptionFormat");
@@ -24,6 +26,19 @@ public static class EventFieldValidator
         ValidateAttendees(request.Attendees);
         ValidateAttachments(request.AttachmentReferences);
         ValidateReminderMinutes(request.IsReminderOn, request.ReminderMinutesBeforeStart);
+        if (request.IsAllDay)
+        {
+            if (requireAllDayDates
+                || request.AllDayStartDate.HasValue
+                || request.AllDayEndDateExclusive.HasValue)
+            {
+                ValidateAllDayFields(true, request.AllDayStartDate, request.AllDayEndDateExclusive);
+            }
+        }
+        else if (request.AllDayStartDate is not null || request.AllDayEndDateExclusive is not null)
+        {
+            throw new DomainException(02009, "非全天事件不能提供 allDayStartDate/allDayEndDateExclusive。");
+        }
         return request;
     }
 
@@ -38,6 +53,12 @@ public static class EventFieldValidator
         ValidateAttendees(request.Attendees);
         ValidateAttachments(request.AttachmentReferences);
         ValidateReminderMinutes(request.IsReminderOn, request.ReminderMinutesBeforeStart);
+        if (request.IsAllDay == true
+            && (request.AllDayStartDate.HasValue || request.AllDayEndDateExclusive.HasValue))
+            ValidateAllDayFields(true, request.AllDayStartDate, request.AllDayEndDateExclusive);
+        else if (request.IsAllDay == false
+                 && (request.AllDayStartDate is not null || request.AllDayEndDateExclusive is not null))
+            throw new DomainException(02009, "非全天事件不能提供 allDayStartDate/allDayEndDateExclusive。");
         return request;
     }
 
@@ -52,6 +73,12 @@ public static class EventFieldValidator
         ValidateAttendees(draft.Attendees);
         ValidateAttachments(draft.AttachmentReferences);
         ValidateReminderMinutes(draft.IsReminderOn, draft.ReminderMinutesBeforeStart);
+        if (draft.IsAllDay
+            && (draft.AllDayStartDate.HasValue || draft.AllDayEndDateExclusive.HasValue))
+            ValidateAllDayFields(true, draft.AllDayStartDate, draft.AllDayEndDateExclusive);
+        else if (!draft.IsAllDay
+                 && (draft.AllDayStartDate is not null || draft.AllDayEndDateExclusive is not null))
+            throw new DomainException(02009, "非全天事件不能提供 allDayStartDate/allDayEndDateExclusive。");
         return draft;
     }
 
@@ -66,6 +93,7 @@ public static class EventFieldValidator
             OnlineMeetingProvider = NormalizeString(request.OnlineMeetingProvider),
             OnlineMeetingUrl = NormalizeString(request.OnlineMeetingUrl),
             ExternalLink = NormalizeString(request.ExternalLink),
+            TimeZoneId = NormalizeTimeZoneId(request.TimeZoneId),
             Organizer = NormalizeOrganizer(request.Organizer),
         };
     }
@@ -81,6 +109,7 @@ public static class EventFieldValidator
             OnlineMeetingProvider = NormalizeString(request.OnlineMeetingProvider),
             OnlineMeetingUrl = NormalizeString(request.OnlineMeetingUrl),
             ExternalLink = NormalizeString(request.ExternalLink),
+            TimeZoneId = NormalizeTimeZoneId(request.TimeZoneId),
             Organizer = NormalizeOrganizer(request.Organizer),
         };
     }
@@ -96,6 +125,7 @@ public static class EventFieldValidator
             OnlineMeetingProvider = NormalizeString(draft.OnlineMeetingProvider),
             OnlineMeetingUrl = NormalizeString(draft.OnlineMeetingUrl),
             ExternalLink = NormalizeString(draft.ExternalLink),
+            TimeZoneId = NormalizeTimeZoneId(draft.TimeZoneId),
             Organizer = NormalizeOrganizer(draft.Organizer),
         };
     }
@@ -156,5 +186,35 @@ public static class EventFieldValidator
     {
         if (reminderMinutes.HasValue && reminderMinutes.Value < 0)
             throw new DomainException(02009, "ReminderMinutesBeforeStart 不能为负数");
+    }
+
+    private static void ValidateAllDayFields(
+        bool isAllDay,
+        DateOnly? allDayStartDate,
+        DateOnly? allDayEndDateExclusive)
+    {
+        if (!isAllDay)
+        {
+            if (allDayStartDate is not null || allDayEndDateExclusive is not null)
+                throw new DomainException(02009, "非全天事件不能提供 allDayStartDate/allDayEndDateExclusive。");
+            return;
+        }
+
+        if (!allDayStartDate.HasValue || !allDayEndDateExclusive.HasValue)
+            throw new DomainException(02009, "全天事件必须提供 allDayStartDate 与 allDayEndDateExclusive；服务端不从 dtStart/dtEnd 推断日期。");
+
+        if (allDayStartDate.HasValue && allDayEndDateExclusive!.Value <= allDayStartDate.Value)
+            throw new DomainException(02009, "全天事件的排他结束日期必须晚于开始日期。");
+    }
+
+    private static string? NormalizeTimeZoneId(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return null;
+
+        if (value.Length > 100)
+            throw new DomainException(02009, "TimeZoneId 长度不能超过 100 个字符。");
+
+        return value;
     }
 }
