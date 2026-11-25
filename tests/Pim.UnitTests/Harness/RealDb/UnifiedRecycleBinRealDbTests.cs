@@ -60,7 +60,8 @@ public sealed class UnifiedRecycleBinRealDbTests : IAsyncLifetime
 
         var page = await service.ListAsync(null, null, null, null, 1, 100);
 
-        Assert.Equal(4, page.TotalCount);
+        Assert.Equal(3, page.TotalCount);
+        Assert.Equal(0, page.Groups.Single(group => group.Domain == RecycleBinDomains.Note).TotalCount);
         Assert.Equal(1, page.Groups.Single(group => group.Domain == RecycleBinDomains.File).TotalCount);
         Assert.Equal(1, page.Groups.Single(group => group.Domain == RecycleBinDomains.Calendar).TotalCount);
         Assert.Equal(1, page.Groups.Single(group => group.Domain == RecycleBinDomains.Task).TotalCount);

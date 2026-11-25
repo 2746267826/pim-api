@@ -259,7 +259,30 @@ public sealed class UnifiedRecycleBinServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task BatchRestore_CalendarStaleExpectedDeletedAtFailsInsideCalendarLock()
+    public async Task BatchRestore_LegacyFileWithoutDeletedAt_UsesModifiedAtCasToken()
+    {
+        var localFile = await SeedLocalFileAsync("历史软删文件.txt");
+        await _files.DeleteToTrashAsync(localFile.Id);
+        var row = await _db.Set<FileItemEntity>().SingleAsync(candidate => candidate.Id == localFile.Id);
+        row.DeletedAt = null;
+        await _db.SaveChangesAsync();
+
+        var listed = (await _service.ListAsync(null, null, null, null, 1, 50))
+            .Items.Single(item => item.Id == localFile.Id);
+        Assert.Equal(row.ModifiedAt, listed.DeletedAt);
+
+        var receipt = await _service.RestoreAsync(new RecycleBinBatchRequest(
+        [
+            new RecycleBinItemRef(RecycleBinDomains.File, localFile.Id, listed.DeletedAt)
+        ]));
+
+        Assert.Equal(RecycleBinItemStatuses.Success, Assert.Single(receipt.Items).Status);
+        Assert.False((await _db.Set<FileItemEntity>().SingleAsync(candidate => candidate.Id == localFile.Id)).IsDeleted);
+        Assert.NotNull(await _localStore.GetAsync(_user, localFile.ProviderId, localFile.ExternalFileId));
+    }
+
+    [Fact]
+    public async Task BatchRestore_CalendarStaleExpectedDeletedAtFailsClosed()
     {
         var book = SeedCalendar(_user, "需要刷新的日历", "calendar", deleted: false);
         var evt = SeedEvent(book, "需要刷新的日程", deleted: true);

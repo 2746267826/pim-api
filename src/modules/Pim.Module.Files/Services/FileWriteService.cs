@@ -223,7 +223,8 @@ public sealed class FileWriteService
         {
             throw new DomainException(5339, "该文件不在回收站中");
         }
-        if (expectedDeletedAt.HasValue && item.DeletedAt != expectedDeletedAt.Value)
+        if (expectedDeletedAt.HasValue &&
+            (item.DeletedAt ?? item.ModifiedAt) != expectedDeletedAt.Value)
         {
             throw new DomainException(40901, "文件状态已变化，请刷新回收站后重试");
         }
