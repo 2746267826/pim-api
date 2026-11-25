@@ -145,7 +145,7 @@ public sealed class McpProtocolIntegrationTests : IClassFixture<WebApplicationFa
     }
 
     [Fact]
-    public async Task ToolsList_AdvertisesCamelCaseRequiredWithDeprecatedSnakeAlias()
+    public async Task ToolsList_AdvertisesCamelCaseWithoutRemovedSnakeAlias()
     {
         using var client = CreateClient();
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "pim_mcp_dummy");
@@ -159,9 +159,27 @@ public sealed class McpProtocolIntegrationTests : IClassFixture<WebApplicationFa
         var properties = schema.GetProperty("properties");
         Assert.True(properties.TryGetProperty("taskId", out var canonical));
         Assert.Equal("string", canonical.GetProperty("type").GetString());
-        Assert.True(properties.TryGetProperty("task_id", out var legacy));
-        Assert.True(legacy.GetProperty("deprecated").GetBoolean());
+        Assert.False(properties.TryGetProperty("task_id", out _));
         Assert.Equal(["taskId"], schema.GetProperty("required").EnumerateArray().Select(x => x.GetString()));
+    }
+
+    [Fact]
+    public async Task ToolsCall_LegacySnakeCaseArgument_Returns400ToolResult()
+    {
+        using var client = CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "pim_mcp_dummy");
+        var response = await client.SendAsync(JsonRpc("tools/call", new
+        {
+            name = "get_task_by_id",
+            arguments = new { task_id = "t1" },
+        }));
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        using var body = ReadJsonFromResponse(response);
+        var content = body.RootElement.GetProperty("result").GetProperty("content");
+        var text = content.EnumerateArray().First(c => c.GetProperty("type").GetString() == "text").GetProperty("text").GetString();
+        using var payload = JsonDocument.Parse(text!);
+        Assert.Equal(400, payload.RootElement.GetProperty("code").GetInt32());
+        Assert.Contains("taskId", payload.RootElement.GetProperty("error").GetString());
     }
 
     [Fact]

@@ -190,9 +190,9 @@ Content-Type: application/json
 
 **总览 100**：`Calendar 31 | PcTracker 26 | Mobile 19 | QuickNotes 3 | Files 7 | Core 14`。
 
-> **参数命名 / Parameter names**：规范形态统一为 camelCase。历史 `task_id`、`file_id`、`from_time`、`event_id`、`calendar_id`、`habit_id`、`note_id`、`attachment_id`、`report_id` 继续作为 `deprecated` 兼容别名接受，单独传旧名仍可执行；工具 schema 的 `required` 只声明 camelCase。同一次调用同时传入两种写法但值不同时返回 `400`，避免静默择一。
+> **参数命名 / Parameter names**：规范形态统一为 camelCase。历史 snake_case 参数（`task_id`、`file_id`、`from_time`、`event_id`、`calendar_id`、`habit_id`、`note_id`、`attachment_id`、`report_id`）没有兼容期：任一旧名都会在鉴权与分发前返回 `400`，并在 `error` 中给出对应的 camelCase 替代名。工具 schema 不再声明这些旧属性，`required` 只声明 camelCase。`get_tasks.status` 仍是独立的 deprecated 单值别名，请优先使用 `statuses`。
 >
-> Canonical MCP arguments are camelCase. The legacy snake_case names listed above remain accepted as deprecated aliases, while the schema `required` list exposes only camelCase. Passing both spellings with different values returns `400`.
+> Canonical MCP arguments are camelCase. The legacy snake_case names listed above have no compatibility window: any one of them returns `400` before authentication and dispatch, with the camelCase replacement named in `error`. The tool schema no longer advertises them, and `required` exposes only camelCase. `get_tasks.status` remains a separate deprecated single-value alias; prefer `statuses`.
 
 | 模块 | 工具数 | 常用 20 选 |
 |---|---|---|
@@ -3532,6 +3532,7 @@ A: 所有聚合按 `timezone` 切天，默认为 `Asia/Shanghai`。传入 `timez
 | v3.1 | 2026-09-01 | 修复 mcp>=2.0 兼容（构造参数/HTTP app/请求头获取适配，--check/stdio/HTTP 三种模式可用，issue #179）+ 生产部署模板（systemd + OpenResty `/mcp` 反代，issue #178）|
 | v5.0 | 2026-09-20 | 文件模块 v2（P4）：新增 `read_file_text`（元数据搜索之外的内容级读取，交 Hermes 现取现抽）；退役 `get_file_versions`/`get_file_trash`/`index_file`（WebDAV 与内容索引线随 OneDrive 切换取消）→ 149 工具（读 100 / 写 49）；Python 参考服务同步 |
 | v5.1 | 2026-11-23 | MCP 参数统一为 camelCase；`task_id`/`file_id`/`from_time` 等旧名保留为 `deprecated` 兼容别名，双写法冲突值返回 400；`required` 仅声明 camelCase（WO-R01-CAMEL / #460） |
+| v5.2 | 2026-11-25 | R01 收口：移除 14 个 snake_case 兼容别名（`report_id`、`task_id`、`event_id`、`habit_id`、`calendar_id`、`note_id`、`attachment_id`、`file_id`、`from_time`）；旧名在鉴权与分发前直接返回 400 并给出 camelCase 替代名，契约不再声明旧属性 |
 
 ---
 

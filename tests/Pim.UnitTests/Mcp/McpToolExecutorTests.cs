@@ -213,20 +213,33 @@ public sealed class McpToolExecutorTests : IDisposable
     [Theory]
     [MemberData(nameof(ParameterAliasCases))]
     public async Task CamelCaseParameter_DispatchesToRestEndpoint(ParameterAliasCase testCase)
-        => await AssertParameterAliasDispatches(testCase, useLegacy: false);
+        => await AssertCanonicalParameterDispatches(testCase);
 
     [Theory]
     [MemberData(nameof(ParameterAliasCases))]
-    public async Task LegacySnakeCaseParameter_RemainsCallableAsDeprecatedAlias(ParameterAliasCase testCase)
-        => await AssertParameterAliasDispatches(testCase, useLegacy: true);
+    public async Task LegacySnakeCaseParameter_Returns400WithCamelCaseReplacement(ParameterAliasCase testCase)
+    {
+        CreateExecutor();
 
-    private async Task AssertParameterAliasDispatches(ParameterAliasCase testCase, bool useLegacy)
+        var args = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(testCase.ExtraArgsJson)!;
+        args[testCase.Legacy] = Json($"\"{testCase.Value}\"");
+
+        var result = await CallTool(testCase.Tool, args);
+
+        Assert.Equal(400, result!["code"]!.GetValue<int>());
+        var message = result["error"]!.GetValue<string>();
+        Assert.Contains(testCase.Legacy, message);
+        Assert.Contains(testCase.Canonical, message);
+        Assert.Empty(_requests);
+    }
+
+    private async Task AssertCanonicalParameterDispatches(ParameterAliasCase testCase)
     {
         CreateExecutor();
         _routes[$"{testCase.Method} {testCase.Path}"] = new(200, testCase.ResponseJson);
 
         var args = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(testCase.ExtraArgsJson)!;
-        args[useLegacy ? testCase.Legacy : testCase.Canonical] = Json($"\"{testCase.Value}\"");
+        args[testCase.Canonical] = Json($"\"{testCase.Value}\"");
 
         var result = await CallTool(testCase.Tool, args);
 
@@ -245,26 +258,9 @@ public sealed class McpToolExecutorTests : IDisposable
     }
 
     [Fact]
-    public async Task ConflictingCamelAndSnakeAliases_AreRejectedBeforeDispatch()
+    public async Task LegacyAliasAlongsideCanonical_IsRejectedBeforeDispatch()
     {
         CreateExecutor();
-
-        var result = await CallTool("get_task_checklist", new Dictionary<string, JsonElement>
-        {
-            ["taskId"] = Json("\"task-camel\""),
-            ["task_id"] = Json("\"task-legacy\""),
-        });
-
-        Assert.Equal(400, result!["code"]!.GetValue<int>());
-        Assert.Contains("different values", result!["error"]!.GetValue<string>());
-        Assert.Empty(_requests);
-    }
-
-    [Fact]
-    public async Task MatchingCamelAndSnakeAliases_AreCollapsedBeforeDispatch()
-    {
-        CreateExecutor();
-        _routes["GET /api/v1/calendar/tasks/t1/checklist"] = new(200, "{\"code\":0,\"data\":[]}");
 
         var result = await CallTool("get_task_checklist", new Dictionary<string, JsonElement>
         {
@@ -272,10 +268,59 @@ public sealed class McpToolExecutorTests : IDisposable
             ["task_id"] = Json("\"t1\""),
         });
 
-        Assert.Equal(0, result!["code"]!.GetValue<int>());
-        var request = Assert.Single(_requests);
-        Assert.Equal("/api/v1/calendar/tasks/t1/checklist", request.Path);
-        Assert.True(string.IsNullOrEmpty(request.Query));
+        Assert.Equal(400, result!["code"]!.GetValue<int>());
+        Assert.Contains("taskId", result["error"]!.GetValue<string>());
+        Assert.Empty(_requests);
+    }
+
+    [Fact]
+    public async Task LegacyAliasWithNullValue_IsRejectedBeforeDispatch()
+    {
+        CreateExecutor();
+
+        var result = await CallTool("get_report", new Dictionary<string, JsonElement>
+        {
+            ["report_id"] = Json("null"),
+        });
+
+        Assert.Equal(400, result!["code"]!.GetValue<int>());
+        Assert.Contains("reportId", result["error"]!.GetValue<string>());
+        Assert.Empty(_requests);
+    }
+
+    [Fact]
+    public async Task LegacyAliasInJsonBody_IsRejectedBeforeDispatch()
+    {
+        CreateExecutor(withWritePermission: true);
+
+        var result = await CallTool("create_task", new Dictionary<string, JsonElement>
+        {
+            ["title"] = Json("\"Demo\""),
+            ["calendar_id"] = Json("\"cal-1\""),
+        });
+
+        Assert.Equal(400, result!["code"]!.GetValue<int>());
+        Assert.Contains("calendarId", result["error"]!.GetValue<string>());
+        Assert.Empty(_requests);
+    }
+
+    [Fact]
+    public async Task LegacyAliasInMultipart_IsRejectedBeforeDispatch()
+    {
+        CreateExecutor(withWritePermission: true);
+
+        var result = await CallTool("upload_file", new Dictionary<string, JsonElement>
+        {
+            ["providerId"] = Json("\"p1\""),
+            ["path"] = Json("\"/\""),
+            ["fileName"] = Json("\"a.txt\""),
+            ["fileContentBase64"] = Json("\"YQ==\""),
+            ["file_id"] = Json("\"f1\""),
+        });
+
+        Assert.Equal(400, result!["code"]!.GetValue<int>());
+        Assert.Contains("fileId", result["error"]!.GetValue<string>());
+        Assert.Empty(_requests);
     }
 
     public static TheoryData<string> HabitRangeParams => new() { "start", "end" };
@@ -298,39 +343,20 @@ public sealed class McpToolExecutorTests : IDisposable
         Assert.Empty(_requests);
     }
 
-    [Theory]
-    [MemberData(nameof(HabitRangeParams))]
-    public async Task HabitOccurrences_MissingLegacyRangeParam_Returns400BeforeAuthentication(string missing)
+    [Fact]
+    public async Task HabitOccurrences_LegacyHabitId_Returns400BeforeAuthentication()
     {
         CreateExecutor(http: false, stdioToken: null);
-        var args = new Dictionary<string, JsonElement>
-        {
-            ["habit_id"] = Json("\"h1\""),
-        };
-        AddOtherHabitRangeParam(args, missing);
-
-        var result = await CallTool("get_habit_occurrences", args);
-
-        Assert.Equal(400, result!["code"]!.GetValue<int>());
-        Assert.Equal($"{missing} is required", result["error"]!.GetValue<string>());
-        Assert.Empty(_requests);
-    }
-
-    [Fact]
-    public async Task HabitOccurrences_ConflictingHabitIdAliases_AreRejectedBeforeDispatch()
-    {
-        CreateExecutor();
 
         var result = await CallTool("get_habit_occurrences", new Dictionary<string, JsonElement>
         {
-            ["habitId"] = Json("\"habit-camel\""),
-            ["habit_id"] = Json("\"habit-legacy\""),
+            ["habit_id"] = Json("\"h1\""),
             ["start"] = Json("\"2026-09-01\""),
             ["end"] = Json("\"2026-09-02\""),
         });
 
         Assert.Equal(400, result!["code"]!.GetValue<int>());
-        Assert.Contains("different values", result["error"]!.GetValue<string>());
+        Assert.Contains("habitId", result["error"]!.GetValue<string>());
         Assert.Empty(_requests);
     }
 
@@ -572,7 +598,7 @@ public sealed class McpToolExecutorTests : IDisposable
 
         var result = await CallTool("get_task_checklist", new Dictionary<string, JsonElement>
         {
-            ["task_id"] = Json($"\"{taskId}\"")
+            ["taskId"] = Json($"\"{taskId}\"")
         });
 
         var request = Assert.Single(_requests);
@@ -599,7 +625,7 @@ public sealed class McpToolExecutorTests : IDisposable
 
         var result = await CallTool("get_task_checklist", new Dictionary<string, JsonElement>
         {
-            ["task_id"] = Json($"\"{taskId}\"")
+            ["taskId"] = Json($"\"{taskId}\"")
         });
 
         Assert.Equal(400, result!["code"]!.GetValue<int>());
@@ -826,7 +852,7 @@ public sealed class McpToolExecutorTests : IDisposable
     {
         CreateExecutor();
         _routes["GET /api/v1/files/items/f1/open-link"] = new(200, """{"code":0,"data":{"openLink":"https://files.example.com/x"}}""");
-        var result = await CallTool("get_file_open_link", new Dictionary<string, JsonElement> { ["file_id"] = Json("\"f1\"") });
+        var result = await CallTool("get_file_open_link", new Dictionary<string, JsonElement> { ["fileId"] = Json("\"f1\"") });
         Assert.Equal(12, result!["data"]!["openLinkHash"]!.GetValue<string>().Length);
     }
 
@@ -918,7 +944,7 @@ public sealed class McpToolExecutorTests : IDisposable
     {
         CreateExecutor();
         _routes["GET /api/v1/calendar/calendars"] = new(200, """{"code":0,"data":[{"id":"cal-1","name":"Work"},{"id":"cal-2","name":"Life"}]}""");
-        var result = await CallTool("get_calendar_by_id", new Dictionary<string, JsonElement> { ["calendar_id"] = Json("\"cal-2\"") });
+        var result = await CallTool("get_calendar_by_id", new Dictionary<string, JsonElement> { ["calendarId"] = Json("\"cal-2\"") });
         Assert.Equal("Life", result!["data"]!["name"]!.GetValue<string>());
     }
 
@@ -927,7 +953,7 @@ public sealed class McpToolExecutorTests : IDisposable
     {
         CreateExecutor();
         _routes["GET /api/v1/calendar/calendars"] = new(200, """{"code":0,"data":[{"id":"cal-1"}]}""");
-        var result = await CallTool("get_calendar_by_id", new Dictionary<string, JsonElement> { ["calendar_id"] = Json("\"cal-zzz\"") });
+        var result = await CallTool("get_calendar_by_id", new Dictionary<string, JsonElement> { ["calendarId"] = Json("\"cal-zzz\"") });
         Assert.Equal(404, result!["code"]!.GetValue<int>());
         Assert.Contains("calendar cal-zzz not found", result!["error"]!.GetValue<string>());
     }

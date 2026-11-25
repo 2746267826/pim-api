@@ -83,7 +83,8 @@ public sealed class McpToolExecutor
         JsonNode? result;
         try
         {
-            result = await ExecuteSpecAsync(spec, args, ct);
+            var aliasError = McpToolInputPolicy.RejectLegacyAliases(requestParams.Arguments?.Keys);
+            result = aliasError is null ? await ExecuteSpecAsync(spec, args, ct) : aliasError;
             RecordActivity(startedAt, toolName, IsToolError(result) ? GetInt(result as JsonObject, "code") ?? 500 : 200, args);
         }
         catch (McpToolAuthException auth)
@@ -129,8 +130,7 @@ public sealed class McpToolExecutor
 
     private async Task<JsonNode?> ExecuteSpecAsync(McpToolSpec spec, JsonObject args, CancellationToken ct)
     {
-        var validationError = McpToolInputPolicy.NormalizeAliases(spec.Name, args)
-            ?? Validate(spec, args)
+        var validationError = Validate(spec, args)
             ?? McpToolInputPolicy.Apply(spec.Name, args);
         if (validationError is not null)
             return validationError;
