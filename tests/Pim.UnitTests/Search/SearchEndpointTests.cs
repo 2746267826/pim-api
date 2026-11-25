@@ -271,6 +271,7 @@ public sealed class SearchEndpointTests
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var data = await ReadDataAsync(response);
+        Assert.Equal(1, data.GetProperty("page").GetInt32());
         Assert.Equal(1, data.GetProperty("pageSize").GetInt32());
         Assert.Equal(2, data.GetProperty("totalCount").GetInt32());
         Assert.Equal(2, data.GetProperty("totalPages").GetInt32());
@@ -292,6 +293,15 @@ public sealed class SearchEndpointTests
         Assert.Contains(calendarItems, x => x.GetProperty("domain").GetString() == "task");
         Assert.Contains(calendarItems, x => x.GetProperty("domain").GetString() == "event");
         Assert.DoesNotContain(calendarItems, x => x.GetProperty("domain").GetString() == "note");
+
+        using var mixed = await client.GetAsync(
+            "/api/v1/search?q=%E4%BB%BB%E5%8A%A1&type=event,task&limit=20");
+        Assert.Equal(HttpStatusCode.OK, mixed.StatusCode);
+        var mixedItems = (await ReadDataAsync(mixed)).GetProperty("items").EnumerateArray().ToArray();
+        Assert.Equal(3, mixedItems.Length);
+        Assert.Contains(mixedItems, x => x.GetProperty("domain").GetString() == "task");
+        Assert.Contains(mixedItems, x => x.GetProperty("domain").GetString() == "event");
+        Assert.DoesNotContain(mixedItems, x => x.GetProperty("domain").GetString() == "note");
     }
 
     [Fact]

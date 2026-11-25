@@ -187,6 +187,7 @@ describe('GlobalSearchPage', () => {
     await userEvent.click(screen.getByRole('button', { name: /重试该领域/ }))
 
     expect(await screen.findByText('研究组会')).toBeTruthy()
+    expect(screen.getByText('研究笔记')).toBeTruthy()
     await waitFor(() => expect(searchApiMock.query).toHaveBeenCalledTimes(2))
     expect(searchApiMock.query.mock.calls[1]![0]).toMatchObject({
       q: '研究',
@@ -194,6 +195,29 @@ describe('GlobalSearchPage', () => {
       page: 1,
       pageSize: 20,
     })
+  })
+
+  it('pages through the aggregated result count and sends the URL page to the API', async () => {
+    searchApiMock.query.mockResolvedValue({
+      ...response([
+        group('note', '笔记', [result('note', NOTE_ID, '研究笔记', `/native-notes?note=${NOTE_ID}`)], 45),
+        group('task', '任务', []),
+        group('event', '日程', []),
+      ]),
+      totalCount: 45,
+      totalPages: 3,
+    })
+
+    page('/search?q=%E7%A0%94%E7%A9%B6')
+
+    expect(await screen.findByText('研究笔记')).toBeTruthy()
+    expect(screen.getByText('第 1 / 3 页')).toBeTruthy()
+    await userEvent.click(screen.getByRole('button', { name: '下一页' }))
+
+    await waitFor(() => expect(searchApiMock.query).toHaveBeenLastCalledWith(
+      expect.objectContaining({ q: '研究', page: 2, pageSize: 20 }),
+      expect.anything(),
+    ))
   })
 
   it('shows the server correlation id when the aggregate request fails', async () => {

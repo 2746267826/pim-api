@@ -276,8 +276,8 @@ export function GlobalSearchPage() {
     setRetryDomain(domain)
     setRetryError(null)
     try {
-      // The global page boundary depends on every domain. Re-query the same stable
-      // snapshot, then replace only the failed group in the UI.
+      // The API has no stable snapshot token yet, so re-query the same filters and
+      // replace only the failed group in the UI; concurrent changes may shift results.
       const result = await searchApi.query(searchParams, { signal: controller.signal })
       if (generation !== retryGeneration.current || controller.signal.aborted) return
       const group = result.groups.find((item) => item.domain === domain)

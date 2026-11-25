@@ -604,11 +604,12 @@ public class CalendarService
 
         // If originalEventId provided (synthetic occurrence case), prefer master via originalEventId for scope=this/series
         EventEntity? entity = null;
-        var hasOriginal = originalEventId.HasValue && originalEventId.Value != Guid.Empty && !string.Equals(scope, "instance", StringComparison.OrdinalIgnoreCase);
+        var originalEventIdValue = originalEventId.GetValueOrDefault();
+        var hasOriginal = originalEventIdValue != Guid.Empty && !string.Equals(scope, "instance", StringComparison.OrdinalIgnoreCase);
         if (hasOriginal && (string.Equals(scope, "this", StringComparison.OrdinalIgnoreCase) || string.Equals(scope, "series", StringComparison.OrdinalIgnoreCase)))
         {
             entity = await _db.Set<EventEntity>()
-                .FirstOrDefaultAsync(e => e.Id == originalEventId.Value && e.Calendar.UserId == UserId, ct);
+                .FirstOrDefaultAsync(e => e.Id == originalEventIdValue && e.Calendar.UserId == UserId, ct);
         }
         entity ??= await _db.Set<EventEntity>()
             .FirstOrDefaultAsync(e => e.Id == id && e.Calendar.UserId == UserId, ct)
@@ -1012,11 +1013,12 @@ public class CalendarService
     public async Task DeleteEventAsync(Guid id, string? scope, string? recurrenceId, Guid? originalEventId, CancellationToken ct)
     {
         EventEntity? entity = null;
-        var hasOriginal = originalEventId.HasValue && originalEventId.Value != Guid.Empty;
+        var originalEventIdValue = originalEventId.GetValueOrDefault();
+        var hasOriginal = originalEventIdValue != Guid.Empty;
         if (hasOriginal && (string.Equals(scope, "this", StringComparison.OrdinalIgnoreCase) || string.Equals(scope, "series", StringComparison.OrdinalIgnoreCase)))
         {
             entity = await _db.Set<EventEntity>().IgnoreQueryFilters()
-                .FirstOrDefaultAsync(e => e.Id == originalEventId.Value && e.Calendar.UserId == UserId, ct);
+                .FirstOrDefaultAsync(e => e.Id == originalEventIdValue && e.Calendar.UserId == UserId, ct);
         }
         entity ??= await _db.Set<EventEntity>().IgnoreQueryFilters()
             .FirstOrDefaultAsync(e => e.Id == id && e.Calendar.UserId == UserId, ct)
