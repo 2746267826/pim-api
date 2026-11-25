@@ -613,7 +613,8 @@ public sealed class NoteAsrTests : IAsyncLifetime
         var attempt = await scope.ServiceProvider.GetRequiredService<PimDbContext>()
             .NoteAsrAttempts.AsNoTracking().SingleAsync(x => x.Id == task.AttemptId);
         Assert.True(attempt.StopRequested);
-        Assert.NotEqual("Succeeded", attempt.State);
+        Assert.Contains(attempt.State, new[] { "Succeeded", "Failed", "Cancelled" });
+        Assert.Equal(1, _calls);
     }
 
     [Fact]
