@@ -14,6 +14,8 @@ import { SidebarContent } from './sidebar'
 import { useSidebarCollapsed } from './use-sidebar-collapsed'
 import { CalendarVisibilityProvider } from '@/features/calendar/calendar-visibility'
 import { GlobalEditorsProvider } from './global-editors'
+import { useAuth } from '@/features/auth/auth-context'
+import { configureDiagnosticQueue, diagnosticQueue } from '@/features/diagnostics/queue'
 
 /** 页脚：本地版本 / API 版本 / "有可用更新"标记 / 当前服务器 */
 function AppFooter() {
@@ -41,9 +43,33 @@ export function AppShell() {
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
   const { pathname } = useLocation()
   const { collapsed, toggle } = useSidebarCollapsed()
+  const { user } = useAuth()
+  const [apiBase, setApiBase] = useState(() => getApiBase())
 
   // 全局滚动活动跟踪（延迟轮询依赖）
   useEffect(() => installScrollTracking(), [])
+
+  useEffect(() => {
+    const update = () => setApiBase(getApiBase())
+    window.addEventListener('pim:api-base-changed', update)
+    return () => window.removeEventListener('pim:api-base-changed', update)
+  }, [])
+
+  useEffect(() => {
+    if (!user) {
+      diagnosticQueue.detach()
+      return
+    }
+    configureDiagnosticQueue({
+      ownerScope: `${apiBase}|${user.id}`,
+      appVersion: APP_VERSION,
+    })
+    const stop = diagnosticQueue.start()
+    return () => {
+      stop()
+      diagnosticQueue.detach()
+    }
+  }, [apiBase, user])
 
   // 路由变化时收起移动抽屉
   useEffect(() => {

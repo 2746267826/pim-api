@@ -241,7 +241,7 @@ public class ExceptionMiddleware
         40101 => StatusCodes.Status401Unauthorized,
         40301 or 40302 or 40303 => StatusCodes.Status403Forbidden,
         40901 or 40902 or 40903 or 40904 => StatusCodes.Status409Conflict,
-        41301 => StatusCodes.Status413PayloadTooLarge,
+        41301 or 41302 => StatusCodes.Status413PayloadTooLarge,
         42901 => StatusCodes.Status429TooManyRequests,
         50301 or 50302 => StatusCodes.Status503ServiceUnavailable,
         _ => StatusCodes.Status400BadRequest

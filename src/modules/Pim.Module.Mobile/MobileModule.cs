@@ -16,6 +16,7 @@ using Pim.Module.Mobile.Entities;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
 using Pim.Module.Mobile.DTOs;
+using Pim.Module.Mobile.Diagnostics;
 using Pim.Module.Mobile.Services;
 
 namespace Pim.Module.Mobile;
@@ -59,6 +60,7 @@ public sealed class MobileModule : IModule
         services.AddScoped<DeviceManagementService>();
         services.AddScoped<MobileSyncBacklogInspector>();
         services.AddScoped<IDataQualityInspector, MobileSyncBacklogInspector>();
+        services.AddScoped<DiagnosticEventService>();
 
         // #568：入库执行入口（脱离请求连接）+ 耗时分解落表 + 孤儿批次回收。
         services.AddSingleton<MobileSyncIngestTimingWriter>();

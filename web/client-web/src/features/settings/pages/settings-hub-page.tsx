@@ -12,6 +12,7 @@ import {
   KeyRound,
   Plug,
   Server,
+  ShieldAlert,
   ShieldCheck,
   Table,
   Trash2,
@@ -121,6 +122,7 @@ export function SettingsHubPage() {
     cards: [
       { to: '/exhibition', title: '展览馆', description: '图表组件陈列馆', icon: Images, badge: '建设中' },
       { to: '/status', title: '状态', description: '系统与组件状态', icon: Activity },
+      { to: '/diagnostics', title: '诊断', description: '跨端错误事件、脱敏与一键导出', icon: ShieldAlert },
       { to: '/devices', title: '设备管理', description: '移动设备合并/改名/导出', icon: HardDrive },
       { to: '/app-knowledge-base', title: '应用知识库', description: '应用/域名知识与分类树', icon: BookOpen },
     ],
