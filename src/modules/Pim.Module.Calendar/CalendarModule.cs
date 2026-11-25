@@ -618,12 +618,11 @@ public class CalendarModule : IModule
         .Produces<ApiResponse<string>>(400)
         .Produces<ApiResponse<string>>(500);
 
-        // Events — PagedResult is canonical (PIM-024), but keep List branch for backward compat
-        // with old APKs (e.g. 2026.08.343) that call GET /events?start=&end= without page params.
-        // New clients (web + updated Android) always send page/pageSize and get PagedResult.
+        // Events — R02：start/end 必填、最长 366 天，且始终返回统一分页结构。
         group.MapGet("/events", async (
-            [FromQuery] DateTimeOffset? start,
-            [FromQuery] DateTimeOffset? end,
+            HttpRequest request,
+            [FromQuery] DateTimeOffset start,
+            [FromQuery] DateTimeOffset end,
             [FromQuery] string? search,
             [FromQuery] Guid? calendarId,
             [FromQuery] int? page,
@@ -631,19 +630,13 @@ public class CalendarModule : IModule
             [FromServices] CalendarService svc,
             CancellationToken ct) =>
         {
-            if (string.IsNullOrWhiteSpace(search) && calendarId is null && page is null && pageSize is null)
-            {
-                // Old path — return List for legacy clients to avoid SerializationException
-                // Keep until sunset (e.g. after all APKs >2026.08.349 have migrated); web already sends page.
-                var events = await svc.GetEventsAsync(start ?? DateTimeOffset.MinValue, end ?? DateTimeOffset.MaxValue, ct);
-                return Results.Ok(ApiResponse<List<EventResponse>>.Ok(events));
-            }
-
-            var result = await svc.GetEventsPagedAsync(search, calendarId, start, end, page ?? 1, pageSize ?? 50, ct);
+            var requestedStart = request.Query.ContainsKey("start") ? start : (DateTimeOffset?)null;
+            var requestedEnd = request.Query.ContainsKey("end") ? end : (DateTimeOffset?)null;
+            var (rangeStart, rangeEnd) = EventQueryContract.Validate(requestedStart, requestedEnd);
+            var result = await svc.GetEventsPagedAsync(
+                search, calendarId, rangeStart, rangeEnd, page ?? 1, pageSize ?? 20, ct);
             return Results.Ok(ApiResponse<PagedResult<EventResponse>>.Ok(result));
         })
-        // 双形态 200：无分页参数时兼容旧客户端返回 List<EventResponse>（映射清单已记录）；
-        // 这里标注 PagedResult<EventResponse>（PIM-024 规范形态）。
         .Produces<ApiResponse<PagedResult<EventResponse>>>(200)
         .Produces(401)
         .Produces<ApiResponse<string>>(400)
@@ -1094,6 +1087,7 @@ public class CalendarModule : IModule
         })
         .Produces<byte[]>(200, "text/calendar")
         .Produces(401)
+        .Produces<ApiResponse<string>>(400)
         .Produces<ApiResponse<string>>(500);
 
         // Outlook (rewired to new lightweight chain)

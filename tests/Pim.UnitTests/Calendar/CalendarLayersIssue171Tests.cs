@@ -131,7 +131,7 @@ public sealed class CalendarLayersIssue171Tests
         var target = new EventEntity();
         using var doc = JsonDocument.Parse(json);
         OutlookEventMapper.ApplyGraphEvent(target, doc.RootElement, Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid());
-        Assert.Equal("China Standard Time", target.TimeZoneId);
+        Assert.Equal("Asia/Shanghai", target.TimeZoneId);
         Assert.Equal("China Standard Time", target.SourceTimeZoneId);
     }
 

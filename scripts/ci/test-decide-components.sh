@@ -33,6 +33,18 @@ check "仅前端变化 → mcp=false" "false" "$(field "$out" mcp)"
 out="$(run FORCE_ALL=true F_API=false F_DOCKER=false F_MCP=false F_INFRA=false)"
 check "force_all → all=true" "true" "$(field "$out" all)"
 
+# VERSION 变化（master 发布运行）：必须全量重建，否则发布 job 会搬上一版旧资产。
+out="$(run FORCE_ON_VERSION=true F_API=false F_DOCKER=false F_MCP=false F_INFRA=false)"
+check "VERSION 变化 → all=true" "true" "$(field "$out" all)"
+check "VERSION 变化 → api=true" "true" "$(field "$out" api)"
+check "VERSION 变化 → docker=true" "true" "$(field "$out" docker)"
+check "VERSION 变化 → mcp=true" "true" "$(field "$out" mcp)"
+contains "VERSION 变化有可见说明" "VERSION" "$(cat "$TMP/last.err")"
+
+# 未变化时不能因为多了这个开关就变成全量（防止写死成 true 的假生效）。
+out="$(run FORCE_ON_VERSION=false F_API=false F_DOCKER=false F_MCP=false F_INFRA=false)"
+check "VERSION 未变化 → all=false" "false" "$(field "$out" all)"
+
 out="$(run BASELINE_OK=false PREVIOUS_TAG= F_API=false F_DOCKER=false F_MCP=false F_INFRA=false)"
 check "首次发布 → 全量构建" "true" "$(field "$out" all)"
 contains "首次发布有可见说明" "全量构建" "$(cat "$TMP/last.err")"

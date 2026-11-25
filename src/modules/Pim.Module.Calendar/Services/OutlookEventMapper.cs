@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Linq;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using Pim.Core.Exceptions;
 using Pim.Module.Calendar.DTOs;
 using Pim.Module.Calendar.Entities;
 
@@ -56,8 +57,7 @@ public static class OutlookEventMapper
         target.OutlookEtag = GetStringOrNull(graph, "@odata.etag");
         target.OriginalStartTimeZone = GetStringOrNull(graph, "originalStartTimeZone");
         target.OriginalEndTimeZone = GetStringOrNull(graph, "originalEndTimeZone");
-        // TimeZoneId/SourceTimeZoneId were previously left null -> clients could not map UTC back to original local time (issue #171)
-        // Populate from originalStartTimeZone (preferred) or start.timeZone, truncated to 100 chars.
+        // SourceTimeZoneId 保留 Graph 的原始 Windows/IANA 值；TimeZoneId 只在可映射时写 IANA。
         {
             var startTz = GetStringOrNull(graph, "start", "timeZone");
             var effectiveTz = !string.IsNullOrWhiteSpace(target.OriginalStartTimeZone)
@@ -65,9 +65,10 @@ public static class OutlookEventMapper
                 : startTz;
             if (!string.IsNullOrWhiteSpace(effectiveTz))
             {
-                var normalized = effectiveTz!.Length > 100 ? effectiveTz[..100] : effectiveTz;
-                target.TimeZoneId = normalized;
-                target.SourceTimeZoneId = normalized;
+                var source = effectiveTz!.Length > 100 ? effectiveTz[..100] : effectiveTz;
+                var resolved = EventTimeZoneResolver.Resolve(null, source);
+                target.TimeZoneId = resolved.Id;
+                target.SourceTimeZoneId = source;
             }
             else
             {
@@ -148,6 +149,17 @@ public static class OutlookEventMapper
         {
             target.AllDayStartDate = DateOnly.Parse(startRaw[..10], CultureInfo.InvariantCulture);
             target.AllDayEndDateExclusive = DateOnly.Parse(endRaw[..10], CultureInfo.InvariantCulture);
+            var resolved = EventTimeZoneResolver.Resolve(
+                target.TimeZoneId, target.SourceTimeZoneId, target.OriginalStartTimeZone);
+            var zone = resolved.Zone ?? EventTimeZoneResolver.DisplayZone;
+            target.DtStart = EventTimeZoneResolver.StartOfLocalDate(
+                target.AllDayStartDate.Value,
+                zone,
+                zone.GetUtcOffset(target.AllDayStartDate.Value.ToDateTime(TimeOnly.MinValue)));
+            target.DtEnd = EventTimeZoneResolver.StartOfLocalDate(
+                target.AllDayEndDateExclusive.Value,
+                zone,
+                zone.GetUtcOffset(target.AllDayEndDateExclusive.Value.ToDateTime(TimeOnly.MinValue)));
         }
         else
         {
@@ -182,6 +194,39 @@ public static class OutlookEventMapper
         var bodyContentType = string.Equals(draft.DescriptionFormat, "html", StringComparison.OrdinalIgnoreCase)
             ? "html"
             : "text";
+        var hasAllDayStart = draft.AllDayStartDate.HasValue;
+        var hasAllDayEnd = draft.AllDayEndDateExclusive.HasValue;
+        if (draft.IsAllDay && hasAllDayStart != hasAllDayEnd)
+        {
+            throw new DomainException(
+                02009,
+                "全天事件的 allDayStartDate 与 allDayEndDateExclusive 必须同时提供。");
+        }
+        if (draft.IsAllDay
+            && hasAllDayStart
+            && draft.AllDayEndDateExclusive!.Value <= draft.AllDayStartDate!.Value)
+        {
+            throw new DomainException(
+                02009,
+                "全天事件的排他结束日期必须晚于开始日期。");
+        }
+
+        // Legacy all-day rows may predate independent dates. Preserve their absolute
+        // bounds instead of inventing a calendar date from dtStart/dtEnd.
+        var hasIndependentAllDayDates = draft.IsAllDay && hasAllDayStart && hasAllDayEnd;
+        var allDayStart = draft.AllDayStartDate;
+        var allDayEnd = draft.AllDayEndDateExclusive;
+        TimeZoneInfo? resolvedZone = null;
+        var writeZoneId = "UTC";
+        if ((!draft.IsAllDay || hasIndependentAllDayDates)
+            && EventTimeZoneResolver.TryResolveIana(
+                draft.TimeZoneId, out var ianaId, out var candidateZone, out _)
+            && TimeZoneInfo.TryConvertIanaIdToWindowsId(ianaId, out var windowsId)
+            && !string.IsNullOrWhiteSpace(windowsId))
+        {
+            resolvedZone = candidateZone;
+            writeZoneId = windowsId;
+        }
         var payload = new Dictionary<string, object?>
         {
             ["subject"] = draft.Title,
@@ -198,13 +243,13 @@ public static class OutlookEventMapper
             },
             ["start"] = new Dictionary<string, object?>
             {
-                ["dateTime"] = FormatDateTime(draft.DtStart, draft.IsAllDay),
-                ["timeZone"] = "UTC"
+                ["dateTime"] = FormatWriteDateTime(draft.DtStart, draft.IsAllDay, allDayStart, resolvedZone),
+                ["timeZone"] = writeZoneId
             },
             ["end"] = new Dictionary<string, object?>
             {
-                ["dateTime"] = FormatDateTime(draft.DtEnd, draft.IsAllDay),
-                ["timeZone"] = "UTC"
+                ["dateTime"] = FormatWriteDateTime(draft.DtEnd, draft.IsAllDay, allDayEnd, resolvedZone),
+                ["timeZone"] = writeZoneId
             },
             ["isAllDay"] = draft.IsAllDay
         };
@@ -268,7 +313,12 @@ public static class OutlookEventMapper
             }
         }
 
-        var recurrencePayload = BuildGraphRecurrencePayload(draft.RRule, draft.DtStart, draft.IsAllDay);
+        var recurrenceStartDate = draft.IsAllDay
+            ? allDayStart ?? DateOnly.FromDateTime(draft.DtStart.UtcDateTime)
+            : resolvedZone is null
+                ? DateOnly.FromDateTime(draft.DtStart.UtcDateTime)
+                : DateOnly.FromDateTime(EventTimeZoneResolver.ConvertToZone(draft.DtStart, resolvedZone).DateTime);
+        var recurrencePayload = BuildGraphRecurrencePayload(draft.RRule, recurrenceStartDate, writeZoneId);
         if (recurrencePayload is not null)
         {
             payload["recurrence"] = recurrencePayload;
@@ -583,7 +633,10 @@ public static class OutlookEventMapper
         };
     }
 
-    private static Dictionary<string, object?>? BuildGraphRecurrencePayload(string? rrule, DateTimeOffset dtStart, bool isAllDay)
+    private static Dictionary<string, object?>? BuildGraphRecurrencePayload(
+        string? rrule,
+        DateOnly startDateValue,
+        string recurrenceTimeZone)
     {
         if (string.IsNullOrWhiteSpace(rrule))
             return null;
@@ -620,7 +673,7 @@ public static class OutlookEventMapper
                 pattern["daysOfWeek"] = days;
         }
 
-        var startDate = dtStart.ToUniversalTime().ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        var startDate = startDateValue.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
         Dictionary<string, object?> range;
         if (map.TryGetValue("COUNT", out var countRaw) && int.TryParse(countRaw, out var count) && count > 0)
         {
@@ -629,7 +682,7 @@ public static class OutlookEventMapper
                 ["type"] = "numbered",
                 ["startDate"] = startDate,
                 ["numberOfOccurrences"] = count,
-                ["recurrenceTimeZone"] = "UTC"
+                ["recurrenceTimeZone"] = recurrenceTimeZone
             };
         }
         else if (map.TryGetValue("UNTIL", out var untilRaw) && !string.IsNullOrEmpty(untilRaw))
@@ -640,7 +693,7 @@ public static class OutlookEventMapper
                 ["type"] = "endDate",
                 ["startDate"] = startDate,
                 ["endDate"] = endDate,
-                ["recurrenceTimeZone"] = "UTC"
+                ["recurrenceTimeZone"] = recurrenceTimeZone
             };
         }
         else
@@ -649,7 +702,7 @@ public static class OutlookEventMapper
             {
                 ["type"] = "noEnd",
                 ["startDate"] = startDate,
-                ["recurrenceTimeZone"] = "UTC"
+                ["recurrenceTimeZone"] = recurrenceTimeZone
             };
         }
 
@@ -715,10 +768,22 @@ public static class OutlookEventMapper
         target.ExternalMetadataJson = JsonSerializer.Serialize(envelope, JsonOptions);
     }
 
-    private static string FormatDateTime(DateTimeOffset dto, bool isAllDay)
+    private static string FormatWriteDateTime(
+        DateTimeOffset dto,
+        bool isAllDay,
+        DateOnly? allDayDate,
+        TimeZoneInfo? zone)
     {
         if (isAllDay)
-            return dto.Date.ToString("yyyy-MM-ddTHH:mm:ss.fffffff", CultureInfo.InvariantCulture);
-        return dto.UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ss.fffffff", CultureInfo.InvariantCulture);
+        {
+            if (allDayDate is { } date)
+                return date.ToDateTime(TimeOnly.MinValue)
+                    .ToString("yyyy-MM-dd'T'HH:mm:ss.fffffff", CultureInfo.InvariantCulture);
+
+            return dto.UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss.fffffff", CultureInfo.InvariantCulture);
+        }
+
+        var value = zone is null ? dto.UtcDateTime : TimeZoneInfo.ConvertTime(dto, zone).DateTime;
+        return value.ToString("yyyy-MM-ddTHH:mm:ss.fffffff", CultureInfo.InvariantCulture);
     }
 }

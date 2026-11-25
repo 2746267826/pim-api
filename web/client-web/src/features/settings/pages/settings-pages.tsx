@@ -12,6 +12,7 @@ import { Button, Card, CardTitle, Chip, ConfirmDialog, Dialog, DialogBody, Dialo
 import { EventEditorDialog } from '@/features/calendar/components/event-editor-dialog'
 import { useCalendars } from '@/features/calendar/queries'
 import type { EventResponse } from '@/features/calendar/types'
+import { buildCalendarDataEventsPath, buildCalendarDataWindow } from '@/features/settings/calendar-data-window'
 import { cn } from '@/lib/utils'
 
 /* ── /settings/data-reliability 数据可信度 ─────────────────── */
@@ -636,10 +637,13 @@ export function CalendarDataManagerPage() {
   const [search, setSearch] = useState('')
   const [page, setPage] = useState(1)
   const [selected, setSelected] = useState<Set<string>>(new Set())
+  const eventWindow = useMemo(() => buildCalendarDataWindow(), [])
   const calendars = useQuery({ queryKey: ['calendar', 'calendars', 'all'], queryFn: () => apiGet<{ id: string; name: string; color: string; kind: string }[]>('/api/v1/calendar/calendars') })
   const events = useQuery({
-    queryKey: ['calendar', 'admin-events', search, page],
-    queryFn: () => apiGet<{ items: AdminEvent[]; totalCount: number; totalPages: number }>(`/api/v1/calendar/events?page=${page}&pageSize=50${search ? `&search=${encodeURIComponent(search)}` : ''}`),
+    queryKey: ['calendar', 'admin-events', eventWindow.start, eventWindow.end, search, page],
+    queryFn: () => apiGet<{ items: AdminEvent[]; totalCount: number; totalPages: number }>(
+      buildCalendarDataEventsPath({ page, search, window: eventWindow }),
+    ),
     placeholderData: (prev) => prev,
   })
   const [importTarget, setImportTarget] = useState('')

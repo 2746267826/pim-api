@@ -144,6 +144,16 @@ public sealed class McpToolExecutorTests : IDisposable
 
     private static JsonElement Json(string raw) => JsonDocument.Parse(raw).RootElement.Clone();
 
+    private static Dictionary<string, string> ParseQuery(string? query)
+        => (query ?? string.Empty)
+            .TrimStart('?')
+            .Split('&', StringSplitOptions.RemoveEmptyEntries)
+            .Select(part => part.Split('=', 2))
+            .ToDictionary(
+                part => Uri.UnescapeDataString(part[0]),
+                part => Uri.UnescapeDataString(part.Length > 1 ? part[1] : string.Empty),
+                StringComparer.Ordinal);
+
     public sealed record ParameterAliasCase(
         string Tool,
         string Canonical,
@@ -699,6 +709,71 @@ public sealed class McpToolExecutorTests : IDisposable
         Assert.Equal("Demo", body["title"]!.GetValue<string>());
         Assert.False(body["isAllDay"]!.GetValue<bool>());
         Assert.Equal("Bearer ", request.Auth![..7]);
+    }
+
+    [Fact]
+    public async Task CreateEvent_AllDayFieldsReachRestBody()
+    {
+        CreateExecutor(withWritePermission: true);
+        _routes["POST /api/v1/calendar/events"] = new(200, "{\"code\":0,\"data\":{\"id\":\"e-all-day\"}}");
+
+        var result = await CallTool("create_event", new Dictionary<string, JsonElement>
+        {
+            ["calendarId"] = Json("\"cal-1\""),
+            ["title"] = Json("\"Holiday\""),
+            ["dtStart"] = Json("\"2026-07-12T00:00:00Z\""),
+            ["dtEnd"] = Json("\"2026-07-13T00:00:00Z\""),
+            ["isAllDay"] = Json("true"),
+            ["allDayStartDate"] = Json("\"2026-07-12\""),
+            ["allDayEndDateExclusive"] = Json("\"2026-07-13\""),
+        });
+
+        Assert.Equal(0, result!["code"]!.GetValue<int>());
+        var body = JsonNode.Parse(Assert.Single(_requests).Body!)!.AsObject();
+        Assert.True(body["isAllDay"]!.GetValue<bool>());
+        Assert.Equal("2026-07-12", body["allDayStartDate"]!.GetValue<string>());
+        Assert.Equal("2026-07-13", body["allDayEndDateExclusive"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public async Task GetEventById_FallbackScanStaysWithinRestWindowLimit()
+    {
+        CreateExecutor();
+        _routes["GET /api/v1/calendar/events/e1"] = new(404, "{\"code\":404,\"error\":\"not found\"}");
+        _routes["GET /api/v1/calendar/events"] = new(200,
+            "{\"code\":0,\"data\":{\"items\":[{\"id\":\"e1\",\"title\":\"Found\"}],\"totalCount\":1}}");
+
+        var result = await CallTool("get_event_by_id", new Dictionary<string, JsonElement>
+        {
+            ["eventId"] = Json("\"e1\""),
+        });
+
+        Assert.Equal("Found", result!["data"]!["title"]!.GetValue<string>());
+        var scan = Assert.Single(_requests.Where(request =>
+            request.Method == "GET" && request.Path == "/api/v1/calendar/events"));
+        var query = ParseQuery(scan.Query);
+        var start = DateTimeOffset.Parse(query["start"]);
+        var end = DateTimeOffset.Parse(query["end"]);
+        Assert.Equal(TimeSpan.FromDays(366), end - start);
+        Assert.Equal("1", query["page"]);
+        Assert.Equal("100", query["pageSize"]);
+    }
+
+    [Fact]
+    public async Task SearchCalendarEvents_WindowContractErrorFallsBackToGlobalSearch()
+    {
+        CreateExecutor();
+        _routes["GET /api/v1/calendar/events"] = new(400,
+            "{\"code\":2009,\"message\":\"start/end 必填\",\"data\":null}");
+        _routes["GET /api/v1/search"] = new(200, "{\"code\":0,\"data\":{\"items\":[]}}");
+
+        var result = await CallTool("search_calendar_events", new Dictionary<string, JsonElement>
+        {
+            ["q"] = Json("\"planning\""),
+        });
+
+        Assert.Equal(0, result!["code"]!.GetValue<int>());
+        Assert.Contains(_requests, request => request.Path == "/api/v1/search");
     }
 
     [Fact]

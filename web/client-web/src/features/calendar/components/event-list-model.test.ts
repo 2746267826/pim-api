@@ -127,6 +127,18 @@ describe('buildEventListSections（分组 + 排序 + 过滤）', () => {
     expect(buildEventListSections(undefined, undefined)).toEqual([])
   })
 
+  it('全天缺少独立日期时标记日期未知，不从 dtStart 推断', () => {
+    const sections = buildEventListSections([ev({
+      isAllDay: true,
+      dtStart: '2026-09-27T16:00:00+00:00',
+      dtEnd: '2026-09-28T16:00:00+00:00',
+      allDayStartDate: null,
+      allDayEndDateExclusive: null,
+    })], [])
+    expect(sections.map((section) => section.dateLabel)).toEqual(['日期未知'])
+    expect(sections[0].items[0].dayOverride).toBe('unknown')
+  })
+
   it('重复系列标记 repeated；取消状态标记 cancelled', () => {
     const sections = buildEventListSections(
       [ev({ rrule: 'FREQ=WEEKLY', status: 'Cancelled' })],

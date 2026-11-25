@@ -86,6 +86,16 @@ export interface EventResponse {
    * （生效值 = isMuted ?? 所属日历本的 defaultMuted）。
    */
   isMuted: boolean | null
+  allDayStartDate?: string | null
+  allDayEndDateExclusive?: string | null
+  timeZoneResolution?: 'resolved' | 'sourceOnly' | 'unknown' | null
+  timeZoneIdType?: string | null
+  timeZoneSourceType?: string | null
+  localStart?: string | null
+  localEnd?: string | null
+  displayTimeZoneId?: string | null
+  displayLocalStart?: string | null
+  displayLocalEnd?: string | null
 }
 
 /** Outlook 镜像事件（source 以 outlook 开头）走写回通道而非直接 PUT/DELETE */

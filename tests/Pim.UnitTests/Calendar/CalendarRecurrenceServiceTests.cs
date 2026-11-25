@@ -503,6 +503,250 @@ public class CalendarRecurrenceServiceTests
     }
 
     [Fact]
+    public async Task UpdateSeries_FromMovedAllDayException_PreservesMasterDaysAndAbsoluteBounds()
+    {
+        await using var db = CreateDb();
+        var cal = SeedCal(db);
+        await db.SaveChangesAsync();
+        var svc = Svc(db);
+
+        var master = await svc.CreateEventAsync(new CreateEventRequest(
+            cal.Id, "All-day series", null, null,
+            new DateTimeOffset(2026, 7, 5, 16, 0, 0, TimeSpan.Zero),
+            new DateTimeOffset(2026, 7, 7, 16, 0, 0, TimeSpan.Zero),
+            "FREQ=WEEKLY;COUNT=4",
+            IsAllDay: true,
+            TimeZoneId: "Asia/Shanghai",
+            AllDayStartDate: new DateOnly(2026, 7, 6),
+            AllDayEndDateExclusive: new DateOnly(2026, 7, 8)), default);
+        var recId = D(2026, 7, 13, 0).ToString("O");
+        var ex = await svc.CreateEventAsync(new CreateEventRequest(
+            cal.Id, "Moved all-day exception", null, null,
+            new DateTimeOffset(2026, 7, 12, 16, 0, 0, TimeSpan.Zero),
+            new DateTimeOffset(2026, 7, 14, 16, 0, 0, TimeSpan.Zero),
+            null,
+            IsAllDay: true,
+            TimeZoneId: "Asia/Shanghai",
+            IsException: true,
+            SeriesMasterId: master.Id,
+            RecurrenceId: recId,
+            AllDayStartDate: new DateOnly(2026, 7, 13),
+            AllDayEndDateExclusive: new DateOnly(2026, 7, 15)), default);
+        var masterBefore = await db.Set<EventEntity>().AsNoTracking().FirstAsync(e => e.Id == master.Id);
+        var exBefore = await db.Set<EventEntity>().AsNoTracking().FirstAsync(e => e.Id == ex.Id);
+
+        var updated = await svc.UpdateEventAsync(ex.Id, new UpdateEventRequest(
+            cal.Id, "All-day series renamed", null, null,
+            exBefore.DtStart, exBefore.DtEnd, "FREQ=WEEKLY;COUNT=4",
+            IsAllDay: true,
+            AllDayStartDate: exBefore.AllDayStartDate,
+            AllDayEndDateExclusive: exBefore.AllDayEndDateExclusive), "series", default);
+
+        Assert.Equal(master.Id, updated.Id);
+        var masterAfter = await db.Set<EventEntity>().AsNoTracking().FirstAsync(e => e.Id == master.Id);
+        Assert.Equal("All-day series renamed", masterAfter.Title);
+        Assert.Equal(masterBefore.DtStart.UtcDateTime, masterAfter.DtStart.UtcDateTime);
+        Assert.Equal(masterBefore.DtEnd.UtcDateTime, masterAfter.DtEnd.UtcDateTime);
+        Assert.Equal(new DateOnly(2026, 7, 6), masterAfter.AllDayStartDate);
+        Assert.Equal(new DateOnly(2026, 7, 8), masterAfter.AllDayEndDateExclusive);
+
+        var exAfter = await db.Set<EventEntity>().AsNoTracking().FirstAsync(e => e.Id == ex.Id);
+        Assert.Equal(exBefore.DtStart.UtcDateTime, exAfter.DtStart.UtcDateTime);
+        Assert.Equal(exBefore.AllDayStartDate, exAfter.AllDayStartDate);
+    }
+
+    [Fact]
+    public async Task UpdateSeries_FromMovedTimedException_PreservesMasterAbsoluteStart()
+    {
+        await using var db = CreateDb();
+        var cal = SeedCal(db);
+        await db.SaveChangesAsync();
+        var svc = Svc(db);
+
+        var master = await svc.CreateEventAsync(new CreateEventRequest(
+            cal.Id, "Timed series", null, null, D(2026, 7, 6, 9), D(2026, 7, 6, 10),
+            "FREQ=WEEKLY;COUNT=4", TimeZoneId: "Asia/Shanghai"), default);
+        var recId = D(2026, 7, 13, 14).ToString("O");
+        var ex = await svc.CreateEventAsync(new CreateEventRequest(
+            cal.Id, "Moved timed exception", null, null, D(2026, 7, 13, 14), D(2026, 7, 13, 15),
+            null,
+            TimeZoneId: "Asia/Shanghai",
+            IsException: true,
+            SeriesMasterId: master.Id,
+            RecurrenceId: recId), default);
+        var masterBefore = await db.Set<EventEntity>().AsNoTracking().FirstAsync(e => e.Id == master.Id);
+        var exBefore = await db.Set<EventEntity>().AsNoTracking().FirstAsync(e => e.Id == ex.Id);
+
+        var updated = await svc.UpdateEventAsync(ex.Id, new UpdateEventRequest(
+            cal.Id, "Timed series renamed", null, null,
+            exBefore.DtStart, exBefore.DtEnd, "FREQ=WEEKLY;COUNT=4",
+            IsAllDay: false), "series", default);
+
+        Assert.Equal(master.Id, updated.Id);
+        var masterAfter = await db.Set<EventEntity>().AsNoTracking().FirstAsync(e => e.Id == master.Id);
+        Assert.Equal("Timed series renamed", masterAfter.Title);
+        Assert.Equal(masterBefore.DtStart.UtcDateTime, masterAfter.DtStart.UtcDateTime);
+        Assert.Equal(masterBefore.DtEnd.UtcDateTime, masterAfter.DtEnd.UtcDateTime);
+        Assert.False(masterAfter.IsAllDay);
+    }
+
+    [Fact]
+    public async Task UpdateSeries_FromMovedTimedException_AppliesDurationDeltaToMaster()
+    {
+        await using var db = CreateDb();
+        var cal = SeedCal(db);
+        await db.SaveChangesAsync();
+        var svc = Svc(db);
+
+        var master = await svc.CreateEventAsync(new CreateEventRequest(
+            cal.Id, "Timed series", null, null, D(2026, 7, 6, 9), D(2026, 7, 6, 10),
+            "FREQ=WEEKLY;COUNT=4"), default);
+        var recId = D(2026, 7, 13, 14).ToString("O");
+        var ex = await svc.CreateEventAsync(new CreateEventRequest(
+            cal.Id, "Moved timed exception", null, null, D(2026, 7, 13, 14), D(2026, 7, 13, 15),
+            null,
+            IsException: true,
+            SeriesMasterId: master.Id,
+            RecurrenceId: recId), default);
+        var masterBefore = await db.Set<EventEntity>().AsNoTracking().FirstAsync(e => e.Id == master.Id);
+        var exBefore = await db.Set<EventEntity>().AsNoTracking().FirstAsync(e => e.Id == ex.Id);
+
+        await svc.UpdateEventAsync(ex.Id, new UpdateEventRequest(
+            cal.Id, "Timed series duration", null, null,
+            exBefore.DtStart, exBefore.DtStart.AddHours(2), "FREQ=WEEKLY;COUNT=4",
+            IsAllDay: false), "series", default);
+
+        var masterAfter = await db.Set<EventEntity>().AsNoTracking().FirstAsync(e => e.Id == master.Id);
+        Assert.Equal(masterBefore.DtStart.UtcDateTime, masterAfter.DtStart.UtcDateTime);
+        Assert.Equal(masterBefore.DtEnd.AddHours(1).UtcDateTime, masterAfter.DtEnd.UtcDateTime);
+    }
+
+    [Fact]
+    public async Task UpdateSeries_FromLongerTimedException_UsesRequestedDurationOnMasterStart()
+    {
+        await using var db = CreateDb();
+        var cal = SeedCal(db);
+        await db.SaveChangesAsync();
+        var svc = Svc(db);
+
+        var master = await svc.CreateEventAsync(new CreateEventRequest(
+            cal.Id, "Timed series", null, null, D(2026, 7, 6, 9), D(2026, 7, 6, 10),
+            "FREQ=WEEKLY;COUNT=4"), default);
+        var recId = D(2026, 7, 13, 14).ToString("O");
+        var ex = await svc.CreateEventAsync(new CreateEventRequest(
+            cal.Id, "Long moved timed exception", null, null, D(2026, 7, 13, 14), D(2026, 7, 13, 17),
+            null,
+            IsException: true,
+            SeriesMasterId: master.Id,
+            RecurrenceId: recId), default);
+        var masterBefore = await db.Set<EventEntity>().AsNoTracking().FirstAsync(e => e.Id == master.Id);
+        var exBefore = await db.Set<EventEntity>().AsNoTracking().FirstAsync(e => e.Id == ex.Id);
+
+        await svc.UpdateEventAsync(ex.Id, new UpdateEventRequest(
+            cal.Id, "Timed series shorter", null, null,
+            exBefore.DtStart, exBefore.DtStart.AddHours(2), "FREQ=WEEKLY;COUNT=4",
+            IsAllDay: false), "series", default);
+
+        var masterAfter = await db.Set<EventEntity>().AsNoTracking().FirstAsync(e => e.Id == master.Id);
+        Assert.Equal(masterBefore.DtStart.UtcDateTime, masterAfter.DtStart.UtcDateTime);
+        Assert.Equal(masterBefore.DtStart.AddHours(2).UtcDateTime, masterAfter.DtEnd.UtcDateTime);
+    }
+
+    [Fact]
+    public async Task UpdateSeries_FromMovedAllDayException_AppliesDateDeltaToMaster()
+    {
+        await using var db = CreateDb();
+        var cal = SeedCal(db);
+        await db.SaveChangesAsync();
+        var svc = Svc(db);
+
+        var master = await svc.CreateEventAsync(new CreateEventRequest(
+            cal.Id, "All-day series", null, null,
+            new DateTimeOffset(2026, 7, 5, 16, 0, 0, TimeSpan.Zero),
+            new DateTimeOffset(2026, 7, 7, 16, 0, 0, TimeSpan.Zero),
+            "FREQ=WEEKLY;COUNT=4",
+            IsAllDay: true,
+            TimeZoneId: "Asia/Shanghai",
+            AllDayStartDate: new DateOnly(2026, 7, 6),
+            AllDayEndDateExclusive: new DateOnly(2026, 7, 8)), default);
+        var recId = D(2026, 7, 13, 0).ToString("O");
+        var ex = await svc.CreateEventAsync(new CreateEventRequest(
+            cal.Id, "Moved all-day exception", null, null,
+            new DateTimeOffset(2026, 7, 12, 16, 0, 0, TimeSpan.Zero),
+            new DateTimeOffset(2026, 7, 14, 16, 0, 0, TimeSpan.Zero),
+            null,
+            IsAllDay: true,
+            TimeZoneId: "Asia/Shanghai",
+            IsException: true,
+            SeriesMasterId: master.Id,
+            RecurrenceId: recId,
+            AllDayStartDate: new DateOnly(2026, 7, 13),
+            AllDayEndDateExclusive: new DateOnly(2026, 7, 15)), default);
+        var masterBefore = await db.Set<EventEntity>().AsNoTracking().FirstAsync(e => e.Id == master.Id);
+        var exBefore = await db.Set<EventEntity>().AsNoTracking().FirstAsync(e => e.Id == ex.Id);
+
+        await svc.UpdateEventAsync(ex.Id, new UpdateEventRequest(
+            cal.Id, "All-day series extended", null, null,
+            exBefore.DtStart, exBefore.DtEnd, "FREQ=WEEKLY;COUNT=4",
+            IsAllDay: true,
+            AllDayStartDate: exBefore.AllDayStartDate,
+            AllDayEndDateExclusive: new DateOnly(2026, 7, 16)), "series", default);
+
+        var masterAfter = await db.Set<EventEntity>().AsNoTracking().FirstAsync(e => e.Id == master.Id);
+        Assert.Equal(masterBefore.DtStart.UtcDateTime, masterAfter.DtStart.UtcDateTime);
+        Assert.Equal(masterBefore.DtEnd.AddDays(1).UtcDateTime, masterAfter.DtEnd.UtcDateTime);
+        Assert.Equal(new DateOnly(2026, 7, 6), masterAfter.AllDayStartDate);
+        Assert.Equal(new DateOnly(2026, 7, 9), masterAfter.AllDayEndDateExclusive);
+    }
+
+    [Fact]
+    public async Task UpdateSeries_FromLongerAllDayException_UsesRequestedDurationOnMasterStart()
+    {
+        await using var db = CreateDb();
+        var cal = SeedCal(db);
+        await db.SaveChangesAsync();
+        var svc = Svc(db);
+
+        var master = await svc.CreateEventAsync(new CreateEventRequest(
+            cal.Id, "All-day series", null, null,
+            new DateTimeOffset(2026, 7, 5, 16, 0, 0, TimeSpan.Zero),
+            new DateTimeOffset(2026, 7, 7, 16, 0, 0, TimeSpan.Zero),
+            "FREQ=WEEKLY;COUNT=4",
+            IsAllDay: true,
+            TimeZoneId: "Asia/Shanghai",
+            AllDayStartDate: new DateOnly(2026, 7, 6),
+            AllDayEndDateExclusive: new DateOnly(2026, 7, 8)), default);
+        var recId = D(2026, 7, 13, 0).ToString("O");
+        var ex = await svc.CreateEventAsync(new CreateEventRequest(
+            cal.Id, "Long moved all-day exception", null, null,
+            new DateTimeOffset(2026, 7, 12, 16, 0, 0, TimeSpan.Zero),
+            new DateTimeOffset(2026, 7, 17, 16, 0, 0, TimeSpan.Zero),
+            null,
+            IsAllDay: true,
+            TimeZoneId: "Asia/Shanghai",
+            IsException: true,
+            SeriesMasterId: master.Id,
+            RecurrenceId: recId,
+            AllDayStartDate: new DateOnly(2026, 7, 13),
+            AllDayEndDateExclusive: new DateOnly(2026, 7, 18)), default);
+        var masterBefore = await db.Set<EventEntity>().AsNoTracking().FirstAsync(e => e.Id == master.Id);
+        var exBefore = await db.Set<EventEntity>().AsNoTracking().FirstAsync(e => e.Id == ex.Id);
+
+        await svc.UpdateEventAsync(ex.Id, new UpdateEventRequest(
+            cal.Id, "All-day series shorter", null, null,
+            exBefore.DtStart, exBefore.DtEnd, "FREQ=WEEKLY;COUNT=4",
+            IsAllDay: true,
+            AllDayStartDate: exBefore.AllDayStartDate,
+            AllDayEndDateExclusive: new DateOnly(2026, 7, 15)), "series", default);
+
+        var masterAfter = await db.Set<EventEntity>().AsNoTracking().FirstAsync(e => e.Id == master.Id);
+        Assert.Equal(masterBefore.DtStart.UtcDateTime, masterAfter.DtStart.UtcDateTime);
+        Assert.Equal(masterBefore.DtEnd.UtcDateTime, masterAfter.DtEnd.UtcDateTime);
+        Assert.Equal(new DateOnly(2026, 7, 6), masterAfter.AllDayStartDate);
+        Assert.Equal(new DateOnly(2026, 7, 8), masterAfter.AllDayEndDateExclusive);
+    }
+
+    [Fact]
     public async Task EndpointScope_Series_FromException_DelegatesToMaster()
     {
         await using var db = CreateDb();
