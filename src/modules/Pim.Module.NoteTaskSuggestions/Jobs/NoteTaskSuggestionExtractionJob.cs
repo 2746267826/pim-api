@@ -5,6 +5,9 @@ using Pim.Core.Ai;
 using Pim.Core.Exceptions;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
+using Pim.Module.Calendar.Entities;
+using Pim.Module.Calendar.Services;
+using Pim.Module.NoteTaskSuggestions.DTOs;
 using Pim.Module.NoteTaskSuggestions.Entities;
 using Pim.Module.NoteTaskSuggestions.Services;
 
@@ -12,6 +15,7 @@ namespace Pim.Module.NoteTaskSuggestions.Jobs;
 
 internal sealed class NoteTaskSuggestionExtractionJob(
     PimDbContext db,
+    CalendarService calendar,
     INoteTaskSuggestionModelClient model,
     TimeProvider timeProvider,
     ILogger<NoteTaskSuggestionExtractionJob> logger)
@@ -55,9 +59,10 @@ internal sealed class NoteTaskSuggestionExtractionJob(
                 return;
             if (result.Status != AiRequestStatus.Succeeded || string.IsNullOrWhiteSpace(result.ResponseText))
             {
-                await FailAsync(owner, extractionId, result.LogId,
+                await FailAsync(owner, extractionId, extraction.NoteId, result.LogId,
                     "ai_" + result.Status.ToString().ToLowerInvariant(),
-                    result.ErrorMessage ?? "文本模型未返回可用的任务建议；不会自动重发", ct);
+                    result.ErrorMessage ?? "文本模型未返回可用的任务建议；不会自动重发",
+                    extraction.Revision, ct);
                 return;
             }
 
@@ -68,12 +73,15 @@ internal sealed class NoteTaskSuggestionExtractionJob(
             }
             catch (InvalidDataException error)
             {
-                await FailAsync(owner, extractionId, result.LogId, "model_output_invalid",
-                    error.Message, ct);
+                await FailAsync(owner, extractionId, extraction.NoteId, result.LogId,
+                    "model_output_invalid",
+                    error.Message, extraction.Revision, ct);
                 return;
             }
 
-            await PersistSuccessAsync(owner, extractionId, result.LogId, drafts, ct);
+            await PersistSuccessAsync(
+                owner, extractionId, extraction.NoteId, extraction.Revision,
+                result.LogId, drafts, ct);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -81,9 +89,9 @@ internal sealed class NoteTaskSuggestionExtractionJob(
         }
         catch (DomainException error)
         {
-            await FailAsync(owner, extractionId, null,
+            await FailAsync(owner, extractionId, extraction.NoteId, null,
                 error.ErrorCode == 40901 ? "destination_changed" : "extraction_blocked",
-                error.Message, ct);
+                error.Message, extraction.Revision, ct);
         }
         catch (Exception error) when (
             error is DbUpdateException or IOException or InvalidDataException or
@@ -91,8 +99,9 @@ internal sealed class NoteTaskSuggestionExtractionJob(
         {
             logger.LogWarning(error,
                 "Task suggestion extraction {ExtractionId} failed at a durable checkpoint", extractionId);
-            await FailAsync(owner, extractionId, null, "checkpoint_failed",
-                "任务建议提取检查点写入失败；不会自动重发，请核对后新建请求", ct);
+            await FailAsync(owner, extractionId, extraction.NoteId, null, "checkpoint_failed",
+                "任务建议提取检查点写入失败；不会自动重发，请核对后新建请求",
+                extraction.Revision, ct);
         }
     }
 
@@ -129,16 +138,20 @@ internal sealed class NoteTaskSuggestionExtractionJob(
     private async Task PersistSuccessAsync(
         Guid owner,
         Guid extractionId,
+        Guid noteId,
+        Guid expectedRevision,
         Guid logId,
         IReadOnlyList<NoteTaskSuggestionDraft> drafts,
         CancellationToken ct)
     {
-        await AdvisoryLock.RunAsync(db, NoteTaskSuggestionService.Key(extractionId), async () =>
+        await AdvisoryLock.RunAsync(db, NoteTaskSuggestionService.NoteKey(noteId), async () =>
         {
             var extraction = await db.Set<NoteTaskSuggestionExtractionEntity>()
-                .SingleOrDefaultAsync(x => x.Id == extractionId && x.UserId == owner, ct)
+                .SingleOrDefaultAsync(x => x.Id == extractionId && x.UserId == owner &&
+                    x.NoteId == noteId, ct)
                 ?? throw new DomainException(40401, "任务建议提取记录不存在");
-            if (extraction.Status == NoteTaskSuggestionExtractionStatuses.Succeeded)
+            if (extraction.Status == NoteTaskSuggestionExtractionStatuses.Succeeded ||
+                extraction.Revision != expectedRevision)
                 return 0;
             if (extraction.Status != NoteTaskSuggestionExtractionStatuses.Running)
                 throw new DomainException(40901, "任务建议提取状态已改变");
@@ -160,10 +173,46 @@ internal sealed class NoteTaskSuggestionExtractionJob(
             }
 
             var now = timeProvider.GetUtcNow();
+            var existingItems = await db.Set<NoteTaskSuggestionEntity>().AsNoTracking()
+                .Where(x => x.UserId == owner && x.NoteId == extraction.NoteId &&
+                    x.ArtifactVersionId == extraction.ArtifactVersionId &&
+                    (x.Status == NoteTaskSuggestionStatuses.Draft ||
+                     x.Status == NoteTaskSuggestionStatuses.Confirmed))
+                .ToListAsync(ct);
+            var eventCalendarId = existingItems.Any(x => x.Kind == NoteTaskSuggestionKinds.Event) ||
+                drafts.Any(x => x.Kind == NoteTaskSuggestionKindDto.Event)
+                    ? await calendar.GetOrCreateDefaultEventCalendarIdAsync(owner, ct)
+                    : (Guid?)null;
+            var activeTaskIds = await ActiveTaskIdsAsync(owner, existingItems, ct);
+            var activeEventIds = await ActiveEventIdsAsync(owner, existingItems, ct);
+            var seenFingerprints = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var item in existingItems)
+            {
+                if (item.Status == NoteTaskSuggestionStatuses.Draft)
+                {
+                    seenFingerprints.Add(NoteTaskSuggestionService.ItemFingerprint(
+                        item, NoteTaskSuggestionService.FingerprintCalendarId(item, eventCalendarId)));
+                    continue;
+                }
+                if (item.Status != NoteTaskSuggestionStatuses.Confirmed)
+                    continue;
+
+                var active = item.Kind == NoteTaskSuggestionKinds.Event
+                    ? item.EventId is { } eventId && activeEventIds.Contains(eventId)
+                    : item.TaskId is { } taskId && activeTaskIds.Contains(taskId);
+                if (!active)
+                    continue;
+
+                seenFingerprints.Add(NoteTaskSuggestionService.ItemFingerprint(
+                    item, NoteTaskSuggestionService.FingerprintCalendarId(item, eventCalendarId)));
+                if (item.ItemFingerprint is { } storedFingerprint)
+                    seenFingerprints.Add(storedFingerprint);
+            }
             var ordinal = 0;
+            var added = 0;
             foreach (var draft in drafts)
             {
-                db.Set<NoteTaskSuggestionEntity>().Add(new NoteTaskSuggestionEntity
+                var entity = new NoteTaskSuggestionEntity
                 {
                     UserId = owner,
                     ExtractionId = extraction.Id,
@@ -176,16 +225,26 @@ internal sealed class NoteTaskSuggestionExtractionJob(
                     SourceManifestSha256 = extraction.SourceManifestSha256,
                     SourceGenerationTaskId = extraction.SourceGenerationTaskId,
                     Title = draft.Title,
+                    Kind = draft.Kind.ToString(),
                     Description = draft.Description,
                     Priority = draft.Priority,
                     Due = draft.Due,
+                    StartAt = draft.Start,
+                    EndAt = draft.End,
+                    TimeZoneId = draft.TimeZoneId,
                     Status = NoteTaskSuggestionStatuses.Draft,
                     CreatedAt = now,
                     UpdatedAt = now
-                });
+                };
+                var fingerprint = NoteTaskSuggestionService.ItemFingerprint(
+                    entity, NoteTaskSuggestionService.FingerprintCalendarId(entity, eventCalendarId));
+                if (!seenFingerprints.Add(fingerprint))
+                    continue;
+                db.Set<NoteTaskSuggestionEntity>().Add(entity);
+                added++;
             }
 
-            extraction.SuggestionCount = drafts.Count;
+            extraction.SuggestionCount = added;
             extraction.Status = NoteTaskSuggestionExtractionStatuses.Succeeded;
             extraction.AiCallLogId = logId == Guid.Empty ? null : logId;
             extraction.ErrorCode = null;
@@ -194,18 +253,65 @@ internal sealed class NoteTaskSuggestionExtractionJob(
             extraction.UpdatedAt = now;
             extraction.Revision = Guid.NewGuid();
             await db.SaveChangesAsync(ct);
-            return drafts.Count;
+            return added;
         }, ct);
     }
 
+    private async Task<HashSet<Guid>> ActiveTaskIdsAsync(
+        Guid owner,
+        IReadOnlyList<NoteTaskSuggestionEntity> items,
+        CancellationToken ct)
+    {
+        var ids = items
+            .Where(x => x.Kind == NoteTaskSuggestionKinds.Task && x.TaskId.HasValue)
+            .Select(x => x.TaskId!.Value)
+            .Distinct()
+            .ToArray();
+        if (ids.Length == 0)
+            return [];
+
+        return (await db.Set<TaskEntity>().AsNoTracking()
+            .Where(x => x.UserId == owner && ids.Contains(x.Id))
+            .Select(x => x.Id)
+            .ToListAsync(ct)).ToHashSet();
+    }
+
+    private async Task<HashSet<Guid>> ActiveEventIdsAsync(
+        Guid owner,
+        IReadOnlyList<NoteTaskSuggestionEntity> items,
+        CancellationToken ct)
+    {
+        var ids = items
+            .Where(x => x.Kind == NoteTaskSuggestionKinds.Event && x.EventId.HasValue)
+            .Select(x => x.EventId!.Value)
+            .Distinct()
+            .ToArray();
+        if (ids.Length == 0)
+            return [];
+
+        return (await db.Set<EventEntity>().AsNoTracking()
+            .Where(x => ids.Contains(x.Id) && x.Calendar.UserId == owner)
+            .Select(x => x.Id)
+            .ToListAsync(ct)).ToHashSet();
+    }
+
     private Task FailAsync(
-        Guid owner, Guid extractionId, Guid? logId, string code, string message, CancellationToken ct)
-        => AdvisoryLock.RunAsync(db, NoteTaskSuggestionService.Key(extractionId), async () =>
+        Guid owner,
+        Guid extractionId,
+        Guid noteId,
+        Guid? logId,
+        string code,
+        string message,
+        Guid expectedRevision,
+        CancellationToken ct)
+        => AdvisoryLock.RunAsync(db, NoteTaskSuggestionService.NoteKey(noteId), async () =>
         {
             var extraction = await db.Set<NoteTaskSuggestionExtractionEntity>()
-                .SingleOrDefaultAsync(x => x.Id == extractionId && x.UserId == owner, ct);
+                .SingleOrDefaultAsync(x => x.Id == extractionId && x.UserId == owner &&
+                    x.NoteId == noteId, ct);
             if (extraction is null ||
-                extraction.Status == NoteTaskSuggestionExtractionStatuses.Succeeded)
+                extraction.Status == NoteTaskSuggestionExtractionStatuses.Succeeded ||
+                extraction.Revision != expectedRevision)
                 return false;
 
             var now = timeProvider.GetUtcNow();

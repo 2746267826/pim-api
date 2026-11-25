@@ -46,12 +46,12 @@ export function loadExtractionIntent(
     }
     return {
       kind: 'blocked',
-      message: '本机保存的任务提取意图与当前账号、固定笔记版本或内容摘要不一致。为避免使用旧模型目标发送，本入口已锁定。',
+      message: '本机保存的任务与日程提取意图与当前账号、固定笔记版本或内容摘要不一致。为避免使用旧模型目标发送，本入口已锁定。',
     }
   } catch {
     return {
       kind: 'blocked',
-      message: '本机保存的任务提取意图无法读取。为避免创建未知的付费请求，本入口已锁定。',
+      message: '本机保存的任务与日程提取意图无法读取。为避免创建未知的付费请求，本入口已锁定。',
     }
   }
 }
@@ -63,7 +63,7 @@ export function saveExtractionIntent(
   intent: StartNoteTaskSuggestionExtraction,
 ): string | null {
   return save(extractionIntentScope(userId, serverBinding, versionId), intent,
-    '本机无法保存冻结的任务提取标识，已停止发送请求。')
+    '本机无法保存冻结的任务与日程提取标识，已停止发送请求。')
 }
 
 export function clearExtractionIntent(
@@ -120,17 +120,17 @@ export function loadConfirmIntent(
       }
       return {
         kind: 'blocked',
-        message: '本机保存的确认请求属于该建议的旧修订，本入口已锁定，不会覆盖旧请求或新建第二个任务。',
+        message: '本机保存的确认请求属于该建议的旧修订，本入口已锁定，不会覆盖旧请求或重复创建任务或日程。',
       }
     }
     return {
       kind: 'blocked',
-      message: '本机保存的确认请求与当前建议修订不一致，本入口已锁定，不会新建第二个任务。',
+      message: '本机保存的确认请求与当前建议修订不一致，本入口已锁定，不会重复创建任务或日程。',
     }
   } catch {
     return {
       kind: 'blocked',
-      message: '本机保存的确认请求无法读取，本入口已锁定，不会新建第二个任务。',
+      message: '本机保存的确认请求无法读取，本入口已锁定，不会重复创建任务或日程。',
     }
   }
 }
@@ -147,7 +147,7 @@ export function saveConfirmIntent(
     suggestionId,
     revision,
     requestId,
-  }, '本机无法保存冻结的确认请求标识，已停止创建任务。')
+  }, '本机无法保存冻结的确认请求标识，已停止创建任务或日程。')
 }
 
 export function clearConfirmIntent(
@@ -161,6 +161,18 @@ export function clearConfirmIntent(
       value.expectedUserId === userId &&
       value.suggestionId === suggestionId &&
       value.requestId === requestId)
+}
+
+export function resetConfirmIntent(
+  userId: string,
+  serverBinding: string,
+  suggestionId: string,
+) {
+  try {
+    window.localStorage.removeItem(confirmIntentScope(userId, serverBinding, suggestionId))
+  } catch {
+    // Best effort: a blocked localStorage entry must not become a permanent lock.
+  }
 }
 
 function save(key: string, value: unknown, error: string): string | null {

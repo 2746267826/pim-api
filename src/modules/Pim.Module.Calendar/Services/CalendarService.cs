@@ -559,19 +559,45 @@ public class CalendarService
     private static string? Truncate(string? value, int maxLength) =>
         value is not null && value.Length > maxLength ? value[..maxLength] : value;
 
-    private async Task<CalendarEntity> GetOrCreateDefaultCalendarAsync(string kind, CancellationToken ct)
+    private Task<CalendarEntity> GetOrCreateDefaultCalendarAsync(string kind, CancellationToken ct)
+        => GetOrCreateDefaultCalendarAsync(UserId, kind, ct);
+
+    private Task<CalendarEntity> GetOrCreateDefaultCalendarAsync(
+        Guid owner, string kind, CancellationToken ct)
+    {
+        if (!_db.Database.IsNpgsql())
+            return GetOrCreateDefaultCalendarCoreAsync(owner, kind, ct);
+
+        if (_db.Database.CurrentTransaction is not null)
+            return GetOrCreateDefaultCalendarInExistingTransactionAsync(owner, kind, ct);
+
+        return TaskRowLock.WithDefaultCalendarLockAsync(
+            _db, owner, () => GetOrCreateDefaultCalendarCoreAsync(owner, kind, ct), ct);
+    }
+
+    private async Task<CalendarEntity> GetOrCreateDefaultCalendarInExistingTransactionAsync(
+        Guid owner, string kind, CancellationToken ct)
+    {
+        await TaskRowLock.AcquireDefaultCalendarLockAsync(_db, owner, ct);
+        return await GetOrCreateDefaultCalendarCoreAsync(owner, kind, ct);
+    }
+
+    private async Task<CalendarEntity> GetOrCreateDefaultCalendarCoreAsync(
+        Guid owner, string kind, CancellationToken ct)
     {
         var calendar = await _db.Set<CalendarEntity>()
-            .FirstOrDefaultAsync(c => c.UserId == UserId && c.Kind == kind && c.IsDefault, ct)
+            .FirstOrDefaultAsync(c => c.UserId == owner && c.Kind == kind && c.IsDefault, ct)
             ?? await _db.Set<CalendarEntity>()
-                .FirstOrDefaultAsync(c => c.UserId == UserId && c.Kind == kind, ct);
+                .OrderBy(c => c.CreatedAt)
+                .ThenBy(c => c.Id)
+                .FirstOrDefaultAsync(c => c.UserId == owner && c.Kind == kind, ct);
 
         if (calendar is not null)
             return calendar;
 
         calendar = new CalendarEntity
         {
-            UserId = UserId,
+            UserId = owner,
             Name = kind == "task" ? "默认任务" : "默认日历",
             Kind = kind,
             Color = "#3B82F6",
@@ -582,6 +608,21 @@ public class CalendarService
         await _db.SaveChangesAsync(ct);
         return calendar;
     }
+
+    /// <summary>
+    /// Resolve the same default event calendar used by <see cref="CreateEventAsync"/>.
+    /// Suggestion fingerprints need this stable id before the event is created.
+    /// </summary>
+    public async Task<Guid> GetOrCreateDefaultEventCalendarIdAsync(CancellationToken ct) =>
+        (await GetOrCreateDefaultCalendarAsync("calendar", ct)).Id;
+
+    /// <summary>
+    /// Resolve the same default event calendar for a background job that carries the owner id
+    /// instead of an authenticated <see cref="ICurrentUserService"/> context.
+    /// </summary>
+    public async Task<Guid> GetOrCreateDefaultEventCalendarIdAsync(
+        Guid owner, CancellationToken ct) =>
+        (await GetOrCreateDefaultCalendarAsync(owner, "calendar", ct)).Id;
 
     public async Task<EventResponse> UpdateEventAsync(Guid id, UpdateEventRequest request, CancellationToken ct)
         => await UpdateEventAsync(id, request, null, null, ct);

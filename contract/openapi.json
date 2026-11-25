@@ -19307,6 +19307,16 @@
             "nullable": true,
             "type": "string"
           },
+          "end": {
+            "format": "date-time",
+            "nullable": true,
+            "type": "string"
+          },
+          "eventId": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          },
           "extractionId": {
             "format": "uuid",
             "type": "string"
@@ -19314,6 +19324,9 @@
           "id": {
             "format": "uuid",
             "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/NoteTaskSuggestionKindDto"
           },
           "noteId": {
             "format": "uuid",
@@ -19345,6 +19358,11 @@
           "sourceManifestSha256": {
             "type": "string"
           },
+          "start": {
+            "format": "date-time",
+            "nullable": true,
+            "type": "string"
+          },
           "status": {
             "$ref": "#/components/schemas/NoteTaskSuggestionStatusDto"
           },
@@ -19355,6 +19373,10 @@
           },
           "taskId": {
             "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          },
+          "timeZoneId": {
             "nullable": true,
             "type": "string"
           },
@@ -19375,6 +19397,7 @@
           "createdAt",
           "extractionId",
           "id",
+          "kind",
           "noteId",
           "ordinal",
           "priority",
@@ -19565,6 +19588,13 @@
           "Running",
           "Succeeded",
           "Failed"
+        ],
+        "type": "string"
+      },
+      "NoteTaskSuggestionKindDto": {
+        "enum": [
+          "Task",
+          "Event"
         ],
         "type": "string"
       },
@@ -26101,6 +26131,11 @@
             "nullable": true,
             "type": "string"
           },
+          "end": {
+            "format": "date-time",
+            "nullable": true,
+            "type": "string"
+          },
           "expectedRevision": {
             "format": "uuid",
             "type": "string"
@@ -26109,8 +26144,18 @@
             "format": "int32",
             "type": "integer"
           },
+          "start": {
+            "format": "date-time",
+            "nullable": true,
+            "type": "string"
+          },
           "taskBookId": {
             "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          },
+          "timeZoneId": {
+            "maxLength": 100,
             "nullable": true,
             "type": "string"
           },

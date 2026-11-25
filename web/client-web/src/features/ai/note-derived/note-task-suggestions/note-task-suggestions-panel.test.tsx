@@ -3,6 +3,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { ApiError } from '@/api/client'
 import { NoteTaskSuggestionsPanel } from './note-task-suggestions-panel'
 import {
   confirmIntentScope,
@@ -28,8 +29,12 @@ const api = vi.hoisted(() => ({
   confirm: vi.fn(),
   dismiss: vi.fn(),
 }))
+const calendarApi = vi.hoisted(() => ({
+  list: vi.fn(),
+}))
 vi.mock('../api', () => ({ noteDerivedApi: derived }))
 vi.mock('./api', () => ({ noteTaskSuggestionsApi: api }))
+vi.mock('@/features/calendar/api', () => ({ calendarsApi: calendarApi }))
 
 beforeAll(() => {
   if (!HTMLElement.prototype.hasPointerCapture) HTMLElement.prototype.hasPointerCapture = () => false
@@ -90,8 +95,11 @@ const suggestion: NoteTaskSuggestion = {
   description: '报价单需要在下午前核对。',
   dismissedAt: null,
   due: null,
+  end: null,
+  eventId: null,
   extractionId,
   id: suggestionId,
+  kind: 'Task',
   noteId,
   ordinal: 0,
   priority: 5,
@@ -100,9 +108,11 @@ const suggestion: NoteTaskSuggestion = {
   sourceGenerationTaskId: null,
   sourceInputSha256: version.inputSha256,
   sourceManifestSha256: version.manifestSha256,
+  start: null,
   status: 'Draft',
   taskBookId: null,
   taskId: null,
+  timeZoneId: null,
   title: '发送客户报价单',
   updatedAt: '2026-11-01T10:01:00Z',
   versionId,
@@ -179,6 +189,18 @@ beforeEach(() => {
   api.list.mockResolvedValue({ total: 0, items: [] })
   api.startExtraction.mockResolvedValue(extraction)
   api.extraction.mockResolvedValue(extraction)
+  calendarApi.list.mockResolvedValue([{
+    id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    name: '默认日历',
+    color: '#3B82F6',
+    kind: 'calendar',
+    isDefault: true,
+    eventCount: 0,
+    source: 'pim',
+    outlookCalendarBindingId: null,
+    canEdit: true,
+    defaultMuted: false,
+  }])
 })
 
 afterEach(() => {
@@ -192,13 +214,13 @@ describe('NoteTaskSuggestionsPanel', () => {
     await chooseDestination()
     expect(api.startExtraction).not.toHaveBeenCalled()
     expect((screen.getByRole('button', {
-      name: '确认并提取任务建议',
+      name: '确认并提取任务与日程建议',
     }) as HTMLButtonElement).disabled).toBe(true)
 
     await userEvent.click(screen.getByRole('checkbox', {
       name: /确认将固定版本完整正文发送到所选文本模型/,
     }))
-    await userEvent.click(screen.getByRole('button', { name: '确认并提取任务建议' }))
+    await userEvent.click(screen.getByRole('button', { name: '确认并提取任务与日程建议' }))
 
     await waitFor(() => expect(api.startExtraction).toHaveBeenCalledOnce())
     expect(api.startExtraction).toHaveBeenCalledWith(expect.objectContaining({
@@ -222,7 +244,7 @@ describe('NoteTaskSuggestionsPanel', () => {
     api.startExtraction.mockRejectedValueOnce(new Error('response lost'))
     page()
     await chooseAndConfirmCharge()
-    await userEvent.click(screen.getByRole('button', { name: '确认并提取任务建议' }))
+    await userEvent.click(screen.getByRole('button', { name: '确认并提取任务与日程建议' }))
 
     expect(await screen.findByText(/已冻结请求标识/)).toBeTruthy()
     const firstRequestId = api.startExtraction.mock.calls[0]?.[0].requestId
@@ -276,6 +298,84 @@ describe('NoteTaskSuggestionsPanel', () => {
     expect(localStorage.getItem(confirmIntentScope(userId, serverBinding, suggestionId))).toContain(oldRequestId)
   })
 
+  it('restores the server suggestion fields when an edit is cancelled', async () => {
+    api.list.mockResolvedValue({ total: 1, items: [suggestion] })
+    page()
+
+    await userEvent.click(await screen.findByRole('button', { name: '编辑' }))
+    const title = screen.getByLabelText('任务标题') as HTMLInputElement
+    fireEvent.change(title, { target: { value: '尚未保存的本地标题' } })
+    expect(title.value).toBe('尚未保存的本地标题')
+
+    await userEvent.click(screen.getByRole('button', { name: '取消' }))
+    await userEvent.click(screen.getByRole('button', { name: '编辑' }))
+
+    expect((screen.getByLabelText('任务标题') as HTMLInputElement).value)
+      .toBe(suggestion.title)
+  })
+
+  it('recovers a malformed local confirm intent only after checking the server', async () => {
+    api.list.mockResolvedValue({ total: 1, items: [suggestion] })
+    api.get.mockResolvedValue(suggestion)
+    localStorage.setItem(confirmIntentScope(userId, serverBinding, suggestionId), '{broken-json')
+    page()
+
+    expect(await screen.findByText(/确认请求无法读取/)).toBeTruthy()
+    expect((screen.getByRole('button', { name: '编辑' }) as HTMLButtonElement).disabled)
+      .toBe(true)
+    await userEvent.click(screen.getByRole('button', { name: '核对服务器状态' }))
+
+    await waitFor(() => expect(api.get).toHaveBeenCalledWith(suggestionId))
+    expect(localStorage.getItem(confirmIntentScope(userId, serverBinding, suggestionId))).toBeNull()
+    expect((screen.getByRole('button', { name: '编辑' }) as HTMLButtonElement).disabled)
+      .toBe(false)
+    expect(await screen.findByText(/服务器仍为待确认/)).toBeTruthy()
+  })
+
+  it('clears a stale-revision confirm intent after checking the server revision', async () => {
+    const oldRevision = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    const oldRequestId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+    api.list.mockResolvedValue({ total: 1, items: [suggestion] })
+    api.get.mockResolvedValue(suggestion)
+    expect(saveConfirmIntent(
+      userId, serverBinding, suggestionId, oldRevision, oldRequestId)).toBeNull()
+    page()
+
+    expect(await screen.findByText(/属于该建议的旧修订/)).toBeTruthy()
+    await userEvent.click(screen.getByRole('button', { name: '核对服务器状态' }))
+
+    await waitFor(() => expect(api.get).toHaveBeenCalledOnce())
+    expect(localStorage.getItem(confirmIntentScope(userId, serverBinding, suggestionId))).toBeNull()
+    expect(await screen.findByText(/服务器仍为待确认/)).toBeTruthy()
+    expect((screen.getByRole('button', { name: '编辑' }) as HTMLButtonElement).disabled)
+      .toBe(false)
+  })
+
+  it('offers server reconciliation after a duplicate confirm 409', async () => {
+    api.list.mockResolvedValue({ total: 1, items: [suggestion] })
+    api.get.mockResolvedValue(suggestion)
+    api.confirm.mockRejectedValue(
+      new ApiError('同一笔记中已确认相同的事项；本次未重复创建。', 40901, 409))
+    page()
+
+    await userEvent.click(await screen.findByRole('button', { name: '确认创建任务' }))
+    await userEvent.click(screen.getByRole('button', { name: '再次点击创建任务' }))
+
+    expect(await screen.findByText(/服务器拒绝了本次确认/)).toBeTruthy()
+    expect((screen.getByRole('button', { name: '编辑' }) as HTMLButtonElement).disabled)
+      .toBe(true)
+    expect(localStorage.getItem(confirmIntentScope(userId, serverBinding, suggestionId)))
+      .not.toBeNull()
+
+    await userEvent.click(screen.getByRole('button', { name: '核对服务器状态' }))
+
+    await waitFor(() => expect(api.get).toHaveBeenCalledOnce())
+    expect(localStorage.getItem(confirmIntentScope(userId, serverBinding, suggestionId))).toBeNull()
+    expect((screen.getByRole('button', { name: '编辑' }) as HTMLButtonElement).disabled)
+      .toBe(false)
+    expect(await screen.findByText(/服务器仍为待确认/)).toBeTruthy()
+  })
+
   it('keeps edit and dismiss failures visible without turning the suggestion into success', async () => {
     api.list.mockResolvedValue({ total: 1, items: [suggestion] })
     api.update.mockRejectedValue(new Error('任务建议已被修改，请刷新后重试'))
@@ -327,5 +427,150 @@ describe('NoteTaskSuggestionsPanel', () => {
     expect(screen.getByText('已放弃')).toBeTruthy()
     expect(screen.queryByRole('button', { name: '确认创建任务' })).toBeNull()
     expect(screen.queryByRole('button', { name: '编辑' })).toBeNull()
+  })
+
+  it('shows event suggestions in their IANA zone and offers editing and creation', async () => {
+    api.list.mockResolvedValue({
+      total: 1,
+      items: [{
+        ...suggestion,
+        id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+        kind: 'Event',
+        start: '2026-11-21T11:00:00Z',
+        end: '2026-11-21T12:00:00Z',
+        timeZoneId: 'Asia/Shanghai',
+        title: '机器学习答疑',
+      }],
+    })
+    page()
+
+    expect(await screen.findByText(/日程时间：/)).toBeTruthy()
+    expect(screen.getByText('日程时间：2026-11-21 19:00–20:00 · Asia/Shanghai')).toBeTruthy()
+    expect(screen.getByRole('button', { name: '编辑' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: '确认创建日程' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: '确认创建任务' })).toBeNull()
+    expect(screen.queryByText(/暂不支持/)).toBeNull()
+    expect(api.confirm).not.toHaveBeenCalled()
+  })
+
+  it('saves event wall-clock edits as UTC with the declared IANA zone and target calendar', async () => {
+    const event = {
+      ...suggestion,
+      id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+      kind: 'Event' as const,
+      start: '2026-11-21T11:00:00Z',
+      end: '2026-11-21T12:00:00Z',
+      timeZoneId: 'Asia/Shanghai',
+      title: '机器学习答疑',
+    }
+    api.list.mockResolvedValue({ total: 1, items: [event] })
+    api.update.mockResolvedValue({ ...event, revision: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee' })
+    page()
+
+    await userEvent.click(await screen.findByRole('button', { name: '编辑' }))
+    expect((screen.getByLabelText('开始时间') as HTMLInputElement).value)
+      .toBe('2026-11-21T19:00')
+    expect((screen.getByLabelText('结束时间') as HTMLInputElement).value)
+      .toBe('2026-11-21T20:00')
+    expect((screen.getByLabelText('IANA 时区') as HTMLInputElement).value)
+      .toBe('Asia/Shanghai')
+
+    fireEvent.change(screen.getByLabelText('开始时间'), { target: { value: '2026-11-21T20:00' } })
+    fireEvent.change(screen.getByLabelText('结束时间'), { target: { value: '2026-11-21T21:00' } })
+    await userEvent.click(screen.getByRole('button', { name: '保存修订' }))
+
+    await waitFor(() => expect(api.update).toHaveBeenCalledOnce())
+    expect(api.update).toHaveBeenCalledWith(event.id, expect.objectContaining({
+      due: null,
+      taskBookId: null,
+      start: '2026-11-21T12:00:00.000Z',
+      end: '2026-11-21T13:00:00.000Z',
+      timeZoneId: 'Asia/Shanghai',
+    }))
+    expect(await screen.findByText(/建议已保存/)).toBeTruthy()
+  })
+
+  it('confirms a stored absolute event without a zone but rejects invalid edits and DST gaps', async () => {
+    const event = {
+      ...suggestion,
+      id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+      kind: 'Event' as const,
+      start: '2026-03-08T07:30:00Z',
+      end: '2026-03-08T08:30:00Z',
+      timeZoneId: null,
+      title: '夏令时边界日程',
+    }
+    api.list.mockResolvedValue({ total: 1, items: [event] })
+    page()
+
+    expect(await screen.findByText(/时区未知/)).toBeTruthy()
+    expect(screen.getByText(/将按服务端已保存的绝对时间创建/)).toBeTruthy()
+    expect((screen.getByRole('button', { name: '确认创建日程' }) as HTMLButtonElement)
+      .disabled).toBe(false)
+
+    await userEvent.click(screen.getByRole('button', { name: '编辑' }))
+    await userEvent.type(screen.getByLabelText('IANA 时区'), 'America/New_York')
+    fireEvent.change(screen.getByLabelText('开始时间'), { target: { value: '2026-03-08T02:30' } })
+    fireEvent.change(screen.getByLabelText('结束时间'), { target: { value: '2026-03-08T03:30' } })
+    await userEvent.click(screen.getByRole('button', { name: '保存修订' }))
+
+    expect(await screen.findByText(/该时间在所选时区不存在/)).toBeTruthy()
+    expect(api.update).not.toHaveBeenCalled()
+
+    fireEvent.change(screen.getByLabelText('IANA 时区'), { target: { value: 'Mars/Olympus' } })
+    await userEvent.click(screen.getByRole('button', { name: '保存修订' }))
+    expect(await screen.findByText('日程时区必须是有效的 IANA 时区。')).toBeTruthy()
+    expect(api.update).not.toHaveBeenCalled()
+  })
+
+  it('blocks an event without a zone when no complete stored range exists', async () => {
+    api.list.mockResolvedValue({
+      total: 1,
+      items: [{
+        ...suggestion,
+        id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+        kind: 'Event',
+        start: null,
+        end: null,
+        timeZoneId: null,
+        title: '缺少时间的日程',
+      }],
+    })
+    page()
+
+    expect(await screen.findByText(/日程缺少 IANA 时区且时间不完整/)).toBeTruthy()
+    expect((screen.getByRole('button', { name: '确认创建日程' }) as HTMLButtonElement)
+      .disabled).toBe(true)
+  })
+
+  it('confirms an event with the frozen request id instead of creating a task', async () => {
+    const event = {
+      ...suggestion,
+      id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+      kind: 'Event' as const,
+      start: '2026-11-21T11:00:00Z',
+      end: '2026-11-21T12:00:00Z',
+      timeZoneId: 'Asia/Shanghai',
+      title: '机器学习答疑',
+    }
+    api.list.mockResolvedValue({ total: 1, items: [event] })
+    api.confirm.mockResolvedValue({
+      ...event,
+      calendarId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      eventId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+      status: 'Confirmed',
+    })
+    page()
+
+    await userEvent.click(await screen.findByRole('button', { name: '确认创建日程' }))
+    await userEvent.click(screen.getByRole('button', { name: '再次点击创建日程' }))
+
+    await waitFor(() => expect(api.confirm).toHaveBeenCalledOnce())
+    expect(api.confirm).toHaveBeenCalledWith(event.id, expect.objectContaining({
+      expectedRevision: event.revision,
+      requestId: expect.stringMatching(/^[0-9a-f-]{36}$/),
+    }))
+    expect(await screen.findByText(/已在目标日历创建日程/)).toBeTruthy()
+    expect(screen.queryByText(/创建任务/)).toBeNull()
   })
 })
