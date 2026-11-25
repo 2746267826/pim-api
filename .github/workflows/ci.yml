@@ -50,6 +50,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.ver.outputs.version }}
+      display_version: ${{ steps.ver.outputs.display_version }}
       version_code: ${{ steps.ver.outputs.version_code }}
       artifact_slug: ${{ steps.ver.outputs.artifact_slug }}
       git_sha_short: ${{ steps.ver.outputs.git_sha_short }}

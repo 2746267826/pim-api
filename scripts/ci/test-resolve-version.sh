@@ -140,6 +140,31 @@ else
   echo "OK   action-outputs-declared ($declared_keys keys)"
 fi
 
+# ---- ci.yml 的 resolve-version job 必须把这些键透出去 ----
+# 只有 action.yml 声明还不够：job 的 outputs 里漏掉一行，`needs.resolve-version.outputs.X`
+# 就是空字符串（真实踩过：display_version 漏映射 → 前端拿到空的显示版本号）。
+CI_YML="$ROOT/.github/workflows/ci.yml"
+missing_job=""
+job_keys=0
+while IFS= read -r key; do
+  [[ -z "$key" ]] && continue
+  job_keys=$((job_keys + 1))
+  if ! grep -qE "steps\.ver\.outputs\.${key}\b" "$CI_YML"; then
+    missing_job="$missing_job $key"
+  fi
+done < <(env GITHUB_REPOSITORY=2746267826/pim-api GITHUB_REF=refs/heads/master \
+             GITHUB_RUN_NUMBER=42 GITHUB_SHA=abcdef1 GITHUB_EVENT_NAME=push \
+             bash "$SCRIPT" --date 2026-07-12 --print-env | sed 's/=.*//')
+if [[ "$job_keys" -eq 0 ]]; then
+  echo "FAIL ci.yml-job-outputs: 脚本没有输出任何键，检查本身失效"
+  fail=1
+elif [[ -n "$missing_job" ]]; then
+  echo "FAIL ci.yml 的 resolve-version job 没透出:$missing_job"
+  fail=1
+else
+  echo "OK   ci.yml-job-outputs ($job_keys keys)"
+fi
+
 if [[ "$fail" -ne 0 ]]; then
   echo "resolve-version tests failed"
   exit 1
