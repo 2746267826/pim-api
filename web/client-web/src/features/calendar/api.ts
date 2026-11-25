@@ -50,6 +50,8 @@ export const domainProjectsApi = {
 /* 双态端点：固定带 page/pageSize 命中 PagedResult 分支（02 §日历网格） */
 
 export const eventsApi = {
+  get: (id: string, options?: FetchOptions) =>
+    apiGet<EventResponse>(`/api/v1/calendar/events/${id}`, options),
   listPaged: (params: { start: string; end: string; page?: number; pageSize?: number }) => {
     const q = new URLSearchParams({
       start: params.start,
@@ -108,6 +110,8 @@ function buildTasksQuery(params: TasksPagedParams): string {
 }
 
 export const tasksApi = {
+  get: (id: string, options?: FetchOptions) =>
+    apiGet<TaskResponse>(`/api/v1/calendar/tasks/${id}`, options),
   listPaged: (params: TasksPagedParams) => {
     const q = buildTasksQuery(params)
     return apiGet<PagedResult<TaskResponse>>(`/api/v1/calendar/tasks${q ? `?${q}` : ''}`)

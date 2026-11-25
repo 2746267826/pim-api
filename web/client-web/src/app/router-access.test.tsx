@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest'
 import type { RouteObject } from 'react-router'
 import { router } from './router'
 import { RequireAdmin } from './guards'
+import { NAV_GROUPS } from './nav'
 
 function findRoute(
   routes: RouteObject[],
@@ -32,5 +33,15 @@ describe('application route access', () => {
     expect(found).not.toBeNull()
     expect(found?.ancestors.some((route) =>
       isValidElement(route.element) && route.element.type === RequireAdmin)).toBe(true)
+  })
+
+  it('puts global search in the regular work navigation without an admin guard', () => {
+    const found = findRoute(router.routes, 'search')
+    expect(found).not.toBeNull()
+    expect(found?.route.element).toBeTruthy()
+    expect(found?.ancestors.some((route) =>
+      isValidElement(route.element) && route.element.type === RequireAdmin)).toBe(false)
+    const work = NAV_GROUPS.find((group) => group.label === '工作')
+    expect(work?.items).toContainEqual(expect.objectContaining({ to: '/search', label: '搜索' }))
   })
 })

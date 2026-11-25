@@ -11,6 +11,7 @@ import {
   Monitor,
   NotebookPen,
   Repeat,
+  Search,
   Settings,
   ShieldCheck,
   Smartphone,
@@ -31,12 +32,13 @@ export interface NavGroup {
   items: NavItem[]
 }
 
-/** 一级导航 16 项，按 v0.2 页面设计分 5 组 */
+/** 一级导航 17 项，按 v0.2 页面设计分 5 组 */
 export const NAV_GROUPS: NavGroup[] = [
   {
     label: '工作',
     items: [
       { to: '/today', label: '今日', icon: Sunrise },
+      { to: '/search', label: '搜索', icon: Search },
       { to: '/calendar', label: '日历', icon: Calendar },
       { to: '/workbench', label: '工作台', icon: LayoutDashboard },
       { to: '/tasks', label: '任务', icon: CheckSquare },

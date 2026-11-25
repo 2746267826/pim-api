@@ -27,15 +27,18 @@ export class ApiError extends Error {
 
   /** 已真实收到的网关响应头标识；仅用于传输证据，不推断 provider 结果。 */
   readonly gatewayName: string | null
+  /** 服务端请求关联编号；仅来自 X-Correlation-Id 响应头。 */
+  readonly correlationId: string | null
 
   constructor(message: string, code = -1, status = 0, retryAfterMs: number | null = null,
-    gatewayName: string | null = null) {
+    gatewayName: string | null = null, correlationId: string | null = null) {
     super(message)
     this.name = 'ApiError'
     this.code = code
     this.status = status
     this.retryAfterMs = retryAfterMs
     this.gatewayName = gatewayName
+    this.correlationId = correlationId
   }
 }
 
@@ -351,6 +354,7 @@ export async function apiFetch<T>(
     res.status === 429 && !allow.has(429) ? parseRetryAfter(res.headers.get('retry-after')) : null
   const gatewayName = (res.headers.get('x-gateway-name') ??
     res.headers.get('via') ?? res.headers.get('server'))?.trim().slice(0, 200) || null
+  const correlationId = res.headers.get('x-correlation-id')?.trim().slice(0, 128) || null
   const withWait = (message: string): string =>
     retryAfterMs === null ? message : `${message}（服务端要求等待约 ${formatRetryAfter(retryAfterMs)}）`
 
@@ -361,7 +365,7 @@ export async function apiFetch<T>(
   assertRequestActive(opts)
   if (contentType.includes('text/html') || (!contentType.includes('json') && text.trimStart().startsWith('<'))) {
     throw new ApiError('接口返回了 HTML 而非 JSON：服务器地址可能不正确，或后端未启动', -1,
-      res.status, retryAfterMs, gatewayName)
+      res.status, retryAfterMs, gatewayName, correlationId)
   }
 
   let body: unknown = undefined
@@ -369,7 +373,7 @@ export async function apiFetch<T>(
     try {
       body = JSON.parse(text)
     } catch {
-      throw new ApiError('响应不是合法 JSON', -1, res.status, retryAfterMs, gatewayName)
+      throw new ApiError('响应不是合法 JSON', -1, res.status, retryAfterMs, gatewayName, correlationId)
     }
   }
 
@@ -384,6 +388,7 @@ export async function apiFetch<T>(
         res.status,
         retryAfterMs,
         gatewayName,
+        correlationId,
       )
     }
     return envelope.data as T
@@ -392,7 +397,7 @@ export async function apiFetch<T>(
   // 裸对象端点（/api/version、/api/client/shell/latest 等，非 ApiResponse 封装）
   if (!statusOk) {
     throw new ApiError(withWait(`请求失败（HTTP ${res.status}）`), -1, res.status, retryAfterMs,
-      gatewayName)
+      gatewayName, correlationId)
   }
   return body as T
 }

@@ -248,6 +248,41 @@ public sealed class NoteDerivedStore(IOptions<NoteMaterialUploadOptions> options
         return result;
     }
 
+    internal async Task<IReadOnlyDictionary<Guid, NoteDerivedSearchSnapshot>> ListSearchSnapshotsAsync(
+        Guid owner, CancellationToken ct)
+    {
+        await using var lease = await LockAsync(owner, ct);
+        var result = new Dictionary<Guid, NoteDerivedSearchSnapshot>();
+        var root = ArtifactsFolder(owner);
+        if (!Directory.Exists(root)) return result;
+
+        foreach (var noteFolder in Directory.EnumerateDirectories(root))
+        {
+            if (!Guid.TryParseExact(Path.GetFileName(noteFolder), "D", out var noteId)) continue;
+            var record = "";
+            var analysis = "";
+            var updatedAt = DateTimeOffset.MinValue;
+            foreach (var kind in Enum.GetValues<NoteDerivedArtifactKind>())
+            {
+                var path = ArtifactPath(owner, noteId, kind);
+                if (!File.Exists(path)) continue;
+                var artifact = await ReadArtifactFileAsync(path, owner, noteId, kind, ct);
+                if (artifact.HeadVersionId is not { } headVersionId) continue;
+                var version = await TryReadVersionAsync(owner, artifact, headVersionId, ct);
+                if (version is null) continue;
+                if (kind == NoteDerivedArtifactKind.CompleteRecord)
+                    record = version.ContentMarkdown;
+                else
+                    analysis = version.ContentMarkdown;
+                if (version.CreatedAt > updatedAt) updatedAt = version.CreatedAt;
+                if (artifact.UpdatedAt > updatedAt) updatedAt = artifact.UpdatedAt;
+            }
+            if (record.Length > 0 || analysis.Length > 0)
+                result[noteId] = new NoteDerivedSearchSnapshot(record, analysis, updatedAt);
+        }
+        return result;
+    }
+
     internal async Task<NoteDerivedVersionState> AppendGeneratedAsync(Guid owner, Guid artifactId,
         NoteDerivedVersionDraft draft, CancellationToken ct)
     {
@@ -760,3 +795,8 @@ public sealed class NoteDerivedStore(IOptions<NoteMaterialUploadOptions> options
 
     private sealed record ArtifactLocator(Guid ArtifactId, Guid NoteId, NoteDerivedArtifactKind Kind);
 }
+
+internal sealed record NoteDerivedSearchSnapshot(
+    string CompleteRecord,
+    string IndependentAnalysis,
+    DateTimeOffset UpdatedAt);

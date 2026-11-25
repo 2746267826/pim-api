@@ -105,6 +105,26 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
         return new(candidates.Length, offset, page);
     }
 
+    internal async Task<IReadOnlyList<NativeNoteSearchSource>> ListSearchSourcesAsync(
+        Guid userId, CancellationToken ct = default)
+    {
+        await using var lease = await LockAsync(userId, ct);
+        var ledger = await LoadLedgerAsync(userId, ct);
+        await PruneAsync(userId, ledger, ct);
+        var result = new List<NativeNoteSearchSource>();
+        foreach (var head in ledger.Heads)
+        {
+            if (!Guid.TryParseExact(head.Key, "D", out var noteId)) continue;
+            if (!ledger.Versions.TryGetValue(Key(head.Value), out var version) ||
+                version.NoteId != noteId || version.Phase != "Uploaded")
+                continue;
+            var request = await RequestAsync(userId, head.Value, ct);
+            result.Add(new NativeNoteSearchSource(noteId, head.Value, request.InputJson,
+                version.CreatedAt, version.HasConflict));
+        }
+        return result;
+    }
+
     public async Task<NoteMaterialVersionDto> GetCurrentAsync(Guid userId, Guid noteId, CancellationToken ct = default)
     {
         await using var lease = await LockAsync(userId, ct);
@@ -639,3 +659,10 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
     private sealed record StoredVersion(Guid NoteId, Guid? BaseVersionId, string Fingerprint, long SizeBytes,
         DateTimeOffset CreatedAt, DateTimeOffset ExpiresAt, string Phase, bool HasConflict = false);
 }
+
+internal sealed record NativeNoteSearchSource(
+    Guid NoteId,
+    Guid VersionId,
+    string InputJson,
+    DateTimeOffset CreatedAt,
+    bool HasConflict);

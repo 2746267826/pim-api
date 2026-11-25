@@ -1,5 +1,7 @@
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { deferredIntervalMs, standardIntervalMs } from '@/lib/polling'
+import { useApiBaseBinding } from '@/lib/use-api-base-binding'
+import { useAuth } from '@/features/auth/auth-context'
 import { calendarsApi, checklistApi, domainProjectsApi, eventsApi, layersApi, reportsApi, segmentsApi, taskBooksApi, taskTimerApi, tasksApi } from './api'
 import type { components } from '@/api/generated'
 import type { TaskResponse, TasksPagedParams } from './types'
@@ -11,7 +13,11 @@ export const calendarKeys = {
   calendars: (kind?: string) => ['calendar', 'calendars', kind ?? 'all'] as const,
   taskBooks: ['calendar', 'task-books'] as const,
   events: (start: string, end: string) => ['calendar', 'events', start, end] as const,
+  eventDetail: (ownerId: string, serverBinding: string, eventId: string) =>
+    ['calendar', 'events', 'detail', ownerId, serverBinding, eventId] as const,
   tasks: (params: TasksPagedParams) => ['calendar', 'tasks', 'paged', params] as const,
+  taskDetail: (ownerId: string, serverBinding: string, taskId: string) =>
+    ['calendar', 'tasks', 'detail', ownerId, serverBinding, taskId] as const,
   tasksAll: ['calendar', 'tasks', 'all'] as const,
   layers: (start: string, end: string, layers: string, outlookOnly: boolean) =>
     ['calendar', 'layers', start, end, layers, outlookOnly] as const,
@@ -28,7 +34,9 @@ function invalidateCalendar(qc: ReturnType<typeof useQueryClient>, extra: readon
     calendarKeys.taskBooks,
     calendarKeys.tasksAll,
     ['calendar', 'events'],
+    ['calendar', 'events', 'detail'],
     ['calendar', 'tasks', 'paged'],
+    ['calendar', 'tasks', 'detail'],
     ['calendar', 'layers'],
     ['calendar', 'task-segments'],
     ['calendar', 'task-timer'],
@@ -63,6 +71,17 @@ export function useEvents(start: string, end: string, enabled = true) {
     queryFn: () => eventsApi.listPaged({ start, end, page: 1, pageSize: 100 }),
     enabled,
     refetchInterval: () => deferredIntervalMs(),
+  })
+}
+
+export function useEventDetail(eventId: string | null) {
+  const { user } = useAuth()
+  const serverBinding = useApiBaseBinding()
+  return useQuery({
+    queryKey: calendarKeys.eventDetail(user?.id ?? '', serverBinding, eventId ?? ''),
+    queryFn: ({ signal }) => eventsApi.get(eventId!, { signal }),
+    enabled: user != null && eventId != null,
+    retry: false,
   })
 }
 
@@ -132,6 +151,17 @@ export function useTasksPaged(params: TasksPagedParams) {
   return useQuery({
     queryKey: calendarKeys.tasks(params),
     queryFn: () => tasksApi.listPaged(params),
+  })
+}
+
+export function useTaskDetail(taskId: string | null) {
+  const { user } = useAuth()
+  const serverBinding = useApiBaseBinding()
+  return useQuery({
+    queryKey: calendarKeys.taskDetail(user?.id ?? '', serverBinding, taskId ?? ''),
+    queryFn: ({ signal }) => tasksApi.get(taskId!, { signal }),
+    enabled: user != null && taskId != null,
+    retry: false,
   })
 }
 

@@ -79,6 +79,27 @@ describe('apiFetch 基础行为', () => {
     expect((err as ApiError).status).toBe(400)
   })
 
+  it('业务错误保留 X-Correlation-Id 供全局搜索失败详情展示', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(
+        JSON.stringify({ code: 50001, message: '搜索服务暂时不可用', data: null }),
+        {
+          status: 503,
+          headers: {
+            'content-type': 'application/json',
+            'x-correlation-id': 'corr-client-q08',
+          },
+        },
+      )),
+    )
+
+    const err = await apiFetch('/api/v1/search?q=x').catch((error) => error)
+
+    expect(err).toBeInstanceOf(ApiError)
+    expect((err as ApiError).correlationId).toBe('corr-client-q08')
+  })
+
   it('204 返回 undefined', async () => {
     vi.stubGlobal(
       'fetch',
