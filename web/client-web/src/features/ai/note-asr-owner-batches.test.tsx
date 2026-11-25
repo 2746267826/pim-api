@@ -262,5 +262,7 @@ describe('NoteAsrOwnerBatches', () => {
     expect(screen.queryByText(task.taskId)).toBeNull()
     expect(screen.queryByText(/consent-2/)).toBeNull()
     expect(screen.queryByText(/asr\.example\.test/)).toBeNull()
+    expect(screen.queryByText(job.model)).toBeNull()
+    expect(screen.getByText('Batch 任务')).toBeTruthy()
   })
 })

@@ -33,7 +33,7 @@ function batchStatus(job: NoteAsrBatchJob): BatchStatusView {
 function toView(job: NoteAsrBatchJob, showVersionDetails: boolean): BatchJobView {
   return {
     id: job.id,
-    title: `Batch ${job.model}`,
+    title: showVersionDetails ? `Batch ${job.model}` : 'Batch 任务',
     status: batchStatus(job),
     createdAtLabel: dateTime(job.createdAt),
     destinationLabel: showVersionDetails ? job.baseUrl : '已确认的云端 Batch 目标',
