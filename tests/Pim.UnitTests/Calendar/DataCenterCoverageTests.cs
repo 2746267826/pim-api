@@ -21,7 +21,7 @@ public class DataCenterCoverageTests
         await using var db = CreateDb();
         SeedFullDataCenterFixture(db);
         await db.SaveChangesAsync();
-        var service = new DataCenterQueryService(db, new FixedCurrentUserService(UserId));
+        var service = new DataCenterQueryService(db, new FixedCurrentUserService(UserId, "admin"));
 
         var result = await service.QueryAsync(
             new DataCenterQueryRequest(null, null, null, false, 1, 200),
@@ -63,14 +63,52 @@ public class DataCenterCoverageTests
             CreatedAt = DateTimeOffset.UtcNow
         };
         db.AuditVersions.Add(otherAudit);
+        db.Users.Add(new UserEntity
+        {
+            Id = UserId,
+            Username = "data-center-audit-isolation",
+            Email = "audit-isolation@example.com",
+            PasswordHash = "synthetic",
+            Role = "admin",
+            IsActive = true
+        });
         await db.SaveChangesAsync();
-        var service = new DataCenterQueryService(db, new FixedCurrentUserService(UserId));
+        var service = new DataCenterQueryService(db, new FixedCurrentUserService(UserId, "admin"));
 
         var result = await service.QueryAsync(
             new DataCenterQueryRequest(null, null, null, false, 1, 200),
             CancellationToken.None);
 
         Assert.DoesNotContain(result.Items, item => item.ObjectType == "audit-version");
+    }
+
+    [Fact]
+    public async Task OrdinaryUserDoesNotSeeAuditVersionsOrInternalSyncDiagnostics_AdminDoes()
+    {
+        await using var db = CreateDb();
+        SeedFullDataCenterFixture(db);
+        await db.SaveChangesAsync();
+
+        var ordinary = await new DataCenterQueryService(db, new FixedCurrentUserService(UserId))
+            .QueryAsync(new DataCenterQueryRequest(null, null, null, false, 1, 200));
+        Assert.DoesNotContain(ordinary.Items, item => item.ObjectType == "audit-version");
+        var directAuditQuery = await new DataCenterQueryService(db, new FixedCurrentUserService(UserId))
+            .QueryAsync(new DataCenterQueryRequest("audit-version", null, null, false, 1, 200));
+        Assert.Empty(directAuditQuery.Items);
+        Assert.Equal("同步冲突需核对", Assert.Single(ordinary.Items, item => item.ObjectType == "sync-conflict").Summary);
+        Assert.Equal("同步批次", Assert.Single(ordinary.Items, item => item.ObjectType == "sync-batch").Summary);
+        Assert.Equal("Task for Data Center coverage",
+            Assert.Single(ordinary.Items, item => item.ObjectType == "task-segment").Summary);
+
+        var admin = await new DataCenterQueryService(db, new FixedCurrentUserService(UserId, "admin"))
+            .QueryAsync(new DataCenterQueryRequest(null, null, null, false, 1, 200));
+        Assert.Contains(admin.Items, item => item.ObjectType == "audit-version");
+        Assert.Contains("internal-sync-detail",
+            Assert.Single(admin.Items, item => item.ObjectType == "sync-conflict").Summary);
+        Assert.Contains("read=1",
+            Assert.Single(admin.Items, item => item.ObjectType == "sync-batch").Summary);
+        Assert.Equal("coverage segment",
+            Assert.Single(admin.Items, item => item.ObjectType == "task-segment").Summary);
     }
 
     [Fact]
@@ -201,7 +239,9 @@ public class DataCenterCoverageTests
             ObjectId = activeEvent.Id,
             GraphEventId = "graph-event-coverage",
             ConflictKind = "both_sides_changed",
-            Status = "open"
+            Status = "open",
+            PimSnapshotJson = """{"diagnostic":"internal-sync-detail"}""",
+            ExternalSnapshotJson = """{"diagnostic":"external-sync-detail"}"""
         };
         var auditVersion = new AuditVersionEntity
         {
@@ -227,11 +267,20 @@ public class DataCenterCoverageTests
         db.Set<OutlookSyncBatchEntity>().Add(syncBatch);
         db.Set<SyncConflictEntity>().Add(syncConflict);
         db.AuditVersions.Add(auditVersion);
+        db.Users.Add(new UserEntity
+        {
+            Id = UserId,
+            Username = "data-center-coverage",
+            Email = "coverage@example.com",
+            PasswordHash = "synthetic",
+            Role = "admin",
+            IsActive = true
+        });
     }
 
-    private sealed class FixedCurrentUserService(Guid userId) : ICurrentUserService
+    private sealed class FixedCurrentUserService(Guid userId, string role = "user") : ICurrentUserService
     {
         public Guid? UserId { get; } = userId;
-        public string? Role => "user";
+        public string? Role { get; } = role;
     }
 }

@@ -1,7 +1,10 @@
 using System.Text.Json;
+using Microsoft.EntityFrameworkCore;
 using Pim.Api.Infrastructure;
 using Pim.Core.Common;
 using Pim.Core.Exceptions;
+using Pim.Infrastructure.Auth;
+using Pim.Infrastructure.Data;
 using Pim.Module.Files.Providers;
 using Pim.Module.Files.Providers.Abstractions;
 using Pim.Module.Files.Providers.Google;
@@ -35,9 +38,11 @@ public class ExceptionMiddleware
         }
         catch (DomainException ex)
         {
-            context.Response.StatusCode = ResolveDomainStatusCode(ex.ErrorCode);
+            var statusCode = ResolveDomainStatusCode(ex.ErrorCode);
+            context.Response.StatusCode = statusCode;
             context.Response.ContentType = "application/json";
-            var response = ApiResponse<string>.Error(ex.ErrorCode, ex.Message);
+            var response = ApiResponse<string>.Error(ex.ErrorCode,
+                await SanitizeDomainMessageAsync(context, ex.Message, statusCode));
             await context.Response.WriteAsync(JsonSerializer.Serialize(response, JsonOptions));
         }
         catch (OneDriveGraphException ex)
@@ -139,7 +144,12 @@ public class ExceptionMiddleware
             _logger.LogWarning(ex, "Bad HTTP request with correlation id {CorrelationId}: {Message}", correlationId, ex.Message);
             context.Response.StatusCode = StatusCodes.Status400BadRequest;
             context.Response.ContentType = "application/json";
-            var response = ApiResponse<string>.Error(40000, $"请求参数格式无效: {ex.Message}");
+            var nativeNotes = NoteErrorSanitizer.IsNativeNotesPath(context.Request.Path);
+            var includeDiagnostics = !nativeNotes || await IsCurrentActiveAdminAsync(context);
+            var message = nativeNotes
+                ? NoteErrorSanitizer.BadRequestMessage(ex.Message, includeDiagnostics)
+                : $"请求参数格式无效: {ex.Message}";
+            var response = ApiResponse<string>.Error(40000, message);
             await context.Response.WriteAsync(JsonSerializer.Serialize(response, JsonOptions));
         }
         catch (Exception ex) when (ClientAbort.IsClientAbort(context, ex))
@@ -246,4 +256,34 @@ public class ExceptionMiddleware
         50301 or 50302 => StatusCodes.Status503ServiceUnavailable,
         _ => StatusCodes.Status400BadRequest
     };
+
+    private static async Task<string> SanitizeDomainMessageAsync(HttpContext context, string message,
+        int statusCode)
+    {
+        if (!NoteErrorSanitizer.IsNativeNotesPath(context.Request.Path)) return message;
+        if (await IsCurrentActiveAdminAsync(context)) return message;
+        return NoteErrorSanitizer.SanitizeDomainMessage(message, statusCode);
+    }
+
+    private static async Task<bool> IsCurrentActiveAdminAsync(HttpContext context)
+    {
+        var currentUser = context.RequestServices.GetService<ICurrentUserService>();
+        if (currentUser?.UserId is not Guid userId ||
+            !string.Equals(currentUser.Role, AdminBootstrap.AdminRole, StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        var db = context.RequestServices.GetService<PimDbContext>();
+        if (db is null) return false;
+        try
+        {
+            return await db.Users.AsNoTracking().AnyAsync(x =>
+                x.Id == userId && x.IsActive && x.Role == AdminBootstrap.AdminRole,
+                CancellationToken.None);
+        }
+        catch
+        {
+            // If the account cannot be verified, fail closed and keep the sanitized text.
+            return false;
+        }
+    }
 }

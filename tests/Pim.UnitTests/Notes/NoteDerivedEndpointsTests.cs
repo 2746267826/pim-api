@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Json;
+using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -54,7 +55,7 @@ public sealed class NoteDerivedEndpointsTests : IDisposable
     public async Task ReceiptIsOwnerScopedAndDoesNotEchoSourceText()
     {
         var owner = await AuthRegistrationTestHost.SeedAndLoginAsync(_factory,
-            "derived-receipt-owner-" + Guid.NewGuid().ToString("N"));
+            "derived-receipt-owner-" + Guid.NewGuid().ToString("N"), "admin");
         var other = await AuthRegistrationTestHost.SeedAndLoginAsync(_factory,
             "derived-receipt-other-" + Guid.NewGuid().ToString("N"));
         using var client = AuthRegistrationTestHost.Authed(_factory, owner.AccessToken);
@@ -94,12 +95,128 @@ public sealed class NoteDerivedEndpointsTests : IDisposable
     }
 
     [Fact]
+    public async Task OrdinaryUserReceivesRedactedDerivedDiagnostics_AdminReceivesRawDiagnostics()
+    {
+        var admin = await AuthRegistrationTestHost.SeedAndLoginAsync(_factory,
+            "derived-diagnostics-admin-" + Guid.NewGuid().ToString("N"), "admin");
+        var ordinary = await AuthRegistrationTestHost.SeedAndLoginAsync(_factory,
+            "derived-diagnostics-user-" + Guid.NewGuid().ToString("N"));
+        using var adminClient = AuthRegistrationTestHost.Authed(_factory, admin.AccessToken);
+        using var ordinaryClient = AuthRegistrationTestHost.Authed(_factory, ordinary.AccessToken);
+        var store = _factory.Services.GetRequiredService<NoteDerivedStore>();
+
+        var ordinaryTaskId = Guid.NewGuid();
+        var ordinaryNoteId = Guid.NewGuid();
+        var ordinaryVersionId = Guid.NewGuid();
+        await store.CreateTaskAsync(ordinary.UserId,
+            new(ordinaryTaskId, ordinary.UserId, ordinaryVersionId, null,
+                new(Guid.NewGuid(), Guid.NewGuid(), "https://synthetic.invalid/v1/", true)),
+            Plan(ordinary.UserId, ordinaryNoteId, ordinaryVersionId, 1), "ordinary-diagnostics", default);
+        var adminTaskId = Guid.NewGuid();
+        var adminNoteId = Guid.NewGuid();
+        var adminVersionId = Guid.NewGuid();
+        await store.CreateTaskAsync(admin.UserId,
+            new(adminTaskId, admin.UserId, adminVersionId, null,
+                new(Guid.NewGuid(), Guid.NewGuid(), "https://synthetic.invalid/v1/", true)),
+            Plan(admin.UserId, adminNoteId, adminVersionId, 1), "admin-diagnostics", default);
+
+        foreach (var (owner, taskId) in new[] { (ordinary.UserId, ordinaryTaskId), (admin.UserId, adminTaskId) })
+        {
+            await store.UpdateTaskAsync(owner, taskId, state =>
+            {
+                state.Issues.Add(new NoteDerivedIssueDto("markdown_unreadable",
+                    "读取 /data/private/secret.md 失败 sha256=" + new string('a', 64),
+                    "private/secret.md", Guid.NewGuid().ToString("D"), "image-batch:0001"));
+                var attempt = state.Steps[0].Attempts[0];
+                attempt.RequestId = Guid.NewGuid();
+                attempt.LogId = Guid.NewGuid();
+                attempt.ErrorCode = "provider_error";
+                attempt.ErrorMessage = "https://internal.example/v1 返回 500";
+            }, default);
+        }
+
+        var ordinaryTask = await Data<NoteDerivedTaskDto>(
+            await ordinaryClient.GetAsync($"{Tasks}/{ordinaryTaskId}"));
+        Assert.Equal(string.Empty, ordinaryTask.InputSha256);
+        Assert.Equal(string.Empty, ordinaryTask.ManifestSha256);
+        Assert.Equal(string.Empty, ordinaryTask.PlanVersion);
+        var ordinaryIssue = Assert.Single(ordinaryTask.Issues);
+        Assert.Equal(NoteResponsePrivacy.GenericIssueCode, ordinaryIssue.Code);
+        Assert.Equal(NoteResponsePrivacy.GenericIssueMessage, ordinaryIssue.Message);
+        Assert.Null(ordinaryIssue.SourcePath);
+        Assert.Null(ordinaryIssue.BlockId);
+        Assert.Null(ordinaryIssue.StepKey);
+        var ordinaryAttempt = Assert.Single(ordinaryTask.Steps[0].Attempts);
+        Assert.Equal(Guid.Empty, ordinaryAttempt.RequestId);
+        Assert.Null(ordinaryAttempt.LogId);
+        Assert.Null(ordinaryAttempt.ErrorCode);
+        Assert.Null(ordinaryAttempt.ErrorMessage);
+
+        var ordinaryReceipt = await Data<NoteDerivedTaskReceiptDto>(
+            await ordinaryClient.GetAsync($"{Tasks}/{ordinaryTaskId}/receipt"));
+        Assert.Equal(string.Empty, ordinaryReceipt.InputSha256);
+        Assert.Equal(string.Empty, ordinaryReceipt.ManifestSha256);
+        var ordinarySource = Assert.Single(ordinaryReceipt.Sources);
+        Assert.Equal(string.Empty, ordinarySource.SourceId);
+        Assert.Null(ordinarySource.SourcePath);
+        Assert.Null(ordinarySource.SourceSha256);
+        Assert.Null(ordinarySource.TextSha256);
+        Assert.Empty(ordinarySource.Bindings);
+
+        var adminTask = await Data<NoteDerivedTaskDto>(
+            await adminClient.GetAsync($"{Tasks}/{adminTaskId}"));
+        Assert.Equal("input-sha", adminTask.InputSha256);
+        Assert.Equal("manifest-sha", adminTask.ManifestSha256);
+        var adminIssue = Assert.Single(adminTask.Issues);
+        Assert.Equal("markdown_unreadable", adminIssue.Code);
+        Assert.Equal("private/secret.md", adminIssue.SourcePath);
+        Assert.NotNull(adminIssue.BlockId);
+        Assert.Equal("image-batch:0001", adminIssue.StepKey);
+        var adminAttempt = Assert.Single(adminTask.Steps[0].Attempts);
+        Assert.NotEqual(Guid.Empty, adminAttempt.RequestId);
+        Assert.NotNull(adminAttempt.LogId);
+        Assert.Equal("provider_error", adminAttempt.ErrorCode);
+        Assert.Equal("https://internal.example/v1 返回 500", adminAttempt.ErrorMessage);
+
+        var adminReceipt = await Data<NoteDerivedTaskReceiptDto>(
+            await adminClient.GetAsync($"{Tasks}/{adminTaskId}/receipt"));
+        Assert.Equal("input-sha", adminReceipt.InputSha256);
+        Assert.Equal("manifest-sha", adminReceipt.ManifestSha256);
+        Assert.NotEmpty(adminReceipt.Sources);
+    }
+
+    [Fact]
+    public async Task NativeNotesMalformedJsonIsSanitizedForOrdinaryUser_AdminKeepsDetail()
+    {
+        var admin = await AuthRegistrationTestHost.SeedAndLoginAsync(_factory,
+            "derived-bad-json-admin-" + Guid.NewGuid().ToString("N"), "admin");
+        var ordinary = await AuthRegistrationTestHost.SeedAndLoginAsync(_factory,
+            "derived-bad-json-user-" + Guid.NewGuid().ToString("N"));
+        using var adminClient = AuthRegistrationTestHost.Authed(_factory, admin.AccessToken);
+        using var ordinaryClient = AuthRegistrationTestHost.Authed(_factory, ordinary.AccessToken);
+
+        using var ordinaryResponse = await ordinaryClient.PostAsync(Tasks,
+            new StringContent("{", Encoding.UTF8, "application/json"));
+        Assert.Equal(HttpStatusCode.BadRequest, ordinaryResponse.StatusCode);
+        Assert.Equal("请求参数格式无效",
+            (await AuthRegistrationTestHost.ReadErrorAsync(ordinaryResponse)).Message);
+
+        using var adminResponse = await adminClient.PostAsync(Tasks,
+            new StringContent("{", Encoding.UTF8, "application/json"));
+        Assert.Equal(HttpStatusCode.BadRequest, adminResponse.StatusCode);
+        var adminMessage = (await AuthRegistrationTestHost.ReadErrorAsync(adminResponse)).Message;
+        Assert.NotNull(adminMessage);
+        Assert.StartsWith("请求参数格式无效: ", adminMessage);
+        Assert.NotEqual("请求参数格式无效", adminMessage);
+    }
+
+    [Fact]
     public async Task CompletedHistoryWithUnverifiableCallsReadsBackAsGapWithoutRecharging()
     {
         var admin = await AuthRegistrationTestHost.SeedAndLoginAsync(_factory,
             "derived-history-admin-" + Guid.NewGuid().ToString("N"), "admin");
         var owner = await AuthRegistrationTestHost.SeedAndLoginAsync(_factory,
-            "derived-history-owner-" + Guid.NewGuid().ToString("N"));
+            "derived-history-owner-" + Guid.NewGuid().ToString("N"), "admin");
         using var client = AuthRegistrationTestHost.Authed(_factory, owner.AccessToken);
         var model = await CreateModelAsync(admin.AccessToken);
         var material = NoteDerivedFixture.CreateMaterial(withAudio: false);
@@ -138,7 +255,7 @@ public sealed class NoteDerivedEndpointsTests : IDisposable
     public async Task TaskAndStepEndpointsExposeBoundedCurrentAttempts_WithoutGuessingStepKeys()
     {
         var owner = await AuthRegistrationTestHost.SeedAndLoginAsync(_factory,
-            "derived-steps-" + Guid.NewGuid().ToString("N"));
+            "derived-steps-" + Guid.NewGuid().ToString("N"), "admin");
         using var client = AuthRegistrationTestHost.Authed(_factory, owner.AccessToken);
         var noteId = Guid.NewGuid();
         var taskId = Guid.NewGuid();
@@ -176,7 +293,7 @@ public sealed class NoteDerivedEndpointsTests : IDisposable
         var admin = await AuthRegistrationTestHost.SeedAndLoginAsync(_factory,
             "derived-admin-" + Guid.NewGuid().ToString("N"), "admin");
         var owner = await AuthRegistrationTestHost.SeedAndLoginAsync(_factory,
-            "derived-zero-audio-" + Guid.NewGuid().ToString("N"));
+            "derived-zero-audio-" + Guid.NewGuid().ToString("N"), "admin");
         using var client = AuthRegistrationTestHost.Authed(_factory, owner.AccessToken);
         var model = await CreateModelAsync(admin.AccessToken);
 
@@ -234,7 +351,7 @@ public sealed class NoteDerivedEndpointsTests : IDisposable
         var admin = await AuthRegistrationTestHost.SeedAndLoginAsync(_factory,
             "derived-admin-missing-slice-" + Guid.NewGuid().ToString("N"), "admin");
         var owner = await AuthRegistrationTestHost.SeedAndLoginAsync(_factory,
-            "derived-missing-slice-" + Guid.NewGuid().ToString("N"));
+            "derived-missing-slice-" + Guid.NewGuid().ToString("N"), "admin");
         using var client = AuthRegistrationTestHost.Authed(_factory, owner.AccessToken);
         var model = await CreateModelAsync(admin.AccessToken);
         var material = NoteDerivedFixture.CreateMaterial(audioSamples: 16_000 * 121);
@@ -275,7 +392,7 @@ public sealed class NoteDerivedEndpointsTests : IDisposable
         var admin = await AuthRegistrationTestHost.SeedAndLoginAsync(_factory,
             "derived-admin-markdown-" + Guid.NewGuid().ToString("N"), "admin");
         var owner = await AuthRegistrationTestHost.SeedAndLoginAsync(_factory,
-            "derived-markdown-" + Guid.NewGuid().ToString("N"));
+            "derived-markdown-" + Guid.NewGuid().ToString("N"), "admin");
         using var client = AuthRegistrationTestHost.Authed(_factory, owner.AccessToken);
         var model = await CreateModelAsync(admin.AccessToken);
         var material = NoteDerivedFixture.CreateMaterial(withAudio: false);

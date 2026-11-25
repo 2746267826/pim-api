@@ -35,6 +35,7 @@ public sealed class DataCenterQueryService
         CancellationToken ct = default)
     {
         var userId = UserId;
+        var isAdmin = await IsCurrentActiveAdminAsync(ct);
         var page = Math.Max(1, request.Page);
         var pageSize = Math.Clamp(request.PageSize, 1, 100);
         var items = new List<DataCenterItem>();
@@ -85,7 +86,9 @@ public sealed class DataCenterQueryService
                 || s.Source.ToLower().Contains(searchTerm.ToLower())
                 || s.Status.ToLower().Contains(searchTerm.ToLower()));
             var segments = await q.Take(2000).ToListAsync(ct);
-            items.AddRange(segments.Select(s => new DataCenterItem("task-segment", s.Id, s.Task.Title, s.Source, s.Status, s.StartsAt, s.EndsAt, FirstText(s.PlanningReason, s.Task.Description))));
+            items.AddRange(segments.Select(s => new DataCenterItem("task-segment", s.Id, s.Task.Title, s.Source,
+                s.Status, s.StartsAt, s.EndsAt,
+                isAdmin ? FirstText(s.PlanningReason, s.Task.Description) : FirstText(s.Task.Description))));
         }
         if (ShouldInclude("habit"))
         {
@@ -98,7 +101,9 @@ public sealed class DataCenterQueryService
                 || h.Source.ToLower().Contains(searchTerm.ToLower())
                 || h.Status.ToLower().Contains(searchTerm.ToLower()));
             var habits = await q.Take(2000).ToListAsync(ct);
-            items.AddRange(habits.Select(h => new DataCenterItem("habit", h.Id, h.Title, h.Source, h.Status, h.CreatedAt, h.UpdatedAt, FirstText(h.Description, h.Cadence, h.RuleJson))));
+            items.AddRange(habits.Select(h => new DataCenterItem("habit", h.Id, h.Title, h.Source, h.Status,
+                h.CreatedAt, h.UpdatedAt,
+                isAdmin ? FirstText(h.Description, h.Cadence, h.RuleJson) : FirstText(h.Description, h.Cadence))));
         }
         if (ShouldInclude("habit-occurrence"))
         {
@@ -131,7 +136,8 @@ public sealed class DataCenterQueryService
                 || p.Source.ToLower().Contains(searchTerm.ToLower())
                 || p.Status.ToLower().Contains(searchTerm.ToLower()));
             var placeholders = await q.Take(2000).ToListAsync(ct);
-            items.AddRange(placeholders.Select(p => new DataCenterItem("ai-placeholder", p.Id, p.Title, p.Source, p.Status, p.StartsAt, p.EndsAt, p.Reason)));
+            items.AddRange(placeholders.Select(p => new DataCenterItem("ai-placeholder", p.Id, p.Title, p.Source,
+                p.Status, p.StartsAt, p.EndsAt, isAdmin ? p.Reason : "计划占位")));
         }
         if (ShouldInclude("reminder"))
         {
@@ -142,7 +148,9 @@ public sealed class DataCenterQueryService
                 || r.Body != null && r.Body.ToLower().Contains(searchTerm.ToLower())
                 || r.Status.ToLower().Contains(searchTerm.ToLower()));
             var reminders = await q.Take(2000).ToListAsync(ct);
-            items.AddRange(reminders.Select(r => new DataCenterItem("reminder", r.Id, r.Title, "reminder", r.Status, r.ScheduledAt, null, FirstText(r.TriggerReason, r.Body, r.RiskLevel))));
+            items.AddRange(reminders.Select(r => new DataCenterItem("reminder", r.Id, r.Title, "reminder",
+                r.Status, r.ScheduledAt, null,
+                isAdmin ? FirstText(r.TriggerReason, r.Body, r.RiskLevel) : FirstText(r.Body))));
         }
         if (ShouldInclude("reminder-delivery"))
         {
@@ -152,7 +160,9 @@ public sealed class DataCenterQueryService
                 || d.Channel.ToLower().Contains(searchTerm.ToLower())
                 || d.Status.ToLower().Contains(searchTerm.ToLower()));
             var reminderDeliveries = await q.Take(2000).ToListAsync(ct);
-            items.AddRange(reminderDeliveries.Select(d => new DataCenterItem("reminder-delivery", d.Id, d.Reminder.Title, d.Channel, d.Status, d.CreatedAt, d.RespondedAt, FirstText(d.Action, d.PayloadJson))));
+            items.AddRange(reminderDeliveries.Select(d => new DataCenterItem("reminder-delivery", d.Id,
+                d.Reminder.Title, d.Channel, d.Status, d.CreatedAt, d.RespondedAt,
+                isAdmin ? FirstText(d.Action, d.PayloadJson) : FirstText(d.Action))));
         }
         if (ShouldInclude("report"))
         {
@@ -163,7 +173,9 @@ public sealed class DataCenterQueryService
                 || r.ContentMarkdown != null && r.ContentMarkdown.ToLower().Contains(searchTerm.ToLower())
                 || r.MetricsJson != null && r.MetricsJson.ToLower().Contains(searchTerm.ToLower()));
             var reports = await q.Take(2000).ToListAsync(ct);
-            items.AddRange(reports.Select(r => new DataCenterItem("report", r.Id, $"{r.Kind} report", "report", r.Status, r.GeneratedAt, null, FirstText(r.ContentMarkdown, r.MetricsJson))));
+            items.AddRange(reports.Select(r => new DataCenterItem("report", r.Id, $"{r.Kind} report", "report",
+                r.Status, r.GeneratedAt, null,
+                isAdmin ? FirstText(r.ContentMarkdown, r.MetricsJson) : FirstText(r.ContentMarkdown, "报告"))));
         }
         if (ShouldInclude("report-suggestion"))
         {
@@ -174,7 +186,9 @@ public sealed class DataCenterQueryService
                 || s.Summary != null && s.Summary.ToLower().Contains(searchTerm.ToLower())
                 || s.PayloadJson != null && s.PayloadJson.ToLower().Contains(searchTerm.ToLower()));
             var reportSuggestions = await q.Take(2000).ToListAsync(ct);
-            items.AddRange(reportSuggestions.Select(s => new DataCenterItem("report-suggestion", s.Id, s.Action, "report", s.Status, s.CreatedAt, s.UpdatedAt, FirstText(s.Summary, s.PayloadJson))));
+            items.AddRange(reportSuggestions.Select(s => new DataCenterItem("report-suggestion", s.Id, s.Action,
+                "report", s.Status, s.CreatedAt, s.UpdatedAt,
+                isAdmin ? FirstText(s.Summary, s.PayloadJson) : FirstText(s.Summary))));
         }
         if (ShouldInclude("sync-connection"))
         {
@@ -184,7 +198,9 @@ public sealed class DataCenterQueryService
                 c.Provider.ToLower().Contains(searchTerm.ToLower())
                 || c.Status.ToLower().Contains(searchTerm.ToLower()));
             var outlookConnections = await q.Take(2000).ToListAsync(ct);
-            items.AddRange(outlookConnections.Select(c => new DataCenterItem("sync-connection", c.Id, c.Provider, c.Provider, c.Status, c.LastSyncedAt ?? c.CreatedAt, c.AccessTokenExpiresAt, FirstText(c.TokenHealth, c.LastError))));
+            items.AddRange(outlookConnections.Select(c => new DataCenterItem("sync-connection", c.Id, c.Provider,
+                c.Provider, c.Status, c.LastSyncedAt ?? c.CreatedAt, c.AccessTokenExpiresAt,
+                isAdmin ? FirstText(c.TokenHealth, c.LastError) : "同步连接")));
         }
         if (ShouldInclude("sync-batch"))
         {
@@ -194,7 +210,11 @@ public sealed class DataCenterQueryService
                 b.Provider.ToLower().Contains(searchTerm.ToLower())
                 || b.Status.ToLower().Contains(searchTerm.ToLower()));
             var syncBatches = await q.Take(2000).ToListAsync(ct);
-            items.AddRange(syncBatches.Select(b => new DataCenterItem("sync-batch", b.Id, $"{b.Provider} sync batch", b.Provider, b.Status, b.StartedAt, b.FinishedAt, $"read={b.ReadCount}; created={b.CreatedCount}; updated={b.UpdatedCount}; conflicts={b.ConflictCount}; failures={b.FailureCount}")));
+            items.AddRange(syncBatches.Select(b => new DataCenterItem("sync-batch", b.Id,
+                $"{b.Provider} sync batch", b.Provider, b.Status, b.StartedAt, b.FinishedAt,
+                isAdmin
+                    ? $"read={b.ReadCount}; created={b.CreatedCount}; updated={b.UpdatedCount}; conflicts={b.ConflictCount}; failures={b.FailureCount}"
+                    : "同步批次")));
         }
         if (ShouldInclude("sync-conflict"))
         {
@@ -205,9 +225,14 @@ public sealed class DataCenterQueryService
                 || c.Provider.ToLower().Contains(searchTerm.ToLower())
                 || c.Status.ToLower().Contains(searchTerm.ToLower()));
             var syncConflicts = await q.Take(2000).ToListAsync(ct);
-            items.AddRange(syncConflicts.Select(c => new DataCenterItem("sync-conflict", c.Id, c.ConflictKind, c.Provider, c.Status, c.CreatedAt, c.UpdatedAt, FirstText(AuditSnapshotSanitizer.SanitizeJson(c.PimSnapshotJson), AuditSnapshotSanitizer.SanitizeJson(c.ExternalSnapshotJson)))));
+            items.AddRange(syncConflicts.Select(c => new DataCenterItem("sync-conflict", c.Id, c.ConflictKind,
+                c.Provider, c.Status, c.CreatedAt, c.UpdatedAt,
+                isAdmin
+                    ? FirstText(AuditSnapshotSanitizer.SanitizeJson(c.PimSnapshotJson),
+                        AuditSnapshotSanitizer.SanitizeJson(c.ExternalSnapshotJson))
+                    : "同步冲突需核对")));
         }
-        if (ShouldInclude("audit-version"))
+        if (isAdmin && ShouldInclude("audit-version"))
         {
             var q = _db.Set<AuditVersionEntity>().AsNoTracking().Where(v => v.UserId == userId);
             if (!string.IsNullOrWhiteSpace(filterSource)) q = q.Where(v => v.Source == filterSource);
@@ -361,6 +386,15 @@ public sealed class DataCenterQueryService
 
     private static bool ContainsIgnoreCase(string? value, string term)
         => value?.Contains(term, StringComparison.OrdinalIgnoreCase) ?? false;
+
+    private async Task<bool> IsCurrentActiveAdminAsync(CancellationToken ct)
+    {
+        if (_currentUser.UserId is not Guid userId ||
+            !string.Equals(_currentUser.Role, AdminBootstrap.AdminRole, StringComparison.OrdinalIgnoreCase))
+            return false;
+        return await _db.Users.AsNoTracking().AnyAsync(x =>
+            x.Id == userId && x.IsActive && x.Role == AdminBootstrap.AdminRole, ct);
+    }
 
     private static string FirstText(params string?[] values)
         => values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value)) ?? string.Empty;

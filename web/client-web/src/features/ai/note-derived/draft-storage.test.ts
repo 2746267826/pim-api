@@ -99,6 +99,34 @@ describe('note-derived local draft storage', () => {
     expect(loaded.ok && loaded.value?.pending?.intentId).toBe('44444444-4444-4444-8444-444444444444')
   })
 
+  it('migrates a legacy draft only to the result version it was based on', () => {
+    const legacy = createStoredDraft(scope, '旧 head 的本机草稿', 'version-head')
+    expect(persistStoredDraft(legacy).ok).toBe(true)
+
+    const headScope = { ...scope, artifactVersionId: 'version-head' }
+    const migrated = loadStoredDraft(headScope)
+    expect(migrated.ok && migrated.value?.draft.text).toBe('旧 head 的本机草稿')
+    expect(migrated.ok && migrated.value?.binding.artifactVersionId).toBe('version-head')
+
+    // The legacy key has no version scope, so it must never mask a different result.
+    expect(loadStoredDraft({ ...scope, artifactVersionId: 'version-candidate' }))
+      .toEqual({ ok: true, value: null })
+    expect(loadStoredDraft({ ...scope, artifactVersionId: 'version-without-base' }))
+      .toEqual({ ok: true, value: null })
+  })
+
+  it('reports a corrupt legacy draft instead of silently starting empty', () => {
+    const key = noteDerivedDraftStorageKey(scope)
+    expect(key).toBeTruthy()
+    localStorage.setItem(key!, '{"broken":')
+
+    expect(loadStoredDraft({ ...scope, artifactVersionId: 'version-head' }))
+      .toEqual(expect.objectContaining({
+        ok: false,
+        error: expect.objectContaining({ code: 'corrupt' }),
+      }))
+  })
+
   it('encodes every storage-key segment, including URL bindings and result versions', () => {
     const scoped = {
       ...scope,

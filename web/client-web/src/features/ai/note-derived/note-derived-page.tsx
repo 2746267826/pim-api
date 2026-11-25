@@ -36,6 +36,7 @@ import {
   type NoteDerivedDraftScope,
   type StoredNoteDerivedDraft,
 } from './draft-storage'
+import { pendingArtifactVersion } from './pending-artifact-version'
 import {
   beginManualSave,
   isVersionHead,
@@ -91,15 +92,6 @@ function SectionTitle({ number, title, description }: { number?: string; title: 
 
 function bindingScope(ownerId: string, serverBinding: string, artifactId: string, sourceVersionId: string, kind: NoteDerivedArtifactKind, artifactVersionId?: string): NoteDerivedDraftScope {
   return { ownerId, serverBinding, artifactId, sourceVersionId, kind, ...(artifactVersionId ? { artifactVersionId } : {}) }
-}
-
-function pendingArtifactVersion(artifact: NoteDerivedArtifact) {
-  const head = artifact.versions.find((item) => item.isHead || item.versionId === artifact.headVersionId)
-  const headCreatedAt = head ? Date.parse(head.createdAt) : Number.NaN
-  return artifact.versions
-    .filter((item) => !item.isHead && item.versionId !== artifact.headVersionId)
-    .filter((item) => !head || Date.parse(item.createdAt) > headCreatedAt)
-    .sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt))[0]
 }
 
 function loadLocalRecord(scope: NoteDerivedDraftScope): { record: StoredNoteDerivedDraft; error: string | null } {
