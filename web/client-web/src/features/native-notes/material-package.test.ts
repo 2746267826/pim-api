@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest'
 import { Zip, ZipDeflate, unzipSync, zipSync } from 'fflate'
-import { buildMaterialBundle, sha256Hex } from './material-model'
+import { buildMaterialBundle, jsonValuesEqual, sha256Hex } from './material-model'
 import {
   assertAndroidNotePackageSize,
   exportAndroidNotePackage,
@@ -118,6 +118,14 @@ function underdeclareEntrySize(archive: Uint8Array, path: string, declaredSize: 
 }
 
 describe('Android schema-v1 note package', () => {
+  it('compares canonical ink by JSON value instead of property order', () => {
+    expect(jsonValuesEqual(
+      { width: 320, strokeStyles: [{ color: '#263b85', width: 2.5 }] },
+      { strokeStyles: [{ width: 2.5, color: '#263b85' }], width: 320 },
+    )).toBe(true)
+    expect(jsonValuesEqual({ width: 320 }, { width: 321 })).toBe(false)
+  })
+
   it('round-trips ordered Markdown, WebP bytes, editable ink, and PNG preview', async () => {
     const { bundle, archive } = await mixedArchive()
     const imported = await importAndroidNotePackage(archive)
