@@ -437,8 +437,8 @@ describe('AI文字调用完整页面', () => {
     open('/settings/ai?tab=usage')
     expect(await screen.findByText('连接级用量限制')).toBeTruthy()
 
-    await userEvent.click(screen.getByRole('switch', { name: '启用用量限制' }))
-    await userEvent.click(screen.getByRole('button', { name: '保存用量限制' }))
+    await userEvent.click(await screen.findByRole('switch', { name: '启用用量限制' }))
+    await userEvent.click(await screen.findByRole('button', { name: '保存用量限制' }))
 
     await waitFor(() => expect(fixture.api.saveConnectionUsageLimit).not.toHaveBeenCalled())
   })
