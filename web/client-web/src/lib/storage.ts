@@ -45,6 +45,8 @@ export const STORAGE_KEYS = {
   exhibition: 'pim.exhibition',
   sidebarCollapsed: 'pim.sidebarCollapsed',
   calendarSkin: 'pim.calendarSkin',
+  /** 手写画笔上次选择的颜色与粗细（本机偏好） */
+  inkBrushPreference: 'pim.inkBrushPreference',
 } as const
 
 export function getString(key: string): string | null {
