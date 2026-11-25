@@ -15,8 +15,12 @@
 dev 构建也不会出现"版本回退"。`versionCode = 100000 + run_number` 单调递增，
 客户端永远不会把正式版判成比 dev 版旧。
 
-显示号由 CI 注入：前端用 `VITE_DISPLAY_VERSION`，本地 `npm run dev` 没注入时
-回落成 `0.0.0-local`（不再写死一个看起来像真版本的号）。
+显示号由 CI 注入：前端用 `VITE_DISPLAY_VERSION`；Docker 的 `web-build` 阶段用
+同一个值写 `/app/wwwroot/web-version.json` 与镜像标签 `org.pim.web-version`。
+本地 `npm run dev` 没注入时回落成 `0.0.0-local`（不再写死一个看起来像真版本的号）。
+`build-docker` 的 smoke 会从运行中的容器 GET `/web-version.json` 和
+`/api/version`，断言 `version` / `webVersion` 都是目标显示版本，并检查前端
+bundle 里确实出现该版本号。
 
 ## 自动发布 = dev 版（pre-release）
 
@@ -45,6 +49,13 @@ gh workflow run release.yml \
   -f notes="$(cat notes.md)" \
   -f promote_tag=api-v26.11.1234
 ```
+
+`release.yml` 只能从 master 触发。`promote_tag` 不是「给个 tag 就提升」：
+脚本会校验 tag 指向的 commit 在当前 master 历史里、该 commit 的 `VERSION`
+等于输入的显示版本、tag 里的 run number 对应一次成功的 master push 构建，
+并要求四个 release 资产齐全、`pim-web-version.json` 里的显示版本也一致。
+已经提升过的正式版可以重入，提升步骤会继续收敛正文/title 与
+`make_latest`，而不是提前退出。
 
 `release.yml` 依次做四件事：
 

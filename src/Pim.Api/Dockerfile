@@ -6,6 +6,7 @@
 FROM node:22-bookworm-slim AS web-build
 ARG PIM_VERSION=0.0.0-local
 ARG PIM_WEB_VERSION=0.0.0-local
+ARG PIM_WEB_DISPLAY_VERSION=0.0.0-local
 ARG PIM_WEB_SHA=0000000
 ARG PIM_WEB_BUILT_AT=1970-01-01T00:00:00Z
 WORKDIR /web
@@ -14,14 +15,16 @@ RUN npm ci --no-audit --no-fund
 COPY web/client-web/ ./
 COPY web/scripts/ci/write-web-version.sh /usr/local/bin/write-web-version.sh
 ENV VITE_APP_VERSION="$PIM_WEB_VERSION" \
+    VITE_DISPLAY_VERSION="$PIM_WEB_DISPLAY_VERSION" \
     VITE_GIT_SHA="$PIM_WEB_SHA"
 RUN set -eux; \
     npm run build; \
     test -s dist/index.html; \
     test -d dist/assets; \
     test -n "$(find dist/assets -type f -print -quit)"; \
+    grep -R -q -F -- "$PIM_WEB_DISPLAY_VERSION" dist/assets; \
     bash /usr/local/bin/write-web-version.sh --out dist/web-version.json \
-      --version "$PIM_WEB_VERSION" --git-sha "$PIM_WEB_SHA" --built-at "$PIM_WEB_BUILT_AT"; \
+      --version "$PIM_WEB_DISPLAY_VERSION" --git-sha "$PIM_WEB_SHA" --built-at "$PIM_WEB_BUILT_AT"; \
     test -s dist/web-version.json
 
 FROM mcr.microsoft.com/dotnet/sdk:8.0 AS server-build
@@ -45,10 +48,10 @@ RUN dotnet publish "Pim.Api.csproj" -c Release -o /app/publish \
 FROM mcr.microsoft.com/dotnet/aspnet:8.0
 # 三个 label 是契约：docker inspect 直接读出「这个镜像里前端是哪版」。
 ARG PIM_VERSION=0.0.0-local
-ARG PIM_WEB_VERSION=unknown
+ARG PIM_WEB_DISPLAY_VERSION=0.0.0-local
 ARG PIM_WEB_SHA=unknown
 LABEL org.pim.api-version="$PIM_VERSION" \
-      org.pim.web-version="$PIM_WEB_VERSION" \
+      org.pim.web-version="$PIM_WEB_DISPLAY_VERSION" \
       org.pim.web-sha="$PIM_WEB_SHA"
 WORKDIR /app
 COPY --from=server-build /app/publish .
@@ -61,6 +64,7 @@ COPY --from=web-build /web/dist/ /app/wwwroot/
 RUN set -eux; \
     test -s /app/wwwroot/index.html; \
     test -s /app/wwwroot/web-version.json; \
+    grep -qF "\"version\": \"$PIM_WEB_DISPLAY_VERSION\"" /app/wwwroot/web-version.json; \
     test -d /app/wwwroot/assets; \
     test -n "$(find /app/wwwroot/assets -type f -print -quit)"; \
     echo "embedded web dist: $(cat /app/wwwroot/web-version.json)"

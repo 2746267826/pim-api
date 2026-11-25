@@ -28,6 +28,14 @@ expect_rc "仅前端变化：web-build/docker 成功、api/mcp 跳过 → 通过
   R_RESOLVE=success R_CHANGES=success R_WEBBUILD=success R_API=skipped R_DOCKER=success R_MCP=skipped \
   W_ALL=false W_API=false W_DOCKER=true W_MCP=false
 
+expect_rc "仅 VERSION 变化：web-build 成功、其它按设计跳过 → 通过" 0 \
+  R_RESOLVE=success R_CHANGES=success R_WEBBUILD=success R_API=skipped R_DOCKER=skipped R_MCP=skipped \
+  W_ALL=false W_API=false W_DOCKER=false W_MCP=false W_VERSION=true
+
+expect_rc "VERSION 变化但 web-build skipped → 失败" 1 \
+  R_RESOLVE=success R_CHANGES=success R_WEBBUILD=skipped R_API=skipped R_DOCKER=skipped R_MCP=skipped \
+  W_ALL=false W_API=false W_DOCKER=false W_MCP=false W_VERSION=true
+
 expect_rc "应当重建却 skipped → 失败" 1 \
   R_RESOLVE=success R_CHANGES=success R_WEBBUILD=success R_API=skipped R_DOCKER=success R_MCP=skipped \
   W_ALL=false W_API=true W_DOCKER=false W_MCP=false

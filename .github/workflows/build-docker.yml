@@ -6,6 +6,9 @@ on:
       version:
         required: true
         type: string
+      display_version:
+        required: true
+        type: string
       artifact_slug:
         required: true
         type: string
@@ -26,6 +29,10 @@ on:
   workflow_dispatch:
     inputs:
       version:
+        required: false
+        default: ''
+        type: string
+      display_version:
         required: false
         default: ''
         type: string
@@ -67,13 +74,25 @@ jobs:
       - name: Resolve version if needed
         id: ver
         shell: bash
+        env:
+          IN_VERSION: ${{ inputs.version }}
+          IN_DISPLAY_VERSION: ${{ inputs.display_version }}
+          IN_ARTIFACT_SLUG: ${{ inputs.artifact_slug }}
+          IN_GIT_SHA_SHORT: ${{ inputs.git_sha_short }}
+          IN_IS_RELEASE: ${{ inputs.is_release }}
+          IN_ASSEMBLY_VERSION: ${{ inputs.assembly_version }}
         run: |
-          if [ -n "${{ inputs.version }}" ]; then
-            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
-            echo "artifact_slug=${{ inputs.artifact_slug }}" >> "$GITHUB_OUTPUT"
-            echo "git_sha_short=${{ inputs.git_sha_short }}" >> "$GITHUB_OUTPUT"
-            echo "is_release=${{ inputs.is_release }}" >> "$GITHUB_OUTPUT"
-            echo "assembly_version=${{ inputs.assembly_version }}" >> "$GITHUB_OUTPUT"
+          if [ -n "$IN_VERSION" ]; then
+            if [ -z "$IN_DISPLAY_VERSION" ]; then
+              echo "::error::显示版本号不能为空（PIM_WEB_DISPLAY_VERSION 是镜像版本契约）"
+              exit 1
+            fi
+            echo "version=$IN_VERSION" >> "$GITHUB_OUTPUT"
+            echo "display_version=$IN_DISPLAY_VERSION" >> "$GITHUB_OUTPUT"
+            echo "artifact_slug=$IN_ARTIFACT_SLUG" >> "$GITHUB_OUTPUT"
+            echo "git_sha_short=$IN_GIT_SHA_SHORT" >> "$GITHUB_OUTPUT"
+            echo "is_release=$IN_IS_RELEASE" >> "$GITHUB_OUTPUT"
+            echo "assembly_version=$IN_ASSEMBLY_VERSION" >> "$GITHUB_OUTPUT"
           else
             bash "$GITHUB_WORKSPACE/scripts/ci/resolve-version.sh"
           fi
@@ -105,6 +124,7 @@ jobs:
             PIM_VERSION=${{ steps.ver.outputs.version }}
             ASSEMBLY_VERSION=${{ steps.ver.outputs.assembly_version }}
             PIM_WEB_VERSION=${{ steps.ver.outputs.version }}
+            PIM_WEB_DISPLAY_VERSION=${{ steps.ver.outputs.display_version }}
             PIM_WEB_SHA=${{ steps.ver.outputs.git_sha_short }}
             PIM_WEB_BUILT_AT=${{ steps.webtime.outputs.built_at }}
 
@@ -127,7 +147,7 @@ jobs:
           API_LABEL="$(docker inspect --format '{{ index .Config.Labels "org.pim.api-version" }}' "$IMG")"
           WEB_LABEL="$(docker inspect --format '{{ index .Config.Labels "org.pim.web-version" }}' "$IMG")"
           SHA_LABEL="$(docker inspect --format '{{ index .Config.Labels "org.pim.web-sha" }}' "$IMG")"
-          test "$WEB_LABEL" = "${{ steps.ver.outputs.version }}"
+          test "$WEB_LABEL" = "${{ steps.ver.outputs.display_version }}"
           test "$SHA_LABEL" = "${{ steps.ver.outputs.git_sha_short }}"
           test "$API_LABEL" = "${{ steps.ver.outputs.version }}"
           echo "labels 与本次注入值一致：api=$API_LABEL web=$WEB_LABEL sha=$SHA_LABEL"
@@ -138,17 +158,19 @@ jobs:
           FILE_WEB_VERSION="$(jq -r '.version' /tmp/image-web-version.json)"
           FILE_WEB_SHA="$(jq -r '.gitSha' /tmp/image-web-version.json)"
           FILE_WEB_BUILT_AT="$(jq -r '.builtAt' /tmp/image-web-version.json)"
-          test "$FILE_WEB_VERSION" = "${{ steps.ver.outputs.version }}"
+          test "$FILE_WEB_VERSION" = "${{ steps.ver.outputs.display_version }}"
           test "$FILE_WEB_SHA" = "${{ steps.ver.outputs.git_sha_short }}"
           test "$FILE_WEB_BUILT_AT" = "${{ steps.webtime.outputs.built_at }}"
           echo "web-version.json 与注入值一致：version=$FILE_WEB_VERSION sha=$FILE_WEB_SHA builtAt=$FILE_WEB_BUILT_AT"
 
       - name: Smoke test
         run: |
-          # 冒烟测试只验证镜像能起进程、响应 /health，并且真的在同源伺服 SPA。
+          # 冒烟测试验证镜像能起进程、响应 /health，真的在同源伺服 SPA，
+          # 并且实际 HTTP 响应里的显示版本就是本次 VERSION 的目标版本。
           # 这条 job 里没有数据库。生产默认是"迁移失败即非零退出"（避免以半套 schema
           # 提供服务），因此这里显式声明例外：Database__Migrations__FailFast=false。
           IMG="${{ env.IMAGE }}:latest"
+          DISPLAY_VERSION="${{ steps.ver.outputs.display_version }}"
           CID="$(docker run -d --rm -e ASPNETCORE_URLS=http://+:5000 -e ASPNETCORE_ENVIRONMENT=Development -e Database__Migrations__FailFast=false "$IMG")"
           trap 'docker rm -f "$CID" >/dev/null 2>&1 || true' EXIT
           for i in $(seq 1 90); do
@@ -179,6 +201,31 @@ jobs:
             exit 1
           fi
           echo "smoke: SPA / OK（返回的正文与镜像内 index.html 逐字节一致，$(wc -c < /tmp/image-index.html) 字节）"
+
+          # 镜像内文件正确不代表 HTTP 端点真的读到了它。这里从运行中的容器
+          # GET /web-version.json 与 /api/version，断言显示版本是目标版本。
+          docker exec "$CID" bash -c \
+            'exec 3<>/dev/tcp/localhost/5000; printf "GET /web-version.json HTTP/1.0\r\n\r\n" >&3; cat <&3' > /tmp/http-web-version.txt
+          grep -q "200 OK" /tmp/http-web-version.txt
+          awk 'BEGIN{body=0} body{print} /^\r?$/{body=1}' /tmp/http-web-version.txt > /tmp/http-web-version.json
+          jq -e --arg v "$DISPLAY_VERSION" '.version == $v' /tmp/http-web-version.json >/dev/null \
+            || { echo "::error::运行中镜像的 /web-version.json 显示版本不是 ${DISPLAY_VERSION}：$(cat /tmp/http-web-version.json)"; exit 1; }
+          echo "smoke: /web-version.json OK（version=${DISPLAY_VERSION}）"
+
+          docker exec "$CID" bash -c \
+            'exec 3<>/dev/tcp/localhost/5000; printf "GET /api/version HTTP/1.0\r\n\r\n" >&3; cat <&3' > /tmp/http-api-version.txt
+          grep -q "200 OK" /tmp/http-api-version.txt
+          awk 'BEGIN{body=0} body{print} /^\r?$/{body=1}' /tmp/http-api-version.txt > /tmp/http-api-version.json
+          jq -e --arg v "$DISPLAY_VERSION" '.webVersion == $v' /tmp/http-api-version.json >/dev/null \
+            || { echo "::error::运行中镜像的 /api/version webVersion 不是 ${DISPLAY_VERSION}：$(cat /tmp/http-api-version.json)"; exit 1; }
+          echo "smoke: /api/version OK（webVersion=${DISPLAY_VERSION}）"
+
+          # 前端 bundle 里必须真的出现注入的显示版本号（不是只写进了元数据文件）。
+          if ! docker exec "$CID" sh -c 'grep -R -q -F -- "$1" /app/wwwroot/assets' sh "$DISPLAY_VERSION"; then
+            echo "::error::/app/wwwroot/assets 里找不到注入的显示版本 ${DISPLAY_VERSION}（VITE_DISPLAY_VERSION 没生效）"
+            exit 1
+          fi
+          echo "smoke: 前端 bundle 含显示版本 ${DISPLAY_VERSION}"
 
       # 台账（REQ-7）：从**烘焙好的镜像**里读 wwwroot/web-version.json 原样转录，
       # 再加产物镜像的 tag/digest 与本次 API 版本。不重新计算前端字段。
