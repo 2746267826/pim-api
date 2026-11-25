@@ -879,4 +879,3 @@ public sealed class CalendarRecycleBinService
     /// <summary>仅统计过期条数，不删除（兼容旧调用）。</summary>
     public Task<int> CountExpiredSoftDeletedAsync(TimeSpan? retention = null, CancellationToken ct = default)
         => PurgeExpiredSoftDeletedAsync(retention, executeDelete: false, ct);
-}
