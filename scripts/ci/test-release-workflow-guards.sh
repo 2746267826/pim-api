@@ -43,7 +43,9 @@ job_block() { # <file> <job-name>
 
 check_in_job() { # <label> <file> <job> <literal>
   local label="$1" file="$2" job="$3" literal="$4"
-  if job_block "$file" "$job" | grep -Fq -- "$literal"; then
+  local block
+  block="$(job_block "$file" "$job")"
+  if grep -Fq -- "$literal" <<<"$block"; then
     echo "  ✅ $label"
     pass=$((pass + 1))
   else
@@ -54,13 +56,54 @@ check_in_job() { # <label> <file> <job> <literal>
 
 check_not_in_job() { # <label> <file> <job> <literal>
   local label="$1" file="$2" job="$3" literal="$4"
-  if job_block "$file" "$job" | grep -Fq -- "$literal"; then
+  local block
+  block="$(job_block "$file" "$job")"
+  if grep -Fq -- "$literal" <<<"$block"; then
     echo "  ❌ $label — $file 的 job [$job] 仍包含 [$literal]"
     fail=$((fail + 1))
   else
     echo "  ✅ $label"
     pass=$((pass + 1))
   fi
+}
+
+# 回归：`job_block | grep -Fq` 在 set -o pipefail 下，如果 block 大于管道
+# 缓冲且目标在开头，grep 命中后会提前退出，awk 随后收到 SIGPIPE（141）。
+# 这会让“命中”的 check_in_job 假红，也会让“仍包含”的 check_not_in_job
+# 假绿。下面用固定大小的大 block 复现两种判定，不依赖调度时序。
+check_sigpipe_regression() {
+  local tmp rc contains_verdict absent_verdict
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/pim-release-guards-sigpipe.XXXXXX")"
+  {
+    printf 'jobs:\n  probe:\n    needle\n'
+    awk 'BEGIN { for (i = 0; i < 8192; i++) printf "    padding-%04d-0123456789abcdef\n", i }'
+    printf '  next:\n'
+  } > "$tmp/workflow.yml"
+
+  rc=0
+  (
+    ROOT="$tmp"
+    set -o pipefail
+    job_block workflow.yml probe | grep -Fq -- needle
+  ) || rc=$?
+  [[ "$rc" -eq 141 ]] || { rm -rf "$tmp"; return 1; }
+
+  contains_verdict="$(
+    ROOT="$tmp"
+    pass=0
+    fail=0
+    check_in_job "sigpipe contains" workflow.yml probe needle >/dev/null 2>&1
+    printf '%s/%s' "$pass" "$fail"
+  )"
+  absent_verdict="$(
+    ROOT="$tmp"
+    pass=0
+    fail=0
+    check_not_in_job "sigpipe absent" workflow.yml probe needle >/dev/null 2>&1
+    printf '%s/%s' "$pass" "$fail"
+  )"
+  rm -rf "$tmp"
+  [[ "$contains_verdict" == "1/0" && "$absent_verdict" == "0/1" ]]
 }
 
 echo "== release workflow guards =="
@@ -136,8 +179,18 @@ check "web README 说明显示版本来自 VITE_DISPLAY_VERSION" web/README.md '
 check "release 文档说明 latest 回退防护" docs/release-channels.md '同显示版本的旧 CalVer 会被拒绝'
 check "release 文档说明旧 workflow 定义不可回溯" docs/release-channels.md '触发时那版 workflow 定义'
 
-if [[ "$fail" -ne 0 ]]; then
-  echo "release workflow guard tests failed: ${fail} missing, ${pass} passed" >&2
+regression_fail=0
+if check_sigpipe_regression; then
+  echo "  ✅ SIGPIPE 回归：大 block 的命中/缺失判定稳定（不影响 61 个行为断言计数）"
+  sigpipe_status=PASS
+else
+  echo "  ❌ SIGPIPE 回归：job block 断言仍受 grep 早退/SIGPIPE 影响"
+  regression_fail=1
+  sigpipe_status=FAIL
+fi
+
+if [[ "$fail" -ne 0 || "$regression_fail" -ne 0 ]]; then
+  echo "release workflow guard tests failed: ${fail} missing, ${pass} passed, SIGPIPE regression ${sigpipe_status}" >&2
   exit 1
 fi
-echo "release workflow guard tests passed (${pass} checks)"
+echo "release workflow guard tests passed (${pass} checks; SIGPIPE regression PASS)"
