@@ -120,6 +120,8 @@ internal static class NoteTaskSuggestionPrompt
             if (!string.IsNullOrWhiteSpace(timeZoneId) &&
                 !NoteTaskSuggestionTimeZone.IsIana(timeZoneId))
                 throw new InvalidDataException("任务建议 timeZoneId 必须是有效的 IANA 时区");
+            if (kind == NoteTaskSuggestionKindDto.Task && !string.IsNullOrWhiteSpace(timeZoneId))
+                throw new InvalidDataException("任务建议不能携带 timeZoneId；需要时区时请使用 kind=Event");
             var start = OptionalDateTimeOffset(item, "start", timeZoneId);
             var end = OptionalDateTimeOffset(item, "end", timeZoneId);
             if (start.HasValue != end.HasValue)

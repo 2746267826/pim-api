@@ -171,11 +171,23 @@ public sealed class NoteTaskSuggestionEndpointsTests : IAsyncLifetime
         Assert.Equal(40001, missingError.Code);
         Assert.Contains("必须提供有效 timeZoneId", missingError.Message);
 
-        var accepted = await client.PutAsync(
+        var windowsZone = await client.PutAsync(
             $"{NoteTaskSuggestionEndpointPaths.Root}/{suggestionId}",
             Json("""
                 {"expectedRevision":"__REVISION__","title":"HTTP 无偏移日程","priority":5,
                  "start":"2026-11-21T19:00:00","end":"2026-11-21T20:00:00",
+                 "timeZoneId":"China Standard Time"}
+                """.Replace("__REVISION__", revisionJson)));
+        Assert.Equal(HttpStatusCode.BadRequest, windowsZone.StatusCode);
+        var windowsError = await AuthRegistrationTestHost.ReadErrorAsync(windowsZone);
+        Assert.Equal(40001, windowsError.Code);
+        Assert.Contains("有效的 IANA 时区", windowsError.Message);
+
+        var accepted = await client.PutAsync(
+            $"{NoteTaskSuggestionEndpointPaths.Root}/{suggestionId}",
+            Json("""
+                {"expectedRevision":"__REVISION__","title":"HTTP 无偏移日程","priority":5,
+                 "start":" 2026-11-21t19:00:00 ","end":" 2026-11-21t20:00:00 ",
                  "timeZoneId":"Asia/Shanghai"}
                 """.Replace("__REVISION__", revisionJson)));
         Assert.Equal(HttpStatusCode.OK, accepted.StatusCode);
@@ -184,6 +196,21 @@ public sealed class NoteTaskSuggestionEndpointsTests : IAsyncLifetime
         Assert.Equal("2026-11-21T11:00:00+00:00", data.GetProperty("start").GetString());
         Assert.Equal("2026-11-21T12:00:00+00:00", data.GetProperty("end").GetString());
         Assert.Equal("Asia/Shanghai", data.GetProperty("timeZoneId").GetString());
+
+        var acceptedRevision = data.GetProperty("revision").GetString();
+        var explicitOffset = await client.PutAsync(
+            $"{NoteTaskSuggestionEndpointPaths.Root}/{suggestionId}",
+            Json("""
+                {"expectedRevision":"__REVISION__","title":"HTTP 无偏移日程","priority":5,
+                 "start":" 2026-11-21t20:00:00+08:00 ","end":" 2026-11-21t21:00:00+08:00 ",
+                 "timeZoneId":null}
+                """.Replace("__REVISION__", acceptedRevision)));
+        Assert.Equal(HttpStatusCode.OK, explicitOffset.StatusCode);
+        var offsetData = (await AuthRegistrationTestHost.ReadJsonAsync(explicitOffset))
+            .GetProperty("data");
+        Assert.Equal("2026-11-21T12:00:00+00:00", offsetData.GetProperty("start").GetString());
+        Assert.Equal("2026-11-21T13:00:00+00:00", offsetData.GetProperty("end").GetString());
+        Assert.Equal(JsonValueKind.Null, offsetData.GetProperty("timeZoneId").ValueKind);
     }
 
     private static StringContent Json(string value) =>

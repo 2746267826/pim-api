@@ -260,7 +260,14 @@ internal sealed class NoteTaskSuggestionService(
                     throw new DomainException(40901, "确认请求标识已绑定另一条任务建议，原结果保留");
 
                 if (entity.Kind == NoteTaskSuggestionKinds.Event)
+                {
                     ValidateEventRange(entity);
+                    ValidateEventTimeZone(entity);
+                }
+                else
+                {
+                    ValidateTaskFields(entity);
+                }
                 var eventCalendarId = await ResolveFingerprintCalendarIdAsync(entity, ct);
                 var fingerprint = ItemFingerprint(entity, eventCalendarId);
                 var duplicate = await FindConfirmedDuplicateAsync(owner, entity, fingerprint, ct);
@@ -494,8 +501,9 @@ internal sealed class NoteTaskSuggestionService(
             return;
 
         if (!await db.Set<CalendarEntity>().AsNoTracking()
-                .AnyAsync(x => x.Id == targetCalendar && x.UserId == owner, ct))
-            throw new DomainException(40001, "目标日历不存在");
+                .AnyAsync(x => x.Id == targetCalendar && x.UserId == owner &&
+                    x.Kind == "calendar", ct))
+            throw new DomainException(40001, "目标日历不存在或不是日程日历");
     }
 
     private async Task<Guid?> ResolveFingerprintCalendarIdAsync(
@@ -504,7 +512,13 @@ internal sealed class NoteTaskSuggestionService(
         if (entity.Kind != NoteTaskSuggestionKinds.Event)
             return entity.CalendarId;
         if (entity.CalendarId is { } calendarId && calendarId != Guid.Empty)
+        {
+            if (!await db.Set<CalendarEntity>().AsNoTracking()
+                    .AnyAsync(x => x.Id == calendarId && x.UserId == entity.UserId &&
+                        x.Kind == "calendar", ct))
+                throw new DomainException(40001, "目标日历不存在或不是日程日历");
             return calendarId;
+        }
         return await calendar.GetOrCreateDefaultEventCalendarIdAsync(ct);
     }
 
@@ -566,6 +580,21 @@ internal sealed class NoteTaskSuggestionService(
             throw new DomainException(40001, "日程建议缺少开始或结束时间，请先补全后再确认");
         if (end <= start)
             throw new DomainException(40001, "日程结束时间必须晚于开始时间");
+    }
+
+    private static void ValidateEventTimeZone(NoteTaskSuggestionEntity entity)
+    {
+        if (string.IsNullOrWhiteSpace(entity.TimeZoneId))
+            return;
+        if (entity.TimeZoneId.Trim().Length > 100 ||
+            !NoteTaskSuggestionTimeZone.IsIana(entity.TimeZoneId))
+            throw new DomainException(40001, "日程时区必须是有效的 IANA 时区，请先编辑修正");
+    }
+
+    private static void ValidateTaskFields(NoteTaskSuggestionEntity entity)
+    {
+        if (!string.IsNullOrWhiteSpace(entity.TimeZoneId))
+            throw new DomainException(40001, "任务建议不能携带时区，请先编辑修正");
     }
 
     private async Task<bool> OriginalObjectExistsAsync(

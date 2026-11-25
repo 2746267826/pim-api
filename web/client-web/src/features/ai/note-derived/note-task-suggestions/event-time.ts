@@ -3,6 +3,11 @@ const formatterCache = new Map<string, Intl.DateTimeFormat>()
 export function isIanaTimeZone(timeZoneId: string | null | undefined): boolean {
   const zone = timeZoneId?.trim()
   if (!zone) return false
+  // Intl 在某些运行时会接受 "+08:00" 这类固定偏移标识；它不是 IANA 区域名，
+  // 也不能表达夏令时规则。Windows 时区 ID 则含空格，同样不是 IANA ID。
+  if (/\s/.test(zone)) return false
+  if (/^[+-]\d{2}:?\d{2}$/.test(zone)) return false
+  if (/^(?:UTC|GMT)[+-]\d{1,2}(?::?\d{2})?$/i.test(zone)) return false
   try {
     formatterFor(zone)
     return true
@@ -161,7 +166,7 @@ export function formatEventRange(
     return `${start ? '待补结束时间' : '待补开始时间'}${start || end ? '（时间未完整）' : ''}`
   }
   const zone = timeZoneId?.trim()
-  if (!zone) return '时区未知：请补全 IANA 时区后再确认创建日程'
+  if (!zone) return '时区未知：将按已保存的绝对时间创建；如需按当地时间编辑，请先补全 IANA 时区'
   if (!isIanaTimeZone(zone)) return '时区无效：请核对 IANA 时区后再确认创建日程'
   try {
     requireTimeZone(zone)

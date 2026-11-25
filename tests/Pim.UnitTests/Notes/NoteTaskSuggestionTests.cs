@@ -607,6 +607,153 @@ public sealed class NoteTaskSuggestionTests
         Assert.Contains("有效的 IANA 时区", invalidZone.Message);
     }
 
+    [Theory]
+    [InlineData(" 2026-11-21t19:00:00z ", true)]
+    [InlineData(" 2026-11-21T19:00:00+08:00 ", true)]
+    [InlineData("2026-11-21t19:00:00-05:00", true)]
+    [InlineData("2026-11-21 19:00:00+08:00", true)]
+    [InlineData("2026-11-21T19:00:00", false)]
+    [InlineData("2026-11-21", false)]
+    public void ExplicitOffsetDetectionTrimsAndAcceptsLowercaseSeparators(
+        string value, bool expected)
+    {
+        Assert.Equal(expected, NoteTaskSuggestionTimeZone.HasExplicitOffset(value));
+    }
+
+    [Fact]
+    public void IanaValidationRejectsWindowsIdsAndConvertsTrimmedLowercaseOffsets()
+    {
+        Assert.True(NoteTaskSuggestionTimeZone.IsIana("Asia/Shanghai"));
+        Assert.True(NoteTaskSuggestionTimeZone.IsIana("UTC"));
+        Assert.True(NoteTaskSuggestionTimeZone.IsIana("Etc/GMT+8"));
+        Assert.False(NoteTaskSuggestionTimeZone.IsIana("China Standard Time"));
+        Assert.False(NoteTaskSuggestionTimeZone.IsIana("Pacific Standard Time"));
+
+        Assert.True(NoteTaskSuggestionTimeZone.TryConvertToUtc(
+            " 2026-11-21t19:00:00z ", null, out var converted, out var error));
+        Assert.Equal(DateTimeOffset.Parse("2026-11-21T19:00:00Z"), converted);
+        Assert.Equal("", error);
+    }
+
+    [SkippableFact]
+    public async Task EventWithExplicitOffsetCanOmitTimeZoneAndConfirm()
+    {
+        await using var harness = await Harness.CreateAsync(
+            "test_note_task_suggestion_event_offset_without_zone");
+        var suggestion = await harness.CreateSuggestionAsync(
+            "显式偏移无时区", NoteTaskSuggestionKindDto.Event);
+
+        var updated = await harness.Service.UpdateAsync(
+            suggestion.Id,
+            new(suggestion.Revision, "显式偏移无时区", null, 5, null, null, null,
+                Start: null, End: null, TimeZoneId: null)
+            {
+                StartRaw = " 2026-11-21t19:00:00z ",
+                EndRaw = " 2026-11-21t20:00:00z "
+            },
+            default);
+
+        Assert.Equal(DateTimeOffset.Parse("2026-11-21T19:00:00Z"), updated.Start);
+        Assert.Equal(DateTimeOffset.Parse("2026-11-21T20:00:00Z"), updated.End);
+        Assert.Null(updated.TimeZoneId);
+
+        var confirmed = await harness.Service.ConfirmAsync(
+            suggestion.Id, new(Guid.NewGuid(), updated.Revision), default);
+
+        Assert.NotNull(confirmed.EventId);
+        Assert.Null(confirmed.TimeZoneId);
+        var stored = await harness.AdminDb.Set<EventEntity>().SingleAsync();
+        Assert.Equal(confirmed.EventId, stored.Id);
+        Assert.Null(stored.TimeZoneId);
+        Assert.Equal(updated.Start, stored.DtStart);
+        Assert.Equal(updated.End, stored.DtEnd);
+    }
+
+    [SkippableFact]
+    public async Task EventUpdateAndConfirmationRejectTaskBookAsTheTargetCalendar()
+    {
+        await using var harness = await Harness.CreateAsync(
+            "test_note_task_suggestion_event_task_book");
+        var taskBook = new CalendarEntity
+        {
+            UserId = harness.Owner,
+            Name = "任务本不是日程日历",
+            Kind = "task",
+            IsDefault = false
+        };
+        harness.AdminDb.Add(taskBook);
+        await harness.AdminDb.SaveChangesAsync();
+
+        var start = DateTimeOffset.Parse("2026-11-24T09:00:00Z");
+        var end = DateTimeOffset.Parse("2026-11-24T10:00:00Z");
+        var suggestion = await harness.CreateSuggestionAsync(
+            "不能写入任务本", NoteTaskSuggestionKindDto.Event, null, start, end, "UTC");
+
+        var updateError = await Assert.ThrowsAsync<DomainException>(() =>
+            harness.Service.UpdateAsync(
+                suggestion.Id,
+                new(suggestion.Revision, suggestion.Title, null, 5, null, null, taskBook.Id,
+                    start, end, "UTC"),
+                default));
+        Assert.Equal(40001, updateError.ErrorCode);
+        Assert.Contains("不是日程日历", updateError.Message);
+        Assert.Null((await harness.Service.GetAsync(suggestion.Id, default)).CalendarId);
+
+        harness.AdminDb.ChangeTracker.Clear();
+        var stored = await harness.AdminDb.Set<NoteTaskSuggestionEntity>()
+            .SingleAsync(x => x.Id == suggestion.Id);
+        stored.CalendarId = taskBook.Id;
+        await harness.AdminDb.SaveChangesAsync();
+        await using var confirmDb = harness.NewContext();
+        var confirmService = harness.NewService(confirmDb);
+
+        var confirmError = await Assert.ThrowsAsync<DomainException>(() =>
+            confirmService.ConfirmAsync(
+                suggestion.Id, new(Guid.NewGuid(), suggestion.Revision), default));
+        Assert.Equal(40001, confirmError.ErrorCode);
+        Assert.Contains("不是日程日历", confirmError.Message);
+        Assert.Equal(0, await harness.AdminDb.Set<EventEntity>().CountAsync());
+    }
+
+    [SkippableFact]
+    public async Task ConfirmationRejectsStoredWindowsTimeZoneOrTaskTimeZone()
+    {
+        await using var harness = await Harness.CreateAsync(
+            "test_note_task_suggestion_confirm_timezone");
+        var start = DateTimeOffset.Parse("2026-11-24T11:00:00Z");
+        var end = DateTimeOffset.Parse("2026-11-24T12:00:00Z");
+        var eventSuggestion = await harness.CreateSuggestionAsync(
+            "确认时校验时区", NoteTaskSuggestionKindDto.Event, null, start, end, "UTC");
+        var taskSuggestion = await harness.CreateSuggestionAsync(
+            "任务不能带时区", NoteTaskSuggestionKindDto.Task);
+
+        harness.AdminDb.ChangeTracker.Clear();
+        var storedEvent = await harness.AdminDb.Set<NoteTaskSuggestionEntity>()
+            .SingleAsync(x => x.Id == eventSuggestion.Id);
+        storedEvent.TimeZoneId = "China Standard Time";
+        var storedTask = await harness.AdminDb.Set<NoteTaskSuggestionEntity>()
+            .SingleAsync(x => x.Id == taskSuggestion.Id);
+        storedTask.TimeZoneId = "Asia/Shanghai";
+        await harness.AdminDb.SaveChangesAsync();
+        await using var confirmDb = harness.NewContext();
+        var confirmService = harness.NewService(confirmDb);
+
+        var eventError = await Assert.ThrowsAsync<DomainException>(() =>
+            confirmService.ConfirmAsync(
+                eventSuggestion.Id, new(Guid.NewGuid(), eventSuggestion.Revision), default));
+        Assert.Equal(40001, eventError.ErrorCode);
+        Assert.Contains("有效的 IANA 时区", eventError.Message);
+
+        var taskError = await Assert.ThrowsAsync<DomainException>(() =>
+            confirmService.ConfirmAsync(
+                taskSuggestion.Id, new(Guid.NewGuid(), taskSuggestion.Revision), default));
+        Assert.Equal(40001, taskError.ErrorCode);
+        Assert.Contains("任务建议不能携带时区", taskError.Message);
+
+        Assert.Equal(0, await harness.AdminDb.Set<EventEntity>().CountAsync());
+        Assert.Equal(0, await harness.AdminDb.Set<TaskEntity>().CountAsync());
+    }
+
     [SkippableFact]
     public async Task EventConfirmationRejectsOutlookBoundCalendarWithoutCreatingAnything()
     {
@@ -952,6 +1099,78 @@ public sealed class NoteTaskSuggestionTests
     }
 
     [SkippableFact]
+    public async Task ConcurrentEventConfirmationsForDifferentNotesCreateOneDefaultCalendar()
+    {
+        await using var harness = await Harness.CreateAsync(
+            "test_note_task_suggestion_default_calendar_race");
+        var start = DateTimeOffset.Parse("2026-11-30T09:00:00Z");
+        var end = DateTimeOffset.Parse("2026-11-30T10:00:00Z");
+        var first = await harness.CreateSuggestionAsync(
+            "默认日历并发生成 A", NoteTaskSuggestionKindDto.Event, null, start, end, "UTC");
+
+        harness.Source.NoteId = Guid.NewGuid();
+        var second = await harness.CreateSuggestionAsync(
+            "默认日历并发生成 B", NoteTaskSuggestionKindDto.Event, null,
+            start.AddHours(1), end.AddHours(1), "UTC");
+        await using var secondDb = harness.NewContext();
+        var secondService = harness.NewService(secondDb);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+        var confirmed = await Task.WhenAll(
+                harness.Service.ConfirmAsync(
+                    first.Id, new(Guid.NewGuid(), first.Revision), timeout.Token),
+                secondService.ConfirmAsync(
+                    second.Id, new(Guid.NewGuid(), second.Revision), timeout.Token))
+            .WaitAsync(TimeSpan.FromSeconds(35));
+
+        Assert.Equal(2, confirmed.Length);
+        Assert.Equal(confirmed[0].CalendarId, confirmed[1].CalendarId);
+        Assert.NotNull(confirmed[0].CalendarId);
+        var calendars = await harness.AdminDb.Set<CalendarEntity>().AsNoTracking()
+            .Where(x => x.UserId == harness.Owner && x.Kind == "calendar")
+            .ToListAsync();
+        var calendar = Assert.Single(calendars);
+        Assert.True(calendar.IsDefault);
+        Assert.Equal(2, await harness.AdminDb.Set<EventEntity>().CountAsync());
+    }
+
+    [SkippableFact]
+    public async Task ConcurrentDefaultCalendarCreationIsIsolatedPerUser()
+    {
+        await using var harness = await Harness.CreateAsync(
+            "test_note_task_suggestion_default_calendar_users");
+        var secondUser = Guid.NewGuid();
+        harness.AdminDb.Users.Add(new UserEntity
+        {
+            Id = secondUser,
+            Username = $"task-suggestion-{secondUser:N}",
+            Email = $"{secondUser:N}@synthetic.invalid",
+            PasswordHash = "synthetic",
+            IsActive = true
+        });
+        await harness.AdminDb.SaveChangesAsync();
+
+        await using var ownerDb = harness.NewContext();
+        await using var secondDb = harness.NewContextFor(secondUser);
+        var ownerCalendar = harness.NewCalendarService(ownerDb, harness.Owner);
+        var secondCalendar = harness.NewCalendarService(secondDb, secondUser);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+        var ids = await Task.WhenAll(
+                ownerCalendar.GetOrCreateDefaultEventCalendarIdAsync(timeout.Token),
+                secondCalendar.GetOrCreateDefaultEventCalendarIdAsync(timeout.Token))
+            .WaitAsync(TimeSpan.FromSeconds(35));
+
+        Assert.NotEqual(ids[0], ids[1]);
+        var calendars = await harness.AdminDb.Set<CalendarEntity>().AsNoTracking()
+            .Where(x => x.Kind == "calendar" && (x.UserId == harness.Owner || x.UserId == secondUser))
+            .ToListAsync();
+        Assert.Equal(2, calendars.Count);
+        Assert.Single(calendars, x => x.UserId == harness.Owner && x.IsDefault);
+        Assert.Single(calendars, x => x.UserId == secondUser && x.IsDefault);
+    }
+
+    [SkippableFact]
     public async Task SameTitleIsStillDistinctAcrossKindsAndEventTimes()
     {
         await using var harness = await Harness.CreateAsync(
@@ -1219,9 +1438,37 @@ public sealed class NoteTaskSuggestionTests
          "start":"2026-11-21T19:00:00","end":"2026-11-21T20:00:00",
          "timeZoneId":"Mars/Olympus"}]}
         """)]
+    [InlineData("""
+        {"suggestions":[{"kind":"Event","title":"Windows 时区","priority":5,
+         "start":"2026-11-21T19:00:00","end":"2026-11-21T20:00:00",
+         "timeZoneId":"China Standard Time"}]}
+        """)]
     public void PromptParserRejectsWallClockTimesWithoutAValidTimeZone(string json)
     {
         Assert.Throws<InvalidDataException>(() => NoteTaskSuggestionPrompt.Parse(json));
+    }
+
+    [Fact]
+    public void PromptParserAcceptsExplicitOffsetEventWithoutTimeZone()
+    {
+        var draft = Assert.Single(NoteTaskSuggestionPrompt.Parse("""
+            {"suggestions":[{"kind":"Event","title":"显式偏移无时区","priority":5,
+             "start":"2026-11-21T19:00:00+08:00","end":"2026-11-21T20:00:00+08:00",
+             "timeZoneId":null}]}
+            """));
+
+        Assert.Null(draft.TimeZoneId);
+        Assert.Equal(DateTimeOffset.Parse("2026-11-21T11:00:00Z"), draft.Start);
+        Assert.Equal(DateTimeOffset.Parse("2026-11-21T12:00:00Z"), draft.End);
+    }
+
+    [Fact]
+    public void PromptParserRejectsTimeZoneOnTask()
+    {
+        Assert.Throws<InvalidDataException>(() => NoteTaskSuggestionPrompt.Parse("""
+            {"suggestions":[{"kind":"Task","title":"任务不应带时区","priority":5,
+             "due":"2026-11-21T19:00:00+08:00","timeZoneId":"Asia/Shanghai"}]}
+            """));
     }
 
     [Theory]
@@ -1414,6 +1661,15 @@ public sealed class NoteTaskSuggestionTests
 
         public PimDbContext NewContext() => new(_options, _currentUser);
 
+        public PimDbContext NewContextFor(Guid owner) => new(_options, new FakeUser(owner));
+
+        public CalendarService NewCalendarService(PimDbContext db, Guid owner) => new(
+            db,
+            new FakeUser(owner),
+            new RecurrenceService(NullLogger<RecurrenceService>.Instance),
+            new EventAttachmentService(db),
+            TimeProvider.System);
+
         public NoteTaskSuggestionService NewService(
             PimDbContext db, bool dispatchAvailable = true) => new(
             db,
@@ -1467,12 +1723,7 @@ public sealed class NoteTaskSuggestionTests
                 NullLogger<NoteTaskSuggestionExtractionJob>.Instance);
         }
 
-        private CalendarService Calendar(PimDbContext db) => new(
-            db,
-            _currentUser,
-            new RecurrenceService(NullLogger<RecurrenceService>.Instance),
-            new EventAttachmentService(db),
-            TimeProvider.System);
+        private CalendarService Calendar(PimDbContext db) => NewCalendarService(db, Owner);
 
         public async ValueTask DisposeAsync()
         {

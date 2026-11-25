@@ -477,11 +477,33 @@ public class CalendarService
     private static string? Truncate(string? value, int maxLength) =>
         value is not null && value.Length > maxLength ? value[..maxLength] : value;
 
-    private async Task<CalendarEntity> GetOrCreateDefaultCalendarAsync(string kind, CancellationToken ct)
+    private Task<CalendarEntity> GetOrCreateDefaultCalendarAsync(string kind, CancellationToken ct)
+    {
+        if (!_db.Database.IsNpgsql())
+            return GetOrCreateDefaultCalendarCoreAsync(kind, ct);
+
+        if (_db.Database.CurrentTransaction is not null)
+            return GetOrCreateDefaultCalendarInExistingTransactionAsync(kind, ct);
+
+        return TaskRowLock.WithDefaultCalendarLockAsync(
+            _db, UserId, () => GetOrCreateDefaultCalendarCoreAsync(kind, ct), ct);
+    }
+
+    private async Task<CalendarEntity> GetOrCreateDefaultCalendarInExistingTransactionAsync(
+        string kind, CancellationToken ct)
+    {
+        await TaskRowLock.AcquireDefaultCalendarLockAsync(_db, UserId, ct);
+        return await GetOrCreateDefaultCalendarCoreAsync(kind, ct);
+    }
+
+    private async Task<CalendarEntity> GetOrCreateDefaultCalendarCoreAsync(
+        string kind, CancellationToken ct)
     {
         var calendar = await _db.Set<CalendarEntity>()
             .FirstOrDefaultAsync(c => c.UserId == UserId && c.Kind == kind && c.IsDefault, ct)
             ?? await _db.Set<CalendarEntity>()
+                .OrderBy(c => c.CreatedAt)
+                .ThenBy(c => c.Id)
                 .FirstOrDefaultAsync(c => c.UserId == UserId && c.Kind == kind, ct);
 
         if (calendar is not null)

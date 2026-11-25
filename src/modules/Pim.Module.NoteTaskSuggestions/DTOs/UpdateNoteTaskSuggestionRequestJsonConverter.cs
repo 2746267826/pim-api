@@ -1,4 +1,3 @@
-using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -91,9 +90,7 @@ public sealed class UpdateNoteTaskSuggestionRequestJsonConverter
 
     private static DateTimeOffset? ParseExplicitOffset(string? value) =>
         value is not null &&
-        Services.NoteTaskSuggestionTimeZone.HasExplicitOffset(value) &&
-        DateTimeOffset.TryParse(value, CultureInfo.InvariantCulture,
-            DateTimeStyles.AllowWhiteSpaces, out var parsed)
+        Services.NoteTaskSuggestionTimeZone.TryParseExplicitOffset(value, out var parsed)
             ? parsed
             : null;
 

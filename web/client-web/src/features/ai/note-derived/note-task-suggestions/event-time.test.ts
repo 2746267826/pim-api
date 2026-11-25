@@ -20,6 +20,10 @@ describe('event-time', () => {
   it('fails closed without an IANA zone instead of silently using Shanghai or the browser zone', () => {
     expect(isIanaTimeZone('Asia/Shanghai')).toBe(true)
     expect(isIanaTimeZone('Mars/Olympus')).toBe(false)
+    expect(isIanaTimeZone('China Standard Time')).toBe(false)
+    expect(isIanaTimeZone('Pacific Standard Time')).toBe(false)
+    expect(isIanaTimeZone('+08:00')).toBe(false)
+    expect(isIanaTimeZone('UTC+8')).toBe(false)
     expect(toEventTimeZoneInput('2026-11-21T11:00:00Z', null)).toBe('')
     expect(toEventTimeZoneInput('2026-11-21T11:00:00Z', 'Mars/Olympus')).toBe('')
     expect(formatEventRange(

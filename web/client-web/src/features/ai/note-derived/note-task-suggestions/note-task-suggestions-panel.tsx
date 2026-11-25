@@ -398,10 +398,15 @@ function SuggestionRow({
   const draft = suggestion.status === 'Draft'
   const validTimeZone = isIanaTimeZone(timeZoneId)
   const completeEventRange = Boolean(start && end)
-  const eventReady = isTask || (validTimeZone && completeEventRange)
+  const storedEventRange = Boolean(suggestion.start && suggestion.end)
+  const eventReady = isTask ||
+    (validTimeZone && completeEventRange) ||
+    (!timeZoneId.trim() && storedEventRange)
   const eventHint = !isTask && draft
     ? !timeZoneId.trim()
-      ? '日程缺少 IANA 时区。请先编辑补全时区与开始、结束时间，再确认创建。'
+      ? storedEventRange
+        ? '日程未提供 IANA 时区，将按服务端已保存的绝对时间创建；如需按当地时间修改，请先补全时区与起止时间。'
+        : '日程缺少 IANA 时区且时间不完整。请先编辑补全时区与开始、结束时间，再确认创建。'
       : !validTimeZone
         ? '日程时区无效。请编辑为有效的 IANA 时区后再确认创建。'
         : !completeEventRange

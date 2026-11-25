@@ -411,7 +411,7 @@ describe('NoteTaskSuggestionsPanel', () => {
     expect(await screen.findByText(/建议已保存/)).toBeTruthy()
   })
 
-  it('requires a valid IANA zone and rejects DST gaps before saving an event', async () => {
+  it('confirms a stored absolute event without a zone but rejects invalid edits and DST gaps', async () => {
     const event = {
       ...suggestion,
       id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
@@ -425,8 +425,9 @@ describe('NoteTaskSuggestionsPanel', () => {
     page()
 
     expect(await screen.findByText(/时区未知/)).toBeTruthy()
+    expect(screen.getByText(/将按服务端已保存的绝对时间创建/)).toBeTruthy()
     expect((screen.getByRole('button', { name: '确认创建日程' }) as HTMLButtonElement)
-      .disabled).toBe(true)
+      .disabled).toBe(false)
 
     await userEvent.click(screen.getByRole('button', { name: '编辑' }))
     await userEvent.type(screen.getByLabelText('IANA 时区'), 'America/New_York')
@@ -441,6 +442,26 @@ describe('NoteTaskSuggestionsPanel', () => {
     await userEvent.click(screen.getByRole('button', { name: '保存修订' }))
     expect(await screen.findByText('日程时区必须是有效的 IANA 时区。')).toBeTruthy()
     expect(api.update).not.toHaveBeenCalled()
+  })
+
+  it('blocks an event without a zone when no complete stored range exists', async () => {
+    api.list.mockResolvedValue({
+      total: 1,
+      items: [{
+        ...suggestion,
+        id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+        kind: 'Event',
+        start: null,
+        end: null,
+        timeZoneId: null,
+        title: '缺少时间的日程',
+      }],
+    })
+    page()
+
+    expect(await screen.findByText(/日程缺少 IANA 时区且时间不完整/)).toBeTruthy()
+    expect((screen.getByRole('button', { name: '确认创建日程' }) as HTMLButtonElement)
+      .disabled).toBe(true)
   })
 
   it('confirms an event with the frozen request id instead of creating a task', async () => {

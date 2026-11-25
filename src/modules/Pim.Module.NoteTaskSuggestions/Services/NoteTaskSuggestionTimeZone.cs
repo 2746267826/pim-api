@@ -10,9 +10,19 @@ internal static class NoteTaskSuggestionTimeZone
         if (string.IsNullOrWhiteSpace(timeZoneId))
             return false;
 
+        var trimmed = timeZoneId.Trim();
+        // Windows 时区 ID 也常含空格（例如 "China Standard Time"），而
+        // IANA 区域名不允许空白。先挡掉这类输入，再由 HasIanaId 拒绝运行时
+        // 能识别、但不是 IANA ID 的其它别名。
+        if (trimmed.Any(char.IsWhiteSpace))
+            return false;
+
         try
         {
-            timeZone = TimeZoneInfo.FindSystemTimeZoneById(timeZoneId.Trim());
+            var found = TimeZoneInfo.FindSystemTimeZoneById(trimmed);
+            if (!found.HasIanaId)
+                return false;
+            timeZone = found;
             return true;
         }
         catch (TimeZoneNotFoundException)
@@ -29,17 +39,29 @@ internal static class NoteTaskSuggestionTimeZone
 
     public static bool HasExplicitOffset(string text)
     {
-        if (text.EndsWith('Z') || text.EndsWith('z'))
+        var trimmed = text.Trim();
+        if (trimmed.EndsWith('Z') || trimmed.EndsWith('z'))
             return true;
 
-        var timeStart = text.IndexOf('T');
-        if (timeStart < 0)
-            timeStart = text.IndexOf(' ');
+        var timeStart = trimmed.IndexOfAny(['T', 't', ' ']);
         if (timeStart < 0)
             return false;
 
-        var timePart = text[(timeStart + 1)..];
+        var timePart = trimmed[(timeStart + 1)..];
         return timePart.Contains('+') || timePart.Contains('-');
+    }
+
+    public static bool TryParseExplicitOffset(string text, out DateTimeOffset value)
+    {
+        var trimmed = text.Trim();
+        if (!HasExplicitOffset(trimmed))
+        {
+            value = default;
+            return false;
+        }
+
+        return DateTimeOffset.TryParse(trimmed, CultureInfo.InvariantCulture,
+            DateTimeStyles.AllowWhiteSpaces, out value);
     }
 
     /// <summary>
@@ -66,8 +88,7 @@ internal static class NoteTaskSuggestionTimeZone
         var zoneId = timeZoneId?.Trim();
         if (HasExplicitOffset(trimmed))
         {
-            if (!DateTimeOffset.TryParse(trimmed, CultureInfo.InvariantCulture,
-                    DateTimeStyles.AllowWhiteSpaces, out var parsed))
+            if (!TryParseExplicitOffset(trimmed, out var parsed))
             {
                 error = "必须是 ISO-8601 时间或 null";
                 return false;
