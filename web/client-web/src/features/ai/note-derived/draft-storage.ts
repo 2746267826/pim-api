@@ -155,7 +155,7 @@ export function noteDerivedDraftStorageKey(scope: NoteDerivedDraftScope): string
   if (!isUsableDraftScope(scope)) return null
   const parts = [scope.ownerId, scope.serverBinding, scope.artifactId, scope.sourceVersionId, scope.kind]
   if (scope.artifactVersionId) parts.push(scope.artifactVersionId)
-  return `${STORAGE_PREFIX}/${parts.join('/')}`
+  return `${STORAGE_PREFIX}/${parts.map((part) => encodeURIComponent(part)).join('/')}`
 }
 
 export function createStoredDraft(

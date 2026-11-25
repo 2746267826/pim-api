@@ -197,6 +197,26 @@ public class AdminEndpointsE2ETests
         var adminClient = Authed(factory, admin.AccessToken!);
         Assert.Equal(HttpStatusCode.OK, (await adminClient.GetAsync(path)).StatusCode);
         Assert.Equal(HttpStatusCode.OK, (await adminClient.GetAsync("/api/v1/operations/audit/export")).StatusCode);
+        var adminRestoreVersionId = Guid.NewGuid();
+        var adminUserId = GetUserId(factory, "audit-admin");
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
+            db.AuditVersions.Add(new AuditVersionEntity
+            {
+                Id = adminRestoreVersionId,
+                UserId = adminUserId,
+                ObjectType = "event",
+                ObjectId = objectId,
+                Source = "synthetic",
+                BeforeJson = "{}",
+                AfterJson = "{\"title\":\"synthetic\"}",
+                ChangedFieldsJson = "[\"title\"]",
+            });
+            await db.SaveChangesAsync();
+        }
+        Assert.Equal(HttpStatusCode.OK,
+            (await adminClient.PostAsync($"/api/v1/operations/audit/{adminRestoreVersionId}/restore-preview", null)).StatusCode);
 
         var ordinaryClient = Authed(factory, ordinary.AccessToken!);
         Assert.Equal(HttpStatusCode.Forbidden, (await ordinaryClient.GetAsync(path)).StatusCode);
