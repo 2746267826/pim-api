@@ -61,6 +61,8 @@ jobs:
   shard:
     if: github.event_name == 'push' || inputs.mode == 'filter-only'
     runs-on: ubuntu-latest
+    # 防止某个测试 hang 住把 job 挂死（昨晚那次其实是时区误读，但确实需要这个保险）
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -81,10 +83,14 @@ jobs:
           - name: shard-4
             desc: 'Api 其余类（排除慢组 1/2/3）'
             filter: 'FullyQualifiedName~Pim.UnitTests.Api&FullyQualifiedName!~PcKeystatsUploadValidationE2ETests&FullyQualifiedName!~PublicRegistrationGateE2ETests&FullyQualifiedName!~AuthPasswordChangeE2ETests&FullyQualifiedName!~AdminCreateUserE2ETests&FullyQualifiedName!~PcTrackerEndpointsE2ETests&FullyQualifiedName!~FilesProviderErrorSurfaceTests&FullyQualifiedName!~OneDriveContentEndpointsE2ETests&FullyQualifiedName!~TaskChecklistGetE2ETests'
-          # shard-5：所有非 Api 目录（Harness/Calendar/Notes/Mcp/Services… 合计仅 17 分钟累加）
+          # shard-5：非 Api 里耗时较大的一组（Notes 352s + Files 97s + Tiles 78s + Services 41s）
           - name: shard-5
-            desc: '非 Api 全部（Harness + Calendar + Notes + Mcp + Services + …）'
-            filter: 'FullyQualifiedName!~Pim.UnitTests.Api'
+            desc: '非 Api-A：Notes + Files + Tiles + Services'
+            filter: 'FullyQualifiedName~Pim.UnitTests.Notes|FullyQualifiedName~Pim.UnitTests.Files|FullyQualifiedName~Pim.UnitTests.Tiles|FullyQualifiedName~Pim.UnitTests.Services'
+          # shard-6：非 Api 其余（Mcp 225s + Harness 2377个30s + Calendar 932个28s + …）
+          - name: shard-6
+            desc: '非 Api-B：Mcp + Harness + Calendar + PcTracker + Mobile + 其余'
+            filter: 'FullyQualifiedName!~Pim.UnitTests.Api&FullyQualifiedName!~Pim.UnitTests.Notes&FullyQualifiedName!~Pim.UnitTests.Files&FullyQualifiedName!~Pim.UnitTests.Tiles&FullyQualifiedName!~Pim.UnitTests.Services'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
