@@ -612,7 +612,7 @@ it('hides raw derived phases, attempt diagnostics and issue messages from ordina
   }
   const rawStep = {
     key: 'internal-step-key',
-    kind: 'RecordSynthesis' as const,
+    kind: 'VendorStepKind' as never,
     status: 'VendorStepStatus',
     attempts: [{
       requestId: 'abababab-abab-4bab-8bab-abababababab',
@@ -641,7 +641,8 @@ it('hides raw derived phases, attempt diagnostics and issue messages from ordina
 
   await userEvent.click(screen.getByText('步骤与尝试详情'))
   expect(await screen.findByText(/第 1 次/)).toBeTruthy()
-  expect(screen.queryAllByText(/VendorStepStatus|VendorAttemptStatus|provider attempt diagnostic|provider_attempt_code|provider_issue_code|internal-step-key|internal\/path/)).toHaveLength(0)
+  expect(screen.queryAllByText(/VendorStepKind|VendorStepStatus|VendorAttemptStatus|provider attempt diagnostic|provider_attempt_code|provider_issue_code|internal-step-key|internal\/path/)).toHaveLength(0)
+  expect(screen.getAllByText('处理步骤').length).toBeGreaterThan(0)
   expect(screen.getAllByText(/处理状态待核对/).length).toBeGreaterThan(0)
 
   await userEvent.click(screen.getByRole('button', { name: /停止后续步骤/ }))
@@ -662,7 +663,7 @@ it('keeps raw derived phases and attempt diagnostics for admins', async () => {
   }
   const rawStep = {
     key: 'internal-step-key',
-    kind: 'RecordSynthesis' as const,
+    kind: 'VendorStepKind' as never,
     status: 'VendorStepStatus',
     attempts: [{
       requestId: 'abababab-abab-4bab-8bab-abababababab',
@@ -690,6 +691,7 @@ it('keeps raw derived phases and attempt diagnostics for admins', async () => {
 
   await userEvent.click(screen.getByText('步骤、尝试与 endpoint 详情'))
   expect(await screen.findByText(/第 1 次/)).toBeTruthy()
+  expect(screen.getAllByText(/VendorStepKind/).length).toBeGreaterThan(0)
   expect(screen.getAllByText(/VendorStepStatus/).length).toBeGreaterThan(0)
   expect(screen.getByText(/VendorAttemptStatus/)).toBeTruthy()
   expect(screen.getByText(/provider attempt diagnostic/)).toBeTruthy()
@@ -711,6 +713,45 @@ it('hides raw derived read errors from ordinary users', async () => {
   await userEvent.click(await screen.findByText(/更多：任务详情、停止与恢复/))
   expect(await screen.findByText(/步骤读取失败/)).toBeTruthy()
   expect(screen.queryAllByText(/provider steps diagnostic/)).toHaveLength(0)
+})
+
+it('hides raw artifact and manual-save errors from ordinary users', async () => {
+  auth.user.role = 'user'
+  const headArtifact: NoteDerivedArtifact = { ...artifact, headVersionId: versionId }
+  derived.artifacts.mockResolvedValue([headArtifact])
+  derived.version.mockRejectedValue(new Error('provider version diagnostic'))
+
+  page(); await chooseSource()
+
+  expect(await screen.findByText(/内容读取失败：请刷新核对/)).toBeTruthy()
+  expect(screen.queryAllByText(/provider version diagnostic/)).toHaveLength(0)
+
+  cleanup()
+  derived.version.mockResolvedValue({ ...version, isHead: true })
+  derived.saveManual.mockRejectedValue(new Error('provider manual-save diagnostic'))
+  page(); await chooseSource()
+  await userEvent.click(await screen.findByRole('button', { name: '保存修改' }))
+
+  expect(await screen.findByText(/保存状态未确认/)).toBeTruthy()
+  expect(screen.queryAllByText(/provider manual-save diagnostic/)).toHaveLength(0)
+})
+
+it('keeps raw artifact and manual-save errors for admins', async () => {
+  const headArtifact: NoteDerivedArtifact = { ...artifact, headVersionId: versionId }
+  derived.artifacts.mockResolvedValue([headArtifact])
+  derived.version.mockRejectedValue(new Error('provider version diagnostic'))
+
+  page(); await chooseSource()
+
+  expect(await screen.findByText(/版本读取失败：provider version diagnostic/)).toBeTruthy()
+
+  cleanup()
+  derived.version.mockResolvedValue({ ...version, isHead: true })
+  derived.saveManual.mockRejectedValue(new Error('provider manual-save diagnostic'))
+  page(); await chooseSource()
+  await userEvent.click(await screen.findByRole('button', { name: '保存为人工修订' }))
+
+  expect(await screen.findByText(/provider manual-save diagnostic/)).toBeTruthy()
 })
 
 it('ignores a historical version in an ordinary-user processing link', async () => {

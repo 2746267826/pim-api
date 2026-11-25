@@ -67,6 +67,8 @@ const failureText = (error: unknown, showVersionDetails: boolean, fallback: stri
   showVersionDetails && error instanceof Error && error.message.trim() ? error.message : fallback
 const phaseLabel = (value: string, showVersionDetails: boolean) =>
   phaseNames[value] ?? (showVersionDetails ? value : '处理状态待核对')
+const stepLabel = (value: string, showVersionDetails: boolean) =>
+  stepNames[value] ?? (showVersionDetails ? value : '处理步骤')
 const time = (value: string) => formatTime(value)
 
 function tone(value: string) {
@@ -546,7 +548,7 @@ function TaskDetailCard({ taskId, ownerId, serverBinding, showVersionDetails, on
     {steps.isPending ? <Skeleton className="h-28" /> : steps.isError ? <p role="alert" className="text-sm text-text-2">步骤读取失败：{failureText(steps.error, showVersionDetails, '请刷新核对。')}</p>
       : !steps.data?.items.length ? <p className="text-sm text-text-3">当前没有可显示的步骤。</p>
         : <div className="space-y-2">{steps.data.items.map((step) => <div key={step.key} className="space-y-2 rounded-ctl border border-border p-3">
-          <div className="flex flex-wrap items-center justify-between gap-2"><div><p className="text-sm text-text-1">{stepNames[step.kind] ?? (showVersionDetails ? step.kind : '处理步骤')}</p>{showVersionDetails && <p className="mt-1 break-all text-xs text-text-3">{step.key}</p>}</div><State value={step.status} showVersionDetails={showVersionDetails} /></div>
+          <div className="flex flex-wrap items-center justify-between gap-2"><div><p className="text-sm text-text-1">{stepLabel(step.kind, showVersionDetails)}</p>{showVersionDetails && <p className="mt-1 break-all text-xs text-text-3">{step.key}</p>}</div><State value={step.status} showVersionDetails={showVersionDetails} /></div>
           {step.attempts.length > 0 && <div className="space-y-1">{step.attempts.map((attempt, index) => <p key={attempt.requestId} className="break-all text-xs text-text-3">第 {index + 1} 次 · {phaseLabel(attempt.status, showVersionDetails)}{showVersionDetails && attempt.errorCode ? ` · ${attempt.errorCode}` : ''}{attempt.errorMessage ? ` · ${showVersionDetails ? attempt.errorMessage : '处理记录需核对'}` : ''}{showVersionDetails && attempt.logId ? ` · 调用 ${attempt.logId}` : ''}</p>)}</div>}
         </div>)}</div>}
     </details>
@@ -617,7 +619,7 @@ function RetryControls({ task, steps, ownerId, serverBinding, showVersionDetails
   return <div className="space-y-3 rounded-ctl border border-warn-border p-3">
     <h3 className="text-xs font-medium text-text-2">显式恢复</h3>
     {!pending && candidates.map((step) => <label key={step.key} className="flex items-center gap-2 text-xs text-text-2"><input type="checkbox" checked={selected.includes(step.key)}
-      onChange={(event) => setSelected((current) => event.target.checked ? [...current, step.key] : current.filter((key) => key !== step.key))} disabled={busy} />{stepNames[step.kind] ?? step.kind}{showVersionDetails ? ` · ${step.key}` : ''}</label>)}
+      onChange={(event) => setSelected((current) => event.target.checked ? [...current, step.key] : current.filter((key) => key !== step.key))} disabled={busy} />{stepLabel(step.kind, showVersionDetails)}{showVersionDetails ? ` · ${step.key}` : ''}</label>)}
     {pending && <div className="space-y-2 text-xs leading-5 text-text-2"><p>已有恢复意图{showVersionDetails ? ` ${pending.intentId}` : ''}，不会分配新标识。</p><Button size="sm" disabled={busy || !pending.requestJson} onClick={() => void replay()}>核对原恢复提交</Button></div>}
     {!pending && selected.length > 0 && <><label className="flex items-start gap-2 text-xs leading-5 text-text-2"><input type="checkbox" checked={ack} onChange={(event) => setAck(event.target.checked)} /><span>确认恢复 {selected.length} 个步骤，理解未知结果可能重复计费；成功步骤不重跑。</span></label>
       <Button size="sm" disabled={busy || !ack || approval === ''} onClick={() => void retry()}>恢复所选步骤</Button></>}
