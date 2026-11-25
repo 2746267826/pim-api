@@ -549,7 +549,8 @@ public sealed class NoteMaterialUploadStoreTests : IDisposable
     [Fact]
     public async Task Opus_mime_without_format_still_uses_the_canonical_opus_path()
     {
-        var fixture = RewriteInput(OpusFixture(), input => AudioChunk(input).Remove("format"));
+        var fixture = Fixture.Create(audioSamples: 1600, audio: TinyOpus(),
+            audioFormat: "opus", includeFormat: false);
         var store = Store();
         var begun = await store.BeginAsync(_user, fixture.Request);
         Assert.EndsWith(".opus", begun.Files[5].Path);
@@ -803,7 +804,7 @@ public sealed class NoteMaterialUploadStoreTests : IDisposable
     internal sealed record Fixture(BeginNoteMaterialUploadRequest Request, List<byte[]> Content)
     {
         internal static Fixture Create(int audioSamples = 160, Guid? noteId = null, Guid? baseId = null,
-            byte[]? audio = null, string? audioFormat = null)
+            byte[]? audio = null, string? audioFormat = null, bool includeFormat = true)
         {
             var version = Guid.NewGuid(); var note = noteId ?? Guid.NewGuid(); var recording = Guid.NewGuid();
             var photoBlock = Guid.NewGuid(); var photo = Guid.NewGuid(); var inkBlock = Guid.NewGuid();
@@ -828,7 +829,7 @@ public sealed class NoteMaterialUploadStoreTests : IDisposable
             };
             if (opus)
             {
-                chunk["format"] = "opus";
+                if (includeFormat) chunk["format"] = "opus";
                 chunk["mimeType"] = "audio/ogg";
             }
             var sessionJson = JsonSerializer.Serialize(new

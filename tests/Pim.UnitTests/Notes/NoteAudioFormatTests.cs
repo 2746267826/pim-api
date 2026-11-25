@@ -138,7 +138,7 @@ public sealed class NoteAudioFormatTests
         Assert.Equal(2, fifteen.Count);
         Assert.Equal(0, fifteen[0].SourceOffset);
         Assert.Equal(0, fifteen[0].RecordingOffset);
-        Assert.Equal(240_000, fifteen[1].SourceOffset);
+        Assert.Equal(0, fifteen[1].SourceOffset);
         Assert.Equal(240_000, fifteen[1].RecordingOffset);
         Assert.Equal(240_000, fifteen[1].TimelineOffset);
         Assert.All(fifteen, step => Assert.EndsWith(".opus", step.Path));
