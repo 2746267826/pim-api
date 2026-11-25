@@ -305,6 +305,8 @@ jobs:
           # promote_tag 来源校验、bump PR 模板）错了不会有普通测试信号。
           bash scripts/ci/test-release-workflow-guards.sh
           bash scripts/ci/test-validate-promote-target.sh
+          bash scripts/ci/test-release-publish-guard.sh
+          bash scripts/ci/test-image-latest-guard.sh
           bash scripts/ci/test-validate-release-notes.sh
           # 契约变更检测与客户端通知（#415）：判定错了不会有别的信号，只会静默地不通知。
           bash scripts/ci/test-detect-contract-change.sh
@@ -589,6 +591,12 @@ jobs:
     permissions:
       contents: write
       pull-requests: read
+    # release.yml 的 apply 作业用同一个 group：CI 自动发布（pre-release / 资产刷新）
+    # 与人工正式版提升不能并发，否则提升刚把 release 改成 formal，旧 run 重跑又把它
+    # 写回 pre-release，/releases/latest 会回退。
+    concurrency:
+      group: pim-release-mutation
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
         with:
@@ -614,28 +622,32 @@ jobs:
 
       # 旧 CI run 可能在这个 tag 被 release.yml 提升成正式版之后才重跑。
       # 重跑如果照常执行 softprops 的 prerelease: true，会把正式 tag 降回
-      # pre-release，/releases/latest 也随之回退。正式版只允许 release.yml 提升，
-      # 这里检测到已经是正式版就不碰它。
+      # pre-release，/releases/latest 也随之回退。
+      #
+      # 守卫脚本（可行为测试）的边界：
+      #   * 正式版 → 绝不改写；
+      #   * 已存在 release 的 commit / tag run 号不属于本次 run → 失败；
+      #   * 重跑只有在该 commit 仍是当前 master HEAD 时才刷新/补发；
+      #   * release / master HEAD API 错误 → 失败，不把「读不到」当成「不存在」。
+      # 注意：GitHub 重跑使用的是触发时那版 workflow 定义；本次变更之前的旧 run
+      # 不受新守卫回溯保护，历史 run 不应再重跑。
       - name: Guard existing formal release
         id: existing
         if: steps.decide.outputs.do_release == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.resolve-version.outputs.release_tag }}
+          SHA: ${{ github.sha }}
+          RUN_NUMBER: ${{ github.run_number }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
           set -euo pipefail
-          if IS_PRE="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
-                --json isPrerelease --jq '.isPrerelease' 2>/dev/null)"; then
-            if [[ "$IS_PRE" != "true" ]]; then
-              echo "publish=false" >> "$GITHUB_OUTPUT"
-              echo "::notice::${TAG} 已经是正式版；旧 CI 重跑不重新发布，避免降回 pre-release"
-              exit 0
-            fi
-            echo "::notice::${TAG} 已存在且仍是 pre-release，允许本次重跑刷新资产/说明"
-          else
-            echo "::notice::${TAG} 尚不存在，正常创建 pre-release"
-          fi
-          echo "publish=true" >> "$GITHUB_OUTPUT"
+          bash "$GITHUB_WORKSPACE/scripts/ci/release-publish-guard.sh" \
+            --repo "$GITHUB_REPOSITORY" \
+            --tag "$TAG" \
+            --sha "$SHA" \
+            --run-number "$RUN_NUMBER" \
+            --run-attempt "$RUN_ATTEMPT"
 
       - name: Download release artifacts
         if: steps.decide.outputs.do_release == 'true' && steps.existing.outputs.publish == 'true'

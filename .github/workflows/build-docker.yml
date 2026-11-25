@@ -260,11 +260,29 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # 旧 CI run 重跑时不能把生产默认拉取的 :latest 指回旧 commit。
+      # 版本号固定的 tag 可以照常 push；只有这个可变 tag 必须跟当前 master HEAD。
+      - name: Guard mutable :latest image tag
+        id: latest
+        if: steps.ver.outputs.is_release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          bash "$GITHUB_WORKSPACE/scripts/ci/image-latest-guard.sh" \
+            --repo "$REPO" --sha "$SHA"
+
       - name: Push tags
         if: steps.ver.outputs.is_release == 'true'
         run: |
           docker push "${{ env.IMAGE }}:v${{ steps.ver.outputs.artifact_slug }}"
-          docker push "${{ env.IMAGE }}:latest"
+          if [[ "${{ steps.latest.outputs.push_latest }}" == "true" ]]; then
+            docker push "${{ env.IMAGE }}:latest"
+          else
+            echo "::notice::本次 run 的 commit 不是当前 master HEAD（reason=${{ steps.latest.outputs.reason }}）；不移动 :latest，仅 push 固定版本 tag"
+          fi
 
       - name: Export image tarball
         if: steps.ver.outputs.is_release == 'true'
