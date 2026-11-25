@@ -1,7 +1,7 @@
 name: Test Shard Experiment
 
 # 实验性 workflow：验证把 build-api 的测试拆成多个 shard 是否可行。
-# 完全独立于 ci.yml，只在手动触发时运行，不参与 PR 门禁。
+# 完全独立于 ci.yml，只在手动触发或推实验分支时运行，不参与 PR 门禁。
 #
 # 两个模式：
 #   filter-only  不起 PG、不做 schema 初始化，只验证「按 filter 切分后总数是否等于全集」
@@ -57,37 +57,31 @@ jobs:
           path: /tmp/trx/*.trx
           retention-days: 14
 
-  # ── 5 个 shard：按实测耗时切分（Api 拆细，其余合并）──
+  # ── filter-only：不起 PG，快速验证切分完整性（本轮临时关闭，跑 full）──
   shard:
-    if: github.event_name == 'push' || inputs.mode == 'filter-only'
+    if: false
     runs-on: ubuntu-latest
-    # 防止某个测试 hang 住把 job 挂死（昨晚那次其实是时区误读，但确实需要这个保险）
+    # 防止某个测试 hang 住把 job 挂死
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         include:
-          # shard-1：单个最慢的类，9.2 分钟，决定整体墙钟下限
           - name: shard-1
             desc: 'Api: PcKeystatsUploadValidationE2ETests（最慢单类）'
             filter: 'FullyQualifiedName~Pim.UnitTests.Api.PcKeystatsUploadValidationE2ETests'
-          # shard-2：Api 慢组 A（三个 ~4 分钟的 E2E 类）
           - name: shard-2
             desc: 'Api: PublicRegistrationGate + AuthPasswordChange + AdminCreateUser'
             filter: 'FullyQualifiedName~Pim.UnitTests.Api.PublicRegistrationGateE2ETests|FullyQualifiedName~Pim.UnitTests.Api.AuthPasswordChangeE2ETests|FullyQualifiedName~Pim.UnitTests.Api.AdminCreateUserE2ETests'
-          # shard-3：Api 慢组 B（四个 3-3.5 分钟的 E2E 类）
           - name: shard-3
             desc: 'Api: PcTrackerEndpoints + FilesProviderErrorSurface + OneDriveContent + TaskChecklistGet'
             filter: 'FullyQualifiedName~Pim.UnitTests.Api.PcTrackerEndpointsE2ETests|FullyQualifiedName~Pim.UnitTests.Api.FilesProviderErrorSurfaceTests|FullyQualifiedName~Pim.UnitTests.Api.OneDriveContentEndpointsE2ETests|FullyQualifiedName~Pim.UnitTests.Api.TaskChecklistGetE2ETests'
-          # shard-4：Api 其余（用 NOT 排除已分配的 8 个类）
           - name: shard-4
             desc: 'Api 其余类（排除慢组 1/2/3）'
             filter: 'FullyQualifiedName~Pim.UnitTests.Api&FullyQualifiedName!~PcKeystatsUploadValidationE2ETests&FullyQualifiedName!~PublicRegistrationGateE2ETests&FullyQualifiedName!~AuthPasswordChangeE2ETests&FullyQualifiedName!~AdminCreateUserE2ETests&FullyQualifiedName!~PcTrackerEndpointsE2ETests&FullyQualifiedName!~FilesProviderErrorSurfaceTests&FullyQualifiedName!~OneDriveContentEndpointsE2ETests&FullyQualifiedName!~TaskChecklistGetE2ETests'
-          # shard-5：非 Api 里耗时较大的一组（Notes 352s + Files 97s + Tiles 78s + Services 41s）
           - name: shard-5
             desc: '非 Api-A：Notes + Files + Tiles + Services'
             filter: 'FullyQualifiedName~Pim.UnitTests.Notes|FullyQualifiedName~Pim.UnitTests.Files|FullyQualifiedName~Pim.UnitTests.Tiles|FullyQualifiedName~Pim.UnitTests.Services'
-          # shard-6：非 Api 其余（Mcp 225s + Harness 2377个30s + Calendar 932个28s + …）
           - name: shard-6
             desc: '非 Api-B：Mcp + Harness + Calendar + PcTracker + Mobile + 其余'
             filter: 'FullyQualifiedName!~Pim.UnitTests.Api&FullyQualifiedName!~Pim.UnitTests.Notes&FullyQualifiedName!~Pim.UnitTests.Files&FullyQualifiedName!~Pim.UnitTests.Tiles&FullyQualifiedName!~Pim.UnitTests.Services'
@@ -120,4 +114,131 @@ jobs:
         with:
           name: shard-log-${{ matrix.name }}
           path: /tmp/${{ matrix.name }}.log
+          retention-days: 7
+
+  # ── full：起 PG + 迁移 + 运行时初始化器，真跑全部（含 RealDb 用例）──
+  shard-full:
+    if: github.event_name == 'push' || inputs.mode == 'full'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    # 复刻 build-api.yml 的一次性 PostgreSQL：随本次运行创建、结束销毁
+    # TempMigrationDatabase 会自行建库/删库，需 CREATEDB 权限（官方镜像 POSTGRES_USER 即超级用户）
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: pim_ci
+          POSTGRES_PASSWORD: pim_ci_temporary
+          POSTGRES_DB: pim_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      PIM_TEST_CONN: "Host=127.0.0.1;Port=5432;Database=pim_ci;Username=pim_ci;Password=pim_ci_temporary"
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: shard-1
+            desc: 'Api: PcKeystatsUploadValidationE2ETests'
+            filter: 'FullyQualifiedName~Pim.UnitTests.Api.PcKeystatsUploadValidationE2ETests'
+          - name: shard-2
+            desc: 'Api: PublicRegistrationGate + AuthPasswordChange + AdminCreateUser'
+            filter: 'FullyQualifiedName~Pim.UnitTests.Api.PublicRegistrationGateE2ETests|FullyQualifiedName~Pim.UnitTests.Api.AuthPasswordChangeE2ETests|FullyQualifiedName~Pim.UnitTests.Api.AdminCreateUserE2ETests'
+          - name: shard-3
+            desc: 'Api: PcTrackerEndpoints + FilesProviderErrorSurface + OneDriveContent + TaskChecklistGet'
+            filter: 'FullyQualifiedName~Pim.UnitTests.Api.PcTrackerEndpointsE2ETests|FullyQualifiedName~Pim.UnitTests.Api.FilesProviderErrorSurfaceTests|FullyQualifiedName~Pim.UnitTests.Api.OneDriveContentEndpointsE2ETests|FullyQualifiedName~Pim.UnitTests.Api.TaskChecklistGetE2ETests'
+          - name: shard-4
+            desc: 'Api 其余类'
+            filter: 'FullyQualifiedName~Pim.UnitTests.Api&FullyQualifiedName!~PcKeystatsUploadValidationE2ETests&FullyQualifiedName!~PublicRegistrationGateE2ETests&FullyQualifiedName!~AuthPasswordChangeE2ETests&FullyQualifiedName!~AdminCreateUserE2ETests&FullyQualifiedName!~PcTrackerEndpointsE2ETests&FullyQualifiedName!~FilesProviderErrorSurfaceTests&FullyQualifiedName!~OneDriveContentEndpointsE2ETests&FullyQualifiedName!~TaskChecklistGetE2ETests'
+          - name: shard-5
+            desc: '非 Api-A：Notes + Files + Tiles + Services'
+            filter: 'FullyQualifiedName~Pim.UnitTests.Notes|FullyQualifiedName~Pim.UnitTests.Files|FullyQualifiedName~Pim.UnitTests.Tiles|FullyQualifiedName~Pim.UnitTests.Services'
+          - name: shard-6
+            desc: '非 Api-B：Mcp + Harness + Calendar + PcTracker + Mobile + 其余'
+            filter: 'FullyQualifiedName!~Pim.UnitTests.Api&FullyQualifiedName!~Pim.UnitTests.Notes&FullyQualifiedName!~Pim.UnitTests.Files&FullyQualifiedName!~Pim.UnitTests.Tiles&FullyQualifiedName!~Pim.UnitTests.Services'
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Restore
+        run: dotnet restore Pim.sln --runtime linux-x64
+
+      # 与 build-api.yml 完全一致的 schema 初始化：迁移链 + 运行时模块初始化器
+      # 真库用例假定目标库具备完整 schema；只做迁移链会让真库用例在查询运行时维护的列时失败（42703）
+      - name: Initialize database schema (migrations + runtime initializers)
+        run: |
+          set -euo pipefail
+          dotnet tool install --global dotnet-ef --version 8.0.11 >/dev/null 2>&1 || true
+          export PATH="$PATH:$HOME/.dotnet/tools"
+
+          echo "==> 1/2 迁移链"
+          dotnet ef database update \
+            --project src/Pim.Infrastructure/Pim.Infrastructure.csproj \
+            --startup-project src/Pim.Api/Pim.Api.csproj \
+            --connection "$PIM_TEST_CONN"
+
+          echo "==> 2/2 启动 API 触发运行时模块初始化器"
+          openssl genrsa -out "$RUNNER_TEMP/jwt.pem" 2048
+          export ConnectionStrings__DefaultConnection="$PIM_TEST_CONN"
+          export Jwt__PrivateKeyPath="$RUNNER_TEMP/jwt.pem"
+          export DataProtection__KeysPath="$RUNNER_TEMP/dp_keys"
+          export PIM_OPS_KEY=ci-temporary-ops-key
+          export PIM_OPS_RO_CONNECTION="$PIM_TEST_CONN"
+          export ASPNETCORE_ENVIRONMENT=Test
+          export ASPNETCORE_URLS=http://127.0.0.1:5999
+
+          dotnet run --project src/Pim.Api --no-launch-profile --no-restore > "$RUNNER_TEMP/api-init.log" 2>&1 &
+          API_PID=$!
+          READY=0
+          for _ in $(seq 1 60); do
+            if curl -sf http://127.0.0.1:5999/health >/dev/null 2>&1; then READY=1; break; fi
+            sleep 2
+          done
+          kill "$API_PID" 2>/dev/null || true
+          wait "$API_PID" 2>/dev/null || true
+          pkill -f "Pim.Api" 2>/dev/null || true
+          sleep 2
+          if [ "$READY" != "1" ]; then
+            echo "::error::API 未在 120s 内就绪，运行时 schema 初始化可能未完成"
+            tail -50 "$RUNNER_TEMP/api-init.log"
+            exit 1
+          fi
+          echo "schema 初始化完成"
+
+      - name: '${{ matrix.name }} (full) — ${{ matrix.desc }}'
+        env:
+          SHARD_FILTER: ${{ matrix.filter }}
+          SHARD_NAME: ${{ matrix.name }}
+        run: |
+          set +e
+          START=$(date +%s)
+          dotnet test Pim.sln --configuration Release --no-restore \
+            --filter "$SHARD_FILTER" \
+            --logger "console;verbosity=minimal" 2>&1 | tee "/tmp/full-${SHARD_NAME}.log"
+          RC=$?
+          END=$(date +%s)
+          echo "=== full-${SHARD_NAME} 测试耗时: $((END-START)) 秒 ==="
+          grep -E 'Passed!|Failed!|Total tests|Passed:|Failed:|Skipped:' "/tmp/full-${SHARD_NAME}.log" | tail -5
+          exit $RC
+
+      - name: 'Upload ${{ matrix.name }} full log'
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: full-log-${{ matrix.name }}
+          path: /tmp/full-${{ matrix.name }}.log
           retention-days: 7
