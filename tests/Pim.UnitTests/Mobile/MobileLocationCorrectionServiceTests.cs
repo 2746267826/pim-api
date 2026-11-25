@@ -809,7 +809,7 @@ public sealed class MobileLocationCorrectionServiceTests
             request with { Cursor = legacyCursor },
             CancellationToken.None);
         var encodedPage = firstPage.NextCursor is null
-            ? Enumerable.Empty<string>()
+            ? Enumerable.Empty<Guid>()
             : (await service.GetPointsAsync(
                 request with { Cursor = firstPage.NextCursor },
                 CancellationToken.None)).Items.Select(point => point.Id);

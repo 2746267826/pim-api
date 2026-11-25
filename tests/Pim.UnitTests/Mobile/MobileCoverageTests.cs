@@ -366,7 +366,11 @@ public sealed class MobileCoverageTests
         var page2 = await svc.GetSegmentPointsAsync(segmentId, new MobileLocationQueryRequest(DateTimeOffset.Parse("2026-07-07T00:00:00Z"), DateTimeOffset.Parse("2026-07-08T00:00:00Z"), Cursor: page1.NextCursor, PageSize: 2));
         Assert.Equal(2, page2.Items.Count);
         Assert.Equal(
-            new[] { "33333333-3333-3333-3333-333333333333", "44444444-4444-4444-4444-444444444444" },
+            new[]
+            {
+                Guid.Parse("33333333-3333-3333-3333-333333333333"),
+                Guid.Parse("44444444-4444-4444-4444-444444444444"),
+            },
             page2.Items.Select(point => point.Id).ToArray());
         Assert.False(page2.HasMore);
     }
@@ -470,7 +474,7 @@ public sealed class MobileCoverageTests
         var page = await svc.GetSegmentPointsAsync(segment.Id, query);
 
         Assert.Equal(
-            segment.Path.Select(point => point.Id).ToArray(),
+            segment.Path.Select(point => Guid.Parse(point.Id)).ToArray(),
             page.Items.Select(point => point.Id).ToArray());
     }
 
