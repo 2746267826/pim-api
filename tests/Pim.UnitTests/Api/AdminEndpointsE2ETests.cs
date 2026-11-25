@@ -114,6 +114,25 @@ public class AdminEndpointsE2ETests
         Assert.Equal(HttpStatusCode.OK, demoteResp2.StatusCode);
         Assert.Equal(HttpStatusCode.Forbidden,
             (await Authed(factory, r1.AccessToken!).GetAsync("/api/v1/admin/users")).StatusCode);
+        var staleAdminClient = Authed(factory, r1.AccessToken!);
+        Assert.Equal(HttpStatusCode.Forbidden,
+            (await staleAdminClient.GetAsync(
+                $"/api/v1/operations/audit/event/{Guid.NewGuid()}")).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden,
+            (await staleAdminClient.GetAsync("/api/v1/operations/audit/export")).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden,
+            (await staleAdminClient.GetAsync("/api/v1/calendar/data-center/audit/export")).StatusCode);
+        Assert.Equal(HttpStatusCode.OK,
+            (await staleAdminClient.PostAsJsonAsync("/api/v1/calendar/data-center/query",
+                new
+                {
+                    search = (string?)null,
+                    objectType = (string?)null,
+                    source = (string?)null,
+                    pendingOnly = false,
+                    page = 1,
+                    pageSize = 50
+                })).StatusCode);
 
         // 7b. bob 重新登录获取带 admin 角色的新令牌（旧令牌仍是 user 角色）
         var bobLogin = await anon.PostAsJsonAsync("/api/v1/auth/login", new { username = "bob", password = "password123" });
@@ -260,6 +279,36 @@ public class AdminEndpointsE2ETests
         var adminClient = Authed(factory, admin.AccessToken!);
         var ordinaryClient = Authed(factory, ordinary.AccessToken!);
         var objectId = Guid.NewGuid();
+        var adminAuditVersionId = Guid.NewGuid();
+        var ordinaryAuditVersionId = Guid.NewGuid();
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
+            db.AuditVersions.AddRange(
+                new AuditVersionEntity
+                {
+                    Id = adminAuditVersionId,
+                    UserId = GetUserId(factory, "calendar-admin"),
+                    ObjectType = "event",
+                    ObjectId = objectId,
+                    Source = "synthetic-admin",
+                    BeforeJson = "{}",
+                    AfterJson = "{\"title\":\"admin\"}",
+                    ChangedFieldsJson = "[\"title\"]",
+                },
+                new AuditVersionEntity
+                {
+                    Id = ordinaryAuditVersionId,
+                    UserId = GetUserId(factory, "calendar-user"),
+                    ObjectType = "event",
+                    ObjectId = Guid.NewGuid(),
+                    Source = "synthetic-ordinary",
+                    BeforeJson = "{}",
+                    AfterJson = "{\"title\":\"ordinary\"}",
+                    ChangedFieldsJson = "[\"title\"]",
+                });
+            await db.SaveChangesAsync();
+        }
         var governanceRequests = new (string Method, string Path, object? Body)[]
         {
             ("POST", "/api/v1/calendar/data-center/batch/preview", new { action = "archive", objects = new[] { new { objectType = "task", objectId } } }),
@@ -279,6 +328,22 @@ public class AdminEndpointsE2ETests
         var query = new { search = (string?)null, objectType = (string?)null, source = (string?)null, pendingOnly = false, page = 1, pageSize = 50 };
         Assert.Equal(HttpStatusCode.OK, (await ordinaryClient.PostAsJsonAsync("/api/v1/calendar/data-center/query", query)).StatusCode);
         Assert.Equal(HttpStatusCode.OK, (await adminClient.PostAsJsonAsync("/api/v1/calendar/data-center/query", query)).StatusCode);
+        var auditQuery = new { search = (string?)null, objectType = "audit-version", source = "synthetic-admin", pendingOnly = false, page = 1, pageSize = 50 };
+        var ordinaryAuditResponse = await ordinaryClient.PostAsJsonAsync(
+            "/api/v1/calendar/data-center/query", auditQuery);
+        Assert.Equal(HttpStatusCode.OK, ordinaryAuditResponse.StatusCode);
+        var ordinaryAuditData = (await ReadDataAsync(ordinaryAuditResponse)).GetProperty("data");
+        Assert.Equal(0, ordinaryAuditData.GetProperty("total").GetInt32());
+        Assert.Equal(0, ordinaryAuditData.GetProperty("items").GetArrayLength());
+
+        var adminAuditResponse = await adminClient.PostAsJsonAsync(
+            "/api/v1/calendar/data-center/query", auditQuery);
+        Assert.Equal(HttpStatusCode.OK, adminAuditResponse.StatusCode);
+        var adminAuditData = (await ReadDataAsync(adminAuditResponse)).GetProperty("data");
+        Assert.Equal(1, adminAuditData.GetProperty("total").GetInt32());
+        var adminAuditItem = Assert.Single(adminAuditData.GetProperty("items").EnumerateArray());
+        Assert.Equal(adminAuditVersionId.ToString("D"), adminAuditItem.GetProperty("objectId").GetString());
+        Assert.NotEqual(ordinaryAuditVersionId.ToString("D"), adminAuditItem.GetProperty("objectId").GetString());
 
         var batchPreview = await adminClient.PostAsJsonAsync("/api/v1/calendar/data-center/batch/preview",
             new { action = "archive", objects = new[] { new { objectType = "task", objectId } } });

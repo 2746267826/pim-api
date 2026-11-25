@@ -11,6 +11,8 @@ namespace Pim.Module.Calendar.Services;
 
 public sealed class DataCenterQueryService
 {
+    private const string GenericConfirmationSummary = "待确认操作";
+
     private static readonly HashSet<string> PendingStatuses = new(StringComparer.OrdinalIgnoreCase)
     {
         OperationConfirmationStatus.Pending.ToString(),
@@ -47,7 +49,8 @@ public sealed class DataCenterQueryService
         // Fast path: single ObjectType → DB-level pagination to avoid full load
         if (!string.IsNullOrWhiteSpace(filterType))
         {
-            var single = await QuerySingleTypeAsync(userId, filterType!, searchTerm, filterSource, request, page, pageSize, ct);
+            var single = await QuerySingleTypeAsync(userId, isAdmin, filterType!, searchTerm, filterSource,
+                request, page, pageSize, ct);
             if (single != null) return single;
         }
 
@@ -80,11 +83,18 @@ public sealed class DataCenterQueryService
         {
             var q = _db.Set<TaskExecutionSegmentEntity>().AsNoTracking().Include(s => s.Task).Where(s => s.UserId == userId);
             if (!string.IsNullOrWhiteSpace(filterSource)) q = q.Where(s => s.Source == filterSource);
-            if (!string.IsNullOrWhiteSpace(searchTerm)) q = q.Where(s =>
-                s.Task.Title.ToLower().Contains(searchTerm.ToLower())
-                || s.PlanningReason != null && s.PlanningReason.ToLower().Contains(searchTerm.ToLower())
-                || s.Source.ToLower().Contains(searchTerm.ToLower())
-                || s.Status.ToLower().Contains(searchTerm.ToLower()));
+            if (!string.IsNullOrWhiteSpace(searchTerm))
+            {
+                var term = searchTerm.ToLower();
+                q = isAdmin
+                    ? q.Where(s => s.Task.Title.ToLower().Contains(term)
+                        || s.PlanningReason != null && s.PlanningReason.ToLower().Contains(term)
+                        || s.Source.ToLower().Contains(term)
+                        || s.Status.ToLower().Contains(term))
+                    : q.Where(s => s.Task.Title.ToLower().Contains(term)
+                        || s.Source.ToLower().Contains(term)
+                        || s.Status.ToLower().Contains(term));
+            }
             var segments = await q.Take(2000).ToListAsync(ct);
             items.AddRange(segments.Select(s => new DataCenterItem("task-segment", s.Id, s.Task.Title, s.Source,
                 s.Status, s.StartsAt, s.EndsAt,
@@ -142,11 +152,18 @@ public sealed class DataCenterQueryService
         if (ShouldInclude("reminder"))
         {
             var q = _db.Set<ReminderEntity>().AsNoTracking().Where(r => r.UserId == userId);
-            if (!string.IsNullOrWhiteSpace(searchTerm)) q = q.Where(r =>
-                r.Title.ToLower().Contains(searchTerm.ToLower())
-                || r.TriggerReason != null && r.TriggerReason.ToLower().Contains(searchTerm.ToLower())
-                || r.Body != null && r.Body.ToLower().Contains(searchTerm.ToLower())
-                || r.Status.ToLower().Contains(searchTerm.ToLower()));
+            if (!string.IsNullOrWhiteSpace(searchTerm))
+            {
+                var term = searchTerm.ToLower();
+                q = isAdmin
+                    ? q.Where(r => r.Title.ToLower().Contains(term)
+                        || r.TriggerReason != null && r.TriggerReason.ToLower().Contains(term)
+                        || r.Body != null && r.Body.ToLower().Contains(term)
+                        || r.Status.ToLower().Contains(term))
+                    : q.Where(r => r.Title.ToLower().Contains(term)
+                        || r.Body != null && r.Body.ToLower().Contains(term)
+                        || r.Status.ToLower().Contains(term));
+            }
             var reminders = await q.Take(2000).ToListAsync(ct);
             items.AddRange(reminders.Select(r => new DataCenterItem("reminder", r.Id, r.Title, "reminder",
                 r.Status, r.ScheduledAt, null,
@@ -167,11 +184,18 @@ public sealed class DataCenterQueryService
         if (ShouldInclude("report"))
         {
             var q = _db.Set<ReportArtifactEntity>().AsNoTracking().Where(r => r.UserId == userId);
-            if (!string.IsNullOrWhiteSpace(searchTerm)) q = q.Where(r =>
-                r.Kind.ToLower().Contains(searchTerm.ToLower())
-                || r.Status.ToLower().Contains(searchTerm.ToLower())
-                || r.ContentMarkdown != null && r.ContentMarkdown.ToLower().Contains(searchTerm.ToLower())
-                || r.MetricsJson != null && r.MetricsJson.ToLower().Contains(searchTerm.ToLower()));
+            if (!string.IsNullOrWhiteSpace(searchTerm))
+            {
+                var term = searchTerm.ToLower();
+                q = isAdmin
+                    ? q.Where(r => r.Kind.ToLower().Contains(term)
+                        || r.Status.ToLower().Contains(term)
+                        || r.ContentMarkdown != null && r.ContentMarkdown.ToLower().Contains(term)
+                        || r.MetricsJson != null && r.MetricsJson.ToLower().Contains(term))
+                    : q.Where(r => r.Kind.ToLower().Contains(term)
+                        || r.Status.ToLower().Contains(term)
+                        || r.ContentMarkdown != null && r.ContentMarkdown.ToLower().Contains(term));
+            }
             var reports = await q.Take(2000).ToListAsync(ct);
             items.AddRange(reports.Select(r => new DataCenterItem("report", r.Id, $"{r.Kind} report", "report",
                 r.Status, r.GeneratedAt, null,
@@ -180,11 +204,18 @@ public sealed class DataCenterQueryService
         if (ShouldInclude("report-suggestion"))
         {
             var q = _db.Set<ReportSuggestionEntity>().AsNoTracking().Include(s => s.Report).Where(s => s.UserId == userId);
-            if (!string.IsNullOrWhiteSpace(searchTerm)) q = q.Where(s =>
-                s.Action.ToLower().Contains(searchTerm.ToLower())
-                || s.Status.ToLower().Contains(searchTerm.ToLower())
-                || s.Summary != null && s.Summary.ToLower().Contains(searchTerm.ToLower())
-                || s.PayloadJson != null && s.PayloadJson.ToLower().Contains(searchTerm.ToLower()));
+            if (!string.IsNullOrWhiteSpace(searchTerm))
+            {
+                var term = searchTerm.ToLower();
+                q = isAdmin
+                    ? q.Where(s => s.Action.ToLower().Contains(term)
+                        || s.Status.ToLower().Contains(term)
+                        || s.Summary != null && s.Summary.ToLower().Contains(term)
+                        || s.PayloadJson != null && s.PayloadJson.ToLower().Contains(term))
+                    : q.Where(s => s.Action.ToLower().Contains(term)
+                        || s.Status.ToLower().Contains(term)
+                        || s.Summary != null && s.Summary.ToLower().Contains(term));
+            }
             var reportSuggestions = await q.Take(2000).ToListAsync(ct);
             items.AddRange(reportSuggestions.Select(s => new DataCenterItem("report-suggestion", s.Id, s.Action,
                 "report", s.Status, s.CreatedAt, s.UpdatedAt,
@@ -247,20 +278,32 @@ public sealed class DataCenterQueryService
         }
         if (ShouldInclude("confirmation"))
         {
-            var q = _db.OperationConfirmations.AsNoTracking().Where(c => c.RequestedByUserId == null || c.RequestedByUserId == userId);
+            var q = _db.OperationConfirmations.AsNoTracking().AsQueryable();
+            q = isAdmin
+                ? q.Where(c => c.RequestedByUserId == null || c.RequestedByUserId == userId)
+                : q.Where(c => c.RequestedByUserId == userId);
             if (!string.IsNullOrWhiteSpace(filterSource)) q = q.Where(c => c.Source == filterSource);
-            if (!string.IsNullOrWhiteSpace(searchTerm)) q = q.Where(c =>
-                c.OperationType.ToLower().Contains(searchTerm.ToLower())
-                || c.Source.ToLower().Contains(searchTerm.ToLower())
-                || c.Status.ToLower().Contains(searchTerm.ToLower())
-                || c.Summary != null && c.Summary.ToLower().Contains(searchTerm.ToLower()));
+            if (!string.IsNullOrWhiteSpace(searchTerm))
+            {
+                var term = searchTerm.ToLower();
+                q = isAdmin
+                    ? q.Where(c => c.OperationType.ToLower().Contains(term)
+                        || c.Source.ToLower().Contains(term)
+                        || c.Status.ToLower().Contains(term)
+                        || c.Summary != null && c.Summary.ToLower().Contains(term))
+                    : q.Where(c => c.OperationType.ToLower().Contains(term)
+                        || c.Source.ToLower().Contains(term)
+                        || c.Status.ToLower().Contains(term));
+            }
             if (request.PendingOnly)
             {
                 var now = _timeProvider.GetUtcNow();
                 q = q.Where(c => PendingStatuses.Contains(c.Status) && c.ExpiresAt > now);
             }
             var confirmations = await q.Take(2000).ToListAsync(ct);
-            items.AddRange(confirmations.Select(c => new DataCenterItem("confirmation", c.Id, c.OperationType, c.Source, c.Status, c.CreatedAt, c.ExpiresAt, c.Summary)));
+            items.AddRange(confirmations.Select(c => new DataCenterItem("confirmation", c.Id, c.OperationType,
+                c.Source, c.Status, c.CreatedAt, c.ExpiresAt,
+                isAdmin ? c.Summary : GenericConfirmationSummary)));
         }
         if (ShouldInclude("recycle-bin"))
         {
@@ -301,7 +344,9 @@ public sealed class DataCenterQueryService
         return new DataCenterQueryResponse(pageItems, page, pageSize, totalCount);
     }
 
-    private async Task<DataCenterQueryResponse?> QuerySingleTypeAsync(Guid userId, string filterType, string? searchTerm, string? filterSource, DataCenterQueryRequest request, int page, int pageSize, CancellationToken ct)
+    private async Task<DataCenterQueryResponse?> QuerySingleTypeAsync(Guid userId, bool isAdmin,
+        string filterType, string? searchTerm, string? filterSource, DataCenterQueryRequest request, int page,
+        int pageSize, CancellationToken ct)
     {
         // 为最常见的单类型查询提供真正的 DB pagination，避免全量
         switch (filterType)
@@ -327,8 +372,18 @@ public sealed class DataCenterQueryService
             }
             case "confirmation":
             {
-                var q = _db.OperationConfirmations.AsNoTracking().Where(c => c.RequestedByUserId == null || c.RequestedByUserId == userId);
-                if (!string.IsNullOrWhiteSpace(searchTerm)) q = q.Where(c => c.OperationType.ToLower().Contains(searchTerm!.ToLower()) || c.Summary != null && c.Summary.ToLower().Contains(searchTerm!.ToLower()));
+                var q = _db.OperationConfirmations.AsNoTracking().AsQueryable();
+                q = isAdmin
+                    ? q.Where(c => c.RequestedByUserId == null || c.RequestedByUserId == userId)
+                    : q.Where(c => c.RequestedByUserId == userId);
+                if (!string.IsNullOrWhiteSpace(searchTerm))
+                {
+                    var term = searchTerm.ToLower();
+                    q = isAdmin
+                        ? q.Where(c => c.OperationType.ToLower().Contains(term)
+                            || c.Summary != null && c.Summary.ToLower().Contains(term))
+                        : q.Where(c => c.OperationType.ToLower().Contains(term));
+                }
                 if (!string.IsNullOrWhiteSpace(filterSource)) q = q.Where(c => c.Source == filterSource);
                 if (request.PendingOnly)
                 {
@@ -337,7 +392,9 @@ public sealed class DataCenterQueryService
                 }
                 var total = await q.CountAsync(ct);
                 var rows = await q.OrderBy(c => c.CreatedAt).ThenBy(c => c.Id).Skip((page-1)*pageSize).Take(pageSize).ToListAsync(ct);
-                var items = rows.Select(c => new DataCenterItem("confirmation", c.Id, c.OperationType, c.Source, c.Status, c.CreatedAt, c.ExpiresAt, c.Summary)).ToList();
+                var items = rows.Select(c => new DataCenterItem("confirmation", c.Id, c.OperationType,
+                    c.Source, c.Status, c.CreatedAt, c.ExpiresAt,
+                    isAdmin ? c.Summary : GenericConfirmationSummary)).ToList();
                 return new DataCenterQueryResponse(items, page, pageSize, total);
             }
             default: return null;

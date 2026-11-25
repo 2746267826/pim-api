@@ -3,10 +3,16 @@ namespace Pim.Core.Notes;
 /// <summary>
 /// Projects successful Native Notes responses for ordinary users.
 ///
-/// Version/artifact/task identifiers, CAS revisions, step keys and content hashes stay in the
-/// response because the Android/Windows upload and conflict-resolution protocols need them.
-/// Diagnostics that are not part of those protocols (attempt/log ids, error text, source paths,
-/// hashes of server inputs, prompt/model metadata and coverage issue details) are removed.
+/// Version/artifact/task identifiers, CAS revisions, step keys, generation task ids and the fixed
+/// input/manifest/content hashes stay in the response because the Android/Windows upload, task
+/// suggestion, conflict-resolution and bundle protocols need them. Diagnostics that are not part
+/// of those protocols (attempt/log ids, error text, source paths, prompt/model metadata, receipt
+/// bindings and coverage issue details) are removed.
+///
+/// The material endpoints (<c>/native-notes/{noteId}/current</c>, <c>/versions/{id}</c>,
+/// <c>/versions/{id}/bundle</c> and <c>/{noteId}/versions</c>) intentionally keep the owner's
+/// <c>InputJson</c>/<c>ManifestJson</c>: they are the user-authored note and its resumable upload
+/// contract, not server diagnostics.
 /// </summary>
 public static class NoteResponsePrivacy
 {
@@ -18,8 +24,6 @@ public static class NoteResponsePrivacy
         if (includeDiagnostics) return task;
         return task with
         {
-            InputSha256 = string.Empty,
-            ManifestSha256 = string.Empty,
             PlanVersion = string.Empty,
             Coverage = RedactCoverage(task.Coverage),
             Issues = RedactIssues(task.Issues),
@@ -50,14 +54,9 @@ public static class NoteResponsePrivacy
 
     public static NoteDerivedArtifactDto RedactArtifact(NoteDerivedArtifactDto artifact, bool includeDiagnostics)
     {
-        if (includeDiagnostics) return artifact;
-        return artifact with
-        {
-            Versions = artifact.Versions.Select(version => version with
-            {
-                GenerationTaskId = null
-            }).ToArray()
-        };
+        // Version summaries contain only ids, hashes, conflict/head state and timestamps.
+        // GenerationTaskId is retained because task suggestions and Android bind to it.
+        return artifact;
     }
 
     public static NoteDerivedVersionDto RedactVersion(NoteDerivedVersionDto version, bool includeDiagnostics)
@@ -65,9 +64,6 @@ public static class NoteResponsePrivacy
         if (includeDiagnostics) return version;
         return version with
         {
-            GenerationTaskId = null,
-            InputSha256 = string.Empty,
-            ManifestSha256 = string.Empty,
             PlanVersion = string.Empty,
             PromptVersion = string.Empty,
             AiCallLogId = null,
@@ -95,7 +91,6 @@ public static class NoteResponsePrivacy
             Issues = RedactIssues(receipt.Issues),
             Steps = receipt.Steps.Select(step => step with
             {
-                StepKey = string.Empty,
                 RequestId = null,
                 AiCallLogId = null,
                 EvidenceId = null,
@@ -104,7 +99,6 @@ public static class NoteResponsePrivacy
             }).ToArray(),
             Sources = receipt.Sources.Select(source => source with
             {
-                SourceId = string.Empty,
                 BlockId = null,
                 SourcePath = null,
                 SourceSha256 = null,
@@ -117,10 +111,6 @@ public static class NoteResponsePrivacy
             }).ToArray(),
             Batches = receipt.Batches.Select(batch => batch with
             {
-                StepKey = string.Empty,
-                SourceIds = [],
-                PlannedImages = 0,
-                ActualImages = 0,
                 Binding = null,
                 Issues = RedactIssues(batch.Issues)
             }).ToArray()

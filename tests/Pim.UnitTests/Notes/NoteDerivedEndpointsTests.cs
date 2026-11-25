@@ -137,8 +137,8 @@ public sealed class NoteDerivedEndpointsTests : IDisposable
 
         var ordinaryTask = await Data<NoteDerivedTaskDto>(
             await ordinaryClient.GetAsync($"{Tasks}/{ordinaryTaskId}"));
-        Assert.Equal(string.Empty, ordinaryTask.InputSha256);
-        Assert.Equal(string.Empty, ordinaryTask.ManifestSha256);
+        Assert.Equal("input-sha", ordinaryTask.InputSha256);
+        Assert.Equal("manifest-sha", ordinaryTask.ManifestSha256);
         Assert.Equal(string.Empty, ordinaryTask.PlanVersion);
         var ordinaryIssue = Assert.Single(ordinaryTask.Issues);
         Assert.Equal(NoteResponsePrivacy.GenericIssueCode, ordinaryIssue.Code);
@@ -157,11 +157,16 @@ public sealed class NoteDerivedEndpointsTests : IDisposable
         Assert.Equal(string.Empty, ordinaryReceipt.InputSha256);
         Assert.Equal(string.Empty, ordinaryReceipt.ManifestSha256);
         var ordinarySource = Assert.Single(ordinaryReceipt.Sources);
-        Assert.Equal(string.Empty, ordinarySource.SourceId);
+        Assert.StartsWith("text:", ordinarySource.SourceId, StringComparison.Ordinal);
         Assert.Null(ordinarySource.SourcePath);
         Assert.Null(ordinarySource.SourceSha256);
         Assert.Null(ordinarySource.TextSha256);
         Assert.Empty(ordinarySource.Bindings);
+        var ordinaryReceiptStep = Assert.Single(ordinaryReceipt.Steps);
+        Assert.Equal("image-batch:0001", ordinaryReceiptStep.StepKey);
+        var ordinaryBatch = Assert.Single(ordinaryReceipt.Batches);
+        Assert.Equal("image-batch:0001", ordinaryBatch.StepKey);
+        Assert.Empty(ordinaryBatch.SourceIds);
 
         var adminTask = await Data<NoteDerivedTaskDto>(
             await adminClient.GetAsync($"{Tasks}/{adminTaskId}"));
@@ -183,6 +188,82 @@ public sealed class NoteDerivedEndpointsTests : IDisposable
         Assert.Equal("input-sha", adminReceipt.InputSha256);
         Assert.Equal("manifest-sha", adminReceipt.ManifestSha256);
         Assert.NotEmpty(adminReceipt.Sources);
+    }
+
+    [Fact]
+    public async Task OrdinaryUserArtifactVersionKeepsSyncFieldsAndHidesDiagnostics()
+    {
+        var admin = await AuthRegistrationTestHost.SeedAndLoginAsync(_factory,
+            "derived-artifact-admin-" + Guid.NewGuid().ToString("N"), "admin");
+        var ordinary = await AuthRegistrationTestHost.SeedAndLoginAsync(_factory,
+            "derived-artifact-user-" + Guid.NewGuid().ToString("N"));
+        using var adminClient = AuthRegistrationTestHost.Authed(_factory, admin.AccessToken);
+        using var ordinaryClient = AuthRegistrationTestHost.Authed(_factory, ordinary.AccessToken);
+        var store = _factory.Services.GetRequiredService<NoteDerivedStore>();
+
+        var ordinaryNoteId = Guid.NewGuid();
+        var ordinaryArtifact = await store.EnsureArtifactAsync(ordinary.UserId, ordinaryNoteId,
+            NoteDerivedArtifactKind.CompleteRecord, default);
+        var ordinaryVersionId = Guid.NewGuid();
+        var ordinaryGenerationTaskId = Guid.NewGuid();
+        await store.AppendGeneratedAsync(ordinary.UserId, ordinaryArtifact.ArtifactId,
+            DiagnosticDraft(ordinaryArtifact, ordinaryVersionId, ordinaryGenerationTaskId, "普通用户正文"),
+            default);
+
+        var adminNoteId = Guid.NewGuid();
+        var adminArtifact = await store.EnsureArtifactAsync(admin.UserId, adminNoteId,
+            NoteDerivedArtifactKind.CompleteRecord, default);
+        var adminVersionId = Guid.NewGuid();
+        var adminGenerationTaskId = Guid.NewGuid();
+        await store.AppendGeneratedAsync(admin.UserId, adminArtifact.ArtifactId,
+            DiagnosticDraft(adminArtifact, adminVersionId, adminGenerationTaskId, "管理员正文"), default);
+
+        using var ordinaryArtifactResponse =
+            await ordinaryClient.GetAsync($"{Artifacts}/{ordinaryArtifact.ArtifactId}");
+        var ordinaryArtifactJson = await ordinaryArtifactResponse.Content.ReadAsStringAsync();
+        var ordinaryArtifactData = JsonSerializer.Deserialize<ApiResponse<NoteDerivedArtifactDto>>(
+            ordinaryArtifactJson, new JsonSerializerOptions(JsonSerializerDefaults.Web))!.Data!;
+        Assert.Equal(NoteDerivedArtifactKind.CompleteRecord, ordinaryArtifactData.Kind);
+        var ordinarySummary = Assert.Single(ordinaryArtifactData.Versions);
+        Assert.Equal(ordinaryVersionId, ordinarySummary.VersionId);
+        Assert.Equal(ordinaryGenerationTaskId, ordinarySummary.GenerationTaskId);
+
+        using var ordinaryVersionResponse =
+            await ordinaryClient.GetAsync($"{Artifacts}/{ordinaryArtifact.ArtifactId}/versions/{ordinaryVersionId}");
+        var ordinaryVersionJson = await ordinaryVersionResponse.Content.ReadAsStringAsync();
+        var ordinaryVersion = JsonSerializer.Deserialize<ApiResponse<NoteDerivedVersionDto>>(
+            ordinaryVersionJson, new JsonSerializerOptions(JsonSerializerDefaults.Web))!.Data!;
+        Assert.Equal(ordinaryVersionId, ordinaryVersion.VersionId);
+        Assert.Equal(ordinaryArtifact.ArtifactId, ordinaryVersion.ArtifactId);
+        Assert.Equal(ordinaryGenerationTaskId, ordinaryVersion.GenerationTaskId);
+        Assert.Equal("input-sha", ordinaryVersion.InputSha256);
+        Assert.Equal("manifest-sha", ordinaryVersion.ManifestSha256);
+        Assert.Equal("普通用户正文", ordinaryVersion.ContentMarkdown);
+        Assert.Equal(string.Empty, ordinaryVersion.PlanVersion);
+        Assert.Equal(string.Empty, ordinaryVersion.PromptVersion);
+        Assert.Null(ordinaryVersion.AiCallLogId);
+        Assert.Null(ordinaryVersion.ModelProfileId);
+        Assert.Null(ordinaryVersion.ModelRevision);
+        Assert.Null(ordinaryVersion.ModelEndpoint);
+        var ordinaryIssue = Assert.Single(ordinaryVersion.Coverage!.Issues);
+        Assert.Equal(NoteResponsePrivacy.GenericIssueCode, ordinaryIssue.Code);
+        Assert.Null(ordinaryIssue.SourcePath);
+        Assert.DoesNotContain("https://internal.example/v1/", ordinaryVersionJson, StringComparison.Ordinal);
+        Assert.DoesNotContain("private/secret.md", ordinaryVersionJson, StringComparison.Ordinal);
+        Assert.DoesNotContain("provider_error", ordinaryVersionJson, StringComparison.Ordinal);
+
+        var adminArtifactData = await Data<NoteDerivedArtifactDto>(
+            await adminClient.GetAsync($"{Artifacts}/{adminArtifact.ArtifactId}"));
+        Assert.Equal(adminGenerationTaskId, Assert.Single(adminArtifactData.Versions).GenerationTaskId);
+        var adminVersion = await Data<NoteDerivedVersionDto>(
+            await adminClient.GetAsync($"{Artifacts}/{adminArtifact.ArtifactId}/versions/{adminVersionId}"));
+        Assert.Equal("plan-v1", adminVersion.PlanVersion);
+        Assert.Equal("prompt-v1", adminVersion.PromptVersion);
+        Assert.NotNull(adminVersion.AiCallLogId);
+        Assert.NotNull(adminVersion.ModelProfileId);
+        Assert.NotNull(adminVersion.ModelRevision);
+        Assert.Equal("https://internal.example/v1/", adminVersion.ModelEndpoint);
+        Assert.Equal("markdown_unreadable", Assert.Single(adminVersion.Coverage!.Issues).Code);
     }
 
     [Fact]
@@ -582,6 +663,28 @@ public sealed class NoteDerivedEndpointsTests : IDisposable
         Guid.NewGuid(),
         "https://synthetic.invalid/v1/",
         new NoteDerivedCoverageDto(1, 0, 0, 1, 1, 1, 1, 1, 1, true, []));
+
+    private static NoteDerivedVersionDraft DiagnosticDraft(NoteDerivedArtifactState artifact,
+        Guid versionId, Guid generationTaskId, string content) => new(
+        versionId,
+        artifact.Kind,
+        null,
+        null,
+        artifact.NoteId,
+        generationTaskId,
+        content,
+        "input-sha",
+        "manifest-sha",
+        "plan-v1",
+        "prompt-v1",
+        Guid.NewGuid(),
+        Guid.NewGuid(),
+        Guid.NewGuid(),
+        "https://internal.example/v1/",
+        new NoteDerivedCoverageDto(1, 0, 0, 0, 0, 0, 0, 0, 0, false,
+            [new NoteDerivedIssueDto("provider_error",
+                "读取 /data/private/secret.md 失败 sha256=" + new string('a', 64),
+                "private/secret.md", Guid.NewGuid().ToString("D"), "image-batch:0001")]));
 
     private async Task<AiModelDto> CreateModelAsync(string adminAccessToken)
     {

@@ -35,6 +35,7 @@ public class DataCenterCoverageTests
             "habit",
             "reminder",
             "report",
+            "report-suggestion",
             "confirmation",
             "sync-batch",
             "sync-conflict",
@@ -99,6 +100,14 @@ public class DataCenterCoverageTests
         Assert.Equal("同步批次", Assert.Single(ordinary.Items, item => item.ObjectType == "sync-batch").Summary);
         Assert.Equal("Task for Data Center coverage",
             Assert.Single(ordinary.Items, item => item.ObjectType == "task-segment").Summary);
+        Assert.Equal("待确认操作",
+            Assert.Single(ordinary.Items, item => item.ObjectType == "confirmation").Summary);
+        Assert.DoesNotContain(ordinary.Items, item =>
+            item.ObjectType == "confirmation" && item.Title == "data-center.global");
+
+        var directConfirmation = await new DataCenterQueryService(db, new FixedCurrentUserService(UserId))
+            .QueryAsync(new DataCenterQueryRequest("confirmation", null, null, false, 1, 20));
+        Assert.Equal("待确认操作", Assert.Single(directConfirmation.Items).Summary);
 
         var admin = await new DataCenterQueryService(db, new FixedCurrentUserService(UserId, "admin"))
             .QueryAsync(new DataCenterQueryRequest(null, null, null, false, 1, 200));
@@ -109,6 +118,34 @@ public class DataCenterCoverageTests
             Assert.Single(admin.Items, item => item.ObjectType == "sync-batch").Summary);
         Assert.Equal("coverage segment",
             Assert.Single(admin.Items, item => item.ObjectType == "task-segment").Summary);
+        Assert.Contains(admin.Items, item =>
+            item.ObjectType == "confirmation" && item.Title == "data-center.global"
+            && item.Summary == "Global confidential confirmation");
+        Assert.Contains("Coverage confirmation",
+            admin.Items.Where(item => item.ObjectType == "confirmation").Select(item => item.Summary));
+    }
+
+    [Theory]
+    [InlineData("task-segment", "coverage segment")]
+    [InlineData("reminder", "due-soon")]
+    [InlineData("report", "internal-report-metric")]
+    [InlineData("report-suggestion", "internal-report-payload")]
+    [InlineData("confirmation", "Coverage confirmation")]
+    [InlineData("confirmation", "Global confidential confirmation")]
+    public async Task OrdinaryUserCannotProbeHiddenDiagnosticsThroughSearch_AdminCan(
+        string objectType, string search)
+    {
+        await using var db = CreateDb();
+        SeedFullDataCenterFixture(db);
+        await db.SaveChangesAsync();
+
+        var ordinary = await new DataCenterQueryService(db, new FixedCurrentUserService(UserId))
+            .QueryAsync(new DataCenterQueryRequest(objectType, search, null, false, 1, 50));
+        Assert.Empty(ordinary.Items);
+
+        var admin = await new DataCenterQueryService(db, new FixedCurrentUserService(UserId, "admin"))
+            .QueryAsync(new DataCenterQueryRequest(objectType, search, null, false, 1, 50));
+        Assert.Contains(admin.Items, item => item.ObjectType == objectType);
     }
 
     [Fact]
@@ -211,7 +248,7 @@ public class DataCenterCoverageTests
             Kind = "Daily",
             ContentMarkdown = "# Coverage",
             InputsJson = "{}",
-            MetricsJson = "{}",
+            MetricsJson = """{"diagnostic":"internal-report-metric"}""",
             GeneratedAt = new DateTimeOffset(2026, 7, 8, 7, 0, 0, TimeSpan.Zero)
         };
         var confirmation = new OperationConfirmationEntity
@@ -223,6 +260,25 @@ public class DataCenterCoverageTests
             Source = "data-center",
             Status = OperationConfirmationStatus.Pending.ToString(),
             ExpiresAt = DateTimeOffset.UtcNow.AddHours(1)
+        };
+        var globalConfirmation = new OperationConfirmationEntity
+        {
+            RequestedByUserId = null,
+            OperationType = "data-center.global",
+            Summary = "Global confidential confirmation",
+            RiskLevel = OperationRiskLevel.L4BatchOrDestructiveGovernance.ToString(),
+            Source = "data-center",
+            Status = OperationConfirmationStatus.Pending.ToString(),
+            ExpiresAt = DateTimeOffset.UtcNow.AddHours(1)
+        };
+        var reportSuggestion = new ReportSuggestionEntity
+        {
+            UserId = UserId,
+            Report = report,
+            ReportId = report.Id,
+            Action = "review",
+            Summary = "Coverage report suggestion",
+            PayloadJson = """{"diagnostic":"internal-report-payload"}"""
         };
         var syncBatch = new OutlookSyncBatchEntity
         {
@@ -263,7 +319,8 @@ public class DataCenterCoverageTests
         db.Set<HabitRoutineEntity>().Add(habit);
         db.Set<ReminderEntity>().Add(reminder);
         db.Set<ReportArtifactEntity>().Add(report);
-        db.OperationConfirmations.Add(confirmation);
+        db.Set<ReportSuggestionEntity>().Add(reportSuggestion);
+        db.OperationConfirmations.AddRange(confirmation, globalConfirmation);
         db.Set<OutlookSyncBatchEntity>().Add(syncBatch);
         db.Set<SyncConflictEntity>().Add(syncConflict);
         db.AuditVersions.Add(auditVersion);

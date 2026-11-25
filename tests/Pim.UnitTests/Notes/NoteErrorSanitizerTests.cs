@@ -1,5 +1,13 @@
+using System.Text.Json;
 using Microsoft.AspNetCore.Http;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
 using Pim.Api.Middleware;
+using Pim.Core.Exceptions;
+using Pim.Infrastructure.Auth;
+using Pim.Infrastructure.Data;
+using Pim.Infrastructure.Data.Entities;
 using Xunit;
 
 namespace Pim.UnitTests.Notes;
@@ -46,5 +54,68 @@ public class NoteErrorSanitizerTests
     {
         Assert.Equal("请求参数格式无效", NoteErrorSanitizer.BadRequestMessage("line 1", false));
         Assert.Equal("请求参数格式无效: line 1", NoteErrorSanitizer.BadRequestMessage("line 1", true));
+    }
+
+    [Theory]
+    [InlineData("user", true, false)]
+    [InlineData("admin", true, true)]
+    [InlineData("admin", false, false)]
+    public async Task MiddlewareSanitizesDomainErrorByCurrentActiveRole(
+        string role, bool isActive, bool keepsRaw)
+    {
+        var userId = Guid.NewGuid();
+        var options = new DbContextOptionsBuilder<PimDbContext>()
+            .UseInMemoryDatabase($"note-error-middleware-{Guid.NewGuid()}")
+            .Options;
+        await using var db = new PimDbContext(options);
+        db.Users.Add(new UserEntity
+        {
+            Id = userId,
+            Username = "error-" + Guid.NewGuid().ToString("N"),
+            Email = "error@example.com",
+            PasswordHash = "synthetic",
+            Role = role,
+            IsActive = isActive
+        });
+        await db.SaveChangesAsync();
+
+        var services = new ServiceCollection();
+        services.AddSingleton<ICurrentUserService>(new FixedCurrentUserService(userId, role));
+        services.AddSingleton(db);
+        await using var provider = services.BuildServiceProvider();
+
+        const string raw =
+            "派生任务 11111111-1111-4111-8111-111111111111 调用 provider " +
+            "https://internal.example/v1 读取 /data/private/secret.md 失败";
+        var context = new DefaultHttpContext { RequestServices = provider };
+        context.Request.Path = "/api/v1/native-notes/derived-tasks/11111111-1111-4111-8111-111111111111";
+        context.Response.Body = new MemoryStream();
+        var middleware = new ExceptionMiddleware(
+            _ => throw new DomainException(40901, raw),
+            NullLogger<ExceptionMiddleware>.Instance);
+
+        await middleware.InvokeAsync(context);
+
+        Assert.Equal(StatusCodes.Status409Conflict, context.Response.StatusCode);
+        context.Response.Body.Position = 0;
+        using var response = await JsonDocument.ParseAsync(context.Response.Body);
+        var message = response.RootElement.GetProperty("message").GetString();
+        Assert.Equal(keepsRaw ? raw : NoteErrorSanitizer.FallbackMessage(409), message);
+        if (keepsRaw)
+        {
+            Assert.Contains("internal.example", message, StringComparison.Ordinal);
+            Assert.Contains("secret.md", message, StringComparison.Ordinal);
+        }
+        else
+        {
+            Assert.DoesNotContain("internal.example", message, StringComparison.Ordinal);
+            Assert.DoesNotContain("secret.md", message, StringComparison.Ordinal);
+        }
+    }
+
+    private sealed class FixedCurrentUserService(Guid userId, string role) : ICurrentUserService
+    {
+        public Guid? UserId { get; } = userId;
+        public string? Role { get; } = role;
     }
 }
