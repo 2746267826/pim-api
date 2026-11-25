@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ClipboardCheck, ListChecks, RefreshCw, ShieldCheck } from 'lucide-react'
+import { calendarsApi } from '@/features/calendar/api'
+import type { CalendarBook } from '@/features/calendar/types'
 import {
   Button,
   Card,
@@ -18,6 +20,7 @@ import {
 import type { Tone } from '@/components/ui'
 import { noteDerivedApi, type NoteDerivedDestination } from '../api'
 import { createAiRequestId } from '../../request-id'
+import { ApiError } from '@/api/client'
 import {
   noteTaskSuggestionsApi,
   type NoteTaskSuggestion,
@@ -31,11 +34,19 @@ import {
   loadConfirmIntent,
   loadExtractionId,
   loadExtractionIntent,
+  resetConfirmIntent,
   saveConfirmIntent,
   saveExtractionId,
   saveExtractionIntent,
+  type ConfirmIntentState,
   type ExtractionIntentState,
 } from './intent-storage'
+import {
+  formatEventRange,
+  fromEventTimeZoneInput,
+  isIanaTimeZone,
+  toEventTimeZoneInput,
+} from './event-time'
 import { fromLocalInputValue, toLocalInputValue } from '@/lib/datetime'
 
 const statusNames: Record<string, string> = {
@@ -43,6 +54,10 @@ const statusNames: Record<string, string> = {
   Confirmed: '已创建任务',
   Dismissed: '已放弃',
 }
+const statusName = (suggestion: NoteTaskSuggestion) =>
+  suggestion.status === 'Confirmed' && suggestion.kind === 'Event'
+    ? '已创建日程'
+    : statusNames[suggestion.status] ?? suggestion.status
 const extractionNames: Record<string, string> = {
   Queued: '排队中',
   Running: '提取中',
@@ -59,14 +74,32 @@ const statusTone = (status: string): Tone => status === 'Confirmed' ? 'ok'
   : status === 'Dismissed' ? 'neutral' : 'warn'
 const extractionTone = (status: string): Tone => status === 'Succeeded' ? 'ok'
   : status === 'Failed' ? 'crit' : status === 'Draft' ? 'warn' : 'info'
+const errorText = (error: unknown) => error instanceof Error ? error.message : '请求失败，请刷新核对'
 const failureText = (error: unknown, showTechnicalDetails: boolean, fallback: string) =>
   showTechnicalDetails && error instanceof Error && error.message.trim() ? error.message : fallback
 const extractionLabel = (status: string, showTechnicalDetails: boolean) =>
   extractionNames[status] ?? (showTechnicalDetails ? status : '提取状态待核对')
-const suggestionStatusLabel = (status: string, showTechnicalDetails: boolean) =>
-  statusNames[status] ?? (showTechnicalDetails ? status : '状态待核对')
+const suggestionStatusLabel = (suggestion: NoteTaskSuggestion, showTechnicalDetails: boolean) =>
+  showTechnicalDetails
+    ? statusName(suggestion)
+    : suggestion.status === 'Confirmed' && suggestion.kind === 'Event'
+      ? '已创建日程'
+      : statusNames[suggestion.status] ?? '状态待核对'
 const destinationKey = (value: NoteDerivedDestination) =>
   `${value.modelId}/${value.modelRevision}/${value.endpoint}`
+const suggestionFields = (suggestion: NoteTaskSuggestion) => {
+  const timeZoneId = suggestion.timeZoneId?.trim() ?? ''
+  return {
+    title: suggestion.title,
+    description: suggestion.description ?? '',
+    priority: String(suggestion.priority),
+    due: toLocalInputValue(suggestion.due),
+    timeZoneId,
+    start: toEventTimeZoneInput(suggestion.start, timeZoneId),
+    end: toEventTimeZoneInput(suggestion.end, timeZoneId),
+    calendarId: suggestion.calendarId ?? '',
+  }
+}
 
 /**
  * Owner-scoped note task suggestion lifecycle. It only reads the shared note
@@ -108,6 +141,10 @@ export function NoteTaskSuggestionsPanel({
     queryKey: ['note-derived', userId, serverBinding, 'destinations'],
     queryFn: ({ signal }) => noteDerivedApi.destinations(signal),
   })
+  const calendars = useQuery({
+    queryKey: ['note-task-suggestions', userId, serverBinding, 'event-calendars'],
+    queryFn: () => calendarsApi.list('calendar'),
+  })
   const suggestions = useQuery({
     queryKey: ['note-task-suggestions', userId, serverBinding, noteId],
     queryFn: ({ signal }) => noteTaskSuggestionsApi.list(noteId, signal),
@@ -129,6 +166,8 @@ export function NoteTaskSuggestionsPanel({
   const versionItems = suggestions.data?.items
     .filter((item) => item.versionId === versionId)
     .sort((left, right) => left.ordinal - right.ordinal) ?? []
+  const taskItems = versionItems.filter((item) => item.kind === 'Task')
+  const eventItems = versionItems.filter((item) => item.kind === 'Event')
   const draftCount = versionItems.filter((item) => item.status === 'Draft').length
   const activeExtraction = extraction.data &&
     (extraction.data.status === 'Queued' || extraction.data.status === 'Running')
@@ -154,9 +193,12 @@ export function NoteTaskSuggestionsPanel({
   const extractionStatus = extraction.data?.status
   useEffect(() => {
     if (extractionStatus !== 'Succeeded') return
-    setNotice(showTechnicalDetails
-      ? `已固定本次笔记版本并生成 ${extraction.data?.suggestionCount ?? 0} 条建议。请逐条核对后再创建任务。`
-      : `已生成 ${extraction.data?.suggestionCount ?? 0} 条任务建议。请逐条核对后再创建任务。`)
+    const count = extraction.data?.suggestionCount ?? 0
+    setNotice(count > 0
+      ? showTechnicalDetails
+        ? `已固定本次笔记版本并生成 ${count} 条建议。请逐条核对后再创建任务或日程。`
+        : `已生成 ${count} 条任务或日程建议。请逐条核对后再创建。`
+      : '提取完成；本次没有新增建议。相同固定版本已存在的待确认候选不会重复生成，请直接核对列表。')
     void qc.invalidateQueries({ queryKey: ['note-task-suggestions', userId, serverBinding, noteId] })
   }, [extraction.data?.suggestionCount, extractionStatus, noteId, qc, serverBinding, showTechnicalDetails, userId])
 
@@ -200,8 +242,8 @@ export function NoteTaskSuggestionsPanel({
       setExtractionId(created.id)
       setChargeConfirmed(false)
       setNotice(showTechnicalDetails
-        ? '任务提取已受理。固定正文快照和服务商目标已保存；页面会轮询真实状态，不会在本机自动改用另一模型。'
-        : '任务提取已受理。本次正文和服务商目标已保存；页面会轮询真实状态，不会自动改用另一模型。')
+        ? '任务与日程提取已受理。固定正文快照和服务商目标已保存；页面会轮询真实状态，不会在本机自动改用另一模型。'
+        : '任务与日程提取已受理。本次正文和服务商目标已保存；页面会轮询真实状态，不会自动改用另一模型。')
     } catch (failure) {
       setError(`${failureText(failure, showTechnicalDetails, '提取提交未确认，请刷新核对')}。已冻结请求标识；请使用原提取请求核对，不会自动创建第二次付费请求。`)
     } finally {
@@ -240,11 +282,11 @@ export function NoteTaskSuggestionsPanel({
           <ListChecks className="size-4" aria-hidden />
         </span>
         <div>
-          <h2 className="text-sm font-semibold text-text-1">从笔记提取任务建议</h2>
+          <h2 className="text-sm font-semibold text-text-1">从笔记提取任务与日程建议</h2>
           <p className="mt-1 max-w-2xl text-xs leading-5 text-text-3">
             {showTechnicalDetails
-              ? '只从当前固定版本的正文提取；来源、内容摘要、文本模型和地址会在发送前冻结。建议不会自动变成任务。'
-              : '只从当前内容的正文提取；文本模型和发送地址会在发送前确认。建议不会自动变成任务。'}
+              ? '只从当前固定版本的正文提取；来源、内容摘要、文本模型和地址会在发送前冻结。建议不会自动变成任务或日程。'
+              : '只从当前内容的正文提取；文本模型和发送地址会在发送前确认。建议不会自动变成任务或日程。'}
           </p>
         </div>
       </div>
@@ -261,12 +303,12 @@ export function NoteTaskSuggestionsPanel({
       </div>
     </div>
 
-    {(version.isError || destinations.isError || suggestions.isError) &&
+    {(version.isError || destinations.isError || suggestions.isError || calendars.isError) &&
       <InlineAlert tone="crit" title="任务建议数据未完整加载">
-        {failureText(version.error ?? destinations.error ?? suggestions.error, showTechnicalDetails, '请刷新核对')}。已加载内容保持不变，不会自动新建请求。
+        {failureText(version.error ?? destinations.error ?? suggestions.error ?? calendars.error, showTechnicalDetails, '请刷新核对')}。已加载内容保持不变，不会自动新建请求。
       </InlineAlert>}
-    {error && <InlineAlert tone="crit" title="任务建议操作未确认">{error}</InlineAlert>}
-    {notice && <InlineAlert tone="ok" title="任务建议">{notice}</InlineAlert>}
+    {error && <InlineAlert tone="crit" title="建议操作未确认">{error}</InlineAlert>}
+    {notice && <InlineAlert tone="ok" title="任务与日程建议">{notice}</InlineAlert>}
     {intentBlocked && <InlineAlert tone="warn" title="提取入口已锁定">{intentBlocked}</InlineAlert>}
 
     <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(260px,.7fr)]">
@@ -277,8 +319,8 @@ export function NoteTaskSuggestionsPanel({
           : !sourceReady
             ? <InlineAlert tone="warn">
                 {showTechnicalDetails
-                  ? '当前材料版本没有可核对的派生正文摘要，暂时不能提取任务建议。'
-                  : '当前内容暂时无法核对，不能提取任务建议。'}
+                  ? '当前材料版本没有可核对的派生正文摘要，暂时不能提取任务或日程建议。'
+                  : '当前内容暂时无法核对，不能提取任务或日程建议。'}
               </InlineAlert>
             : !textDestinations.length
               ? <InlineAlert tone="warn">暂无可用的共享文本模型目标。普通账号不能读取或配置管理员凭据。</InlineAlert>
@@ -290,9 +332,6 @@ export function NoteTaskSuggestionsPanel({
                     value: destinationKey(item),
                     label: `${item.displayName}${showTechnicalDetails ? ` · ${item.model}` : ''}`,
                   }))} className="w-full" />}
-        {version.data && showTechnicalDetails && <p className="break-all font-mono text-[11px] leading-5 text-text-4">
-          固定内容 SHA-256：{version.data.contentSha256}
-        </p>}
       </div>
       <div className="space-y-2">
         <Label>发送范围</Label>
@@ -314,7 +353,7 @@ export function NoteTaskSuggestionsPanel({
             : !canExtract}
           onClick={() => void beginExtraction()}>
           <ClipboardCheck className="size-4" aria-hidden />
-          {intent ? '按原提取标识重试' : activeExtraction ? '提取处理中' : '确认并提取任务建议'}
+          {intent ? '按原提取标识重试' : activeExtraction ? '提取处理中' : '确认并提取任务与日程建议'}
         </Button>
       </div>
     </div>
@@ -327,19 +366,24 @@ export function NoteTaskSuggestionsPanel({
     <div className="space-y-3 border-t border-border pt-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
-          <h3 className="text-sm font-semibold text-text-1">{showTechnicalDetails ? '本版本建议' : '任务建议'}</h3>
-          <p className="mt-1 text-xs text-text-3">共 {versionItems.length} 条，待处理 {draftCount} 条；已创建任务与放弃记录保留历史。</p>
+          <h3 className="text-sm font-semibold text-text-1">{showTechnicalDetails ? '本版本建议' : '任务与日程建议'}</h3>
+          <p className="mt-1 text-xs text-text-3">
+            共 {versionItems.length} 条，其中任务 {taskItems.length} 条、日程 {eventItems.length} 条；
+            待处理建议 {draftCount} 条，已创建与放弃记录保留历史。
+          </p>
         </div>
         <StatusBadge tone={draftCount ? 'warn' : 'neutral'}>{draftCount} 条待确认</StatusBadge>
       </div>
       {suggestions.isPending
         ? <Skeleton className="h-24" />
         : !versionItems.length
-          ? <EmptyState size="sm" title="还没有任务建议" description="明确确认费用后提取；模型只会生成候选，不会直接写入任务。" />
+          ? <EmptyState size="sm" title="还没有任务或日程建议" description="明确确认费用后提取；模型只会生成候选，不会直接写入任务或日程。" />
           : <div className="space-y-3">{versionItems.map((suggestion) => (
-              <SuggestionRow key={`${suggestion.id}/${suggestion.revision}`}
+              <SuggestionRow
+                key={`${userId}/${serverBinding}/${suggestion.id}/${suggestion.revision}`}
                 suggestion={suggestion} userId={userId} serverBinding={serverBinding}
                 showTechnicalDetails={showTechnicalDetails}
+                calendars={calendars.data ?? []}
                 onChanged={async (message, created) => {
                   setNotice(message)
                   if (created) onTaskCreated?.(created)
@@ -356,13 +400,9 @@ function ExtractionState({ extraction, showTechnicalDetails }: {
 }) {
   return <div className="flex flex-wrap items-center justify-between gap-2 rounded-ctl border border-border bg-surface px-3 py-2.5 text-xs text-text-2">
     <span>
-      <span className="font-medium">提取记录</span> · 尝试 {extraction.attemptCount} 次
-      {showTechnicalDetails && <> · 固定提示 {extraction.promptVersion}</>}
+      <span className="font-medium">提取记录</span> · 已尝试 {extraction.attemptCount} 次
     </span>
     <span className="flex items-center gap-2">
-      {showTechnicalDetails && extraction.errorCode && (
-        <span className="font-mono text-[11px] text-crit">{extraction.errorCode}</span>
-      )}
       <StatusBadge tone={extractionTone(extraction.status)}>{extractionLabel(extraction.status, showTechnicalDetails)}</StatusBadge>
     </span>
     {extraction.errorMessage && (
@@ -380,63 +420,179 @@ function SuggestionRow({
   userId,
   serverBinding,
   showTechnicalDetails,
+  calendars,
   onChanged,
 }: {
   suggestion: NoteTaskSuggestion
   userId: string
   serverBinding: string
   showTechnicalDetails: boolean
+  calendars: CalendarBook[]
   onChanged: (message: string, created?: NoteTaskSuggestion) => Promise<void>
 }) {
+  const isTask = suggestion.kind === 'Task'
+  const initialTimeZoneId = suggestion.timeZoneId?.trim() ?? ''
   const [editing, setEditing] = useState(false)
   const [title, setTitle] = useState(suggestion.title)
   const [description, setDescription] = useState(suggestion.description ?? '')
   const [priority, setPriority] = useState(String(suggestion.priority))
   const [due, setDue] = useState(toLocalInputValue(suggestion.due))
+  const [timeZoneId, setTimeZoneId] = useState(initialTimeZoneId)
+  const [start, setStart] = useState(() =>
+    toEventTimeZoneInput(suggestion.start, initialTimeZoneId))
+  const [end, setEnd] = useState(() =>
+    toEventTimeZoneInput(suggestion.end, initialTimeZoneId))
+  const [calendarId, setCalendarId] = useState(suggestion.calendarId ?? '')
   const [busy, setBusy] = useState('')
   const [error, setError] = useState('')
-  const confirmIntent = loadConfirmIntent(
-    userId, serverBinding, suggestion.id, suggestion.revision)
+  const [confirmIntent, setConfirmIntent] = useState<ConfirmIntentState>(() =>
+    loadConfirmIntent(userId, serverBinding, suggestion.id, suggestion.revision))
   const frozenConfirm = confirmIntent.kind === 'ready' && confirmIntent.value.revision === suggestion.revision
     ? confirmIntent.value : null
   const confirmBlocked = confirmIntent.kind === 'blocked' ? confirmIntent.message : ''
   const confirmLocked = Boolean(frozenConfirm) || Boolean(confirmBlocked)
   const draft = suggestion.status === 'Draft'
+  const validTimeZone = isIanaTimeZone(timeZoneId)
+  const completeEventRange = Boolean(start && end)
+  const storedEventRange = Boolean(suggestion.start && suggestion.end)
+  const eventReady = isTask ||
+    (validTimeZone && completeEventRange) ||
+    (!timeZoneId.trim() && storedEventRange)
+  const eventHint = !isTask && draft
+    ? !timeZoneId.trim()
+      ? storedEventRange
+        ? '日程未提供 IANA 时区，将按服务端已保存的绝对时间创建；如需按当地时间修改，请先补全时区与起止时间。'
+        : '日程缺少 IANA 时区且时间不完整。请先编辑补全时区与开始、结束时间，再确认创建。'
+      : !validTimeZone
+        ? '日程时区无效。请编辑为有效的 IANA 时区后再确认创建。'
+        : !completeEventRange
+          ? '日程开始和结束时间必须同时完整，才能确认创建。'
+          : ''
+    : ''
+  const calendarOptions = [
+    { value: '', label: '默认日历（未指定）' },
+    ...calendars.map((calendar) => ({
+      value: calendar.id,
+      label: calendar.isDefault ? `${calendar.name}（默认）` : calendar.name,
+      disabled: calendar.canEdit === false || Boolean(calendar.outlookCalendarBindingId),
+    })),
+  ]
+
+  function restoreServerFields() {
+    const fields = suggestionFields(suggestion)
+    setTitle(fields.title)
+    setDescription(fields.description)
+    setPriority(fields.priority)
+    setDue(fields.due)
+    setTimeZoneId(fields.timeZoneId)
+    setStart(fields.start)
+    setEnd(fields.end)
+    setCalendarId(fields.calendarId)
+  }
 
   useEffect(() => {
+    const zone = suggestion.timeZoneId?.trim() ?? ''
     setTitle(suggestion.title)
     setDescription(suggestion.description ?? '')
     setPriority(String(suggestion.priority))
     setDue(toLocalInputValue(suggestion.due))
+    setTimeZoneId(zone)
+    setStart(toEventTimeZoneInput(suggestion.start, zone))
+    setEnd(toEventTimeZoneInput(suggestion.end, zone))
+    setCalendarId(suggestion.calendarId ?? '')
     setEditing(false)
     setError('')
-  }, [suggestion.revision, suggestion.title, suggestion.description, suggestion.priority, suggestion.due])
+  }, [
+    suggestion.calendarId,
+    suggestion.description,
+    suggestion.due,
+    suggestion.end,
+    suggestion.priority,
+    suggestion.revision,
+    suggestion.start,
+    suggestion.timeZoneId,
+    suggestion.title,
+  ])
+
+  function changeTimeZone(value: string) {
+    setTimeZoneId(value)
+    const zone = value.trim()
+    if (!isIanaTimeZone(zone)) return
+    if (!start && suggestion.start)
+      setStart(toEventTimeZoneInput(suggestion.start, zone))
+    if (!end && suggestion.end)
+      setEnd(toEventTimeZoneInput(suggestion.end, zone))
+  }
 
   async function save() {
     if (!title.trim()) {
-      setError('任务标题不能为空。')
+      setError('建议标题不能为空。')
       return
     }
-    const body: UpdateNoteTaskSuggestion = {
-      expectedRevision: suggestion.revision,
-      title: title.trim(),
-      description: description.trim() || null,
-      priority: Number(priority),
-      due: fromLocalInputValue(due),
-      taskBookId: suggestion.taskBookId ?? null,
-      calendarId: suggestion.calendarId ?? null,
+    let body: UpdateNoteTaskSuggestion
+    if (isTask) {
+      body = {
+        expectedRevision: suggestion.revision,
+        title: title.trim(),
+        description: description.trim() || null,
+        priority: Number(priority),
+        due: fromLocalInputValue(due),
+        taskBookId: suggestion.taskBookId ?? null,
+        calendarId: suggestion.calendarId ?? null,
+        start: null,
+        end: null,
+        timeZoneId: null,
+      }
+    } else {
+      const zone = timeZoneId.trim()
+      if (!isIanaTimeZone(zone)) {
+        setError(zone ? '日程时区必须是有效的 IANA 时区。' : '请先填写日程的 IANA 时区。')
+        return
+      }
+      if (!start || !end) {
+        setError('日程必须同时填写开始和结束时间。')
+        return
+      }
+      let startIso: string | null
+      let endIso: string | null
+      try {
+        startIso = fromEventTimeZoneInput(start, zone)
+        endIso = fromEventTimeZoneInput(end, zone)
+      } catch (failure) {
+        setError(errorText(failure))
+        return
+      }
+      if (!startIso || !endIso) {
+        setError('日程必须同时填写开始和结束时间。')
+        return
+      }
+      if (Date.parse(endIso) <= Date.parse(startIso)) {
+        setError('日程结束时间必须晚于开始时间。')
+        return
+      }
+      body = {
+        expectedRevision: suggestion.revision,
+        title: title.trim(),
+        description: description.trim() || null,
+        priority: Number(priority),
+        due: null,
+        taskBookId: null,
+        calendarId: calendarId || null,
+        start: startIso,
+        end: endIso,
+        timeZoneId: zone,
+      }
     }
     setBusy('save')
     setError('')
     try {
-      const updated = await noteTaskSuggestionsApi.update(suggestion.id, body)
+      await noteTaskSuggestionsApi.update(suggestion.id, body)
       if (confirmIntent.kind === 'ready') {
         clearConfirmIntent(userId, serverBinding, suggestion.id, confirmIntent.value.requestId)
       }
+      setConfirmIntent({ kind: 'none' })
       setEditing(false)
-      await onChanged(showTechnicalDetails
-        ? `建议已按原修订保存；后续确认将使用新修订 ${updated.revision}。`
-        : '任务建议已保存；后续确认会使用最新内容。')
+      await onChanged(`建议已保存；请核对后再确认创建${isTask ? '任务' : '日程'}。`)
     } catch (failure) {
       setError(`${failureText(failure, showTechnicalDetails, '保存未确认，请刷新核对')}。服务器记录未在本机改写，请刷新后重新核对修订。`)
     } finally {
@@ -449,9 +605,45 @@ function SuggestionRow({
     setError('')
     try {
       await noteTaskSuggestionsApi.dismiss(suggestion.id, { expectedRevision: suggestion.revision })
-      await onChanged('建议已放弃；不会创建任务，历史记录保留。')
+      await onChanged('建议已放弃；不会创建任务或日程，历史记录保留。')
     } catch (failure) {
       setError(`${failureText(failure, showTechnicalDetails, '放弃未确认，请刷新核对')}。页面不会把失败当成功；请刷新核对当前状态。`)
+    } finally {
+      setBusy('')
+    }
+  }
+
+  async function reconcileConfirm() {
+    if (busy) return
+    setBusy('reconcile')
+    setError('')
+    let current: NoteTaskSuggestion
+    try {
+      current = await noteTaskSuggestionsApi.get(suggestion.id)
+    } catch (failure) {
+      setError(`${failureText(failure, showTechnicalDetails, '服务器状态暂时无法核对，请刷新后再试')}。未核对到服务器当前状态，本机确认记录保持锁定。`)
+      setBusy('')
+      return
+    }
+
+    resetConfirmIntent(userId, serverBinding, suggestion.id)
+    setConfirmIntent({ kind: 'none' })
+    let message: string
+    let created: NoteTaskSuggestion | undefined
+    if (current.status === 'Confirmed') {
+      message = '服务器显示该建议已确认创建；本机冻结的确认请求已清理。'
+      created = current
+    } else if (current.status === 'Dismissed') {
+      message = '服务器显示该建议已放弃；本机冻结的确认请求已清理。'
+    } else if (current.revision !== suggestion.revision) {
+      message = '服务器上的建议内容已更新；本机旧确认记录已清理，请核对最新内容后重新编辑或放弃。'
+    } else {
+      message = '服务器仍为待确认，原确认请求没有创建任务或日程；本机冻结记录已清理，可安全重新编辑或放弃。'
+    }
+    try {
+      await onChanged(message, created)
+    } catch {
+      setError('服务器状态已核对且本机确认记录已清理，但建议列表刷新失败；请点击“刷新建议”后再操作。')
     } finally {
       setBusy('')
     }
@@ -471,6 +663,10 @@ function SuggestionRow({
         setError(storageError)
         return
       }
+      setConfirmIntent({
+        kind: 'ready',
+        value: { requestId, revision: suggestion.revision },
+      })
     }
     setBusy('confirm')
     setError('')
@@ -480,20 +676,24 @@ function SuggestionRow({
         expectedRevision: suggestion.revision,
       })
       clearConfirmIntent(userId, serverBinding, suggestion.id, requestId)
+      setConfirmIntent({ kind: 'none' })
       await onChanged(
-        confirmed.calendarId
-          ? showTechnicalDetails
-            ? `已在既有任务系统创建任务 ${confirmed.taskId}，目标日历保持不变。`
-            : '已在既有任务系统创建任务，目标日历保持不变。'
-          : showTechnicalDetails
-            ? `已在既有任务系统创建收件箱任务 ${confirmed.taskId}。`
-            : '已在既有任务系统创建收件箱任务。',
+        isTask
+          ? confirmed.calendarId
+            ? '已在既有任务系统创建任务，目标日历保持不变。'
+            : '已在既有任务系统创建收件箱任务。'
+          : confirmed.calendarId
+            ? '已在目标日历创建日程，目标日历保持不变。'
+            : '已在默认日历创建日程。',
         confirmed)
     } catch (failure) {
-      setError(failureText(failure, showTechnicalDetails, '确认状态未确认，请刷新核对') + (
-        showTechnicalDetails
-          ? `。确认请求标识已冻结；重试只复用 ${requestId}，不会新建第二个任务。`
-          : '。本次确认状态已保留；重试不会新建第二个任务。'))
+      setError(failure instanceof ApiError && failure.status === 409
+        ? showTechnicalDetails
+          ? `${errorText(failure)}。服务器拒绝了本次确认；请先核对服务器当前状态，再安全放弃或重新编辑。`
+          : '服务器拒绝了本次确认，请先核对服务器当前状态，再安全放弃或重新编辑。'
+        : `${failureText(failure, showTechnicalDetails, '确认状态未确认，请刷新核对')}。${showTechnicalDetails
+          ? '确认请求标识已冻结；重试只复用原请求，不会重复创建任务或日程。'
+          : '本次确认状态已保留；重试不会重复创建任务或日程。'}`)
     } finally {
       setBusy('')
     }
@@ -505,12 +705,16 @@ function SuggestionRow({
         {editing
           ? <div className="space-y-3">
               <div>
-                <Label htmlFor={`task-suggestion-title-${suggestion.id}`}>任务标题</Label>
+                <Label htmlFor={`task-suggestion-title-${suggestion.id}`}>
+                  {isTask ? '任务标题' : '日程标题'}
+                </Label>
                 <Input id={`task-suggestion-title-${suggestion.id}`} value={title}
                   maxLength={255} onChange={(event) => setTitle(event.target.value)} />
               </div>
               <div>
-                <Label htmlFor={`task-suggestion-description-${suggestion.id}`}>任务说明</Label>
+                <Label htmlFor={`task-suggestion-description-${suggestion.id}`}>
+                  {isTask ? '任务说明' : '日程说明'}
+                </Label>
                 <Textarea id={`task-suggestion-description-${suggestion.id}`} value={description}
                   maxLength={20000} onChange={(event) => setDescription(event.target.value)} />
               </div>
@@ -520,44 +724,91 @@ function SuggestionRow({
                   <Select id={`task-suggestion-priority-${suggestion.id}`} ariaLabel="优先级"
                     value={priority} onValueChange={setPriority} options={priorityOptions} className="w-full" />
                 </div>
-                <div>
-                  <Label htmlFor={`task-suggestion-due-${suggestion.id}`}>截止时间（可选）</Label>
-                  <Input id={`task-suggestion-due-${suggestion.id}`} type="datetime-local"
-                    value={due} onChange={(event) => setDue(event.target.value)} />
-                </div>
+                {isTask
+                  ? <div>
+                      <Label htmlFor={`task-suggestion-due-${suggestion.id}`}>截止时间（可选）</Label>
+                      <Input id={`task-suggestion-due-${suggestion.id}`} type="datetime-local"
+                        value={due} onChange={(event) => setDue(event.target.value)} />
+                    </div>
+                  : <div>
+                      <Label htmlFor={`task-suggestion-timezone-${suggestion.id}`}>IANA 时区</Label>
+                      <Input id={`task-suggestion-timezone-${suggestion.id}`} value={timeZoneId}
+                        maxLength={100} placeholder="例如 Asia/Shanghai"
+                        aria-invalid={!validTimeZone}
+                        onChange={(event) => changeTimeZone(event.target.value)} />
+                      <p className="mt-1 text-[11px] leading-5 text-text-4">
+                        {!timeZoneId.trim()
+                          ? '缺少时区时不会推断或使用浏览器时区。'
+                          : !validTimeZone
+                            ? '时区无效，需要填写 IANA 名称。'
+                            : '开始和结束时间按该时区解释。'}
+                      </p>
+                    </div>}
               </div>
+              {!isTask && <div className="grid gap-3 sm:grid-cols-3">
+                <div>
+                  <Label htmlFor={`task-suggestion-start-${suggestion.id}`}>开始时间</Label>
+                  <Input id={`task-suggestion-start-${suggestion.id}`} type="datetime-local"
+                    value={start} onChange={(event) => setStart(event.target.value)} />
+                </div>
+                <div>
+                  <Label htmlFor={`task-suggestion-end-${suggestion.id}`}>结束时间</Label>
+                  <Input id={`task-suggestion-end-${suggestion.id}`} type="datetime-local"
+                    value={end} onChange={(event) => setEnd(event.target.value)} />
+                </div>
+                <div>
+                  <Label htmlFor={`task-suggestion-calendar-${suggestion.id}`}>目标日历</Label>
+                  <Select id={`task-suggestion-calendar-${suggestion.id}`} ariaLabel="目标日历"
+                    value={calendarId} onValueChange={setCalendarId}
+                    options={calendarOptions} className="w-full" />
+                </div>
+              </div>}
             </div>
           : <>
               <div className="flex flex-wrap items-center gap-2">
                 <span className="text-sm font-medium text-text-1">{suggestion.title}</span>
-                <StatusBadge tone={statusTone(suggestion.status)}>{suggestionStatusLabel(suggestion.status, showTechnicalDetails)}</StatusBadge>
+                <StatusBadge tone={statusTone(suggestion.status)}>{suggestionStatusLabel(suggestion, showTechnicalDetails)}</StatusBadge>
+                <StatusBadge tone="neutral" size="xs">{isTask ? '任务' : '日程'}</StatusBadge>
                 <StatusBadge tone="neutral" size="xs">优先级 {priorityLabel(suggestion.priority)}</StatusBadge>
                 {suggestion.due && <span className="text-xs text-text-3">截止 {toLocalInputValue(suggestion.due).replace('T', ' ')}</span>}
               </div>
               {suggestion.description && <p className="mt-1 whitespace-pre-wrap text-xs leading-5 text-text-2">{suggestion.description}</p>}
-              {showTechnicalDetails && suggestion.taskId && (
-                <p className="mt-1 break-all font-mono text-[11px] text-text-4">任务 ID：{suggestion.taskId}</p>
-              )}
-              {showTechnicalDetails && (
-                <p className="mt-1 text-[11px] text-text-4">
-                  来源摘要 {suggestion.sourceContentSha256.slice(0, 12)}… · 修订 {suggestion.revision.slice(0, 8)}…
-                </p>
-              )}
+              {!isTask && <p className="mt-1 text-xs text-text-3">
+                日程时间：{formatEventRange(
+                  suggestion.start, suggestion.end, suggestion.timeZoneId)}
+              </p>}
             </>}
       </div>
       {!editing && draft && <div className="flex flex-wrap gap-2">
-        <Button size="sm" onClick={() => setEditing(true)} disabled={Boolean(busy) || confirmLocked}>编辑</Button>
+        {confirmLocked && <Button size="sm" variant="ghost"
+          disabled={Boolean(busy)} loading={busy === 'reconcile'}
+          onClick={() => void reconcileConfirm()}>核对服务器状态</Button>}
+        <Button size="sm"
+          onClick={() => {
+            restoreServerFields()
+            setEditing(true)
+          }}
+          disabled={Boolean(busy) || confirmLocked}>编辑</Button>
         <TwoStepButton size="sm" variant="danger-soft" disabled={Boolean(busy) || confirmLocked}
           onConfirm={dismiss} armLabel="再次点击确认放弃">放弃</TwoStepButton>
         <TwoStepButton size="sm" variant="primary"
-          disabled={Boolean(busy) || Boolean(confirmBlocked)}
-          onConfirm={confirm} armLabel={frozenConfirm ? '按原请求再次确认' : '再次点击创建任务'}>
-          {frozenConfirm ? '重试未确认的创建' : '确认创建任务'}
+          disabled={Boolean(busy) || Boolean(confirmBlocked) || !eventReady}
+          onConfirm={confirm}
+          armLabel={frozenConfirm
+            ? '按原请求再次确认'
+            : isTask ? '再次点击创建任务' : '再次点击创建日程'}>
+          {frozenConfirm ? '重试未确认的创建' : isTask ? '确认创建任务' : '确认创建日程'}
         </TwoStepButton>
       </div>}
     </div>
+    {!editing && eventHint && <InlineAlert tone="warn" className="mt-3">{eventHint}</InlineAlert>}
     {editing && <div className="mt-3 flex flex-wrap justify-end gap-2">
-      <Button size="sm" variant="ghost" disabled={Boolean(busy)} onClick={() => setEditing(false)}>取消</Button>
+      <Button size="sm" variant="ghost" disabled={Boolean(busy)}
+        onClick={() => {
+          restoreServerFields()
+          setEditing(false)
+          setError('')
+        }}>取消</Button>
       <Button size="sm" variant="primary" loading={busy === 'save'} onClick={() => void save()}>
         {showTechnicalDetails ? '保存修订' : '保存修改'}
       </Button>

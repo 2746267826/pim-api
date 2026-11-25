@@ -13,6 +13,13 @@ public enum NoteTaskSuggestionStatusDto
 }
 
 [JsonConverter(typeof(JsonStringEnumConverter))]
+public enum NoteTaskSuggestionKindDto
+{
+    Task,
+    Event
+}
+
+[JsonConverter(typeof(JsonStringEnumConverter))]
 public enum NoteTaskSuggestionExtractionStatusDto
 {
     Queued,
@@ -69,14 +76,19 @@ public sealed record NoteTaskSuggestionDto(
     string SourceManifestSha256,
     Guid? SourceGenerationTaskId,
     string Title,
+    NoteTaskSuggestionKindDto Kind,
     string? Description,
     int Priority,
     DateTimeOffset? Due,
+    DateTimeOffset? Start,
+    DateTimeOffset? End,
+    string? TimeZoneId,
     Guid? TaskBookId,
     Guid? CalendarId,
     NoteTaskSuggestionStatusDto Status,
     Guid Revision,
     Guid? TaskId,
+    Guid? EventId,
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt,
     DateTimeOffset? ConfirmedAt,
@@ -86,6 +98,7 @@ public sealed record NoteTaskSuggestionListDto(
     int Total,
     IReadOnlyList<NoteTaskSuggestionDto> Items);
 
+[JsonConverter(typeof(UpdateNoteTaskSuggestionRequestJsonConverter))]
 public sealed record UpdateNoteTaskSuggestionRequest(
     Guid ExpectedRevision,
     [property: Required, MaxLength(255)] string Title,
@@ -93,7 +106,19 @@ public sealed record UpdateNoteTaskSuggestionRequest(
     int Priority,
     DateTimeOffset? Due,
     Guid? TaskBookId,
-    Guid? CalendarId);
+    Guid? CalendarId,
+    DateTimeOffset? Start = null,
+    DateTimeOffset? End = null,
+    [property: MaxLength(100)] string? TimeZoneId = null)
+{
+    /// <summary>
+    /// Raw ISO-8601 text retained so a wall-clock value without an offset can be
+    /// converted with the declared IANA time zone instead of the server's local zone.
+    /// </summary>
+    [JsonIgnore] public string? StartRaw { get; init; }
+
+    [JsonIgnore] public string? EndRaw { get; init; }
+}
 
 public sealed record ConfirmNoteTaskSuggestionRequest(
     Guid RequestId,
