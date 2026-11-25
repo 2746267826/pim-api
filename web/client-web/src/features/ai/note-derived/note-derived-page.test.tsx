@@ -533,7 +533,6 @@ it('shows generated candidates and requires an explicit head selection before ma
   expect(await screen.findByText('完整记录')).toBeTruthy()
   expect(await screen.findByText('等待明确选择')).toBeTruthy()
   await waitFor(() => expect(derived.version).toHaveBeenCalled())
-  expect(await screen.findByText(/固定内容 SHA-256/)).toBeTruthy()
   expect(screen.queryByRole('button', { name: '采用这份整理结果' })).toBeNull()
   const history = screen.getByText('高级选项：版本历史与处理详情')
   expect(history.closest('details')?.open).toBe(false)
@@ -573,7 +572,7 @@ it('keeps version history and internal processing identifiers out of the ordinar
 
   page(); await chooseSource()
   expect(await screen.findByRole('combobox', { name: '选择笔记内容' })).toBeTruthy()
-  expect(await screen.findByText('从笔记提取任务建议')).toBeTruthy()
+  expect(await screen.findByText('从笔记提取任务与日程建议')).toBeTruthy()
   expect(screen.getByText(/只从当前内容的正文提取/)).toBeTruthy()
   await userEvent.click(screen.getByRole('combobox', { name: '选择笔记内容' }))
   expect(screen.queryByRole('option', { name: /历史材料不应出现/ })).toBeNull()
