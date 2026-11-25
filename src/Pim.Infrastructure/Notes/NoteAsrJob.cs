@@ -129,18 +129,30 @@ public sealed class NoteAsrJob(NoteAsrTaskStore tasks, NoteMaterialUploadStore m
                     await RecordAdaptiveFailureAsync(owner, id, step, adaptive, ct);
                     return;
                 }
-                await tasks.UpdateAsync(owner, id, current =>
+                byte[] bytes;
+                try
                 {
-                    if (!current.StopRequested) current.Steps[step.Index].Current.Status = "Running";
-                }, ct);
-                await SyncCloudAttemptAsync(owner, id, ct);
-                var bytes = await materials.ReadAudioSliceAsync(owner, state.Request.VersionId,
-                    step.FileIndex, step.SourceOffset, step.Samples, ct);
+                    bytes = await materials.ReadAudioSliceAsync(owner, state.Request.VersionId,
+                        step.FileIndex, step.SourceOffset, step.Samples, ct);
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception error) when (error is IOException or InvalidDataException or
+                    UnauthorizedAccessException)
+                {
+                    await MarkAsync("Blocked",
+                        "本地音频输入读取失败，未发送至转写服务；请核对材料后显式重试", true);
+                    return;
+                }
                 if ((await tasks.ReadAsync(owner, id, ct)).StopRequested)
                 {
                     await MarkAsync("Cancelled", "任务已停止，此片未发送", false);
                     return;
                 }
+                await tasks.UpdateAsync(owner, id, current =>
+                {
+                    if (!current.StopRequested) current.Steps[step.Index].Current.Status = "Running";
+                }, ct);
+                await SyncCloudAttemptAsync(owner, id, ct);
                 var request = new AiAsrCallRequest(requestId, owner,
                     new($"segment-{step.Index + 1:D5}.wav", "wav", Convert.ToBase64String(bytes)),
                     state.Request.Consent, state.Request.Language, state.Request.Consent.ModelId);
@@ -203,10 +215,29 @@ public sealed class NoteAsrJob(NoteAsrTaskStore tasks, NoteMaterialUploadStore m
         NoteAsrStep rootStep, int maxCalls, CancellationToken ct)
     {
         var options = NoteAsrAdaptiveOptions.Default with { MaxCalls = maxCalls };
+        var preparedAudio = new Dictionary<Guid, byte[]>();
         var engine = new NoteAsrAdaptiveTranscription(
             options,
             async (request, token) =>
             {
+                var current = await tasks.ReadAsync(owner, taskId, token);
+                if (current.StopRequested) throw new OperationCanceledException(token);
+                if (current.AttemptId != rootState.AttemptId)
+                    throw new DomainException(40901, "任务执行快照已变化");
+                var version = await materials.GetAsync(owner, rootState.Request.VersionId, token);
+                if (NoteMaterialManifestValidator.Hash(version.InputJson) != rootState.InputSha256 ||
+                    NoteMaterialManifestValidator.Hash(version.ManifestJson) != rootState.ManifestSha256)
+                    throw new DomainException(40901, "固定材料已改变，本片未发送");
+                var start = checked(rootStep.SourceOffset + request.Range.OffsetSamples);
+                if (start < rootStep.SourceOffset ||
+                    checked(start + request.Range.Samples) > rootStep.SourceOffset + rootStep.Samples)
+                    throw new DomainException(40901, "本地音频范围超出固定分片，本片未发送");
+                var bytes = await materials.ReadAudioSliceAsync(owner, rootState.Request.VersionId,
+                    rootStep.FileIndex, start, request.Range.Samples, token);
+                current = await tasks.ReadAsync(owner, taskId, token);
+                if (current.StopRequested) throw new OperationCanceledException(token);
+                if (current.AttemptId != rootState.AttemptId)
+                    throw new DomainException(40901, "任务执行快照已变化");
                 await tasks.UpdateAsync(owner, taskId, state =>
                 {
                     if (state.AttemptId != rootState.AttemptId || state.StopRequested)
@@ -234,6 +265,7 @@ public sealed class NoteAsrJob(NoteAsrTaskStore tasks, NoteMaterialUploadStore m
                     attempt.Status = "Running";
                     attempt.ErrorMessage = null;
                 }, token);
+                preparedAudio[request.ChildRequestId] = bytes;
             },
             async (request, token) =>
             {
@@ -248,27 +280,25 @@ public sealed class NoteAsrJob(NoteAsrTaskStore tasks, NoteMaterialUploadStore m
                 return row is null ? TerminalWithoutLog(attempt) : Classify(row, attempt);
             },
             async (request, token) =>
-                await CallAdaptiveAsync(owner, taskId, rootState, rootStep, request, token));
+                await CallAdaptiveAsync(owner, taskId, rootState, rootStep, request, preparedAudio, token));
         return await engine.RunAsync(rootStep.Current.RequestId,
             new NoteAsrAdaptiveRange(0, rootStep.Samples, NoteAsrPlan.SampleRate), ct);
     }
 
     private async ValueTask<NoteAsrAdaptiveResult> CallAdaptiveAsync(Guid owner, Guid taskId,
-        NoteAsrState rootState, NoteAsrStep rootStep, NoteAsrAdaptiveRequest request, CancellationToken ct)
+        NoteAsrState rootState, NoteAsrStep rootStep, NoteAsrAdaptiveRequest request,
+        Dictionary<Guid, byte[]> preparedAudio, CancellationToken ct)
     {
         var current = await tasks.ReadAsync(owner, taskId, ct);
         if (current.StopRequested)
             return new(NoteAsrAdaptiveOutcome.Cancelled, ReasonCode: "stop_requested");
-        var version = await materials.GetAsync(owner, rootState.Request.VersionId, ct);
-        if (NoteMaterialManifestValidator.Hash(version.InputJson) != rootState.InputSha256 ||
-            NoteMaterialManifestValidator.Hash(version.ManifestJson) != rootState.ManifestSha256)
-            return new(NoteAsrAdaptiveOutcome.ConfigurationRejected, ReasonCode: "material_changed");
-        var start = checked(rootStep.SourceOffset + request.Range.OffsetSamples);
-        if (start < rootStep.SourceOffset ||
-            checked(start + request.Range.Samples) > rootStep.SourceOffset + rootStep.Samples)
-            return new(NoteAsrAdaptiveOutcome.ConfigurationRejected, ReasonCode: "range_outside_fixed_segment");
-        var bytes = await materials.ReadAudioSliceAsync(owner, rootState.Request.VersionId,
-            rootStep.FileIndex, start, request.Range.Samples, ct);
+        if (!preparedAudio.Remove(request.ChildRequestId, out var bytes))
+        {
+            await PersistAdaptiveAttemptAsync(owner, taskId, rootStep.Index, request.ChildRequestId,
+                "Blocked", "本地音频输入尚未准备完成，未发送至转写服务", null, CancellationToken.None);
+            return new(NoteAsrAdaptiveOutcome.PreparationFailed,
+                ReasonCode: "input_not_prepared", Reason: "本地音频输入尚未准备完成");
+        }
         var routedAttempt = await db.NoteAsrAttempts.AsNoTracking().SingleOrDefaultAsync(x =>
             x.Id == rootState.AttemptId && x.OwnerId == owner, ct)
             ?? throw new DomainException(40901, "ASR 执行快照不存在");
@@ -474,11 +504,15 @@ public sealed class NoteAsrJob(NoteAsrTaskStore tasks, NoteMaterialUploadStore m
                 ("Cancelled", "ASR 调用已取消；供应商是否处理未确认，不会自动重发"),
             NoteAsrAdaptiveOutcome.ConfigurationRejected or NoteAsrAdaptiveOutcome.ConsentRejected =>
                 ("Blocked", "ASR 配置、目标授权或同意已拒绝，本片未继续发送"),
+            NoteAsrAdaptiveOutcome.PreparationFailed =>
+                ("Blocked", "本地音频输入准备失败，未发送至转写服务；请核对材料后显式重试"),
             NoteAsrAdaptiveOutcome.UnconfirmedTimeout or NoteAsrAdaptiveOutcome.Unknown =>
                 ("Unknown", "ASR 结果未确认；已保留已有成功子片和真实记录，请人工核对"),
             _ => ("Failed", "自动分片重试未能覆盖完整原分片；已成功子片和真实记录保留")
         };
-        var detail = run.PartialReason ?? run.StopResult?.Reason;
+        var detail = run.StopResult?.Outcome == NoteAsrAdaptiveOutcome.PreparationFailed
+            ? null
+            : run.PartialReason ?? run.StopResult?.Reason;
         await MarkAsync(status, string.IsNullOrWhiteSpace(detail) ? message : message + "：" + detail, true);
 
         async Task MarkAsync(string nextStatus, string error, bool stop)

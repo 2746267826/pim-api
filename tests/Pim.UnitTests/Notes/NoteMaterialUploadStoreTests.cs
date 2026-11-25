@@ -15,8 +15,6 @@ namespace Pim.UnitTests.Notes;
 
 public sealed class NoteMaterialUploadStoreTests : IDisposable
 {
-    private const string TinyOpusBase64 =
-        "T2dnUwACAAAAAAAAAAD3WTvRAAAAALaS03IBE09wdXNIZWFkAQE4AYA+AAAAAABPZ2dTAAAAAAAAAAAAAPdZO9EBAAAAymKEcwE9T3B1c1RhZ3MMAAAATGF2ZjYyLjMuMTAwAQAAAB0AAABlbmNvZGVyPUxhdmM2Mi4xMS4xMDAgbGlib3B1c09nZ1MABPgTAAAAAAAA91k70QIAAAC8/jk5BlgsNDAyHUiBpvLzsXG9AAACAawTWRg+ZP9rYrq27r4PgIGySHntw3HAMzw+4Lq3gqoGy5yUXZK+KTRPCk79dJc5puC04dhrz1VXUtfo+gRq5gEzgyuwxrFRMQV5R6tInNZB5/yVTU6qGAOfCY8CGpOpsivqsqn3IPjcjREgsKc2cUKEV3tyaOknaEiZwl9zLdIzOkXZqNtXjU5TFYlQeWjabWDvCunj8JEhdpsOa4eEvMQ7u7IjyTp0wWsILyBImZ1ysJO6ioODsnzV0ZDnEngGehIa1xNwwmd25QUrHqhBoRTnNbik07INHVVVAkZImUofcy3SMQ7YBziRnHv/ofyN3Rgg3m1Z+H/fHXc2+9+Uhuw6nImqJMAREvhGiD3YP0gFjIXwEebjMnv5p2Wc22oURcy0X+x1X9RwbPlg";
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web) { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
     private readonly string _root = Path.Combine(Path.GetTempPath(), "pim-note-upload-tests", Guid.NewGuid().ToString("N"));
     private readonly Guid _user = Guid.NewGuid();
@@ -571,6 +569,24 @@ public sealed class NoteMaterialUploadStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task Opus_with_corrupt_crc_or_inconsistent_pages_never_publishes()
+    {
+        var corruptCrc = TinyOpus();
+        corruptCrc[^1] ^= 1;
+        await AssertOpusRejected(Fixture.Create(audioSamples: 1600, audio: corruptCrc,
+            audioFormat: "opus"));
+
+        const uint serial = 0x12345678;
+        var gapped = OggOpusTestData.Concat([
+            OggOpusTestData.Page(0x02, serial, 0, 0, OggOpusTestData.OpusHead()),
+            OggOpusTestData.Page(0, serial, 2, 0, OggOpusTestData.OpusTags()),
+            OggOpusTestData.Page(0x04, serial, 3, 5112, OggOpusTestData.AudioPacket())
+        ]);
+        await AssertOpusRejected(Fixture.Create(audioSamples: 1600, audio: gapped,
+            audioFormat: "opus"));
+    }
+
+    [Fact]
     public async Task Opus_manifest_rejects_unknown_conflicting_zero_sample_and_duplicate_chunks_at_begin()
     {
         var unknown = RewriteInput(OpusFixture(), input => AudioChunk(input)["format"] = "mp3");
@@ -636,6 +652,34 @@ public sealed class NoteMaterialUploadStoreTests : IDisposable
         Assert.Equal(fixture.Content[5], output.ToArray());
     }
 
+    [Fact]
+    public async Task Batch_generation_fails_before_provider_with_safe_50303_when_opus_decoder_is_missing()
+    {
+        var fixture = OpusFixture();
+        var store = Store();
+        await store.BeginAsync(_user, fixture.Request);
+        await UploadAll(store, fixture);
+        await store.CompleteAsync(_user, fixture.Request.VersionId);
+        var version = await store.GetAsync(_user, fixture.Request.VersionId);
+        var steps = NoteAsrPlan.Build(version, NoteAsrPlan.SamplesPerCall);
+        var broken = new NoteMaterialUploadOptions
+        {
+            StorageRoot = _root, MaxVersionBytes = 32 * 1024 * 1024,
+            MaxUserReservedBytes = 64 * 1024 * 1024,
+            FfmpegPath = Path.Combine(_root, "missing-ffmpeg")
+        };
+
+        var error = await Assert.ThrowsAsync<DomainException>(() =>
+            NoteAsrBatchJsonlReader.GenerateFromPlanAsync(_user, fixture.Request.VersionId, steps,
+                NoteAsrPlan.SamplesPerCall, "zh", "mimo-v2.6-flash", "逐字转写",
+                Store(options: broken), 4 * 1024 * 1024, ["seg-0"], [0], 4096,
+                CancellationToken.None));
+
+        Assert.Equal(50303, error.ErrorCode);
+        Assert.DoesNotContain(_root, error.Message);
+        Assert.DoesNotContain("missing-ffmpeg", error.Message);
+    }
+
     [SkippableFact]
     public async Task Opus_slice_is_decoded_to_exact_16k_wav_and_recovers_after_the_decoder_is_fixed()
     {
@@ -689,7 +733,7 @@ public sealed class NoteMaterialUploadStoreTests : IDisposable
     private static Fixture OpusFixture() => Fixture.Create(audioSamples: 1600, audio: TinyOpus(),
         audioFormat: "opus");
 
-    private static byte[] TinyOpus() => Convert.FromBase64String(TinyOpusBase64);
+    private static byte[] TinyOpus() => OggOpusTestData.TinyOpus();
 
     private static Fixture RewriteInput(Fixture fixture, Action<JsonObject> edit)
     {

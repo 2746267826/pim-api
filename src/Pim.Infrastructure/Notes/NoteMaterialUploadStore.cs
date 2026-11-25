@@ -508,8 +508,18 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
     {
         using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         var buffer = new byte[64 * 1024];
-        var header = new byte[NoteOggOpus.ProbeBytes];
+        var header = new byte[44];
         var headerLength = 0;
+        NoteOggOpus.Validator? opus = null;
+        long? audioSamples = null;
+        if (file.Kind == "AudioChunk")
+        {
+            if (file.Samples is not { } samples || samples < 0)
+                throw Invalid("录音格式或样本数不符合本次固定材料");
+            audioSamples = samples;
+            if ((file.AudioFormat ?? NoteAudioFormat.Wav) == NoteAudioFormat.Opus)
+                opus = new NoteOggOpus.Validator();
+        }
         for (var part = 0; part < PartCount(file); part++)
         {
             var path = PartFile(userId, versionId, index, part);
@@ -522,6 +532,7 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
                 var take = Math.Min(header.Length - headerLength, read);
                 buffer.AsSpan(0, take).CopyTo(header.AsSpan(headerLength)); headerLength += take;
                 hash.AppendData(buffer, 0, read);
+                opus?.Write(buffer.AsSpan(0, read));
             }
         }
         if (Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant() != file.Sha256)
@@ -537,8 +548,7 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
         if (file.Kind == "AudioChunk")
         {
             var format = file.AudioFormat ?? NoteAudioFormat.Wav;
-            if (file.Samples is not { } samples || samples < 0)
-                throw Invalid("录音格式或样本数不符合本次固定材料");
+            var samples = audioSamples!.Value;
             if (format == NoteAudioFormat.Wav)
             {
                 if (file.SizeBytes < 44 || headerLength < 44 ||
@@ -558,10 +568,7 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
             }
             else
             {
-                var tailLength = (int)Math.Min(NoteOggOpus.ProbeBytes, file.SizeBytes);
-                var tail = await ReadRangeAsync(userId, versionId, index,
-                    file.SizeBytes - tailLength, tailLength, ct);
-                NoteOggOpus.Validate(header.AsSpan(0, headerLength), tail, file.SizeBytes, samples);
+                opus!.Complete(samples);
             }
         }
     }
@@ -578,28 +585,6 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
             var part = (int)(position / NoteMaterialUploadOptions.PartSizeBytes);
             var within = position % NoteMaterialUploadOptions.PartSizeBytes;
             await using var stream = File.OpenRead(PartFile(owner, versionId, fileIndex, part));
-            stream.Position = within;
-            var count = (int)Math.Min(bytes.Length - written, stream.Length - within);
-            if (count <= 0) throw Invalid("录音材料分块损坏");
-            await stream.ReadExactlyAsync(bytes.AsMemory(written, count), ct);
-            written += count;
-            position += count;
-        }
-        return bytes;
-    }
-
-    private async Task<byte[]> ReadRangeAsync(Guid owner, Guid versionId, int fileIndex,
-        long start, int length, CancellationToken ct)
-    {
-        var bytes = new byte[length];
-        var position = start;
-        var written = 0;
-        while (written < bytes.Length)
-        {
-            var part = (int)(position / NoteMaterialUploadOptions.PartSizeBytes);
-            var within = position % NoteMaterialUploadOptions.PartSizeBytes;
-            await using var stream = File.OpenRead(PartFile(owner, versionId, fileIndex, part));
-            if (within >= stream.Length) throw Invalid("录音材料分块损坏");
             stream.Position = within;
             var count = (int)Math.Min(bytes.Length - written, stream.Length - within);
             if (count <= 0) throw Invalid("录音材料分块损坏");

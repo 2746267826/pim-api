@@ -406,10 +406,16 @@ public sealed class NoteDerivedSnapshotBuilder(
                     await materials.VerifyAudioFileAsync(owner, version.Upload.VersionId,
                         file.Index, ct);
                 }
-                catch (Exception error) when (error is DomainException or IOException or InvalidDataException)
+                catch (DomainException error)
                 {
                     issues.Add(new("audio_context_unreadable",
                         "无法读取固定原始录音，未发送音频上下文：" + error.Message, path));
+                }
+                catch (Exception error) when (error is IOException or InvalidDataException or
+                    UnauthorizedAccessException)
+                {
+                    issues.Add(new("audio_context_unreadable",
+                        "无法读取固定原始录音，未发送音频上下文", path));
                 }
             }
         }

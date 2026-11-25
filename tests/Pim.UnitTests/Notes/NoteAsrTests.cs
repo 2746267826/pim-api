@@ -71,7 +71,8 @@ public sealed class NoteAsrTests : IAsyncLifetime
         await _provider.StartAsync();
         _factory = AuthRegistrationTestHost.Create(AuthRegistrationTestHost.NewDbName("durable-asr"))
             .WithWebHostBuilder(b => b.UseEnvironment("Test").UseSetting("NativeNotes:StorageRoot", Path.Combine(_root, "materials"))
-                .UseSetting("ManagedStorage:Root", Path.Combine(_root, "binary")).UseSetting("DataProtection:KeysPath", Path.Combine(_root, "keys")));
+                .UseSetting("ManagedStorage:Root", Path.Combine(_root, "binary")).UseSetting("DataProtection:KeysPath", Path.Combine(_root, "keys"))
+                .UseSetting("NativeNotes:FfmpegPath", Path.Combine(_root, "missing-ffmpeg")));
         var session = await AuthRegistrationTestHost.SeedAndLoginAsync(_factory, "note-asr-owner", "admin");
         _owner = session.UserId; _client = AuthRegistrationTestHost.Authed(_factory, session.AccessToken);
         _model = await Data<AiModelDto>(await _client.PostAsJsonAsync("/api/v1/ai/models", new SaveAiModelRequest("分片ASR",
@@ -519,6 +520,91 @@ public sealed class NoteAsrTests : IAsyncLifetime
             .NoteAsrAttempts.AsNoTracking().SingleAsync(x => x.Id == task.AttemptId);
         Assert.Equal(1, attempt.CompletedSegments);
         Assert.Equal("Succeeded", attempt.State);
+    }
+
+    [Fact]
+    public async Task RoutedCloudOpusDecodeFailureBlocksBeforeProviderWithoutUnknownOrRunningAttempt()
+    {
+        var multimodal = await Data<AiModelDto>(await _client.PostAsJsonAsync("/api/v1/ai/models",
+            new SaveAiModelRequest("多模态解码失败", _provider.Urls.Single() + "/v1/",
+                "mimo-v2.6-flash", true, [AiModelCapability.Transcription], 30, 1024,
+                "synthetic-multimodal-key", AsrPresetId: "mimo-multimodal")));
+        var current = await Data<NoteAsrRouteConfigDto>(await _client.GetAsync(
+            "/api/v1/native-notes/asr-routing/config"));
+        var routeConfig = await Data<NoteAsrRouteConfigDto>(await _client.PutAsJsonAsync(
+            "/api/v1/native-notes/asr-routing/config", new UpdateNoteAsrRouteConfigRequest(
+                current.Revision, NoteAsrRoute.CloudMultimodal, null, null, multimodal.Id, "batch-v1")));
+        var fixture = NoteMaterialUploadStoreTests.Fixture.Create(audioSamples: 1600,
+            audio: OggOpusTestData.TinyOpus(), audioFormat: "opus");
+        await Upload(fixture);
+        var consent = new AiAsrDestinationConsent(multimodal.Id, multimodal.Revision,
+            multimodal.BaseUrl + "chat/completions", "mimo-multimodal", "1", true);
+        var start = new StartNoteAsrRequest(Guid.NewGuid(), _owner, fixture.Request.VersionId, consent, "zh",
+            new NoteAsrRouteConsent(NoteAsrRoute.CloudMultimodal, routeConfig.Revision,
+                routeConfig.ConsentVersion, true, NoteAsrExecutionMode.Realtime));
+
+        var task = await Data<NoteAsrTaskDto>(await _client.PostAsJsonAsync(Route, start));
+        await Run(task.TaskId);
+
+        Assert.Equal(0, _calls);
+        var view = await Get(task.TaskId);
+        Assert.True(view.StopRequested);
+        var segment = Assert.Single((await Segments(task.TaskId)).Items);
+        Assert.Equal("Blocked", segment.Status);
+        Assert.DoesNotContain("Unknown", segment.Status);
+        var blocked = Assert.Single(segment.Attempts);
+        Assert.Equal("Blocked", blocked.Status);
+        Assert.DoesNotContain(_root, blocked.ErrorMessage ?? "");
+        Assert.DoesNotContain("missing-ffmpeg", blocked.ErrorMessage ?? "");
+        using var scope = _factory.Services.CreateScope();
+        var attempt = await scope.ServiceProvider.GetRequiredService<PimDbContext>()
+            .NoteAsrAttempts.AsNoTracking().SingleAsync(x => x.Id == task.AttemptId);
+        Assert.Equal("Failed", attempt.State);
+        Assert.Equal(0, attempt.CompletedSegments);
+        Assert.Equal(1, attempt.FailedSegments);
+    }
+
+    [Fact]
+    public async Task LegacyCloudOpusDecodeFailureBlocksBeforeProviderWithoutLeakingDecoderDetails()
+    {
+        var fixture = NoteMaterialUploadStoreTests.Fixture.Create(audioSamples: 1600,
+            audio: OggOpusTestData.TinyOpus(), audioFormat: "opus");
+        await Upload(fixture);
+        var task = await Data<NoteAsrTaskDto>(await _client.PostAsJsonAsync(Route, Start(fixture)));
+
+        await Run(task.TaskId);
+
+        Assert.Equal(0, _calls);
+        Assert.True((await Get(task.TaskId)).StopRequested);
+        var segment = Assert.Single((await Segments(task.TaskId)).Items);
+        Assert.Equal("Blocked", segment.Status);
+        var blocked = Assert.Single(segment.Attempts);
+        Assert.Equal("Blocked", blocked.Status);
+        Assert.DoesNotContain(_root, blocked.ErrorMessage ?? "");
+        Assert.DoesNotContain("missing-ffmpeg", blocked.ErrorMessage ?? "");
+    }
+
+    [Fact]
+    public async Task LegacyCloudWavReadFailureBlocksBeforeProviderWithoutUnknownOrLeakedPath()
+    {
+        var fixture = NoteMaterialUploadStoreTests.Fixture.Create();
+        await Upload(fixture);
+        var task = await Data<NoteAsrTaskDto>(await _client.PostAsJsonAsync(Route, Start(fixture)));
+        var part = Path.Combine(_root, "binary", _owner.ToString("D"), "note-parts",
+            fixture.Request.VersionId.ToString("D"),
+            NoteMaterialManifestValidator.Hash("5/0") + ".blob");
+        Assert.True(File.Exists(part));
+        File.Delete(part);
+
+        await Run(task.TaskId);
+
+        Assert.Equal(0, _calls);
+        Assert.True((await Get(task.TaskId)).StopRequested);
+        var segment = Assert.Single((await Segments(task.TaskId)).Items);
+        Assert.Equal("Blocked", segment.Status);
+        var blocked = Assert.Single(segment.Attempts);
+        Assert.Equal("Blocked", blocked.Status);
+        Assert.DoesNotContain(_root, blocked.ErrorMessage ?? "");
     }
 
     [Fact]

@@ -567,11 +567,17 @@ public sealed class NoteDerivedJob(
                 bytes = await materials.ReadAudioSliceAsync(state.Owner, state.Request.VersionId,
                     audio.FileIndex, audio.SourceOffsetSamples, audio.Samples, ct);
             }
-            catch (Exception error) when (error is DomainException or IOException or InvalidDataException)
+            catch (DomainException error)
             {
                 return new([], Issue("audio_context_unreadable",
                     "无法读取固定原始录音片段，未发送音频上下文：" + error.Message,
                     stepKey, audio.Path));
+            }
+            catch (Exception error) when (error is IOException or InvalidDataException or
+                UnauthorizedAccessException)
+            {
+                return new([], Issue("audio_context_unreadable",
+                    "无法读取固定原始录音片段，未发送音频上下文", stepKey, audio.Path));
             }
             if (bytes.Length != audio.SizeBytes)
                 return new([], Issue("audio_context_changed",

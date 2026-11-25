@@ -9,11 +9,6 @@ namespace Pim.UnitTests.Notes;
 
 public sealed class NoteAudioFormatTests
 {
-    // 0.1 s, mono, 16 kHz sine encoded as Ogg Opus by FFmpeg. The final granule minus
-    // pre-skip is exactly 1,600 16 kHz samples.
-    private const string TinyOpusBase64 =
-        "T2dnUwACAAAAAAAAAAD3WTvRAAAAALaS03IBE09wdXNIZWFkAQE4AYA+AAAAAABPZ2dTAAAAAAAAAAAAAPdZO9EBAAAAymKEcwE9T3B1c1RhZ3MMAAAATGF2ZjYyLjMuMTAwAQAAAB0AAABlbmNvZGVyPUxhdmM2Mi4xMS4xMDAgbGlib3B1c09nZ1MABPgTAAAAAAAA91k70QIAAAC8/jk5BlgsNDAyHUiBpvLzsXG9AAACAawTWRg+ZP9rYrq27r4PgIGySHntw3HAMzw+4Lq3gqoGy5yUXZK+KTRPCk79dJc5puC04dhrz1VXUtfo+gRq5gEzgyuwxrFRMQV5R6tInNZB5/yVTU6qGAOfCY8CGpOpsivqsqn3IPjcjREgsKc2cUKEV3tyaOknaEiZwl9zLdIzOkXZqNtXjU5TFYlQeWjabWDvCunj8JEhdpsOa4eEvMQ7u7IjyTp0wWsILyBImZ1ysJO6ioODsnzV0ZDnEngGehIa1xNwwmd25QUrHqhBoRTnNbik07INHVVVAkZImUofcy3SMQ7YBziRnHv/ofyN3Rgg3m1Z+H/fHXc2+9+Uhuw6nImqJMAREvhGiD3YP0gFjIXwEebjMnv5p2Wc22oURcy0X+x1X9RwbPlg";
-
     [Fact]
     public void Legacy_chunks_without_format_remain_wav()
     {
@@ -89,6 +84,7 @@ public sealed class NoteAudioFormatTests
     [Fact]
     public void Ogg_validation_rejects_truncation_stereo_missing_eos_and_wrong_sample_count()
     {
+        AssertRejected([], 1600);
         AssertRejected(TinyOpus()[..^1], 1600);
         AssertRejected(new byte[128], 1600);
 
@@ -105,6 +101,62 @@ public sealed class NoteAudioFormatTests
 
         AssertRejected(TinyOpus(), 1599);
         AssertRejected(TinyOpus(), 1601);
+    }
+
+    [Fact]
+    public void Ogg_validation_accepts_mono_mapping_family_zero_and_one()
+    {
+        Validate(OggOpusTestData.Valid(1600), 1600);
+        Validate(OggOpusTestData.Valid(1600, family: 1), 1600);
+    }
+
+    [Fact]
+    public void Ogg_validation_rejects_crc_sequence_serial_tags_mapping_empty_and_trailing_pages()
+    {
+        var crc = OggOpusTestData.Valid(1600);
+        crc[^1] ^= 1;
+        AssertRejected(crc, 1600);
+
+        const uint serial = 0x12345678;
+        AssertRejected(OggOpusTestData.Concat([
+            OggOpusTestData.Page(0x02, serial, 0, 0, OggOpusTestData.OpusHead()),
+            OggOpusTestData.Page(0, serial, 2, 0, OggOpusTestData.OpusTags()),
+            OggOpusTestData.Page(0x04, serial, 3, 5112, OggOpusTestData.AudioPacket())
+        ]), 1600);
+
+        AssertRejected(OggOpusTestData.Concat([
+            OggOpusTestData.Page(0x02, serial, 0, 0, OggOpusTestData.OpusHead()),
+            OggOpusTestData.Page(0, serial + 1, 1, 0, OggOpusTestData.OpusTags()),
+            OggOpusTestData.Page(0x04, serial, 2, 5112, OggOpusTestData.AudioPacket())
+        ]), 1600);
+
+        AssertRejected(OggOpusTestData.Concat([
+            OggOpusTestData.Page(0x02, serial, 0, 0, OggOpusTestData.OpusHead()),
+            OggOpusTestData.Page(0, serial, 1, 0, "NotOpusTags"u8.ToArray()),
+            OggOpusTestData.Page(0x04, serial, 2, 5112, OggOpusTestData.AudioPacket())
+        ]), 1600);
+
+        var truncatedTags = OggOpusTestData.OpusTags();
+        BinaryPrimitives.WriteUInt32LittleEndian(truncatedTags.AsSpan(8), uint.MaxValue);
+        AssertRejected(OggOpusTestData.Concat([
+            OggOpusTestData.Page(0x02, serial, 0, 0, OggOpusTestData.OpusHead()),
+            OggOpusTestData.Page(0, serial, 1, 0, truncatedTags),
+            OggOpusTestData.Page(0x04, serial, 2, 5112, OggOpusTestData.AudioPacket())
+        ]), 1600);
+
+        AssertRejected(OggOpusTestData.Valid(1600, family: 2), 1600);
+
+        AssertRejected(OggOpusTestData.Concat([
+            OggOpusTestData.Page(0x02, serial, 0, 0, OggOpusTestData.OpusHead()),
+            OggOpusTestData.Page(0x04, serial, 1, 0, OggOpusTestData.OpusTags())
+        ]), 1600);
+
+        AssertRejected(OggOpusTestData.Concat([
+            OggOpusTestData.Page(0x02, serial, 0, 0, OggOpusTestData.OpusHead()),
+            OggOpusTestData.Page(0, serial, 1, 0, OggOpusTestData.OpusTags()),
+            OggOpusTestData.Page(0x04, serial, 2, 5112, OggOpusTestData.AudioPacket()),
+            OggOpusTestData.Page(0, serial, 3, 5112, OggOpusTestData.AudioPacket())
+        ]), 1600);
     }
 
     [Fact]
@@ -156,10 +208,7 @@ public sealed class NoteAudioFormatTests
 
     private static void Validate(byte[] bytes, long samples)
     {
-        var headLength = Math.Min(NoteOggOpus.ProbeBytes, bytes.Length);
-        var tailLength = Math.Min(NoteOggOpus.ProbeBytes, bytes.Length);
-        NoteOggOpus.Validate(bytes.AsSpan(0, headLength),
-            bytes.AsSpan(bytes.Length - tailLength, tailLength), bytes.Length, samples);
+        NoteOggOpus.Validate(bytes, samples);
     }
 
     private static void AssertRejected(byte[] bytes, long samples)
@@ -168,7 +217,7 @@ public sealed class NoteAudioFormatTests
         Assert.Equal(40001, error.ErrorCode);
     }
 
-    private static byte[] TinyOpus() => Convert.FromBase64String(TinyOpusBase64);
+    private static byte[] TinyOpus() => OggOpusTestData.TinyOpus();
 
     private static JsonElement Chunk(string json)
     {
