@@ -283,7 +283,7 @@ export function NoteTaskSuggestionsPanel({
                   placeholder="选择本次提取目标"
                   options={textDestinations.map((item) => ({
                     value: destinationKey(item),
-                    label: `${item.displayName} · ${item.model}`,
+                    label: `${item.displayName}${showTechnicalDetails ? ` · ${item.model}` : ''}`,
                   }))} className="w-full" />}
         {version.data && showTechnicalDetails && <p className="break-all font-mono text-[11px] leading-5 text-text-4">
           固定内容 SHA-256：{version.data.contentSha256}
@@ -360,7 +360,13 @@ function ExtractionState({ extraction, showTechnicalDetails }: {
       )}
       <StatusBadge tone={extractionTone(extraction.status)}>{extractionNames[extraction.status] ?? extraction.status}</StatusBadge>
     </span>
-    {extraction.errorMessage && <span className="w-full text-crit">{extraction.errorMessage}</span>}
+    {extraction.errorMessage && (
+      <span className="w-full text-crit">
+        {showTechnicalDetails
+          ? extraction.errorMessage
+          : '提取未完整完成，请刷新核对；现有建议仍可读取，不会自动重发。'}
+      </span>
+    )}
   </div>
 }
 

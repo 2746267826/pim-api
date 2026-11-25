@@ -33,6 +33,14 @@ const kindLabels: Record<string, string> = {
 }
 
 const errorText = (error: unknown) => error instanceof Error ? error.message : '请求失败，请刷新核对'
+const failureText = (error: unknown, showVersionDetails: boolean, fallback: string) =>
+  showVersionDetails && error instanceof Error && error.message.trim() ? error.message : fallback
+const overallLabel = (value: string, showVersionDetails: boolean) =>
+  overallLabels[value] ?? (showVersionDetails ? value : '处理状态待核对')
+const chainLabel = (value: string, showVersionDetails: boolean) =>
+  chainLabels[value] ?? (showVersionDetails ? value : '处理状态待核对')
+const waitingText = (value: string | null | undefined, showVersionDetails: boolean, fallback: string) =>
+  showVersionDetails && value ? value : fallback
 
 function overallTone(value: string) {
   if (value === 'Completed') return 'ok' as const
@@ -53,18 +61,20 @@ function ChainCard({ chain, showVersionDetails }: { chain: NoteProcessingChain; 
   return <div className="min-w-0 rounded-ctl border border-border bg-bg p-3">
     <div className="flex flex-wrap items-center justify-between gap-2">
       <span className="text-sm font-medium text-text-1">{title}</span>
-      <StatusBadge dot={false} tone={chainTone(chain.state)}>{chainLabels[chain.state] ?? chain.state}</StatusBadge>
+      <StatusBadge dot={false} tone={chainTone(chain.state)}>{chainLabel(chain.state, showVersionDetails)}</StatusBadge>
     </div>
     <p className="mt-2 text-xs text-text-3">
       {chain.state === 'NotApplicable'
         ? showVersionDetails ? '该固定版本没有录音，不创建空 ASR 任务。' : '当前内容没有录音，无需创建转写任务。'
         : chain.taskCreated
           ? `${chain.completedItems} / ${chain.totalItems} 项完成${chain.failedItems ? ` · ${chain.failedItems} 项未完成` : ''}`
-          : chain.waitingReason ?? '任务尚未创建'}
+          : waitingText(chain.waitingReason, showVersionDetails, '任务尚未开始，请刷新核对')}
     </p>
-    {chain.errors.length > 0 && <ul className="mt-2 space-y-1 text-xs leading-5 text-crit">
-      {chain.errors.map((error, index) => <li key={`${chain.kind}-${index}`}>{error}</li>)}
-    </ul>}
+    {chain.errors.length > 0 && (showVersionDetails
+      ? <ul className="mt-2 space-y-1 text-xs leading-5 text-crit">
+          {chain.errors.map((error, index) => <li key={`${chain.kind}-${index}`}>{error}</li>)}
+        </ul>
+      : <p className="mt-2 text-xs leading-5 text-warn">处理未完整完成，请刷新核对；页面不会自动重发。</p>)}
   </div>
 }
 
@@ -102,7 +112,7 @@ export function NoteProcessingPanel({ ownerId, serverBinding, noteId, versionId,
       notifySuccess('处理任务已按账号默认目标持久化；后续由后台任务执行')
       onChanged?.()
     } catch (error) {
-      const message = errorText(error)
+      const message = failureText(error, showVersionDetails, '发起未确认，请刷新核对')
       setActionError(message)
       notifyError(message)
     } finally {
@@ -125,7 +135,7 @@ export function NoteProcessingPanel({ ownerId, serverBinding, noteId, versionId,
       <div className="min-w-0">
         <div className="flex flex-wrap items-center gap-2">
           <h2 className="text-sm font-semibold text-text-1">服务器笔记处理</h2>
-          <StatusBadge dot={false} tone={overallTone(value.state)}>{overallLabels[value.state] ?? value.state}</StatusBadge>
+          <StatusBadge dot={false} tone={overallTone(value.state)}>{overallLabel(value.state, showVersionDetails)}</StatusBadge>
           <Chip>{value.autoProcessingEnabled ? '自动处理已开启' : '自动处理已关闭'}</Chip>
         </div>
         <p className="mt-1 text-xs leading-5 text-text-3">
@@ -143,7 +153,9 @@ export function NoteProcessingPanel({ ownerId, serverBinding, noteId, versionId,
       </div>
     </div>
 
-    {value.pendingReason && <InlineAlert tone="warn" title="尚未发起">{value.pendingReason}</InlineAlert>}
+    {value.pendingReason && <InlineAlert tone="warn" title="尚未发起">
+      {waitingText(value.pendingReason, showVersionDetails, '处理尚未发起，请核对材料是否完整或稍后手动重试；页面不会自动重发。')}
+    </InlineAlert>}
     {actionError && <InlineAlert tone="crit" title="发起未完成">{actionError}</InlineAlert>}
 
     <div className="grid gap-3 md:grid-cols-2">
@@ -162,9 +174,11 @@ export function NoteProcessingPanel({ ownerId, serverBinding, noteId, versionId,
       </div>
     </div>}
 
-    {value.issues.length > 0 && <ul className="space-y-1 text-xs leading-5 text-text-2">
-      {value.issues.map((issue, index) => <li key={`${issue.code}-${index}`}>{issue.message}</li>)}
-    </ul>}
+    {value.issues.length > 0 && (showVersionDetails
+      ? <ul className="space-y-1 text-xs leading-5 text-text-2">
+          {value.issues.map((issue, index) => <li key={`${issue.code}-${index}`}>{issue.message}</li>)}
+        </ul>
+      : <p className="text-xs leading-5 text-warn">部分材料或处理项尚未完成，请刷新核对；页面不会自动重发。</p>)}
 
     <p className="text-xs leading-5 text-text-3">
       {showVersionDetails ? '当前仅覆盖该固定版本的全量材料' : '当前仅覆盖这篇笔记的全量材料'}

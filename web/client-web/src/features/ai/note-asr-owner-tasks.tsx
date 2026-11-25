@@ -16,6 +16,9 @@ function stateTone(phase: string) {
   return 'warn' as const
 }
 
+const phaseLabel = (phase: string, showVersionDetails: boolean) =>
+  phaseNames[phase] ?? (showVersionDetails ? phase : '处理状态待核对')
+
 /** Ordinary-owner ASR task list and detail. It uses only public note ASR APIs. */
 export function NoteAsrOwnerTasks({ userId, serverBinding, versionId, selectedTaskId, onSelect, showVersionDetails = true }: {
   userId: string
@@ -37,7 +40,7 @@ export function NoteAsrOwnerTasks({ userId, serverBinding, versionId, selectedTa
 
   return <div className="space-y-3">
     {selectedTask && <div role="status" aria-label="当前转写任务摘要" className="rounded-ctl border border-border bg-bg p-3 text-xs text-text-2">
-      <span className="font-medium">转写进度：{phaseNames[selectedTask.phase] ?? selectedTask.phase}</span>
+      <span className="font-medium">转写进度：{phaseLabel(selectedTask.phase, showVersionDetails)}</span>
       <span className="ml-2 text-text-3">{selectedTask.completedSegments}/{selectedTask.totalSegments} 片 · 失败 {selectedTask.failedSegments}</span>
     </div>}
     <details className="rounded-card border border-border bg-bg px-4 py-3 shadow-card">
@@ -50,7 +53,8 @@ export function NoteAsrOwnerTasks({ userId, serverBinding, versionId, selectedTa
     {tasks.isPending ? <Skeleton className="h-16" />
       : tasks.isError ? <p role="alert" className="text-sm text-text-2">任务读取失败，请刷新核对；页面不会自动重发。</p>
         : !versionTasks.length ? <p className="text-sm text-text-3">{showVersionDetails ? '该材料版本还没有转写任务。' : '这篇笔记还没有转写任务。'}</p>
-          : <div className="space-y-2">{versionTasks.map((task) => <TaskRow key={task.taskId} task={task} selected={task.taskId === selected} onSelect={onSelect} />)}</div>}
+          : <div className="space-y-2">{versionTasks.map((task) => <TaskRow key={task.taskId} task={task} selected={task.taskId === selected}
+            showVersionDetails={showVersionDetails} onSelect={onSelect} />)}</div>}
     {selected && <TaskDetail key={`${serverBinding}/${selected}`} id={selected} userId={userId} serverBinding={serverBinding}
       prefix={prefix} showVersionDetails={showVersionDetails} />}
     {selectedTask && <NoteAsrOwnerBatches key={`batches/${serverBinding}/${selectedTask.taskId}`} task={selectedTask}
@@ -62,12 +66,17 @@ export function NoteAsrOwnerTasks({ userId, serverBinding, versionId, selectedTa
   </div>
 }
 
-function TaskRow({ task, selected, onSelect }: { task: NoteAsrTask; selected: boolean; onSelect: (id: string) => void }) {
+function TaskRow({ task, selected, showVersionDetails, onSelect }: {
+  task: NoteAsrTask
+  selected: boolean
+  showVersionDetails: boolean
+  onSelect: (id: string) => void
+}) {
   return <button type="button" onClick={() => onSelect(task.taskId)}
     className={`w-full min-w-0 rounded-ctl border p-3 text-left text-xs ${selected ? 'border-primary bg-primary/5' : 'border-border hover:bg-surface'}`}>
     <span className="flex flex-wrap items-center justify-between gap-2">
       <span className="break-words text-text-2">{formatTime(task.createdAt)} · {task.completedSegments}/{task.totalSegments} 片 · 失败 {task.failedSegments}</span>
-      <StatusBadge size="xs" dot={false} tone={stateTone(task.phase)}>{phaseNames[task.phase] ?? task.phase}</StatusBadge>
+      <StatusBadge size="xs" dot={false} tone={stateTone(task.phase)}>{phaseLabel(task.phase, showVersionDetails)}</StatusBadge>
     </span>
     <span className="mt-1 block text-text-3">{task.destination ? '云端转写' : '本机排队转写'}</span>
     {task.stopRequested && <span className="mt-1 block text-warn">已请求停止；未知结果不会自动重试。</span>}

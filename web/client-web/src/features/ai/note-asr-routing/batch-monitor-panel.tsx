@@ -14,6 +14,20 @@ const statusMeta: Record<BatchStatusView, { label: string; tone: 'ok' | 'warn' |
   failed: { label: '失败', tone: 'crit' },
   expired: { label: '已过期', tone: 'warn' },
 }
+const userStatusLabels: Record<BatchStatusView, string> = {
+  validating: '校验中',
+  waiting: '排队中',
+  running: '运行中',
+  partial: '部分成功',
+  unknown: '结果待核对',
+  cancelling: '取消请求已发送',
+  cancelled: '已取消',
+  completed: '已完成',
+  failed: '失败',
+  expired: '已过期',
+}
+const failureText = (error: unknown, showVersionDetails: boolean, fallback: string) =>
+  showVersionDetails && error instanceof Error && error.message.trim() ? error.message : fallback
 
 export interface BatchMonitorPanelProps {
   jobs: BatchJobView[]
@@ -56,9 +70,11 @@ export function BatchMonitorPanel({
     setActionError('')
     try {
       await onPoll(job.id)
-      setNotice('已读取最新状态；页面只展示供应商确认后的状态。')
+      setNotice(showVersionDetails
+        ? '已读取最新状态；页面只展示供应商确认后的状态。'
+        : '已读取最新状态；页面以服务端返回为准。')
     } catch (error) {
-      setActionError(`${error instanceof Error ? error.message : '查询失败'}。当前记录保持不变，不会自动新建或重发任务。`)
+      setActionError(`${failureText(error, showVersionDetails, '查询状态未确认，请刷新核对')}。当前记录保持不变，不会自动新建或重发任务。`)
     } finally {
       setBusyId(null)
     }
@@ -71,11 +87,13 @@ export function BatchMonitorPanel({
     setActionError('')
     try {
       await onCancel(job.id)
-      setNotice('取消请求已发送；这是异步操作，最终状态仍以供应商后续查询为准，页面不会直接标记完成或成功。')
+      setNotice(showVersionDetails
+        ? '取消请求已发送；这是异步操作，最终状态仍以供应商后续查询为准，页面不会直接标记完成或成功。'
+        : '取消请求已发送；这是异步操作，最终状态仍需后续核对，页面不会直接标记完成或成功。')
       setCancelId(null)
       setCancelConfirmed(false)
     } catch (error) {
-      setActionError(`${error instanceof Error ? error.message : '取消失败'}。任务状态保持不变，请刷新核对。`)
+      setActionError(`${failureText(error, showVersionDetails, '取消状态未确认，请刷新核对')}。任务状态保持不变，请刷新核对。`)
     } finally {
       setBusyId(null)
     }
@@ -88,12 +106,14 @@ export function BatchMonitorPanel({
   return <Card className="min-w-0 space-y-3 p-4 sm:p-5">
     <div className="flex min-w-0 flex-wrap items-start justify-between gap-2">
       <div className="min-w-0">
-        <h2 className="text-sm font-semibold text-text-1">MiMo Batch 长任务</h2>
-        <p className="mt-1 break-words text-xs text-text-3">Batch 预览；音频上游尚未验收，需管理员显式启用。没有供应商任务标识时只做人工核对，禁止自动重建或自动重发。</p>
+        <h2 className="text-sm font-semibold text-text-1">{showVersionDetails ? 'MiMo Batch 长任务' : '批量转写任务'}</h2>
+        <p className="mt-1 break-words text-xs text-text-3">{showVersionDetails
+          ? 'Batch 预览；音频上游尚未验收，需管理员显式启用。没有供应商任务标识时只做人工核对，禁止自动重建或自动重发。'
+          : '云端批量转写；缺少可核对记录时只做人工核对，禁止自动重建或自动重发。'}</p>
       </div>
       <div className="flex flex-wrap items-center gap-2">
         {jobs.length > boundedPageSize && <span className="text-xs text-text-3">第 {currentPage} / {totalPages} 页</span>}
-        <StatusBadge size="xs" tone="warn" dot={false}>音频能力 NOT-VERIFIED</StatusBadge>
+        <StatusBadge size="xs" tone="warn" dot={false}>{showVersionDetails ? '音频能力 NOT-VERIFIED' : '上游能力待验收'}</StatusBadge>
       </div>
     </div>
     {notice && <InlineAlert tone="info" title="操作状态">{notice}</InlineAlert>}
@@ -104,7 +124,7 @@ export function BatchMonitorPanel({
       return <section key={job.id} className="min-w-0 rounded-ctl border border-border p-3" aria-label={`Batch任务 ${job.title}`}>
         <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
           <h3 className="min-w-0 break-words text-sm font-medium text-text-1">{job.title}</h3>
-          <StatusBadge size="xs" dot={false} tone={meta.tone}>{meta.label}</StatusBadge>
+          <StatusBadge size="xs" dot={false} tone={meta.tone}>{showVersionDetails ? meta.label : userStatusLabels[job.status]}</StatusBadge>
         </div>
         <div className="mt-2 grid min-w-0 gap-1 text-xs text-text-3 sm:grid-cols-2">
           <p className="break-words">{job.createdAtLabel}{showVersionDetails ? ` · ${job.destinationLabel}` : ''}</p>
@@ -117,12 +137,20 @@ export function BatchMonitorPanel({
         {showVersionDetails && (job.providerRequestId
           ? <p className="mt-2 break-all font-mono text-[11px] text-text-4">供应商任务标识：{job.providerRequestId}</p>
           : <InlineAlert tone="warn" title="没有可核对的供应商任务标识" className="mt-2">保持 UNKNOWN，请到MiMo平台按提交时间、文件与请求信息人工核对；不得自动创建新任务、重新上传或假定成功。</InlineAlert>)}
+        {!showVersionDetails && job.status === 'unknown' && !job.providerRequestId && <InlineAlert tone="warn" title="缺少可核对的执行记录" className="mt-2">
+          请保留当前任务并人工核对；不会自动新建、重发或假定成功。
+        </InlineAlert>}
         {job.status === 'partial' && <InlineAlert tone="warn" title="部分成功" className="mt-2">
           成功请求已经产生费用并保留结果；失败请求不会自动续跑或整体重发，需逐项核对后人工决定。
         </InlineAlert>}
         {unknownWithoutId && <p className="mt-2 break-words text-xs text-crit">当前页面只提供历史与证据，不会因缺少标识而生成新的付费任务。</p>}
-        {job.outputAvailable && <p className="mt-2 text-xs text-ok">已取得输出文件，仍需核对 UNKNOWN/失败项后才能发布完整结果。</p>}
-        {job.errorLabel && <p className="mt-2 break-words text-xs text-warn">{job.errorLabel}</p>}
+        {job.outputAvailable && <p className="mt-2 text-xs text-ok">{showVersionDetails
+          ? '已取得输出文件，仍需核对 UNKNOWN/失败项后才能发布完整结果。'
+          : '已取得输出文件，仍需核对未完成项后才能发布完整结果。'}</p>}
+        {showVersionDetails && job.errorLabel && <p className="mt-2 break-words text-xs text-warn">{job.errorLabel}</p>}
+        {!showVersionDetails && ['failed', 'expired', 'unknown'].includes(job.status) && <p className="mt-2 break-words text-xs text-warn">
+          本次处理未完整成功，请刷新核对；页面不会自动重发。
+        </p>}
         <div className="mt-3 flex flex-wrap gap-2">
           {job.providerRequestId && onPoll && <Button size="sm" loading={busyId === job.id} disabled={disabled || readOnly} onClick={() => void poll(job)}>立即查询状态</Button>}
           {onCancel && job.status !== 'cancelled' && job.status !== 'completed' && job.status !== 'partial' &&
@@ -138,7 +166,7 @@ export function BatchMonitorPanel({
           <p className="break-words text-xs text-crit">取消是异步请求；已成功请求仍可能计费并生成部分结果。确认后不代表任务已完成。</p>
           <label className="flex items-start gap-2 text-xs text-text-2">
             <Checkbox checked={cancelConfirmed} onCheckedChange={setCancelConfirmed} ariaLabel={`确认请求取消 ${job.title}`} disabled={busyId != null} />
-            <span>确认请求供应商取消该任务，并理解最终状态仍需后续核对</span>
+            <span>{showVersionDetails ? '确认请求供应商取消该任务' : '确认请求取消该任务'}，并理解最终状态仍需后续核对</span>
           </label>
           <div className="flex flex-wrap gap-2">
             <Button size="sm" variant="danger" loading={busyId === job.id} disabled={!cancelConfirmed || busyId != null} onClick={() => void cancel()}>确认异步取消</Button>

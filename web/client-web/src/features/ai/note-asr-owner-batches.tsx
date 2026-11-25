@@ -13,6 +13,8 @@ import { BatchMonitorPanel, type BatchJobView, type BatchStatusView } from './no
 import { createAiRequestId } from './request-id'
 
 const dateTime = (value: string | null | undefined) => value ? new Date(value).toLocaleString() : '未知'
+const failureText = (error: unknown, showVersionDetails: boolean, fallback: string) =>
+  showVersionDetails && error instanceof Error && error.message.trim() ? error.message : fallback
 
 function batchStatus(job: NoteAsrBatchJob): BatchStatusView {
   switch (job.status.trim().toUpperCase().replaceAll('_', '')) {
@@ -47,8 +49,21 @@ function toView(job: NoteAsrBatchJob, showVersionDetails: boolean): BatchJobView
     inputExpiresAtLabel: dateTime(job.inputExpireAt),
     batchExpiresAtLabel: dateTime(job.batchExpiresAt),
     outputAvailable: Boolean(job.outputFileId),
-    errorLabel: job.lastErrorMessage ?? undefined,
+    errorLabel: showVersionDetails ? job.lastErrorMessage ?? undefined : undefined,
   }
+}
+
+const statusLabels: Record<BatchStatusView, string> = {
+  validating: '校验中',
+  waiting: '排队中',
+  running: '运行中',
+  partial: '部分成功',
+  unknown: '结果待核对',
+  cancelling: '取消请求已发送',
+  cancelled: '已取消',
+  completed: '已完成',
+  failed: '失败',
+  expired: '已过期',
 }
 
 const retryableTerminal = (job: NoteAsrBatchJob) => {
@@ -81,8 +96,9 @@ export function NoteAsrOwnerBatches({ task, userId, serverBinding, onCreated, sh
       await aiApi.asrBatchPoll(id)
       await qc.invalidateQueries({ queryKey: ['ai', userId, serverBinding, 'asr-batch-jobs'] })
     } catch (error) {
-      setPollError(error instanceof Error ? error.message : '查询失败')
-      throw error
+      const message = failureText(error, showVersionDetails, '查询状态未确认，请刷新核对')
+      setPollError(message)
+      throw new Error(message)
     }
   }
 
@@ -92,8 +108,9 @@ export function NoteAsrOwnerBatches({ task, userId, serverBinding, onCreated, sh
       await aiApi.asrBatchCancel(id)
       await qc.invalidateQueries({ queryKey: ['ai', userId, serverBinding, 'asr-batch-jobs'] })
     } catch (error) {
-      setPollError(error instanceof Error ? error.message : '取消失败')
-      throw error
+      const message = failureText(error, showVersionDetails, '取消状态未确认，请刷新核对')
+      setPollError(message)
+      throw new Error(message)
     }
   }
 
@@ -208,7 +225,7 @@ function BatchFailedRetry({ task, jobs, userId, serverBinding, onCreated, showVe
       await qc.invalidateQueries({ queryKey: ['ai', userId, serverBinding, 'asr-batch-jobs'] })
       await qc.invalidateQueries({ queryKey: ['ai', userId, serverBinding, 'note-asr'] })
     } catch (failure) {
-      setError(`${failure instanceof Error ? failure.message : '失败项 Batch 重试未确认'}。已冻结原提交标识，不会新建子任务、自动重试或整体重发。`)
+      setError(`${failureText(failure, showVersionDetails, '失败项批量重试未确认，请刷新核对')}。已冻结原提交标识，不会新建子任务、自动重试或整体重发。`)
     } finally {
       setBusy(false)
     }
@@ -247,10 +264,12 @@ function BatchFailedRetry({ task, jobs, userId, serverBinding, onCreated, showVe
         onCreated?.(child)
         await qc.invalidateQueries({ queryKey: ['ai', userId, serverBinding, 'asr-batch-jobs'] })
       } else {
-        setNotice('尚未同时确认子任务与 Batch 标识。保留原提交标识，不会重新分配或自动重发。')
+        setNotice(showVersionDetails
+          ? '尚未同时确认子任务与 Batch 标识。保留原提交标识，不会重新分配或自动重发。'
+          : '尚未同时确认子任务与提交记录。保留原提交标识，不会重新分配或自动重发。')
       }
     } catch (failure) {
-      setError(`${failure instanceof Error ? failure.message : '核对失败'}。保留原提交标识，请刷新后重试。`)
+      setError(`${failureText(failure, showVersionDetails, '核对未确认，请刷新核对')}。保留原提交标识，请刷新后重试。`)
     } finally {
       setBusy(false)
     }
@@ -270,7 +289,7 @@ function BatchFailedRetry({ task, jobs, userId, serverBinding, onCreated, showVe
             disabled={busy || Boolean(intent) || Boolean(blockedIntent)}
             options={jobs.map((value) => ({
               value: value.id,
-              label: `${dateTime(value.createdAt)} · 失败 ${value.failedItems ?? '未知'} / ${value.totalItems ?? '未知'} · ${value.status}`,
+              label: `${dateTime(value.createdAt)} · 失败 ${value.failedItems ?? '未知'} / ${value.totalItems ?? '未知'} · ${showVersionDetails ? value.status : statusLabels[batchStatus(value)]}`,
             }))}
             onValueChange={selectJob} /></div>
         {!destination && <InlineAlert tone="warn" title="原 Batch 目标当前不可用">

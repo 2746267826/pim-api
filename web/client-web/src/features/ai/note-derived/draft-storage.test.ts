@@ -78,13 +78,40 @@ describe('note-derived local draft storage', () => {
     expect(loadStoredDraft(scope)).toEqual({ ok: true, value: null })
   })
 
-  it('keeps existing encoded storage keys and encodes the selected result version', () => {
-    expect(noteDerivedDraftStorageKey(scope)).toBe(
-      'pim.noteDerivedDraft.v1/11111111-1111-4111-8111-111111111111/https%3A%2F%2Fpim-a.example/22222222-2222-4222-8222-222222222222/33333333-3333-4333-8333-333333333333/CompleteRecord',
+  it('reads legacy encoded keys and keeps pending charge intents attached to the same draft', () => {
+    const legacyKey = 'pim.noteDerivedDraft.v1/11111111-1111-4111-8111-111111111111/https%3A%2F%2Fpim-a.example/22222222-2222-4222-8222-222222222222/33333333-3333-4333-8333-333333333333/CompleteRecord'
+    expect(noteDerivedDraftStorageKey(scope)).toBe(legacyKey)
+
+    const stored: StoredNoteDerivedDraft = {
+      ...createStoredDraft(scope, '旧版本地草稿', 'head-1'),
+      pending: {
+        kind: 'manual-save',
+        intentId: '44444444-4444-4444-8444-444444444444',
+        reservedAt: '2026-11-25T00:00:00Z',
+        submittedText: '旧版本地草稿',
+        submittedBaseToken: 'head-1',
+      },
+    }
+    localStorage.setItem(legacyKey, JSON.stringify(stored))
+
+    const loaded = loadStoredDraft(scope)
+    expect(loaded.ok && loaded.value?.draft.text).toBe('旧版本地草稿')
+    expect(loaded.ok && loaded.value?.pending?.intentId).toBe('44444444-4444-4444-8444-444444444444')
+  })
+
+  it('encodes every storage-key segment, including URL bindings and result versions', () => {
+    const scoped = {
+      ...scope,
+      serverBinding: 'https://pim-a.example/custom-base',
+      artifactVersionId: 'version/candidate?source=1#fragment',
+    }
+    const key = noteDerivedDraftStorageKey(scoped)
+    expect(key).toContain(
+      '/https%3A%2F%2Fpim-a.example%2Fcustom-base/',
     )
-    expect(noteDerivedDraftStorageKey({ ...scope, artifactVersionId: 'version/candidate' })).toMatch(
-      /\/version%2Fcandidate$/,
-    )
+    expect(key).toMatch(/\/version%2Fcandidate%3Fsource%3D1%23fragment$/)
+    expect(key).not.toContain('/https://pim-a.example/')
+    expect(key).not.toContain('/version/candidate')
   })
 
   it('keeps configured base paths in the canonical server binding', () => {

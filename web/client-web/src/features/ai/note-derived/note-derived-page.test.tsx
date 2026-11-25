@@ -196,6 +196,16 @@ it('explains an empty shared destination catalogue without exposing admin config
   expect(screen.queryByRole('link', { name: /ASR 配置/ })).toBeNull()
 })
 
+it('shows only the shared destination name to ordinary users in the generation summary', async () => {
+  auth.user.role = 'user'
+  page(); await chooseSource(); await chooseDestination()
+
+  const disclosure = screen.getByRole('group', { name: '本次生成目标、材料范围与费用' })
+  expect(disclosure.textContent).toContain('本次目标：合成共享目标')
+  expect(disclosure.textContent).not.toContain(destination.model)
+  expect(screen.queryByText(new RegExp(destination.model))).toBeNull()
+})
+
 it('shows the ordinary-user ASR start entry on native notes without admin model queries', async () => {
   auth.user.role = 'user'
   derived.sources.mockResolvedValue({ total: 1, offset: 0, items: [{ ...source, recordings: 1, totalSamples: 16000 }] })
@@ -212,6 +222,18 @@ it('shows the ordinary-user ASR start entry on native notes without admin model 
   expect(assistant.asrRouteConfig).toHaveBeenCalled()
   expect(assistant.models).not.toHaveBeenCalled()
   expect(assistant.asrPresets).not.toHaveBeenCalled()
+})
+
+it('hides raw ASR phase values from the ordinary task summary', async () => {
+  auth.user.role = 'user'
+  derived.sources.mockResolvedValue({ total: 1, offset: 0, items: [{ ...source, recordings: 1, totalSamples: 16000 }] })
+  assistant.noteAsrTasks.mockResolvedValue([{ ...asrTask, phase: 'VendorPhase' }])
+
+  page(); await chooseSource()
+
+  const summary = await screen.findByRole('status', { name: '当前转写任务摘要' })
+  expect(summary.textContent).toContain('处理状态待核对')
+  expect(summary.textContent).not.toContain('VendorPhase')
 })
 
 it('uses the task-list selection as the sole completed ASR choice for generation', async () => {
@@ -641,6 +663,67 @@ it('lets ordinary users inspect and adopt a newer result without version history
     artifactId,
     expect.objectContaining({ versionId: nextVersionId }),
   ))
+})
+
+it('offers only the newest unselected result that is newer than the current head', async () => {
+  auth.user.role = 'user'
+  const headCreatedAt = '2026-10-30T00:00:00Z'
+  const staleVersionId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+  const newestVersionId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
+  const baseSummary = artifact.versions[0]!
+  const headArtifact: NoteDerivedArtifact = {
+    ...artifact,
+    headVersionId: versionId,
+    versions: [
+      { ...baseSummary, versionId: staleVersionId, createdAt: '2026-10-29T00:00:00Z', isHead: false },
+      { ...baseSummary, versionId, createdAt: headCreatedAt, isHead: true },
+      { ...baseSummary, versionId: newestVersionId, createdAt: '2026-10-31T00:00:00Z', isHead: false },
+    ],
+  }
+  derived.artifacts.mockResolvedValue([headArtifact])
+  derived.version.mockImplementation((_artifactId: string, id: string) => Promise.resolve(id === newestVersionId
+    ? {
+        ...version,
+        versionId: newestVersionId,
+        contentMarkdown: '最新候选正文',
+        createdAt: '2026-10-31T00:00:00Z',
+        isHead: false,
+      }
+    : { ...version, versionId, createdAt: headCreatedAt, isHead: true }))
+
+  page(); await chooseSource()
+
+  expect(await screen.findByText('有新的整理结果尚未采用；当前内容保持不变。')).toBeTruthy()
+  await userEvent.click(screen.getByRole('button', { name: '查看新结果' }))
+  expect(await screen.findByDisplayValue('最新候选正文')).toBeTruthy()
+  expect(screen.queryByText(new RegExp(staleVersionId))).toBeNull()
+})
+
+it('does not prompt for an older unselected result after a newer head is current', async () => {
+  auth.user.role = 'user'
+  const staleVersionId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+  const baseSummary = artifact.versions[0]!
+  derived.artifacts.mockResolvedValue([{
+    ...artifact,
+    headVersionId: versionId,
+    versions: [
+      { ...baseSummary, versionId: staleVersionId, createdAt: '2026-10-28T00:00:00Z', isHead: false },
+      { ...baseSummary, versionId, createdAt: '2026-10-30T00:00:00Z', isHead: true },
+    ],
+  }])
+  derived.version.mockResolvedValue({
+    ...version,
+    versionId,
+    contentMarkdown: '当前已采用正文',
+    createdAt: '2026-10-30T00:00:00Z',
+    isHead: true,
+  })
+
+  page(); await chooseSource()
+
+  expect(await screen.findByDisplayValue('当前已采用正文')).toBeTruthy()
+  expect(screen.queryByText('有新的整理结果尚未采用；当前内容保持不变。')).toBeNull()
+  expect(screen.queryByRole('button', { name: '查看新结果' })).toBeNull()
 })
 
 it('shows the selected new result instead of an existing local draft and restores the draft when returning', async () => {

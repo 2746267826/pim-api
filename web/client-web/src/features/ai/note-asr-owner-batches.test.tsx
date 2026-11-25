@@ -229,6 +229,10 @@ describe('NoteAsrOwnerBatches', () => {
 
   it('hides Batch, provider, task and target internals from ordinary owners', async () => {
     const clientTaskId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    api.asrBatchJobs.mockResolvedValue([{
+      ...job,
+      lastErrorMessage: 'MiMo raw batch failure detail',
+    }])
     localStorage.setItem(noteAsrBatchFailedIntentScope(userId, serverBinding, job.id), JSON.stringify({
       kind: 'failed',
       expectedUserId: userId,
@@ -263,6 +267,29 @@ describe('NoteAsrOwnerBatches', () => {
     expect(screen.queryByText(/consent-2/)).toBeNull()
     expect(screen.queryByText(/asr\.example\.test/)).toBeNull()
     expect(screen.queryByText(new RegExp(job.model))).toBeNull()
+    expect(screen.queryByText(/MiMo raw batch failure detail/)).toBeNull()
     expect(screen.getByText('Batch 任务')).toBeTruthy()
+  })
+
+  it('uses a generic batch status for ordinary owners instead of raw status values', async () => {
+    api.asrBatchJobs.mockResolvedValue([{ ...job, status: 'VendorState' }])
+
+    page(task, serverBinding, false)
+
+    expect(await screen.findByText('结果待核对')).toBeTruthy()
+    expect(screen.queryByText(/VendorState/)).toBeNull()
+  })
+
+  it('keeps raw batch status and error diagnostics for admins', async () => {
+    api.asrBatchJobs.mockResolvedValue([{
+      ...job,
+      lastErrorMessage: 'provider batch diagnostic detail',
+    }])
+
+    page(task, serverBinding, true)
+
+    expect(await screen.findByText('provider batch diagnostic detail')).toBeTruthy()
+    await userEvent.click(screen.getByRole('combobox', { name: '原 Batch 任务' }))
+    expect(await screen.findByRole('option', { name: /Completed/ })).toBeTruthy()
   })
 })

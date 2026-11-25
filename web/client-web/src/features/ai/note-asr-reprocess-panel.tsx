@@ -12,11 +12,14 @@ import {
 } from './note-asr-reprocess-intent'
 
 const dateTime = (value: string) => new Date(value).toLocaleString()
-const phaseLabel: Record<string, string> = {
+const phaseLabels: Record<string, string> = {
   queued: '等待处理', running: '转写中', succeeded: '转写完成', needsattention: '有分片需处理',
   failed: '失败', stopped: '已停止', unknown: '结果待核对', cancelled: '已取消',
 }
-const label = (value: string) => phaseLabel[value.toLowerCase()] ?? value
+const statusLabel = (value: string, showVersionDetails: boolean) =>
+  phaseLabels[value.toLowerCase()] ?? (showVersionDetails ? value : '处理状态待核对')
+const failureText = (error: unknown, showVersionDetails: boolean, fallback: string) =>
+  showVersionDetails && error instanceof Error && error.message.trim() ? error.message : fallback
 
 export function NoteAsrReprocessPanel({ task, userId, serverBinding, onCreated, showVersionDetails = true }: {
   task: NoteAsrTask
@@ -124,7 +127,7 @@ export function NoteAsrReprocessPanel({ task, userId, serverBinding, onCreated, 
       await qc.invalidateQueries({ queryKey: ['ai', userId, serverBinding, 'reprocess-history', task.taskId] })
       await qc.invalidateQueries({ queryKey: ['ai', userId, serverBinding, 'note-asr'] })
     } catch (error) {
-      setActionError(`${error instanceof Error ? error.message : '重处理未确认'}。已冻结原提交标识，不会分配新任务、自动重试或重复计费。`)
+      setActionError(`${failureText(error, showVersionDetails, '重处理未确认，请刷新核对')}。已冻结原提交标识，不会分配新任务、自动重试或重复计费。`)
     } finally {
       setBusy(false)
     }
@@ -255,7 +258,9 @@ export function NoteAsrReprocessPanel({ task, userId, serverBinding, onCreated, 
               className="min-w-0 rounded-ctl border border-border p-3 text-xs text-text-2">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <span className="break-all font-mono">{showVersionDetails ? item.taskId : dateTime(item.createdAt)}</span>
-                <StatusBadge size="xs" dot={false} tone={item.phase.toLowerCase() === 'succeeded' ? 'ok' : 'warn'}>{label(item.phase)}</StatusBadge>
+                <StatusBadge size="xs" dot={false} tone={item.phase.toLowerCase() === 'succeeded' ? 'ok' : 'warn'}>
+                  {statusLabel(item.phase, showVersionDetails)}
+                </StatusBadge>
               </div>
               {showVersionDetails
                 ? <p className="mt-1 break-words">{dateTime(item.createdAt)} · 路由 {item.route} · {item.executionMode}</p>
@@ -293,12 +298,14 @@ function Attempts({ taskId, userId, serverBinding, attempts, showVersionDetails 
           ? attempt.attemptId
           : attempt.route === 'local' ? '本机转写执行' : '云端转写执行'}</span>
         <StatusBadge size="xs" dot={false} tone={attempt.state.toLowerCase() === 'succeeded' ? 'ok' : terminal ? 'warn' : 'info'}>
-          {label(attempt.state)}{attempt.stopRequested ? ' · 已请求停止' : ''}
+          {statusLabel(attempt.state, showVersionDetails)}{attempt.stopRequested ? ' · 已请求停止' : ''}
         </StatusBadge>
       </div>
       <p className="mt-1 break-words">{showVersionDetails ? `${attempt.route} · ` : ''}{attempt.completedSegments}/{attempt.expectedSegments} 片 · 失败 {attempt.failedSegments}</p>
       {showVersionDetails && <p className="mt-1 break-all font-mono text-text-3">{attempt.endpoint ?? attempt.model ?? '目标未记录'}</p>}
-      {attempt.lastErrorMessage && <p className="mt-1 break-words text-warn">{attempt.lastErrorMessage}</p>}
+      {attempt.lastErrorMessage && <p className="mt-1 break-words text-warn">
+        {showVersionDetails ? attempt.lastErrorMessage : '执行未完整成功，请刷新核对；页面不会自动重试。'}
+      </p>}
       {!terminal && !attempt.stopRequested && <div className="mt-2">
         {stopId !== attempt.attemptId
           ? <Button size="sm" variant="secondary" onClick={() => { setStopId(attempt.attemptId); setConfirmed(false); setError('') }}>停止该执行</Button>
@@ -316,7 +323,7 @@ function Attempts({ taskId, userId, serverBinding, attempts, showVersionDetails 
                       await qc.invalidateQueries({ queryKey: ['ai', userId, serverBinding, 'asr-attempts', taskId] })
                       setStopId(null); setConfirmed(false)
                     })
-                    .catch((failure: unknown) => setError(failure instanceof Error ? failure.message : '停止失败'))
+                    .catch((failure: unknown) => setError(failureText(failure, showVersionDetails, '停止状态未确认，请刷新核对')))
                     .finally(() => setBusy(false))
                 }}>确认停止</Button>
               <Button size="sm" variant="ghost" disabled={busy} onClick={() => { setStopId(null); setConfirmed(false) }}>返回</Button>

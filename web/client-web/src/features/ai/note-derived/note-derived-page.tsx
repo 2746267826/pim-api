@@ -88,6 +88,15 @@ function bindingScope(ownerId: string, serverBinding: string, artifactId: string
   return { ownerId, serverBinding, artifactId, sourceVersionId, kind, ...(artifactVersionId ? { artifactVersionId } : {}) }
 }
 
+function pendingArtifactVersion(artifact: NoteDerivedArtifact) {
+  const head = artifact.versions.find((item) => item.isHead || item.versionId === artifact.headVersionId)
+  const headCreatedAt = head ? Date.parse(head.createdAt) : Number.NaN
+  return artifact.versions
+    .filter((item) => !item.isHead && item.versionId !== artifact.headVersionId)
+    .filter((item) => !head || Date.parse(item.createdAt) > headCreatedAt)
+    .sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt))[0]
+}
+
 function loadLocalRecord(scope: NoteDerivedDraftScope): { record: StoredNoteDerivedDraft; error: string | null } {
   const loaded = loadStoredDraft(scope)
   if (!loaded.ok) return { record: createStoredDraft(scope), error: loaded.error.message }
@@ -467,7 +476,9 @@ function StartTaskCard({ ownerId, serverBinding, role, source, destinations, des
         : '这份内容没有录音，不需要创建转写任务；正文、照片和手写图仍会由服务端完整核对。'}
     </p>}
     <div role="group" aria-label="本次生成目标、材料范围与费用" className="space-y-1 rounded-ctl border border-border p-3 text-xs leading-5 text-text-2">
-      <p>{destination ? `本次目标：${destination.displayName} · ${destination.model}` : '本次目标：尚未选择可用的共享生成目标'}</p>
+      <p>{destination
+        ? `本次目标：${destination.displayName}${canViewVersions ? ` · ${destination.model}` : ''}`
+        : '本次目标：尚未选择可用的共享生成目标'}</p>
       <p>发送材料：{canViewVersions ? '固定版本的' : '这份内容的'}完整正文、照片和手写渲染图{needsAsr ? '，以及已核对成功的 ASR 转写' : ''}。</p>
       <p className="font-medium text-warn">创建后可能产生服务商费用；页面不会自动创建或自动付费。</p>
     </div>
@@ -619,7 +630,7 @@ function ArtifactCard({ artifact, ownerId, serverBinding, showVersionDetails, on
     enabled: Boolean(selectedVersionId),
   })
   const selectedSummary = artifact.versions.find((item) => item.versionId === selectedVersionId)
-  const pendingSummary = showVersionDetails ? undefined : artifact.versions.find((item) => !item.isHead)
+  const pendingSummary = showVersionDetails ? undefined : pendingArtifactVersion(artifact)
   const showingPending = Boolean(selectedSummary && !selectedSummary.isHead)
   const headVersionId = artifact.headVersionId
 

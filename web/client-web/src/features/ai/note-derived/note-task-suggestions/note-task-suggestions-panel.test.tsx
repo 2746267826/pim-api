@@ -208,6 +208,25 @@ describe('NoteTaskSuggestionsPanel', () => {
     expect(screen.queryByText(new RegExp(contentSha256.slice(0, 12)))).toBeNull()
   })
 
+  it('shows only the shared display name in ordinary-user text target labels', async () => {
+    page(false)
+    await screen.findByText('任务建议')
+    await chooseDestination()
+
+    expect(screen.getByRole('combobox', { name: '文本模型目标' }).textContent).toBe('合成文本目标')
+    expect(screen.queryByText(new RegExp(destination.model))).toBeNull()
+  })
+
+  it('keeps the underlying text model available to admins', async () => {
+    page(true)
+    await screen.findByText('本版本建议')
+    await chooseDestination()
+
+    expect(screen.getByRole('combobox', { name: '文本模型目标' }).textContent).toContain(
+      `合成文本目标 · ${destination.model}`,
+    )
+  })
+
   it('does not request extraction before explicit charge consent and freezes the owned artifact digest', async () => {
     page()
     await chooseDestination()

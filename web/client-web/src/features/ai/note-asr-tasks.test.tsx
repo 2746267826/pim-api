@@ -127,16 +127,63 @@ it('rerun for a version with history needs explicit consent and creates a new ta
 })
 
 it('hides the service endpoint and internal execution identity from ordinary task detail', async () => {
+  api.noteAsrTask.mockResolvedValue({ ...task, phase: 'VendorTaskState' })
+  api.noteAsrSegments.mockResolvedValue({
+    total: 1,
+    offset: 0,
+    items: [{
+      index: 0, recordingId: id, recordingSegment: 1, chunkIndex: 1, sourceFileIndex: 0,
+      sourcePath: 'recordings/source-0.wav', sourceSha256: 'a'.repeat(64), sourceOffsetSamples: 0,
+      recordingOffsetSamples: 0, timelineOffsetSamples: 0, samples: 960000,
+      status: 'VendorSegmentState', transcript: '保留成功分片原文',
+      attempts: [{
+        requestId: version, logId: id, status: 'VendorAttemptState',
+        errorMessage: 'MiMo raw attempt failure',
+      }],
+    }],
+  })
   render(<QueryClientProvider client={qc}>
     <TaskDetail id={task.taskId} userId={owner} serverBinding="https://synthetic.invalid" prefix={['ai', owner, 'note-asr-owner']}
       showVersionDetails={false} />
   </QueryClientProvider>)
   expect(await screen.findByText('逐片进度与恢复')).toBeTruthy()
   expect(await screen.findByText('本任务使用已确认的云端目标')).toBeTruthy()
+  expect((await screen.findAllByText('处理状态待核对')).length).toBeGreaterThan(0)
+  expect(screen.getByText(/处理记录需核对/)).toBeTruthy()
   expect(screen.queryByText(/处理详情：服务地址/)).toBeNull()
   expect(screen.queryByText(task.destination!.endpoint)).toBeNull()
   expect(screen.queryByText(task.taskId)).toBeNull()
   expect(screen.queryByText(task.destination!.presetId)).toBeNull()
   expect(screen.queryByText(/第 1 段/)).toBeNull()
   expect(screen.queryByText(/原始分块/)).toBeNull()
+  expect(screen.queryByText(/VendorTaskState/)).toBeNull()
+  expect(screen.queryByText(/VendorSegmentState/)).toBeNull()
+  expect(screen.queryByText(/VendorAttemptState/)).toBeNull()
+  expect(screen.queryByText(/MiMo raw attempt failure/)).toBeNull()
+})
+
+it('keeps raw execution states and attempt errors for admins', async () => {
+  api.noteAsrTask.mockResolvedValue({ ...task, phase: 'VendorTaskState' })
+  api.noteAsrSegments.mockResolvedValue({
+    total: 1,
+    offset: 0,
+    items: [{
+      index: 0, recordingId: id, recordingSegment: 1, chunkIndex: 1, sourceFileIndex: 0,
+      sourcePath: 'recordings/source-0.wav', sourceSha256: 'a'.repeat(64), sourceOffsetSamples: 0,
+      recordingOffsetSamples: 0, timelineOffsetSamples: 0, samples: 960000,
+      status: 'VendorSegmentState', transcript: '保留成功分片原文',
+      attempts: [{
+        requestId: version, logId: id, status: 'VendorAttemptState',
+        errorMessage: 'provider attempt diagnostic',
+      }],
+    }],
+  })
+  render(<QueryClientProvider client={qc}>
+    <TaskDetail id={task.taskId} userId={owner} serverBinding="https://synthetic.invalid" prefix={['ai', owner, 'note-asr-owner']} />
+  </QueryClientProvider>)
+
+  expect(await screen.findByText('VendorTaskState')).toBeTruthy()
+  expect(await screen.findByText('VendorSegmentState')).toBeTruthy()
+  expect(await screen.findByText(/VendorAttemptState/)).toBeTruthy()
+  expect(await screen.findByText(/provider attempt diagnostic/)).toBeTruthy()
 })

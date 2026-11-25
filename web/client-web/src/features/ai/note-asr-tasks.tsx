@@ -11,8 +11,11 @@ const errorText = (error: unknown) => error instanceof Error ? error.message : '
 const names: Record<string, string> = { Queued: '等待处理', Running: '转写中', Succeeded: '转写完成', NeedsAttention: '有分片需处理', Stopped: '已停止',
   Failed: '失败', Blocked: '未发送', Cancelled: '已取消', Incomplete: '结果未完整确认', TimedOut: '超时', Unknown: '结果待核对' }
 const time = (samples: number, rate = 16000) => `${Math.floor(samples / rate / 60)}:${String(Math.floor(samples / rate) % 60).padStart(2, '0')}`
-function State({ value }: { value: string }) {
-  return <StatusBadge dot={false} tone={value === 'Succeeded' ? 'ok' : ['Queued', 'Running'].includes(value) ? 'info' : 'warn'}>{names[value] ?? value}</StatusBadge>
+function stateLabel(value: string, showVersionDetails: boolean) {
+  return names[value] ?? (showVersionDetails ? value : '处理状态待核对')
+}
+function State({ value, showVersionDetails = true }: { value: string; showVersionDetails?: boolean }) {
+  return <StatusBadge dot={false} tone={value === 'Succeeded' ? 'ok' : ['Queued', 'Running'].includes(value) ? 'info' : 'warn'}>{stateLabel(value, showVersionDetails)}</StatusBadge>
 }
 
 export function NoteAsrTasks({ userId, models, settings, showDetail }: { userId: string; models: Model[]; settings: ModelSettings; showDetail: (id: string) => void }) {
@@ -107,12 +110,12 @@ export function TaskDetail({ id, userId, serverBinding, prefix, showDetail, show
     if (!task.data || busy) return
     setBusy(true); setMessage('')
     try { await action(task.data); setSelected([]); setApproved(''); await qc.invalidateQueries({ queryKey: prefix }) }
-    catch (error) { setMessage(errorText(error) + '。请先刷新核对，恢复操作不会自动重发。') }
+    catch (error) { setMessage((showVersionDetails ? errorText(error) : '操作状态未确认，请刷新核对') + '。请先刷新核对，恢复操作不会自动重发。') }
     finally { setBusy(false) }
   }
   return <Card className="space-y-4 p-5"><h2 className="text-sm font-semibold text-text-1">逐片进度与恢复</h2>
     {!task.data ? task.isError ? <p role="alert">任务读取失败，请刷新核对。</p> : <Skeleton className="h-20" /> : <>
-      <div className="flex flex-wrap items-center justify-between gap-2"><State value={task.data.phase} /><span className="text-xs text-text-3">{task.data.completedSegments}/{task.data.totalSegments} 片 · 已覆盖 {time(task.data.completedSamples, task.data.sampleRate)} / {time(task.data.totalSamples, task.data.sampleRate)}</span></div>
+      <div className="flex flex-wrap items-center justify-between gap-2"><State value={task.data.phase} showVersionDetails={showVersionDetails} /><span className="text-xs text-text-3">{task.data.completedSegments}/{task.data.totalSegments} 片 · 已覆盖 {time(task.data.completedSamples, task.data.sampleRate)} / {time(task.data.totalSamples, task.data.sampleRate)}</span></div>
       <progress aria-label="成功转写覆盖进度" className="h-2 w-full accent-primary" max={task.data.totalSamples} value={task.data.completedSamples} />
       {!task.data.backgroundProcessingAvailable && <p role="status" className="text-sm text-text-2">服务器未启用后台调度，任务已保存；启用后才会继续处理。</p>}
       <p className="text-xs text-text-3">{task.data.destination ? '本任务使用已确认的云端目标' : '本机排队转写 · 未发送云端'}</p>
@@ -122,10 +125,10 @@ export function TaskDetail({ id, userId, serverBinding, prefix, showDetail, show
       {segments.isError && <p role="alert">分片结果加载失败，请刷新核对。</p>}
       <div className="space-y-3">{segments.data?.items.map((part) => {
         const retryable = !['Succeeded', 'Running'].includes(part.status)
-        return <div key={part.index} className="space-y-2 rounded-ctl border border-border p-3"><div className="flex flex-wrap items-center justify-between gap-2"><span className="text-sm">第 {part.index + 1} 片 · {time(part.timelineOffsetSamples)}–{time(part.timelineOffsetSamples + part.samples)}</span><State value={part.status} /></div>
+        return <div key={part.index} className="space-y-2 rounded-ctl border border-border p-3"><div className="flex flex-wrap items-center justify-between gap-2"><span className="text-sm">第 {part.index + 1} 片 · {time(part.timelineOffsetSamples)}–{time(part.timelineOffsetSamples + part.samples)}</span><State value={part.status} showVersionDetails={showVersionDetails} /></div>
           {part.transcript != null && <pre aria-label={`第${part.index + 1}片转写`} className="max-h-64 overflow-auto whitespace-pre-wrap break-words text-sm text-text-1">{part.transcript || '空转写，请试听原音频核对。'}</pre>}
           <details className="text-xs text-text-3"><summary className="cursor-pointer">分片核对与恢复</summary><div className="mt-2 space-y-2"><p>{showVersionDetails ? `第 ${part.recordingSegment} 段 · 原始分块 ${part.chunkIndex}` : '本段录音'} · {part.attempts.length} 次记录</p>
-          {part.attempts.map((attempt, index) => <div key={attempt.requestId} className="flex flex-wrap items-center gap-2 text-xs text-text-3"><span>第 {index + 1} 次 · {names[attempt.status] ?? attempt.status}{attempt.errorMessage ? ` · ${attempt.errorMessage}` : ''}</span>
+          {part.attempts.map((attempt, index) => <div key={attempt.requestId} className="flex flex-wrap items-center gap-2 text-xs text-text-3"><span>第 {index + 1} 次 · {stateLabel(attempt.status, showVersionDetails)}{attempt.errorMessage ? ` · ${showVersionDetails ? attempt.errorMessage : '处理记录需核对'}` : ''}</span>
             {attempt.logId && showDetail && <Button size="sm" variant="ghost" onClick={() => showDetail(attempt.logId!)}>查看分片调用记录</Button>}</div>)}
           {retryable && <label className="flex items-center gap-2 text-xs text-text-2"><input type="checkbox" aria-label={`恢复第${part.index + 1}片`} checked={selected.includes(part.index)} disabled={busy}
             onChange={(event) => { setSelected((s) => event.target.checked ? [...s, part.index] : s.filter((i) => i !== part.index)); setApproved('') }} />选择恢复该片</label>}</div></details>
