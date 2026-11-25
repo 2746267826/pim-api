@@ -672,6 +672,200 @@ public sealed class AiAsrJobServiceTests
 
     [SkippableFact]
     [Trait("DataSource", "RealDb")]
+    public async Task Postgres_generic_call_recovery_leaves_expired_asr_audit_to_job_recovery()
+    {
+        await using var database = await TempMigrationDatabase.CreateAsync(
+            "test_ai_asr_job_cross_recovery");
+        await database.MigrateAsync();
+        var owner = new Owner();
+        ISecretProtector secrets =
+            new DataProtectionSecretProtector(new EphemeralDataProtectionProvider());
+        var profile = await SeedPostgresAsync(database.Db, owner, secrets);
+        var now = DateTimeOffset.UtcNow;
+        var log = new AiRequestLogEntity
+        {
+            UserId = owner.UserId,
+            ClientRequestId = Guid.NewGuid(),
+            InputHash = "synthetic",
+            Module = "system",
+            Purpose = AiAsrJobService.AuditPurpose,
+            SourceObjectType = "ai-model",
+            SourceObjectId = profile.Id.ToString("D"),
+            Provider = ScriptedPreset.PresetId,
+            Model = profile.Model,
+            ModelProfileId = profile.Id,
+            ModelRevision = profile.Revision,
+            CorrelationId = Guid.NewGuid().ToString("N"),
+            Status = "running",
+            AttemptNumber = 1,
+            MaxAttempts = 1,
+            StartedAt = now.AddMinutes(-10),
+            InitiatedAt = now.AddMinutes(-10),
+            ExecutionExpiresAt = now.AddMinutes(-1),
+            MetadataJson = """{"providerAttempted":true}"""
+        };
+        var job = new AiAsrJobEntity
+        {
+            OwnerId = owner.UserId!.Value,
+            ClientRequestId = log.ClientRequestId!.Value,
+            LogId = log.Id,
+            Status = "running",
+            ModelProfileId = profile.Id,
+            ModelRevision = profile.Revision,
+            PresetId = ScriptedPreset.PresetId,
+            PresetVersion = ScriptedPreset.Dto.Version,
+            Model = profile.Model,
+            Endpoint = AiAsrPresetRegistry.OperationEndpoint(profile.BaseUrl, ScriptedPreset.Dto),
+            ProviderAttempted = true,
+            CreatedAt = now.AddMinutes(-10),
+            StartedAt = now.AddMinutes(-9),
+            ExecutionExpiresAt = now.AddMinutes(-1)
+        };
+        database.Db.AiRequestLogs.Add(log);
+        database.Db.AiAsrJobs.Add(job);
+        await database.Db.SaveChangesAsync();
+
+        await AiCallRecovery.RecoverExpiredAsync(database.Db, CancellationToken.None);
+
+        database.Db.ChangeTracker.Clear();
+        Assert.Equal("running", (await database.Db.AiRequestLogs.AsNoTracking()
+            .SingleAsync(x => x.Id == log.Id)).Status);
+        Assert.Equal("running", (await database.Db.AiAsrJobs.AsNoTracking()
+            .SingleAsync(x => x.Id == job.Id)).Status);
+
+        await AiAsrJobRecovery.RecoverExpiredAsync(database.Db, CancellationToken.None);
+
+        database.Db.ChangeTracker.Clear();
+        var recoveredJob = await database.Db.AiAsrJobs.AsNoTracking()
+            .SingleAsync(x => x.Id == job.Id);
+        var recoveredLog = await database.Db.AiRequestLogs.AsNoTracking()
+            .SingleAsync(x => x.Id == log.Id);
+        Assert.Equal("incomplete", recoveredJob.Status);
+        Assert.Equal("worker_lost", recoveredJob.AbortSource);
+        Assert.True(recoveredJob.ProviderAttempted);
+        Assert.Equal(recoveredJob.Status, recoveredLog.Status);
+        Assert.Equal(recoveredJob.ErrorCode, recoveredLog.ErrorCode);
+        using var metadata = JsonDocument.Parse(recoveredLog.MetadataJson);
+        Assert.True(metadata.RootElement.GetProperty("providerAttempted").GetBoolean());
+    }
+
+    [SkippableFact]
+    [Trait("DataSource", "RealDb")]
+    public async Task Postgres_job_recovery_overwrites_a_legacy_premature_audit_terminal_state()
+    {
+        await using var database = await TempMigrationDatabase.CreateAsync(
+            "test_ai_asr_job_premature_audit");
+        await database.MigrateAsync();
+        var owner = new Owner();
+        ISecretProtector secrets =
+            new DataProtectionSecretProtector(new EphemeralDataProtectionProvider());
+        var profile = await SeedPostgresAsync(database.Db, owner, secrets);
+        var now = DateTimeOffset.UtcNow;
+        var log = new AiRequestLogEntity
+        {
+            UserId = owner.UserId,
+            ClientRequestId = Guid.NewGuid(),
+            InputHash = "synthetic",
+            Module = "system",
+            Purpose = AiAsrJobService.AuditPurpose,
+            SourceObjectType = "ai-model",
+            SourceObjectId = profile.Id.ToString("D"),
+            Provider = ScriptedPreset.PresetId,
+            Model = profile.Model,
+            ModelProfileId = profile.Id,
+            ModelRevision = profile.Revision,
+            CorrelationId = Guid.NewGuid().ToString("N"),
+            Status = "incomplete",
+            ErrorCode = "outcome_unknown",
+            StartedAt = now.AddMinutes(-10),
+            InitiatedAt = now.AddMinutes(-10),
+            FinishedAt = now.AddMinutes(-1),
+            ExecutionExpiresAt = now.AddMinutes(-1),
+            MetadataJson = """{"providerAttempted":true}"""
+        };
+        var job = new AiAsrJobEntity
+        {
+            OwnerId = owner.UserId!.Value,
+            ClientRequestId = log.ClientRequestId!.Value,
+            LogId = log.Id,
+            Status = "running",
+            ModelProfileId = profile.Id,
+            ModelRevision = profile.Revision,
+            PresetId = ScriptedPreset.PresetId,
+            PresetVersion = ScriptedPreset.Dto.Version,
+            Model = profile.Model,
+            Endpoint = AiAsrPresetRegistry.OperationEndpoint(profile.BaseUrl, ScriptedPreset.Dto),
+            ProviderAttempted = true,
+            CreatedAt = now.AddMinutes(-10),
+            StartedAt = now.AddMinutes(-9),
+            ExecutionExpiresAt = now.AddMinutes(-1)
+        };
+        database.Db.AiRequestLogs.Add(log);
+        database.Db.AiAsrJobs.Add(job);
+        await database.Db.SaveChangesAsync();
+
+        await AiAsrJobRecovery.RecoverExpiredAsync(database.Db, CancellationToken.None);
+
+        database.Db.ChangeTracker.Clear();
+        var recoveredJob = await database.Db.AiAsrJobs.AsNoTracking()
+            .SingleAsync(x => x.Id == job.Id);
+        var recoveredLog = await database.Db.AiRequestLogs.AsNoTracking()
+            .SingleAsync(x => x.Id == log.Id);
+        Assert.Equal("incomplete", recoveredJob.Status);
+        Assert.Equal("incomplete", recoveredLog.Status);
+        Assert.Equal("worker_lost_outcome_unknown", recoveredJob.ErrorCode);
+        Assert.Equal(recoveredJob.ErrorCode, recoveredLog.ErrorCode);
+        Assert.Equal("worker_lost_outcome_unknown", recoveredLog.ErrorCode);
+    }
+
+    [SkippableFact]
+    [Trait("DataSource", "RealDb")]
+    public async Task Postgres_generic_recovery_closes_an_orphaned_asr_audit_without_a_job()
+    {
+        await using var database = await TempMigrationDatabase.CreateAsync(
+            "test_ai_asr_orphan_audit");
+        await database.MigrateAsync();
+        var owner = new Owner();
+        ISecretProtector secrets =
+            new DataProtectionSecretProtector(new EphemeralDataProtectionProvider());
+        var profile = await SeedPostgresAsync(database.Db, owner, secrets);
+        var now = DateTimeOffset.UtcNow;
+        database.Db.AiRequestLogs.Add(new AiRequestLogEntity
+        {
+            UserId = owner.UserId,
+            ClientRequestId = Guid.NewGuid(),
+            InputHash = "synthetic",
+            Module = "system",
+            Purpose = AiAsrJobService.AuditPurpose,
+            SourceObjectType = "ai-model",
+            SourceObjectId = profile.Id.ToString("D"),
+            Provider = ScriptedPreset.PresetId,
+            Model = profile.Model,
+            ModelProfileId = profile.Id,
+            ModelRevision = profile.Revision,
+            CorrelationId = Guid.NewGuid().ToString("N"),
+            Status = "running",
+            AttemptNumber = 1,
+            MaxAttempts = 1,
+            StartedAt = now.AddMinutes(-10),
+            InitiatedAt = now.AddMinutes(-10),
+            ExecutionExpiresAt = now.AddMinutes(-1),
+            MetadataJson = """{"providerAttempted":false}"""
+        });
+        await database.Db.SaveChangesAsync();
+
+        await AiCallRecovery.RecoverExpiredAsync(database.Db, CancellationToken.None);
+
+        database.Db.ChangeTracker.Clear();
+        var recovered = await database.Db.AiRequestLogs.AsNoTracking().SingleAsync();
+        Assert.Equal("incomplete", recovered.Status);
+        Assert.Equal("outcome_unknown", recovered.ErrorCode);
+        using var metadata = JsonDocument.Parse(recovered.MetadataJson);
+        Assert.True(metadata.RootElement.GetProperty("providerAttempted").GetBoolean());
+    }
+
+    [SkippableFact]
+    [Trait("DataSource", "RealDb")]
     public async Task Postgres_cancel_and_claim_races_never_split_job_and_audit_terminal_state()
     {
         await using var database = await TempMigrationDatabase.CreateAsync(

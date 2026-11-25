@@ -27,7 +27,13 @@ public static class AiAsrJobRecovery
             {
                 Apply(row, now);
                 var log = await db.AiRequestLogs.SingleOrDefaultAsync(x => x.Id == row.LogId, ct);
-                if (log is not null) ApplyLog(row, log, now);
+                if (log is not null)
+                {
+                    if (log.Status is not ("preparing" or "running" or "cancelling" or "incomplete"))
+                        throw new InvalidOperationException(
+                            "ASR recovery found an audit row with an unexpected terminal state");
+                    ApplyLog(row, log, now);
+                }
             }
             await db.SaveChangesAsync(ct);
             return;
@@ -102,7 +108,10 @@ public static class AiAsrJobRecovery
                                 true)
                         WHERE id = {row.LogId}
                           AND user_id = {row.OwnerId}
-                          AND status IN ('preparing', 'running', 'cancelling')
+                          -- AiCallRecovery may already have marked a legacy ASR log incomplete
+                          -- before this job-scoped recovery ran. The job row above is the winner,
+                          -- so the audit row must follow it instead of aborting the whole batch.
+                          AND status IN ('preparing', 'running', 'cancelling', 'incomplete')
                         """, ct);
                     if (updated != 1)
                         throw new InvalidOperationException(

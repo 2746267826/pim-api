@@ -914,7 +914,10 @@ public sealed class NoteAsrBatchService(PimDbContext db, ICurrentUserService use
                 return null;
             }
         }
-        return new BatchTokens(prompt, completion, total);
+        if (prompt is < 0 or > int.MaxValue || completion is < 0 or > int.MaxValue ||
+            total is < 0 or > int.MaxValue)
+            return null;
+        return new BatchTokens((int)prompt, (int)completion, (int)total);
     }
 
     private static bool TryToken(JsonElement usage, string name, out long value)
@@ -926,7 +929,7 @@ public sealed class NoteAsrBatchService(PimDbContext db, ICurrentUserService use
                value >= 0;
     }
 
-    private sealed record BatchTokens(long Prompt, long Completion, long Total);
+    private sealed record BatchTokens(int Prompt, int Completion, int Total);
 
     public async Task<IReadOnlyList<NoteAsrBatchJobDto>> ListAsync(CancellationToken ct)
     {

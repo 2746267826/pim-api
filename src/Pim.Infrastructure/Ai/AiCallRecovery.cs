@@ -10,7 +10,13 @@ public static class AiCallRecovery
     public static async Task RecoverExpiredAsync(PimDbContext db, CancellationToken ct)
     {
         var now = DateTimeOffset.UtcNow;
-        var query = db.AiRequestLogs.Where(x => x.Status == "running" && x.ExecutionExpiresAt < now);
+        // ASR jobs own their audit row through AiAsrJobRecovery, which atomically updates both
+        // rows. Recovering the log here first would make that guarded update lose its row and
+        // leave the job stuck in running forever.
+        var query = db.AiRequestLogs.Where(x => x.Status == "running" &&
+                                                (x.Purpose != AiAsrJobService.AuditPurpose ||
+                                                 !db.AiAsrJobs.Any(job => job.LogId == x.Id)) &&
+                                                x.ExecutionExpiresAt < now);
         const string message = "请求执行期限已过，结果未确认；请先核对记录，重新调用会产生新的请求。";
         if (db.Database.IsNpgsql())
         {
@@ -26,7 +32,11 @@ public static class AiCallRecovery
                         ARRAY['providerAttempted'],
                         'true'::jsonb,
                         true)
-                WHERE status = 'running' AND execution_expires_at < {now}
+                WHERE status = 'running'
+                  AND (purpose <> {AiAsrJobService.AuditPurpose} OR NOT EXISTS (
+                      SELECT 1 FROM ai_asr_jobs job
+                      WHERE job.log_id = ai_request_logs.id))
+                  AND execution_expires_at < {now}
                 """, ct);
             return;
         }
