@@ -94,7 +94,7 @@ public class DataCenterCoverageTests
             .QueryAsync(new DataCenterQueryRequest(null, null, null, false, 1, 200));
         Assert.DoesNotContain(ordinary.Items, item => item.ObjectType == "audit-version");
         var directAuditQuery = await new DataCenterQueryService(db, new FixedCurrentUserService(UserId))
-            .QueryAsync(new DataCenterQueryRequest("audit-version", null, null, false, 1, 200));
+            .QueryAsync(new DataCenterQueryRequest(null, "audit-version", null, false, 1, 200));
         Assert.Empty(directAuditQuery.Items);
         Assert.Equal("同步冲突需核对", Assert.Single(ordinary.Items, item => item.ObjectType == "sync-conflict").Summary);
         Assert.Equal("同步批次", Assert.Single(ordinary.Items, item => item.ObjectType == "sync-batch").Summary);
@@ -106,7 +106,7 @@ public class DataCenterCoverageTests
             item.ObjectType == "confirmation" && item.Title == "data-center.global");
 
         var directConfirmation = await new DataCenterQueryService(db, new FixedCurrentUserService(UserId))
-            .QueryAsync(new DataCenterQueryRequest("confirmation", null, null, false, 1, 20));
+            .QueryAsync(new DataCenterQueryRequest(null, "confirmation", null, false, 1, 20));
         Assert.Equal("待确认操作", Assert.Single(directConfirmation.Items).Summary);
 
         var admin = await new DataCenterQueryService(db, new FixedCurrentUserService(UserId, "admin"))
@@ -140,11 +140,11 @@ public class DataCenterCoverageTests
         await db.SaveChangesAsync();
 
         var ordinary = await new DataCenterQueryService(db, new FixedCurrentUserService(UserId))
-            .QueryAsync(new DataCenterQueryRequest(objectType, search, null, false, 1, 50));
+            .QueryAsync(new DataCenterQueryRequest(search, objectType, null, false, 1, 50));
         Assert.Empty(ordinary.Items);
 
         var admin = await new DataCenterQueryService(db, new FixedCurrentUserService(UserId, "admin"))
-            .QueryAsync(new DataCenterQueryRequest(objectType, search, null, false, 1, 50));
+            .QueryAsync(new DataCenterQueryRequest(search, objectType, null, false, 1, 50));
         Assert.Contains(admin.Items, item => item.ObjectType == objectType);
     }
 

@@ -140,17 +140,29 @@ public sealed class NoteDerivedEndpointsTests : IDisposable
         Assert.Equal("input-sha", ordinaryTask.InputSha256);
         Assert.Equal("manifest-sha", ordinaryTask.ManifestSha256);
         Assert.Equal(string.Empty, ordinaryTask.PlanVersion);
-        var ordinaryIssue = Assert.Single(ordinaryTask.Issues);
-        Assert.Equal(NoteResponsePrivacy.GenericIssueCode, ordinaryIssue.Code);
-        Assert.Equal(NoteResponsePrivacy.GenericIssueMessage, ordinaryIssue.Message);
-        Assert.Null(ordinaryIssue.SourcePath);
-        Assert.Null(ordinaryIssue.BlockId);
-        Assert.Null(ordinaryIssue.StepKey);
+        Assert.NotEmpty(ordinaryTask.Issues);
+        Assert.All(ordinaryTask.Issues, issue =>
+        {
+            Assert.Equal(NoteResponsePrivacy.GenericIssueCode, issue.Code);
+            Assert.Equal(NoteResponsePrivacy.GenericIssueMessage, issue.Message);
+            Assert.Null(issue.SourcePath);
+            Assert.Null(issue.BlockId);
+            Assert.Null(issue.StepKey);
+        });
         var ordinaryAttempt = Assert.Single(ordinaryTask.Steps[0].Attempts);
         Assert.Equal(Guid.Empty, ordinaryAttempt.RequestId);
         Assert.Null(ordinaryAttempt.LogId);
         Assert.Null(ordinaryAttempt.ErrorCode);
         Assert.Null(ordinaryAttempt.ErrorMessage);
+        var ordinarySteps = await Data<NoteDerivedStepsDto>(
+            await ordinaryClient.GetAsync($"{Tasks}/{ordinaryTaskId}/steps"));
+        Assert.All(ordinarySteps.Items.SelectMany(step => step.Attempts), attempt =>
+        {
+            Assert.Equal(Guid.Empty, attempt.RequestId);
+            Assert.Null(attempt.LogId);
+            Assert.Null(attempt.ErrorCode);
+            Assert.Null(attempt.ErrorMessage);
+        });
 
         var ordinaryReceipt = await Data<NoteDerivedTaskReceiptDto>(
             await ordinaryClient.GetAsync($"{Tasks}/{ordinaryTaskId}/receipt"));
@@ -172,7 +184,7 @@ public sealed class NoteDerivedEndpointsTests : IDisposable
             await adminClient.GetAsync($"{Tasks}/{adminTaskId}"));
         Assert.Equal("input-sha", adminTask.InputSha256);
         Assert.Equal("manifest-sha", adminTask.ManifestSha256);
-        var adminIssue = Assert.Single(adminTask.Issues);
+        var adminIssue = Assert.Single(adminTask.Issues, issue => issue.SourcePath == "private/secret.md");
         Assert.Equal("markdown_unreadable", adminIssue.Code);
         Assert.Equal("private/secret.md", adminIssue.SourcePath);
         Assert.NotNull(adminIssue.BlockId);
@@ -182,6 +194,13 @@ public sealed class NoteDerivedEndpointsTests : IDisposable
         Assert.NotNull(adminAttempt.LogId);
         Assert.Equal("provider_error", adminAttempt.ErrorCode);
         Assert.Equal("https://internal.example/v1 返回 500", adminAttempt.ErrorMessage);
+        var adminSteps = await Data<NoteDerivedStepsDto>(
+            await adminClient.GetAsync($"{Tasks}/{adminTaskId}/steps"));
+        var adminStepAttempt = Assert.Single(adminSteps.Items.SelectMany(step => step.Attempts));
+        Assert.NotEqual(Guid.Empty, adminStepAttempt.RequestId);
+        Assert.NotNull(adminStepAttempt.LogId);
+        Assert.Equal("provider_error", adminStepAttempt.ErrorCode);
+        Assert.Equal("https://internal.example/v1 返回 500", adminStepAttempt.ErrorMessage);
 
         var adminReceipt = await Data<NoteDerivedTaskReceiptDto>(
             await adminClient.GetAsync($"{Tasks}/{adminTaskId}/receipt"));
@@ -263,7 +282,7 @@ public sealed class NoteDerivedEndpointsTests : IDisposable
         Assert.NotNull(adminVersion.ModelProfileId);
         Assert.NotNull(adminVersion.ModelRevision);
         Assert.Equal("https://internal.example/v1/", adminVersion.ModelEndpoint);
-        Assert.Equal("markdown_unreadable", Assert.Single(adminVersion.Coverage!.Issues).Code);
+        Assert.Equal("provider_error", Assert.Single(adminVersion.Coverage!.Issues).Code);
     }
 
     [Fact]

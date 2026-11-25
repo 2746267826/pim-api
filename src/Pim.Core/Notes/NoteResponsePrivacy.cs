@@ -3,16 +3,17 @@ namespace Pim.Core.Notes;
 /// <summary>
 /// Projects successful Native Notes responses for ordinary users.
 ///
-/// Version/artifact/task identifiers, CAS revisions, step keys, generation task ids and the fixed
-/// input/manifest/content hashes stay in the response because the Android/Windows upload, task
-/// suggestion, conflict-resolution and bundle protocols need them. Diagnostics that are not part
-/// of those protocols (attempt/log ids, error text, source paths, prompt/model metadata, receipt
-/// bindings and coverage issue details) are removed.
+/// Version/artifact/task identifiers, CAS revisions, step keys, generation task ids, the fixed
+/// input/manifest/content hashes and the confirmed generation destination (model id, revision and
+/// endpoint) stay in the response because the Android/Windows upload, task suggestion,
+/// conflict-resolution, retry and bundle protocols need them. Diagnostics that are not part of
+/// those protocols (attempt/log ids, error text, source paths, prompt/model generation metadata,
+/// receipt bindings and coverage issue details) are removed.
 ///
 /// The material endpoints (<c>/native-notes/{noteId}/current</c>, <c>/versions/{id}</c>,
 /// <c>/versions/{id}/bundle</c> and <c>/{noteId}/versions</c>) intentionally keep the owner's
-/// <c>InputJson</c>/<c>ManifestJson</c>: they are the user-authored note and its resumable upload
-/// contract, not server diagnostics.
+/// <c>InputJson</c>/<c>ManifestJson</c> and the upload file paths/hashes/sizes/part state: they are
+/// the user-authored note and its resumable upload contract, not server diagnostics.
 /// </summary>
 public static class NoteResponsePrivacy
 {

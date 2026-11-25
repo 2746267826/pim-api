@@ -34,13 +34,23 @@ public class NoteErrorSanitizerTests
     }
 
     [Theory]
+    [InlineData("必须提供有效 timeZoneId")]
+    [InlineData("必须提供有效的 IANA 时区")]
+    [InlineData("日程建议必须用 start/end 表示时间，不能使用 due")]
+    [InlineData("任务建议不能携带 timeZoneId；需要时区时请使用 kind=Event")]
+    public void KeepsActionableFieldNamesAndTimeZoneErrors(string message)
+    {
+        Assert.Equal(message, NoteErrorSanitizer.SanitizeDomainMessage(message, 400));
+    }
+
+    [Theory]
     [InlineData("派生任务 11111111-1111-4111-8111-111111111111 不存在")]
     [InlineData("材料摘要 " + "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")]
     [InlineData("调用 https://internal.example/v1 失败")]
     [InlineData("读取 /data/pim/native-notes/private.json 失败")]
     [InlineData("attempt 与 fence 不匹配")]
     [InlineData("provider_error")]
-    [InlineData("VendorPhase")]
+    [InlineData("phase mismatch")]
     [InlineData("材料 private/secret.md 不存在")]
     [InlineData("任务 123456 已过期")]
     public void ReplacesInternalDetailWithStatusFallback(string message)

@@ -327,7 +327,7 @@ public sealed class DataCenterQueryService
             items.AddRange(deletedTasks.Select(t => new DataCenterItem("recycle-bin", t.Id, t.Title, "manual", "deleted", t.DtStart, t.PlannedEnd ?? t.Due, FirstText(t.Description, t.Calendar?.Name, $"Deleted at {t.DeletedAt:O}"))));
         }
 
-        var filtered = ApplyFilters(items, request)
+        var filtered = ApplyStructuralFilters(items, request)
             .OrderBy(i => i.StartsAt ?? DateTimeOffset.MaxValue)
             .ThenBy(i => i.EndsAt ?? DateTimeOffset.MaxValue)
             .ThenBy(i => i.ObjectType)
@@ -401,21 +401,11 @@ public sealed class DataCenterQueryService
         }
     }
 
-    private IEnumerable<DataCenterItem> ApplyFilters(
+    private static IEnumerable<DataCenterItem> ApplyStructuralFilters(
         IEnumerable<DataCenterItem> items,
         DataCenterQueryRequest request)
     {
         var filtered = items;
-
-        if (!string.IsNullOrWhiteSpace(request.Search))
-        {
-            var term = request.Search.Trim();
-            filtered = filtered.Where(i =>
-                ContainsIgnoreCase(i.Title, term)
-                || ContainsIgnoreCase(i.Summary, term)
-                || ContainsIgnoreCase(i.Source, term)
-                || ContainsIgnoreCase(i.Status, term));
-        }
 
         if (!string.IsNullOrWhiteSpace(request.ObjectType))
         {
@@ -440,9 +430,6 @@ public sealed class DataCenterQueryService
 
         return filtered;
     }
-
-    private static bool ContainsIgnoreCase(string? value, string term)
-        => value?.Contains(term, StringComparison.OrdinalIgnoreCase) ?? false;
 
     private async Task<bool> IsCurrentActiveAdminAsync(CancellationToken ct)
     {

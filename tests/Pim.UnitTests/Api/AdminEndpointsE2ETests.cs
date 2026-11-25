@@ -115,6 +115,23 @@ public class AdminEndpointsE2ETests
         Assert.Equal(HttpStatusCode.Forbidden,
             (await Authed(factory, r1.AccessToken!).GetAsync("/api/v1/admin/users")).StatusCode);
         var staleAdminClient = Authed(factory, r1.AccessToken!);
+        var staleAdminAuditVersionId = Guid.NewGuid();
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
+            db.AuditVersions.Add(new AuditVersionEntity
+            {
+                Id = staleAdminAuditVersionId,
+                UserId = GetUserId(factory, "alice"),
+                ObjectType = "event",
+                ObjectId = Guid.NewGuid(),
+                Source = "synthetic-stale-admin",
+                BeforeJson = "{}",
+                AfterJson = "{\"title\":\"stale\"}",
+                ChangedFieldsJson = "[\"title\"]",
+            });
+            await db.SaveChangesAsync();
+        }
         Assert.Equal(HttpStatusCode.Forbidden,
             (await staleAdminClient.GetAsync(
                 $"/api/v1/operations/audit/event/{Guid.NewGuid()}")).StatusCode);
@@ -122,17 +139,38 @@ public class AdminEndpointsE2ETests
             (await staleAdminClient.GetAsync("/api/v1/operations/audit/export")).StatusCode);
         Assert.Equal(HttpStatusCode.Forbidden,
             (await staleAdminClient.GetAsync("/api/v1/calendar/data-center/audit/export")).StatusCode);
-        Assert.Equal(HttpStatusCode.OK,
-            (await staleAdminClient.PostAsJsonAsync("/api/v1/calendar/data-center/query",
-                new
-                {
-                    search = (string?)null,
-                    objectType = (string?)null,
-                    source = (string?)null,
-                    pendingOnly = false,
-                    page = 1,
-                    pageSize = 50
-                })).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden,
+            (await staleAdminClient.PostAsync(
+                $"/api/v1/operations/audit/{Guid.NewGuid()}/restore-preview", null)).StatusCode);
+        var staleGovernanceRequests = new (string Method, string Path, object? Body)[]
+        {
+            ("POST", "/api/v1/calendar/data-center/batch/preview", new { action = "archive", objects = Array.Empty<object>() }),
+            ("POST", "/api/v1/calendar/data-center/batch/request-confirmation", new { action = "archive", objects = Array.Empty<object>() }),
+            ("POST", "/api/v1/calendar/data-center/batch/execute", new { confirmationId = Guid.NewGuid() }),
+            ("POST", "/api/v1/calendar/data-center/restore/preview", new { auditVersionId = Guid.NewGuid(), reason = "synthetic" }),
+            ("POST", "/api/v1/calendar/data-center/restore/request-confirmation", new { auditVersionId = Guid.NewGuid(), reason = "synthetic" }),
+        };
+        foreach (var (method, path, body) in staleGovernanceRequests)
+        {
+            Assert.Equal(HttpStatusCode.Forbidden,
+                (await SendAsync(staleAdminClient, method, path, body)).StatusCode);
+        }
+
+        var staleQueryResponse = await staleAdminClient.PostAsJsonAsync(
+            "/api/v1/calendar/data-center/query",
+            new
+            {
+                search = (string?)null,
+                objectType = (string?)null,
+                source = (string?)null,
+                pendingOnly = false,
+                page = 1,
+                pageSize = 50
+            });
+        Assert.Equal(HttpStatusCode.OK, staleQueryResponse.StatusCode);
+        var staleQueryData = (await ReadDataAsync(staleQueryResponse)).GetProperty("data");
+        Assert.DoesNotContain(staleQueryData.GetProperty("items").EnumerateArray(),
+            item => item.GetProperty("objectType").GetString() == "audit-version");
 
         // 7b. bob 重新登录获取带 admin 角色的新令牌（旧令牌仍是 user 角色）
         var bobLogin = await anon.PostAsJsonAsync("/api/v1/auth/login", new { username = "bob", password = "password123" });
@@ -333,14 +371,14 @@ public class AdminEndpointsE2ETests
             "/api/v1/calendar/data-center/query", auditQuery);
         Assert.Equal(HttpStatusCode.OK, ordinaryAuditResponse.StatusCode);
         var ordinaryAuditData = (await ReadDataAsync(ordinaryAuditResponse)).GetProperty("data");
-        Assert.Equal(0, ordinaryAuditData.GetProperty("total").GetInt32());
+        Assert.Equal(0, ordinaryAuditData.GetProperty("totalCount").GetInt32());
         Assert.Equal(0, ordinaryAuditData.GetProperty("items").GetArrayLength());
 
         var adminAuditResponse = await adminClient.PostAsJsonAsync(
             "/api/v1/calendar/data-center/query", auditQuery);
         Assert.Equal(HttpStatusCode.OK, adminAuditResponse.StatusCode);
         var adminAuditData = (await ReadDataAsync(adminAuditResponse)).GetProperty("data");
-        Assert.Equal(1, adminAuditData.GetProperty("total").GetInt32());
+        Assert.Equal(1, adminAuditData.GetProperty("totalCount").GetInt32());
         var adminAuditItem = Assert.Single(adminAuditData.GetProperty("items").EnumerateArray());
         Assert.Equal(adminAuditVersionId.ToString("D"), adminAuditItem.GetProperty("objectId").GetString());
         Assert.NotEqual(ordinaryAuditVersionId.ToString("D"), adminAuditItem.GetProperty("objectId").GetString());

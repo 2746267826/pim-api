@@ -69,7 +69,8 @@ public class CalendarWorkbenchQueryTests
 
         var objectTypeResult = await service.QueryAsync(new DataCenterQueryRequest(null, "confirmation", null, false, 1, 50));
         Assert.Contains(objectTypeResult.Items, item => item.ObjectId == seed.ConfirmationId);
-        Assert.Contains(objectTypeResult.Items, item => item.Summary == "Expired stale confirmation");
+        Assert.Contains(objectTypeResult.Items, item => item.Summary == "待确认操作");
+        Assert.DoesNotContain(objectTypeResult.Items, item => item.Summary == "Expired stale confirmation");
 
         var sourceResult = await service.QueryAsync(new DataCenterQueryRequest(null, null, "outlook-ics", false, 1, 50));
         var outlookItem = Assert.Single(sourceResult.Items);

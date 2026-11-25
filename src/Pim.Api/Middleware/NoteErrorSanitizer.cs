@@ -14,10 +14,14 @@ public static class NoteErrorSanitizer
         @"|\b[0-9a-f]{32,64}\b" +
         @"|https?://" +
         @"|(?:^|[\s""'(])(?:[a-zA-Z]:\\|/(?:data|tmp|home|var|app|srv|opt)/)" +
-        @"|\b(?:attempt|fence|lease|provider|endpoint|model|batch|request[ _-]?id|log[ _-]?id|sha-?256|hash|phase|step[ _-]?key|receipt|coverage|artifact|version[ _-]?id)[a-z0-9_-]*\b" +
-        @"|\b(?:Exception|IOException|JsonException|InvalidDataException|NullReferenceException)\b" +
-        @"|\b[A-Za-z][A-Za-z0-9_.-]{3,}\b" +
-        @"|[A-Za-z0-9_.-]+[\\/][A-Za-z0-9_.\\/-]+" +
+        @"|\b(?:attempt|fence|lease|provider|endpoint|model|batch|request[ _-]?id|log[ _-]?id|sha-?256|hash|phase|step[ _-]?key|receipt|coverage|artifact|version[ _-]?id|prompt[ _-]?version|plan[ _-]?version|generation[ _-]?task|ai[ _-]?call|revision)\b" +
+        @"|\b(?:openai|anthropic|azure|google|gemini|mimo|gpt|deepseek|qwen|claude|siliconflow|dashscope)\b" +
+        @"|\b[A-Za-z0-9_]*(?:Exception|ErrorCode)\b" +
+        @"|\b[a-z0-9]+(?:_[a-z0-9]+)+\b" +
+        @"|\b[a-z0-9-]+(?:\.[a-z0-9-]+)+\b" +
+        @"|(?:\.{1,2}/|[A-Za-z0-9_.-]+/)[A-Za-z0-9_.-]+\.[A-Za-z0-9]{1,8}\b" +
+        @"|[A-Za-z0-9_.-]+\\[A-Za-z0-9_.\\-]+\b" +
+        @"|\b[A-Za-z0-9_-]+\.(?:md|json|jsonl|txt|png|jpe?g|webp|wav|pdf|zip|log)\b" +
         @"|\b\d{4,}\b" +
         @"|\{\s*""" ,
         RegexOptions.IgnoreCase | RegexOptions.Compiled | RegexOptions.CultureInvariant);
