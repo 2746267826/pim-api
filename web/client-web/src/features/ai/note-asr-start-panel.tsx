@@ -396,7 +396,7 @@ export function NoteAsrStartPanel({ userId, serverBinding, versionId, onCreated,
       </div>
       <p>发送范围：{showVersionDetails ? '当前固定版本' : '这篇笔记当前内容'}的全部录音。</p>
       {effectiveRoute === 'cloud' && savedDestination && <>
-        <p className="break-words">目标：{savedDestination.displayName} · {savedDestination.model}</p>
+        <p className="break-words">目标：{savedDestination.displayName}{showVersionDetails ? ` · ${savedDestination.model}` : ''}</p>
         <p className="font-medium text-warn">音频将离开本机；服务商可能按成功请求或 Token 收取现金费用。</p>
       </>}
       {effectiveRoute === 'cloud' && !savedDestination && <InlineAlert tone="warn" title={cloudInvalid ? '已保存云端目标失效' : '云端尚未配置'}>

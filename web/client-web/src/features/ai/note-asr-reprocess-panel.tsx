@@ -198,7 +198,7 @@ export function NoteAsrReprocessPanel({ task, userId, serverBinding, onCreated, 
               任务在本机队列执行，不发送云端、不需要云端凭据；本机离线时保持排队。
             </InlineAlert>}
             {selectedRoute !== 'local' && selectedDestination && <div className="space-y-2 rounded-ctl border border-border p-3 text-xs text-text-2">
-              <p className="break-words">目标：{selectedDestination.displayName} · {selectedDestination.model}</p>
+              <p className="break-words">目标：{selectedDestination.displayName}{showVersionDetails ? ` · ${selectedDestination.model}` : ''}</p>
               {showVersionDetails
                 ? <>
                   <p className="break-all font-mono text-text-3">{selectedDestination.endpoint}</p>

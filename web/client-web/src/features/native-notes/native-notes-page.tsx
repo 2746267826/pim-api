@@ -94,10 +94,11 @@ function Workspace({ ownerId, role, serverBinding }: { ownerId: string; role?: s
   }, [])
 
   useEffect(() => {
-    if (canViewVersions || !params.has('version')) return
+    if (canViewVersions || (!params.has('version') && !params.has('versionId'))) return
     changeInternalNavigation(() => {
       const next = new URLSearchParams(params)
       next.delete('version')
+      next.delete('versionId')
       setParams(next, { replace: true })
     })
   }, [canViewVersions, changeInternalNavigation, params, setParams])

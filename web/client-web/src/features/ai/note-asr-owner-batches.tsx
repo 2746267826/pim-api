@@ -277,7 +277,7 @@ function BatchFailedRetry({ task, jobs, userId, serverBinding, onCreated, showVe
           原任务没有可核验的目标，或当前共享目录缺少完全相同的 modelId、revision 与多模态预设；不会按模型名称猜测或改用其他付费目标。
         </InlineAlert>}
         {destination && config.data && <div className="rounded-ctl border border-border p-3 text-xs leading-5 text-text-2">
-          <p className="break-words">{destination.displayName} · {destination.model}</p>
+          <p className="break-words">{destination.displayName}{showVersionDetails ? ` · ${destination.model}` : ''}</p>
           {showVersionDetails && <p className="break-all font-mono">{destination.endpoint}</p>}
           <p>{showVersionDetails
             ? `失败项会按当前配置版本 ${config.data.consentVersion} 重新确认；Batch 可能长等待并按成功 Token 消耗现金。`

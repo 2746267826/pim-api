@@ -569,7 +569,7 @@ describe('NativeNotesPage', () => {
 
   it('does not let ordinary users open an arbitrary saved version by URL', async () => {
     authState.role = 'user'
-    page(`/native-notes?note=${noteId}&version=${historyVersionId}`)
+    page(`/native-notes?note=${noteId}&version=${historyVersionId}&versionId=${historyVersionId}`)
 
     expect(await screen.findByRole('heading', { name: '继续写这篇笔记' })).toBeTruthy()
     await waitFor(() => expect(testRouter.state.location.search).toBe(`?note=${noteId}`))

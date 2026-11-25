@@ -213,6 +213,7 @@ describe('NoteAsrReprocessPanel', () => {
     expect(screen.queryByText(attempt.attemptId)).toBeNull()
     expect(screen.queryByText(history.items[0]!.taskId)).toBeNull()
     expect(screen.queryByText(destination.endpoint)).toBeNull()
+    expect(screen.queryByText(new RegExp(destination.model))).toBeNull()
     expect(screen.queryByText(/mimo-multimodal/)).toBeNull()
     expect(screen.queryByText(/consent-v1/)).toBeNull()
   })

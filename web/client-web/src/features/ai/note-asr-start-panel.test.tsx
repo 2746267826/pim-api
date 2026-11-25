@@ -187,6 +187,7 @@ describe('NoteAsrStartPanel', () => {
     expect(screen.queryByText(destination.endpoint)).toBeNull()
     expect(screen.queryByText(taskId)).toBeNull()
     expect(screen.queryByText(destination.presetId)).toBeNull()
+    expect(screen.queryByText(new RegExp(destination.model))).toBeNull()
     expect(screen.queryByText(/consent-1/)).toBeNull()
   })
 
