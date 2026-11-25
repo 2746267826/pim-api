@@ -206,6 +206,196 @@ public sealed class NoteTaskSuggestionTests
     }
 
     [SkippableFact]
+    public async Task EventExtractionDeduplicatesAcrossCustomAndImplicitEarliestCalendar()
+    {
+        await using var harness = await Harness.CreateAsync(
+            "test_note_task_suggestion_event_calendar_dedupe");
+        var earliest = new CalendarEntity
+        {
+            UserId = harness.Owner,
+            Name = "最早日程日历",
+            Kind = "calendar",
+            IsDefault = false,
+            CreatedAt = DateTimeOffset.Parse("2026-11-01T00:00:00Z")
+        };
+        var later = new CalendarEntity
+        {
+            UserId = harness.Owner,
+            Name = "较晚日程日历",
+            Kind = "calendar",
+            IsDefault = false,
+            CreatedAt = DateTimeOffset.Parse("2026-11-02T00:00:00Z")
+        };
+        harness.AdminDb.AddRange(earliest, later);
+        await harness.AdminDb.SaveChangesAsync();
+
+        var start = DateTimeOffset.Parse("2026-12-03T09:00:00Z");
+        var end = DateTimeOffset.Parse("2026-12-03T10:00:00Z");
+        harness.Wire.Reply = """
+            {"suggestions":[{"kind":"Event","title":"非默认最早日历日程","description":null,
+             "priority":5,"due":null,"start":"2026-12-03T09:00:00Z",
+             "end":"2026-12-03T10:00:00Z","timeZoneId":"UTC"}]}
+            """;
+        var explicitExtraction = await harness.Service.StartExtractionAsync(harness.Request(), default);
+        await harness.Job.RunAsync(harness.Owner, explicitExtraction.Id, default);
+
+        harness.Db.ChangeTracker.Clear();
+        var draft = await harness.Service.ListAsync(
+            harness.Source.NoteId, NoteTaskSuggestionStatusDto.Draft, default);
+        var explicitDraft = Assert.Single(draft.Items);
+        explicitDraft = await harness.Service.UpdateAsync(
+            explicitDraft.Id,
+            new(explicitDraft.Revision, explicitDraft.Title, null, 5, null, null, earliest.Id,
+                start, end, "UTC"),
+            default);
+        await harness.Service.ConfirmAsync(
+            explicitDraft.Id, new(Guid.NewGuid(), explicitDraft.Revision), default);
+
+        var implicitExtraction = await harness.Service.StartExtractionAsync(harness.Request(), default);
+        await harness.Job.RunAsync(harness.Owner, implicitExtraction.Id, default);
+
+        harness.Db.ChangeTracker.Clear();
+        var suggestions = await harness.AdminDb.Set<NoteTaskSuggestionEntity>().AsNoTracking()
+            .Where(x => x.NoteId == harness.Source.NoteId)
+            .ToListAsync();
+        var storedImplicitExtraction = await harness.AdminDb
+            .Set<NoteTaskSuggestionExtractionEntity>().AsNoTracking()
+            .SingleAsync(x => x.Id == implicitExtraction.Id);
+        var evt = await harness.AdminDb.Set<EventEntity>().AsNoTracking().SingleAsync();
+
+        Assert.Single(suggestions);
+        Assert.Equal(NoteTaskSuggestionStatuses.Confirmed, suggestions[0].Status);
+        Assert.Equal(earliest.Id, evt.CalendarId);
+        Assert.Equal(0, storedImplicitExtraction.SuggestionCount);
+    }
+
+    [SkippableFact]
+    public async Task ConfirmationReplayAndQueryUseTheSameCalendarResolverAsExtraction()
+    {
+        await using var harness = await Harness.CreateAsync(
+            "test_note_task_suggestion_event_resolver_replay");
+        var earliest = new CalendarEntity
+        {
+            UserId = harness.Owner,
+            Name = "最早日程日历",
+            Kind = "calendar",
+            IsDefault = false,
+            CreatedAt = DateTimeOffset.Parse("2026-11-01T00:00:00Z")
+        };
+        var later = new CalendarEntity
+        {
+            UserId = harness.Owner,
+            Name = "较晚日程日历",
+            Kind = "calendar",
+            IsDefault = false,
+            CreatedAt = DateTimeOffset.Parse("2026-11-02T00:00:00Z")
+        };
+        harness.AdminDb.AddRange(earliest, later);
+        await harness.AdminDb.SaveChangesAsync();
+        var start = DateTimeOffset.Parse("2026-12-04T09:00:00Z");
+        var end = DateTimeOffset.Parse("2026-12-04T10:00:00Z");
+        var first = await harness.CreateSuggestionAsync(
+            "非默认日历重放日程", NoteTaskSuggestionKindDto.Event, null, start, end, "UTC");
+        harness.AdvanceSourceVersion();
+        var second = await harness.CreateSuggestionAsync(
+            "非默认日历重放日程", NoteTaskSuggestionKindDto.Event, null, start, end, "UTC");
+
+        var confirm = new ConfirmNoteTaskSuggestionRequest(Guid.NewGuid(), first.Revision);
+        var confirmed = await harness.Service.ConfirmAsync(first.Id, confirm, default);
+        var replay = await harness.Service.ConfirmAsync(first.Id, confirm, default);
+        var duplicate = await Assert.ThrowsAsync<DomainException>(() => harness.Service.ConfirmAsync(
+            second.Id, new(Guid.NewGuid(), second.Revision), default));
+
+        Assert.Equal(confirmed.EventId, replay.EventId);
+        Assert.Equal(earliest.Id, confirmed.CalendarId);
+        Assert.Equal(40901, duplicate.ErrorCode);
+        Assert.Contains(confirmed.EventId!.Value.ToString("D"), duplicate.Message);
+        Assert.Equal(1, await harness.AdminDb.Set<EventEntity>().CountAsync());
+    }
+
+    [SkippableFact]
+    public async Task ExtractionPersistenceWaitsForConfirmationOfTheSameNote()
+    {
+        await using var harness = await Harness.CreateAsync(
+            "test_note_task_suggestion_note_lock_race");
+        var start = DateTimeOffset.Parse("2026-12-05T09:00:00Z");
+        var end = DateTimeOffset.Parse("2026-12-05T10:00:00Z");
+        var first = await harness.CreateSuggestionAsync(
+            "竞态日程", NoteTaskSuggestionKindDto.Event, null, start, end, "UTC");
+        var confirm = new ConfirmNoteTaskSuggestionRequest(Guid.NewGuid(), first.Revision);
+        harness.Wire.Delay = TimeSpan.FromSeconds(5);
+        harness.Wire.Reply = """
+            {"suggestions":[{"kind":"Event","title":"竞态日程","description":"覆盖真实 PostgreSQL",
+             "priority":9,"due":null,"start":"2026-12-05T09:00:00Z",
+             "end":"2026-12-05T10:00:00Z","timeZoneId":"UTC"}]}
+            """;
+        var replay = await harness.Service.StartExtractionAsync(harness.Request(), default);
+        await using var jobDb = harness.NewContext();
+        var job = harness.NewJob(jobDb);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var jobRun = job.RunAsync(harness.Owner, replay.Id, timeout.Token);
+        await harness.WaitForJobClaimAsync(replay.Id, timeout.Token);
+        var confirmed = await harness.Service.ConfirmAsync(first.Id, confirm, timeout.Token);
+        await jobRun;
+
+        harness.Db.ChangeTracker.Clear();
+        var suggestions = await harness.AdminDb.Set<NoteTaskSuggestionEntity>().AsNoTracking()
+            .Where(x => x.NoteId == harness.Source.NoteId)
+            .ToListAsync();
+        var storedReplay = await harness.AdminDb.Set<NoteTaskSuggestionExtractionEntity>()
+            .AsNoTracking().SingleAsync(x => x.Id == replay.Id);
+        Assert.Equal(NoteTaskSuggestionStatusDto.Confirmed, confirmed.Status);
+        Assert.Single(suggestions);
+        Assert.Equal(NoteTaskSuggestionStatuses.Confirmed, suggestions[0].Status);
+        Assert.Equal(0, storedReplay.SuggestionCount);
+        Assert.Equal(1, await harness.AdminDb.Set<EventEntity>().CountAsync());
+    }
+
+    [SkippableFact]
+    public async Task ReExtractionAllowsDeletedOriginalsButSkipsAnActiveReplacement()
+    {
+        await using var harness = await Harness.CreateAsync(
+            "test_note_task_suggestion_deleted_reextract");
+        var start = DateTimeOffset.Parse("2026-12-07T09:00:00Z");
+        var end = DateTimeOffset.Parse("2026-12-07T10:00:00Z");
+        var first = await harness.CreateSuggestionAsync(
+            "删除后重加日程", NoteTaskSuggestionKindDto.Event, null, start, end, "UTC");
+        var firstConfirmed = await harness.Service.ConfirmAsync(
+            first.Id, new(Guid.NewGuid(), first.Revision), default);
+        await harness.DeleteEventAsync(firstConfirmed.EventId!.Value);
+
+        var reAdd = await harness.Service.StartExtractionAsync(harness.Request(), default);
+        await harness.Job.RunAsync(harness.Owner, reAdd.Id, default);
+        harness.Db.ChangeTracker.Clear();
+        var replacementDraft = await harness.AdminDb.Set<NoteTaskSuggestionEntity>().AsNoTracking()
+            .SingleAsync(x => x.ExtractionId == reAdd.Id);
+        Assert.Equal(NoteTaskSuggestionStatuses.Draft, replacementDraft.Status);
+
+        var replacement = await harness.Service.ConfirmAsync(
+            replacementDraft.Id,
+            new(Guid.NewGuid(), replacementDraft.Revision), default);
+        Assert.NotEqual(firstConfirmed.EventId, replacement.EventId);
+
+        var activeReplay = await harness.Service.StartExtractionAsync(harness.Request(), default);
+        await harness.Job.RunAsync(harness.Owner, activeReplay.Id, default);
+        harness.Db.ChangeTracker.Clear();
+        var storedActiveReplay = await harness.AdminDb
+            .Set<NoteTaskSuggestionExtractionEntity>().AsNoTracking()
+            .SingleAsync(x => x.Id == activeReplay.Id);
+        Assert.Equal(0, storedActiveReplay.SuggestionCount);
+        Assert.Equal(1, await harness.AdminDb.Set<EventEntity>().CountAsync());
+
+        await harness.DeleteEventAsync(replacement.EventId!.Value);
+        var deletedReplay = await harness.Service.StartExtractionAsync(harness.Request(), default);
+        await harness.Job.RunAsync(harness.Owner, deletedReplay.Id, default);
+        harness.Db.ChangeTracker.Clear();
+        var againDraft = await harness.AdminDb.Set<NoteTaskSuggestionEntity>().AsNoTracking()
+            .SingleAsync(x => x.ExtractionId == deletedReplay.Id);
+        Assert.Equal(NoteTaskSuggestionStatuses.Draft, againDraft.Status);
+        Assert.Equal(0, await harness.AdminDb.Set<EventEntity>().CountAsync());
+    }
+
+    [SkippableFact]
     public async Task RepeatedExtractionOfSameVersionSkipsDuplicateDrafts()
     {
         await using var harness = await Harness.CreateAsync(
@@ -1347,6 +1537,58 @@ public sealed class NoteTaskSuggestionTests
     }
 
     [SkippableFact]
+    public async Task ConfirmationFailureAfterEventInsertRollsBackTheInsertedObject()
+    {
+        await using var harness = await Harness.CreateAsync(
+            "test_note_task_suggestion_confirm_event_rollback");
+        var calendar = new CalendarEntity
+        {
+            UserId = harness.Owner,
+            Name = "回滚日程日历",
+            Kind = "calendar",
+            IsDefault = false
+        };
+        harness.AdminDb.Add(calendar);
+        await harness.AdminDb.SaveChangesAsync();
+        var start = DateTimeOffset.Parse("2026-12-06T09:00:00Z");
+        var end = DateTimeOffset.Parse("2026-12-06T10:00:00Z");
+        var suggestion = await harness.CreateSuggestionAsync(
+            "入库后失败回滚", NoteTaskSuggestionKindDto.Event, null, start, end, "UTC");
+        suggestion = await harness.Service.UpdateAsync(
+            suggestion.Id,
+            new(suggestion.Revision, suggestion.Title, null, 5, null, null, calendar.Id,
+                start, end, "UTC"),
+            default);
+        await harness.AdminDb.Database.ExecuteSqlRawAsync("""
+            CREATE FUNCTION reject_note_suggestion_confirmation() RETURNS trigger AS $$
+            BEGIN
+              IF NEW.status = 'Confirmed' AND OLD.status = 'Draft' THEN
+                RAISE EXCEPTION 'synthetic confirmation failure after object insert';
+              END IF;
+              RETURN NEW;
+            END;
+            $$ LANGUAGE plpgsql;
+            """);
+        await harness.AdminDb.Database.ExecuteSqlRawAsync("""
+            CREATE TRIGGER reject_note_suggestion_confirmation
+            BEFORE UPDATE ON note_task_suggestions
+            FOR EACH ROW EXECUTE FUNCTION reject_note_suggestion_confirmation();
+            """);
+
+        await Assert.ThrowsAsync<DbUpdateException>(() => harness.Service.ConfirmAsync(
+            suggestion.Id, new(Guid.NewGuid(), suggestion.Revision), default));
+
+        harness.AdminDb.ChangeTracker.Clear();
+        var stored = await harness.AdminDb.Set<NoteTaskSuggestionEntity>().AsNoTracking()
+            .SingleAsync(x => x.Id == suggestion.Id);
+        Assert.Equal(NoteTaskSuggestionStatuses.Draft, stored.Status);
+        Assert.Null(stored.ConfirmRequestId);
+        Assert.Null(stored.EventId);
+        Assert.Equal(0, await harness.AdminDb.Set<EventEntity>().CountAsync());
+        Assert.Equal(1, await harness.AdminDb.Set<CalendarEntity>().CountAsync());
+    }
+
+    [SkippableFact]
     public async Task OtherOwnerCannotReadOrMutatePersistedSuggestion()
     {
         await using var harness = await Harness.CreateAsync("test_note_task_suggestion_owner");
@@ -1604,12 +1846,12 @@ public sealed class NoteTaskSuggestionTests
             Source = source;
             Wire = wire;
             Profile = profile;
-            var calendar = Calendar(db);
+            var calendar = CreateCalendarService(db);
             var calls = new AiTextCallService(db, secrets, new AiProfileChatClientFactory(wire),
                 currentUser, new AiTextCallGate());
             Service = new NoteTaskSuggestionService(db, currentUser, source, calendar,
                 TimeProvider.System, NullLogger<NoteTaskSuggestionService>.Instance, jobs);
-            Job = new NoteTaskSuggestionExtractionJob(db,
+            Job = new NoteTaskSuggestionExtractionJob(db, calendar,
                 new AiTextNoteTaskSuggestionModelClient(calls),
                 TimeProvider.System,
                 NullLogger<NoteTaskSuggestionExtractionJob>.Instance);
@@ -1726,7 +1968,7 @@ public sealed class NoteTaskSuggestionTests
             db,
             _currentUser,
             Source,
-            Calendar(db),
+            CreateCalendarService(db),
             TimeProvider.System,
             NullLogger<NoteTaskSuggestionService>.Instance,
             dispatchAvailable ? new RecordingJobs() : null);
@@ -1764,17 +2006,48 @@ public sealed class NoteTaskSuggestionTests
             return await Service.GetAsync(stored.Id, default);
         }
 
+        public async Task WaitForJobClaimAsync(Guid extractionId, CancellationToken ct)
+        {
+            var deadline = DateTimeOffset.UtcNow.AddSeconds(10);
+            while (DateTimeOffset.UtcNow < deadline)
+            {
+                ct.ThrowIfCancellationRequested();
+                AdminDb.ChangeTracker.Clear();
+                var status = await AdminDb.Set<NoteTaskSuggestionExtractionEntity>()
+                    .AsNoTracking()
+                    .Where(x => x.Id == extractionId)
+                    .Select(x => x.Status)
+                    .SingleAsync(ct);
+                if (status == NoteTaskSuggestionExtractionStatuses.Running)
+                    return;
+                await Task.Delay(25, ct);
+            }
+            throw new TimeoutException("Extraction job did not claim before the test deadline");
+        }
+
         public NoteTaskSuggestionExtractionJob NewJob(PimDbContext db)
         {
             var calls = new AiTextCallService(db, _secrets, new AiProfileChatClientFactory(Wire),
                 _currentUser, new AiTextCallGate());
-            return new NoteTaskSuggestionExtractionJob(db,
+            return new NoteTaskSuggestionExtractionJob(db, CreateCalendarService(db),
                 new AiTextNoteTaskSuggestionModelClient(calls),
                 TimeProvider.System,
                 NullLogger<NoteTaskSuggestionExtractionJob>.Instance);
         }
 
-        private CalendarService Calendar(PimDbContext db) => NewCalendarService(db, Owner);
+        public async Task DeleteTaskAsync(Guid id)
+        {
+            await CreateCalendarService(Db).DeleteTaskAsync(id, default);
+            Db.ChangeTracker.Clear();
+        }
+
+        public async Task DeleteEventAsync(Guid id)
+        {
+            await CreateCalendarService(Db).DeleteEventAsync(id, default);
+            Db.ChangeTracker.Clear();
+        }
+
+        private CalendarService CreateCalendarService(PimDbContext db) => NewCalendarService(db, Owner);
 
         public async ValueTask DisposeAsync()
         {

@@ -244,14 +244,7 @@ internal sealed class NoteTaskSuggestionService(
                 var entity = await RequireSuggestionAsync(owner, id, ct);
 
                 if (entity.Status == NoteTaskSuggestionStatuses.Confirmed)
-                {
-                    if (entity.ConfirmRequestId == request.RequestId &&
-                        await OriginalObjectExistsAsync(owner, entity, ct))
-                    {
-                        return Map(entity);
-                    }
-                    throw new DomainException(40901, "任务建议已经确认；原对象标识不可替换");
-                }
+                    return await ReplayConfirmedAsync(owner, entity, request.RequestId, ct);
                 RequireDraft(entity);
                 if (entity.Revision != request.ExpectedRevision)
                     throw new DomainException(40901, "任务建议已被修改，请刷新后重试");
@@ -270,9 +263,12 @@ internal sealed class NoteTaskSuggestionService(
                 }
                 var eventCalendarId = await ResolveFingerprintCalendarIdAsync(entity, ct);
                 var fingerprint = ItemFingerprint(entity, eventCalendarId);
-                var duplicate = await FindConfirmedDuplicateAsync(owner, entity, fingerprint, ct);
+                var sameItem = await ListConfirmedSameItemAsync(
+                    owner, entity, fingerprint, eventCalendarId, ct);
+                var duplicate = await FindActiveConfirmedDuplicateAsync(owner, sameItem, ct);
                 if (duplicate is not null)
                     throw DuplicateSuggestion(duplicate);
+                var confirmationFingerprint = ConfirmationFingerprint(fingerprint, sameItem.Count);
 
                 if (entity.Kind == NoteTaskSuggestionKinds.Task)
                 {
@@ -321,7 +317,7 @@ internal sealed class NoteTaskSuggestionService(
                 var now = timeProvider.GetUtcNow();
                 entity.Status = NoteTaskSuggestionStatuses.Confirmed;
                 entity.ConfirmRequestId = request.RequestId;
-                entity.ItemFingerprint = fingerprint;
+                entity.ItemFingerprint = confirmationFingerprint;
                 entity.ConfirmedAt = now;
                 entity.UpdatedAt = now;
                 entity.Revision = Guid.NewGuid();
@@ -339,13 +335,15 @@ internal sealed class NoteTaskSuggestionService(
                 .SingleOrDefaultAsync(x => x.Id == id && x.UserId == owner, ct);
             if (stored is { Status: NoteTaskSuggestionStatuses.Confirmed } &&
                 stored.ConfirmRequestId == request.RequestId)
-                return Map(stored);
+                return await ReplayConfirmedAsync(owner, stored, request.RequestId, ct);
             if (stored is not null)
             {
                 var eventCalendarId = await ResolveFingerprintCalendarIdAsync(stored, ct);
-                var duplicate = await FindConfirmedDuplicateAsync(
-                    owner, stored, ItemFingerprint(stored, eventCalendarId), ct);
-                if (duplicate is not null && duplicate.Id != id)
+                var fingerprint = ItemFingerprint(stored, eventCalendarId);
+                var sameItem = await ListConfirmedSameItemAsync(
+                    owner, stored, fingerprint, eventCalendarId, ct);
+                var duplicate = await FindActiveConfirmedDuplicateAsync(owner, sameItem, ct);
+                if (duplicate is not null)
                     throw DuplicateSuggestion(duplicate);
             }
             throw;
@@ -519,7 +517,7 @@ internal sealed class NoteTaskSuggestionService(
                 throw new DomainException(40001, "目标日历不存在或不是日程日历");
             return calendarId;
         }
-        return await calendar.GetOrCreateDefaultEventCalendarIdAsync(ct);
+        return await calendar.GetOrCreateDefaultEventCalendarIdAsync(entity.UserId, ct);
     }
 
     private static (DateTimeOffset? Start, DateTimeOffset? End) ValidateEditableFields(
@@ -597,31 +595,159 @@ internal sealed class NoteTaskSuggestionService(
             throw new DomainException(40001, "任务建议不能携带时区，请先编辑修正");
     }
 
-    private async Task<bool> OriginalObjectExistsAsync(
+    private async Task<NoteTaskSuggestionDto> ReplayConfirmedAsync(
+        Guid owner, NoteTaskSuggestionEntity entity, Guid requestId, CancellationToken ct)
+    {
+        if (entity.ConfirmRequestId != requestId)
+            throw new DomainException(40901, "任务建议已经确认；原对象标识不可替换");
+
+        var isEvent = entity.Kind == NoteTaskSuggestionKinds.Event;
+        var label = isEvent ? "日程" : "任务";
+        var targetId = isEvent ? entity.EventId : entity.TaskId;
+        var state = await OriginalObjectStateAsync(owner, entity, ct);
+        if (state == OriginalObjectState.Active)
+            return Map(entity);
+        if (state == OriginalObjectState.Deleted)
+            throw new DomainException(40901,
+                $"原{label} {targetId:D} 已删除；普通回放不会重新创建。" +
+                "如需重新添加，请对新的待确认建议执行确认。");
+        throw new DomainException(40901,
+            $"原{label}不存在或不可读；原确认请求保留，不会补建第二个对象");
+    }
+
+    private async Task<OriginalObjectState> OriginalObjectStateAsync(
         Guid owner, NoteTaskSuggestionEntity entity, CancellationToken ct)
     {
         if (entity.Kind == NoteTaskSuggestionKinds.Event)
-            return entity.EventId is { } eventId &&
-                await db.Set<EventEntity>().AsNoTracking()
-                    .AnyAsync(x => x.Id == eventId && x.Calendar.UserId == owner, ct);
-        return entity.TaskId is { } taskId &&
-            await db.Set<TaskEntity>().AsNoTracking()
-                .AnyAsync(x => x.Id == taskId && x.UserId == owner, ct);
+        {
+            if (entity.EventId is not { } eventId)
+                return OriginalObjectState.Missing;
+            var stored = await db.Set<EventEntity>().IgnoreQueryFilters().AsNoTracking()
+                .Where(x => x.Id == eventId && x.Calendar.UserId == owner)
+                .Select(x => new { x.DeletedAt })
+                .SingleOrDefaultAsync(ct);
+            return stored is null
+                ? OriginalObjectState.Missing
+                : stored.DeletedAt is null
+                    ? OriginalObjectState.Active
+                    : OriginalObjectState.Deleted;
+        }
+
+        if (entity.TaskId is not { } taskId)
+            return OriginalObjectState.Missing;
+        var task = await db.Set<TaskEntity>().IgnoreQueryFilters().AsNoTracking()
+            .Where(x => x.Id == taskId && x.UserId == owner)
+            .Select(x => new { x.DeletedAt })
+            .SingleOrDefaultAsync(ct);
+        return task is null
+            ? OriginalObjectState.Missing
+            : task.DeletedAt is null
+                ? OriginalObjectState.Active
+                : OriginalObjectState.Deleted;
     }
 
-    private Task<NoteTaskSuggestionEntity?> FindConfirmedDuplicateAsync(
-        Guid owner, NoteTaskSuggestionEntity entity, string fingerprint, CancellationToken ct) =>
-        db.Set<NoteTaskSuggestionEntity>().AsNoTracking()
+    private async Task<List<NoteTaskSuggestionEntity>> ListConfirmedSameItemAsync(
+        Guid owner,
+        NoteTaskSuggestionEntity entity,
+        string fingerprint,
+        Guid? eventCalendarId,
+        CancellationToken ct)
+    {
+        var confirmed = await db.Set<NoteTaskSuggestionEntity>().AsNoTracking()
             .Where(x => x.UserId == owner && x.NoteId == entity.NoteId &&
                 x.Id != entity.Id && x.Status == NoteTaskSuggestionStatuses.Confirmed &&
-                x.ItemFingerprint == fingerprint)
+                x.Kind == entity.Kind)
             .OrderBy(x => x.ConfirmedAt)
             .ThenBy(x => x.CreatedAt)
             .ThenBy(x => x.Id)
-            .FirstOrDefaultAsync(ct);
+            .ToListAsync(ct);
+        return confirmed
+            .Where(x => string.Equals(
+                ItemFingerprint(x, FingerprintCalendarId(x, eventCalendarId)),
+                fingerprint,
+                StringComparison.Ordinal))
+            .ToList();
+    }
 
-    private static DomainException DuplicateSuggestion(NoteTaskSuggestionEntity original)
-        => new(40901, "同一笔记中已确认相同的事项；本次未重复创建。");
+    private async Task<ConfirmedDuplicate?> FindActiveConfirmedDuplicateAsync(
+        Guid owner,
+        IReadOnlyList<NoteTaskSuggestionEntity> sameItem,
+        CancellationToken ct)
+    {
+        if (sameItem.Count == 0)
+            return null;
+
+        var taskIds = sameItem
+            .Where(x => x.Kind == NoteTaskSuggestionKinds.Task && x.TaskId.HasValue)
+            .Select(x => x.TaskId!.Value)
+            .Distinct()
+            .ToArray();
+        var eventIds = sameItem
+            .Where(x => x.Kind == NoteTaskSuggestionKinds.Event && x.EventId.HasValue)
+            .Select(x => x.EventId!.Value)
+            .Distinct()
+            .ToArray();
+        List<Guid> activeTaskIds = taskIds.Length == 0
+            ? []
+            : await db.Set<TaskEntity>().AsNoTracking()
+                .Where(x => x.UserId == owner && taskIds.Contains(x.Id))
+                .Select(x => x.Id)
+                .ToListAsync(ct);
+        List<Guid> activeEventIds = eventIds.Length == 0
+            ? []
+            : await db.Set<EventEntity>().AsNoTracking()
+                .Where(x => eventIds.Contains(x.Id) && x.Calendar.UserId == owner)
+                .Select(x => x.Id)
+                .ToListAsync(ct);
+        var activeTasks = activeTaskIds.ToHashSet();
+        var activeEvents = activeEventIds.ToHashSet();
+
+        foreach (var original in sameItem)
+        {
+            var targetId = original.Kind == NoteTaskSuggestionKinds.Event
+                ? original.EventId
+                : original.TaskId;
+            if (targetId is not { } id)
+                continue;
+            var active = original.Kind == NoteTaskSuggestionKinds.Event
+                ? activeEvents.Contains(id)
+                : activeTasks.Contains(id);
+            if (active)
+                return new ConfirmedDuplicate(original.Kind, original.Id, id);
+        }
+        return null;
+    }
+
+    private static DomainException DuplicateSuggestion(ConfirmedDuplicate original)
+    {
+        var label = original.Kind == NoteTaskSuggestionKinds.Event ? "日程" : "任务";
+        return new(40901,
+            $"同一笔记中已确认相同的事项；本次未重复创建。原{label} {original.TargetId:D}" +
+            $"（建议 {original.SuggestionId:D}）仍有效。");
+    }
+
+    private static string ConfirmationFingerprint(string itemFingerprint, int existingItemCount) =>
+        existingItemCount == 0
+            ? itemFingerprint
+            : Hash("replacement-v1|" + itemFingerprint + "|" +
+                existingItemCount.ToString(CultureInfo.InvariantCulture));
+
+    internal static Guid? FingerprintCalendarId(
+        NoteTaskSuggestionEntity entity, Guid? eventCalendarId) =>
+        entity.Kind == NoteTaskSuggestionKinds.Event
+            ? entity.CalendarId is { } calendarId && calendarId != Guid.Empty
+                ? calendarId
+                : eventCalendarId
+            : entity.CalendarId;
+
+    private enum OriginalObjectState
+    {
+        Active,
+        Deleted,
+        Missing
+    }
+
+    private sealed record ConfirmedDuplicate(string Kind, Guid SuggestionId, Guid TargetId);
 
     internal static string ItemFingerprint(
         NoteTaskSuggestionEntity entity, Guid? resolvedCalendarId = null)
