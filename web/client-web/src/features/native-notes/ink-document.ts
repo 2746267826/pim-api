@@ -25,6 +25,7 @@ export interface InkDocument extends Record<string, unknown> {
 }
 
 export type InkEraserMode = 'partial' | 'whole'
+export type InkStrokeIdFactory = (index: number) => string
 
 export const LEGACY_INK_COLOR = '#263b85'
 export const INK_COLOR = '#252b35'
@@ -43,7 +44,10 @@ const EPSILON = 1e-9
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const COLOR_PATTERN = /^#[0-9a-f]{6}$/i
 
-export function parseInkDocument(value: Record<string, unknown>): InkDocument {
+export function parseInkDocument(
+  value: Record<string, unknown>,
+  createId: InkStrokeIdFactory = () => createStrokeId(),
+): InkDocument {
   const width = finiteNumber(value.width, '画布宽度')
   const height = finiteNumber(value.height, '画布高度')
   if (width < 80 || width > 2048 || height < 80 || height > 4096) {
@@ -117,8 +121,9 @@ export function parseInkDocument(value: Record<string, unknown>): InkDocument {
   const usedIds = new Set<string>()
   const strokeIds = strokes.map((_, index): string => {
     if (rawStrokeIds === undefined) {
-      let id = createStrokeId()
-      while (usedIds.has(id)) id = createStrokeId()
+      const id = createId(index).toLowerCase()
+      if (!UUID_PATTERN.test(id)) throw new Error('笔迹身份生成无效')
+      if (usedIds.has(id)) throw new Error('笔迹身份生成重复')
       usedIds.add(id)
       return id
     }
@@ -513,7 +518,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-function deriveStrokeId(sourceId: string, pieceIndex: number): string {
+export function deriveStrokeId(sourceId: string, pieceIndex: number): string {
   const bytes = new Uint8Array(16)
   const seed = `${sourceId}:${pieceIndex}`
   for (let block = 0; block < 4; block++) {

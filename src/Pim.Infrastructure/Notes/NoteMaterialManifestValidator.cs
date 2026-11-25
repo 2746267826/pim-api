@@ -159,24 +159,119 @@ internal static partial class NoteMaterialManifestValidator
     }
     private static void ValidateInk(JsonElement ink)
     {
-        var width = ink.GetProperty("width").GetDouble(); var height = ink.GetProperty("height").GetDouble();
-        Require(double.IsFinite(width) && width is >= 80 and <= 2048 &&
-            double.IsFinite(height) && height is >= 80 and <= 4096, "手写卡片尺寸无效");
-        foreach (var stroke in ink.GetProperty("strokes").EnumerateArray())
+        Require(ink.ValueKind == JsonValueKind.Object, "手写卡片结构无效");
+        var width = RequiredNumber(ink, "width", "手写卡片尺寸无效");
+        var height = RequiredNumber(ink, "height", "手写卡片尺寸无效");
+        Require(width is >= 80 and <= 2048 && height is >= 80 and <= 4096, "手写卡片尺寸无效");
+        var strokes = RequiredArray(ink, "strokes", "手写卡片笔画结构无效");
+        Require(strokes.GetArrayLength() <= 10_000, "手写笔画数量超过上限");
+        var strokeIds = OptionalArray(ink, "strokeIds", "手写笔迹身份结构无效");
+        Require(strokeIds is null || strokeIds.Value.GetArrayLength() == strokes.GetArrayLength(),
+            "手写笔迹身份数量必须与笔画一致");
+        var strokeStyles = OptionalArray(ink, "strokeStyles", "手写笔迹样式结构无效");
+        Require(strokeStyles is null || strokeStyles.Value.GetArrayLength() == strokes.GetArrayLength(),
+            "手写笔迹样式数量必须与笔画一致");
+
+        var ids = new HashSet<Guid>();
+        if (strokeIds is { } idArray)
         {
-            var pen = stroke.GetProperty("width").GetDouble(); var points = stroke.GetProperty("points");
-            Require(double.IsFinite(pen) && pen is >= 0.5 and <= 24 && points.GetArrayLength() > 0, "手写笔迹无效");
-            foreach (var point in points.EnumerateArray())
+            foreach (var item in idArray.EnumerateArray())
             {
-                var x = point.GetProperty("x").GetDouble(); var y = point.GetProperty("y").GetDouble(); var pressure = point.GetProperty("pressure").GetDouble();
-                Require(double.IsFinite(x) && double.IsFinite(y) && double.IsFinite(pressure) &&
-                    x >= 0 && x <= width && y >= 0 && y <= height && pressure is >= 0 and <= 1, "手写笔迹超出原稿范围");
+                Require(item.ValueKind == JsonValueKind.String, "手写笔迹身份无效");
+                var raw = item.GetString();
+                Require(raw is not null, "手写笔迹身份无效");
+                Require(Guid.TryParseExact(raw!, "D", out var id), "手写笔迹身份无效");
+                Require(ids.Add(id), "手写笔迹身份重复");
             }
         }
+
+        var strokeIndex = 0;
+        long pointTotal = 0;
+        foreach (var stroke in strokes.EnumerateArray())
+        {
+            Require(stroke.ValueKind == JsonValueKind.Object, "手写笔画结构无效");
+            var strokeWidth = OptionalNumber(stroke, "width", "手写笔画宽度无效") ?? 2.5;
+            Require(strokeWidth is >= 0.5 and <= 24, "手写笔画宽度无效");
+            var strokeColor = OptionalColor(stroke, "color");
+            var points = RequiredArray(stroke, "points", "手写笔画缺少坐标点");
+            Require(points.GetArrayLength() > 0, "手写笔画缺少坐标点");
+            if (strokeStyles is { } styles)
+            {
+                var style = styles[strokeIndex];
+                Require(style.ValueKind == JsonValueKind.Object, "手写笔迹样式结构无效");
+                var styleColor = RequiredColor(style, "color");
+                var styleWidth = RequiredNumber(style, "width", "手写笔迹样式宽度无效");
+                Require(styleWidth is >= 0.5 and <= 24, "手写笔迹样式宽度无效");
+                if (strokeColor is not null)
+                {
+                    Require(string.Equals(strokeColor, styleColor, StringComparison.OrdinalIgnoreCase),
+                        "手写笔画颜色与样式不一致");
+                }
+                if (stroke.TryGetProperty("width", out _))
+                {
+                    Require(Math.Abs(strokeWidth - styleWidth) <= 1e-9, "手写笔画宽度与样式不一致");
+                }
+            }
+            pointTotal += points.GetArrayLength();
+            Require(pointTotal <= 50_000, "手写笔画点数超过上限");
+            foreach (var point in points.EnumerateArray())
+            {
+                Require(point.ValueKind == JsonValueKind.Object, "手写坐标点结构无效");
+                var x = RequiredNumber(point, "x", "手写坐标或压力超出 schema-v1 范围");
+                var y = RequiredNumber(point, "y", "手写坐标或压力超出 schema-v1 范围");
+                var pressure = OptionalNumber(point, "pressure", "手写坐标或压力超出 schema-v1 范围") ?? 1;
+                Require(x >= 0 && x <= width && y >= 0 && y <= height && pressure is >= 0 and <= 1,
+                    "手写坐标或压力超出 schema-v1 范围");
+            }
+            strokeIndex++;
+        }
     }
+
+    private static JsonElement RequiredArray(JsonElement node, string key, string message)
+    {
+        Require(node.TryGetProperty(key, out var item) && item.ValueKind == JsonValueKind.Array, message);
+        return item;
+    }
+
+    private static JsonElement? OptionalArray(JsonElement node, string key, string message)
+    {
+        if (!node.TryGetProperty(key, out var item)) return null;
+        Require(item.ValueKind == JsonValueKind.Array, message);
+        return item;
+    }
+
+    private static double RequiredNumber(JsonElement node, string key, string message)
+    {
+        Require(node.TryGetProperty(key, out var item) && item.ValueKind == JsonValueKind.Number, message);
+        var value = item.GetDouble();
+        Require(double.IsFinite(value), message);
+        return value;
+    }
+
+    private static double? OptionalNumber(JsonElement node, string key, string message)
+    {
+        if (!node.TryGetProperty(key, out var item)) return null;
+        Require(item.ValueKind == JsonValueKind.Number, message);
+        var value = item.GetDouble();
+        Require(double.IsFinite(value), message);
+        return value;
+    }
+
+    private static string? OptionalColor(JsonElement node, string key)
+    {
+        if (!node.TryGetProperty(key, out var item)) return null;
+        Require(item.ValueKind == JsonValueKind.String, "手写颜色无效");
+        var value = item.GetString()!;
+        Require(InkColorPattern().IsMatch(value), "手写颜色无效");
+        return value;
+    }
+
+    private static string RequiredColor(JsonElement node, string key) =>
+        OptionalColor(node, key) ?? throw Invalid("手写笔迹样式缺少颜色");
     private static void Require(bool value, string message) { if (!value) throw Invalid(message); }
     private static DomainException Invalid(string message) => new(40001, message);
     private sealed record ExpectedMaterial(string Kind, string? Hash = null, string? BlockId = null,
         string? RecordingId = null, int? Segment = null, int? ChunkIndex = null, long? Samples = null, long? SizeBytes = null);
     [GeneratedRegex("^[0-9a-f]{64}$", RegexOptions.CultureInvariant)] private static partial Regex DigestPattern();
+    [GeneratedRegex("^#[0-9A-Fa-f]{6}$", RegexOptions.CultureInvariant)] private static partial Regex InkColorPattern();
 }

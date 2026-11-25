@@ -254,6 +254,87 @@ describe('native note material model', () => {
     }))
   })
 
+  it('normalizes a legacy ink snapshot deterministically for retries', async () => {
+    const legacy = {
+      width: 320,
+      height: 240,
+      strokes: [{
+        points: [{ x: 12, y: 18 }],
+      }],
+    }
+    const previewBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 4])
+    const build = () => buildMaterialBundle({
+      versionId,
+      noteId,
+      baseVersionId: null,
+      revision: 0,
+      title: '旧手写重试',
+      noteCreatedAtMillis: 100,
+      createdAtMillis: 200,
+      blocks: [{ id: assetId, kind: 'ink', ink: legacy, bytes: previewBytes }],
+    })
+
+    const first = await build()
+    const second = await build()
+    expect(second.inputJson).toBe(first.inputJson)
+    expect(second.manifestJson).toBe(first.manifestJson)
+  })
+
+  it('keeps an already canonical source ink byte-for-byte when only other blocks change', async () => {
+    const previewBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 5])
+    const source = await buildMaterialBundle({
+      versionId,
+      noteId,
+      baseVersionId: null,
+      revision: 3,
+      title: '源手写',
+      noteCreatedAtMillis: 100,
+      createdAtMillis: 200,
+      blocks: [{
+        id: assetId,
+        kind: 'ink',
+        ink: {
+          width: 320,
+          height: 240,
+          strokeIds: [inkStrokeId],
+          strokeStyles: [{ color: '#263b85', width: 2.5, styleExtension: 'keep' }],
+          strokes: [{ color: '#263b85', width: 2.5, points: [{ x: 12, y: 18, pressure: 1 }] }],
+        },
+        bytes: previewBytes,
+      }],
+    })
+    const floatInput = source.inputJson
+      .replace('"width":320', '"width":320.0')
+      .replace('"x":12', '"x":12.0')
+    const sourceBlock = JSON.parse(floatInput).note.blocks[0] as {
+      id: string
+      ink: Record<string, unknown>
+    }
+    const sourceInk = extractJsonValue(floatInput, ['note', 'blocks', 0, 'ink'])
+
+    const next = await buildMaterialBundle({
+      versionId: '99999999-9999-4999-8999-999999999999',
+      noteId,
+      baseVersionId: versionId,
+      revision: 4,
+      title: '源手写续写',
+      noteCreatedAtMillis: 100,
+      createdAtMillis: 300,
+      blocks: [{
+        id: sourceBlock.id,
+        kind: 'ink',
+        ink: sourceBlock.ink,
+        sha256: await sha256Hex(encoder.encode(sourceInk)),
+        bytes: previewBytes,
+      }],
+      sourceInputJson: floatInput,
+    })
+
+    expect(extractJsonValue(next.inputJson, ['note', 'blocks', 0, 'ink'])).toBe(sourceInk)
+    expect(next.inputJson).toContain('"width":320.0')
+    expect(next.inputJson).toContain('"x":12.0')
+  })
+
   it.each([
     {
       name: 'duplicate stroke IDs',
@@ -688,9 +769,13 @@ describe('native note material model', () => {
         { x: 180, y: 30, pressure: 1 },
       ],
     }])
+    expect(next.inputJson).toContain('320.0')
+    expect(next.inputJson).toContain('12.0')
     expect(next.inputJson).toContain(new TextDecoder().decode(new Uint8Array(readFileSync(path.join(fixtureDirectory, 'recordings/77777777-7777-4777-8777-777777777777/manifest.json')))))
     const oldPreview = manifest.files.find((file) => file.kind === 'InkPreview')!
-    const newPreviewPath = `assets/${normalizedInkBlock.id}-${await sha256Hex(encoder.encode(JSON.stringify(normalizedInk)))}.png`
+    const normalizedInkIndex = nextNoteValue.blocks.findIndex((block) => block.kind === 'ink')
+    const normalizedInkJson = extractJsonValue(nextNote, ['blocks', normalizedInkIndex, 'ink'])
+    const newPreviewPath = `assets/${normalizedInkBlock.id}-${await sha256Hex(encoder.encode(normalizedInkJson))}.png`
     expect(newPreviewPath).not.toBe(oldPreview.path)
     expect(next.files.find((file) => file.path === oldPreview.path)).toBeUndefined()
     expect(next.files).toContainEqual(expect.objectContaining({

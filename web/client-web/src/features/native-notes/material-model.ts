@@ -1,5 +1,5 @@
 import type { components } from '@/api/generated'
-import { parseInkDocument } from './ink-document'
+import { deriveStrokeId, parseInkDocument, type InkDocument } from './ink-document'
 import { extractJsonValue, replaceJsonObjectProperties, splitJsonArrayValues } from './raw-json'
 
 export type NoteMaterialVersion = components['schemas']['NoteMaterialVersionDto']
@@ -224,15 +224,23 @@ export async function buildMaterialBundle(input: BuildMaterialInput): Promise<Ma
       continue
     }
 
-    const normalizedInk = parseInkDocument(block.ink)
+    const normalizedInk = parseInkDocument(block.ink, (index) => deriveStrokeId(block.id, index))
     const sourceBlockJson = sourceBlockJsonById.get(block.id)
     const sourceBlockKind = sourceBlockJson ? (JSON.parse(sourceBlockJson) as { kind?: string }).kind : undefined
     const sourceInkJson = sourceBlockKind === 'ink' && sourceBlockJson ? extractJsonValue(sourceBlockJson, ['ink']) : undefined
+    let sourceInk: Record<string, unknown> | undefined
     if (sourceInkJson) {
-      const sourceInk = JSON.parse(sourceInkJson) as Record<string, unknown>
-      parseInkDocument(sourceInk)
+      sourceInk = JSON.parse(sourceInkJson) as Record<string, unknown>
+      parseInkDocument(sourceInk, (index) => deriveStrokeId(block.id, index))
     }
-    const inkJson = JSON.stringify(normalizedInk)
+    const sourceUnchanged = sourceInk !== undefined && sourceInkJson !== undefined &&
+      jsonValuesEqual(sourceInk, block.ink)
+    const inkJson = sourceUnchanged
+      ? preserveSourceInkJson(sourceInkJson!, normalizedInk)
+      : JSON.stringify(normalizedInk)
+    if (sourceUnchanged) {
+      parseInkDocument(JSON.parse(inkJson) as Record<string, unknown>, (index) => deriveStrokeId(block.id, index))
+    }
     const hash = await sha256Hex(encoder.encode(inkJson))
     const sourceHash = sourceInkJson
       ? await sha256Hex(encoder.encode(sourceInkJson))
@@ -458,7 +466,7 @@ export function parseMaterialVersion(material: NoteMaterialVersion): ParsedNoteM
     if (kind === 'ink') {
       const ink = raw.ink
       if (!ink || typeof ink !== 'object' || Array.isArray(ink)) throw new Error('固定材料包含无效手写卡片')
-      parseInkDocument(ink as Record<string, unknown>)
+      parseInkDocument(ink as Record<string, unknown>, (index) => deriveStrokeId(id, index))
       const index = preservedFiles.findIndex((file) => file.kind === 'InkPreview' && file.blockId === id)
       const file = preservedFiles[index]
       if (index < 0 || !file?.path) throw new Error('固定材料缺少手写预览图')
@@ -491,6 +499,71 @@ export function parseMaterialVersion(material: NoteMaterialVersion): ParsedNoteM
 
 function nullishEqual(left: unknown, right: unknown): boolean {
   return (left ?? null) === (right ?? null)
+}
+
+function jsonValuesEqual(left: unknown, right: unknown): boolean {
+  if (left === right) return true
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return Array.isArray(left) && Array.isArray(right) &&
+      left.length === right.length &&
+      left.every((value, index) => jsonValuesEqual(value, right[index]))
+  }
+  if (typeof left !== 'object' || typeof right !== 'object' || left === null || right === null) return false
+  const leftRecord = left as Record<string, unknown>
+  const rightRecord = right as Record<string, unknown>
+  const leftKeys = Object.keys(leftRecord)
+  const rightKeys = Object.keys(rightRecord)
+  return leftKeys.length === rightKeys.length &&
+    leftKeys.every((key) => hasOwn(rightRecord, key) && jsonValuesEqual(leftRecord[key], rightRecord[key]))
+}
+
+function preserveSourceInkJson(sourceJson: string, normalized: InkDocument): string {
+  const source = JSON.parse(sourceJson) as Record<string, unknown>
+  const sourceStrokes = Array.isArray(source.strokes)
+    ? source.strokes as Array<Record<string, unknown>>
+    : []
+  const rootReplacements: Record<string, string> = {}
+  if (!hasOwn(source, 'strokeIds')) rootReplacements.strokeIds = JSON.stringify(normalized.strokeIds)
+  if (!hasOwn(source, 'strokeStyles')) rootReplacements.strokeStyles = JSON.stringify(normalized.strokeStyles)
+  let result = Object.keys(rootReplacements).length
+    ? replaceJsonObjectProperties(sourceJson, rootReplacements)
+    : sourceJson
+
+  let strokesChanged = false
+  const patchedStrokes = splitJsonArrayValues(extractJsonValue(result, ['strokes'])).map((strokeJson, index) => {
+    const sourceStroke = sourceStrokes[index] ?? {}
+    const normalizedStroke = normalized.strokes[index]!
+    const strokeReplacements: Record<string, string> = {}
+    if (!hasOwn(sourceStroke, 'color')) strokeReplacements.color = JSON.stringify(normalizedStroke.color)
+    if (!hasOwn(sourceStroke, 'width')) strokeReplacements.width = JSON.stringify(normalizedStroke.width)
+    let next = Object.keys(strokeReplacements).length
+      ? replaceJsonObjectProperties(strokeJson, strokeReplacements)
+      : strokeJson
+    if (Object.keys(strokeReplacements).length) strokesChanged = true
+
+    const sourcePoints = Array.isArray(sourceStroke.points)
+      ? sourceStroke.points as Array<Record<string, unknown>>
+      : []
+    let pointsChanged = false
+    const patchedPoints = splitJsonArrayValues(extractJsonValue(next, ['points'])).map((pointJson, pointIndex) => {
+      if (hasOwn(sourcePoints[pointIndex] ?? {}, 'pressure')) return pointJson
+      pointsChanged = true
+      return replaceJsonObjectProperties(pointJson, { pressure: '1' })
+    })
+    if (pointsChanged) {
+      next = replaceJsonObjectProperties(next, { points: `[${patchedPoints.join(',')}]` })
+      strokesChanged = true
+    }
+    return next
+  })
+  if (strokesChanged) {
+    result = replaceJsonObjectProperties(result, { strokes: `[${patchedStrokes.join(',')}]` })
+  }
+  return result
+}
+
+function hasOwn(value: object, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(value, key)
 }
 
 export async function hydrateParsedPhotos(

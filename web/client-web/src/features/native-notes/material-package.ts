@@ -1,5 +1,5 @@
 import { Inflate, zipSync } from 'fflate'
-import { parseInkDocument } from './ink-document'
+import { deriveStrokeId, parseInkDocument } from './ink-document'
 import { sha256Hex, type MaterialBundle, type MaterialDraftBlock, type SupportedPhotoMime } from './material-model'
 
 export interface ImportedAndroidNotePackage {
@@ -130,7 +130,7 @@ export async function importAndroidNotePackage(archive: Uint8Array): Promise<Imp
     if (raw.kind === 'ink') {
       const ink = raw.ink
       if (!isRecord(ink)) throw new Error('手写向量不符合 Android schema-v1 尺寸或笔画结构')
-      const normalizedInk = parseInkDocument(ink)
+      const normalizedInk = parseInkDocument(ink, (index) => deriveStrokeId(String(raw.id), index))
       // Keep numeric lexemes: Kotlin Float serialization may emit 320.0 where JS emits 320.
       const rawInk = findObjectPropertyRaw(rawBlocks[blockIndex]!, 'ink')
       const inkVectorSha = await sha256Hex(textEncoder.encode(compactJson(rawInk)))
@@ -423,7 +423,7 @@ function validateExportedNoteInk(bytes: Uint8Array) {
   for (const raw of note.blocks) {
     if (!isRecord(raw) || raw.kind !== 'ink') continue
     if (!isRecord(raw.ink)) throw new Error('手写向量不符合 Android schema-v1 尺寸或笔画结构')
-    const normalized = parseInkDocument(raw.ink)
+    const normalized = parseInkDocument(raw.ink, (index) => deriveStrokeId(String(raw.id ?? ''), index))
     if (JSON.stringify(normalized) !== JSON.stringify(raw.ink)) {
       throw new Error('手写向量未按 D04 规范写入，拒绝导出')
     }

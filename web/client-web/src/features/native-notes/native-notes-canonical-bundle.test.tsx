@@ -17,6 +17,7 @@ import {
   type NoteMaterialUpload,
   type NoteMaterialVersion,
 } from './material-model'
+import { extractJsonValue } from './raw-json'
 
 const nativeApi = vi.hoisted(() => ({
   limits: vi.fn(), notes: vi.fn(), current: vi.fn(), versions: vi.fn(), version: vi.fn(),
@@ -221,7 +222,25 @@ describe('Android golden consumer canonical native-note reading', () => {
     })
 
     const nextManifest = JSON.parse(request.material.manifestJson) as { files: GoldenManifestFile[] }
-    for (const expected of fixture.manifest.files.filter((file) => file.kind !== 'Document')) {
+    const nextInkBlock = nextInput.note.blocks.find((block) => block.kind === 'ink') as {
+      id: string
+      ink: Record<string, unknown>
+    }
+    const nextInkIndex = nextInput.note.blocks.findIndex((block) => block.kind === 'ink')
+    const nextInkRaw = extractJsonValue(request.material.inputJson, ['note', 'blocks', nextInkIndex, 'ink'])
+    const nextInkHash = await sha256Hex(new TextEncoder().encode(nextInkRaw))
+    const nextInkPath = `assets/${nextInkBlock.id}-${nextInkHash}.png`
+    const oldInkPreview = fixture.manifest.files.find((file) => file.kind === 'InkPreview')!
+    expect(nextManifest.files).not.toContainEqual(expect.objectContaining({ path: oldInkPreview.path }))
+    expect(nextManifest.files).toContainEqual(expect.objectContaining({
+      path: nextInkPath,
+      kind: 'InkPreview',
+      blockId: nextInkBlock.id,
+      sha256: oldInkPreview.sha256,
+      sizeBytes: oldInkPreview.sizeBytes,
+    }))
+    for (const expected of fixture.manifest.files.filter((file) =>
+      file.kind !== 'Document' && file.kind !== 'Markdown' && file.kind !== 'InkPreview')) {
       expect(nextManifest.files).toContainEqual(expect.objectContaining({
         path: expected.path, kind: expected.kind, sha256: expected.sha256, sizeBytes: expected.sizeBytes,
         ...(expected.blockId ? { blockId: expected.blockId } : {}),
@@ -259,17 +278,66 @@ describe('Android golden consumer canonical native-note reading', () => {
 
     expect(next.revision).toBe(8)
     expect(next.baseVersionId).toBe(fixture.input.id)
-    expect(JSON.parse(next.inputJson).recordings).toEqual(fixture.input.recordings)
+    const nextInput = JSON.parse(next.inputJson) as GoldenInput
+    expect(nextInput.recordings).toEqual(fixture.input.recordings)
     expect(next.inputJson).toContain('320.0')
     expect(next.inputJson).toContain('12.0')
+    const nextInkBlock = nextInput.note.blocks.find((block) => block.kind === 'ink') as {
+      id: string
+      ink: {
+        width: number
+        height: number
+        strokeIds: string[]
+        strokeStyles: Array<Record<string, unknown>>
+        strokes: Array<Record<string, unknown>>
+      }
+    }
+    expect(nextInkBlock.ink).toMatchObject({
+      width: 320,
+      height: 240,
+      strokeStyles: [{ color: '#263b85', width: 2.5 }],
+      strokes: [{
+        color: '#263b85',
+        width: 2.5,
+        points: [
+          { x: 12, y: 18, pressure: 1 },
+          { x: 96, y: 84, pressure: 1 },
+          { x: 180, y: 30, pressure: 1 },
+        ],
+      }],
+    })
+    expect(nextInkBlock.ink.strokeIds).toEqual([expect.stringMatching(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+    )])
+    const nextInkIndex = nextInput.note.blocks.findIndex((block) => block.kind === 'ink')
+    const nextInkRaw = extractJsonValue(next.inputJson, ['note', 'blocks', nextInkIndex, 'ink'])
+    const normalizedInkHash = await sha256Hex(new TextEncoder().encode(nextInkRaw))
+    const normalizedInkPath = `assets/${nextInkBlock.id}-${normalizedInkHash}.png`
+    const oldInkPreview = fixture.files.find((file) => file.kind === 'InkPreview')!
 
     const nextManifest = JSON.parse(next.manifestJson) as GoldenManifest
     expect(nextManifest.files).toHaveLength(7)
-    expect(next.files.map((file) => file.path)).toEqual(fixture.files.map((file) => file.path))
-    for (const file of fixture.files.filter((entry) => entry.kind === 'Photo' || entry.kind === 'InkPreview')) {
+    expect(new Set(next.files.map((file) => file.path))).toEqual(new Set([
+      ...fixture.files.map((file) => file.path).filter((filePath) => filePath !== oldInkPreview.path),
+      normalizedInkPath,
+    ]))
+    for (const file of fixture.files.filter((entry) => entry.kind === 'Photo')) {
       const nextFile = next.files.find((entry) => entry.path === file.path)!
       expect(nextFile.sha256).toBe(file.sha256)
       expect(await sha256Hex(nextFile.bytes)).toBe(file.sha256)
+    }
+    const normalizedPreview = next.files.find((file) => file.path === normalizedInkPath)!
+    expect(normalizedPreview.sha256).toBe(oldInkPreview.sha256)
+    expect(normalizedPreview.sizeBytes).toBe(oldInkPreview.sizeBytes)
+    expect(await sha256Hex(normalizedPreview.bytes)).toBe(oldInkPreview.sha256)
+    for (const file of fixture.files.filter((entry) =>
+      entry.kind === 'RecordingManifest' || entry.kind === 'AudioChunk')) {
+      expect(next.files).toContainEqual(expect.objectContaining({
+        path: file.path,
+        kind: file.kind,
+        sha256: file.sha256,
+        sizeBytes: file.sizeBytes,
+      }))
     }
 
     const exportDirectory = path.resolve(process.cwd(), 'scratch/interop/web-continuation-v1')
