@@ -5,12 +5,37 @@
 ## 提交流程
 
 1. Android 先固定现有 schema-v1 的 `NoteMaterialInput` 与 `NoteMaterialManifest`。`POST /api/v1/native-notes/versions` 提交版本/笔记 ID、所基于的服务器版本、原始输入 JSON、材料清单 JSON及本次上传同意。
-2. 服务端对照原稿块和每个录音会话推导所需文件，校验版本身份、输入摘要、原稿/导出 Markdown/录音清单摘要与大小、照片关联、向量尺寸和每个音频分片描述。缺少照片、手写图、录音或夹带未知文件均不接受为完整清单。JSON 原文和未知扩展字段保留，未知块类型明确拒绝，不能假装已经完整兼容。
+2. 服务端对照原稿块和每个录音会话推导所需文件，校验版本身份、输入摘要、原稿/导出 Markdown/录音清单摘要与大小、照片关联、向量尺寸和每个音频分片描述。缺少照片、手写图、录音或夹带未知文件均不接受为完整清单。录音分片可声明 `format`/`mimeType`（见“音频格式与解码边界”），未声明时按旧 WAV 兼容。JSON 原文和未知扩展字段保留，未知块类型明确拒绝，不能假装已经完整兼容。
 3. 客户端按返回的固定 `partSizeBytes`，用 `PUT .../files/{fileIndex}/parts/{partIndex}?sha256=...` 上传二进制分块。每块独立校验长度与 SHA-256，重复相同内容幂等；同位置不同内容返回 409。状态返回已收分块，新进程可继续上传。未完成版本可清除某块后重传，或取消整个上传。
-4. `POST .../{versionId}/complete` 流式校验全部文件的完整摘要、长度、WAV 头/采样格式和图片类型签名。全部齐备后才发布版本；未齐备返回 409，损坏返回 400。发布状态仅为 `Uploaded` 或 `Conflict`，不表示 ASR 或 AI 已开始。
+4. `POST .../{versionId}/complete` 流式校验全部文件的完整摘要、长度、WAV 头或 Ogg Opus 容器结构、声明样本数和图片类型签名。全部齐备后才发布版本；未齐备返回 409，损坏或格式不符返回 400。发布状态仅为 `Uploaded` 或 `Conflict`，不表示 ASR 或 AI 已开始。
 5. 保存校验 `baseVersionId`。当前版本已改变时，保留新旧双方全部材料，新版标为 `Conflict`；不能自动替换当前版本。用户明确选择后，用 `POST .../{versionId}/promote` 携带重新核对的 `expectedCurrentVersionId`，再次校验后才更新当前版本。原有版本仍可读取。
 
 `GET /api/v1/native-notes/upload-limits`、单版本状态和笔记版本列表均要求现有 JWT 鉴权。所有磁盘位置只由已验证用户 ID、版本 ID及整数文件/分块索引生成；清单中的路径只用于核对与展示，不作为磁盘访问路径。文件下载由服务端流式提供，返回预期 SHA-256；不发私有文件 URL、第三方授权直链或账号凭据。
+
+## 音频格式与解码边界
+
+录音会话的每个 `chunks[]` 可带可选 `format` 与 `mimeType`。两者都省略时按旧客户端兼容为 WAV；显式值必须一致，未知值或互相矛盾会在创建上传会话时以 `40001` 拒绝，不会静默当 WAV。
+
+| 声明 | 接受值 | 固定材料路径 |
+| --- | --- | --- |
+| `format` | `wav`、`opus`（大小写不敏感） | 由服务端推导 |
+| `mimeType` | `audio/wav`、`audio/x-wav`、`audio/ogg`、`audio/opus`；允许 `; codecs=...` 参数 | 由服务端推导 |
+| WAV 路径 | 旧格式，无额外声明 | `recordings/{recordingId}/s{segment:D4}-c{index:D6}.wav` |
+| Opus 路径 | Ogg 容器，编码必须为 Opus | `recordings/{recordingId}/s{segment:D4}-c{index:D6}.opus` |
+
+Opus 分片的规范扩展名是 `.opus`，媒体类型是 `audio/ogg`；客户端本地文件叫 `.ogg` 不影响上传，清单必须使用服务端推导的 `.opus` 路径。单分片必须大于 0 字节且不超过 64 MiB，声明样本数必须大于 0；每份清单仍受 `NativeNotes:MaxFiles`（默认 20,000）和单版本/用户配额约束。同一 `segment`+`index` 只能声明一次，不能借不同格式重复计时间轴。
+
+`chunks[].samples` 固定表示**解码后的 16 kHz 单声道样本数**，不是 Ogg Opus 内部的 48 kHz granule。Opus 分片必须：
+
+- 是完整 Ogg 流，首包包含 `OpusHead`，声道数为 1；
+- 有结束页（EOS），且最终 granule 减去 pre-skip 后能被 3 整除；
+- 换算出的 16 kHz 样本数与清单声明完全一致。
+
+这些条件在 `complete` 时校验，非法或截断文件返回 `40001`，不会发布为完整版本。Android 侧把录音分片调整为 15 秒只是客户端采集策略；服务端不把 15 秒写进协议或 ASR 计划，而是继续按声明样本数切片，单次 ASR 预算仍由服务端现有 60 秒常量（或已解析路由的预算）决定。15 秒对应 240,000 个 16 kHz 样本，服务端会按实际样本数处理，不假定分片长度。
+
+原始 Opus/Ogg 字节按上传内容原样保存、下载和导出，不做有损再编码；WAV 用户和历史数据继续走原有直接读取路径。进入 ASR、Batch 或派生音频上下文前，服务端用 `ffmpeg` 把所需样本范围严格解码为 16 kHz 单声道 PCM，再包装成现有 WAV 输入，provider 不会收到压缩容器。解码输出字节数必须与声明样本数完全一致，否则以 `40001` 拒绝且不发送 provider 请求。FFmpeg stderr 只留在内存中丢弃，不写入日志、任务错误或客户端响应。运行镜像安装 `ffmpeg`；可用 `NativeNotes:FfmpegPath`（默认 `ffmpeg`）和 `NativeNotes:AudioDecodeTimeoutSeconds`（默认 120 秒）配置。解码器缺失、路径非法、超时配置越界或进程启动失败返回 `50303`（HTTP 503），任务进入可解释的阻断状态，WAV 不受影响；人工重试前应先修复运行环境。临时解码文件位于系统临时目录，使用随机文件名，创建时在非 Windows 平台限制为当前用户可读写，完成后删除。
+
+隔离测试覆盖格式白名单、MIME 冲突、旧 WAV 默认兼容、Opus 容器结构/样本数、64 MiB 边界、15 秒样本切片、解码失败安全信息和配置修复后的恢复。真实 Android/Windows 采集器、真实 Opus 编码器输出及第三方 ASR provider 的端到端链路尚未在本机验证；包含恶意压缩音频沙箱逃逸、FFmpeg 漏洞面或长期 DoS 的结论也不能由这些测试替代。
 
 ## 存储与限额
 
@@ -26,7 +51,10 @@
 | `NativeNotes:MaxPendingVersions` | 10 | 每用户未完成上传数 |
 | `NativeNotes:MaxVersionsPerUser` | 2,000 | 每用户全部版本数 |
 | `NativeNotes:UploadExpiryHours` | 168 小时 | 未完成上传到期后，在该账号后续操作时清理并释放预留容量 |
+| `NativeNotes:FfmpegPath` | `ffmpeg` | Opus/Ogg 解码器路径；缺失或非法时 `50303`，WAV 不受影响 |
+| `NativeNotes:AudioDecodeTimeoutSeconds` | 120 秒 | 单次 Opus 解码超时；越界配置按解码器不可用返回 `50303`，运行超时按 `40001` 拒绝且不发送 provider |
 | 照片/手写派生图 | 32 / 40 MiB | 单文件固定格式上限；照片仍须与原稿关联 |
+| Opus/Ogg 录音分片 | 64 MiB | 单文件上限；还须满足 Ogg Opus 结构、单声道和声明样本数 |
 
 共享字节额度不足时会拒绝新分块并保留已收块，不因单独的笔记预留额度通过而保证全部可写；旧目录内容不计入共享字节额度，仍受笔记预留/版本上限及实际磁盘约束。已发布版本不因上传有效期自动删除。用户可删除一篇笔记的全部服务器材料；本机内容不被远程删除。删除意图先进入原子账本，文件清理中断后在下一次账号操作时继续。已经发布的材料不可通过“取消上传”或分块接口修改。
 

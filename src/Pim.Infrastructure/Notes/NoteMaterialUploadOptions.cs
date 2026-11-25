@@ -13,6 +13,8 @@ public sealed class NoteMaterialUploadOptions
     public int MaxPendingVersions { get; set; } = 10;
     public int MaxVersionsPerUser { get; set; } = 2_000;
     public int UploadExpiryHours { get; set; } = 168;
+    public string FfmpegPath { get; set; } = "ffmpeg";
+    public int AudioDecodeTimeoutSeconds { get; set; } = 120;
 
     public bool IsValid() => !string.IsNullOrWhiteSpace(StorageRoot) &&
         Path.IsPathFullyQualified(StorageRoot) && MaxVersionBytes is > 0 and <= 64L * 1024 * 1024 * 1024 &&

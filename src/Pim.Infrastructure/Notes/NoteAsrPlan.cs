@@ -23,7 +23,8 @@ internal static class NoteAsrPlan
             {
                 var segment = chunk.GetProperty("segment").GetInt32(); var index = chunk.GetProperty("index").GetInt32();
                 var count = chunk.GetProperty("samples").GetInt64();
-                var file = files[$"recordings/{recordingId:D}/s{segment:D4}-c{index:D6}.wav"];
+                var format = NoteAudioFormats.Parse(chunk);
+                var file = files[NoteAudioFormats.Path(recordingId, segment, index, format)];
                 for (long offset = 0; offset < count; offset += samplesPerCall)
                 {
                     if (steps.Count >= 5_000) throw new DomainException(41301, "本次转写超过5000片，请按材料版本分批处理；原录音保留");

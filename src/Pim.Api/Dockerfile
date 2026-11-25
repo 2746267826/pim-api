@@ -72,7 +72,8 @@ RUN set -eux; \
 EXPOSE 5000
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends supervisor tini \
+    && apt-get install -y --no-install-recommends supervisor tini ffmpeg \
+    && ffmpeg -version >/dev/null \
     && rm -rf /var/lib/apt/lists/*
 
 COPY scripts/docker/supervisord.conf /etc/supervisor/supervisord.conf

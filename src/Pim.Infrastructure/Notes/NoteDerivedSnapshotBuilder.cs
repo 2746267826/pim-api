@@ -343,14 +343,15 @@ public sealed class NoteDerivedSnapshotBuilder(
                 var segment = chunk.GetProperty("segment").GetInt32();
                 var chunkIndex = chunk.GetProperty("index").GetInt32();
                 var samples = chunk.GetProperty("samples").GetInt64();
-                var path = $"recordings/{recordingId:D}/s{segment:D4}-c{chunkIndex:D6}.wav";
+                var format = NoteAudioFormats.Parse(chunk);
+                var path = NoteAudioFormats.Path(recordingId, segment, chunkIndex, format);
                 if (segment <= 0 || chunkIndex <= 0 || samples <= 0 ||
                     !files.TryGetValue(path, out var file) || file.Kind != "AudioChunk" ||
-                    file.SizeBytes != NoteDerivedAudioContext.ByteSize(samples) ||
+                    !NoteAudioFormats.HasValidDeclaredSize(format, file.SizeBytes, samples) ||
                     !NoteMaterialManifestValidator.IsDigest(file.Sha256))
                 {
                     issues.Add(new("audio_context_invalid",
-                        "固定录音分片身份、样本数或 WAV 文件大小无效", path));
+                        "固定录音分片身份、样本数或音频文件大小无效", path));
                     continue;
                 }
 
@@ -402,8 +403,8 @@ public sealed class NoteDerivedSnapshotBuilder(
                 var file = files[path];
                 try
                 {
-                    _ = await materials.ReadAudioSliceAsync(owner, version.Upload.VersionId,
-                        file.Index, 0, 1, ct);
+                    await materials.VerifyAudioFileAsync(owner, version.Upload.VersionId,
+                        file.Index, ct);
                 }
                 catch (Exception error) when (error is DomainException or IOException or InvalidDataException)
                 {

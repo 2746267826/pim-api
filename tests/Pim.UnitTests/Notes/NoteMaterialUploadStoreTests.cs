@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Encodings.Web;
@@ -14,6 +15,8 @@ namespace Pim.UnitTests.Notes;
 
 public sealed class NoteMaterialUploadStoreTests : IDisposable
 {
+    private const string TinyOpusBase64 =
+        "T2dnUwACAAAAAAAAAAD3WTvRAAAAALaS03IBE09wdXNIZWFkAQE4AYA+AAAAAABPZ2dTAAAAAAAAAAAAAPdZO9EBAAAAymKEcwE9T3B1c1RhZ3MMAAAATGF2ZjYyLjMuMTAwAQAAAB0AAABlbmNvZGVyPUxhdmM2Mi4xMS4xMDAgbGlib3B1c09nZ1MABPgTAAAAAAAA91k70QIAAAC8/jk5BlgsNDAyHUiBpvLzsXG9AAACAawTWRg+ZP9rYrq27r4PgIGySHntw3HAMzw+4Lq3gqoGy5yUXZK+KTRPCk79dJc5puC04dhrz1VXUtfo+gRq5gEzgyuwxrFRMQV5R6tInNZB5/yVTU6qGAOfCY8CGpOpsivqsqn3IPjcjREgsKc2cUKEV3tyaOknaEiZwl9zLdIzOkXZqNtXjU5TFYlQeWjabWDvCunj8JEhdpsOa4eEvMQ7u7IjyTp0wWsILyBImZ1ysJO6ioODsnzV0ZDnEngGehIa1xNwwmd25QUrHqhBoRTnNbik07INHVVVAkZImUofcy3SMQ7YBziRnHv/ofyN3Rgg3m1Z+H/fHXc2+9+Uhuw6nImqJMAREvhGiD3YP0gFjIXwEebjMnv5p2Wc22oURcy0X+x1X9RwbPlg";
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web) { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
     private readonly string _root = Path.Combine(Path.GetTempPath(), "pim-note-upload-tests", Guid.NewGuid().ToString("N"));
     private readonly Guid _user = Guid.NewGuid();
@@ -455,7 +458,292 @@ public sealed class NoteMaterialUploadStoreTests : IDisposable
         Assert.True((await Store().CompleteAsync(_user, fixture.Request.VersionId)).IsCurrent);
     }
 
-    private NoteMaterialUploadStore Store(TimeProvider? time = null) => new(Options.Create(_options), time);
+    [Fact]
+    public async Task Legacy_wav_material_without_a_format_field_still_slices_to_the_same_bytes()
+    {
+        var fixture = Fixture.Create(audioSamples: 160);
+        var store = Store();
+        await store.BeginAsync(_user, fixture.Request);
+        await UploadAll(store, fixture);
+        await store.CompleteAsync(_user, fixture.Request.VersionId);
+
+        var slice = await store.ReadAudioSliceAsync(_user, fixture.Request.VersionId, 5, 0, 160,
+            CancellationToken.None);
+
+        Assert.Equal(fixture.Content[5], slice);
+        Assert.Equal(".wav", Path.GetExtension((await store.GetAsync(_user, fixture.Request.VersionId))
+            .Upload.Files[5].Path));
+    }
+
+    [Fact]
+    public async Task Wav_slicing_ignores_invalid_opus_decoder_configuration()
+    {
+        var fixture = Fixture.Create(audioSamples: 160);
+        var store = Store();
+        await store.BeginAsync(_user, fixture.Request);
+        await UploadAll(store, fixture);
+        await store.CompleteAsync(_user, fixture.Request.VersionId);
+        var options = new NoteMaterialUploadOptions
+        {
+            StorageRoot = _root, MaxVersionBytes = 32 * 1024 * 1024,
+            MaxUserReservedBytes = 64 * 1024 * 1024, FfmpegPath = " ",
+            AudioDecodeTimeoutSeconds = 0
+        };
+
+        var slice = await Store(options: options).ReadAudioSliceAsync(_user,
+            fixture.Request.VersionId, 5, 0, 160, CancellationToken.None);
+
+        Assert.Equal(fixture.Content[5], slice);
+    }
+
+    [Fact]
+    public async Task Opus_upload_and_download_keep_the_original_ogg_container()
+    {
+        var fixture = OpusFixture();
+        var store = Store();
+        var begun = await store.BeginAsync(_user, fixture.Request);
+        Assert.EndsWith(".opus", begun.Files[5].Path);
+        await UploadAll(store, fixture);
+
+        var completed = await store.CompleteAsync(_user, fixture.Request.VersionId);
+        Assert.Equal("Uploaded", completed.Phase);
+        Assert.True(completed.IsCurrent);
+
+        using var output = new MemoryStream();
+        await store.ReadFileAsync(_user, fixture.Request.VersionId, 5, output);
+        Assert.Equal(fixture.Content[5], output.ToArray());
+    }
+
+    [Fact]
+    public async Task Opus_clone_preserves_the_original_container_and_rejects_a_wav_relabel()
+    {
+        var original = OpusFixture();
+        var store = Store();
+        await store.BeginAsync(_user, original.Request);
+        await UploadAll(store, original);
+        await store.CompleteAsync(_user, original.Request.VersionId);
+        var next = CloneFixture(original);
+
+        var cloned = await store.CloneAsync(_user, original.Request.VersionId,
+            new CloneNoteMaterialVersionRequest(original.Request.VersionId, next.Request));
+        Assert.EndsWith(".opus", cloned.Files[5].Path);
+        Assert.Equal(cloned.Files[5].PartCount, cloned.Files[5].UploadedParts.Count);
+        await UploadPart(store, next, 0, 0);
+        await UploadPart(store, next, 1, 0);
+        Assert.True((await store.CompleteAsync(_user, next.Request.VersionId)).IsCurrent);
+        using (var output = new MemoryStream())
+        {
+            await store.ReadFileAsync(_user, next.Request.VersionId, 5, output);
+            Assert.Equal(original.Content[5], output.ToArray());
+        }
+
+        var relabelled = RewriteInput(next, input =>
+        {
+            AudioChunk(input)["format"] = "wav";
+            AudioChunk(input)["mimeType"] = "audio/wav";
+        });
+        await Error(40001, () => store.CloneAsync(_user, original.Request.VersionId,
+            new CloneNoteMaterialVersionRequest(original.Request.VersionId, relabelled.Request)));
+    }
+
+    [Fact]
+    public async Task Opus_mime_without_format_still_uses_the_canonical_opus_path()
+    {
+        var fixture = RewriteInput(OpusFixture(), input => AudioChunk(input).Remove("format"));
+        var store = Store();
+        var begun = await store.BeginAsync(_user, fixture.Request);
+        Assert.EndsWith(".opus", begun.Files[5].Path);
+        await UploadAll(store, fixture);
+        Assert.Equal("Uploaded",
+            (await store.CompleteAsync(_user, fixture.Request.VersionId)).Phase);
+    }
+
+    [Fact]
+    public async Task Opus_with_truncated_container_or_wrong_sample_count_never_publishes()
+    {
+        await AssertOpusRejected(Fixture.Create(audioSamples: 1600, audio: TinyOpus()[..^1],
+            audioFormat: "opus"));
+        await AssertOpusRejected(Fixture.Create(audioSamples: 1599, audio: TinyOpus(),
+            audioFormat: "opus"));
+        await AssertOpusRejected(Fixture.Create(audioSamples: 1600,
+            audio: Encoding.UTF8.GetBytes("this is not an ogg opus recording"), audioFormat: "opus"));
+    }
+
+    [Fact]
+    public async Task Opus_manifest_rejects_unknown_conflicting_zero_sample_and_duplicate_chunks_at_begin()
+    {
+        var unknown = RewriteInput(OpusFixture(), input => AudioChunk(input)["format"] = "mp3");
+        await Error(40001, () => Store().BeginAsync(_user, unknown.Request));
+
+        var conflict = RewriteInput(OpusFixture(), input => AudioChunk(input)["format"] = "wav");
+        await Error(40001, () => Store().BeginAsync(_user, conflict.Request));
+
+        var zero = RewriteInput(OpusFixture(), input => AudioChunk(input)["samples"] = 0);
+        await Error(40001, () => Store().BeginAsync(_user, zero.Request));
+
+        var duplicate = RewriteInput(OpusFixture(), input =>
+        {
+            var chunks = input["recordings"]!.AsArray()[0]!["chunks"]!.AsArray();
+            var clone = AudioChunk(input).DeepClone().AsObject();
+            clone["format"] = "wav";
+            clone["mimeType"] = "audio/wav";
+            chunks.Add(clone);
+        });
+        await Error(40001, () => Store().BeginAsync(_user, duplicate.Request));
+    }
+
+    [Fact]
+    public async Task Opus_manifest_rejects_files_over_the_64_mib_declared_boundary_at_begin()
+    {
+        var fixture = OpusFixture();
+        var manifest = JsonNode.Parse(fixture.Request.ManifestJson)!.AsObject();
+        manifest["files"]!.AsArray()[5]!["sizeBytes"] = NoteAudioFormats.MaxOpusFileBytes + 1;
+        var request = fixture.Request with { ManifestJson = manifest.ToJsonString(Json) };
+        var options = new NoteMaterialUploadOptions
+        {
+            StorageRoot = _root, MaxVersionBytes = 128 * 1024 * 1024,
+            MaxUserReservedBytes = 128 * 1024 * 1024
+        };
+
+        await Error(40001, () => Store(options: options).BeginAsync(_user, request));
+    }
+
+    [Fact]
+    public async Task Missing_opus_decoder_fails_with_safe_50303_and_keeps_the_original_downloadable()
+    {
+        var fixture = OpusFixture();
+        var store = Store();
+        await store.BeginAsync(_user, fixture.Request);
+        await UploadAll(store, fixture);
+        await store.CompleteAsync(_user, fixture.Request.VersionId);
+
+        var broken = new NoteMaterialUploadOptions
+        {
+            StorageRoot = _root, MaxVersionBytes = 32 * 1024 * 1024,
+            MaxUserReservedBytes = 64 * 1024 * 1024,
+            FfmpegPath = Path.Combine(_root, "missing-ffmpeg")
+        };
+        var error = await Assert.ThrowsAsync<DomainException>(() =>
+            Store(options: broken).ReadAudioSliceAsync(_user, fixture.Request.VersionId, 5, 0, 1600,
+                CancellationToken.None));
+        Assert.Equal(50303, error.ErrorCode);
+        Assert.DoesNotContain(_root, error.Message);
+        Assert.DoesNotContain("missing-ffmpeg", error.Message);
+
+        using var output = new MemoryStream();
+        await Store().ReadFileAsync(_user, fixture.Request.VersionId, 5, output);
+        Assert.Equal(fixture.Content[5], output.ToArray());
+    }
+
+    [SkippableFact]
+    public async Task Opus_slice_is_decoded_to_exact_16k_wav_and_recovers_after_the_decoder_is_fixed()
+    {
+        Skip.IfNot(FfmpegAvailable(), "FFmpeg is required to verify the Opus decode boundary");
+        var fixture = OpusFixture();
+        var store = Store();
+        await store.BeginAsync(_user, fixture.Request);
+        await UploadAll(store, fixture);
+        await store.CompleteAsync(_user, fixture.Request.VersionId);
+
+        var broken = new NoteMaterialUploadOptions
+        {
+            StorageRoot = _root, MaxVersionBytes = 32 * 1024 * 1024,
+            MaxUserReservedBytes = 64 * 1024 * 1024,
+            FfmpegPath = Path.Combine(_root, "missing-ffmpeg")
+        };
+        await Error(50303, () => Store(options: broken).ReadAudioSliceAsync(_user,
+            fixture.Request.VersionId, 5, 0, 1600, CancellationToken.None));
+
+        var decoded = Store();
+        var full = await decoded.ReadAudioSliceAsync(_user, fixture.Request.VersionId, 5, 0, 1600,
+            CancellationToken.None);
+        AssertWav(full, 1600);
+        Assert.Contains(full.AsSpan(44).ToArray(), value => value != 0);
+
+        var offset = await decoded.ReadAudioSliceAsync(_user, fixture.Request.VersionId, 5, 800, 800,
+            CancellationToken.None);
+        AssertWav(offset, 800);
+        Assert.Equal(full.AsSpan(44 + 800 * 2, 800 * 2).ToArray(), offset.AsSpan(44).ToArray());
+
+        using var output = new MemoryStream();
+        await decoded.ReadFileAsync(_user, fixture.Request.VersionId, 5, output);
+        Assert.Equal(fixture.Content[5], output.ToArray());
+    }
+
+    private NoteMaterialUploadStore Store(TimeProvider? time = null, NoteMaterialUploadOptions? options = null) =>
+        new(Options.Create(options ?? _options), time);
+
+    private async Task AssertOpusRejected(Fixture fixture)
+    {
+        var store = Store();
+        await store.BeginAsync(_user, fixture.Request);
+        await UploadAll(store, fixture);
+        var error = await Assert.ThrowsAsync<DomainException>(() =>
+            store.CompleteAsync(_user, fixture.Request.VersionId));
+        Assert.Equal(40001, error.ErrorCode);
+        Assert.DoesNotContain(_root, error.Message);
+        Assert.Equal("Uploading", (await store.GetAsync(_user, fixture.Request.VersionId)).Upload.Phase);
+    }
+
+    private static Fixture OpusFixture() => Fixture.Create(audioSamples: 1600, audio: TinyOpus(),
+        audioFormat: "opus");
+
+    private static byte[] TinyOpus() => Convert.FromBase64String(TinyOpusBase64);
+
+    private static Fixture RewriteInput(Fixture fixture, Action<JsonObject> edit)
+    {
+        var input = JsonNode.Parse(fixture.Request.InputJson)!.AsObject();
+        edit(input);
+        var inputJson = input.ToJsonString(Json);
+        var manifest = JsonNode.Parse(fixture.Request.ManifestJson)!.AsObject();
+        manifest["inputSha256"] = Hash(Encoding.UTF8.GetBytes(inputJson));
+        return fixture with
+        {
+            Request = fixture.Request with
+            {
+                InputJson = inputJson, ManifestJson = manifest.ToJsonString(Json)
+            }
+        };
+    }
+
+    private static JsonObject AudioChunk(JsonObject input) =>
+        input["recordings"]!.AsArray()[0]!["chunks"]!.AsArray()[0]!.AsObject();
+
+    private static void AssertWav(byte[] bytes, int samples)
+    {
+        Assert.Equal(44 + samples * 2, bytes.Length);
+        Assert.Equal("RIFF"u8.ToArray(), bytes[..4]);
+        Assert.Equal("WAVEfmt "u8.ToArray(), bytes.AsSpan(8, 8).ToArray());
+        Assert.Equal(16_000u, BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(24)));
+        Assert.Equal(32_000u, BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(28)));
+        Assert.Equal((uint)(samples * 2), BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(40)));
+    }
+
+    private static bool FfmpegAvailable()
+    {
+        try
+        {
+            var start = new ProcessStartInfo("ffmpeg")
+            {
+                UseShellExecute = false, RedirectStandardOutput = true,
+                RedirectStandardError = true, CreateNoWindow = true
+            };
+            start.ArgumentList.Add("-version");
+            using var process = Process.Start(start);
+            if (process is null) return false;
+            if (!process.WaitForExit(5000))
+            {
+                process.Kill(entireProcessTree: true);
+                return false;
+            }
+            return process.ExitCode == 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     private static async Task Error(int code, Func<Task> action) => Assert.Equal(code, (await Assert.ThrowsAsync<DomainException>(action)).ErrorCode);
     private async Task UploadAll(NoteMaterialUploadStore store, Fixture fixture)
     {
@@ -514,10 +802,12 @@ public sealed class NoteMaterialUploadStoreTests : IDisposable
 
     internal sealed record Fixture(BeginNoteMaterialUploadRequest Request, List<byte[]> Content)
     {
-        internal static Fixture Create(int audioSamples = 160, Guid? noteId = null, Guid? baseId = null)
+        internal static Fixture Create(int audioSamples = 160, Guid? noteId = null, Guid? baseId = null,
+            byte[]? audio = null, string? audioFormat = null)
         {
             var version = Guid.NewGuid(); var note = noteId ?? Guid.NewGuid(); var recording = Guid.NewGuid();
             var photoBlock = Guid.NewGuid(); var photo = Guid.NewGuid(); var inkBlock = Guid.NewGuid();
+            var opus = string.Equals(audioFormat, "opus", StringComparison.Ordinal);
             var png = Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a8X8AAAAASUVORK5CYII=");
             var ink = new { width = 320.0, height = 180.0, strokes = Array.Empty<object>() };
             var inkJson = JsonSerializer.Serialize(ink, Json); var inkPath = $"assets/{inkBlock:D}-{Hash(Encoding.UTF8.GetBytes(inkJson))}.png";
@@ -532,11 +822,20 @@ public sealed class NoteMaterialUploadStoreTests : IDisposable
                     new { id = inkBlock.ToString("D"), kind = "ink", ink }
                 }
             }, Json);
+            var chunk = new Dictionary<string, object?>
+            {
+                ["segment"] = 1, ["index"] = 1, ["samples"] = audioSamples
+            };
+            if (opus)
+            {
+                chunk["format"] = "opus";
+                chunk["mimeType"] = "audio/ogg";
+            }
             var sessionJson = JsonSerializer.Serialize(new
             {
                 id = recording.ToString("D"), schemaVersion = 1, createdAtMillis = 1, noteId = note.ToString("D"),
                 phase = "Completed", currentSegment = 1, problem = (string?)null,
-                chunks = new[] { new { segment = 1, index = 1, samples = audioSamples } }
+                chunks = new[] { chunk }
             }, Json);
             var input = JsonSerializer.Serialize(new
             {
@@ -545,17 +844,12 @@ public sealed class NoteMaterialUploadStoreTests : IDisposable
                 recordings = new[] { JsonSerializer.Deserialize<JsonElement>(sessionJson) }
             }, Json);
             var markdown = $"{text}\n\n![照片](assets/{photo:D}.png)\n\n![手写卡片]({inkPath})\n<!-- 可编辑笔迹、身份和尺寸保存在同包 note.json 中 -->";
-            var wav = new byte[44 + audioSamples * 2];
-            "RIFF"u8.CopyTo(wav); BinaryPrimitives.WriteUInt32LittleEndian(wav.AsSpan(4), (uint)(wav.Length - 8));
-            "WAVEfmt "u8.CopyTo(wav.AsSpan(8)); BinaryPrimitives.WriteUInt32LittleEndian(wav.AsSpan(16), 16);
-            BinaryPrimitives.WriteUInt16LittleEndian(wav.AsSpan(20), 1); BinaryPrimitives.WriteUInt16LittleEndian(wav.AsSpan(22), 1);
-            BinaryPrimitives.WriteUInt32LittleEndian(wav.AsSpan(24), 16_000); BinaryPrimitives.WriteUInt32LittleEndian(wav.AsSpan(28), 32_000);
-            BinaryPrimitives.WriteUInt16LittleEndian(wav.AsSpan(32), 2); BinaryPrimitives.WriteUInt16LittleEndian(wav.AsSpan(34), 16);
-            "data"u8.CopyTo(wav.AsSpan(36)); BinaryPrimitives.WriteUInt32LittleEndian(wav.AsSpan(40), (uint)(audioSamples * 2));
+            var audioBytes = audio ?? Wav(audioSamples);
             var content = new List<byte[]> { Encoding.UTF8.GetBytes(noteJson), Encoding.UTF8.GetBytes(markdown), png, png,
-                Encoding.UTF8.GetBytes(sessionJson), wav };
+                Encoding.UTF8.GetBytes(sessionJson), audioBytes };
+            var extension = opus ? ".opus" : ".wav";
             var paths = new[] { "note.json", "document.md", $"assets/{photo:D}.png", inkPath,
-                $"recordings/{recording:D}/manifest.json", $"recordings/{recording:D}/s0001-c000001.wav" };
+                $"recordings/{recording:D}/manifest.json", $"recordings/{recording:D}/s0001-c000001{extension}" };
             var kinds = new[] { "Document", "Markdown", "Photo", "InkPreview", "RecordingManifest", "AudioChunk" };
             var files = paths.Select((path, i) => new
             {
@@ -567,6 +861,18 @@ public sealed class NoteMaterialUploadStoreTests : IDisposable
             var manifest = JsonSerializer.Serialize(new { schemaVersion = 1, versionId = version.ToString("D"), noteId = note.ToString("D"),
                 revision = 1, inputSha256 = Hash(Encoding.UTF8.GetBytes(input)), files }, Json);
             return new(new(version, note, baseId, input, manifest, true), content);
+        }
+
+        private static byte[] Wav(int audioSamples)
+        {
+            var wav = new byte[44 + audioSamples * 2];
+            "RIFF"u8.CopyTo(wav); BinaryPrimitives.WriteUInt32LittleEndian(wav.AsSpan(4), (uint)(wav.Length - 8));
+            "WAVEfmt "u8.CopyTo(wav.AsSpan(8)); BinaryPrimitives.WriteUInt32LittleEndian(wav.AsSpan(16), 16);
+            BinaryPrimitives.WriteUInt16LittleEndian(wav.AsSpan(20), 1); BinaryPrimitives.WriteUInt16LittleEndian(wav.AsSpan(22), 1);
+            BinaryPrimitives.WriteUInt32LittleEndian(wav.AsSpan(24), 16_000); BinaryPrimitives.WriteUInt32LittleEndian(wav.AsSpan(28), 32_000);
+            BinaryPrimitives.WriteUInt16LittleEndian(wav.AsSpan(32), 2); BinaryPrimitives.WriteUInt16LittleEndian(wav.AsSpan(34), 16);
+            "data"u8.CopyTo(wav.AsSpan(36)); BinaryPrimitives.WriteUInt32LittleEndian(wav.AsSpan(40), (uint)(audioSamples * 2));
+            return wav;
         }
     }
 }

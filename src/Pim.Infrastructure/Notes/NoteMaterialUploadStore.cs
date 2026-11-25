@@ -21,6 +21,7 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
     private readonly NoteMaterialUploadOptions _options = options.Value;
     private readonly TimeProvider _clock = clock ?? TimeProvider.System;
     private readonly ManagedBinaryStore _binaries = binaries ?? new(Options.Create(new ManagedBinaryOptions { Root = Path.Combine(options.Value.StorageRoot, "binary") }));
+    private readonly NoteAudioDecoder _audioDecoder = new(options.Value);
 
     public NoteMaterialUploadLimitsDto Limits => new(NoteMaterialUploadOptions.PartSizeBytes, NoteMaterialUploadOptions.MaxMetadataCharacters,
         _options.MaxVersionBytes, _options.MaxUserReservedBytes, _options.MaxFiles,
@@ -166,7 +167,7 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
                     file.Sha256 == sourceFile.Sha256 && file.SizeBytes == sourceFile.SizeBytes &&
                     file.RecordingId == sourceFile.RecordingId && file.Segment == sourceFile.Segment &&
                     file.ChunkIndex == sourceFile.ChunkIndex && file.Samples == sourceFile.Samples &&
-                    file.BlockId == sourceFile.BlockId))
+                    file.BlockId == sourceFile.BlockId && file.AudioFormat == sourceFile.AudioFormat))
                 throw Invalid("续写材料必须完整保留原版本的音频、照片与手写预览；请从当前版本重新载入原稿");
         }
         var key = Key(request.VersionId);
@@ -198,7 +199,8 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
                 sourceFile.File.Kind != targetFile.Kind || sourceFile.File.Sha256 != targetFile.Sha256 ||
                 sourceFile.File.SizeBytes != targetFile.SizeBytes || sourceFile.File.RecordingId != targetFile.RecordingId ||
                 sourceFile.File.Segment != targetFile.Segment || sourceFile.File.ChunkIndex != targetFile.ChunkIndex ||
-                sourceFile.File.Samples != targetFile.Samples || sourceFile.File.BlockId != targetFile.BlockId)
+                sourceFile.File.Samples != targetFile.Samples || sourceFile.File.BlockId != targetFile.BlockId ||
+                sourceFile.File.AudioFormat != targetFile.AudioFormat)
                 continue;
             await VerifyFileAsync(userId, sourceVersionId, sourceFile.Index, sourceFile.File, ct);
             for (var partIndex = 0; partIndex < PartCount(targetFile); partIndex++)
@@ -389,32 +391,47 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
     internal async Task<byte[]> ReadAudioSliceAsync(Guid owner, Guid versionId, int fileIndex,
         long offsetSamples, long samples, CancellationToken ct)
     {
+        byte[]? wav = null;
+        string? opusSource = null;
+        await using (var lease = await LockAsync(owner, ct))
+        {
+            var ledger = await LoadLedgerAsync(owner, ct);
+            if (Find(ledger, versionId).Phase == "Uploading") throw Conflict("材料尚未提交完整");
+            var file = FileAt(NoteMaterialManifestValidator.Validate(
+                await RequestAsync(owner, versionId, ct), ReadLimits), fileIndex);
+            if (file.Kind != "AudioChunk" || offsetSamples < 0 ||
+                samples is <= 0 or > NoteAsrPlan.SamplesPerCall ||
+                file.Samples is not { } sourceSamples || offsetSamples > sourceSamples ||
+                samples > sourceSamples - offsetSamples)
+                throw Invalid("录音分片范围无效");
+            await VerifyFileAsync(owner, versionId, fileIndex, file, ct);
+            if ((file.AudioFormat ?? NoteAudioFormat.Wav) == NoteAudioFormat.Wav)
+                wav = await ReadWavSliceAsync(owner, versionId, fileIndex, offsetSamples, samples, ct);
+            else
+                opusSource = await WriteAudioTempAsync(owner, versionId, fileIndex, file,
+                    NoteAudioFormats.Extension(NoteAudioFormat.Opus), ct);
+        }
+        if (wav is not null) return wav;
+        try
+        {
+            return await _audioDecoder.DecodeOpusSliceAsync(opusSource!, offsetSamples, samples, ct);
+        }
+        finally
+        {
+            TryDelete(opusSource);
+        }
+    }
+
+    internal async Task VerifyAudioFileAsync(Guid owner, Guid versionId, int fileIndex,
+        CancellationToken ct)
+    {
         await using var lease = await LockAsync(owner, ct);
         var ledger = await LoadLedgerAsync(owner, ct);
         if (Find(ledger, versionId).Phase == "Uploading") throw Conflict("材料尚未提交完整");
-        var file = FileAt(NoteMaterialManifestValidator.Validate(await RequestAsync(owner, versionId, ct), ReadLimits), fileIndex);
-        if (file.Kind != "AudioChunk" || offsetSamples < 0 || samples is <= 0 or > NoteAsrPlan.SamplesPerCall ||
-            offsetSamples > file.Samples || samples > file.Samples - offsetSamples) throw Invalid("录音分片范围无效");
+        var file = FileAt(NoteMaterialManifestValidator.Validate(
+            await RequestAsync(owner, versionId, ct), ReadLimits), fileIndex);
+        if (file.Kind != "AudioChunk") throw Invalid("录音材料索引无效");
         await VerifyFileAsync(owner, versionId, fileIndex, file, ct);
-        var bytes = new byte[checked(44 + (int)samples * 2)];
-        "RIFF"u8.CopyTo(bytes); BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(4), (uint)(bytes.Length - 8));
-        "WAVEfmt "u8.CopyTo(bytes.AsSpan(8)); BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(16), 16);
-        BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(20), 1); BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(22), 1);
-        BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(24), 16_000); BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(28), 32_000);
-        BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(32), 2); BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(34), 16);
-        "data"u8.CopyTo(bytes.AsSpan(36)); BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(40), (uint)samples * 2);
-        long position = 44 + offsetSamples * 2; var written = 44;
-        while (written < bytes.Length)
-        {
-            var part = (int)(position / NoteMaterialUploadOptions.PartSizeBytes);
-            var within = position % NoteMaterialUploadOptions.PartSizeBytes;
-            await using var stream = File.OpenRead(PartFile(owner, versionId, fileIndex, part));
-            stream.Position = within;
-            var count = (int)Math.Min(bytes.Length - written, stream.Length - within);
-            if (count <= 0) throw Invalid("录音材料分块损坏");
-            await stream.ReadExactlyAsync(bytes.AsMemory(written, count), ct); written += count; position += count;
-        }
-        return bytes;
     }
 
     internal async Task<byte[]> ReadImageBytesAsync(Guid owner, Guid versionId, int fileIndex, CancellationToken ct)
@@ -491,7 +508,7 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
     {
         using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         var buffer = new byte[64 * 1024];
-        var header = new byte[44];
+        var header = new byte[NoteOggOpus.ProbeBytes];
         var headerLength = 0;
         for (var part = 0; part < PartCount(file); part++)
         {
@@ -517,19 +534,119 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
                 file.Path.EndsWith(".webp", StringComparison.Ordinal) && mime == "image/webp";
             if (!valid) throw Invalid("照片或手写预览图的文件类型与固定材料不一致");
         }
-        if (file.Kind == "AudioChunk" && (headerLength != 44 ||
-            !header.AsSpan(0, 4).SequenceEqual("RIFF"u8) || !header.AsSpan(8, 8).SequenceEqual("WAVEfmt "u8) ||
-            BinaryPrimitives.ReadUInt32LittleEndian(header.AsSpan(4)) != file.SizeBytes - 8 ||
-            BinaryPrimitives.ReadUInt32LittleEndian(header.AsSpan(16)) != 16 ||
-            BinaryPrimitives.ReadUInt16LittleEndian(header.AsSpan(20)) != 1 ||
-            BinaryPrimitives.ReadUInt16LittleEndian(header.AsSpan(22)) != 1 ||
-            BinaryPrimitives.ReadUInt32LittleEndian(header.AsSpan(24)) != 16_000 ||
-            BinaryPrimitives.ReadUInt32LittleEndian(header.AsSpan(28)) != 32_000 ||
-            BinaryPrimitives.ReadUInt16LittleEndian(header.AsSpan(32)) != 2 ||
-            BinaryPrimitives.ReadUInt16LittleEndian(header.AsSpan(34)) != 16 ||
-            !header.AsSpan(36, 4).SequenceEqual("data"u8) ||
-            BinaryPrimitives.ReadUInt32LittleEndian(header.AsSpan(40)) != file.Samples * 2))
-            throw Invalid("录音格式或样本数不符合本次固定材料");
+        if (file.Kind == "AudioChunk")
+        {
+            var format = file.AudioFormat ?? NoteAudioFormat.Wav;
+            if (file.Samples is not { } samples || samples < 0)
+                throw Invalid("录音格式或样本数不符合本次固定材料");
+            if (format == NoteAudioFormat.Wav)
+            {
+                if (file.SizeBytes < 44 || headerLength < 44 ||
+                    !header.AsSpan(0, 4).SequenceEqual("RIFF"u8) ||
+                    !header.AsSpan(8, 8).SequenceEqual("WAVEfmt "u8) ||
+                    BinaryPrimitives.ReadUInt32LittleEndian(header.AsSpan(4)) != file.SizeBytes - 8 ||
+                    BinaryPrimitives.ReadUInt32LittleEndian(header.AsSpan(16)) != 16 ||
+                    BinaryPrimitives.ReadUInt16LittleEndian(header.AsSpan(20)) != 1 ||
+                    BinaryPrimitives.ReadUInt16LittleEndian(header.AsSpan(22)) != 1 ||
+                    BinaryPrimitives.ReadUInt32LittleEndian(header.AsSpan(24)) != NoteAsrPlan.SampleRate ||
+                    BinaryPrimitives.ReadUInt32LittleEndian(header.AsSpan(28)) != NoteAsrPlan.SampleRate * 2 ||
+                    BinaryPrimitives.ReadUInt16LittleEndian(header.AsSpan(32)) != 2 ||
+                    BinaryPrimitives.ReadUInt16LittleEndian(header.AsSpan(34)) != 16 ||
+                    !header.AsSpan(36, 4).SequenceEqual("data"u8) ||
+                    BinaryPrimitives.ReadUInt32LittleEndian(header.AsSpan(40)) != samples * 2)
+                    throw Invalid("录音格式或样本数不符合本次固定材料");
+            }
+            else
+            {
+                var tailLength = (int)Math.Min(NoteOggOpus.ProbeBytes, file.SizeBytes);
+                var tail = await ReadRangeAsync(userId, versionId, index,
+                    file.SizeBytes - tailLength, tailLength, ct);
+                NoteOggOpus.Validate(header.AsSpan(0, headerLength), tail, file.SizeBytes, samples);
+            }
+        }
+    }
+
+    private async Task<byte[]> ReadWavSliceAsync(Guid owner, Guid versionId, int fileIndex,
+        long offsetSamples, long samples, CancellationToken ct)
+    {
+        var bytes = new byte[checked(44 + (int)samples * 2)];
+        NoteAudioFormats.WriteWavHeader(bytes, checked((int)samples * 2));
+        long position = 44 + offsetSamples * 2;
+        var written = 44;
+        while (written < bytes.Length)
+        {
+            var part = (int)(position / NoteMaterialUploadOptions.PartSizeBytes);
+            var within = position % NoteMaterialUploadOptions.PartSizeBytes;
+            await using var stream = File.OpenRead(PartFile(owner, versionId, fileIndex, part));
+            stream.Position = within;
+            var count = (int)Math.Min(bytes.Length - written, stream.Length - within);
+            if (count <= 0) throw Invalid("录音材料分块损坏");
+            await stream.ReadExactlyAsync(bytes.AsMemory(written, count), ct);
+            written += count;
+            position += count;
+        }
+        return bytes;
+    }
+
+    private async Task<byte[]> ReadRangeAsync(Guid owner, Guid versionId, int fileIndex,
+        long start, int length, CancellationToken ct)
+    {
+        var bytes = new byte[length];
+        var position = start;
+        var written = 0;
+        while (written < bytes.Length)
+        {
+            var part = (int)(position / NoteMaterialUploadOptions.PartSizeBytes);
+            var within = position % NoteMaterialUploadOptions.PartSizeBytes;
+            await using var stream = File.OpenRead(PartFile(owner, versionId, fileIndex, part));
+            if (within >= stream.Length) throw Invalid("录音材料分块损坏");
+            stream.Position = within;
+            var count = (int)Math.Min(bytes.Length - written, stream.Length - within);
+            if (count <= 0) throw Invalid("录音材料分块损坏");
+            await stream.ReadExactlyAsync(bytes.AsMemory(written, count), ct);
+            written += count;
+            position += count;
+        }
+        return bytes;
+    }
+
+    private async Task<string> WriteAudioTempAsync(Guid owner, Guid versionId, int fileIndex,
+        NoteUploadedMaterial file, string extension, CancellationToken ct)
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"pim-audio-{Guid.NewGuid():N}{extension}");
+        try
+        {
+            var streamOptions = new FileStreamOptions
+            {
+                Mode = FileMode.CreateNew, Access = FileAccess.Write, Share = FileShare.None,
+                BufferSize = 64 * 1024,
+                Options = FileOptions.Asynchronous | FileOptions.SequentialScan
+            };
+            if (!OperatingSystem.IsWindows())
+                streamOptions.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+            await using (var output = new FileStream(path, streamOptions))
+            {
+                for (var part = 0; part < PartCount(file); part++)
+                {
+                    await using var source = File.OpenRead(PartFile(owner, versionId, fileIndex, part));
+                    await source.CopyToAsync(output, ct);
+                }
+            }
+            return path;
+        }
+        catch
+        {
+            TryDelete(path);
+            throw;
+        }
+    }
+
+    private static void TryDelete(string? path)
+    {
+        if (path is null) return;
+        try { File.Delete(path); }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
     }
 
     private Task<NoteMaterialUploadDto> DescribeAsync(Guid userId, Guid versionId, StoredVersion entry,
