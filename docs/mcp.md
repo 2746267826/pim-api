@@ -640,11 +640,15 @@ async def get_calendars(-) -> Any: ...
 #### `get_events` — Core event query.
 - **API**: `GET /calendar/events?start&end&calendarId`
 - **参数**: `start,end,calendarId?,page/pageSize,redactUrls`
-- **返回**: `Event[]`
+- **返回**: `PagedResult<EventResponse>`
+
+`start` 和 `end` 必填，最长 366 天（正好 366 天允许，超过一秒即 400）。日期形式或省略偏移的时间按 UTC 解释；`Z`、`+08:00` 等显式偏移表示绝对时刻。工具不接受 `timezone`/`timeZoneId` 参数，也不会用服务器或设备时区猜测查询窗口。
+
+`dtStart`/`dtEnd` 是带显式偏移的绝对时刻，不能因为 `timeZoneId` 再加减时差。`timeZoneId` 是规范化后的 IANA 来源信息，`sourceTimeZoneId` 保留原始来源值；二者为 `null` 都只表示未知，不表示 UTC。`timeZoneResolution` 区分 `resolved`、`sourceOnly` 和 `unknown`。定时且已解析的事件会同时返回事件当地时间 `localStart/localEnd` 与北京时间展示字段 `displayTimeZoneId/displayLocalStart/displayLocalEnd`；全天事件只使用独立的 `allDayStartDate/allDayEndDateExclusive`，不从绝对时刻截取日期。
 
 **签名 / Signature**
 ```python
-async def get_events(start: str, end: str, redactUrls: bool = True, page: int = 1, pageSize: int = 20) -> Any: ...
+async def get_events(start: str, end: str, calendarId: Optional[str] = None, redactUrls: bool = True, page: int = 1, pageSize: int = 20) -> Any: ...
 ```
 
 **返回示例 / Success**
@@ -3087,6 +3091,8 @@ async def get_version(-) -> Any: ...
 | `delete_event` | `DELETE /api/v1/calendar/events/{id}` | query scope/recurrenceId/originalEventId |
 | `restore_event` | `POST /api/v1/calendar/events/{id}/restore` | restoreAsCopy? |
 | `batch_delete_events` | `POST /api/v1/calendar/events/batch-delete` | ids[] |
+
+写入 `create_event`/`update_event` 时，`dtStart`/`dtEnd` 必须携带显式 UTC 偏移或 `Z`，例如 `2026-09-01T09:00:00Z` 或 `2026-09-01T17:00:00+08:00`。日期形式、无偏移值和机器本地时间都会被拒绝，工具不会替调用方猜测时区。`timeZoneId` 只接受有效 IANA ID（`UTC`、`GMT`、`Etc/UTC` 或带 `/` 的 IANA ID）；Windows ID 会被拒绝，来源未知时省略该字段。全天事件的 `allDayStartDate`/`allDayEndDateExclusive` 是唯一日期来源，定时事件必须省略两者。
 
 **Calendar 任务 14**
 

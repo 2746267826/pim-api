@@ -621,9 +621,8 @@ public class CalendarModule : IModule
 
         // Events — R02：start/end 必填、最长 366 天，且始终返回统一分页结构。
         group.MapGet("/events", async (
-            HttpRequest request,
-            [FromQuery] DateTimeOffset start,
-            [FromQuery] DateTimeOffset end,
+            [FromQuery] string? start,
+            [FromQuery] string? end,
             [FromQuery] string? search,
             [FromQuery] Guid? calendarId,
             [FromQuery] int? page,
@@ -631,9 +630,7 @@ public class CalendarModule : IModule
             [FromServices] CalendarService svc,
             CancellationToken ct) =>
         {
-            var requestedStart = request.Query.ContainsKey("start") ? start : (DateTimeOffset?)null;
-            var requestedEnd = request.Query.ContainsKey("end") ? end : (DateTimeOffset?)null;
-            var (rangeStart, rangeEnd) = EventQueryContract.Validate(requestedStart, requestedEnd);
+            var (rangeStart, rangeEnd) = EventQueryContract.ParseQueryRange(start, end);
             var result = await svc.GetEventsPagedAsync(
                 search, calendarId, rangeStart, rangeEnd, page ?? 1, pageSize ?? 20, ct);
             return Results.Ok(ApiResponse<PagedResult<EventResponse>>.Ok(result));

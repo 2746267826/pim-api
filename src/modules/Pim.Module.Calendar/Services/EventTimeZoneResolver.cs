@@ -229,6 +229,6 @@ public sealed record EventTimeZoneInfo(
             sourceId is null ? EventTimeZoneResolver.Unknown : EventTimeZoneResolver.SourceOnly,
             null,
             sourceId,
-            sourceId is null ? null : EventTimeZoneResolver.UnknownSourceType,
+            EventTimeZoneResolver.UnknownSourceType,
             null);
 }

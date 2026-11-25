@@ -71,6 +71,20 @@ internal static class McpTimeRange
         return $"{seconds}.{fraction}Z";
     }
 
+    public static bool HasExplicitOffset(string value)
+    {
+        var trimmed = value.Trim();
+        if (trimmed.EndsWith('Z') || trimmed.EndsWith('z'))
+            return true;
+
+        var timeStart = trimmed.IndexOfAny(['T', 't', ' ']);
+        if (timeStart < 0)
+            return false;
+
+        var timePart = trimmed[(timeStart + 1)..];
+        return timePart.Contains('+') || timePart.Contains('-');
+    }
+
     public static (DateTimeOffset Start, DateTimeOffset End) CenteredWindow(DateTimeOffset center)
     {
         var start = center.AddDays(-(MaxSpanDays / 2));

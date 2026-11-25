@@ -144,6 +144,8 @@ export function EventEditorDialog({ open, onOpenChange, calendars, initial, even
     end: string
     startInstant: string
     endInstant: string
+    startFold: string | null
+    endFold: string | null
   } | null>(null)
   const lastValidTimeZone = useRef(CALENDAR_DISPLAY_TIME_ZONE)
 
@@ -203,18 +205,22 @@ export function EventEditorDialog({ open, onOpenChange, calendars, initial, even
         organizerName: event.organizer?.name ?? '',
         organizerEmail: event.organizer?.email ?? '',
       })
+      lastValidTimeZone.current = isValidTimeZoneId(interpretationZone)
+        ? interpretationZone
+        : CALENDAR_DISPLAY_TIME_ZONE
+      const startFoldValue = findFoldChoice(startValue, lastValidTimeZone.current, event.dtStart)
+      const endFoldValue = findFoldChoice(endValue, lastValidTimeZone.current, event.dtEnd)
       timeBaseline.current = {
         zoneInput,
         start: startValue,
         end: endValue,
         startInstant: event.dtStart,
         endInstant: event.dtEnd,
+        startFold: startFoldValue,
+        endFold: endFoldValue,
       }
-      lastValidTimeZone.current = isValidTimeZoneId(interpretationZone)
-        ? interpretationZone
-        : CALENDAR_DISPLAY_TIME_ZONE
-      setStartFold(findFoldChoice(startValue, lastValidTimeZone.current, event.dtStart))
-      setEndFold(findFoldChoice(endValue, lastValidTimeZone.current, event.dtEnd))
+      setStartFold(startFoldValue)
+      setEndFold(endFoldValue)
       setAttendees((event.attendees ?? []).map((a) => ({ name: a.name ?? '', email: a.email ?? '', type: a.type === 'optional' ? 'optional' : 'required' })))
       const hasMore = Boolean(event.isMuted != null || event.isReminderOn || event.showAs || event.importance || event.sensitivity || (event.categories?.length ?? 0) > 0 || event.isOnlineMeeting || event.externalLink || (event.attendees?.length ?? 0) > 0)
       setShowMore(hasMore)
@@ -243,6 +249,8 @@ export function EventEditorDialog({ open, onOpenChange, calendars, initial, even
         end: endValue,
         startInstant: initial.start.toISOString(),
         endInstant: initial.end.toISOString(),
+        startFold: null,
+        endFold: null,
       }
       lastValidTimeZone.current = CALENDAR_DISPLAY_TIME_ZONE
       setAttendees([])
@@ -251,8 +259,11 @@ export function EventEditorDialog({ open, onOpenChange, calendars, initial, even
 
   function resolveCurrentWallTime(value: string, side: 'start' | 'end'): string {
     const baseline = timeBaseline.current
-    if (baseline && value === baseline[side])
-      return side === 'start' ? baseline.startInstant : baseline.endInstant
+    if (baseline && value === baseline[side]) {
+      const selectedFold = side === 'start' ? startFold : endFold
+      if (selectedFold === (side === 'start' ? baseline.startFold : baseline.endFold))
+        return side === 'start' ? baseline.startInstant : baseline.endInstant
+    }
 
     const resolution = resolveWallTime(value, lastValidTimeZone.current)
     if (resolution.status === 'gap')
@@ -282,6 +293,8 @@ export function EventEditorDialog({ open, onOpenChange, calendars, initial, even
       const endInstant = resolveCurrentWallTime(current.dtEnd, 'end')
       const startValue = formatInstantInZone(startInstant, nextZone)
       const endValue = formatInstantInZone(endInstant, nextZone)
+      const nextStartFold = findFoldChoice(startValue, nextZone, startInstant)
+      const nextEndFold = findFoldChoice(endValue, nextZone, endInstant)
       form.setValue('timeZoneId', rawValue, { shouldDirty: true })
       form.setValue('dtStart', startValue, { shouldDirty: true })
       form.setValue('dtEnd', endValue, { shouldDirty: true })
@@ -291,10 +304,12 @@ export function EventEditorDialog({ open, onOpenChange, calendars, initial, even
         end: endValue,
         startInstant,
         endInstant,
+        startFold: nextStartFold,
+        endFold: nextEndFold,
       }
       lastValidTimeZone.current = nextZone
-      setStartFold(findFoldChoice(startValue, nextZone, startInstant))
-      setEndFold(findFoldChoice(endValue, nextZone, endInstant))
+      setStartFold(nextStartFold)
+      setEndFold(nextEndFold)
       form.clearErrors(['timeZoneId', 'dtStart', 'dtEnd'])
     } catch (reason) {
       form.setError('timeZoneId', {
@@ -312,7 +327,8 @@ export function EventEditorDialog({ open, onOpenChange, calendars, initial, even
   ): string | null {
     const baseline = timeBaseline.current
     const zone = form.getValues('timeZoneId').trim()
-    if (baseline && value === baseline[side] && zone === baseline.zoneInput.trim())
+    if (baseline && value === baseline[side] && zone === baseline.zoneInput.trim()
+      && (side === 'start' ? startFold : endFold) === (side === 'start' ? baseline.startFold : baseline.endFold))
       return side === 'start' ? baseline.startInstant : baseline.endInstant
     if (!isValidTimeZoneId(zone)) return null
     return chooseWallTimeCandidate(resolution, fold)?.instant ?? null
@@ -363,6 +379,8 @@ export function EventEditorDialog({ open, onOpenChange, calendars, initial, even
         && values.dtStart === baseline.start
         && values.dtEnd === baseline.end
         && zone === baseline.zoneInput
+        && startFold === baseline.startFold
+        && endFold === baseline.endFold
       if (preserveUntouched) {
         dtStart = baseline.startInstant
         dtEnd = baseline.endInstant

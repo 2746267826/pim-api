@@ -166,6 +166,21 @@ describe('日程编辑器时区', () => {
     expect(screen.getByText('请选择回拨时段中实际发生的开始和结束时刻。')).toBeTruthy()
   })
 
+  it('回拨时段选择第二个 fold 时提交对应的绝对时刻', async () => {
+    render(<EventEditorDialog open onOpenChange={vi.fn()} calendars={CALENDARS} event={existingEvent()} />)
+
+    fireEvent.change(screen.getByLabelText<HTMLSelectElement>('开始时刻'), {
+      target: { value: '2026-11-01T06:30:00.000Z' },
+    })
+    save()
+    await settle()
+
+    expect(saveMock).toHaveBeenCalledTimes(1)
+    const body = saveMock.mock.calls[0][0].body
+    expect(body.dtStart).toBe('2026-11-01T06:30:00.000Z')
+    expect(body.dtEnd).toBe('2026-11-01T07:30:00.000Z')
+  })
+
   it('不从绝对时刻推断全天日期，并拒绝非法日期', async () => {
     render(<EventEditorDialog open onOpenChange={vi.fn()} calendars={CALENDARS} initial={{
       start: new Date('2026-11-16T01:00:00.000Z'),

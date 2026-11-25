@@ -212,8 +212,17 @@ public static class EventFieldValidator
         if (string.IsNullOrWhiteSpace(value))
             return null;
 
-        if (value.Length > 100)
+        var trimmed = value.Trim();
+        if (trimmed.Length > 100)
             throw new DomainException(02009, "TimeZoneId 长度不能超过 100 个字符。");
+
+        // R02：写入边界只接受可解析的 IANA/Windows 时区。未知来源可以省略该字段，
+        // 由响应显式标成 unknown；但把无法解析的值静默保存成“来源”会让调用方
+        // 误以为自己设置了时区。
+        if (!EventTimeZoneResolver.TryResolveIana(trimmed, out _, out _, out _))
+            throw new DomainException(
+                02009,
+                $"TimeZoneId 无法解析为有效时区：{trimmed}；未知来源请省略该字段。");
 
         return value;
     }

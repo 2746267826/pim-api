@@ -49,8 +49,12 @@ public record CreateEventRequest(
     [property:Required][property:MaxLength(255)] string Title,
     string? Description,
     [property:MaxLength(500)] string? Location,
-    [property:Required] DateTimeOffset DtStart,
-    [property:Required] DateTimeOffset DtEnd,
+    [property:Required]
+    [property:JsonConverter(typeof(ExplicitOffsetDateTimeOffsetConverter))]
+    DateTimeOffset DtStart,
+    [property:Required]
+    [property:JsonConverter(typeof(ExplicitOffsetDateTimeOffsetConverter))]
+    DateTimeOffset DtEnd,
     string? RRule,
     string? Uid = null,
     bool IsAllDay = false,
@@ -92,8 +96,12 @@ public record UpdateEventRequest(
     [property:Required][property:MaxLength(255)] string Title,
     string? Description,
     [property:MaxLength(500)] string? Location,
-    [property:Required] DateTimeOffset DtStart,
-    [property:Required] DateTimeOffset DtEnd,
+    [property:Required]
+    [property:JsonConverter(typeof(ExplicitOffsetDateTimeOffsetConverter))]
+    DateTimeOffset DtStart,
+    [property:Required]
+    [property:JsonConverter(typeof(ExplicitOffsetDateTimeOffsetConverter))]
+    DateTimeOffset DtEnd,
     string? RRule,
     string? Uid = null,
     bool? IsAllDay = null,

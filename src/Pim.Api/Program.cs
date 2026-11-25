@@ -111,6 +111,9 @@ builder.Services.AddSwaggerGen(c =>
     c.OperationFilter<Pim.Api.Infrastructure.OpenApi.MobileProcessingResponseOperationFilter>();
     // R04：任务列表的重复 status 查询参数（OR 集合 + 四值 enum）超出 Swashbuckle 推断能力。
     c.OperationFilter<Pim.Api.Infrastructure.OpenApi.TaskStatusQueryOperationFilter>();
+    // R02：事件查询窗口的 UTC/显式偏移规则，以及事件时间字段的可判定语义。
+    c.OperationFilter<Pim.Api.Infrastructure.OpenApi.CalendarEventQueryOperationFilter>();
+    c.SchemaFilter<Pim.Api.Infrastructure.OpenApi.CalendarEventSchemaFilter>();
     c.DocumentFilter<Pim.Api.Infrastructure.OpenApi.SecuritySchemesDocumentFilter>();
 });
 
