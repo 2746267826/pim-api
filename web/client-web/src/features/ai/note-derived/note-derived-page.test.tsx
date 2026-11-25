@@ -598,6 +598,121 @@ it('keeps version history and internal processing identifiers out of the ordinar
   await waitFor(() => expect(derived.select).toHaveBeenCalledWith(artifactId, expect.objectContaining({ versionId })))
 })
 
+it('hides raw derived phases, attempt diagnostics and issue messages from ordinary users', async () => {
+  auth.user.role = 'user'
+  const rawTask: NoteDerivedTask = {
+    ...task,
+    phase: 'VendorPhase',
+    issues: [{
+      code: 'provider_issue_code',
+      message: 'provider issue diagnostic',
+      sourcePath: 'internal/path',
+      stepKey: 'internal-step-key',
+    }],
+  }
+  const rawStep = {
+    key: 'internal-step-key',
+    kind: 'RecordSynthesis' as const,
+    status: 'VendorStepStatus',
+    attempts: [{
+      requestId: 'abababab-abab-4bab-8bab-abababababab',
+      status: 'VendorAttemptStatus',
+      errorCode: 'provider_attempt_code',
+      errorMessage: 'provider attempt diagnostic',
+      logId: 'cdcdcdcd-cdcd-4cdc-8cdc-cdcdcdcdcdcd',
+    }],
+  }
+  derived.tasks.mockResolvedValue([rawTask])
+  derived.task.mockResolvedValue(rawTask)
+  derived.steps.mockResolvedValue({ total: 1, offset: 0, items: [rawStep] })
+  derived.stop.mockRejectedValue(new Error('provider stop diagnostic'))
+
+  page(); await chooseSource()
+  await userEvent.click(await screen.findByText(/更多：历史任务与处理进度/))
+  await userEvent.click(await screen.findByRole('button', { name: /材料覆盖完整/ }))
+
+  const summary = await screen.findByRole('status', { name: '当前整理任务摘要' })
+  expect(summary.textContent).toContain('处理状态待核对')
+  await userEvent.click(await screen.findByText(/更多：任务详情、停止与恢复/))
+  expect(await screen.findByRole('heading', { name: '当前任务进度' })).toBeTruthy()
+  expect(screen.queryAllByText(/VendorPhase/)).toHaveLength(0)
+  expect(screen.queryAllByText(/provider issue diagnostic/)).toHaveLength(0)
+  expect(screen.getByText('这项材料或步骤尚未完整处理，请刷新核对。')).toBeTruthy()
+
+  await userEvent.click(screen.getByText('步骤与尝试详情'))
+  expect(await screen.findByText(/第 1 次/)).toBeTruthy()
+  expect(screen.queryAllByText(/VendorStepStatus|VendorAttemptStatus|provider attempt diagnostic|provider_attempt_code|provider_issue_code|internal-step-key|internal\/path/)).toHaveLength(0)
+  expect(screen.getAllByText(/处理状态待核对/).length).toBeGreaterThan(0)
+
+  await userEvent.click(screen.getByRole('button', { name: /停止后续步骤/ }))
+  expect(await screen.findByText(/停止状态未确认/)).toBeTruthy()
+  expect(screen.queryAllByText(/provider stop diagnostic/)).toHaveLength(0)
+})
+
+it('keeps raw derived phases and attempt diagnostics for admins', async () => {
+  const rawTask: NoteDerivedTask = {
+    ...task,
+    phase: 'VendorPhase',
+    issues: [{
+      code: 'provider_issue_code',
+      message: 'provider issue diagnostic',
+      sourcePath: 'internal/path',
+      stepKey: 'internal-step-key',
+    }],
+  }
+  const rawStep = {
+    key: 'internal-step-key',
+    kind: 'RecordSynthesis' as const,
+    status: 'VendorStepStatus',
+    attempts: [{
+      requestId: 'abababab-abab-4bab-8bab-abababababab',
+      status: 'VendorAttemptStatus',
+      errorCode: 'provider_attempt_code',
+      errorMessage: 'provider attempt diagnostic',
+      logId: 'cdcdcdcd-cdcd-4cdc-8cdc-cdcdcdcdcdcd',
+    }],
+  }
+  derived.tasks.mockResolvedValue([rawTask])
+  derived.task.mockResolvedValue(rawTask)
+  derived.steps.mockResolvedValue({ total: 1, offset: 0, items: [rawStep] })
+
+  page(); await chooseSource()
+  await userEvent.click(await screen.findByText(/更多：历史任务与处理进度/))
+  await userEvent.click(await screen.findByRole('button', { name: /材料覆盖完整/ }))
+
+  const summary = await screen.findByRole('status', { name: '当前整理任务摘要' })
+  expect(summary.textContent).toContain('VendorPhase')
+  await userEvent.click(await screen.findByText(/更多：任务详情、停止与恢复/))
+  expect(await screen.findByRole('heading', { name: '当前任务进度' })).toBeTruthy()
+  expect(screen.getAllByText(/VendorPhase/).length).toBeGreaterThan(0)
+  expect(screen.getByText('provider issue diagnostic')).toBeTruthy()
+  expect(screen.getByText(/provider_issue_code/)).toBeTruthy()
+
+  await userEvent.click(screen.getByText('步骤、尝试与 endpoint 详情'))
+  expect(await screen.findByText(/第 1 次/)).toBeTruthy()
+  expect(screen.getAllByText(/VendorStepStatus/).length).toBeGreaterThan(0)
+  expect(screen.getByText(/VendorAttemptStatus/)).toBeTruthy()
+  expect(screen.getByText(/provider attempt diagnostic/)).toBeTruthy()
+  expect(screen.getByText(/provider_attempt_code/)).toBeTruthy()
+})
+
+it('hides raw derived read errors from ordinary users', async () => {
+  auth.user.role = 'user'
+  derived.tasks.mockResolvedValue([task])
+  derived.destinations.mockRejectedValue(new Error('provider destination diagnostic'))
+  derived.steps.mockRejectedValue(new Error('provider steps diagnostic'))
+
+  page(); await chooseSource()
+
+  expect(await screen.findByText(/安全目标加载失败/)).toBeTruthy()
+  expect(screen.queryAllByText(/provider destination diagnostic/)).toHaveLength(0)
+  await userEvent.click(await screen.findByText(/更多：历史任务与处理进度/))
+  await userEvent.click(await screen.findByRole('button', { name: /材料覆盖完整/ }))
+  await userEvent.click(await screen.findByText(/更多：任务详情、停止与恢复/))
+  expect(await screen.findByText(/步骤读取失败/)).toBeTruthy()
+  expect(screen.queryAllByText(/provider steps diagnostic/)).toHaveLength(0)
+})
+
 it('ignores a historical version in an ordinary-user processing link', async () => {
   auth.user.role = 'user'
   const historySource = {

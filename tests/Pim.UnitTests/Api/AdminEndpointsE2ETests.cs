@@ -112,6 +112,8 @@ public class AdminEndpointsE2ETests
         Assert.Equal(HttpStatusCode.OK, promoteResp.StatusCode);
         var demoteResp2 = await alice.PostAsJsonAsync($"/api/v1/admin/users/{GetUserId(list, "alice")}/role", new { role = "user" });
         Assert.Equal(HttpStatusCode.OK, demoteResp2.StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden,
+            (await Authed(factory, r1.AccessToken!).GetAsync("/api/v1/admin/users")).StatusCode);
 
         // 7b. bob 重新登录获取带 admin 角色的新令牌（旧令牌仍是 user 角色）
         var bobLogin = await anon.PostAsJsonAsync("/api/v1/auth/login", new { username = "bob", password = "password123" });
@@ -157,6 +159,26 @@ public class AdminEndpointsE2ETests
         var token = jwt.GenerateAccessToken(Guid.NewGuid(), "someone", "user");
         var client = factory.CreateClient();
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        Assert.Equal(HttpStatusCode.Forbidden, (await client.GetAsync("/api/v1/admin/users")).StatusCode);
+    }
+
+    [Fact]
+    public async Task AdminUsers_DisabledAdminToken_Returns403()
+    {
+        using var factory = CreateFactory($"admin-authz-{Guid.NewGuid()}");
+        var anon = factory.CreateClient();
+        var admin = await RegisterAsync(anon, "disabled-admin");
+        Assert.Equal(HttpStatusCode.Created, admin.Status);
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
+            var user = await db.Users.SingleAsync(u => u.Username == "disabled-admin");
+            user.IsActive = false;
+            await db.SaveChangesAsync();
+        }
+
+        var client = Authed(factory, admin.AccessToken!);
         Assert.Equal(HttpStatusCode.Forbidden, (await client.GetAsync("/api/v1/admin/users")).StatusCode);
     }
 

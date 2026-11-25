@@ -63,7 +63,10 @@ const kindNames: Record<NoteDerivedArtifactKind, string> = {
   IndependentAnalysis: '独立分析',
 }
 const authorNames = { Model: '模型生成', User: '人工修订' } as const
-const errorText = (error: unknown) => error instanceof Error ? error.message : '请求失败，请刷新核对'
+const failureText = (error: unknown, showVersionDetails: boolean, fallback: string) =>
+  showVersionDetails && error instanceof Error && error.message.trim() ? error.message : fallback
+const phaseLabel = (value: string, showVersionDetails: boolean) =>
+  phaseNames[value] ?? (showVersionDetails ? value : '处理状态待核对')
 const time = (value: string) => formatTime(value)
 
 function tone(value: string) {
@@ -73,8 +76,8 @@ function tone(value: string) {
   return 'warn' as const
 }
 
-function State({ value }: { value: string }) {
-  return <StatusBadge dot={false} tone={tone(value)}>{phaseNames[value] ?? value}</StatusBadge>
+function State({ value, showVersionDetails }: { value: string; showVersionDetails: boolean }) {
+  return <StatusBadge dot={false} tone={tone(value)}>{phaseLabel(value, showVersionDetails)}</StatusBadge>
 }
 
 function SectionTitle({ number, title, description }: { number?: string; title: string; description: string }) {
@@ -323,7 +326,9 @@ function Workspace({ ownerId, serverBinding, role }: { ownerId: string; serverBi
               : '仅使用当前内容已成功的转写。若转写仍在处理中，可稍后返回；不会自动启动生成。'}
           </p>}
           <StartTaskCard key={source.versionId} ownerId={ownerId} serverBinding={serverBinding} role={role} source={source}
-          destinations={destinations.data?.items ?? []} destinationsError={destinations.isError ? errorText(destinations.error) : ''}
+          destinations={destinations.data?.items ?? []} destinationsError={destinations.isError
+            ? failureText(destinations.error, canViewVersions, '暂时无法读取安全目标，请刷新核对。')
+            : ''}
           asrTasks={asrTasks.data ?? []} selectedAsrTaskId={selectedAsrTaskId} asrSelectionRevision={asrSelectionRevision} asrLoading={asrTasks.isPending} limits={limits.data}
           onCreated={(task) => {
             setTaskId(task.taskId)
@@ -335,7 +340,7 @@ function Workspace({ ownerId, serverBinding, role }: { ownerId: string; serverBi
         </section>}
 
         {selectedTask && <div role="status" aria-label="当前整理任务摘要" className="rounded-ctl border border-border bg-bg p-3 text-xs text-text-2">
-          <span className="font-medium">整理进度：{phaseNames[selectedTask.phase] ?? selectedTask.phase}</span>
+          <span className="font-medium">整理进度：{phaseLabel(selectedTask.phase, canViewVersions)}</span>
           <span className="ml-2 text-text-3">ASR {selectedTask.coverage.completedTranscriptSegments}/{selectedTask.coverage.transcriptSegments} 片 · 图片 {selectedTask.coverage.completedPhotos + selectedTask.coverage.completedInkPreviews}/{selectedTask.coverage.photos + selectedTask.coverage.inkPreviews}</span>
         </div>}
 
@@ -343,17 +348,17 @@ function Workspace({ ownerId, serverBinding, role }: { ownerId: string; serverBi
           <summary className="cursor-pointer text-sm font-medium text-text-2">更多：历史任务与处理进度{tasks.data?.length ? ` · ${tasks.data.length} 项` : ''}</summary>
           <div className="mt-3 space-y-3 p-1">
           <div className="flex flex-wrap items-center justify-between gap-2"><div><h2 className="text-sm font-semibold text-text-1">处理进度</h2><p className="mt-1 text-xs text-text-3">任务保存在服务器，可离开后返回；旧任务与结果不会被新稿自动替换。</p></div><Button size="sm" variant="ghost" onClick={() => void tasks.refetch()}>刷新任务</Button></div>
-          {tasks.isPending ? <Skeleton className="h-16" /> : tasks.isError ? <p role="alert" className="text-sm text-text-2">任务加载失败：{errorText(tasks.error)}</p>
+          {tasks.isPending ? <Skeleton className="h-16" /> : tasks.isError ? <p role="alert" className="text-sm text-text-2">任务加载失败：{failureText(tasks.error, canViewVersions, '请刷新核对。')}</p>
             : !tasks.data?.length ? <p className="text-sm text-text-3">还没有派生任务。</p>
               : <div className="space-y-2">{tasks.data.map((item) => <button key={item.taskId} type="button" onClick={() => setTaskId(item.taskId)}
                 className="flex w-full flex-wrap items-center justify-between gap-2 rounded-ctl border border-border p-3 text-left text-sm hover:bg-surface">
                 <span className="min-w-0"><span className="block truncate">{time(item.createdAt)} · {item.coverage.complete ? '材料覆盖完整' : '有材料缺口'}</span><span className="mt-1 block text-xs text-text-3">ASR {item.coverage.completedTranscriptSegments}/{item.coverage.transcriptSegments} 片 · 图片 {item.coverage.completedPhotos + item.coverage.completedInkPreviews}/{item.coverage.photos + item.coverage.inkPreviews}</span></span>
-                <State value={item.phase} /></button>)}</div>}
+                <State value={item.phase} showVersionDetails={canViewVersions} /></button>)}</div>}
           </div>
         </details>
 
         {taskId && <details className="min-w-0">
-          <summary className="cursor-pointer rounded-card border border-border bg-bg px-4 py-3 text-sm font-medium text-text-2 shadow-card">更多：任务详情、停止与恢复 · {phaseNames[selectedTask?.phase ?? ''] ?? '查看任务'}</summary>
+          <summary className="cursor-pointer rounded-card border border-border bg-bg px-4 py-3 text-sm font-medium text-text-2 shadow-card">更多：任务详情、停止与恢复 · {selectedTask ? phaseLabel(selectedTask.phase, canViewVersions) : '查看任务'}</summary>
           <div className="mt-3"><TaskDetailCard key={taskId} taskId={taskId} ownerId={ownerId} serverBinding={serverBinding}
             showVersionDetails={canViewVersions} onChanged={refresh} /></div>
         </details>}
@@ -433,7 +438,7 @@ function StartTaskCard({ ownerId, serverBinding, role, source, destinations, des
       if (cleared.ok) setStored(cleared.value)
       onCreated(task)
     } catch (error) {
-      setMessage(errorText(error) + (canViewVersions
+      setMessage(failureText(error, canViewVersions, '提交状态未确认，请刷新核对') + (canViewVersions
         ? '。提交意图已保存，请用同一标识核对或重新提交，不要新建另一个任务。'
         : '。提交状态已保存，可核对原提交或重试，不要新建另一个任务。'))
     } finally {
@@ -452,7 +457,7 @@ function StartTaskCard({ ownerId, serverBinding, role, source, destinations, des
       if (cleared.ok) setStored(cleared.value)
       onCreated(task)
     } catch (error) {
-      setMessage(errorText(error) + '。仍保留原任务标识，没有重新分配。')
+      setMessage(failureText(error, canViewVersions, '核对未确认，请刷新核对') + '。仍保留原任务标识，没有重新分配。')
     } finally {
       setBusy(false)
     }
@@ -512,16 +517,18 @@ function TaskDetailCard({ taskId, ownerId, serverBinding, showVersionDetails, on
   const task = useQuery({ queryKey: ['note-derived', ownerId, serverBinding, 'task', taskId], queryFn: ({ signal }) => noteDerivedApi.task(taskId, signal), refetchInterval: 5000 })
   const steps = useQuery({ queryKey: ['note-derived', ownerId, serverBinding, 'steps', taskId], queryFn: ({ signal }) => noteDerivedApi.steps(taskId, 0, signal), refetchInterval: 5000 })
   if (task.isPending) return <Card className="p-5"><Skeleton className="h-28" /></Card>
-  if (task.isError || !task.data) return <Card className="p-5"><EmptyState title="任务读取失败" description={errorText(task.error)} action={<Button onClick={() => void task.refetch()}>重试</Button>} /></Card>
+  if (task.isError || !task.data) return <Card className="p-5"><EmptyState title="任务读取失败" description={failureText(task.error, showVersionDetails, '请刷新核对。')} action={<Button onClick={() => void task.refetch()}>重试</Button>} /></Card>
   const value = task.data
   async function stop() {
     setBusy(true); setMessage('')
     try { await noteDerivedApi.stop(taskId); await qc.invalidateQueries({ queryKey: ['note-derived', ownerId, serverBinding] }); onChanged() }
-    catch (error) { setMessage(errorText(error)) }
+    catch (error) {
+      setMessage(failureText(error, showVersionDetails, '停止状态未确认，请刷新核对。'))
+    }
     finally { setBusy(false) }
   }
   return <Card className="space-y-4 p-5">
-    <div className="flex flex-wrap items-start justify-between gap-2"><div><h2 className="text-sm font-semibold text-text-1">当前任务进度</h2><p className="mt-1 text-xs text-text-3">{time(value.createdAt)} · 任务已保存，可离开后返回</p></div><State value={value.phase} /></div>
+    <div className="flex flex-wrap items-start justify-between gap-2"><div><h2 className="text-sm font-semibold text-text-1">当前任务进度</h2><p className="mt-1 text-xs text-text-3">{time(value.createdAt)} · 任务已保存，可离开后返回</p></div><State value={value.phase} showVersionDetails={showVersionDetails} /></div>
     <details className="text-xs leading-5 text-text-3"><summary className="cursor-pointer">处理详情</summary><div className="mt-2 space-y-3 rounded-ctl bg-surface p-3">
     {showVersionDetails && <div className="space-y-1 font-mono"><p className="break-all">任务 ID：{value.taskId}</p><p className="break-all">材料来源版本：{value.sourceVersionId}</p><p className="break-all">输入摘要：{value.inputSha256}</p></div>}
     <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
@@ -532,15 +539,15 @@ function TaskDetailCard({ taskId, ownerId, serverBinding, showVersionDetails, on
     </div>
     </div></details>
     {!value.coverage.complete && <div className="rounded-ctl border border-warn-border bg-warn-soft p-3 text-xs leading-5 text-text-2"><p className="font-medium">当前不能发布“完整”结果</p><p>材料覆盖仍有缺口；生成任务可以继续保持失败状态，不能被页面改写成完整。</p></div>}
-    {value.issues.length > 0 && <div className="space-y-2"><h3 className="text-xs font-medium text-text-2">覆盖缺口</h3>{value.issues.map((issue, index) => <div key={`${issue.code}/${issue.stepKey}/${index}`} className="rounded-ctl border border-border p-3 text-xs leading-5 text-text-2"><p className="font-medium">{issue.message}</p>{showVersionDetails && <p className="mt-1 break-all text-text-3">{issue.code}{issue.sourcePath ? ` · ${issue.sourcePath}` : ''}{issue.stepKey ? ` · ${issue.stepKey}` : ''}</p>}</div>)}</div>}
+    {value.issues.length > 0 && <div className="space-y-2"><h3 className="text-xs font-medium text-text-2">覆盖缺口</h3>{value.issues.map((issue, index) => <div key={`${issue.code}/${issue.stepKey}/${index}`} className="rounded-ctl border border-border p-3 text-xs leading-5 text-text-2"><p className="font-medium">{showVersionDetails ? issue.message : '这项材料或步骤尚未完整处理，请刷新核对。'}</p>{showVersionDetails && <p className="mt-1 break-all text-text-3">{issue.code}{issue.sourcePath ? ` · ${issue.sourcePath}` : ''}{issue.stepKey ? ` · ${issue.stepKey}` : ''}</p>}</div>)}</div>}
     {!value.backgroundProcessingAvailable && <p className="text-xs text-text-3">服务器后台处理当前不可用；任务已保存，不会伪造完成状态。</p>}
     <div className="flex flex-wrap gap-2"><Button size="sm" variant="secondary" disabled={busy || value.stopRequested || value.phase === 'Succeeded'} onClick={() => void stop()}><Square className="size-3.5" aria-hidden />停止后续步骤</Button><Button size="sm" variant="ghost" onClick={() => { void task.refetch(); void steps.refetch() }}><RefreshCw className="size-3.5" aria-hidden />刷新步骤</Button></div>
     <details className="text-xs text-text-3"><summary className="cursor-pointer">{showVersionDetails ? '步骤、尝试与 endpoint 详情' : '步骤与尝试详情'}</summary>
-    {steps.isPending ? <Skeleton className="h-28" /> : steps.isError ? <p role="alert" className="text-sm text-text-2">步骤读取失败：{errorText(steps.error)}</p>
+    {steps.isPending ? <Skeleton className="h-28" /> : steps.isError ? <p role="alert" className="text-sm text-text-2">步骤读取失败：{failureText(steps.error, showVersionDetails, '请刷新核对。')}</p>
       : !steps.data?.items.length ? <p className="text-sm text-text-3">当前没有可显示的步骤。</p>
         : <div className="space-y-2">{steps.data.items.map((step) => <div key={step.key} className="space-y-2 rounded-ctl border border-border p-3">
-          <div className="flex flex-wrap items-center justify-between gap-2"><div><p className="text-sm text-text-1">{stepNames[step.kind] ?? step.kind}</p>{showVersionDetails && <p className="mt-1 break-all text-xs text-text-3">{step.key}</p>}</div><State value={step.status} /></div>
-          {step.attempts.length > 0 && <div className="space-y-1">{step.attempts.map((attempt, index) => <p key={attempt.requestId} className="break-all text-xs text-text-3">第 {index + 1} 次 · {attempt.status}{showVersionDetails && attempt.errorCode ? ` · ${attempt.errorCode}` : ''}{attempt.errorMessage ? ` · ${attempt.errorMessage}` : ''}{showVersionDetails && attempt.logId ? ` · 调用 ${attempt.logId}` : ''}</p>)}</div>}
+          <div className="flex flex-wrap items-center justify-between gap-2"><div><p className="text-sm text-text-1">{stepNames[step.kind] ?? (showVersionDetails ? step.kind : '处理步骤')}</p>{showVersionDetails && <p className="mt-1 break-all text-xs text-text-3">{step.key}</p>}</div><State value={step.status} showVersionDetails={showVersionDetails} /></div>
+          {step.attempts.length > 0 && <div className="space-y-1">{step.attempts.map((attempt, index) => <p key={attempt.requestId} className="break-all text-xs text-text-3">第 {index + 1} 次 · {phaseLabel(attempt.status, showVersionDetails)}{showVersionDetails && attempt.errorCode ? ` · ${attempt.errorCode}` : ''}{attempt.errorMessage ? ` · ${showVersionDetails ? attempt.errorMessage : '处理记录需核对'}` : ''}{showVersionDetails && attempt.logId ? ` · 调用 ${attempt.logId}` : ''}</p>)}</div>}
         </div>)}</div>}
     </details>
     <RetryControls key={`${value.taskId}/${value.sourceVersionId}`} task={value} steps={steps.data} ownerId={ownerId}
@@ -586,7 +593,9 @@ function RetryControls({ task, steps, ownerId, serverBinding, showVersionDetails
       const cleared = clearStoredIntent(reserved.record, body.retryId)
       if (cleared.ok) setStored(cleared.value)
       setSelected([]); setAck(false); onChanged()
-    } catch (error) { setMessage(errorText(error) + '。恢复意图已保存，必须用同一标识核对。') }
+    } catch (error) {
+      setMessage(failureText(error, showVersionDetails, '恢复状态未确认，请刷新核对') + '。恢复意图已保存，必须用同一标识核对。')
+    }
     finally { setBusy(false) }
   }
   async function replay() {
@@ -599,7 +608,9 @@ function RetryControls({ task, steps, ownerId, serverBinding, showVersionDetails
       const cleared = clearStoredIntent(stored, pending.intentId)
       if (cleared.ok) setStored(cleared.value)
       onChanged()
-    } catch (error) { setMessage(errorText(error) + '。仍保留原恢复标识。') }
+    } catch (error) {
+      setMessage(failureText(error, showVersionDetails, '核对未确认，请刷新核对') + '。仍保留原恢复标识。')
+    }
     finally { setBusy(false) }
   }
   if (!candidates.length && !pending) return null
@@ -673,7 +684,9 @@ function ArtifactCard({ artifact, ownerId, serverBinding, showVersionDetails, on
         }
       }
       onChanged()
-    } catch (error) { setMessage(errorText(error)) }
+    } catch (error) {
+      setMessage(failureText(error, showVersionDetails, '采用状态未确认，请刷新核对。'))
+    }
     finally { setBusy(false) }
   }
 
@@ -708,7 +721,7 @@ function ArtifactCard({ artifact, ownerId, serverBinding, showVersionDetails, on
         </div>
       </div>
     )}
-    {version.isPending ? <Skeleton className="h-40" /> : version.isError ? <p role="alert" className="text-sm text-text-2">{showVersionDetails ? '版本读取失败' : '内容读取失败'}：{errorText(version.error)}</p>
+    {version.isPending ? <Skeleton className="h-40" /> : version.isError ? <p role="alert" className="text-sm text-text-2">{showVersionDetails ? '版本读取失败' : '内容读取失败'}：{failureText(version.error, showVersionDetails, '请刷新核对。')}</p>
       : version.data ? <ArtifactEditor key={`${artifact.revision}/${version.data.versionId}`} artifact={artifact} version={version.data} ownerId={ownerId} serverBinding={serverBinding} showVersionDetails={showVersionDetails} onChanged={onChanged} /> : null}
     {version.data && <NoteTaskSuggestionsPanel
       key={`task-suggestions-${artifact.artifactId}/${version.data.versionId}`}
@@ -767,7 +780,7 @@ function ArtifactEditor({ artifact, version, ownerId, serverBinding, showVersion
       const receipt = reconcileReceipt(latest.current, started.snapshot, mutation, body, body.revisionId)
       commit(receipt.record); setError(receipt.error); setMessage(receipt.message)
       onChanged()
-    } catch (failure) { setMessage(errorText(failure) + (showVersionDetails
+    } catch (failure) { setMessage(failureText(failure, showVersionDetails, '保存状态未确认，请刷新核对') + (showVersionDetails
       ? '。人工保存意图已保存，刷新后必须用同一标识重新提交核对。'
       : '。保存状态已记录，刷新后可重新提交核对。')) }
     finally { setBusy(false) }
@@ -789,7 +802,7 @@ function ArtifactEditor({ artifact, version, ownerId, serverBinding, showVersion
       const receipt = reconcileReceipt(latest.current, snapshot, mutation, body, pending.intentId)
       commit(receipt.record); setError(receipt.error); setMessage(receipt.message)
       onChanged()
-    } catch (failure) { setMessage(errorText(failure) + (showVersionDetails ? '。仍保留原人工保存标识。' : '。保存状态仍保留，可再次核对。')) }
+    } catch (failure) { setMessage(failureText(failure, showVersionDetails, '核对未确认，请刷新核对') + (showVersionDetails ? '。仍保留原人工保存标识。' : '。保存状态仍保留，可再次核对。')) }
     finally { setBusy(false) }
   }
 

@@ -59,7 +59,12 @@ const statusTone = (status: string): Tone => status === 'Confirmed' ? 'ok'
   : status === 'Dismissed' ? 'neutral' : 'warn'
 const extractionTone = (status: string): Tone => status === 'Succeeded' ? 'ok'
   : status === 'Failed' ? 'crit' : status === 'Draft' ? 'warn' : 'info'
-const errorText = (error: unknown) => error instanceof Error ? error.message : '请求失败，请刷新核对'
+const failureText = (error: unknown, showTechnicalDetails: boolean, fallback: string) =>
+  showTechnicalDetails && error instanceof Error && error.message.trim() ? error.message : fallback
+const extractionLabel = (status: string, showTechnicalDetails: boolean) =>
+  extractionNames[status] ?? (showTechnicalDetails ? status : '提取状态待核对')
+const suggestionStatusLabel = (status: string, showTechnicalDetails: boolean) =>
+  statusNames[status] ?? (showTechnicalDetails ? status : '状态待核对')
 const destinationKey = (value: NoteDerivedDestination) =>
   `${value.modelId}/${value.modelRevision}/${value.endpoint}`
 
@@ -198,7 +203,7 @@ export function NoteTaskSuggestionsPanel({
         ? '任务提取已受理。固定正文快照和服务商目标已保存；页面会轮询真实状态，不会在本机自动改用另一模型。'
         : '任务提取已受理。本次正文和服务商目标已保存；页面会轮询真实状态，不会自动改用另一模型。')
     } catch (failure) {
-      setError(`${errorText(failure)}。已冻结请求标识；请使用原提取请求核对，不会自动创建第二次付费请求。`)
+      setError(`${failureText(failure, showTechnicalDetails, '提取提交未确认，请刷新核对')}。已冻结请求标识；请使用原提取请求核对，不会自动创建第二次付费请求。`)
     } finally {
       setBusy('')
     }
@@ -258,7 +263,7 @@ export function NoteTaskSuggestionsPanel({
 
     {(version.isError || destinations.isError || suggestions.isError) &&
       <InlineAlert tone="crit" title="任务建议数据未完整加载">
-        {errorText(version.error ?? destinations.error ?? suggestions.error)}。已加载内容保持不变，不会自动新建请求。
+        {failureText(version.error ?? destinations.error ?? suggestions.error, showTechnicalDetails, '请刷新核对')}。已加载内容保持不变，不会自动新建请求。
       </InlineAlert>}
     {error && <InlineAlert tone="crit" title="任务建议操作未确认">{error}</InlineAlert>}
     {notice && <InlineAlert tone="ok" title="任务建议">{notice}</InlineAlert>}
@@ -316,7 +321,7 @@ export function NoteTaskSuggestionsPanel({
 
     {extraction.data && <ExtractionState extraction={extraction.data} showTechnicalDetails={showTechnicalDetails} />}
     {extraction.isError && <InlineAlert tone="warn" title="提取状态读取失败">
-      {errorText(extraction.error)}。现有建议仍可读取；不会自动重新发送模型请求。
+      {failureText(extraction.error, showTechnicalDetails, '提取状态暂时无法读取，请刷新核对')}。现有建议仍可读取；不会自动重新发送模型请求。
     </InlineAlert>}
 
     <div className="space-y-3 border-t border-border pt-4">
@@ -358,7 +363,7 @@ function ExtractionState({ extraction, showTechnicalDetails }: {
       {showTechnicalDetails && extraction.errorCode && (
         <span className="font-mono text-[11px] text-crit">{extraction.errorCode}</span>
       )}
-      <StatusBadge tone={extractionTone(extraction.status)}>{extractionNames[extraction.status] ?? extraction.status}</StatusBadge>
+      <StatusBadge tone={extractionTone(extraction.status)}>{extractionLabel(extraction.status, showTechnicalDetails)}</StatusBadge>
     </span>
     {extraction.errorMessage && (
       <span className="w-full text-crit">
@@ -433,9 +438,7 @@ function SuggestionRow({
         ? `建议已按原修订保存；后续确认将使用新修订 ${updated.revision}。`
         : '任务建议已保存；后续确认会使用最新内容。')
     } catch (failure) {
-      setError(showTechnicalDetails
-        ? `${errorText(failure)}。服务器记录未在本机改写，请刷新后重新核对修订。`
-        : `${errorText(failure)}。服务器记录未在本机改写，请刷新后重新核对。`)
+      setError(`${failureText(failure, showTechnicalDetails, '保存未确认，请刷新核对')}。服务器记录未在本机改写，请刷新后重新核对修订。`)
     } finally {
       setBusy('')
     }
@@ -448,7 +451,7 @@ function SuggestionRow({
       await noteTaskSuggestionsApi.dismiss(suggestion.id, { expectedRevision: suggestion.revision })
       await onChanged('建议已放弃；不会创建任务，历史记录保留。')
     } catch (failure) {
-      setError(`${errorText(failure)}。页面不会把失败当成功；请刷新核对当前状态。`)
+      setError(`${failureText(failure, showTechnicalDetails, '放弃未确认，请刷新核对')}。页面不会把失败当成功；请刷新核对当前状态。`)
     } finally {
       setBusy('')
     }
@@ -487,9 +490,10 @@ function SuggestionRow({
             : '已在既有任务系统创建收件箱任务。',
         confirmed)
     } catch (failure) {
-      setError(showTechnicalDetails
-        ? `${errorText(failure)}。确认请求标识已冻结；重试只复用 ${requestId}，不会新建第二个任务。`
-        : `${errorText(failure)}。本次确认状态已保留；重试不会新建第二个任务。`)
+      setError(failureText(failure, showTechnicalDetails, '确认状态未确认，请刷新核对') + (
+        showTechnicalDetails
+          ? `。确认请求标识已冻结；重试只复用 ${requestId}，不会新建第二个任务。`
+          : '。本次确认状态已保留；重试不会新建第二个任务。'))
     } finally {
       setBusy('')
     }
@@ -526,7 +530,7 @@ function SuggestionRow({
           : <>
               <div className="flex flex-wrap items-center gap-2">
                 <span className="text-sm font-medium text-text-1">{suggestion.title}</span>
-                <StatusBadge tone={statusTone(suggestion.status)}>{statusNames[suggestion.status] ?? suggestion.status}</StatusBadge>
+                <StatusBadge tone={statusTone(suggestion.status)}>{suggestionStatusLabel(suggestion.status, showTechnicalDetails)}</StatusBadge>
                 <StatusBadge tone="neutral" size="xs">优先级 {priorityLabel(suggestion.priority)}</StatusBadge>
                 {suggestion.due && <span className="text-xs text-text-3">截止 {toLocalInputValue(suggestion.due).replace('T', ' ')}</span>}
               </div>

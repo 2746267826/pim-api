@@ -8,6 +8,7 @@ import {
   confirmIntentScope,
   extractionIntentScope,
   saveConfirmIntent,
+  saveExtractionId,
 } from './intent-storage'
 import type {
   NoteTaskSuggestion,
@@ -208,6 +209,47 @@ describe('NoteTaskSuggestionsPanel', () => {
     expect(screen.queryByText(new RegExp(contentSha256.slice(0, 12)))).toBeNull()
   })
 
+  it('hides raw extraction status and diagnostics from ordinary users', async () => {
+    saveExtractionId(userId, serverBinding, versionId, extractionId)
+    api.extraction.mockResolvedValue({
+      ...extraction,
+      status: 'VendorPhase',
+      errorCode: 'provider-error-code',
+      errorMessage: 'provider extraction diagnostic',
+    })
+    page(false)
+
+    expect(await screen.findByText('提取记录')).toBeTruthy()
+    expect(screen.getByText('提取状态待核对')).toBeTruthy()
+    expect(screen.getByText(/提取未完整完成/)).toBeTruthy()
+    expect(screen.queryAllByText(/VendorPhase|provider extraction diagnostic|provider-error-code/)).toHaveLength(0)
+  })
+
+  it('keeps raw extraction status and diagnostics for admins', async () => {
+    saveExtractionId(userId, serverBinding, versionId, extractionId)
+    api.extraction.mockResolvedValue({
+      ...extraction,
+      status: 'VendorPhase',
+      errorCode: 'provider-error-code',
+      errorMessage: 'provider extraction diagnostic',
+    })
+    page(true)
+
+    expect(await screen.findByText('VendorPhase')).toBeTruthy()
+    expect(screen.getByText('provider-error-code')).toBeTruthy()
+    expect(screen.getByText(/provider extraction diagnostic/)).toBeTruthy()
+  })
+
+  it('hides raw extraction read errors from ordinary users', async () => {
+    saveExtractionId(userId, serverBinding, versionId, extractionId)
+    api.extraction.mockRejectedValue(new Error('provider extraction read diagnostic'))
+    page(false)
+
+    expect(await screen.findByText('提取状态读取失败')).toBeTruthy()
+    expect(screen.getByText(/提取状态暂时无法读取/)).toBeTruthy()
+    expect(screen.queryAllByText(/provider extraction read diagnostic/)).toHaveLength(0)
+  })
+
   it('shows only the shared display name in ordinary-user text target labels', async () => {
     page(false)
     await screen.findByText('任务建议')
@@ -316,11 +358,11 @@ describe('NoteTaskSuggestionsPanel', () => {
     expect(localStorage.getItem(confirmIntentScope(userId, serverBinding, suggestionId))).toContain(oldRequestId)
   })
 
-  it('keeps edit and dismiss failures visible without turning the suggestion into success', async () => {
+  it('keeps edit and dismiss failures visible without turning the suggestion into success for admins', async () => {
     api.list.mockResolvedValue({ total: 1, items: [suggestion] })
     api.update.mockRejectedValue(new Error('任务建议已被修改，请刷新后重试'))
     api.dismiss.mockRejectedValue(new Error('任务建议已被修改，请刷新后重试'))
-    page()
+    page(true)
 
     await userEvent.click(await screen.findByRole('button', { name: '编辑' }))
     await userEvent.click(screen.getByRole('button', { name: '保存修订' }))
@@ -338,6 +380,31 @@ describe('NoteTaskSuggestionsPanel', () => {
       expectedRevision: suggestionRevision,
     })
     expect(await screen.findAllByText(/任务建议已被修改/)).not.toHaveLength(0)
+    expect(screen.getAllByText('待确认')).not.toHaveLength(0)
+  })
+
+  it('hides raw suggestion action errors from ordinary users', async () => {
+    api.list.mockResolvedValue({ total: 1, items: [suggestion] })
+    api.update.mockRejectedValue(new Error('provider update diagnostic'))
+    api.dismiss.mockRejectedValue(new Error('provider dismiss diagnostic'))
+    api.confirm.mockRejectedValue(new Error('provider confirm diagnostic'))
+    page(false)
+
+    await userEvent.click(await screen.findByRole('button', { name: '编辑' }))
+    await userEvent.click(screen.getByRole('button', { name: '保存修改' }))
+    expect(await screen.findByText(/保存未确认/)).toBeTruthy()
+    expect(screen.queryAllByText(/provider update diagnostic/)).toHaveLength(0)
+    await userEvent.click(screen.getByRole('button', { name: '取消' }))
+
+    await userEvent.click(screen.getByRole('button', { name: '放弃' }))
+    await userEvent.click(screen.getByRole('button', { name: '再次点击确认放弃' }))
+    expect(await screen.findByText(/放弃未确认/)).toBeTruthy()
+    expect(screen.queryAllByText(/provider dismiss diagnostic/)).toHaveLength(0)
+
+    await userEvent.click(screen.getByRole('button', { name: '确认创建任务' }))
+    await userEvent.click(screen.getByRole('button', { name: '再次点击创建任务' }))
+    expect(await screen.findByText(/确认状态未确认/)).toBeTruthy()
+    expect(screen.queryAllByText(/provider confirm diagnostic/)).toHaveLength(0)
     expect(screen.getAllByText('待确认')).not.toHaveLength(0)
   })
 
