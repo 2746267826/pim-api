@@ -206,6 +206,29 @@ public sealed class NoteTaskSuggestionTests
     }
 
     [SkippableFact]
+    public async Task RepeatedExtractionOfSameVersionSkipsDuplicateDrafts()
+    {
+        await using var harness = await Harness.CreateAsync(
+            "test_note_task_suggestion_same_version_dedupe");
+        var first = await harness.CreateSuggestionAsync("同一固定版本只保留一条待确认建议");
+        var replay = await harness.Service.StartExtractionAsync(harness.Request(), default);
+
+        await harness.Job.RunAsync(harness.Owner, replay.Id, default);
+
+        harness.Db.ChangeTracker.Clear();
+        var drafts = await harness.AdminDb.Set<NoteTaskSuggestionEntity>().AsNoTracking()
+            .Where(x => x.Status == NoteTaskSuggestionStatuses.Draft)
+            .ToListAsync();
+        var storedReplay = await harness.AdminDb.Set<NoteTaskSuggestionExtractionEntity>()
+            .AsNoTracking().SingleAsync(x => x.Id == replay.Id);
+
+        Assert.Single(drafts);
+        Assert.Equal(first.Id, drafts[0].Id);
+        Assert.Equal(NoteTaskSuggestionExtractionStatuses.Succeeded, storedReplay.Status);
+        Assert.Equal(0, storedReplay.SuggestionCount);
+    }
+
+    [SkippableFact]
     public async Task ExtractionJobFailsClosedOnInvalidModelOutput()
     {
         await using var harness = await Harness.CreateAsync("test_note_task_suggestion_invalid_output");
@@ -1026,6 +1049,7 @@ public sealed class NoteTaskSuggestionTests
         var end = DateTimeOffset.Parse("2026-11-27T10:00:00Z");
         var defaultEvent = await harness.CreateSuggestionAsync(
             "不同日历日程", NoteTaskSuggestionKindDto.Event, null, start, end, "UTC");
+        harness.AdvanceSourceVersion();
         var explicitEvent = await harness.CreateSuggestionAsync(
             "不同日历日程", NoteTaskSuggestionKindDto.Event, null, start, end, "UTC");
         explicitEvent = await harness.Service.UpdateAsync(
@@ -1062,6 +1086,7 @@ public sealed class NoteTaskSuggestionTests
         var end = DateTimeOffset.Parse("2026-11-28T10:00:00Z");
         var implicitDefault = await harness.CreateSuggestionAsync(
             "显式默认并发生成", NoteTaskSuggestionKindDto.Event, null, start, end, "UTC");
+        harness.AdvanceSourceVersion();
         var explicitDefault = await harness.CreateSuggestionAsync(
             "显式默认并发生成", NoteTaskSuggestionKindDto.Event, null, start, end, "UTC");
         explicitDefault = await harness.Service.UpdateAsync(

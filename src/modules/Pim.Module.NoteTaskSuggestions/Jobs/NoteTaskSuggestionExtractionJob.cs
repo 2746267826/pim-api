@@ -160,10 +160,19 @@ internal sealed class NoteTaskSuggestionExtractionJob(
             }
 
             var now = timeProvider.GetUtcNow();
+            var existingDrafts = await db.Set<NoteTaskSuggestionEntity>().AsNoTracking()
+                .Where(x => x.UserId == owner && x.NoteId == extraction.NoteId &&
+                    x.ArtifactVersionId == extraction.ArtifactVersionId &&
+                    x.Status == NoteTaskSuggestionStatuses.Draft)
+                .ToListAsync(ct);
+            var seenFingerprints = existingDrafts
+                .Select(x => NoteTaskSuggestionService.ItemFingerprint(x))
+                .ToHashSet(StringComparer.Ordinal);
             var ordinal = 0;
+            var added = 0;
             foreach (var draft in drafts)
             {
-                db.Set<NoteTaskSuggestionEntity>().Add(new NoteTaskSuggestionEntity
+                var entity = new NoteTaskSuggestionEntity
                 {
                     UserId = owner,
                     ExtractionId = extraction.Id,
@@ -186,10 +195,14 @@ internal sealed class NoteTaskSuggestionExtractionJob(
                     Status = NoteTaskSuggestionStatuses.Draft,
                     CreatedAt = now,
                     UpdatedAt = now
-                });
+                };
+                if (!seenFingerprints.Add(NoteTaskSuggestionService.ItemFingerprint(entity)))
+                    continue;
+                db.Set<NoteTaskSuggestionEntity>().Add(entity);
+                added++;
             }
 
-            extraction.SuggestionCount = drafts.Count;
+            extraction.SuggestionCount = added;
             extraction.Status = NoteTaskSuggestionExtractionStatuses.Succeeded;
             extraction.AiCallLogId = logId == Guid.Empty ? null : logId;
             extraction.ErrorCode = null;
@@ -198,7 +211,7 @@ internal sealed class NoteTaskSuggestionExtractionJob(
             extraction.UpdatedAt = now;
             extraction.Revision = Guid.NewGuid();
             await db.SaveChangesAsync(ct);
-            return drafts.Count;
+            return added;
         }, ct);
     }
 

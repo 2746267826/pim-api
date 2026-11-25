@@ -3,6 +3,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { ApiError } from '@/api/client'
 import { NoteTaskSuggestionsPanel } from './note-task-suggestions-panel'
 import {
   confirmIntentScope,
@@ -295,6 +296,84 @@ describe('NoteTaskSuggestionsPanel', () => {
     }) as HTMLButtonElement).disabled).toBe(true)
     expect(api.confirm).not.toHaveBeenCalled()
     expect(localStorage.getItem(confirmIntentScope(userId, serverBinding, suggestionId))).toContain(oldRequestId)
+  })
+
+  it('restores the server suggestion fields when an edit is cancelled', async () => {
+    api.list.mockResolvedValue({ total: 1, items: [suggestion] })
+    page()
+
+    await userEvent.click(await screen.findByRole('button', { name: '编辑' }))
+    const title = screen.getByLabelText('任务标题') as HTMLInputElement
+    fireEvent.change(title, { target: { value: '尚未保存的本地标题' } })
+    expect(title.value).toBe('尚未保存的本地标题')
+
+    await userEvent.click(screen.getByRole('button', { name: '取消' }))
+    await userEvent.click(screen.getByRole('button', { name: '编辑' }))
+
+    expect((screen.getByLabelText('任务标题') as HTMLInputElement).value)
+      .toBe(suggestion.title)
+  })
+
+  it('recovers a malformed local confirm intent only after checking the server', async () => {
+    api.list.mockResolvedValue({ total: 1, items: [suggestion] })
+    api.get.mockResolvedValue(suggestion)
+    localStorage.setItem(confirmIntentScope(userId, serverBinding, suggestionId), '{broken-json')
+    page()
+
+    expect(await screen.findByText(/确认请求无法读取/)).toBeTruthy()
+    expect((screen.getByRole('button', { name: '编辑' }) as HTMLButtonElement).disabled)
+      .toBe(true)
+    await userEvent.click(screen.getByRole('button', { name: '核对服务器状态' }))
+
+    await waitFor(() => expect(api.get).toHaveBeenCalledWith(suggestionId))
+    expect(localStorage.getItem(confirmIntentScope(userId, serverBinding, suggestionId))).toBeNull()
+    expect((screen.getByRole('button', { name: '编辑' }) as HTMLButtonElement).disabled)
+      .toBe(false)
+    expect(await screen.findByText(/服务器仍为待确认/)).toBeTruthy()
+  })
+
+  it('clears a stale-revision confirm intent after checking the server revision', async () => {
+    const oldRevision = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    const oldRequestId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+    api.list.mockResolvedValue({ total: 1, items: [suggestion] })
+    api.get.mockResolvedValue(suggestion)
+    expect(saveConfirmIntent(
+      userId, serverBinding, suggestionId, oldRevision, oldRequestId)).toBeNull()
+    page()
+
+    expect(await screen.findByText(/属于该建议的旧修订/)).toBeTruthy()
+    await userEvent.click(screen.getByRole('button', { name: '核对服务器状态' }))
+
+    await waitFor(() => expect(api.get).toHaveBeenCalledOnce())
+    expect(localStorage.getItem(confirmIntentScope(userId, serverBinding, suggestionId))).toBeNull()
+    expect(await screen.findByText(/服务器仍为待确认/)).toBeTruthy()
+    expect((screen.getByRole('button', { name: '编辑' }) as HTMLButtonElement).disabled)
+      .toBe(false)
+  })
+
+  it('offers server reconciliation after a duplicate confirm 409', async () => {
+    api.list.mockResolvedValue({ total: 1, items: [suggestion] })
+    api.get.mockResolvedValue(suggestion)
+    api.confirm.mockRejectedValue(
+      new ApiError('同一笔记中已确认相同的事项；本次未重复创建。', 40901, 409))
+    page()
+
+    await userEvent.click(await screen.findByRole('button', { name: '确认创建任务' }))
+    await userEvent.click(screen.getByRole('button', { name: '再次点击创建任务' }))
+
+    expect(await screen.findByText(/服务器拒绝了本次确认/)).toBeTruthy()
+    expect((screen.getByRole('button', { name: '编辑' }) as HTMLButtonElement).disabled)
+      .toBe(true)
+    expect(localStorage.getItem(confirmIntentScope(userId, serverBinding, suggestionId)))
+      .not.toBeNull()
+
+    await userEvent.click(screen.getByRole('button', { name: '核对服务器状态' }))
+
+    await waitFor(() => expect(api.get).toHaveBeenCalledOnce())
+    expect(localStorage.getItem(confirmIntentScope(userId, serverBinding, suggestionId))).toBeNull()
+    expect((screen.getByRole('button', { name: '编辑' }) as HTMLButtonElement).disabled)
+      .toBe(false)
+    expect(await screen.findByText(/服务器仍为待确认/)).toBeTruthy()
   })
 
   it('keeps edit and dismiss failures visible without turning the suggestion into success', async () => {

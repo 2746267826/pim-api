@@ -20,6 +20,7 @@ import {
 import type { Tone } from '@/components/ui'
 import { noteDerivedApi, type NoteDerivedDestination } from '../api'
 import { createAiRequestId } from '../../request-id'
+import { ApiError } from '@/api/client'
 import {
   noteTaskSuggestionsApi,
   type NoteTaskSuggestion,
@@ -33,9 +34,11 @@ import {
   loadConfirmIntent,
   loadExtractionId,
   loadExtractionIntent,
+  resetConfirmIntent,
   saveConfirmIntent,
   saveExtractionId,
   saveExtractionIntent,
+  type ConfirmIntentState,
   type ExtractionIntentState,
 } from './intent-storage'
 import {
@@ -74,6 +77,19 @@ const extractionTone = (status: string): Tone => status === 'Succeeded' ? 'ok'
 const errorText = (error: unknown) => error instanceof Error ? error.message : '请求失败，请刷新核对'
 const destinationKey = (value: NoteDerivedDestination) =>
   `${value.modelId}/${value.modelRevision}/${value.endpoint}`
+const suggestionFields = (suggestion: NoteTaskSuggestion) => {
+  const timeZoneId = suggestion.timeZoneId?.trim() ?? ''
+  return {
+    title: suggestion.title,
+    description: suggestion.description ?? '',
+    priority: String(suggestion.priority),
+    due: toLocalInputValue(suggestion.due),
+    timeZoneId,
+    start: toEventTimeZoneInput(suggestion.start, timeZoneId),
+    end: toEventTimeZoneInput(suggestion.end, timeZoneId),
+    calendarId: suggestion.calendarId ?? '',
+  }
+}
 
 /**
  * Owner-scoped note task suggestion lifecycle. It only reads the shared note
@@ -165,7 +181,10 @@ export function NoteTaskSuggestionsPanel({
   const extractionStatus = extraction.data?.status
   useEffect(() => {
     if (extractionStatus !== 'Succeeded') return
-    setNotice(`已固定本次笔记版本并生成 ${extraction.data?.suggestionCount ?? 0} 条建议。请逐条核对后再创建任务或日程。`)
+    const count = extraction.data?.suggestionCount ?? 0
+    setNotice(count > 0
+      ? `已固定本次笔记版本并生成 ${count} 条建议。请逐条核对后再创建任务或日程。`
+      : '提取完成；本次没有新增建议。相同固定版本已存在的待确认候选不会重复生成，请直接核对列表。')
     void qc.invalidateQueries({ queryKey: ['note-task-suggestions', userId, serverBinding, noteId] })
   }, [extraction.data?.suggestionCount, extractionStatus, noteId, qc, serverBinding, userId])
 
@@ -336,7 +355,8 @@ export function NoteTaskSuggestionsPanel({
         : !versionItems.length
           ? <EmptyState size="sm" title="还没有任务或日程建议" description="明确确认费用后提取；模型只会生成候选，不会直接写入任务或日程。" />
           : <div className="space-y-3">{versionItems.map((suggestion) => (
-              <SuggestionRow key={`${suggestion.id}/${suggestion.revision}`}
+              <SuggestionRow
+                key={`${userId}/${serverBinding}/${suggestion.id}/${suggestion.revision}`}
                 suggestion={suggestion} userId={userId} serverBinding={serverBinding}
                 calendars={calendars.data ?? []}
                 onChanged={async (message, created) => {
@@ -389,8 +409,8 @@ function SuggestionRow({
   const [calendarId, setCalendarId] = useState(suggestion.calendarId ?? '')
   const [busy, setBusy] = useState('')
   const [error, setError] = useState('')
-  const confirmIntent = loadConfirmIntent(
-    userId, serverBinding, suggestion.id, suggestion.revision)
+  const [confirmIntent, setConfirmIntent] = useState<ConfirmIntentState>(() =>
+    loadConfirmIntent(userId, serverBinding, suggestion.id, suggestion.revision))
   const frozenConfirm = confirmIntent.kind === 'ready' && confirmIntent.value.revision === suggestion.revision
     ? confirmIntent.value : null
   const confirmBlocked = confirmIntent.kind === 'blocked' ? confirmIntent.message : ''
@@ -421,6 +441,18 @@ function SuggestionRow({
       disabled: calendar.canEdit === false || Boolean(calendar.outlookCalendarBindingId),
     })),
   ]
+
+  function restoreServerFields() {
+    const fields = suggestionFields(suggestion)
+    setTitle(fields.title)
+    setDescription(fields.description)
+    setPriority(fields.priority)
+    setDue(fields.due)
+    setTimeZoneId(fields.timeZoneId)
+    setStart(fields.start)
+    setEnd(fields.end)
+    setCalendarId(fields.calendarId)
+  }
 
   useEffect(() => {
     const zone = suggestion.timeZoneId?.trim() ?? ''
@@ -522,6 +554,7 @@ function SuggestionRow({
       if (confirmIntent.kind === 'ready') {
         clearConfirmIntent(userId, serverBinding, suggestion.id, confirmIntent.value.requestId)
       }
+      setConfirmIntent({ kind: 'none' })
       setEditing(false)
       await onChanged(`建议已保存；请核对后再确认创建${isTask ? '任务' : '日程'}。`)
     } catch (failure) {
@@ -544,6 +577,42 @@ function SuggestionRow({
     }
   }
 
+  async function reconcileConfirm() {
+    if (busy) return
+    setBusy('reconcile')
+    setError('')
+    let current: NoteTaskSuggestion
+    try {
+      current = await noteTaskSuggestionsApi.get(suggestion.id)
+    } catch (failure) {
+      setError(`${errorText(failure)}。未核对到服务器当前状态，本机确认记录保持锁定。`)
+      setBusy('')
+      return
+    }
+
+    resetConfirmIntent(userId, serverBinding, suggestion.id)
+    setConfirmIntent({ kind: 'none' })
+    let message: string
+    let created: NoteTaskSuggestion | undefined
+    if (current.status === 'Confirmed') {
+      message = '服务器显示该建议已确认创建；本机冻结的确认请求已清理。'
+      created = current
+    } else if (current.status === 'Dismissed') {
+      message = '服务器显示该建议已放弃；本机冻结的确认请求已清理。'
+    } else if (current.revision !== suggestion.revision) {
+      message = '服务器上的建议内容已更新；本机旧确认记录已清理，请核对最新内容后重新编辑或放弃。'
+    } else {
+      message = '服务器仍为待确认，原确认请求没有创建任务或日程；本机冻结记录已清理，可安全重新编辑或放弃。'
+    }
+    try {
+      await onChanged(message, created)
+    } catch {
+      setError('服务器状态已核对且本机确认记录已清理，但建议列表刷新失败；请点击“刷新建议”后再操作。')
+    } finally {
+      setBusy('')
+    }
+  }
+
   async function confirm() {
     if (confirmIntent.kind === 'blocked') {
       setError(confirmIntent.message)
@@ -558,6 +627,10 @@ function SuggestionRow({
         setError(storageError)
         return
       }
+      setConfirmIntent({
+        kind: 'ready',
+        value: { requestId, revision: suggestion.revision },
+      })
     }
     setBusy('confirm')
     setError('')
@@ -567,6 +640,7 @@ function SuggestionRow({
         expectedRevision: suggestion.revision,
       })
       clearConfirmIntent(userId, serverBinding, suggestion.id, requestId)
+      setConfirmIntent({ kind: 'none' })
       await onChanged(
         isTask
           ? confirmed.calendarId
@@ -577,7 +651,9 @@ function SuggestionRow({
             : '已在默认日历创建日程。',
         confirmed)
     } catch (failure) {
-      setError(`${errorText(failure)}。确认请求标识已冻结；重试只复用原请求，不会重复创建任务或日程。`)
+      setError(failure instanceof ApiError && failure.status === 409
+        ? `${errorText(failure)}。服务器拒绝了本次确认；请先核对服务器当前状态，再安全放弃或重新编辑。`
+        : `${errorText(failure)}。确认请求标识已冻结；重试只复用原请求，不会重复创建任务或日程。`)
     } finally {
       setBusy('')
     }
@@ -664,7 +740,15 @@ function SuggestionRow({
             </>}
       </div>
       {!editing && draft && <div className="flex flex-wrap gap-2">
-        <Button size="sm" onClick={() => setEditing(true)} disabled={Boolean(busy) || confirmLocked}>编辑</Button>
+        {confirmLocked && <Button size="sm" variant="ghost"
+          disabled={Boolean(busy)} loading={busy === 'reconcile'}
+          onClick={() => void reconcileConfirm()}>核对服务器状态</Button>}
+        <Button size="sm"
+          onClick={() => {
+            restoreServerFields()
+            setEditing(true)
+          }}
+          disabled={Boolean(busy) || confirmLocked}>编辑</Button>
         <TwoStepButton size="sm" variant="danger-soft" disabled={Boolean(busy) || confirmLocked}
           onConfirm={dismiss} armLabel="再次点击确认放弃">放弃</TwoStepButton>
         <TwoStepButton size="sm" variant="primary"
@@ -679,7 +763,12 @@ function SuggestionRow({
     </div>
     {!editing && eventHint && <InlineAlert tone="warn" className="mt-3">{eventHint}</InlineAlert>}
     {editing && <div className="mt-3 flex flex-wrap justify-end gap-2">
-      <Button size="sm" variant="ghost" disabled={Boolean(busy)} onClick={() => setEditing(false)}>取消</Button>
+      <Button size="sm" variant="ghost" disabled={Boolean(busy)}
+        onClick={() => {
+          restoreServerFields()
+          setEditing(false)
+          setError('')
+        }}>取消</Button>
       <Button size="sm" variant="primary" loading={busy === 'save'} onClick={() => void save()}>保存修订</Button>
     </div>}
     {confirmBlocked && <InlineAlert tone="warn" className="mt-3">{confirmBlocked}</InlineAlert>}

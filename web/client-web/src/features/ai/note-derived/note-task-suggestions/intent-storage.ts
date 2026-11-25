@@ -163,6 +163,18 @@ export function clearConfirmIntent(
       value.requestId === requestId)
 }
 
+export function resetConfirmIntent(
+  userId: string,
+  serverBinding: string,
+  suggestionId: string,
+) {
+  try {
+    window.localStorage.removeItem(confirmIntentScope(userId, serverBinding, suggestionId))
+  } catch {
+    // Best effort: a blocked localStorage entry must not become a permanent lock.
+  }
+}
+
 function save(key: string, value: unknown, error: string): string | null {
   try {
     window.localStorage.setItem(key, JSON.stringify(value))
