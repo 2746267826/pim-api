@@ -243,6 +243,112 @@ public sealed class OutlookEventWriteServiceTests
     }
 
     [Fact]
+    public async Task Update_AllDayWithIndependentDates_MissingDraftDates_FailsBeforeGraphCall()
+    {
+        await using var db = CreateDb();
+        var (_, bindingId, calendarId, eventId) = await SetupUpdateAsync(db, UserId);
+        var existing = await db.Set<EventEntity>().FirstAsync(e => e.Id == eventId);
+        existing.IsAllDay = true;
+        existing.AllDayStartDate = new DateOnly(2026, 7, 12);
+        existing.AllDayEndDateExclusive = new DateOnly(2026, 7, 13);
+        existing.DtStart = new DateTimeOffset(2026, 7, 11, 16, 0, 0, TimeSpan.Zero);
+        existing.DtEnd = new DateTimeOffset(2026, 7, 12, 16, 0, 0, TimeSpan.Zero);
+        await db.SaveChangesAsync();
+
+        var handler = new ScriptedHttpMessageHandler();
+        var service = CreateService(db, handler);
+        var request = new OutlookWriteRequest(
+            "update",
+            bindingId,
+            eventId,
+            MakeDraft(calendarId) with
+            {
+                IsAllDay = true,
+                DtStart = existing.DtStart,
+                DtEnd = existing.DtEnd,
+            },
+            "instance",
+            OpId,
+            ExpectedEtag: "W/\"expected-etag\"");
+
+        var exception = await Assert.ThrowsAsync<DomainException>(
+            () => service.ExecuteAsync(UserId, request, default));
+
+        Assert.Equal(02009, exception.ErrorCode);
+        Assert.Empty(handler.Requests);
+        Assert.Empty(await db.Set<OutlookSyncBatchEntity>().ToListAsync());
+    }
+
+    [Fact]
+    public async Task Update_TimedToAllDay_MissingDraftDates_FailsBeforeGraphCall()
+    {
+        await using var db = CreateDb();
+        var (_, bindingId, calendarId, eventId) = await SetupUpdateAsync(db, UserId);
+        var existing = await db.Set<EventEntity>().FirstAsync(e => e.Id == eventId);
+        Assert.False(existing.IsAllDay);
+
+        var handler = new ScriptedHttpMessageHandler();
+        var service = CreateService(db, handler);
+        var request = new OutlookWriteRequest(
+            "update",
+            bindingId,
+            eventId,
+            MakeDraft(calendarId) with
+            {
+                IsAllDay = true,
+                DtStart = new DateTimeOffset(2026, 7, 8, 0, 0, 0, TimeSpan.Zero),
+                DtEnd = new DateTimeOffset(2026, 7, 9, 0, 0, 0, TimeSpan.Zero),
+            },
+            "instance",
+            OpId,
+            ExpectedEtag: "W/\"expected-etag\"");
+
+        var exception = await Assert.ThrowsAsync<DomainException>(
+            () => service.ExecuteAsync(UserId, request, default));
+
+        Assert.Equal(02009, exception.ErrorCode);
+        Assert.Empty(handler.Requests);
+        Assert.Empty(await db.Set<OutlookSyncBatchEntity>().ToListAsync());
+    }
+
+    [Fact]
+    public async Task Update_LegacyAllDay_ChangedAbsoluteBoundsWithoutDates_FailsBeforeGraphCall()
+    {
+        await using var db = CreateDb();
+        var (_, bindingId, calendarId, eventId) = await SetupUpdateAsync(db, UserId);
+        var existing = await db.Set<EventEntity>().FirstAsync(e => e.Id == eventId);
+        existing.IsAllDay = true;
+        existing.AllDayStartDate = null;
+        existing.AllDayEndDateExclusive = null;
+        existing.DtStart = new DateTimeOffset(2026, 7, 12, 1, 30, 0, TimeSpan.Zero);
+        existing.DtEnd = new DateTimeOffset(2026, 7, 13, 1, 30, 0, TimeSpan.Zero);
+        await db.SaveChangesAsync();
+
+        var handler = new ScriptedHttpMessageHandler();
+        var service = CreateService(db, handler);
+        var request = new OutlookWriteRequest(
+            "update",
+            bindingId,
+            eventId,
+            MakeDraft(calendarId) with
+            {
+                IsAllDay = true,
+                DtStart = existing.DtStart.AddHours(1),
+                DtEnd = existing.DtEnd.AddHours(1),
+            },
+            "instance",
+            OpId,
+            ExpectedEtag: "W/\"expected-etag\"");
+
+        var exception = await Assert.ThrowsAsync<DomainException>(
+            () => service.ExecuteAsync(UserId, request, default));
+
+        Assert.Equal(02009, exception.ErrorCode);
+        Assert.Empty(handler.Requests);
+        Assert.Empty(await db.Set<OutlookSyncBatchEntity>().ToListAsync());
+    }
+
+    [Fact]
     public async Task Create_AllDayWithoutIndependentDates_RejectedBeforeGraphCall()
     {
         await using var db = CreateDb();

@@ -776,8 +776,10 @@ public class CalendarService
 
         var isScopeSeries = string.Equals(scope, "series", StringComparison.OrdinalIgnoreCase);
 
-        // scope=series from exception: resolve master and update master, not exception
-        // Fix: do not overwrite master DtStart/DtEnd with occurrence's time unless explicitly changed vs master
+        // scope=series from exception: resolve master and update master, not exception.
+        // The exception row may be a moved occurrence, so its dates/instants are not the
+        // series facts. Only apply deltas between the request and the exception to the
+        // master's own dates/instants; otherwise a metadata edit would move the series.
         if (isScopeSeries && entity.IsException)
         {
             if (!entity.SeriesMasterId.HasValue)
@@ -792,23 +794,99 @@ public class CalendarService
             masterEntity.Title = request.Title;
             masterEntity.Description = request.Description;
             masterEntity.Location = request.Location;
-            // Only overwrite master time if request time differs from master time (explicit series time change)
-            // Otherwise keep master's original DtStart/DtEnd to avoid copying occurrence date to master
-            if (normalizedStart != masterEntity.DtStart)
-                masterEntity.DtStart = normalizedStart;
-            if (normalizedEnd != masterEntity.DtEnd)
+
+            var sourceTimeZoneChanged = request.TimeZoneId is not null
+                && !SameResolvedTimeZone(request.TimeZoneId, entity);
+            var seriesTimeZone = sourceTimeZoneChanged
+                ? NormalizeEventTimeZone(request.TimeZoneId, request.TimeZoneId)
+                : NormalizeEventTimeZone(
+                    masterEntity.TimeZoneId,
+                    masterEntity.SourceTimeZoneId ?? masterEntity.OriginalStartTimeZone);
+
+            var timeFactsChanged = requestedIsAllDay != entity.IsAllDay || sourceTimeZoneChanged;
+            if (!timeFactsChanged && requestedIsAllDay && entity.IsAllDay)
             {
-                // also ensure only update if duration or time explicitly changed; if only date part differs due to occurrence, skip
-                // Compare time-of-day and duration: keep master if only occurrence date shifted
-                var reqDuration = normalizedEnd - normalizedStart;
-                var masterDuration = masterEntity.DtEnd - masterEntity.DtStart;
-                // If durations differ or time-of-day differs, treat as explicit change
-                if (reqDuration != masterDuration || normalizedStart.TimeOfDay != masterEntity.DtStart.TimeOfDay)
-                    masterEntity.DtEnd = normalizedEnd;
+                var requestedAllDayStart = allDayStart ?? entity.AllDayStartDate;
+                var requestedAllDayEnd = allDayEnd ?? entity.AllDayEndDateExclusive;
+                timeFactsChanged = requestedAllDayStart != entity.AllDayStartDate
+                    || requestedAllDayEnd != entity.AllDayEndDateExclusive;
             }
+            else if (!timeFactsChanged && !requestedIsAllDay && !entity.IsAllDay)
+            {
+                timeFactsChanged = !SameInstant(normalizedStart, entity.DtStart)
+                    || !SameInstant(normalizedEnd, entity.DtEnd);
+            }
+
+            if (timeFactsChanged)
+            {
+                if (requestedIsAllDay && entity.IsAllDay)
+                {
+                    var requestedAllDayStart = allDayStart ?? entity.AllDayStartDate;
+                    var requestedAllDayEnd = allDayEnd ?? entity.AllDayEndDateExclusive;
+                    if (!requestedAllDayStart.HasValue || !requestedAllDayEnd.HasValue)
+                        throw new DomainException(02009, "全天事件必须同时提供 allDayStartDate 与 allDayEndDateExclusive。");
+
+                    DateOnly masterAllDayStart;
+                    DateOnly masterAllDayEnd;
+                    if (entity.AllDayStartDate.HasValue
+                        && entity.AllDayEndDateExclusive.HasValue
+                        && masterEntity.AllDayStartDate.HasValue
+                        && masterEntity.AllDayEndDateExclusive.HasValue)
+                    {
+                        var startDelta = requestedAllDayStart.Value.DayNumber
+                            - entity.AllDayStartDate.Value.DayNumber;
+                        masterAllDayStart = masterEntity.AllDayStartDate.Value.AddDays(startDelta);
+                    }
+                    else
+                    {
+                        masterAllDayStart = requestedAllDayStart.Value;
+                    }
+                    var requestedDurationDays = requestedAllDayEnd.Value.DayNumber
+                        - requestedAllDayStart.Value.DayNumber;
+                    if (requestedDurationDays <= 0)
+                        throw new DomainException(02009, "全天事件的排他结束日期必须晚于开始日期。");
+                    masterAllDayEnd = masterAllDayStart.AddDays(requestedDurationDays);
+
+                    if (masterAllDayEnd <= masterAllDayStart)
+                        throw new DomainException(02009, "全天事件的排他结束日期必须晚于开始日期。");
+
+                    var zone = EventTimeZoneResolver.Resolve(
+                        seriesTimeZone.Id, seriesTimeZone.SourceId).Zone
+                        ?? EventTimeZoneResolver.DisplayZone;
+                    masterEntity.DtStart = EventTimeZoneResolver.StartOfLocalDate(
+                        masterAllDayStart,
+                        zone,
+                        zone.GetUtcOffset(masterAllDayStart.ToDateTime(TimeOnly.MinValue)));
+                    masterEntity.DtEnd = EventTimeZoneResolver.StartOfLocalDate(
+                        masterAllDayEnd,
+                        zone,
+                        zone.GetUtcOffset(masterAllDayEnd.ToDateTime(TimeOnly.MinValue)));
+                    ApplyAllDayFields(masterEntity, true, masterAllDayStart, masterAllDayEnd);
+                }
+                else if (!requestedIsAllDay && !entity.IsAllDay)
+                {
+                    var startDelta = normalizedStart - entity.DtStart;
+                    var masterStart = masterEntity.DtStart + startDelta;
+                    var requestedDuration = normalizedEnd - normalizedStart;
+                    var masterEnd = masterStart + requestedDuration;
+                    if (masterEnd <= masterStart)
+                        throw new DomainException(02010, "结束时间必须晚于开始时间");
+                    masterEntity.DtStart = masterStart;
+                    masterEntity.DtEnd = masterEnd;
+                    ApplyAllDayFields(masterEntity, false, null, null);
+                }
+                else
+                {
+                    // Mode switch (timed <-> all-day) is an explicit fact change.
+                    masterEntity.DtStart = normalizedStart;
+                    masterEntity.DtEnd = normalizedEnd;
+                    ApplyAllDayFields(masterEntity, requestedIsAllDay, allDayStart, allDayEnd);
+                }
+
+                ApplyTimeZoneFields(masterEntity, seriesTimeZone.Id, seriesTimeZone.SourceId);
+            }
+
             masterEntity.RRule = request.RRule;
-            ApplyAllDayFields(masterEntity, requestedIsAllDay, allDayStart, allDayEnd);
-            ApplyTimeZoneFields(masterEntity, normalizedTimeZone.Id, normalizedTimeZone.SourceId);
             masterEntity.UpdatedAt = _timeProvider.GetUtcNow();
 
             ApplyUnifiedFields(masterEntity, request);

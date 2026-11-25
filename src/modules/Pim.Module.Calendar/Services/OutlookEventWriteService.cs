@@ -237,6 +237,7 @@ public sealed class OutlookEventWriteService
             }
         }
         ValidateEventBinding(localEvent, binding.Id);
+        ValidateUpdateAllDayDates(localEvent, request.Draft);
 
         var batch = NewBatch(userId, connection.Id, binding.Id, binding.Name, "update", localEvent.Id, localEvent.Title);
         _db.Set<OutlookSyncBatchEntity>().Add(batch);
@@ -543,6 +544,26 @@ public sealed class OutlookEventWriteService
             throw new DomainException(02009, "事件没有 Outlook 关联，无法操作。");
         if (evt.OutlookSyncState == "legacy-unbound")
             throw new DomainException(02009, "事件处于 legacy-unbound 状态，无法写回。");
+    }
+
+    private static void ValidateUpdateAllDayDates(EventEntity existing, CreateEventRequest draft)
+    {
+        if (!draft.IsAllDay || (draft.AllDayStartDate.HasValue && draft.AllDayEndDateExclusive.HasValue))
+            return;
+
+        // Historical all-day rows predate independent dates. They may keep their old
+        // absolute bounds for metadata-only updates, but may not silently change time.
+        var isUnchangedLegacyAllDay = existing.IsAllDay
+            && !existing.AllDayStartDate.HasValue
+            && !existing.AllDayEndDateExclusive.HasValue
+            && draft.DtStart.ToUniversalTime() == existing.DtStart.ToUniversalTime()
+            && draft.DtEnd.ToUniversalTime() == existing.DtEnd.ToUniversalTime();
+        if (isUnchangedLegacyAllDay)
+            return;
+
+        throw new DomainException(
+            02009,
+            "全天事件必须提供 allDayStartDate 与 allDayEndDateExclusive；仅历史全天事件保持原绝对边界时可省略。");
     }
 
     private static string GetGraphTargetId(EventEntity evt, string scope)
