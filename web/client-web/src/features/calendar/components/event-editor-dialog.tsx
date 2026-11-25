@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
@@ -8,16 +8,29 @@ import type { components } from '@/api/generated'
 import { isOutlookEvent, type CalendarBook, type EventResponse } from '../types'
 import { isRepeatedEvent, readEventRrule } from '../rrule'
 import { useDeleteEvent, useSaveEvent } from '../queries'
-import { fromLocalInputValue, toLocalInputValue } from '@/lib/datetime'
 import { InlineAlert, Button, Dialog, DialogBody, DialogContent, DialogFooter, DialogHeader, Input, Label, Segmented, Select, Switch, Textarea } from '@/components/ui'
+import {
+  addDateDays,
+  CALENDAR_DISPLAY_TIME_ZONE,
+  chooseWallTimeCandidate,
+  findFoldChoice,
+  formatAbsoluteInstant,
+  formatInstantInZone,
+  isValidTimeZoneId,
+  offsetLabel,
+  resolveWallTime,
+} from '../event-timezone'
 
 /** 与后端 CreateEventRequest 对齐的全部可写字段（05/calendar.md §日程事件） */
 const schema = z.object({
   title: z.string().min(1, '请输入标题').max(255, '最多 255 字符'),
   calendarId: z.string().min(1, '请选择日历本'),
   isAllDay: z.boolean(),
-  dtStart: z.string().min(1, '请选择开始时间'),
-  dtEnd: z.string().min(1, '请选择结束时间'),
+  dtStart: z.string(),
+  dtEnd: z.string(),
+  allDayStartDate: z.string(),
+  allDayEndDate: z.string(),
+  timeZoneId: z.string().max(100, '时区不能超过 100 个字符'),
   location: z.string().max(500, '最多 500 字符'),
   description: z.string(),
   rrule: z.enum(['', 'FREQ=DAILY', 'FREQ=WEEKLY', 'FREQ=MONTHLY']),
@@ -123,11 +136,22 @@ export function EventEditorDialog({ open, onOpenChange, calendars, initial, even
   const [conflict, setConflict] = useState<{ serverTitle?: string; message: string } | null>(null)
   const [attendees, setAttendees] = useState<AttendeeRow[]>([])
   const [showMore, setShowMore] = useState(false)
+  const [startFold, setStartFold] = useState<string | null>(null)
+  const [endFold, setEndFold] = useState<string | null>(null)
+  const timeBaseline = useRef<{
+    zoneInput: string
+    start: string
+    end: string
+    startInstant: string
+    endInstant: string
+  } | null>(null)
+  const lastValidTimeZone = useRef(CALENDAR_DISPLAY_TIME_ZONE)
 
   const form = useForm<z.infer<typeof schema>>({
     resolver: zodResolver(schema),
     defaultValues: {
       title: '', calendarId: '', isAllDay: false, dtStart: '', dtEnd: '',
+      allDayStartDate: '', allDayEndDate: '', timeZoneId: CALENDAR_DISPLAY_TIME_ZONE,
       location: '', description: '', rrule: '',
       isReminderOn: false, reminderMinutesBeforeStart: '',
       showAs: '', importance: '', sensitivity: '', categories: '',
@@ -146,13 +170,22 @@ export function EventEditorDialog({ open, onOpenChange, calendars, initial, even
     setConflict(null)
     setScope('this')
     setShowMore(false)
+    setStartFold(null)
+    setEndFold(null)
     if (event) {
+      const zoneInput = event.timeZoneId ?? ''
+      const interpretationZone = event.timeZoneId ?? event.displayTimeZoneId ?? CALENDAR_DISPLAY_TIME_ZONE
+      const startValue = (event.localStart ?? event.displayLocalStart ?? formatInstantInZone(event.dtStart, interpretationZone)).slice(0, 16)
+      const endValue = (event.localEnd ?? event.displayLocalEnd ?? formatInstantInZone(event.dtEnd, interpretationZone)).slice(0, 16)
       form.reset({
         title: event.title,
         calendarId: event.calendarId,
         isAllDay: event.isAllDay,
-        dtStart: toLocalInputValue(event.dtStart),
-        dtEnd: toLocalInputValue(event.dtEnd),
+        dtStart: startValue,
+        dtEnd: endValue,
+        allDayStartDate: event.allDayStartDate ?? '',
+        allDayEndDate: event.allDayEndDateExclusive ? addDateDays(event.allDayEndDateExclusive, -1) : '',
+        timeZoneId: zoneInput,
         location: event.location ?? '',
         description: event.description ?? '',
         rrule: (readEventRrule(event) as z.infer<typeof schema>['rrule']) ?? '',
@@ -170,16 +203,33 @@ export function EventEditorDialog({ open, onOpenChange, calendars, initial, even
         organizerName: event.organizer?.name ?? '',
         organizerEmail: event.organizer?.email ?? '',
       })
+      timeBaseline.current = {
+        zoneInput,
+        start: startValue,
+        end: endValue,
+        startInstant: event.dtStart,
+        endInstant: event.dtEnd,
+      }
+      lastValidTimeZone.current = isValidTimeZoneId(interpretationZone)
+        ? interpretationZone
+        : CALENDAR_DISPLAY_TIME_ZONE
+      setStartFold(findFoldChoice(startValue, lastValidTimeZone.current, event.dtStart))
+      setEndFold(findFoldChoice(endValue, lastValidTimeZone.current, event.dtEnd))
       setAttendees((event.attendees ?? []).map((a) => ({ name: a.name ?? '', email: a.email ?? '', type: a.type === 'optional' ? 'optional' : 'required' })))
       const hasMore = Boolean(event.isMuted != null || event.isReminderOn || event.showAs || event.importance || event.sensitivity || (event.categories?.length ?? 0) > 0 || event.isOnlineMeeting || event.externalLink || (event.attendees?.length ?? 0) > 0)
       setShowMore(hasMore)
     } else if (initial) {
       const def = calendars.find((c) => c.isDefault && c.kind === 'calendar') ?? calendars.find((c) => c.kind === 'calendar')
+      const startValue = formatInstantInZone(initial.start.toISOString(), CALENDAR_DISPLAY_TIME_ZONE)
+      const endValue = formatInstantInZone(initial.end.toISOString(), CALENDAR_DISPLAY_TIME_ZONE)
       form.reset({
         title: '', calendarId: def?.id ?? '',
         isAllDay: initial.allDay ?? false,
-        dtStart: toLocalInputValue(initial.start.toISOString()),
-        dtEnd: toLocalInputValue(initial.end.toISOString()),
+        dtStart: startValue,
+        dtEnd: endValue,
+        allDayStartDate: initial.allDay ? initial.start.toISOString().slice(0, 10) : '',
+        allDayEndDate: initial.allDay ? addDateDays(initial.end.toISOString().slice(0, 10), -1) : '',
+        timeZoneId: CALENDAR_DISPLAY_TIME_ZONE,
         location: '', description: '', rrule: '',
         isReminderOn: false, reminderMinutesBeforeStart: '',
         showAs: '', importance: '', sensitivity: '', categories: '',
@@ -187,20 +237,161 @@ export function EventEditorDialog({ open, onOpenChange, calendars, initial, even
         isOnlineMeeting: false, onlineMeetingProvider: '', onlineMeetingUrl: '',
         externalLink: '', organizerName: '', organizerEmail: '',
       })
+      timeBaseline.current = {
+        zoneInput: CALENDAR_DISPLAY_TIME_ZONE,
+        start: startValue,
+        end: endValue,
+        startInstant: initial.start.toISOString(),
+        endInstant: initial.end.toISOString(),
+      }
+      lastValidTimeZone.current = CALENDAR_DISPLAY_TIME_ZONE
       setAttendees([])
     }
   }, [open, event, initial, calendars, form])
 
+  function resolveCurrentWallTime(value: string, side: 'start' | 'end'): string {
+    const baseline = timeBaseline.current
+    if (baseline && value === baseline[side])
+      return side === 'start' ? baseline.startInstant : baseline.endInstant
+
+    const resolution = resolveWallTime(value, lastValidTimeZone.current)
+    if (resolution.status === 'gap')
+      throw new Error('当前输入处于夏令时跳时缺口，请先修正时间。')
+    if (resolution.status === 'invalid')
+      throw new Error('当前时间无法按已有时区解析，请先选择有效时区。')
+    const selected = chooseWallTimeCandidate(resolution, side === 'start' ? startFold : endFold)
+    if (!selected) throw new Error('无法解析当前时间。')
+    return selected.instant
+  }
+
+  function handleTimeZoneChange(rawValue: string) {
+    const nextZone = rawValue.trim()
+    const current = form.getValues()
+    if (!nextZone || !isValidTimeZoneId(nextZone)) {
+      form.setValue('timeZoneId', rawValue, { shouldDirty: true })
+      if (nextZone) {
+        form.setError('timeZoneId', { type: 'validate', message: '请输入有效的 IANA 时区 ID。' })
+      } else {
+        form.clearErrors('timeZoneId')
+      }
+      return
+    }
+
+    try {
+      const startInstant = resolveCurrentWallTime(current.dtStart, 'start')
+      const endInstant = resolveCurrentWallTime(current.dtEnd, 'end')
+      const startValue = formatInstantInZone(startInstant, nextZone)
+      const endValue = formatInstantInZone(endInstant, nextZone)
+      form.setValue('timeZoneId', rawValue, { shouldDirty: true })
+      form.setValue('dtStart', startValue, { shouldDirty: true })
+      form.setValue('dtEnd', endValue, { shouldDirty: true })
+      timeBaseline.current = {
+        zoneInput: rawValue,
+        start: startValue,
+        end: endValue,
+        startInstant,
+        endInstant,
+      }
+      lastValidTimeZone.current = nextZone
+      setStartFold(findFoldChoice(startValue, nextZone, startInstant))
+      setEndFold(findFoldChoice(endValue, nextZone, endInstant))
+      form.clearErrors(['timeZoneId', 'dtStart', 'dtEnd'])
+    } catch (reason) {
+      form.setError('timeZoneId', {
+        type: 'validate',
+        message: reason instanceof Error ? reason.message : '无法保留原有绝对时刻。',
+      })
+    }
+  }
+
+  function previewInstant(
+    value: string,
+    side: 'start' | 'end',
+    resolution: ReturnType<typeof resolveWallTime>,
+    fold: string | null,
+  ): string | null {
+    const baseline = timeBaseline.current
+    const zone = form.getValues('timeZoneId').trim()
+    if (baseline && value === baseline[side] && zone === baseline.zoneInput.trim())
+      return side === 'start' ? baseline.startInstant : baseline.endInstant
+    if (!isValidTimeZoneId(zone)) return null
+    return chooseWallTimeCandidate(resolution, fold)?.instant ?? null
+  }
+
   async function submit(values: z.infer<typeof schema>) {
     setError(null)
     setConflict(null)
-    const dtStart = fromLocalInputValue(values.dtStart)
-    const dtEnd = fromLocalInputValue(values.dtEnd)
-    if (!dtStart || !dtEnd) {
-      setError('时间格式不正确')
-      return
+    let dtStart: string
+    let dtEnd: string
+    let allDayStartDate: string | null = null
+    let allDayEndDateExclusive: string | null = null
+    if (values.isAllDay) {
+      const zoneUnchanged = isEdit
+        && values.timeZoneId.trim() === (timeBaseline.current?.zoneInput.trim() ?? '')
+      const legacyAllDayMetadataOnly = isEdit
+        && event?.isAllDay === true
+        && !event.allDayStartDate
+        && !event.allDayEndDateExclusive
+        && !values.allDayStartDate
+        && !values.allDayEndDate
+        && zoneUnchanged
+
+      if (legacyAllDayMetadataOnly) {
+        dtStart = event!.dtStart
+        dtEnd = event!.dtEnd
+      } else {
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(values.allDayStartDate)
+          || !/^\d{4}-\d{2}-\d{2}$/.test(values.allDayEndDate)
+          || addDateDays(values.allDayStartDate, 0) !== values.allDayStartDate
+          || addDateDays(values.allDayEndDate, 0) !== values.allDayEndDate) {
+          setError('请选择全天开始日期和结束日期。')
+          return
+        }
+        allDayStartDate = values.allDayStartDate
+        allDayEndDateExclusive = addDateDays(values.allDayEndDate, 1)
+        if (!allDayEndDateExclusive || allDayEndDateExclusive <= values.allDayStartDate) {
+          setError('全天结束日期必须晚于开始日期。')
+          return
+        }
+        dtStart = event?.dtStart ?? `${values.allDayStartDate}T00:00:00.000Z`
+        dtEnd = event?.dtEnd ?? `${allDayEndDateExclusive}T00:00:00.000Z`
+      }
+    } else {
+      const zone = values.timeZoneId.trim()
+      const baseline = timeBaseline.current
+      const preserveUntouched = baseline
+        && values.dtStart === baseline.start
+        && values.dtEnd === baseline.end
+        && zone === baseline.zoneInput
+      if (preserveUntouched) {
+        dtStart = baseline.startInstant
+        dtEnd = baseline.endInstant
+      } else {
+        if (!isValidTimeZoneId(zone)) {
+          setError('修改时间前，请先选择有效的 IANA 时区。')
+          return
+        }
+        const startResult = resolveWallTime(values.dtStart, zone)
+        const endResult = resolveWallTime(values.dtEnd, zone)
+        if (startResult.status === 'gap' || endResult.status === 'gap') {
+          setError('所选时间处于夏令时跳时缺口，请改选一个有效时刻。')
+          return
+        }
+        if (startResult.status === 'invalid' || endResult.status === 'invalid') {
+          setError('时间格式或时区无效。')
+          return
+        }
+        const startCandidate = chooseWallTimeCandidate(startResult, startFold)
+        const endCandidate = chooseWallTimeCandidate(endResult, endFold)
+        if (!startCandidate || !endCandidate) {
+          setError('请选择回拨时段中实际发生的开始和结束时刻。')
+          return
+        }
+        dtStart = startCandidate.instant
+        dtEnd = endCandidate.instant
+      }
     }
-    if (dtEnd <= dtStart) {
+    if (Date.parse(dtEnd) <= Date.parse(dtStart) && !values.isAllDay) {
       setError('结束时间必须晚于开始时间')
       return
     }
@@ -228,6 +419,11 @@ export function EventEditorDialog({ open, onOpenChange, calendars, initial, even
       dtStart,
       dtEnd,
       isAllDay: values.isAllDay,
+      allDayStartDate,
+      allDayEndDateExclusive,
+      ...(isEdit && timeBaseline.current?.zoneInput === values.timeZoneId.trim()
+        ? {}
+        : { timeZoneId: values.timeZoneId.trim() || null }),
       rRule: values.rrule || null,
       // 后端只接受 'html'（'text' 报 2009 DescriptionFormat 值无效）；纯文本描述可省略该字段
       descriptionFormat: values.description ? 'html' : null,
@@ -365,6 +561,12 @@ export function EventEditorDialog({ open, onOpenChange, calendars, initial, even
 
   const busy = save.isPending || remove.isPending
   const values = form.watch()
+  const startTimeField = form.register('dtStart')
+  const endTimeField = form.register('dtEnd')
+  const startWallResolution = resolveWallTime(values.dtStart, lastValidTimeZone.current)
+  const endWallResolution = resolveWallTime(values.dtEnd, lastValidTimeZone.current)
+  const startInstantPreview = previewInstant(values.dtStart, 'start', startWallResolution, startFold)
+  const endInstantPreview = previewInstant(values.dtEnd, 'end', endWallResolution, endFold)
   /* 工单 04：「未指定」的生效值取自所选日历本的默认静音，界面必须说清当前会按什么执行 */
   const selectedCalendar = calendars.find((c) => c.id === values.calendarId)
   const selectedCalendarName = selectedCalendar?.name ?? '当前日历本'
@@ -435,20 +637,117 @@ export function EventEditorDialog({ open, onOpenChange, calendars, initial, even
             </div>
           </div>
 
-          <div className="grid grid-cols-2 items-end gap-3">
-            <div>
-              <Label htmlFor="event-start">开始 *</Label>
-              <Input id="event-start" type="datetime-local" {...form.register('dtStart')} />
-            </div>
-            <div>
-              <Label htmlFor="event-end">结束 *</Label>
-              <Input id="event-end" type="datetime-local" {...form.register('dtEnd')} />
-            </div>
+          <div>
+            <Label htmlFor="event-timezone">事件时区（IANA）</Label>
+            <Input
+              id="event-timezone"
+              autoComplete="off"
+              placeholder="Asia/Shanghai"
+              {...form.register('timeZoneId')}
+              onChange={(change) => handleTimeZoneChange(change.target.value)}
+            />
+            {event?.sourceTimeZoneId && event.sourceTimeZoneId !== event.timeZoneId && (
+              <p className="mt-1 text-[11px] text-text-4">来源时区：{event.sourceTimeZoneId}</p>
+            )}
+            {event && event.timeZoneResolution !== 'resolved' && !isValidTimeZoneId(event.timeZoneId ?? '') && (
+              <p className="mt-1 text-[11px] text-warn">
+                来源时区未解析；下方时间仅按 {event.displayTimeZoneId ?? CALENDAR_DISPLAY_TIME_ZONE} 参考显示。改时间前请先选择有效时区。
+              </p>
+            )}
+            {form.formState.errors.timeZoneId && (
+              <p className="mt-1 text-xs text-crit">{form.formState.errors.timeZoneId.message}</p>
+            )}
           </div>
           <div className="flex items-center gap-2">
-            <Switch id="event-allday" checked={values.isAllDay} onCheckedChange={(v) => form.setValue('isAllDay', v)} />
+            <Switch
+              id="event-allday"
+              checked={values.isAllDay}
+              onCheckedChange={(checked) => form.setValue('isAllDay', checked)}
+            />
             <Label htmlFor="event-allday" className="mb-0">全天</Label>
           </div>
+
+          {values.isAllDay ? (
+            <div className="grid grid-cols-2 items-end gap-3">
+              <div>
+                <Label htmlFor="event-all-day-start">开始日期 *</Label>
+                <Input id="event-all-day-start" type="date" {...form.register('allDayStartDate')} />
+              </div>
+              <div>
+                <Label htmlFor="event-all-day-end">结束日期（含）*</Label>
+                <Input id="event-all-day-end" type="date" {...form.register('allDayEndDate')} />
+              </div>
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 items-end gap-3">
+              <div>
+                <Label htmlFor="event-start">开始（{lastValidTimeZone.current}）*</Label>
+                <Input
+                  id="event-start"
+                  type="datetime-local"
+                  {...startTimeField}
+                  onChange={(change) => {
+                    void startTimeField.onChange(change)
+                    setStartFold(null)
+                  }}
+                />
+                {startWallResolution.status === 'gap' && <p className="mt-1 text-xs text-crit">该本地时间不存在</p>}
+                {startWallResolution.status === 'ambiguous' && (
+                  <div className="mt-1">
+                    <Label htmlFor="event-start-fold">开始时刻</Label>
+                    <Select
+                      id="event-start-fold"
+                      value={startFold ?? ''}
+                      onValueChange={setStartFold}
+                      placeholder="选择实际发生时刻"
+                      options={startWallResolution.candidates.map((candidate, index) => ({
+                        value: candidate.instant,
+                        label: `${offsetLabel(candidate.offsetMinutes)}（${index === 0 ? '较早一次' : '较晚一次'}）`,
+                      }))}
+                    />
+                  </div>
+                )}
+                {startInstantPreview && (
+                  <p className="mt-1 text-[11px] leading-4 text-text-4">
+                    北京 {formatInstantInZone(startInstantPreview, CALENDAR_DISPLAY_TIME_ZONE).replace('T', ' ')} · 绝对时刻 {formatAbsoluteInstant(startInstantPreview)}
+                  </p>
+                )}
+              </div>
+              <div>
+                <Label htmlFor="event-end">结束（{lastValidTimeZone.current}）*</Label>
+                <Input
+                  id="event-end"
+                  type="datetime-local"
+                  {...endTimeField}
+                  onChange={(change) => {
+                    void endTimeField.onChange(change)
+                    setEndFold(null)
+                  }}
+                />
+                {endWallResolution.status === 'gap' && <p className="mt-1 text-xs text-crit">该本地时间不存在</p>}
+                {endWallResolution.status === 'ambiguous' && (
+                  <div className="mt-1">
+                    <Label htmlFor="event-end-fold">结束时刻</Label>
+                    <Select
+                      id="event-end-fold"
+                      value={endFold ?? ''}
+                      onValueChange={setEndFold}
+                      placeholder="选择实际发生时刻"
+                      options={endWallResolution.candidates.map((candidate, index) => ({
+                        value: candidate.instant,
+                        label: `${offsetLabel(candidate.offsetMinutes)}（${index === 0 ? '较早一次' : '较晚一次'}）`,
+                      }))}
+                    />
+                  </div>
+                )}
+                {endInstantPreview && (
+                  <p className="mt-1 text-[11px] leading-4 text-text-4">
+                    北京 {formatInstantInZone(endInstantPreview, CALENDAR_DISPLAY_TIME_ZONE).replace('T', ' ')} · 绝对时刻 {formatAbsoluteInstant(endInstantPreview)}
+                  </p>
+                )}
+              </div>
+            </div>
+          )}
 
           <div>
             <Label htmlFor="event-location">地点</Label>

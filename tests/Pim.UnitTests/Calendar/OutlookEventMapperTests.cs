@@ -223,6 +223,47 @@ public sealed class OutlookEventMapperTests
     }
 
     [Fact]
+    public void BuildWritePayload_RecurrenceUsesResolvedWindowsTimeZone()
+    {
+        var draft = new CreateEventRequest(
+            PimCalendarId,
+            "Shanghai recurrence",
+            null,
+            null,
+            new DateTimeOffset(2026, 7, 12, 1, 0, 0, TimeSpan.Zero),
+            new DateTimeOffset(2026, 7, 12, 2, 0, 0, TimeSpan.Zero),
+            "FREQ=WEEKLY;COUNT=3",
+            TimeZoneId: "Asia/Shanghai");
+
+        var payload = OutlookEventMapper.BuildWritePayload(draft, null);
+
+        var recurrence = Assert.IsType<Dictionary<string, object?>>(payload["recurrence"]);
+        var range = Assert.IsType<Dictionary<string, object?>>(recurrence["range"]);
+        Assert.Equal("China Standard Time", range["recurrenceTimeZone"]);
+        Assert.Equal("2026-07-12", range["startDate"]);
+    }
+
+    [Fact]
+    public void BuildWritePayload_RecurrenceWithoutResolvedZoneFallsBackToUtc()
+    {
+        var draft = new CreateEventRequest(
+            PimCalendarId,
+            "Unknown zone recurrence",
+            null,
+            null,
+            new DateTimeOffset(2026, 7, 12, 1, 0, 0, TimeSpan.Zero),
+            new DateTimeOffset(2026, 7, 12, 2, 0, 0, TimeSpan.Zero),
+            "FREQ=DAILY;COUNT=2",
+            TimeZoneId: "Custom/Unknown");
+
+        var payload = OutlookEventMapper.BuildWritePayload(draft, null);
+
+        var recurrence = Assert.IsType<Dictionary<string, object?>>(payload["recurrence"]);
+        var range = Assert.IsType<Dictionary<string, object?>>(recurrence["range"]);
+        Assert.Equal("UTC", range["recurrenceTimeZone"]);
+    }
+
+    [Fact]
     public void BuildWritePayload_MapsGraphFieldsAndOmitsSourceOnlyValues()
     {
         var draft = new CreateEventRequest(
@@ -458,19 +499,68 @@ public sealed class OutlookEventMapperTests
             new DateTimeOffset(2026, 7, 12, 0, 0, 0, TimeSpan.FromHours(8)),
             new DateTimeOffset(2026, 7, 13, 0, 0, 0, TimeSpan.FromHours(8)),
             null,
-            IsAllDay: true);
+            IsAllDay: true,
+            TimeZoneId: "Asia/Shanghai",
+            AllDayStartDate: new DateOnly(2026, 7, 12),
+            AllDayEndDateExclusive: new DateOnly(2026, 7, 13));
 
         var payload = OutlookEventMapper.BuildWritePayload(draft, null);
 
         var start = Assert.IsType<Dictionary<string, object?>>(payload["start"]);
         Assert.Equal("2026-07-12T00:00:00.0000000", start["dateTime"]);
-        Assert.Equal("UTC", start["timeZone"]);
-
+        Assert.Equal("China Standard Time", start["timeZone"]);
         var end = Assert.IsType<Dictionary<string, object?>>(payload["end"]);
         Assert.Equal("2026-07-13T00:00:00.0000000", end["dateTime"]);
-        Assert.Equal("UTC", end["timeZone"]);
+        Assert.Equal("China Standard Time", end["timeZone"]);
 
         Assert.True((bool)payload["isAllDay"]!);
+    }
+
+    [Fact]
+    public void BuildWritePayload_LegacyAllDayWithoutIndependentDates_PreservesAbsoluteBounds()
+    {
+        var draft = new CreateEventRequest(
+            PimCalendarId,
+            "Legacy all day",
+            null,
+            null,
+            new DateTimeOffset(2026, 7, 12, 1, 30, 0, TimeSpan.Zero),
+            new DateTimeOffset(2026, 7, 13, 1, 30, 0, TimeSpan.Zero),
+            null,
+            IsAllDay: true,
+            TimeZoneId: "Asia/Shanghai");
+
+        var payload = OutlookEventMapper.BuildWritePayload(draft, null);
+
+        var start = Assert.IsType<Dictionary<string, object?>>(payload["start"]);
+        var end = Assert.IsType<Dictionary<string, object?>>(payload["end"]);
+        Assert.Equal("2026-07-12T01:30:00.0000000", start["dateTime"]);
+        Assert.Equal("2026-07-13T01:30:00.0000000", end["dateTime"]);
+        Assert.Equal("UTC", start["timeZone"]);
+        Assert.Equal("UTC", end["timeZone"]);
+    }
+
+    [Fact]
+    public void BuildWritePayload_TimedEvent_UsesGraphWindowsTimezoneAndLocalWallClock()
+    {
+        var draft = new CreateEventRequest(
+            PimCalendarId,
+            "New York Meeting",
+            null,
+            null,
+            new DateTimeOffset(2026, 7, 12, 13, 0, 0, TimeSpan.Zero),
+            new DateTimeOffset(2026, 7, 12, 14, 0, 0, TimeSpan.Zero),
+            null,
+            TimeZoneId: "America/New_York");
+
+        var payload = OutlookEventMapper.BuildWritePayload(draft, null);
+        var start = Assert.IsType<Dictionary<string, object?>>(payload["start"]);
+        var end = Assert.IsType<Dictionary<string, object?>>(payload["end"]);
+
+        Assert.Equal("2026-07-12T09:00:00.0000000", start["dateTime"]);
+        Assert.Equal("Eastern Standard Time", start["timeZone"]);
+        Assert.Equal("2026-07-12T10:00:00.0000000", end["dateTime"]);
+        Assert.Equal("Eastern Standard Time", end["timeZone"]);
     }
 
     [Fact]

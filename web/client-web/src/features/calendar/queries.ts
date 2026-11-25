@@ -86,7 +86,7 @@ export function useEventDetail(eventId: string | null) {
 }
 
 /*
- * 列表视图（自定义无限下滑）：固定大窗口 [start, end]（约两年）内按页装填，
+ * 列表视图（自定义无限下滑）：固定大窗口 [start, end]（最多 366 天）内按页装填，
  * totalCount 到顶即 hasMore=false——「确实没有更多」由 totalCount 证明，
  * 不需要「连续空窗口」这类启发式。注意后端不保证按开始时间排序，由
  * event-list-model 统一排序分组。

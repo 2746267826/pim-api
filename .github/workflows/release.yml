@@ -1,0 +1,345 @@
+name: Release (promote)
+
+# 正式版发布（手动 / 外部 agent 触发）。
+#
+# 这个 workflow 只做一件事：把「带着新版本号的那次构建」提升成正式版。
+#
+#   1. 校验版本号（x.y.z 且必须大于 master 上 VERSION 的值）与发行说明
+#      （说明必须引用真实并已合并的 PR —— 防编造，见 scripts/ci/validate-release-notes.sh）
+#   2. 开一条只改 VERSION 的 PR，然后自动合并（PR 门禁照走，不绕过保护）
+#   3. 等这次 master 构建跑完 —— 它按常规发出一条 pre-release（带全部资产）
+#   4. 把那条 pre-release 改判为正式版，正文换成给人看的说明
+#
+# 为什么不在本 workflow 里重新构建：正式版必须是「已经过完 CI 的那次构建」。
+# 二次构建会得到另一个产物，等于发了一个没被测过的包。pre-release 里的资产
+# 就是那次构建的产物，直接提升即可。
+#
+# 为什么自动发布（ci.yml）全是 pre-release：GitHub 的 /releases/latest 天生
+# 跳过 pre-release，所以客户端更新检查永远只看到正式版；开发期几十个 dev 版本
+# 不会给用户推"有新版本"。
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Display version, e.g. 1.1.0 (must be greater than VERSION on master)'
+        required: true
+        type: string
+      notes:
+        description: 'Human-readable release notes (markdown; must reference merged PRs like (#123))'
+        required: true
+        type: string
+      promote_tag:
+        description: 'Resume only: promote an existing pre-release tag as-is (skips bump/PR/build wait)'
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: read
+
+concurrency:
+  group: release-promote
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          # 用 PAT 而不是 GITHUB_TOKEN：GITHUB_TOKEN 触发的 push / pull_request
+          # 不会启动任何 workflow，那样 bump PR 永远等不到 CI Gate、合并后的
+          # master 构建也不会跑。PAT（或 GitHub App 令牌）被当作真实用户，才会触发。
+          token: ${{ secrets.PIM_RELEASE_TOKEN || github.token }}
+
+      - name: Preconditions
+        env:
+          RELEASE_TOKEN: ${{ secrets.PIM_RELEASE_TOKEN }}
+          VERSION_INPUT: ${{ inputs.version }}
+          PROMOTE_TAG: ${{ inputs.promote_tag }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$PROMOTE_TAG" && -z "$RELEASE_TOKEN" ]]; then
+            echo "::error::缺少 secret PIM_RELEASE_TOKEN：改版本号要开 PR 并自动合并，必须有一个能触发 workflow 的令牌。"
+            echo "::error::GITHUB_TOKEN 触发的 push/pull_request 不会启动 workflow，PR 永远等不到 CI Gate。"
+            echo "::error::请创建 fine-grained PAT（仅本仓：Contents=RW、Pull requests=RW、Actions=R）或 GitHub App 令牌，存为 secret PIM_RELEASE_TOKEN 后重跑。"
+            exit 1
+          fi
+
+          if [[ -n "$PROMOTE_TAG" ]]; then
+            echo "恢复模式：只提升已存在的 pre-release ${PROMOTE_TAG}（不改版本号、不等构建）"
+            exit 0
+          fi
+
+          if ! [[ "$VERSION_INPUT" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::版本号必须是 x.y.z（收到 '${VERSION_INPUT}'）"
+            exit 1
+          fi
+          CURRENT="$(head -n 1 VERSION | tr -d '\r' | tr -d '[:space:]')"
+          if [[ "$VERSION_INPUT" == "$CURRENT" ]]; then
+            echo "::error::版本号没变（master 上已是 ${CURRENT}）；要发新版请改成一个更大的号"
+            exit 1
+          fi
+          HIGHEST="$(printf '%s\n%s\n' "$CURRENT" "$VERSION_INPUT" | sort -V | tail -n 1)"
+          if [[ "$HIGHEST" != "$VERSION_INPUT" ]]; then
+            echo "::error::版本号必须大于 master 上的 ${CURRENT}（收到 ${VERSION_INPUT}）"
+            exit 1
+          fi
+          echo "版本号检查通过：${CURRENT} → ${VERSION_INPUT}"
+
+      - name: Validate release notes
+        env:
+          GH_TOKEN: ${{ secrets.PIM_RELEASE_TOKEN || github.token }}
+          NOTES: ${{ inputs.notes }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          printf '%s\n' "$NOTES" > "$RUNNER_TEMP/notes.md"
+          bash scripts/ci/validate-release-notes.sh --file "$RUNNER_TEMP/notes.md" --repo "$REPO"
+          echo "说明长度：$(wc -c < "$RUNNER_TEMP/notes.md") 字节"
+
+      # ── 改版本号：开 PR → 自动合并 → 拿到合并提交 ──────────────────────
+      - name: Bump VERSION and merge the PR
+        id: bump
+        if: inputs.promote_tag == ''
+        env:
+          GH_TOKEN: ${{ secrets.PIM_RELEASE_TOKEN }}
+          V: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          BRANCH="release/v${V}"
+          git config user.name "pim-release-bot"
+          git config user.email "pim-release-bot@users.noreply.github.com"
+          git checkout -B "$BRANCH"
+          printf '%s\n' "$V" > VERSION
+          git add VERSION
+          git commit -m "chore(release): v${V} / 正式版 v${V}"
+          # 重跑时分支可能已经在远端：这是一条一次性的发版分支，允许直接覆盖。
+          # （master 上仍然绝不强推，这里是 release/vX.Y.Z。）
+          git push -u origin "$BRANCH" || git push -u origin "$BRANCH" --force
+
+          PR_NUM="$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number // empty')"
+          if [[ -n "$PR_NUM" ]]; then
+            echo "复用已存在的 PR #${PR_NUM}"
+          else
+            # PR 正文保持仓内约定的双语小节，发布说明抽取脚本按这些小节取内容。
+            {
+              echo "## 技术修改 / Technical changes"
+              echo ""
+              echo "- Bump \`VERSION\` to \`${V}\` (display version only; machine version stays CalVer)."
+              echo "- 只改显示版本号文件；机器版本（CalVer + versionCode）不变。"
+              echo ""
+              echo "## 功能变化 / Feature changes"
+              echo ""
+              echo "- 版本号显示为 v${V}。"
+              echo ""
+              echo "## 如何体验 / How to try it"
+              echo ""
+              echo "- 打开 Web 界面，页脚与「设置 → 关于」显示 v${V}。"
+              echo ""
+              echo "## 测试 / Tests"
+              echo ""
+              echo "- 由本仓 CI 在本 PR 与合并提交上运行；正式版只提升已通过 CI 的那次构建。"
+              echo ""
+              echo "---"
+              echo ""
+              echo "由 release workflow 自动创建；合并后会把该次构建提升为正式版。"
+            } > "$RUNNER_TEMP/pr-body.md"
+
+            PR_URL="$(gh pr create --base master --head "$BRANCH" \
+              --title "chore(release): v${V} / 正式版 v${V}" \
+              --body-file "$RUNNER_TEMP/pr-body.md")"
+            PR_NUM="${PR_URL##*/}"
+          fi
+          echo "PR: https://github.com/${GITHUB_REPOSITORY}/pull/${PR_NUM}"
+          echo "pr=$PR_NUM" >> "$GITHUB_OUTPUT"
+
+          HEAD_SHA="$(git rev-parse HEAD)"
+          gh pr merge "$PR_NUM" --squash --auto --match-head-commit "$HEAD_SHA" || true
+
+          DEADLINE=$(( $(date +%s) + 5400 ))
+          MERGE_SHA=""
+          while true; do
+            read -r STATE MERGED_AT CANDIDATE <<<"$(gh pr view "$PR_NUM" \
+              --json state,mergedAt,mergeCommit \
+              --jq '[.state, (.mergedAt // "-"), (.mergeCommit.oid // "-")] | @tsv')"
+            if [[ "$STATE" == "MERGED" ]]; then
+              MERGE_SHA="$CANDIDATE"
+              echo "PR 已合并：$MERGE_SHA"
+              break
+            fi
+            if [[ "$STATE" == "CLOSED" ]]; then
+              echo "::error::PR #${PR_NUM} 被关闭而没有合并，停止发版（版本号未变）"
+              exit 1
+            fi
+            if (( $(date +%s) > DEADLINE )); then
+              echo "::error::等待 PR #${PR_NUM} 自动合并超时（90 分钟）。门禁未通过或自动合并未开启。"
+              echo "::error::检查：https://github.com/${GITHUB_REPOSITORY}/pull/${PR_NUM}；修好后可只重跑本 workflow 的这个 job。"
+              exit 1
+            fi
+            sleep 30
+          done
+          if [[ -z "$MERGE_SHA" || "$MERGE_SHA" == "-" ]]; then
+            echo "::error::拿不到 PR 的合并提交，无法定位构建"
+            exit 1
+          fi
+          echo "merge_sha=$MERGE_SHA" >> "$GITHUB_OUTPUT"
+
+      # ── 等那次 master 构建跑完（它按常规发出 pre-release） ─────────────
+      - name: Wait for the master build of the merge commit
+        id: build
+        if: inputs.promote_tag == ''
+        env:
+          GH_TOKEN: ${{ secrets.PIM_RELEASE_TOKEN }}
+          SHA: ${{ steps.bump.outputs.merge_sha }}
+        run: |
+          set -euo pipefail
+          DEADLINE=$(( $(date +%s) + 7200 ))
+          RUN_ID=""
+          while true; do
+            RUN_ID="$(gh run list --workflow ci.yml --commit "$SHA" --limit 20 \
+              --json databaseId,event --jq '[.[] | select(.event == "push")][0].databaseId // empty')"
+            if [[ -n "$RUN_ID" ]]; then
+              read -r STATUS CONCLUSION <<<"$(gh run view "$RUN_ID" \
+                --json status,conclusion --jq '[.status, (.conclusion // "-")] | @tsv')"
+              echo "构建 run ${RUN_ID}: status=${STATUS} conclusion=${CONCLUSION}"
+              if [[ "$STATUS" == "completed" ]]; then
+                if [[ "$CONCLUSION" != "success" ]]; then
+                  RUN_NUMBER="$(gh run view "$RUN_ID" --json number --jq .number)"
+                  YM="$(gh run view "$RUN_ID" --json createdAt --jq '.createdAt' | cut -c1-7)"
+                  EXPECTED="api-v${YM:2:2}.${YM:5:2}.${RUN_NUMBER}"
+                  echo "::error::合并提交的构建失败（conclusion=${CONCLUSION}）：https://github.com/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}"
+                  echo "::error::PR 已经合并（版本号已改成新号），但没能产出可提升的构建。"
+                  echo "::error::处理：把上面这次 run 里失败的 job 重跑成功后，再执行 gh workflow run release.yml -f promote_tag=${EXPECTED} -f version=<版本号> -f notes=<说明> 完成提升。"
+                  exit 1
+                fi
+                break
+              fi
+            else
+              echo "还没看到 ${SHA} 上的 push 构建，继续等…"
+            fi
+            if (( $(date +%s) > DEADLINE )); then
+              echo "::error::等待合并提交 ${SHA} 的构建超时（2 小时）"
+              echo "::error::去这里看：https://github.com/${GITHUB_REPOSITORY}/actions?query=branch%3Amaster"
+              exit 1
+            fi
+            sleep 30
+          done
+          echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
+
+      # ── 找到这次构建发出的 pre-release ────────────────────────────────
+      - name: Locate the pre-release built from that commit
+        id: rel
+        if: inputs.promote_tag == ''
+        env:
+          GH_TOKEN: ${{ secrets.PIM_RELEASE_TOKEN }}
+          SHA: ${{ steps.bump.outputs.merge_sha }}
+          RUN_ID: ${{ steps.build.outputs.run_id }}
+        run: |
+          set -euo pipefail
+          DEADLINE=$(( $(date +%s) + 900 ))
+          TAG=""
+          while true; do
+            TAG="$(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=50" \
+              --jq "[.[] | select(.target_commitish == \"${SHA}\") | .tag_name][0] // empty")"
+            if [[ -n "$TAG" ]]; then break; fi
+            if (( $(date +%s) > DEADLINE )); then break; fi
+            echo "构建已完成但 release 还没出现，继续等…"
+            sleep 20
+          done
+          if [[ -z "$TAG" ]]; then
+            # 兜底：按 run 号推 tag（ci.yml 用 GITHUB_RUN_NUMBER 生成）
+            RUN_NUMBER="$(gh run view "$RUN_ID" --json number --jq .number)"
+            CREATED="$(gh run view "$RUN_ID" --json createdAt --jq .createdAt)"
+            TAG="api-v${CREATED:2:2}.${CREATED:5:2}.${RUN_NUMBER}"
+            echo "::warning::按合并提交没找到 release，改用 run 号推断 tag=${TAG}"
+          fi
+          if ! gh release view "$TAG" --json tagName >/dev/null 2>&1; then
+            echo "::error::找不到可提升的 release（tag=${TAG}）。构建成功却没发版，去 CI run 里看 release job 日志：https://github.com/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}"
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "待提升的 pre-release：${TAG}"
+
+      # ── 提升为正式版 ──────────────────────────────────────────────────
+      - name: Promote to formal release
+        id: promote
+        env:
+          # 提升只改 release 元数据，不需要触发任何 workflow，用内置令牌即可。
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.promote_tag != '' && inputs.promote_tag || steps.rel.outputs.tag }}
+          V: ${{ inputs.version }}
+          RUN_ID: ${{ steps.build.outputs.run_id }}
+          NOTES: ${{ inputs.notes }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$V" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::版本号必须是 x.y.z（收到 '${V}'）"
+            exit 1
+          fi
+
+          IS_PRE="$(gh release view "$TAG" --json isPrerelease --jq .isPrerelease)"
+          # 必须用 databaseId（REST 数字 id）。`--json id` 给的是 GraphQL 节点 id
+          # （RE_kwDO...），拼进 REST 路径会 404 —— 真踩过，提升看起来成功、其实
+          # latest 没改，用户侧更新检查还指着上一个正式版。
+          RELEASE_ID="$(gh release view "$TAG" --json databaseId --jq .databaseId)"
+          if ! [[ "$RELEASE_ID" =~ ^[0-9]+$ ]]; then
+            echo "::error::拿不到 release 的数字 id（收到 '${RELEASE_ID}'），无法设置 make_latest"
+            exit 1
+          fi
+
+          if [[ "$IS_PRE" != "true" ]]; then
+            # 幂等重跑：正文不再改，但仍确保 latest 指向它（上一次可能就是卡在这里）。
+            echo "::notice::${TAG} 已经是正式版；仍确认 make_latest 指向它"
+            gh api -X PATCH "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" -f make_latest=true >/dev/null
+            echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          printf '%s\n' "$NOTES" > "$RUNNER_TEMP/notes.md"
+          RUN_URL="https://github.com/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}"
+          {
+            cat "$RUNNER_TEMP/notes.md"
+            echo ""
+            echo "---"
+            echo ""
+            echo "内部版本 / internal: \`${TAG}\`"
+            if [[ -n "$RUN_ID" ]]; then
+              echo "构建运行 / build run: [${RUN_ID}](${RUN_URL})"
+            fi
+            echo "构建产物即本正式版的全部资产（不是二次构建）。"
+          } > "$RUNNER_TEMP/final-notes.md"
+
+          gh release edit "$TAG" \
+            --prerelease=false \
+            --title "PIM API v${V} (${TAG})" \
+            --notes-file "$RUNNER_TEMP/final-notes.md"
+
+          # make_latest 显式设置：/releases/latest 是客户端更新检查的入口，不能靠猜。
+          RELEASE_ID="$(gh release view "$TAG" --json id --jq .id)"
+          gh api -X PATCH "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" -f make_latest=true >/dev/null
+          echo "✅ 正式版：${TAG}（显示版本 v${V}）"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Write release summary
+        if: always()
+        env:
+          TAG: ${{ inputs.promote_tag != '' && inputs.promote_tag || steps.rel.outputs.tag }}
+          V: ${{ inputs.version }}
+        run: |
+          {
+            echo "### 正式版发布 v${V}"
+            echo ""
+            echo "| 项 | 值 |"
+            echo "| --- | --- |"
+            echo "| 显示版本 | \`${V}\` |"
+            echo "| 提升的 release | \`${TAG:-未产出}\` |"
+            echo "| 结果 | ${{ job.status }} |"
+            echo ""
+            echo "> /releases/latest 现在指向这条正式版；开发期的 pre-release 不进更新检查。"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,4 +1,3 @@
-using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
@@ -7,6 +6,7 @@ namespace Pim.Module.Mcp.Services;
 public static class McpToolInputPolicy
 {
     private static readonly string[] TaskStatuses = ["NEEDS-ACTION", "IN-PROCESS", "COMPLETED", "CANCELLED"];
+    private static readonly string[] UnsupportedEventTimezoneArgs = ["timezone", "timeZone", "timeZoneId"];
 
     /// <summary>
     /// R01 removed snake_case aliases. They have no compatibility window: any call
@@ -63,18 +63,42 @@ public static class McpToolInputPolicy
 
         if (toolName == "get_events")
         {
+            foreach (var name in UnsupportedEventTimezoneArgs)
+            {
+                if (args.ContainsKey(name))
+                    return Error("get_events does not accept a timezone argument; encode the absolute instant with an ISO 8601 offset in start/end (for example 2026-09-01T08:00:00+08:00)");
+            }
+
             if (args["start"] is null || args["end"] is null)
                 return Error("get_events requires start and end (ISO 8601, maximum 366 days); an unbounded history query is not supported");
+
+            DateTimeOffset startInstant = default;
+            DateTimeOffset endInstant = default;
             foreach (var name in new[] { "start", "end" })
             {
-                if (args[name] is not { } value)
-                    continue;
-                if (value.GetValueKind() != JsonValueKind.String
-                    || !DateTimeOffset.TryParse(value.GetValue<string>(), CultureInfo.InvariantCulture,
-                        DateTimeStyles.AssumeUniversal, out _))
+                var value = args[name]!;
+                if (value.GetValueKind() != JsonValueKind.String)
                     return Error($"{name} must be an ISO 8601 date/time");
+                if (!McpTimeRange.TryParse(value.GetValue<string>(), out var parsed, out var parseError))
+                    return Error($"{name} must be an ISO 8601 date/time: {parseError}");
+                if (name == "start")
+                    startInstant = parsed;
+                else
+                    endInstant = parsed;
             }
+
+            if (startInstant > endInstant)
+                return Error("invalid time range: start must be <= end");
+            if (endInstant - startInstant > McpTimeRange.MaxSpan)
+                return Error("time range too large: max span 366 days");
+
+            args["start"] = McpTimeRange.ToUtcQueryValue(startInstant);
+            args["end"] = McpTimeRange.ToUtcQueryValue(endInstant);
         }
+
+        if (toolName == "search_calendar_events"
+            && NormalizeSearchEventWindow(args, DateTimeOffset.UtcNow) is { } searchWindowError)
+            return searchWindowError;
 
         if (toolName == "get_today_sections" && args.ContainsKey("sectionId"))
             return Error("get_today_sections lists section metadata; use get_today_section(sectionId=...) to read one section");
@@ -85,6 +109,56 @@ public static class McpToolInputPolicy
                 return Error("resourceType must be tree or appRule; use appRule for an id returned by create_category");
         }
 
+        return null;
+    }
+
+    private static JsonObject? NormalizeSearchEventWindow(JsonObject args, DateTimeOffset now)
+    {
+        DateTimeOffset? Parse(string name, out JsonObject? error)
+        {
+            error = null;
+            if (args[name] is not { } node)
+                return null;
+            if (node.GetValueKind() != JsonValueKind.String)
+            {
+                error = Error($"{name} must be an ISO 8601 date/time");
+                return null;
+            }
+            if (!McpTimeRange.TryParse(node.GetValue<string>(), out var parsed, out var parseError))
+            {
+                error = Error($"{name} must be an ISO 8601 date/time: {parseError}");
+                return null;
+            }
+            return parsed;
+        }
+
+        var start = Parse("start", out var startError);
+        if (startError is not null) return startError;
+        var end = Parse("end", out var endError);
+        if (endError is not null) return endError;
+
+        if (start is null && end is null)
+        {
+            var window = McpTimeRange.CenteredWindow(now);
+            start = window.Start;
+            end = window.End;
+        }
+        else if (start is not null && end is null)
+        {
+            end = start.Value.Add(McpTimeRange.MaxSpan);
+        }
+        else if (start is null && end is not null)
+        {
+            start = end.Value.Subtract(McpTimeRange.MaxSpan);
+        }
+
+        if (start!.Value > end!.Value)
+            return Error("invalid time range: start must be <= end");
+        if (end.Value - start.Value > McpTimeRange.MaxSpan)
+            return Error("time range too large: max span 366 days");
+
+        args["start"] = McpTimeRange.ToUtcQueryValue(start.Value);
+        args["end"] = McpTimeRange.ToUtcQueryValue(end.Value);
         return null;
     }
 

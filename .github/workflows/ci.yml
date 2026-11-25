@@ -50,6 +50,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.ver.outputs.version }}
+      display_version: ${{ steps.ver.outputs.display_version }}
       version_code: ${{ steps.ver.outputs.version_code }}
       artifact_slug: ${{ steps.ver.outputs.artifact_slug }}
       git_sha_short: ${{ steps.ver.outputs.git_sha_short }}
@@ -161,6 +162,11 @@ jobs:
               - '.github/workflows/ci.yml'
               - '.github/actions/**'
               - 'scripts/ci/**'
+            # 版本文件单列一组：只改 VERSION 的 master push 必须全量重建（见
+            # decide-components.sh 的 FORCE_ON_VERSION），但 PR 上不该为一个版本号
+            # 白跑一次完整构建——所以不能简单塞进 infra。
+            version:
+              - 'VERSION'
 
       # 基线是否可用：上一版 tag 必须是本次 HEAD 的祖先。历史被改写时（例如拆仓）
       # 那个 tag 上的 diff 没有意义、资产也不能搬运 —— 必须退回"全量构建"，
@@ -258,6 +264,10 @@ jobs:
           F_API: ${{ steps.filter.outputs.api }}
           F_DOCKER: ${{ steps.filter.outputs.docker }}
           F_MCP: ${{ steps.filter.outputs.mcp }}
+          # VERSION 变了要在 master 上强制全量重建：显示版本号被烘进前端产物与
+          # release 资产，只改它而不重建会让发布 job 搬上一版的旧资产，正式版带旧号。
+          # PR 上不强制（就一个版本号，没必要白跑一次完整构建）。
+          FORCE_ON_VERSION: ${{ github.ref == 'refs/heads/master' && steps.filter.outputs.version || 'false' }}
         run: bash "$GITHUB_WORKSPACE/scripts/ci/decide-components.sh"
 
   # 同仓前端构建与校验：lint / 单测 / 契约一致 / 产物完整性。
@@ -286,6 +296,9 @@ jobs:
           bash scripts/ci/test-decide-components.sh
           bash scripts/ci/test-evaluate-gate.sh
           bash scripts/ci/test-build-web-ledger.sh
+          # 显示版本号读错了会让正式版带错号，且不影响任何编译 —— 只能靠测试拦住。
+          bash scripts/ci/test-resolve-version.sh
+          bash scripts/ci/test-validate-release-notes.sh
           # 契约变更检测与客户端通知（#415）：判定错了不会有别的信号，只会静默地不通知。
           bash scripts/ci/test-detect-contract-change.sh
           bash scripts/ci/test-notify-contract-sync.sh
@@ -329,6 +342,8 @@ jobs:
         env:
           VITE_APP_VERSION: ${{ needs.resolve-version.outputs.version }}
           VITE_GIT_SHA: ${{ needs.resolve-version.outputs.git_sha_short }}
+          # 给人看的版本号（1.0.0），来源是仓根 VERSION 文件；上面那个是机器用的 CalVer。
+          VITE_DISPLAY_VERSION: ${{ needs.resolve-version.outputs.display_version }}
         run: npm run build
 
       - name: Write web-version.json into dist
@@ -362,6 +377,7 @@ jobs:
             echo "| --- | --- |"
             echo "| 源码 | \`web/client-web\` |"
             echo "| 前端版本 | \`${{ needs.resolve-version.outputs.version }}\` |"
+            echo "| 显示版本 | \`${{ needs.resolve-version.outputs.display_version }}\` |"
             echo "| git sha | \`${{ needs.resolve-version.outputs.git_sha_short }}\` |"
             echo "| 构建时间(UTC) | \`${{ steps.meta.outputs.built_at }}\` |"
           } >> "$GITHUB_STEP_SUMMARY"
@@ -484,6 +500,7 @@ jobs:
           echo "| 🤖 MCP | ${{ needs.build-mcp.result == 'success' && '✅ Built' || needs.build-mcp.result == 'skipped' && '⏭️ Skipped' || '❌ Failed' }} |"
           echo ""
           echo "数组件判定：all=${{ needs.changes.outputs.all }} api=${{ needs.changes.outputs.api }} docker=${{ needs.changes.outputs.docker }} mcp=${{ needs.changes.outputs.mcp }}"
+          echo "显示版本（VERSION 文件）：${{ needs.resolve-version.outputs.display_version }}；机器版本：${{ needs.resolve-version.outputs.version }}"
           echo "内嵌前端（同仓）：${{ needs.web-build.outputs.version }} / ${{ needs.web-build.outputs.git_sha }}"
           echo "契约变化检测：changed=${{ needs.changes.outputs.contract_changed }}（sha256=${{ needs.changes.outputs.contract_sha256 }}，${{ needs.changes.outputs.contract_bytes }} 字节）；客户端通知 job：${{ needs.contract-notify.result }}"
           echo ""
@@ -685,6 +702,10 @@ jobs:
             --to-tag "${{ needs.resolve-version.outputs.release_tag }}" \
             "${FROM_ARGS[@]}")"
 
+          # 显示版本号（给人看的 1.0.0）放在最前面：正式版正文也由这里改写，
+          # 因此两个号永远同时可见，不会出现"只有好看号、对不上内部版本"的情况。
+          NOTES="显示版本 / Display version: \`${{ needs.resolve-version.outputs.display_version }}\`（内部版本 / internal: \`${{ needs.resolve-version.outputs.version }}\`）"$'\n\n'"${NOTES}"
+
           # REQ-10：release 说明里加一行前端版本，一眼看出前端有没有动。
           # 数据取自本次 release 实际附带的台账（新烘的或从上版搬运的都算），
           # 因此与台账逐字一致；取不到就明说取不到，不猜。
@@ -713,6 +734,12 @@ jobs:
           target_commitish: ${{ github.sha }}
           name: ${{ needs.resolve-version.outputs.release_tag }}
           body: ${{ steps.notes.outputs.notes }}
+          # 自动发布的一律是 dev 版（pre-release）。正式版由 release.yml 把「改版本号
+          # 那次构建」提升上来（gh release edit --prerelease=false），因此：
+          #   * GitHub 的 /releases/latest 天生跳过 pre-release → 更新检查始终指向最后
+          #     一个正式版，开发期不会给用户推一堆"新版本"；
+          #   * tag 名与资产格式一个字未变，增量构建基线与上版搬运逻辑不受影响。
+          prerelease: true
           files: |
             release-assets/pim-api-v*.tar.gz
             release-assets/pim-api-server-*.tar.gz
