@@ -34,6 +34,8 @@ public sealed class DeviceMergeRealDbTests
         "mobile_usage_sessions",
         "mobile_usage_summaries",
         "mobile_location_points",
+        "mobile_location_point_revisions",
+        "mobile_location_segment_merges",
         "mobile_sync_batches",
         "mobile_timeline_blocks",
         "mobile_usage_aggregates",
