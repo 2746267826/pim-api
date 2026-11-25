@@ -187,8 +187,8 @@ public sealed class DeviceManagementService
     /// <summary>
     /// 删除源设备上与目标设备唯一键重复的行，使接下来的整体改写不会撞唯一索引。
     ///
-    /// 覆盖 events / summaries / sync_batches / forensic / location_points 五张
-    /// 唯一索引含 device_id 的表。其余会被改写的移动端表不会冲突：sessions 没有唯一索引；
+    /// 覆盖 events / summaries / sync_batches / forensic / location_points /
+    /// location_segment_merges 这些唯一索引含 device_id 的表。其余会被改写的移动端表不会冲突：sessions 没有唯一索引；
     /// dropped_reason_daily 走"相加"合并、app_catalog 走"保留最新一份"，
     /// 两者都在各自的方法里做冲突消解。派生表（timeline_blocks / usage_aggregates /
     /// analytics_materializations）虽然有同类唯一索引，但合并策略是**删除而不是改写**，
@@ -244,11 +244,23 @@ public sealed class DeviceManagementService
         // 与其它表同一条规则：保留目标设备已有的那一份。
         var locations = _db.Set<MobileLocationPointEntity>();
         await locations
+            .IgnoreQueryFilters()
             .Where(p => p.UserId == userId && p.DeviceId == sourceDeviceId)
-            .Where(p => locations.Any(t => t.UserId == userId && t.DeviceId == targetDeviceId
+            .Where(p => locations.IgnoreQueryFilters().Any(t => t.UserId == userId && t.DeviceId == targetDeviceId
                 && t.RecordedAtUtc == p.RecordedAtUtc
                 && t.Latitude == p.Latitude
                 && t.Longitude == p.Longitude))
+            .ExecuteDeleteAsync(ct);
+
+        // 分段合并的人工覆盖以 (user, device, before_point_id, after_point_id) 唯一。
+        // 重装前后两台设备可能对同一轨迹边界各保存过一次合并，直接改写 device_id 会撞唯一索引。
+        // 与其它表一致：保留目标设备已有的选择，删除源设备上的重复覆盖。
+        var segmentMerges = _db.Set<MobileLocationSegmentMergeEntity>();
+        await segmentMerges
+            .Where(m => m.UserId == userId && m.DeviceId == sourceDeviceId)
+            .Where(m => segmentMerges.Any(t => t.UserId == userId && t.DeviceId == targetDeviceId
+                && t.BeforePointId == m.BeforePointId
+                && t.AfterPointId == m.AfterPointId))
             .ExecuteDeleteAsync(ct);
     }
 
@@ -261,7 +273,16 @@ public sealed class DeviceManagementService
         await _db.Set<MobileUsageEventEntity>().Where(e => e.UserId == userId && e.DeviceId == sourceDeviceId).ExecuteUpdateAsync(s => s.SetProperty(e => e.DeviceId, targetDeviceId), ct);
         await _db.Set<MobileUsageSessionEntity>().Where(e => e.UserId == userId && e.DeviceId == sourceDeviceId).ExecuteUpdateAsync(s => s.SetProperty(e => e.DeviceId, targetDeviceId), ct);
         await _db.Set<MobileUsageSummaryEntity>().Where(e => e.UserId == userId && e.DeviceId == sourceDeviceId).ExecuteUpdateAsync(s => s.SetProperty(e => e.DeviceId, targetDeviceId), ct);
-        await _db.Set<MobileLocationPointEntity>().Where(e => e.UserId == userId && e.DeviceId == sourceDeviceId).ExecuteUpdateAsync(s => s.SetProperty(e => e.DeviceId, targetDeviceId), ct);
+        await _db.Set<MobileLocationPointEntity>()
+            .IgnoreQueryFilters()
+            .Where(e => e.UserId == userId && e.DeviceId == sourceDeviceId)
+            .ExecuteUpdateAsync(s => s.SetProperty(e => e.DeviceId, targetDeviceId), ct);
+        await _db.Set<MobileLocationPointRevisionEntity>()
+            .Where(e => e.UserId == userId && e.DeviceId == sourceDeviceId)
+            .ExecuteUpdateAsync(s => s.SetProperty(e => e.DeviceId, targetDeviceId), ct);
+        await _db.Set<MobileLocationSegmentMergeEntity>()
+            .Where(e => e.UserId == userId && e.DeviceId == sourceDeviceId)
+            .ExecuteUpdateAsync(s => s.SetProperty(e => e.DeviceId, targetDeviceId), ct);
         await _db.Set<MobileSyncBatchEntity>().Where(e => e.UserId == userId && e.DeviceId == sourceDeviceId).ExecuteUpdateAsync(s => s.SetProperty(e => e.DeviceId, targetDeviceId), ct);
         // 取证事件（REQ-1~REQ-4）与丢弃原因统计（REQ-9）随设备一起并入：
         // 它们是"这台设备当时活着/死了"的原始证据，丢掉就等于把合并前的死因取证抹掉。
@@ -701,6 +722,8 @@ public sealed class DeviceManagementService
         var sessions = _db.Set<MobileUsageSessionEntity>();
         var summaries = _db.Set<MobileUsageSummaryEntity>();
         var locations = _db.Set<MobileLocationPointEntity>();
+        var locationRevisions = _db.Set<MobileLocationPointRevisionEntity>();
+        var segmentMerges = _db.Set<MobileLocationSegmentMergeEntity>();
         var batches = _db.Set<MobileSyncBatchEntity>();
         var forensic = _db.Set<MobileForensicEventEntity>();
         var droppedReasons = _db.Set<MobileDroppedReasonDailyEntity>();
@@ -724,8 +747,15 @@ public sealed class DeviceManagementService
                 ct => summaries.CountAsync(e => e.UserId == userId && deviceIds.Contains(e.DeviceId), ct),
                 ct => summaries.Where(e => e.UserId == userId && deviceIds.Contains(e.DeviceId)).ExecuteDeleteAsync(ct)),
             new(DeviceScopedTables.LocationPoints,
-                ct => locations.CountAsync(e => e.UserId == userId && deviceIds.Contains(e.DeviceId), ct),
-                ct => locations.Where(e => e.UserId == userId && deviceIds.Contains(e.DeviceId)).ExecuteDeleteAsync(ct)),
+                // 软删除点仍留在库中；删设备时必须一并清掉，否则会成为永远不可见的孤儿行。
+                ct => locations.IgnoreQueryFilters().CountAsync(e => e.UserId == userId && deviceIds.Contains(e.DeviceId), ct),
+                ct => locations.IgnoreQueryFilters().Where(e => e.UserId == userId && deviceIds.Contains(e.DeviceId)).ExecuteDeleteAsync(ct)),
+            new(DeviceScopedTables.LocationPointRevisions,
+                ct => locationRevisions.CountAsync(e => e.UserId == userId && deviceIds.Contains(e.DeviceId), ct),
+                ct => locationRevisions.Where(e => e.UserId == userId && deviceIds.Contains(e.DeviceId)).ExecuteDeleteAsync(ct)),
+            new(DeviceScopedTables.LocationSegmentMerges,
+                ct => segmentMerges.CountAsync(e => e.UserId == userId && deviceIds.Contains(e.DeviceId), ct),
+                ct => segmentMerges.Where(e => e.UserId == userId && deviceIds.Contains(e.DeviceId)).ExecuteDeleteAsync(ct)),
             new(DeviceScopedTables.SyncBatches,
                 ct => batches.CountAsync(e => e.UserId == userId && deviceIds.Contains(e.DeviceId), ct),
                 ct => batches.Where(e => e.UserId == userId && deviceIds.Contains(e.DeviceId)).ExecuteDeleteAsync(ct)),
@@ -955,6 +985,8 @@ internal static class DeviceScopedTables{
     public const string UsageSessions = "mobile_usage_sessions";
     public const string UsageSummaries = "mobile_usage_summaries";
     public const string LocationPoints = "mobile_location_points";
+    public const string LocationPointRevisions = "mobile_location_point_revisions";
+    public const string LocationSegmentMerges = "mobile_location_segment_merges";
     public const string SyncBatches = "mobile_sync_batches";
     public const string ForensicEvents = "mobile_forensic_events";
     public const string DroppedReasonDaily = "mobile_dropped_reason_daily";

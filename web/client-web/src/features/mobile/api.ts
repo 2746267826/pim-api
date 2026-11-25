@@ -1,18 +1,24 @@
-import { apiDelete, apiGet, apiPost } from '@/api/client'
+import { apiDelete, apiGet, apiPatch, apiPost } from '@/api/client'
 import type { components } from '@/api/generated'
 import type {
   DeviceDeletePreview,
   DeviceMergePreview,
   FrequentPlace,
   LivenessOverview,
+  LocationBatchMutationResult,
+  LocationPointDeleteResult,
+  LocationPointMutationResult,
   LocationOverview,
   LocationTrack,
+  ManagedLocationPointPage,
   MobileAnalyticsOverview,
   MobileChartDto as MobileAnalyticsChartDto,
   MobileHeatmapBucket,
   MobileTimelineBlock,
   MovementStats,
+  SavedPlace,
   SegmentPointsPage,
+  SegmentMergeResult,
 } from './types'
 
 /** 位置分析公共查询参数组（rangeStartUtc/rangeEndUtc/timezone/deviceId/maxAccuracy/includeRejected + force） */
@@ -101,6 +107,55 @@ export const mobileApi = {
     apiGet<SegmentPointsPage>(
       `/api/v1/mobile/location/analytics/segments/${encodeURIComponent(segmentId)}/points?${locQ(params)}`,
     ),
+
+  /** P05：原始点管理列表（含被排除点，永久删除点由服务端隐藏） */
+  managedPoints: (params: Record<string, unknown>) =>
+    apiGet<ManagedLocationPointPage>(`/api/v1/mobile/location/points?${locQ(params)}`),
+  correctPoint: (
+    pointId: string,
+    body: { latitude: number; longitude: number; revision: number; excluded?: boolean | null; reason?: string | null },
+  ) => apiPatch<LocationPointMutationResult>(`/api/v1/mobile/location/points/${encodeURIComponent(pointId)}`, body),
+  restorePoint: (pointId: string, body: { revision: number; reason?: string | null }) =>
+    apiPost<LocationPointMutationResult>(
+      `/api/v1/mobile/location/points/${encodeURIComponent(pointId)}/restore`,
+      body,
+    ),
+  setPointExclusions: (body: {
+    items: { pointId: string; revision: number }[]
+    excluded: boolean
+    reason?: string | null
+  }) => apiPost<LocationBatchMutationResult>('/api/v1/mobile/location/points/exclusions', body),
+  deletePoint: (pointId: string, revision: number) =>
+    apiDelete<LocationPointDeleteResult>(
+      `/api/v1/mobile/location/points/${encodeURIComponent(pointId)}?revision=${encodeURIComponent(String(revision))}`,
+    ),
+  fillPoint: (body: {
+    deviceId: string
+    recordedAtUtc: string
+    latitude: number
+    longitude: number
+    horizontalAccuracyMeters?: number
+    reason?: string | null
+  }) => apiPost<LocationPointMutationResult>('/api/v1/mobile/location/points/fill', body),
+  mergeSegments: (body: {
+    segmentIds: string[]
+    kind: 'stay' | 'move'
+    rangeStartUtc: string
+    rangeEndUtc: string
+    timezone?: string
+    deviceId?: string
+    reason?: string | null
+  }) => apiPost<SegmentMergeResult>('/api/v1/mobile/location/segments/merge', body),
+  savedPlaces: () => apiGet<SavedPlace[]>('/api/v1/mobile/location/places'),
+  createSavedPlace: (body: {
+    name: string
+    type?: string
+    centerLatitude: number
+    centerLongitude: number
+    radiusMeters: number
+  }) => apiPost<SavedPlace>('/api/v1/mobile/location/places', body),
+  updateSavedPlace: (placeId: string, body: { name: string; type?: string; revision: number }) =>
+    apiPatch<SavedPlace>(`/api/v1/mobile/location/places/${encodeURIComponent(placeId)}`, body),
 
   /** 全站唯一 cursor 分页（历史位置原始点表，cursor 栈回退） */
   rawPointsPager(segmentId: string, base: Record<string, unknown>) {

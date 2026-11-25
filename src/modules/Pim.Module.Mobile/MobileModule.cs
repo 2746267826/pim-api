@@ -40,6 +40,8 @@ public sealed class MobileModule : IModule
             sp => sp.GetRequiredService<MobileLivenessService>());
         services.AddScoped<MobileSessionInterpreter>();
         services.AddScoped<MobileLocationService>();
+        services.AddScoped<MobileLocationCorrectionService>();
+        services.AddScoped<MobileSavedPlaceService>();
         services.AddScoped<MobileLocationQueryService>();
         services.AddScoped<MobileLocationAggregationService>();
         services.AddScoped<MobileFrequentPlaceService>();
@@ -282,6 +284,145 @@ public sealed class MobileModule : IModule
         .Produces<ApiResponse<MobileLocationPointsUploadResult>>(200)
         .Produces(401)
         .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
+
+        // P05：历史位置手动纠正。GET 与既有上传 POST 共用 /location/points 路径，
+        // 语义分别是大数据量原始点管理列表与采集端上报，互不影响。
+        group.MapGet("/location/points", async (
+            [AsParameters] MobileManagedLocationEndpointQuery query,
+            [FromServices] MobileLocationCorrectionService service,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<MobileManagedLocationPointPageDto>.Ok(
+                await service.GetPointsAsync(query.ToRequest(), ct))))
+        .Produces<ApiResponse<MobileManagedLocationPointPageDto>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
+
+        group.MapPatch("/location/points/{pointId:guid}", async (
+            [FromRoute] Guid pointId,
+            [FromBody] MobileLocationPointCorrectionRequest request,
+            [FromServices] MobileLocationCorrectionService service,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<MobileLocationPointMutationResult>.Ok(
+                await service.CorrectAsync(pointId, request, ct))))
+        .Produces<ApiResponse<MobileLocationPointMutationResult>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(404)
+        .Produces<ApiResponse<string>>(409)
+        .Produces<ApiResponse<string>>(500);
+
+        group.MapPost("/location/points/{pointId:guid}/restore", async (
+            [FromRoute] Guid pointId,
+            [FromBody] MobileLocationPointRestoreRequest request,
+            [FromServices] MobileLocationCorrectionService service,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<MobileLocationPointMutationResult>.Ok(
+                await service.RestoreAsync(pointId, request, ct))))
+        .Produces<ApiResponse<MobileLocationPointMutationResult>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(404)
+        .Produces<ApiResponse<string>>(409)
+        .Produces<ApiResponse<string>>(500);
+
+        group.MapPost("/location/points/exclusions", async (
+            [FromBody] MobileLocationPointExclusionRequest request,
+            [FromServices] MobileLocationCorrectionService service,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<MobileLocationBatchMutationResult>.Ok(
+                await service.SetExclusionAsync(request, ct))))
+        .Produces<ApiResponse<MobileLocationBatchMutationResult>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(404)
+        .Produces<ApiResponse<string>>(409)
+        .Produces<ApiResponse<string>>(500);
+
+        group.MapDelete("/location/points/{pointId:guid}", async (
+            [FromRoute] Guid pointId,
+            [FromQuery] int? revision,
+            [FromServices] MobileLocationCorrectionService service,
+            CancellationToken ct) =>
+        {
+            if (revision is null)
+                throw new Pim.Core.Exceptions.DomainException(6208, "永久删除必须携带当前修订号。");
+            return Results.Ok(ApiResponse<MobileLocationPointDeleteResult>.Ok(
+                await service.DeleteAsync(pointId, revision.Value, ct)));
+        })
+        .Produces<ApiResponse<MobileLocationPointDeleteResult>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(404)
+        .Produces<ApiResponse<string>>(409)
+        .Produces<ApiResponse<string>>(500);
+
+        group.MapGet("/location/points/{pointId:guid}/revisions", async (
+            [FromRoute] Guid pointId,
+            [FromServices] MobileLocationCorrectionService service,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<IReadOnlyList<MobileLocationPointRevisionDto>>.Ok(
+                await service.GetRevisionsAsync(pointId, ct))))
+        .Produces<ApiResponse<IReadOnlyList<MobileLocationPointRevisionDto>>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(404)
+        .Produces<ApiResponse<string>>(500);
+
+        group.MapPost("/location/points/fill", async (
+            [FromBody] MobileLocationFillRequest request,
+            [FromServices] MobileLocationCorrectionService service,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<MobileLocationPointMutationResult>.Ok(
+                await service.FillAsync(request, ct))))
+        .Produces<ApiResponse<MobileLocationPointMutationResult>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(404)
+        .Produces<ApiResponse<string>>(409)
+        .Produces<ApiResponse<string>>(500);
+
+        group.MapPost("/location/segments/merge", async (
+            [FromBody] MobileLocationSegmentMergeRequest request,
+            [FromServices] MobileLocationCorrectionService service,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<MobileLocationSegmentMergeResult>.Ok(
+                await service.MergeAdjacentSegmentsAsync(request, ct))))
+        .Produces<ApiResponse<MobileLocationSegmentMergeResult>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(404)
+        .Produces<ApiResponse<string>>(500);
+
+        group.MapGet("/location/places", async (
+            [FromServices] MobileSavedPlaceService service,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<IReadOnlyList<MobileSavedPlaceDto>>.Ok(await service.ListAsync(ct))))
+        .Produces<ApiResponse<IReadOnlyList<MobileSavedPlaceDto>>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(500);
+
+        group.MapPost("/location/places", async (
+            [FromBody] MobileSavedPlaceCreateRequest request,
+            [FromServices] MobileSavedPlaceService service,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<MobileSavedPlaceDto>.Ok(await service.CreateAsync(request, ct))))
+        .Produces<ApiResponse<MobileSavedPlaceDto>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
+
+        group.MapPatch("/location/places/{placeId:guid}", async (
+            [FromRoute] Guid placeId,
+            [FromBody] MobileSavedPlaceUpdateRequest request,
+            [FromServices] MobileSavedPlaceService service,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<MobileSavedPlaceDto>.Ok(await service.UpdateAsync(placeId, request, ct))))
+        .Produces<ApiResponse<MobileSavedPlaceDto>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(404)
+        .Produces<ApiResponse<string>>(409)
         .Produces<ApiResponse<string>>(500);
 
         group.MapGet("/summary", async (
@@ -873,6 +1014,28 @@ public sealed record MobileLocationEndpointQuery(
             DeviceId,
             MaxAccuracyMeters,
             IncludeRejected,
+            Cursor,
+            PageSize);
+}
+
+public sealed record MobileManagedLocationEndpointQuery(
+    DateTimeOffset? RangeStartUtc,
+    DateTimeOffset? RangeEndUtc,
+    string? Timezone,
+    string? DeviceId,
+    string? SegmentId,
+    bool IncludeExcluded,
+    string? Cursor,
+    int? PageSize)
+{
+    public MobileManagedLocationQueryRequest ToRequest()
+        => new(
+            RangeStartUtc,
+            RangeEndUtc,
+            Timezone,
+            DeviceId,
+            SegmentId,
+            IncludeExcluded,
             Cursor,
             PageSize);
 }

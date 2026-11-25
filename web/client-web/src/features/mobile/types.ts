@@ -176,6 +176,73 @@ export interface FrequentPlace {
   pointCount: number
   visitDayCount: number
   isHome: boolean
+  savedPlaceId?: string | null
+  name?: string | null
+  type?: string | null
+  savedPlaceRevision?: number | null
+}
+
+export interface ManagedLocationPoint {
+  id: string
+  deviceId: string
+  recordedAtUtc: string
+  latitude: number
+  longitude: number
+  originalLatitude: number | null
+  originalLongitude: number | null
+  horizontalAccuracyMeters: number
+  provider: string
+  sourceKind: string
+  quality: string
+  isExcluded: boolean
+  isCorrected: boolean
+  revision: number
+  excludedAtUtc: string | null
+  updatedAtUtc: string | null
+}
+
+export interface ManagedLocationPointPage {
+  items: ManagedLocationPoint[]
+  nextCursor: string | null
+  hasMore: boolean
+}
+
+export interface SavedPlace {
+  id: string
+  name: string
+  type: string
+  centerLatitude: number
+  centerLongitude: number
+  radiusMeters: number
+  isEnabled: boolean
+  revision: number
+  createdAtUtc: string
+  updatedAtUtc: string
+}
+
+export interface LocationPointMutationResult {
+  point: ManagedLocationPoint
+  recomputedAtUtc: string
+}
+
+export interface LocationBatchMutationResult {
+  updatedCount: number
+  items: { pointId: string; outcome: string; message?: string | null }[]
+  recomputedAtUtc: string
+}
+
+export interface LocationPointDeleteResult {
+  pointId: string
+  deletedAtUtc: string
+  recomputedAtUtc: string
+}
+
+export interface SegmentMergeResult {
+  kind: string
+  boundaryPointId: string
+  rangeStartUtc: string
+  rangeEndUtc: string
+  recomputedAtUtc: string
 }
 
 export interface LocationOverview {

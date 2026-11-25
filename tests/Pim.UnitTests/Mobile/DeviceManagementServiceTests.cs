@@ -382,6 +382,64 @@ public sealed class DeviceManagementServiceTests
     }
 
     [Fact]
+    public async Task MergeAsync_KeepsTargetSegmentMergeWhenSourceRepeatsTheBoundary()
+    {
+        await using var ctx = await DeviceManagementTestDb.CreateAsync();
+        var db = ctx.Db;
+        SeedDevice(db, TargetDeviceId, Now);
+        SeedDevice(db, SourceDeviceA, Now.AddDays(-60));
+        var sharedBoundary = Guid.NewGuid();
+        var targetMerge = new MobileLocationSegmentMergeEntity
+        {
+            UserId = MobileTestHelpers.UserId,
+            DeviceId = TargetDeviceId,
+            BeforePointId = sharedBoundary,
+            AfterPointId = sharedBoundary,
+            Kind = "stay",
+            ActorUserId = MobileTestHelpers.UserId,
+            CreatedAt = Now.AddDays(-2)
+        };
+        db.Set<MobileLocationSegmentMergeEntity>().AddRange(
+            targetMerge,
+            new MobileLocationSegmentMergeEntity
+            {
+                UserId = MobileTestHelpers.UserId,
+                DeviceId = SourceDeviceA,
+                BeforePointId = sharedBoundary,
+                AfterPointId = sharedBoundary,
+                Kind = "move",
+                ActorUserId = MobileTestHelpers.UserId,
+                CreatedAt = Now.AddDays(-1)
+            },
+            new MobileLocationSegmentMergeEntity
+            {
+                UserId = MobileTestHelpers.UserId,
+                DeviceId = SourceDeviceA,
+                BeforePointId = Guid.NewGuid(),
+                AfterPointId = Guid.NewGuid(),
+                Kind = "move",
+                ActorUserId = MobileTestHelpers.UserId,
+                CreatedAt = Now.AddDays(-1)
+            });
+        await db.SaveChangesAsync();
+        var service = CreateService(db);
+
+        await service.MergeAsync([SourceDeviceA], TargetDeviceId, CancellationToken.None);
+
+        db.ChangeTracker.Clear();
+        var merges = await db.Set<MobileLocationSegmentMergeEntity>()
+            .Where(row => row.UserId == MobileTestHelpers.UserId)
+            .ToListAsync();
+        Assert.Equal(2, merges.Count);
+        Assert.DoesNotContain(merges, row => row.DeviceId == SourceDeviceA);
+        var retained = Assert.Single(merges, row =>
+            row.BeforePointId == sharedBoundary && row.AfterPointId == sharedBoundary);
+        Assert.Equal(targetMerge.Id, retained.Id);
+        Assert.Equal("stay", retained.Kind);
+        Assert.Single(merges, row => row.Id != targetMerge.Id && row.DeviceId == TargetDeviceId);
+    }
+
+    [Fact]
     public async Task PreviewMergeAsync_RejectsAnEmptyOrNullSourceList()
     {
         await using var ctx = await DeviceManagementTestDb.CreateAsync();
@@ -545,6 +603,8 @@ public sealed class DeviceManagementServiceTests
         if (await db.Set<MobileUsageSessionEntity>().AnyAsync(e => e.DeviceId == deviceId)) hits.Add("sessions");
         if (await db.Set<MobileUsageSummaryEntity>().AnyAsync(e => e.DeviceId == deviceId)) hits.Add("summaries");
         if (await db.Set<MobileLocationPointEntity>().AnyAsync(e => e.DeviceId == deviceId)) hits.Add("locations");
+        if (await db.Set<MobileLocationPointRevisionEntity>().AnyAsync(e => e.DeviceId == deviceId)) hits.Add("location-revisions");
+        if (await db.Set<MobileLocationSegmentMergeEntity>().AnyAsync(e => e.DeviceId == deviceId)) hits.Add("segment-merges");
         if (await db.Set<MobileSyncBatchEntity>().AnyAsync(e => e.DeviceId == deviceId)) hits.Add("batches");
         if (await db.Set<MobileTimelineBlockEntity>().AnyAsync(e => e.DeviceId == deviceId)) hits.Add("timeline");
         if (await db.Set<MobileUsageAggregateEntity>().AnyAsync(e => e.DeviceId == deviceId)) hits.Add("aggregates");

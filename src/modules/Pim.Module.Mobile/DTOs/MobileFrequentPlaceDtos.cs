@@ -6,7 +6,11 @@ public sealed record MobileFrequentPlaceDto(
     double RadiusMeters,
     int PointCount,
     int VisitDayCount,
-    bool IsHome);
+    bool IsHome,
+    Guid? SavedPlaceId = null,
+    string? Name = null,
+    string? Type = null,
+    int? SavedPlaceRevision = null);
 
 public sealed record MobileFrequentPlacesResponse(
     MobileFrequentPlaceDto? Home,

@@ -28,6 +28,40 @@ public sealed class MobileLocationPointEntity : IUserOwnedEntity
     [Column("longitude")]
     public decimal Longitude { get; set; }
 
+    /// <summary>
+    /// 第一次人工纠正前的原始坐标。为空表示这条点从未被纠正过；
+    /// 恢复原始坐标后仍保留，用于再次区分“当前采用值”和“采集值”。
+    /// </summary>
+    [Column("original_latitude")]
+    public decimal? OriginalLatitude { get; set; }
+
+    [Column("original_longitude")]
+    public decimal? OriginalLongitude { get; set; }
+
+    /// <summary>乐观并发修订号。每次人工修改（纠正/排除/恢复/删除）递增一次。</summary>
+    [Column("revision")]
+    public int Revision { get; set; }
+
+    /// <summary>人工标记为误报；仍保留原始点，但不再参与轨迹、里程、速度、常去地点和统计。</summary>
+    [Column("is_excluded")]
+    public bool IsExcluded { get; set; }
+
+    [Column("excluded_at_utc")]
+    public DateTimeOffset? ExcludedAtUtc { get; set; }
+
+    [Column("excluded_by_user_id")]
+    public Guid? ExcludedByUserId { get; set; }
+
+    /// <summary>用户确认永久删除的时间；置位后该点不再由任何历史位置接口返回。</summary>
+    [Column("deleted_at_utc")]
+    public DateTimeOffset? DeletedAtUtc { get; set; }
+
+    [Column("deleted_by_user_id")]
+    public Guid? DeletedByUserId { get; set; }
+
+    [Column("updated_at")]
+    public DateTimeOffset? UpdatedAt { get; set; }
+
     [Column("horizontal_accuracy_meters")]
     public decimal HorizontalAccuracyMeters { get; set; }
 

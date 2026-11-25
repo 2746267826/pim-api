@@ -582,6 +582,8 @@ public sealed class DeviceMergeScopeTests
         if (await db.Set<MobileUsageSessionEntity>().IgnoreQueryFilters().AnyAsync(e => e.UserId == userId && e.DeviceId == deviceId)) hits.Add(DeviceScopedTables.UsageSessions);
         if (await db.Set<MobileUsageSummaryEntity>().IgnoreQueryFilters().AnyAsync(e => e.UserId == userId && e.DeviceId == deviceId)) hits.Add(DeviceScopedTables.UsageSummaries);
         if (await db.Set<MobileLocationPointEntity>().IgnoreQueryFilters().AnyAsync(e => e.UserId == userId && e.DeviceId == deviceId)) hits.Add(DeviceScopedTables.LocationPoints);
+        if (await db.Set<MobileLocationPointRevisionEntity>().IgnoreQueryFilters().AnyAsync(e => e.UserId == userId && e.DeviceId == deviceId)) hits.Add(DeviceScopedTables.LocationPointRevisions);
+        if (await db.Set<MobileLocationSegmentMergeEntity>().IgnoreQueryFilters().AnyAsync(e => e.UserId == userId && e.DeviceId == deviceId)) hits.Add(DeviceScopedTables.LocationSegmentMerges);
         if (await db.Set<MobileSyncBatchEntity>().IgnoreQueryFilters().AnyAsync(e => e.UserId == userId && e.DeviceId == deviceId)) hits.Add(DeviceScopedTables.SyncBatches);
         if (await db.Set<MobileForensicEventEntity>().IgnoreQueryFilters().AnyAsync(e => e.UserId == userId && e.DeviceId == deviceId)) hits.Add(DeviceScopedTables.ForensicEvents);
         if (await db.Set<MobileDroppedReasonDailyEntity>().IgnoreQueryFilters().AnyAsync(e => e.UserId == userId && e.DeviceId == deviceId)) hits.Add(DeviceScopedTables.DroppedReasonDaily);

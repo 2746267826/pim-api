@@ -74,6 +74,8 @@ public class ExceptionMiddlewareTests
     [InlineData(MobileSyncErrorCodes.PayloadConflict)]
     [InlineData(MobileSyncErrorCodes.RetryExhausted)]
     [InlineData(MobileSyncErrorCodes.LeaseLost)]
+    [InlineData(6204)]
+    [InlineData(6205)]
     public async Task InvokeAsync_MapsMobileSyncConflictCodesTo409(int errorCode)
     {
         var context = new DefaultHttpContext();

@@ -338,6 +338,8 @@ public sealed class DeviceScopeRealDbTests
                 DeviceScopedTables.UsageSessions,
                 DeviceScopedTables.UsageSummaries,
                 DeviceScopedTables.LocationPoints,
+                DeviceScopedTables.LocationPointRevisions,
+                DeviceScopedTables.LocationSegmentMerges,
                 DeviceScopedTables.SyncBatches,
                 DeviceScopedTables.ForensicEvents,
                 DeviceScopedTables.DroppedReasonDaily,
