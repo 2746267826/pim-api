@@ -4,6 +4,7 @@
 #
 # 输入（env，均为 'true'/'false'）：
 #   FORCE_ALL           手动“强制全量构建”（dispatch 输入 force_all）
+#   FORCE_ON_VERSION    VERSION 文件变了且是 master（发布）运行 → 强制全量构建
 #   BASELINE_OK         上一版 release 是否是本次 HEAD 的祖先（false=首次/历史被改写）
 #   PREVIOUS_TAG        上一版 release tag（'' 表示没有）
 #   PREVIOUS_LEDGER     上一版 release 是否带 pim-web-version.json 台账
@@ -18,6 +19,7 @@
 set -euo pipefail
 
 : "${FORCE_ALL:=false}"
+: "${FORCE_ON_VERSION:=false}"
 : "${BASELINE_OK:=true}"
 : "${PREVIOUS_TAG:=}"
 : "${PREVIOUS_LEDGER:=false}"
@@ -31,11 +33,13 @@ is_true() { [ "$1" = "true" ]; }
 
 all=false; api=false; docker=false; mcp=false
 
-if is_true "$FORCE_ALL" || ! is_true "$BASELINE_OK" || is_true "$F_INFRA"; then
+if is_true "$FORCE_ALL" || ! is_true "$BASELINE_OK" || is_true "$F_INFRA" || is_true "$FORCE_ON_VERSION"; then
   if ! is_true "$BASELINE_OK"; then
     pim_log "没有可用的上一版 release 基线（首次发布或历史被改写）→ 全量构建"
   elif is_true "$F_INFRA"; then
     pim_log "CI/脚本等基础设施有变化（infra=true）→ 全量构建"
+  elif is_true "$FORCE_ON_VERSION"; then
+    pim_log "VERSION 文件有变化（发布运行）→ 全量构建，避免把上一版的旧资产搬进正式版"
   else
     pim_log "force_all=true → 全量构建"
   fi
