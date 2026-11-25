@@ -263,6 +263,37 @@ public sealed class AiUsageLimitTests
         Assert.Equal("usage_limit_unknown", decision.ErrorCode);
     }
 
+    [SkippableFact]
+    [Trait("DataSource", "RealDb")]
+    public async Task PostgresExpiredRunningRecoveryNormalizesMetadataAndFailsClosed()
+    {
+        await using var database = await TempMigrationDatabase.CreateAsync("test_j09_recovery");
+        await database.MigrateAsync();
+        var service = Service(database.Db, new AdminUser(), new FixedTimeProvider(Now));
+        var connection = await service.CreateConnectionAsync("PostgreSQL恢复连接", default);
+        await service.SaveRuleAsync(connection.Id, new(connection.Limit.Revision, true,
+            AiUsageLimitPeriods.Month, 80, 100, null, null, "Asia/Shanghai"), default);
+        var row = Log(connection.Id, DateTimeOffset.UtcNow.AddMinutes(-5), null, null,
+            status: "running", metadataJson: "[]",
+            executionExpiresAt: DateTimeOffset.UtcNow.AddMinutes(-1));
+        database.Db.AiRequestLogs.Add(row);
+        await database.Db.SaveChangesAsync();
+
+        await AiCallRecovery.RecoverExpiredAsync(database.Db, default);
+
+        database.Db.ChangeTracker.Clear();
+        var recovered = await database.Db.AiRequestLogs.AsNoTracking()
+            .SingleAsync(x => x.Id == row.Id);
+        Assert.Equal("incomplete", recovered.Status);
+        Assert.Equal("outcome_unknown", recovered.ErrorCode);
+        using (var metadata = JsonDocument.Parse(recovered.MetadataJson))
+            Assert.True(metadata.RootElement.GetProperty("providerAttempted").GetBoolean());
+        var decision = await service.TryBeginAsync(connection.Id, "after-postgres-recovery",
+            "test", TimeSpan.FromMinutes(1), default);
+        Assert.False(decision.Allowed);
+        Assert.Equal("usage_limit_unknown", decision.ErrorCode);
+    }
+
     [Fact]
     public async Task ReminderEvents_MergeMetrics_DirectReachedSkipsWarning_AndReadsArePerAccount()
     {
