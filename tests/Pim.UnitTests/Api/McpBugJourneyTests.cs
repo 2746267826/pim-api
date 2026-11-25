@@ -159,7 +159,7 @@ public sealed class McpBugJourneyTests(ITestOutputHelper output)
     }
 
     [Fact]
-    public async Task Events_RequireBoundedWindow_AlwaysPage_AndKeepRestLegacyList()
+    public async Task Events_RequireBoundedWindow_AlwaysPage_AndRestMatchesMcp()
     {
         using var setup = await Setup.CreateAsync();
         var start = new DateTimeOffset(2026, 10, 20, 1, 0, 0, TimeSpan.Zero);
@@ -185,13 +185,27 @@ public sealed class McpBugJourneyTests(ITestOutputHelper output)
         var ids = first.GetProperty("items").EnumerateArray().Concat(second.GetProperty("items").EnumerateArray())
             .Select(x => x.GetProperty("id").GetGuid()).ToArray();
         Assert.Equal(ids.OrderBy(x => x), ids);
-        var rest = await Success(await setup.Rest.GetAsync($"/api/v1/calendar/events?start={args.start}&end={args.end}"));
-        Assert.Equal(JsonValueKind.Array, rest.ValueKind);
-        Assert.Equal(25, rest.GetArrayLength());
-        var times = rest.EnumerateArray().ToDictionary(x => x.GetProperty("id").GetGuid(), x => x.GetProperty("dtStart").GetDateTimeOffset());
+        var missingWindow = await setup.Rest.GetAsync("/api/v1/calendar/events");
+        Assert.Equal(HttpStatusCode.BadRequest, missingWindow.StatusCode);
+
+        var rest = await Success(await setup.Rest.GetAsync(
+            $"/api/v1/calendar/events?start={args.start}&end={args.end}&page=1&pageSize=100"));
+        Assert.Equal(25, rest.GetProperty("totalCount").GetInt32());
+        Assert.Equal(25, rest.GetProperty("items").GetArrayLength());
+        var times = rest.GetProperty("items").EnumerateArray()
+            .ToDictionary(x => x.GetProperty("id").GetGuid(), x => x.GetProperty("dtStart").GetDateTimeOffset());
         foreach (var item in first.GetProperty("items").EnumerateArray())
             Assert.Equal(times[item.GetProperty("id").GetGuid()], item.GetProperty("dtStart").GetDateTimeOffset());
-        output.WriteLine("MCP rejected unbounded history, paged 25 same-start events in deterministic ID order as 20 + 5, and preserved timestamp instants with null/UTC/Asia-Shanghai metadata. REST's existing 25-item array remained unchanged.");
+
+        var restFirst = await Success(await setup.Rest.GetAsync(
+            $"/api/v1/calendar/events?start={args.start}&end={args.end}"));
+        Assert.Equal(20, restFirst.GetProperty("items").GetArrayLength());
+        Assert.Equal(25, restFirst.GetProperty("totalCount").GetInt32());
+        var restSecond = await Success(await setup.Rest.GetAsync(
+            $"/api/v1/calendar/events?start={args.start}&end={args.end}&page=2"));
+        Assert.Equal(5, restSecond.GetProperty("items").GetArrayLength());
+
+        output.WriteLine("MCP and REST both rejected unbounded history, returned PagedResult with default 20/page, and preserved all 25 timestamp instants across pages.");
     }
 
     [Fact]

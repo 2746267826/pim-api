@@ -31,8 +31,102 @@ public class OutlookIcsServiceTests
 
         var evt = Assert.Single(result.Events);
         Assert.True(evt.IsAllDay);
+        Assert.Equal(new DateOnly(2026, 6, 1), evt.AllDayStartDate);
+        Assert.Equal(new DateOnly(2026, 6, 2), evt.AllDayEndDateExclusive);
         Assert.Equal("all-day@example.com", evt.Uid);
         Assert.Equal("Company holiday", evt.Title);
+    }
+
+    [Fact]
+    public void ImportOutlookIcs_AllDayWithoutDtEnd_UsesNextDayExclusiveEnd()
+    {
+        var ics = """
+        BEGIN:VCALENDAR
+        VERSION:2.0
+        BEGIN:VEVENT
+        UID:all-day-no-dtend@example.com
+        SUMMARY:Company holiday
+        DTSTART;VALUE=DATE:20260712
+        END:VEVENT
+        END:VCALENDAR
+        """;
+
+        var result = new OutlookIcsService().Parse(ics);
+
+        var evt = Assert.Single(result.Events);
+        Assert.True(evt.IsAllDay);
+        Assert.Equal(new DateOnly(2026, 7, 12), evt.AllDayStartDate);
+        Assert.Equal(new DateOnly(2026, 7, 13), evt.AllDayEndDateExclusive);
+        Assert.Null(evt.InvalidReason);
+        Assert.NotEqual(DateTimeOffset.MinValue, evt.End);
+    }
+
+    [Fact]
+    public async Task ImportOutlookIcsAsync_AllDayWithoutDtEnd_ImportsSingleDay()
+    {
+        PimDbContext.RegisterModuleAssembly(typeof(EventEntity).Assembly);
+        await using var db = CreateDb();
+        var userId = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+        var ics = """
+        BEGIN:VCALENDAR
+        VERSION:2.0
+        BEGIN:VEVENT
+        UID:all-day-no-dtend-import@example.com
+        SUMMARY:Legal one-day all-day event
+        DTSTART;VALUE=DATE:20260712
+        END:VEVENT
+        END:VCALENDAR
+        """;
+
+        var report = await CreateService(db, userId).ImportOutlookIcsAsync(
+            ics, null, new OutlookIcsService(), CancellationToken.None);
+
+        Assert.Equal(1, report.Imported);
+        Assert.Equal(0, report.Skipped);
+        var imported = await db.Set<EventEntity>().SingleAsync();
+        Assert.True(imported.IsAllDay);
+        Assert.Equal(new DateOnly(2026, 7, 12), imported.AllDayStartDate);
+        Assert.Equal(new DateOnly(2026, 7, 13), imported.AllDayEndDateExclusive);
+        Assert.Equal(new DateTimeOffset(2026, 7, 11, 16, 0, 0, TimeSpan.Zero), imported.DtStart);
+        Assert.Equal(new DateTimeOffset(2026, 7, 12, 16, 0, 0, TimeSpan.Zero), imported.DtEnd);
+    }
+
+    [Fact]
+    public async Task ImportAndExportAllDayIcs_PreservesIndependentDateRange()
+    {
+        PimDbContext.RegisterModuleAssembly(typeof(EventEntity).Assembly);
+        await using var db = CreateDb();
+        var userId = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+        var ics = """
+        BEGIN:VCALENDAR
+        VERSION:2.0
+        BEGIN:VEVENT
+        UID:all-day-roundtrip@example.com
+        SUMMARY:Company holiday
+        DTSTART;VALUE=DATE:20260712
+        DTEND;VALUE=DATE:20260714
+        END:VEVENT
+        END:VCALENDAR
+        """;
+
+        var report = await CreateService(db, userId).ImportOutlookIcsAsync(
+            ics, null, new OutlookIcsService(), CancellationToken.None);
+
+        Assert.Equal(1, report.Imported);
+        var imported = await db.Set<EventEntity>().SingleAsync();
+        Assert.True(imported.IsAllDay);
+        Assert.Equal(new DateOnly(2026, 7, 12), imported.AllDayStartDate);
+        Assert.Equal(new DateOnly(2026, 7, 14), imported.AllDayEndDateExclusive);
+        Assert.Equal(new DateTimeOffset(2026, 7, 11, 16, 0, 0, TimeSpan.Zero), imported.DtStart);
+        Assert.Equal(new DateTimeOffset(2026, 7, 13, 16, 0, 0, TimeSpan.Zero), imported.DtEnd);
+
+        var exported = new IcsService().ExportEvents([imported]);
+        Assert.Contains("DTSTART;VALUE=DATE:20260712", exported);
+        Assert.Contains("DTEND;VALUE=DATE:20260714", exported);
+
+        var roundTripped = Assert.Single(new OutlookIcsService().Parse(exported).Events);
+        Assert.Equal(new DateOnly(2026, 7, 12), roundTripped.AllDayStartDate);
+        Assert.Equal(new DateOnly(2026, 7, 14), roundTripped.AllDayEndDateExclusive);
     }
 
     [Fact]

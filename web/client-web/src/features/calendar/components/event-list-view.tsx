@@ -8,17 +8,25 @@ import { EmptyState, Skeleton } from '@/components/ui'
 import { cn } from '@/lib/utils'
 import { buildEventListSections, wallClockTime, type ListRowItem } from './event-list-model'
 import { StaggerItem } from '@/components/motion/primitives'
+import { addDateDays, CALENDAR_DISPLAY_LABEL } from '../event-timezone'
 
 /*
  * 列表视图（自定义，替代 FullCalendar listWeek）：
- * - 数据 = 固定大窗口（约两年）分页装填，totalCount 证明加载完全；
+ * - 数据 = 固定 366 天大窗口分页装填，totalCount 证明加载完全；
  * - 滚动容器自带，接近底部（sentinel 进入视口前 320px）自动 fetchNextPage；
  * - 分组/排序/文案由 event-list-model（纯函数）负责；
  * - 图层（任务段/习惯/可用时间/智能占位）只取前 60 天——layers 接口无分页，
- *   习惯类条目按日展开，窗口取整两年会显著放大响应。
+ *   习惯类条目按日展开，窗口取满 366 天会显著放大响应。
  */
-const LIST_HORIZON_DAYS = 730
+export const LIST_HORIZON_DAYS = 366
 const LAYER_WINDOW_DAYS = 60
+
+export function buildEventListHorizon(anchorStart: string) {
+  return {
+    start: anchorStart,
+    end: addDaysIso(anchorStart, LIST_HORIZON_DAYS),
+  }
+}
 
 export function EventListView({
   anchorStart,
@@ -36,8 +44,8 @@ export function EventListView({
   outlookOnly: boolean
   onOpenEvent: (ev: EventResponse) => void
 }) {
-  const horizonEnd = useMemo(() => addDaysIso(anchorStart, LIST_HORIZON_DAYS), [anchorStart])
-  const eventsQ = useEventsInfinite(anchorStart, horizonEnd)
+  const horizon = useMemo(() => buildEventListHorizon(anchorStart), [anchorStart])
+  const eventsQ = useEventsInfinite(horizon.start, horizon.end)
   const { data: layersData } = useLayers(
     anchorStart,
     addDaysIso(anchorStart, LAYER_WINDOW_DAYS),
@@ -98,7 +106,7 @@ export function EventListView({
             <EmptyState
               icon={Inbox}
               title="没有日程"
-              description="该时间范围内没有可显示的日程，向后滚动会自动加载更远的内容。"
+              description="未来 366 天内没有可显示的日程。"
             />
           </div>
         ) : (
@@ -155,8 +163,13 @@ function ListRow({
   const ev = item.event
   const lines = summarizeLines(ev?.description, { exclude: [ev?.location, ev?.title], maxLines: 5 })
   const when = item.allDay
-    ? '全天'
-    : `${wallClockTime(ev?.dtStart)} - ${wallClockTime(ev?.dtEnd ?? undefined) || ''}`.trim()
+    ? allDayRange(ev?.allDayStartDate, ev?.allDayEndDateExclusive)
+    : `${CALENDAR_DISPLAY_LABEL} ${displayClock(ev?.displayLocalStart, ev?.dtStart)}–${displayClock(ev?.displayLocalEnd, ev?.dtEnd)}`
+  const localTime = ev && !item.allDay
+    ? ev.timeZoneResolution === 'resolved' && ev.localStart && ev.localEnd
+      ? `${zoneLabel(ev.timeZoneId)} ${formatLocalClock(ev.localStart)}–${formatLocalClock(ev.localEnd)}`
+      : `时区未知 · ${ev.displayTimeZoneId ?? 'Asia/Shanghai'} ${displayClock(ev.displayLocalStart, ev.dtStart)}–${displayClock(ev.displayLocalEnd, ev.dtEnd)}`
+    : null
   const interactive = item.kind === 'event' && Boolean(ev)
   const color =
     item.kind === 'event'
@@ -183,7 +196,10 @@ function ListRow({
       }
       tabIndex={interactive ? 0 : undefined}
     >
-      <span className="tnum w-[96px] shrink-0 pt-0.5 text-[13px] text-text-2">{when}</span>
+      <span className="tnum w-[150px] shrink-0 pt-0.5 text-[12px] leading-5 text-text-2">
+        <span className="block">{when}</span>
+        {localTime && <span className="block text-[11px] leading-4 text-text-4">{localTime}</span>}
+      </span>
       <div className="min-w-0 flex-1">
         <p
           className={cn(
@@ -203,6 +219,28 @@ function ListRow({
       </div>
     </div>
   )
+}
+
+function displayClock(local: string | null | undefined, fallback: string | null | undefined): string {
+  const value = local || fallback || ''
+  return local ? value.slice(5, 16).replace('T', ' ') : wallClockTime(value)
+}
+
+function formatLocalClock(value: string): string {
+  return value.slice(5, 16).replace('T', ' ')
+}
+
+function zoneLabel(timeZoneId: string | null): string {
+  if (timeZoneId === 'Asia/Shanghai') return '北京'
+  if (timeZoneId === 'America/New_York') return '纽约'
+  if (timeZoneId === 'America/Los_Angeles') return '洛杉矶'
+  return timeZoneId ?? '当地'
+}
+
+function allDayRange(start: string | null | undefined, endExclusive: string | null | undefined): string {
+  if (!start || !endExclusive) return '全天（日期未知）'
+  const lastDate = addDateDays(endExclusive, -1)
+  return start === lastDate ? `${start} 全天` : `${start}–${lastDate} 全天`
 }
 
 /** ISO 时刻加 N 天（窗口推算；入参为完整 ISO 时间戳，返回完整 ISO） */

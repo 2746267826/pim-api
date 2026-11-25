@@ -119,6 +119,17 @@ public sealed class McpToolContractTests
         Assert.Contains("title", createEventRequired);
         Assert.Contains("dtStart", createEventRequired);
         Assert.Contains("dtEnd", createEventRequired);
+        foreach (var name in new[] { "allDayStartDate", "allDayEndDateExclusive" })
+        {
+            var property = createEvent.InputSchema.GetProperty("properties").GetProperty(name)
+                .GetProperty("anyOf").EnumerateArray().First();
+            Assert.Equal("string", property.GetProperty("type").GetString());
+            Assert.Equal("date", property.GetProperty("format").GetString());
+        }
+
+        var updateEvent = byName["update_event"];
+        foreach (var name in new[] { "allDayStartDate", "allDayEndDateExclusive" })
+            Assert.True(updateEvent.InputSchema.GetProperty("properties").TryGetProperty(name, out _));
 
         // create_mobile_goal: limitSeconds required.
         var createGoal = byName["create_mobile_goal"];

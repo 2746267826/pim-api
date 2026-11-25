@@ -22,7 +22,6 @@ namespace Pim.Module.Mcp.Services;
 public sealed class McpToolExecutor
 {
     private const long TruncationBytes = 50 * 1024;
-    private const int MaxTimeSpanDays = 366;
     private const int ParamsSummaryMaxChars = 500;
     private const int ActivityParamsSummaryMaxChars = 120;
     private const int MaxActivityEntries = 100;
@@ -244,7 +243,7 @@ public sealed class McpToolExecutor
             return Error($"invalid time format: {endError}", 400);
         if (startDt > endDt)
             return Error("invalid time range: start must be <= end", 400);
-        if (endDt - startDt > TimeSpan.FromDays(MaxTimeSpanDays))
+        if (endDt - startDt > McpTimeRange.MaxSpan)
             return Error("time range too large: max span 366 days", 400);
         return null;
     }
@@ -257,21 +256,30 @@ public sealed class McpToolExecutor
         {
             if (System.Text.RegularExpressions.Regex.IsMatch(value, @"^\d{4}-\d{2}-\d{2}$"))
             {
-                result = DateTimeOffset.ParseExact(value + "T00:00:00+00:00", "yyyy-MM-dd'T'HH:mm:sszzz", System.Globalization.CultureInfo.InvariantCulture);
+                result = DateTimeOffset.ParseExact(
+                    value + "T00:00:00+00:00",
+                    "yyyy-MM-dd'T'HH:mm:sszzz",
+                    System.Globalization.CultureInfo.InvariantCulture);
                 return true;
             }
-            var iso = value.Replace("Z", "+00:00");
-            if (!DateTimeOffset.TryParse(iso, System.Globalization.CultureInfo.InvariantCulture,
-                    System.Globalization.DateTimeStyles.AssumeUniversal | System.Globalization.DateTimeStyles.AdjustToUniversal, out result))
+
+            var iso = value.Replace("Z", "+00:00", StringComparison.Ordinal);
+            if (!DateTimeOffset.TryParse(
+                    iso,
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    System.Globalization.DateTimeStyles.AssumeUniversal
+                    | System.Globalization.DateTimeStyles.AdjustToUniversal,
+                    out result))
             {
                 error = $"invalid iso8601 '{value}'";
                 return false;
             }
+
             return true;
         }
-        catch (Exception ex)
+        catch (Exception exception)
         {
-            error = $"invalid iso8601 '{value}': {ex.Message}";
+            error = $"invalid iso8601 '{value}': {exception.Message}";
             return false;
         }
     }
@@ -851,10 +859,10 @@ public sealed class McpToolExecutor
                 }
             }
 
-            // Fallback 2: broad 730-day scan (page 1 only).
-            var now = DateTimeOffset.UtcNow;
-            var start = (now.AddDays(-365)).ToString("yyyy-MM-dd'T'HH:mm:ss'Z'");
-            var end = (now.AddDays(365)).ToString("yyyy-MM-dd'T'HH:mm:ss'Z'");
+            // Fallback 2: one legal 366-day scan (page 1 only); REST rejects wider windows.
+            var (scanStart, scanEnd) = McpTimeRange.CenteredWindow(DateTimeOffset.UtcNow);
+            var start = McpTimeRange.ToUtcQueryValue(scanStart);
+            var end = McpTimeRange.ToUtcQueryValue(scanEnd);
             var scan = await SendAsync(
                 new McpToolSpec { Name = "get_events", Method = "GET", Route = "/api/v1/calendar/events", QueryParams = new[] { "start", "end", "page", "pageSize" } },
                 new JsonObject { ["start"] = start, ["end"] = end, ["page"] = 1, ["pageSize"] = 100 },
@@ -864,7 +872,7 @@ public sealed class McpToolExecutor
             if (FindById(scanResult, eventId) is { } found)
                 return new JsonObject { ["code"] = 0, ["data"] = found };
 
-            return Error($"event {eventId} not found (fallback scanned 730-day window page 1 only, use broader get_events search if needed)", 404);
+            return Error($"event {eventId} not found (fallback scanned a 366-day window, page 1 only; use search_calendar_events or a narrower get_events range if needed)", 404);
         }
         return direct;
     }
@@ -982,7 +990,7 @@ public sealed class McpToolExecutor
     {
         var result = await CallAsync(spec, args, accessToken, redact: false, ct);
         if (result is JsonObject obj && GetInt(obj, "code") == 400
-            && (GetString(obj, "error") ?? string.Empty).Contains("search", StringComparison.OrdinalIgnoreCase))
+            && (IsSearchUnsupported(obj) || IsCalendarWindowContractError(obj)))
         {
             var q = GetString(args, "q") ?? string.Empty;
             var pageSize = GetInt(args, "pageSize") ?? 20;
@@ -998,6 +1006,12 @@ public sealed class McpToolExecutor
         }
         return result;
     }
+
+    private static bool IsSearchUnsupported(JsonObject result)
+        => (GetString(result, "error") ?? string.Empty).Contains("search", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsCalendarWindowContractError(JsonObject result)
+        => result["details"] is JsonObject details && GetInt(details, "code") == 2009;
 
     private async Task<JsonNode?> ExportIcsAsync(McpToolSpec spec, JsonObject args, string accessToken, CancellationToken ct)
     {

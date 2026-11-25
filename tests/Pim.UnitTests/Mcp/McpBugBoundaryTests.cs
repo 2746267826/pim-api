@@ -81,6 +81,79 @@ public sealed class McpBugBoundaryTests
     public void Events_RejectUnboundedOrInvalidDates(string json)
         => Assert.Equal(400, McpToolInputPolicy.Apply("get_events", JsonNode.Parse(json)!.AsObject())!["code"]!.GetValue<int>());
 
+    [Fact]
+    public void Events_NormalizeDateOnlyAndOffsetRangesToUtcWithoutChangingExactSeconds()
+    {
+        var args = JsonNode.Parse("""{"start":"2026-09-01T08:00:00+08:00","end":"2026-09-02"}""")!.AsObject();
+
+        Assert.Null(McpToolInputPolicy.Apply("get_events", args));
+
+        Assert.Equal("2026-09-01T00:00:00Z", args["start"]!.GetValue<string>());
+        Assert.Equal("2026-09-02T00:00:00Z", args["end"]!.GetValue<string>());
+
+        var fractional = JsonNode.Parse("""{"start":"2026-09-01T00:00:00.1200","end":"2026-09-01T00:00:01Z"}""")!.AsObject();
+        Assert.Null(McpToolInputPolicy.Apply("get_events", fractional));
+        Assert.Equal("2026-09-01T00:00:00.12Z", fractional["start"]!.GetValue<string>());
+    }
+
+    [Theory]
+    [InlineData("timezone")]
+    [InlineData("timeZone")]
+    [InlineData("timeZoneId")]
+    public void Events_RejectTimezoneArgumentsInsteadOfIgnoringThem(string argument)
+    {
+        var args = new JsonObject
+        {
+            ["start"] = "2026-09-01",
+            ["end"] = "2026-09-02",
+            [argument] = "America/New_York"
+        };
+
+        Assert.Equal(400, McpToolInputPolicy.Apply("get_events", args)!["code"]!.GetValue<int>());
+    }
+
+    [Fact]
+    public void SearchEvents_OmittedRangeIsFilledWithLegal366DayWindow()
+    {
+        var args = new JsonObject { ["q"] = "planning" };
+
+        Assert.Null(McpToolInputPolicy.Apply("search_calendar_events", args));
+
+        var start = DateTimeOffset.Parse(args["start"]!.GetValue<string>());
+        var end = DateTimeOffset.Parse(args["end"]!.GetValue<string>());
+        Assert.Equal(TimeSpan.FromDays(366), end - start);
+        Assert.EndsWith("Z", args["start"]!.GetValue<string>());
+    }
+
+    [Theory]
+    [InlineData("2026-09-01T00:00:00Z", null)]
+    [InlineData(null, "2026-09-01T00:00:00Z")]
+    public void SearchEvents_OneSidedRangeIsCompletedToLegalWindow(string? start, string? end)
+    {
+        var args = new JsonObject { ["q"] = "planning" };
+        if (start is not null) args["start"] = start;
+        if (end is not null) args["end"] = end;
+
+        Assert.Null(McpToolInputPolicy.Apply("search_calendar_events", args));
+
+        var parsedStart = DateTimeOffset.Parse(args["start"]!.GetValue<string>());
+        var parsedEnd = DateTimeOffset.Parse(args["end"]!.GetValue<string>());
+        Assert.Equal(TimeSpan.FromDays(366), parsedEnd - parsedStart);
+    }
+
+    [Fact]
+    public void SearchEvents_ExplicitRangeOver366DaysIsRejected()
+    {
+        var args = new JsonObject
+        {
+            ["q"] = "planning",
+            ["start"] = "2025-01-01T00:00:00Z",
+            ["end"] = "2026-01-02T00:00:01Z",
+        };
+
+        Assert.Equal(400, McpToolInputPolicy.Apply("search_calendar_events", args)!["code"]!.GetValue<int>());
+    }
+
     [Theory]
     [InlineData("get_tasks")]
     [InlineData("get_events")]
