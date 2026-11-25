@@ -170,6 +170,8 @@ public sealed class NativeNoteRecycleService(
         if (derivedTasks.Any(NoteDerivedStore.IsActive))
             throw new DomainException(40901, "笔记的派生任务正在执行，请等待任务结束或停止后重试永久删除");
 
+        await materials.MarkPurgeStartedAsync(owner, noteId, expectedDeletedAt, ct);
+
         var derivedTaskIds = derivedTasks.Select(task => task.Request.TaskId).ToArray();
         var sourceIds = asrTaskIds.Concat(derivedTaskIds)
             .Select(id => id.ToString("D"))

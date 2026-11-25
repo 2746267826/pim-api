@@ -480,6 +480,30 @@ public sealed class UnifiedRecycleBinServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task NotePurge_AfterPartialFailureBlocksRestore_AndRetryCompletes()
+    {
+        var note = await SeedNoteAsync(_user, "清理中断后不能恢复成残缺笔记");
+        await _notes.SoftDeleteAsync(_user, note.NoteId);
+        var deleted = await _materials.GetDeletedAsync(_user, note.NoteId);
+
+        await _materials.MarkPurgeStartedAsync(_user, note.NoteId, deleted!.DeletedAt);
+
+        var restore = await _service.RestoreAsync(Batch((RecycleBinDomains.Note, note.NoteId)));
+        var failed = Assert.Single(restore.Items);
+        Assert.Equal(RecycleBinItemStatuses.Failed, failed.Status);
+        Assert.Equal(40901, failed.ErrorCode);
+        Assert.NotNull(await _materials.GetDeletedAsync(_user, note.NoteId));
+
+        var purge = await _service.PurgeAsync(new RecycleBinBatchRequest(
+        [
+            new RecycleBinItemRef(RecycleBinDomains.Note, note.NoteId, deleted.DeletedAt)
+        ]));
+        Assert.Equal(RecycleBinItemStatuses.Success, Assert.Single(purge.Items).Status);
+        Assert.Null(await _materials.GetDeletedAsync(_user, note.NoteId));
+        await Assert.ThrowsAsync<DomainException>(() => _materials.GetAsync(_user, note.VersionId));
+    }
+
+    [Fact]
     public async Task CalendarPurge_ReusesCalendarRules_AndRemovesBooksWithChildren()
     {
         var book = SeedCalendar(_user, "工作日历", "calendar", deleted: true);

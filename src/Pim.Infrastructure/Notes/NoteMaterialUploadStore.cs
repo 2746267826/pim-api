@@ -551,9 +551,27 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
             return false;
         if (expectedDeletedAt.HasValue && expectedDeletedAt.Value != deleted.DeletedAt)
             throw new DomainException(40901, "笔记状态已变化，请刷新回收站后重试");
+        if (deleted.PurgeStartedAt.HasValue ||
+            !ledger.Versions.ContainsKey(Key(deleted.CurrentVersionId)))
+            throw new DomainException(40901, "笔记的永久删除已开始，不能恢复；请重试永久删除");
         ledger.DeletedNotes.Remove(Key(noteId));
         await SaveLedgerAsync(userId, ledger, ct);
         return true;
+    }
+
+    internal async Task MarkPurgeStartedAsync(
+        Guid userId, Guid noteId, DateTimeOffset? expectedDeletedAt = null,
+        CancellationToken ct = default)
+    {
+        await using var lease = await LockAsync(userId, ct);
+        var ledger = await LoadLedgerAsync(userId, ct);
+        if (ledger.DeletedNotes is null || !ledger.DeletedNotes.TryGetValue(Key(noteId), out var deleted))
+            throw new DomainException(40901, "笔记不在回收站，不能永久删除");
+        if (expectedDeletedAt.HasValue && expectedDeletedAt.Value != deleted.DeletedAt)
+            throw new DomainException(40901, "笔记状态已变化，请刷新回收站后重试");
+        if (deleted.PurgeStartedAt.HasValue) return;
+        ledger.DeletedNotes[Key(noteId)] = deleted with { PurgeStartedAt = _clock.GetUtcNow() };
+        await SaveLedgerAsync(userId, ledger, ct);
     }
 
     public async Task<NativeNotePurgeResult> PurgeDeletedAsync(
@@ -764,7 +782,12 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
         HashSet<string> Deletions, Dictionary<string, StoredNoteDeletion>? DeletedNotes = null, int SchemaVersion = 1);
     private sealed record StoredVersion(Guid NoteId, Guid? BaseVersionId, string Fingerprint, long SizeBytes,
         DateTimeOffset CreatedAt, DateTimeOffset ExpiresAt, string Phase, bool HasConflict = false);
-    private sealed record StoredNoteDeletion(Guid NoteId, string Title, DateTimeOffset DeletedAt, Guid CurrentVersionId);
+    private sealed record StoredNoteDeletion(
+        Guid NoteId,
+        string Title,
+        DateTimeOffset DeletedAt,
+        Guid CurrentVersionId,
+        DateTimeOffset? PurgeStartedAt = null);
 }
 
 internal sealed record NativeNoteSearchSource(
