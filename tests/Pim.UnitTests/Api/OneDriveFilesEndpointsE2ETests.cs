@@ -124,8 +124,12 @@ public class OneDriveFilesEndpointsE2ETests
             string fileName,
             CancellationToken ct = default)
             => Task.FromResult(new OneDriveUploadSession(
-                "https://upload.example.com/session-test",
+                UploadSessionUrl,
                 DateTimeOffset.UtcNow.AddHours(1)));
+
+        /// <summary>Q04：上传会话 URL 由用例按需设置；默认是安全的 HTTPS 地址。</summary>
+        public string UploadSessionUrl { get; set; } = "https://upload.example.com/session-test";
+
         public Task<OneDriveShareLink> CreateShareLinkAsync(
             string accessToken,
             string itemId,
@@ -275,6 +279,36 @@ public class OneDriveFilesEndpointsE2ETests
             // refresh token 必须密文落库
             Assert.DoesNotContain("e2e-refresh", System.Text.Encoding.UTF8.GetString(provider.RefreshTokenEncrypted!));
         }
+    }
+
+    [Theory]
+    [InlineData("http://upload.example.com/session?sig=SECRET-SIGNATURE")]
+    [InlineData("javascript:alert(1)")]
+    [InlineData("not-a-url?sig=SECRET-SIGNATURE")]
+    public async Task UploadSession_RejectsUnsafePreauthorizedUrlAndDoesNotEchoSignature(string uploadUrl)
+    {
+        var graph = new E2EGraphClient { UploadSessionUrl = uploadUrl };
+        using var factory = CreateFactory($"onedrive-e2e-upload-url-{Guid.NewGuid()}", graph);
+        var anon = factory.CreateClient();
+        var token = await RegisterAndGetTokenAsync(anon, $"files-upload-{Guid.NewGuid():N}");
+        var user = Authed(factory, token);
+
+        await user.PostAsJsonAsync("/api/v1/files/providers/onedrive", new { clientId = "cid-e2e" });
+        var providerId = await GetSingleProviderIdAsync(factory);
+        (await user.GetAsync($"/api/v1/files/providers/{providerId}/binding-status")).EnsureSuccessStatusCode();
+
+        using var response = await user.PostAsJsonAsync("/api/v1/files/items/upload-session", new
+        {
+            providerId,
+            path = "/",
+            fileName = "big.bin",
+        });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.Contains("HTTPS", body);
+        Assert.DoesNotContain("SECRET-SIGNATURE", body);
+        Assert.DoesNotContain(uploadUrl, body);
     }
 
     [Fact]

@@ -6,7 +6,7 @@ import { clearTokens } from '@/api/client'
 import { setApiBase } from '@/lib/apiBase'
 import { todayApi } from './api'
 
-const BASE = 'http://192.0.2.10:5858'
+const BASE = 'https://192.0.2.10:5858'
 let calls: { url: string; method: string }[] = []
 
 function envelope(data: unknown): Response {

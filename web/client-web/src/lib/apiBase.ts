@@ -10,6 +10,28 @@ import { STORAGE_KEYS, getJSON, getString, setJSON, setString } from './storage'
 
 const HISTORY_LIMIT = 5
 
+export type ApiBaseReasonCode =
+  | 'invalid-url'
+  | 'unsupported-scheme'
+  | 'address-components'
+  | 'remote-http-blocked'
+
+export interface ApiBaseValidation {
+  ok: boolean
+  value: string
+  reasonCode: ApiBaseReasonCode | null
+  message: string
+  isLoopback: boolean
+}
+
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1', '10.0.2.2'])
+
+/** 本机回环（含 Android 模拟器 10.0.2.2）保留 HTTP 作为开发例外。 */
+export function isLoopbackHost(hostname: string): boolean {
+  const normalized = hostname.toLowerCase().replace(/^\[|\]$/g, '')
+  return LOOPBACK_HOSTS.has(normalized)
+}
+
 /**
  * 归一化用户输入的 API 地址：base 恒为「源地址」（协议://主机:端口，不含 /api/v1）。
  * 用户常把完整 API URL（如 https://host:5858/api/v1）整个粘贴进来——
@@ -23,23 +45,86 @@ export function normalizeApiBaseInput(raw: string): string {
     .replace(/\/api$/i, '')
 }
 
+/**
+ * Q04：远程服务器只允许 HTTPS；回环 HTTP 仅用于本机开发。
+ * 保存与测试连接都必须先过这一层，不能只靠浏览器/WebView 的事后拦截。
+ */
+export function validateApiBaseInput(raw: string): ApiBaseValidation {
+  const value = normalizeApiBaseInput(raw)
+  if (!value) {
+    return { ok: true, value: '', reasonCode: null, message: '', isLoopback: false }
+  }
+
+  let parsed: URL
+  try {
+    parsed = new URL(value)
+  } catch {
+    return {
+      ok: false,
+      value,
+      reasonCode: 'invalid-url',
+      message: '地址需包含协议，例如 https://pim.example.com',
+      isLoopback: false,
+    }
+  }
+
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return {
+      ok: false,
+      value,
+      reasonCode: 'unsupported-scheme',
+      message: '服务器地址必须使用 HTTPS（本机回环开发除外）。',
+      isLoopback: false,
+    }
+  }
+
+  if (parsed.username || parsed.password) {
+    return {
+      ok: false,
+      value,
+      reasonCode: 'address-components',
+      message: '服务器地址不能包含账号或密码。',
+      isLoopback: false,
+    }
+  }
+
+  if (parsed.search || parsed.hash) {
+    return {
+      ok: false,
+      value,
+      reasonCode: 'address-components',
+      message: '服务器地址不能包含查询参数或片段。',
+      isLoopback: false,
+    }
+  }
+
+  const loopback = isLoopbackHost(parsed.hostname)
+  if (parsed.protocol === 'http:' && !loopback) {
+    return {
+      ok: false,
+      value,
+      reasonCode: 'remote-http-blocked',
+      message: '远程服务器必须使用 HTTPS。此地址未保存，也未发送连接请求。',
+      isLoopback: false,
+    }
+  }
+
+  return { ok: true, value, reasonCode: null, message: '', isLoopback: loopback }
+}
+
 export function getApiBase(): string {
-  return normalizeApiBaseInput(getString(STORAGE_KEYS.apiBase) ?? '')
+  const validation = validateApiBaseInput(getString(STORAGE_KEYS.apiBase) ?? '')
+  return validation.ok ? validation.value : ''
 }
 
 export function getApiBaseHistory(): string[] {
-  // 读取时也归一化：修复归一化上线前存入的带 /api/v1 后缀的历史条目，并丢弃坏值
+  // 读取时也归一化并重新过传输门禁：旧版本可能存过远程 HTTP 地址
   const raw = getJSON<string[]>(STORAGE_KEYS.apiBaseHistory, [])
   const cleaned: string[] = []
   for (const item of raw) {
-    const v = normalizeApiBaseInput(item ?? '')
-    if (!v) continue
-    try {
-      new URL(v)
-    } catch {
-      continue
-    }
-    if (!cleaned.includes(v)) cleaned.push(v)
+    const validation = validateApiBaseInput(item ?? '')
+    if (!validation.ok || !validation.value) continue
+    if (!cleaned.includes(validation.value)) cleaned.push(validation.value)
   }
   return cleaned
 }
@@ -55,16 +140,12 @@ function hostChannel(): boolean {
 export function setApiBase(raw: string): void {
   // host 通道不允许保存服务器地址（规格 §6.1）：不写 storage，也不广播变更
   if (hostChannel()) return
-  const value = normalizeApiBaseInput(raw)
-  const changed = value !== getApiBase()
-  if (value) {
-    try {
-      // 仅接受带协议的绝对地址（同源场景请留空）
-      new URL(value)
-    } catch {
-      throw new Error('地址需包含协议，例如 http://192.168.1.10:5858')
-    }
+  const validation = validateApiBaseInput(raw)
+  if (!validation.ok) {
+    throw new Error(validation.message)
   }
+  const value = validation.value
+  const changed = value !== getApiBase()
   setString(STORAGE_KEYS.apiBase, value)
   if (changed) markAuthSessionChanged()
   if (value) {

@@ -6,6 +6,7 @@ using Pim.Api;
 using Pim.Api.Endpoints;
 using Pim.Api.Health;
 using Pim.Api.Infrastructure;
+using Pim.Api.Infrastructure.Http;
 using Pim.Api.Infrastructure.Ops;
 using Pim.Api.Middleware;
 using Pim.Api.Modules.ClientShell;
@@ -199,11 +200,14 @@ builder.Services.AddCors(options =>
             raw = "http://localhost:5173,http://127.0.0.1:5173,http://localhost:5858,http://127.0.0.1:5858";
         }
 
-        var allowedOrigins = raw
-            .Split([',', ';'], StringSplitOptions.RemoveEmptyEntries)
-            .Select(o => o.Trim())
-            .Where(o => !string.IsNullOrWhiteSpace(o))
-            .ToArray();
+        var filteredOrigins = CorsOriginPolicy.Filter(raw);
+        if (filteredOrigins.RejectedOrigins.Count > 0)
+        {
+            // 原始白名单项可能误带账号密码/查询串，日志只记录数量。
+            Log.Warning("CORS 白名单忽略了 {RejectedCount} 个非 HTTPS 或无效来源", filteredOrigins.RejectedOrigins.Count);
+        }
+
+        var allowedOrigins = filteredOrigins.AllowedOrigins.ToArray();
 
         if (allowedOrigins.Length > 0)
         {
@@ -295,12 +299,11 @@ builder.Services.AddSingleton(sp =>
 
 var app = builder.Build();
 
-app.UseForwardedHeaders(new ForwardedHeadersOptions
-{
-    ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto,
-    KnownProxies = { System.Net.IPAddress.Parse("127.0.0.1"), System.Net.IPAddress.Parse("::1") },
-    KnownNetworks = { new Microsoft.AspNetCore.HttpOverrides.IPNetwork(System.Net.IPAddress.Parse("127.0.0.1"), 32), new Microsoft.AspNetCore.HttpOverrides.IPNetwork(System.Net.IPAddress.Parse("::1"), 128) }
-});
+var forwardedHeadersOptions = ForwardedHeadersConfigurator.Create(
+    builder.Configuration[ForwardedHeadersConfigurator.ConfigurationKey]
+    ?? Environment.GetEnvironmentVariable(ForwardedHeadersConfigurator.EnvironmentVariable));
+app.UseForwardedHeaders(forwardedHeadersOptions);
+app.UseMiddleware<RequestSchemeHeaderMiddleware>();
 app.UseMiddleware<CorrelationIdMiddleware>();
 // 指标中间件必须挂在 ExceptionMiddleware 外侧（此处）：它在请求结束时按响应上的
 // StatusCode 打标签，而异常是在 ExceptionMiddleware 里才被转成 502/500 的。
