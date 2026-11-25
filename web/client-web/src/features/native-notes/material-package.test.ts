@@ -15,6 +15,7 @@ const markdownId = '33333333-3333-4333-8333-333333333333'
 const photoBlockId = '44444444-4444-4444-8444-444444444444'
 const assetId = '55555555-5555-4555-8555-555555555555'
 const inkId = '66666666-6666-4666-8666-666666666666'
+const inkStrokeId = '77777777-7777-4777-8777-777777777777'
 
 async function mixedArchive() {
   const bundle = await buildMaterialBundle({
@@ -37,7 +38,20 @@ async function mixedArchive() {
       { id: inkId, kind: 'ink', ink: {
         width: 320,
         height: 240,
-        strokes: [{ width: 2.5, points: [{ x: 12, y: 20, pressure: 0.4 }, { x: 90, y: 110, pressure: 0.9 }] }],
+        rootExtension: { keep: true },
+        strokeIds: [inkStrokeId],
+        strokeStyles: [{ color: '#263b85', width: 2.5, styleExtension: { keep: true } }],
+        strokes: [{
+          color: '#263b85',
+          width: 2.5,
+          strokeExtension: 'keep-stroke',
+          points: [{
+            x: 12,
+            y: 20,
+            pressure: 0.4,
+            pointExtension: 'keep-point',
+          }, { x: 90, y: 110, pressure: 0.9 }],
+        }],
       }, bytes: new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 9]) },
       { id: '77777777-7777-4777-8777-777777777777', kind: 'markdown', text: '图像之后' },
     ],
@@ -67,6 +81,18 @@ function streamingZip(files: Array<{ path: string; bytes: Uint8Array }>) {
     offset += chunk.length
   }
   return result
+}
+
+async function inkArchive(inkJson: string, blockId = inkId) {
+  const inkSha = await sha256Hex(new TextEncoder().encode(inkJson))
+  const path = `assets/${blockId}-${inkSha}.png`
+  const noteJson = `{"schemaVersion":1,"id":"${noteId}","revision":0,"title":"D04","createdAtMillis":1,"blocks":[{"id":"${blockId}","kind":"ink","ink":${inkJson}}]}`
+  const document = `![手写卡片](${path})\n<!-- 可编辑笔迹、身份和尺寸保存在同包 note.json 中 -->`
+  return zipSync({
+    'note.json': new TextEncoder().encode(noteJson),
+    'document.md': new TextEncoder().encode(document),
+    [path]: new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 5]),
+  }, { level: 0, mtime: new Date('1980-01-01T00:00:00Z') })
 }
 
 function underdeclareEntrySize(archive: Uint8Array, path: string, declaredSize: number) {
@@ -102,7 +128,24 @@ describe('Android schema-v1 note package', () => {
     expect(imported.blocks[1]?.kind === 'photo' && imported.blocks[1].bytes).toEqual(bundle.files.find((file) => file.kind === 'Photo')?.bytes)
     expect(imported.blocks[2]).toMatchObject({
       kind: 'ink',
-      ink: { width: 320, height: 240, strokes: [{ width: 2.5, points: [{ x: 12, y: 20, pressure: 0.4 }, { x: 90, y: 110, pressure: 0.9 }] }] },
+      ink: {
+        width: 320,
+        height: 240,
+        rootExtension: { keep: true },
+        strokeIds: [inkStrokeId],
+        strokeStyles: [{ color: '#263b85', width: 2.5, styleExtension: { keep: true } }],
+        strokes: [{
+          color: '#263b85',
+          width: 2.5,
+          strokeExtension: 'keep-stroke',
+          points: [{
+            x: 12,
+            y: 20,
+            pressure: 0.4,
+            pointExtension: 'keep-point',
+          }, { x: 90, y: 110, pressure: 0.9 }],
+        }],
+      },
     })
     expect(imported.blocks[2]?.kind === 'ink' && imported.blocks[2].bytes).toEqual(bundle.files.find((file) => file.kind === 'InkPreview')?.bytes)
   })
@@ -143,7 +186,93 @@ describe('Android schema-v1 note package', () => {
     }, { level: 0, mtime: new Date('1980-01-01T00:00:00Z') })
 
     const imported = await importAndroidNotePackage(archive)
-    expect(imported.blocks[0]).toMatchObject({ kind: 'ink', ink: { width: 320, height: 240 } })
+    expect(imported.blocks[0]).toMatchObject({
+      kind: 'ink',
+      ink: {
+        width: 320,
+        height: 240,
+        strokeStyles: [{ color: '#263b85', width: 2.5 }],
+        strokes: [{
+          color: '#263b85',
+          width: 2.5,
+          points: [{ x: 12, y: 20, pressure: 0.4 }],
+        }],
+      },
+    })
+    const importedInk = imported.blocks[0]?.kind === 'ink' ? imported.blocks[0].ink : undefined
+    expect(importedInk?.strokeIds).toEqual([expect.stringMatching(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+    )])
+  })
+
+  it.each([
+    {
+      name: 'duplicate stroke IDs',
+      ink: {
+        width: 320,
+        height: 240,
+        strokeIds: [inkStrokeId, inkStrokeId.toUpperCase()],
+        strokes: [
+          { points: [{ x: 1, y: 1 }] },
+          { points: [{ x: 2, y: 2 }] },
+        ],
+      },
+      message: '笔迹身份',
+    },
+    {
+      name: 'misaligned strokeStyles',
+      ink: {
+        width: 320,
+        height: 240,
+        strokeStyles: [{ color: '#263b85', width: 2.5 }],
+        strokes: [{ points: [{ x: 1, y: 1 }] }, { points: [{ x: 2, y: 2 }] }],
+      },
+      message: '数量必须与笔画一致',
+    },
+    {
+      name: 'invalid color',
+      ink: {
+        width: 320,
+        height: 240,
+        strokes: [{ color: 'navy', points: [{ x: 1, y: 1 }] }],
+      },
+      message: '笔迹颜色无效',
+    },
+    {
+      name: 'inline and style conflict',
+      ink: {
+        width: 320,
+        height: 240,
+        strokeStyles: [{ color: '#263b85', width: 2.5 }],
+        strokes: [{ color: '#b8373c', width: 2.5, points: [{ x: 1, y: 1 }] }],
+      },
+      message: '笔迹颜色与样式数组不一致',
+    },
+  ])('rejects imported ink with $name', async ({ ink, message }) => {
+    const archive = await inkArchive(JSON.stringify(ink))
+    await expect(importAndroidNotePackage(archive)).rejects.toThrow(message)
+  })
+
+  it('rejects exporting a note whose ink fails strict D04 validation', async () => {
+    const { bundle } = await mixedArchive()
+    const files = bundle.files.map((file) => ({ ...file }))
+    const noteFile = files.find((file) => file.path === 'note.json')!
+    const note = JSON.parse(new TextDecoder().decode(noteFile.bytes)) as {
+      blocks: Array<{ kind: string; ink?: { strokeStyles?: unknown[] } }>
+    }
+    note.blocks.find((block) => block.kind === 'ink')!.ink!.strokeStyles = [{
+      color: '#263b85',
+      width: 2.5,
+    }, {
+      color: '#b8373c',
+      width: 2.5,
+    }]
+    noteFile.bytes = new TextEncoder().encode(JSON.stringify(note))
+    noteFile.sha256 = await sha256Hex(noteFile.bytes)
+    noteFile.sizeBytes = noteFile.bytes.length
+
+    await expect(exportAndroidNotePackage({ ...bundle, files }))
+      .rejects.toThrow('数量必须与笔画一致')
   })
 
   it('rejects ZIP entry paths that can escape the package root', async () => {

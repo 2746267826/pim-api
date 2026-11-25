@@ -63,6 +63,7 @@ export function parseInkDocument(value: Record<string, unknown>): InkDocument {
   }
 
   let pointCount = 0
+  const strokeStyles: InkStrokeStyle[] = []
   const strokes = value.strokes.map((rawStroke, index): InkStroke => {
     if (!isRecord(rawStroke) || !Array.isArray(rawStroke.points) || rawStroke.points.length === 0) {
       throw new Error('笔画必须包含坐标点')
@@ -79,6 +80,7 @@ export function parseInkDocument(value: Record<string, unknown>): InkDocument {
 
     let strokeWidth = inlineWidth ?? DEFAULT_STROKE_WIDTH
     let strokeColor = inlineColor ?? LEGACY_INK_COLOR
+    let strokeStyle: InkStrokeStyle | undefined
     if (rawStrokeStyles !== undefined) {
       const rawStyle = rawStrokeStyles[index]
       if (!isRecord(rawStyle)) throw new Error('笔迹样式必须与笔画一一对应')
@@ -93,7 +95,9 @@ export function parseInkDocument(value: Record<string, unknown>): InkDocument {
       }
       strokeColor = styleColor
       strokeWidth = styleWidth
+      strokeStyle = { ...rawStyle, color: styleColor, width: styleWidth }
     }
+    strokeStyles.push(strokeStyle ?? { color: strokeColor, width: strokeWidth })
 
     pointCount += rawStroke.points.length
     if (pointCount > MAX_POINTS) throw new Error('笔迹点数超过 Web 编辑上限')
@@ -134,7 +138,7 @@ export function parseInkDocument(value: Record<string, unknown>): InkDocument {
     height,
     strokes,
     strokeIds,
-    strokeStyles: strokes.map(({ color, width: strokeWidth }) => ({ color, width: strokeWidth })),
+    strokeStyles,
   }
 }
 
@@ -142,12 +146,26 @@ export function replaceInkStrokes(
   ink: InkDocument,
   strokes: InkStroke[],
   strokeIds: string[],
+  strokeStyles?: readonly InkStrokeStyle[],
 ): InkDocument {
+  if (strokeIds.length !== strokes.length) {
+    throw new Error('笔迹身份无效：数量必须与笔画一致')
+  }
+  const nextStyles = strokeStyles ?? strokes.map((stroke, index) => {
+    const existing = ink.strokeStyles[index]
+    if (existing && existing.color === stroke.color && Math.abs(existing.width - stroke.width) <= EPSILON) {
+      return { ...existing, color: stroke.color, width: stroke.width }
+    }
+    return { color: stroke.color, width: stroke.width }
+  })
+  if (nextStyles.length !== strokes.length) {
+    throw new Error('笔迹样式无效：数量必须与笔画一致')
+  }
   return {
     ...ink,
     strokes,
     strokeIds,
-    strokeStyles: strokes.map(({ color, width }) => ({ color, width })),
+    strokeStyles: [...nextStyles],
   }
 }
 
@@ -160,6 +178,7 @@ export function eraseInk(
   if (!eraserPoints.length) return { ink, changed: false }
   const nextStrokes: InkStroke[] = []
   const nextIds: string[] = []
+  const nextStyles: InkStrokeStyle[] = []
   let changed = false
   const eraserSegments = pathSegments(eraserPoints)
   const usedIds = new Set(ink.strokeIds.map((id) => id.toLowerCase()))
@@ -173,10 +192,12 @@ export function eraseInk(
       usedIds.add(strokeId)
     }
     const hitRadius = radius + stroke.width / 2
+    const strokeStyle = ink.strokeStyles[strokeIndex] ?? { color: stroke.color, width: stroke.width }
     if (mode === 'whole') {
       if (!strokeTouchesPath(stroke, eraserSegments, hitRadius)) {
         nextStrokes.push(stroke)
         nextIds.push(strokeId)
+        nextStyles.push(strokeStyle)
       } else {
         changed = true
       }
@@ -187,17 +208,19 @@ export function eraseInk(
     if (pieces.length === 1 && samePoints(pieces[0]!, stroke.points)) {
       nextStrokes.push(stroke)
       nextIds.push(strokeId)
+      nextStyles.push(strokeStyle)
       return
     }
     changed = true
     pieces.forEach((points, pieceIndex) => {
       nextStrokes.push({ ...stroke, points })
       nextIds.push(pieceIndex === 0 ? strokeId : deriveUniqueStrokeId(strokeId, pieceIndex, usedIds))
+      nextStyles.push(strokeStyle)
     })
   })
 
   if (!changed) return { ink, changed: false }
-  return { ink: replaceInkStrokes(ink, nextStrokes, nextIds), changed: true }
+  return { ink: replaceInkStrokes(ink, nextStrokes, nextIds, nextStyles), changed: true }
 }
 
 export function createStrokeId(): string {

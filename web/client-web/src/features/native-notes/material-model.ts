@@ -1,4 +1,5 @@
 import type { components } from '@/api/generated'
+import { parseInkDocument } from './ink-document'
 import { extractJsonValue, replaceJsonObjectProperties, splitJsonArrayValues } from './raw-json'
 
 export type NoteMaterialVersion = components['schemas']['NoteMaterialVersionDto']
@@ -180,6 +181,7 @@ export async function buildMaterialBundle(input: BuildMaterialInput): Promise<Ma
   const rendered: string[] = []
   const files: MaterialFileSpec[] = []
   const blockIds = new Set<string>()
+  const supersededPaths = new Set<string>()
 
   for (const block of input.blocks) {
     if (!block.id || blockIds.has(block.id)) throw new Error('正文块标识重复，请刷新后重试')
@@ -222,16 +224,32 @@ export async function buildMaterialBundle(input: BuildMaterialInput): Promise<Ma
       continue
     }
 
-    validateInkDocument(block.ink)
+    const normalizedInk = parseInkDocument(block.ink)
     const sourceBlockJson = sourceBlockJsonById.get(block.id)
     const sourceBlockKind = sourceBlockJson ? (JSON.parse(sourceBlockJson) as { kind?: string }).kind : undefined
     const sourceInkJson = sourceBlockKind === 'ink' && sourceBlockJson ? extractJsonValue(sourceBlockJson, ['ink']) : undefined
-    const inkJson = sourceInkJson && JSON.stringify(JSON.parse(sourceInkJson)) === JSON.stringify(block.ink) ? sourceInkJson : JSON.stringify(block.ink)
+    if (sourceInkJson) {
+      const sourceInk = JSON.parse(sourceInkJson) as Record<string, unknown>
+      parseInkDocument(sourceInk)
+    }
+    const inkJson = JSON.stringify(normalizedInk)
     const hash = await sha256Hex(encoder.encode(inkJson))
-    if ('sha256' in block && hash !== block.sha256) throw new Error('已保存手写卡片的摘要发生变化，未创建新版本')
+    const sourceHash = sourceInkJson
+      ? await sha256Hex(encoder.encode(sourceInkJson))
+      : undefined
+    if ('sha256' in block) {
+      const currentHash = await sha256Hex(encoder.encode(JSON.stringify(block.ink)))
+      if (block.sha256 !== sourceHash && block.sha256 !== currentHash) {
+        throw new Error('已保存手写卡片的摘要发生变化，未创建新版本')
+      }
+    }
     if (block.bytes.length > 40 * 1024 * 1024) throw new Error('单张手写预览不能超过 40 MiB')
     const path = `assets/${block.id}-${hash}.png`
-    noteBlocks.push({ ...(block.source ?? {}), id: block.id, kind: 'ink', ink: block.ink })
+    const previousPreviewHash = sourceHash ?? ('sha256' in block ? block.sha256 : undefined)
+    if (previousPreviewHash && previousPreviewHash !== hash) {
+      supersededPaths.add(`assets/${block.id}-${previousPreviewHash}.png`)
+    }
+    noteBlocks.push({ ...(block.source ?? {}), id: block.id, kind: 'ink', ink: normalizedInk })
     rawNoteBlocks.push(replaceJsonObjectProperties(sourceBlockJson ?? JSON.stringify(block.source ?? {}), { id: JSON.stringify(block.id), kind: '"ink"', ink: inkJson }))
     rendered.push(`![手写卡片](${path})\n<!-- 可编辑笔迹、身份和尺寸保存在同包 note.json 中 -->`)
     files.push({
@@ -295,6 +313,7 @@ export async function buildMaterialBundle(input: BuildMaterialInput): Promise<Ma
   for (const preserved of preservedFiles) {
     if (preservedPaths.has(preserved.path)) throw new Error(`原版本包含重复材料路径：${preserved.path}`)
     preservedPaths.add(preserved.path)
+    if (supersededPaths.has(preserved.path)) continue
     const generated = generatedByPath.get(preserved.path)
     if (generated) {
       if (generated.kind === preserved.kind && generated.sha256 === preserved.sha256 &&
@@ -347,46 +366,6 @@ export async function buildMaterialBundle(input: BuildMaterialInput): Promise<Ma
     manifestJson: JSON.stringify(manifest),
     files,
     recordedAudio: (input.preservedRecordings ?? input.recordings)?.length ?? 0,
-  }
-}
-
-function validateInkDocument(ink: Record<string, unknown>) {
-  const width = ink.width
-  const height = ink.height
-  const strokes = ink.strokes
-  if (typeof width !== 'number' || !Number.isFinite(width) || width < 80 || width > 2048 ||
-      typeof height !== 'number' || !Number.isFinite(height) || height < 80 || height > 4096 ||
-      !Array.isArray(strokes) || strokes.length > 10_000) {
-    throw new Error('手写卡片尺寸或笔画结构超出 schema-v1 范围')
-  }
-  let pointCount = 0
-  for (const stroke of strokes) {
-    if (!stroke || typeof stroke !== 'object' || Array.isArray(stroke)) {
-      throw new Error('手写卡片包含无效笔画')
-    }
-    const strokeRecord = stroke as Record<string, unknown>
-    const strokeWidth = strokeRecord.width === undefined ? 2.5 : strokeRecord.width
-    const points = strokeRecord.points
-    if (typeof strokeWidth !== 'number' || !Number.isFinite(strokeWidth) || strokeWidth < 0.5 || strokeWidth > 24 ||
-        !Array.isArray(points) || points.length === 0) {
-      throw new Error('手写卡片包含无效笔画')
-    }
-    pointCount += points.length
-    if (pointCount > 50_000) throw new Error('手写卡片超过 Web 笔迹点数上限')
-    for (const point of points) {
-      if (!point || typeof point !== 'object' || Array.isArray(point)) {
-        throw new Error('手写卡片包含无效坐标点')
-      }
-      const value = point as Record<string, unknown>
-      const x = value.x
-      const y = value.y
-      const pressure = value.pressure === undefined ? 1 : value.pressure
-      if (typeof x !== 'number' || !Number.isFinite(x) || x < 0 || x > width ||
-          typeof y !== 'number' || !Number.isFinite(y) || y < 0 || y > height ||
-          typeof pressure !== 'number' || !Number.isFinite(pressure) || pressure < 0 || pressure > 1) {
-        throw new Error('手写卡片坐标或压力超出 schema-v1 范围')
-      }
-    }
   }
 }
 
@@ -479,6 +458,7 @@ export function parseMaterialVersion(material: NoteMaterialVersion): ParsedNoteM
     if (kind === 'ink') {
       const ink = raw.ink
       if (!ink || typeof ink !== 'object' || Array.isArray(ink)) throw new Error('固定材料包含无效手写卡片')
+      parseInkDocument(ink as Record<string, unknown>)
       const index = preservedFiles.findIndex((file) => file.kind === 'InkPreview' && file.blockId === id)
       const file = preservedFiles[index]
       if (index < 0 || !file?.path) throw new Error('固定材料缺少手写预览图')

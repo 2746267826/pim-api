@@ -1,4 +1,5 @@
 import { Inflate, zipSync } from 'fflate'
+import { parseInkDocument } from './ink-document'
 import { sha256Hex, type MaterialBundle, type MaterialDraftBlock, type SupportedPhotoMime } from './material-model'
 
 export interface ImportedAndroidNotePackage {
@@ -41,6 +42,7 @@ export async function exportAndroidNotePackage(bundle: MaterialBundle): Promise<
     if (file.bytes.length !== file.sizeBytes || await sha256Hex(file.bytes) !== file.sha256) {
       throw new Error(`材料摘要或长度不匹配：${file.path}`)
     }
+    if (file.path === 'note.json') validateExportedNoteInk(file.bytes)
     const limit = file.path === 'note.json'
       ? MAX_METADATA_BYTES
       : file.path === 'document.md'
@@ -127,7 +129,8 @@ export async function importAndroidNotePackage(archive: Uint8Array): Promise<Imp
     }
     if (raw.kind === 'ink') {
       const ink = raw.ink
-      validateInk(ink)
+      if (!isRecord(ink)) throw new Error('手写向量不符合 Android schema-v1 尺寸或笔画结构')
+      const normalizedInk = parseInkDocument(ink)
       // Keep numeric lexemes: Kotlin Float serialization may emit 320.0 where JS emits 320.
       const rawInk = findObjectPropertyRaw(rawBlocks[blockIndex]!, 'ink')
       const inkVectorSha = await sha256Hex(textEncoder.encode(compactJson(rawInk)))
@@ -139,7 +142,7 @@ export async function importAndroidNotePackage(archive: Uint8Array): Promise<Imp
         throw new Error(`手写预览为空、超限或不是 PNG：${entry.path}`)
       }
       expectedPaths.add(entry.path)
-      const inkBlock = { id: raw.id, kind: 'ink' as const, ink, bytes }
+      const inkBlock = { id: raw.id, kind: 'ink' as const, ink: normalizedInk, bytes }
       blocks.push(inkBlock)
       rendered.push(`![手写卡片](${entry.path})\n<!-- 可编辑笔迹、身份和尺寸保存在同包 note.json 中 -->`)
       continue
@@ -414,28 +417,15 @@ function compactJson(source: string): string {
   return result
 }
 
-function validateInk(value: unknown): asserts value is Record<string, unknown> {
-  if (!isRecord(value) || !isFiniteNumber(value.width) || !isFiniteNumber(value.height) ||
-      value.width < 80 || value.width > 2048 || value.height < 80 || value.height > 4096 ||
-      !Array.isArray(value.strokes) || value.strokes.length > 10_000) {
-    throw new Error('手写向量不符合 Android schema-v1 尺寸或笔画结构')
-  }
-  let pointsTotal = 0
-  for (const stroke of value.strokes) {
-    if (!isRecord(stroke) || !Array.isArray(stroke.points) || !stroke.points.length) throw new Error('手写笔画缺少坐标点')
-    const width = stroke.width === undefined ? 2.5 : stroke.width
-    if (!isFiniteNumber(width) || width < 0.5 || width > 24) throw new Error('手写笔画宽度无效')
-    pointsTotal += stroke.points.length
-    if (pointsTotal > 50_000) throw new Error('手写坐标点超过 Web 安全上限')
-    for (const point of stroke.points) {
-      if (!isRecord(point)) throw new Error('手写坐标或压力超出 Android schema-v1 范围')
-      const x = point.x
-      const y = point.y
-      const pressure = point.pressure ?? 1
-      if (!isFiniteNumber(x) || !isFiniteNumber(y) || !isFiniteNumber(pressure) ||
-          x < 0 || x > value.width || y < 0 || y > value.height || pressure < 0 || pressure > 1) {
-        throw new Error('手写坐标或压力超出 Android schema-v1 范围')
-      }
+function validateExportedNoteInk(bytes: Uint8Array) {
+  const note = parseJsonObject(bytes, 'note.json')
+  if (!Array.isArray(note.blocks)) throw new Error('Android note.json 正文块不是数组')
+  for (const raw of note.blocks) {
+    if (!isRecord(raw) || raw.kind !== 'ink') continue
+    if (!isRecord(raw.ink)) throw new Error('手写向量不符合 Android schema-v1 尺寸或笔画结构')
+    const normalized = parseInkDocument(raw.ink)
+    if (JSON.stringify(normalized) !== JSON.stringify(raw.ink)) {
+      throw new Error('手写向量未按 D04 规范写入，拒绝导出')
     }
   }
 }
@@ -496,10 +486,6 @@ function isUuid(value: unknown): value is string {
 
 function isInteger(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value)
-}
-
-function isFiniteNumber(value: unknown): value is number {
-  return typeof value === 'number' && Number.isFinite(value)
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

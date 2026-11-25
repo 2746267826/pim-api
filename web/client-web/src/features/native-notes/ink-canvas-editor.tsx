@@ -276,14 +276,17 @@ export function InkCanvasEditor({
 
   function beginErase(event: ReactPointerEvent<SVGSVGElement>) {
     const point = pointerPoint(event)
+    const baseInk = inkRef.current
+    const result = eraseInk(baseInk, eraserMode, [point])
     gestureRef.current = {
       kind: 'erase',
       pointerId: event.pointerId,
       mode: eraserMode,
-      baseInk: inkRef.current,
+      baseInk,
       points: [point],
-      changed: false,
+      changed: result.changed,
     }
+    if (result.changed) commitInk(result.ink)
     setGestureActive(true)
     setEraserPoint(point)
     pendingChangeRef.current?.(true)

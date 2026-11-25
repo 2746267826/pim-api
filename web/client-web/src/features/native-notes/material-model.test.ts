@@ -17,6 +17,7 @@ import { extractJsonValue } from './raw-json'
 const noteId = '11111111-1111-4111-8111-111111111111'
 const versionId = '22222222-2222-4222-8222-222222222222'
 const assetId = '33333333-3333-4333-8333-333333333333'
+const inkStrokeId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 const encoder = new TextEncoder()
 
 function asMaterialVersion(bundle: Awaited<ReturnType<typeof buildMaterialBundle>>): NoteMaterialVersion {
@@ -129,10 +130,27 @@ describe('native note material model', () => {
     })
     const input = JSON.parse(bundle.inputJson)
     const manifest = JSON.parse(bundle.manifestJson)
-    const inkHash = await sha256Hex(encoder.encode(JSON.stringify(ink)))
+    const normalizedInk = input.note.blocks[1].ink
+    const inkHash = await sha256Hex(encoder.encode(JSON.stringify(normalizedInk)))
     const previewHash = await sha256Hex(previewBytes)
 
-    expect(input.note.blocks[1]).toEqual({ id: inkId, kind: 'ink', ink })
+    expect(normalizedInk).toMatchObject({
+      width: 320,
+      height: 240,
+      strokeStyles: [{ color: '#263b85', width: 2.5 }],
+      strokes: [{
+        color: '#263b85',
+        width: 2.5,
+        points: [
+          { x: 12, y: 18, pressure: 0.4 },
+          { x: 50, y: 60, pressure: 0.9 },
+        ],
+      }],
+    })
+    expect(normalizedInk.strokeIds).toEqual([expect.stringMatching(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+    )])
+    expect(input.note.blocks[1]).toEqual({ id: inkId, kind: 'ink', ink: normalizedInk })
     expect(manifest.files).toContainEqual(expect.objectContaining({
       path: `assets/${inkId}-${inkHash}.png`,
       kind: 'InkPreview',
@@ -141,6 +159,165 @@ describe('native note material model', () => {
       sizeBytes: previewBytes.length,
     }))
     expect(bundle.files.find((file) => file.kind === 'InkPreview')?.bytes).toEqual(previewBytes)
+  })
+
+  it('builds canonical D04 ink and preserves every extension field', async () => {
+    const ink = {
+      width: 320,
+      height: 240,
+      rootExtension: { keep: true },
+      strokeIds: [inkStrokeId],
+      strokeStyles: [{
+        color: '#b8373c',
+        width: 1.8,
+        styleExtension: { source: 'android', keep: true },
+      }],
+      strokes: [{
+        color: '#b8373c',
+        width: 1.8,
+        strokeExtension: 'keep-stroke',
+        points: [{
+          x: 12,
+          y: 18,
+          pressure: 0.4,
+          pointExtension: { keep: true },
+        }],
+      }],
+    }
+    const previewBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 2])
+    const bundle = await buildMaterialBundle({
+      versionId,
+      noteId,
+      baseVersionId: null,
+      revision: 0,
+      title: 'D04 扩展',
+      noteCreatedAtMillis: 100,
+      createdAtMillis: 200,
+      blocks: [{ id: assetId, kind: 'ink', ink, bytes: previewBytes }],
+    })
+    const input = JSON.parse(bundle.inputJson)
+    const outputInk = input.note.blocks[0].ink
+    const outputJson = JSON.stringify(outputInk)
+
+    expect(outputInk).toEqual(ink)
+    expect(JSON.parse(bundle.manifestJson).files).toContainEqual(expect.objectContaining({
+      path: `assets/${assetId}-${await sha256Hex(encoder.encode(outputJson))}.png`,
+      kind: 'InkPreview',
+      blockId: assetId,
+    }))
+  })
+
+  it('normalizes a legacy ink snapshot on first material write', async () => {
+    const legacy = {
+      width: 320,
+      height: 240,
+      rootExtension: 'keep-root',
+      strokes: [{
+        strokeExtension: 'keep-stroke',
+        points: [{
+          x: 12,
+          y: 18,
+          pointExtension: 'keep-point',
+        }],
+      }],
+    }
+    const previewBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 3])
+    const bundle = await buildMaterialBundle({
+      versionId,
+      noteId,
+      baseVersionId: null,
+      revision: 0,
+      title: '旧手写',
+      noteCreatedAtMillis: 100,
+      createdAtMillis: 200,
+      blocks: [{ id: assetId, kind: 'ink', ink: legacy, bytes: previewBytes }],
+    })
+    const input = JSON.parse(bundle.inputJson)
+    const ink = input.note.blocks[0].ink
+    const inkHash = await sha256Hex(encoder.encode(JSON.stringify(ink)))
+
+    expect(ink.rootExtension).toBe('keep-root')
+    expect(ink.strokeIds).toEqual([expect.stringMatching(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+    )])
+    expect(ink.strokeStyles).toEqual([{ color: '#263b85', width: 2.5 }])
+    expect(ink.strokes).toEqual([{
+      color: '#263b85',
+      width: 2.5,
+      strokeExtension: 'keep-stroke',
+      points: [{ x: 12, y: 18, pressure: 1, pointExtension: 'keep-point' }],
+    }])
+    expect(JSON.parse(bundle.manifestJson).files).toContainEqual(expect.objectContaining({
+      path: `assets/${assetId}-${inkHash}.png`,
+      kind: 'InkPreview',
+      blockId: assetId,
+    }))
+  })
+
+  it.each([
+    {
+      name: 'duplicate stroke IDs',
+      ink: {
+        width: 320,
+        height: 240,
+        strokeIds: [inkStrokeId, inkStrokeId.toUpperCase()],
+        strokes: [
+          { points: [{ x: 1, y: 1 }] },
+          { points: [{ x: 2, y: 2 }] },
+        ],
+      },
+      message: '笔迹身份',
+    },
+    {
+      name: 'invalid stroke ID',
+      ink: {
+        width: 320,
+        height: 240,
+        strokeIds: ['invalid'],
+        strokes: [{ points: [{ x: 1, y: 1 }] }],
+      },
+      message: '笔迹身份',
+    },
+    {
+      name: 'misaligned strokeStyles',
+      ink: {
+        width: 320,
+        height: 240,
+        strokeStyles: [{ color: '#b8373c', width: 2 }],
+        strokes: [{ points: [{ x: 1, y: 1 }] }, { points: [{ x: 2, y: 2 }] }],
+      },
+      message: '数量必须与笔画一致',
+    },
+    {
+      name: 'invalid inline color',
+      ink: {
+        width: 320,
+        height: 240,
+        strokes: [{ color: '#xyzxyz', points: [{ x: 1, y: 1 }] }],
+      },
+      message: '笔迹颜色无效',
+    },
+    {
+      name: 'inline and style conflict',
+      ink: {
+        width: 320,
+        height: 240,
+        strokeStyles: [{ color: '#b8373c', width: 2 }],
+        strokes: [{ color: '#245fba', width: 2, points: [{ x: 1, y: 1 }] }],
+      },
+      message: '笔迹颜色与样式数组不一致',
+    },
+  ])('rejects $name before building a material bundle', async ({ ink, message }) => {
+    await expect(buildMaterialBundle({
+      versionId,
+      noteId,
+      baseVersionId: null,
+      revision: 0,
+      title: '无效 D04',
+      noteCreatedAtMillis: 1,
+      createdAtMillis: 2,
+      blocks: [{ id: assetId, kind: 'ink', ink, bytes: new Uint8Array([1]) }],
+    })).rejects.toThrow(message)
   })
 
   it('rejects ink coordinates outside the shared native schema', async () => {
@@ -154,7 +331,7 @@ describe('native note material model', () => {
       createdAtMillis: 2,
       blocks: [{ id: '44444444-4444-4444-8444-444444444444', kind: 'ink',
         ink: { width: 320, height: 240, strokes: [{ points: [{ x: 321, y: 2 }] }] }, bytes: new Uint8Array([1]) }],
-    })).rejects.toThrow('手写卡片坐标或压力超出 schema-v1 范围')
+    })).rejects.toThrow('笔迹坐标或压力超出 schema-v1 范围')
   })
 
   it('parses the exact fixed note.json hash and remote file indexes', async () => {
@@ -177,6 +354,42 @@ describe('native note material model', () => {
       recordings: 0,
       blocks: [{ kind: 'markdown', text: '正文' }],
     })
+  })
+
+  it('rejects malformed D04 ink when loading a fixed material version', async () => {
+    const bundle = await buildMaterialBundle({
+      versionId,
+      noteId,
+      baseVersionId: null,
+      revision: 0,
+      title: 'D04 读取校验',
+      noteCreatedAtMillis: 10,
+      createdAtMillis: 20,
+      blocks: [{
+        id: assetId,
+        kind: 'ink',
+        ink: {
+          width: 320,
+          height: 240,
+          strokes: [{ points: [{ x: 10, y: 10 }] }],
+        },
+        bytes: new Uint8Array([0x89, 0x50, 0x4e, 0x47]),
+      }],
+    })
+    const material = asMaterialVersion(bundle)
+    const input = JSON.parse(material.inputJson) as {
+      note: { blocks: Array<{ kind: string; ink?: Record<string, unknown> }> }
+    }
+    const inkBlock = input.note.blocks.find((block) => block.kind === 'ink')!
+    inkBlock.ink = {
+      width: 320,
+      height: 240,
+      strokeStyles: [{ color: '#b8373c', width: 2 }],
+      strokes: [{ points: [{ x: 10, y: 10 }] }, { points: [{ x: 20, y: 20 }] }],
+    }
+    material.inputJson = JSON.stringify(input)
+
+    expect(() => parseMaterialVersion(material)).toThrow('数量必须与笔画一致')
   })
 
   it('round-trips unknown block fields and preserves mixed recording and attachment descriptors on append', async () => {
@@ -207,7 +420,13 @@ describe('native note material model', () => {
       sha256: photoHash,
       vendorBlock: { keep: true },
     }
-    const ink = { width: 120, height: 160, strokes: [] }
+    const ink = {
+      width: 120,
+      height: 160,
+      strokeIds: [],
+      strokeStyles: [],
+      strokes: [],
+    }
     const inkId = '66666666-6666-4666-8666-666666666666'
     const inkHash = await sha256Hex(encoder.encode(JSON.stringify(ink)))
     const inkBytes = new Uint8Array([5, 4, 3, 2, 1])
@@ -337,7 +556,13 @@ describe('native note material model', () => {
   })
 
   it('preserves an existing vector ink block and its preview bytes when creating a new version', async () => {
-    const ink = { width: 120, height: 160, strokes: [] }
+    const ink = {
+      width: 120,
+      height: 160,
+      strokeIds: [],
+      strokeStyles: [],
+      strokes: [],
+    }
     const inkJson = JSON.stringify(ink)
     const inkHash = await sha256Hex(encoder.encode(inkJson))
     const blockId = '66666666-6666-4666-8666-666666666666'
@@ -415,7 +640,7 @@ describe('native note material model', () => {
     expect(JSON.parse(next.inputJson).note.blocks[0].ink).toEqual(ink)
   })
 
-  it('round-trips the Android mixed-material golden with raw lexical ink and recordings', async () => {
+  it('normalizes legacy ink in the Android mixed-material golden while preserving recordings and attachments', async () => {
     const fixtureDirectory = path.resolve(process.cwd(), '../../tests/Pim.UnitTests/Fixtures/notes/mixed-material-v1')
     const inputJson = new TextDecoder().decode(new Uint8Array(readFileSync(path.join(fixtureDirectory, 'input.json'))))
     const manifestJson = new TextDecoder().decode(new Uint8Array(readFileSync(path.join(fixtureDirectory, 'manifest.json'))))
@@ -443,11 +668,47 @@ describe('native note material model', () => {
       sourceInputJson: inputJson, preservedRecordings: parsed.recordingEntries, preservedFiles: parsed.manifestFiles, preserveSourceFiles: true,
     })
     const nextNote = extractJsonValue(next.inputJson, ['note'])
-    expect(nextNote).toBe(new TextDecoder().decode(new Uint8Array(readFileSync(path.join(fixtureDirectory, 'note.json')))).replace('Canonical mixed materials', 'Canonical mixed materials edited').replace('"revision":7', '"revision":8').replace('# Canonical note\\n\\n**keep this body**\\n', 'edited\\n'))
-    expect(nextNote).toContain('320.0')
-    expect(nextNote).toContain('12.0')
+    const nextNoteValue = JSON.parse(nextNote) as {
+      revision: number
+      blocks: Array<{ id: string; kind: string; ink?: Record<string, unknown> }>
+    }
+    const normalizedInkBlock = nextNoteValue.blocks.find((block) => block.kind === 'ink')!
+    const normalizedInk = normalizedInkBlock.ink!
+    expect(nextNoteValue.revision).toBe(8)
+    expect(normalizedInk.strokeIds).toEqual([expect.stringMatching(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+    )])
+    expect(normalizedInk.strokeStyles).toEqual([{ color: '#263b85', width: 2.5 }])
+    expect(normalizedInk.strokes).toEqual([{
+      color: '#263b85',
+      width: 2.5,
+      points: [
+        { x: 12, y: 18, pressure: 1 },
+        { x: 96, y: 84, pressure: 1 },
+        { x: 180, y: 30, pressure: 1 },
+      ],
+    }])
     expect(next.inputJson).toContain(new TextDecoder().decode(new Uint8Array(readFileSync(path.join(fixtureDirectory, 'recordings/77777777-7777-4777-8777-777777777777/manifest.json')))))
-    expect(next.files.slice(2).map((file) => `${file.kind}:${file.path}:${file.sha256}`)).toEqual(manifest.files.slice(2).map((file) => `${file.kind}:${file.path}:${file.sha256}`))
+    const oldPreview = manifest.files.find((file) => file.kind === 'InkPreview')!
+    const newPreviewPath = `assets/${normalizedInkBlock.id}-${await sha256Hex(encoder.encode(JSON.stringify(normalizedInk)))}.png`
+    expect(newPreviewPath).not.toBe(oldPreview.path)
+    expect(next.files.find((file) => file.path === oldPreview.path)).toBeUndefined()
+    expect(next.files).toContainEqual(expect.objectContaining({
+      path: newPreviewPath,
+      kind: 'InkPreview',
+      blockId: normalizedInkBlock.id,
+      sha256: oldPreview.sha256,
+      sizeBytes: oldPreview.sizeBytes,
+    }))
+    for (const sourceFile of manifest.files.filter((file) =>
+      file.path !== 'note.json' && file.path !== 'document.md' && file.kind !== 'InkPreview')) {
+      expect(next.files).toContainEqual(expect.objectContaining({
+        path: sourceFile.path,
+        kind: sourceFile.kind,
+        sha256: sourceFile.sha256,
+        sizeBytes: sourceFile.sizeBytes,
+      }))
+    }
 
     const ink = parsed.blocks.find((block) => block.kind === 'ink')!
     const badPath = { ...parsed, blocks: parsed.blocks.map((block) => block === ink ? { ...block, path: `${block.path}.bad` } : block) }

@@ -144,6 +144,10 @@ describe('InkCanvasEditor', () => {
       width: 400,
       height: 300,
       strokeIds: [STROKE_1, STROKE_2],
+      strokeStyles: [
+        { color: LEGACY_INK, width: 3, futureStyle: { keep: 'first' } },
+        { color: LEGACY_INK, width: 4, futureStyle: { keep: 'second' } },
+      ],
       strokes: [
         { width: 3, points: [{ x: 40, y: 50, pressure: 0.6 }] },
         { width: 4, points: [{ x: 100, y: 120, pressure: 0.8 }] },
@@ -163,6 +167,7 @@ describe('InkCanvasEditor', () => {
       height: 300,
       platformExtension: { source: 'android-v1' },
       strokeIds: [STROKE_1],
+      strokeStyles: [{ color: LEGACY_INK, width: 3, futureStyle: { keep: 'first' } }],
       strokes: [{ width: 3, color: LEGACY_INK, points: [{ x: 40, y: 50, pressure: 0.6 }] }],
     })
   })
@@ -234,6 +239,10 @@ describe('InkCanvasEditor', () => {
         { color: RED, width: 1.8, points: [{ x: 20, y: 30, pressure: 0.2 }, { x: 100, y: 110, pressure: 0.8 }] },
         { color: BLUE, width: 6, points: [{ x: 200, y: 40, pressure: 0.5 }, { x: 280, y: 200, pressure: 0.5 }] },
       ],
+      strokeStyles: [
+        { color: RED, width: 1.8, platformStyle: { keep: 'first' } },
+        { color: BLUE, width: 6, platformStyle: { keep: 'second' } },
+      ],
       androidExtension: { keep: true },
     }
     const first = render(<InkCanvasEditor initialInk={initialInk} onCancel={vi.fn()} onSave={onSave} />)
@@ -250,6 +259,10 @@ describe('InkCanvasEditor', () => {
       { color: RED, width: 1.8 },
       { color: BLUE, width: 6 },
     ])
+    expect(saved.strokeStyles).toEqual([
+      { color: RED, width: 1.8, platformStyle: { keep: 'first' } },
+      { color: BLUE, width: 6, platformStyle: { keep: 'second' } },
+    ])
     expect(strokeStyles.filter((color) => color === RED || color === BLUE)).toEqual([RED, BLUE])
 
     first.unmount()
@@ -261,6 +274,41 @@ describe('InkCanvasEditor', () => {
     expect(reopened.strokeIds).toEqual([STROKE_1, STROKE_2])
     expect(reopened.strokes.map(({ color, width }) => ({ color, width }))).toEqual([
       { color: RED, width: 1.8 },
+      { color: BLUE, width: 6 },
+    ])
+    expect(reopened.strokeStyles).toEqual(saved.strokeStyles)
+  })
+
+  it('keeps existing stroke style extensions when appending a new stroke', async () => {
+    stubPngCanvas()
+    const onSave = vi.fn()
+    const initialInk = {
+      width: 320,
+      height: 240,
+      strokeIds: [STROKE_1],
+      strokeStyles: [{ color: RED, width: 1.8, platformStyle: { keep: true } }],
+      strokes: [{
+        color: RED,
+        width: 1.8,
+        points: [{ x: 20, y: 30, pressure: 0.3 }, { x: 100, y: 110, pressure: 0.7 }],
+      }],
+    }
+    render(<InkCanvasEditor initialInk={initialInk} onCancel={vi.fn()} onSave={onSave} />)
+
+    await userEvent.click(screen.getByRole('button', { name: '画笔' }))
+    await userEvent.click(screen.getByRole('button', { name: '蓝' }))
+    await userEvent.click(screen.getByRole('button', { name: '粗' }))
+    await userEvent.click(screen.getByRole('button', { name: '完成设置' }))
+    drawStroke(screen.getByTestId('ink-canvas'), 23, [
+      { x: 40, y: 60 },
+      { x: 120, y: 140 },
+    ], 'mouse')
+    await clickSave()
+
+    await waitFor(() => expect(onSave).toHaveBeenCalledOnce())
+    const [ink] = onSave.mock.calls[0] as [InkDocument, Uint8Array]
+    expect(ink.strokeStyles).toEqual([
+      { color: RED, width: 1.8, platformStyle: { keep: true } },
       { color: BLUE, width: 6 },
     ])
   })
@@ -336,6 +384,74 @@ describe('InkCanvasEditor', () => {
     const [ink] = onSave.mock.calls[0] as [InkDocument, Uint8Array]
     expect(ink.strokes).toEqual([expect.objectContaining({ color: BLUE, width: 1.8 })])
     expect(ink.strokeIds).toEqual([STROKE_2])
+  })
+
+  it('erases a whole stroke on pointer down/up without movement', async () => {
+    stubPngCanvas()
+    const onSave = vi.fn()
+    const initialInk = {
+      width: 320,
+      height: 240,
+      strokeIds: [STROKE_1, STROKE_2],
+      strokeStyles: [
+        { color: RED, width: 6, platformStyle: { keep: 'red' } },
+        { color: BLUE, width: 1.8, platformStyle: { keep: 'blue' } },
+      ],
+      strokes: [
+        { color: RED, width: 6, points: [{ x: 20, y: 100 }, { x: 300, y: 100 }] },
+        { color: BLUE, width: 1.8, points: [{ x: 20, y: 200 }, { x: 300, y: 200 }] },
+      ],
+    }
+    render(<InkCanvasEditor initialInk={initialInk} onCancel={vi.fn()} onSave={onSave} />)
+    const canvas = screen.getByTestId('ink-canvas')
+
+    await userEvent.click(screen.getByRole('button', { name: '橡皮' }))
+    await userEvent.click(screen.getByRole('button', { name: '整笔擦除' }))
+    fireEvent.pointerDown(canvas, {
+      pointerId: 35, pointerType: 'mouse', isPrimary: true, button: 0, buttons: 1, clientX: 150, clientY: 100,
+    })
+    fireEvent.pointerUp(canvas, {
+      pointerId: 35, pointerType: 'mouse', isPrimary: true, button: 0, buttons: 0, clientX: 150, clientY: 100,
+    })
+    await clickSave()
+
+    await waitFor(() => expect(onSave).toHaveBeenCalledOnce())
+    const [ink] = onSave.mock.calls[0] as [InkDocument, Uint8Array]
+    expect(ink.strokes).toEqual([expect.objectContaining({ color: BLUE, width: 1.8 })])
+    expect(ink.strokeIds).toEqual([STROKE_2])
+    expect(ink.strokeStyles).toEqual([{ color: BLUE, width: 1.8, platformStyle: { keep: 'blue' } }])
+  })
+
+  it('applies the first partial erase hit on pointer down/up without movement and restores style fields with undo', async () => {
+    stubPngCanvas()
+    const onSave = vi.fn()
+    const initialInk = {
+      width: 320,
+      height: 240,
+      strokeIds: [STROKE_1],
+      strokeStyles: [{ color: GREEN, width: 3.4, platformStyle: { keep: true } }],
+      strokes: [{ color: GREEN, width: 3.4, points: [{ x: 20, y: 100 }, { x: 300, y: 100 }] }],
+    }
+    render(<InkCanvasEditor initialInk={initialInk} onCancel={vi.fn()} onSave={onSave} />)
+    const canvas = screen.getByTestId('ink-canvas')
+
+    await userEvent.click(screen.getByRole('button', { name: '橡皮' }))
+    await userEvent.click(screen.getByRole('button', { name: '局部擦除' }))
+    fireEvent.pointerDown(canvas, {
+      pointerId: 36, pointerType: 'touch', isPrimary: true, button: 0, buttons: 1, clientX: 160, clientY: 100,
+    })
+    fireEvent.pointerUp(canvas, {
+      pointerId: 36, pointerType: 'touch', isPrimary: true, button: 0, buttons: 0, clientX: 160, clientY: 100,
+    })
+    expect(canvas.querySelectorAll('path')).toHaveLength(2)
+
+    await userEvent.click(screen.getByRole('button', { name: '撤销最近一笔' }))
+    await clickSave()
+    await waitFor(() => expect(onSave).toHaveBeenCalledOnce())
+    const [ink] = onSave.mock.calls[0] as [InkDocument, Uint8Array]
+    expect(ink.strokeIds).toEqual([STROKE_1])
+    expect(ink.strokeStyles).toEqual([{ color: GREEN, width: 3.4, platformStyle: { keep: true } }])
+    expect(ink.strokes).toHaveLength(1)
   })
 
   it('groups one erase drag into one undo step', async () => {
