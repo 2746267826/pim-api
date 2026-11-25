@@ -70,12 +70,19 @@ internal static class TaskRowLock
     // 若任务排在前面，就会出现「删除持有簿锁等任务锁、更新持有任务锁等簿锁」的真实死锁（复审指出）。
     private const int CalendarNamespace = 1;
     private const int TaskNamespace = 2;
+    // 默认日历创建是「先查后建」，同一用户的并发请求必须共用一把锁，
+    // 否则两个空日历用户会各自建出一份默认日历。该锁只在建默认日历时持有，
+    // 且没有反向的「默认日历锁 → 任务/簿锁」路径，因此不会形成新的等待环。
+    private const int DefaultCalendarNamespace = 3;
 
     private static (int Namespace, int Id) TaskKey(Guid id)
         => (TaskNamespace, BitConverter.ToInt32(id.ToByteArray(), 0));
 
     private static (int Namespace, int Id) CalendarKey(Guid id)
         => (CalendarNamespace, BitConverter.ToInt32(id.ToByteArray(), 0));
+
+    private static (int Namespace, int Id) DefaultCalendarKey(Guid userId)
+        => (DefaultCalendarNamespace, BitConverter.ToInt32(userId.ToByteArray(), 0));
 
     /// <summary>
     /// 在「任务级咨询锁 + 单事务」内执行 <paramref name="action"/>（见 <see cref="WithLocksAsync"/>）。
@@ -134,6 +141,22 @@ internal static class TaskRowLock
     /// <summary>在**已存在的事务**内取任务簿级咨询锁（命名与用途见 <see cref="WithCalendarLockAsync"/>）。</summary>
     internal static Task AcquireCalendarLockAsync(PimDbContext db, Guid calendarId, CancellationToken ct)
         => AcquireKeysAsync(db, new[] { CalendarKey(calendarId) }, ct);
+
+    /// <summary>
+    /// 在「用户默认日历锁 + 单事务」内执行 <paramref name="action"/>，用于消除
+    /// <see cref="CalendarService.GetOrCreateDefaultCalendarAsync"/> 的并发先查后建窗口。
+    /// </summary>
+    internal static Task<T> WithDefaultCalendarLockAsync<T>(
+        PimDbContext db,
+        Guid userId,
+        Func<Task<T>> action,
+        CancellationToken ct)
+        => WithLocksAsync(db, new[] { DefaultCalendarKey(userId) }, action, ct);
+
+    /// <summary>在已存在的事务内取用户默认日历锁（调用方负责事务边界）。</summary>
+    internal static Task AcquireDefaultCalendarLockAsync(
+        PimDbContext db, Guid userId, CancellationToken ct)
+        => AcquireKeysAsync(db, new[] { DefaultCalendarKey(userId) }, ct);
 
     /// <summary>
     /// 在「咨询锁 + 单事务」内执行 <paramref name="action"/>；<paramref name="keys"/> 为空时直接执行。

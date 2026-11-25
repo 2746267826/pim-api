@@ -22,12 +22,18 @@ public sealed class NoteTaskSuggestionEntityConfiguration
     public void Configure(EntityTypeBuilder<NoteTaskSuggestionEntity> builder)
     {
         builder.Property(x => x.Revision).IsConcurrencyToken();
+        builder.Property(x => x.Kind).HasDefaultValue(NoteTaskSuggestionKinds.Task);
         builder.HasIndex(x => new { x.UserId, x.ExtractionId, x.Ordinal }).IsUnique();
         builder.HasIndex(x => new { x.UserId, x.NoteId, x.Status, x.UpdatedAt });
         builder.HasIndex(x => new { x.UserId, x.ConfirmRequestId }).IsUnique()
             .HasFilter("\"confirm_request_id\" IS NOT NULL");
         builder.HasIndex(x => x.TaskId).IsUnique()
             .HasFilter("\"task_id\" IS NOT NULL");
+        builder.HasIndex(x => x.EventId).IsUnique()
+            .HasFilter("\"event_id\" IS NOT NULL");
+        builder.HasIndex(x => new { x.UserId, x.NoteId, x.ItemFingerprint }).IsUnique()
+            .HasDatabaseName("IX_note_task_suggestions_note_fingerprint_confirmed")
+            .HasFilter("\"status\" = 'Confirmed' AND \"item_fingerprint\" IS NOT NULL");
         builder.HasOne(x => x.Extraction)
             .WithMany()
             .HasForeignKey(x => x.ExtractionId)

@@ -1,6 +1,6 @@
 # PIM 全量交付逐项状态台账（2026-11-25）
 
-本文件是交付包 A–R、Z 共 160 项的当前可续跑盘点。历史细节仍保留在 [`docs/product/pim-delivery-ledger.md`](pim-delivery-ledger.md)；本文件补齐每项的平台、验收条件、当前实现、依赖、负责 Agent、PR/HEAD、证据、状态与下一批动作。
+本文件是交付包 A–R、Z 共 160 项，加 Release/版本与发布安全 1 项，共 161 项的当前可续跑盘点。历史细节仍保留在 [`docs/product/pim-delivery-ledger.md`](pim-delivery-ledger.md)；本文件补齐每项的平台、验收条件、当前实现、依赖、负责 Agent、PR/HEAD、证据、状态与下一批动作。
 
 ## 快照与口径
 
@@ -8,13 +8,13 @@
 | --- | --- |
 | 盘点时间 | 2026-11-25（Asia/Shanghai） |
 | 交付包 | `PIM功能确认-最终交付-20261122.zip`，SHA-256 `b488a01e6f317a2735f387a918787204791fb32a38ad9ce064a07166f4b8a864` |
-| pim-api | `origin/master@e548739378ab5822bc1674e8601b9f0f7399d501`（PR #585 J09、PR #588 R01、PR #591 Windows R04 台账、PR #592 J09/R01 台账已合并）；J09 merge `65ed0935`，head `4212668`；R01 merge `667da4fc`，head `5e2768d7` |
-| pim-android | `origin/master@1ee2fe28cb8e8602bb82097c8958020498753da5`（PR #82 处理状态、PR #89 C04 实时状态、PR #91 L05 日历、PR #94 R04 原生多选均已合并）；#94 head `e3e496bc5c57d66f48abb7e07245928272627688` required CI `45515208111` 全绿；合并后 master CI `45519519147` 在本次核对时仍为 `in_progress` |
+| pim-api | `origin/master@fa60b58eed5fb4e4b14789bff1a5573c15646d43`（PR #585 J09、PR #588 R01、PR #591 Windows R04 台账、PR #592 J09/R01 台账、PR #601/#603/#604 版本与发布安全已合并）；J09 merge `65ed0935`，head `4212668`；R01 merge `667da4fc`，head `5e2768d7`；#601 head `94419049`/merge `f79cc3e8`，#603 head `776bf46e`/merge `b0f92b16`，#604 head `033f3a5f`/merge `fa60b58e`；pre-release `api-v26.11.1174`，latest 仍为 `api-v26.11.1157` |
+| pim-android | `origin/master@c7ff54f7e4f615d628fbc6849151d431b0903b89`（PR #82 处理状态、PR #89 C04 实时状态、PR #91 L05 日历、PR #94 R04 原生多选、PR #97 D04 手写工具均已合并）；#97 head `cdbda8fb5bcf0eca8eb85d82670d06993e53d3e6` required CI `45609248297` 全绿（`release` skipped，独立 instrumented workflow skipped）；合并提交 `c7ff54f7` 即当前 master，合并后 master CI `45625276305` 成功（含 `release`） |
 | pim-windows | `origin/master@af558d03197405a4e51302442e2edcf7c7accd9f`（PR #58 M05 原生 Today 已合并；此前 PR #57 R04 原生多选、PR #52 鼠标手写）；#58 head `911ad809544f98a405789be32e571238d2e88373` required CI `45517672772` 全绿（`release` skipped） |
 | 状态口径 | `PASS`：当前 head 且适用平台完整验收；`FAIL`：确认缺口仍存在或实现未合并；`NOT-VERIFIED`：实现存在但当前 head 无完整验收；`BLOCKED`：缺产品裁决/外部前提；`APPROVED-EXCEPTION`：交付包明确跳过或替代。 |
-| 本轮 PASS | **0**。J09 PR #585、R01 PR #588、Windows M05 PR #58、Android R04 PR #94 均已合并且 required CI 成功；但 J09 的真实第三方 provider Token/费用、管理员浏览器闭环、真实部署与完整崩溃恢复仍 NOT-VERIFIED，R01 的外部独立 MCP 客户端仍 NOT-VERIFIED，M05 的真实 Windows 交互式桌面流程仍 NOT-VERIFIED，R04 的真实 Windows 桌面、Android 实机/OEM 与外部 MCP 仍 NOT-VERIFIED。CI、WPF/AVD 自动化不能替代真实桌面、真机或用户流程。 |
+| 本轮 PASS | **0**。J09 PR #585、R01 PR #588、Windows M05 PR #58、Android R04 PR #94、Android D04 PR #97 均已合并且 required CI 成功；但 J09 的真实第三方 provider Token/费用、管理员浏览器闭环、真实部署与完整崩溃恢复仍 NOT-VERIFIED，R01 的外部独立 MCP 客户端仍 NOT-VERIFIED，M05 的真实 Windows 交互式桌面流程仍 NOT-VERIFIED，R04 的真实 Windows 桌面、Android 实机/OEM 与外部 MCP 仍 NOT-VERIFIED，D04 的 Android 真机/OEM、Android↔Web 往返与 Web/Windows 闭环仍未完成验收。Release/版本与发布安全实现随 #601/#603/#604 合并且 CI 成功，但真实 release dispatch、并发重跑与生产部署仍 NOT-VERIFIED，不记 PASS。CI、WPF/AVD 自动化不能替代真实桌面、真机、真实发布或用户流程。 |
 
-> 关键防回归规则：不把旧 PR head、旧 CI、demo、历史源码审计或客户端契约快照当作当前 head 的 PASS；`NOT-VERIFIED` 不是通过。`pim-android` 本地工作区存在其他 Agent 的未提交产品改动，本台账只认 `origin/master@1ee2fe28cb8e8602bb82097c8958020498753da5`，未使用该工作区未提交内容作为证据。
+> 关键防回归规则：不把旧 PR head、旧 CI、demo、历史源码审计或客户端契约快照当作当前 head 的 PASS；`NOT-VERIFIED` 不是通过。本台账对 Android 只认远端 `origin/master@c7ff54f7e4f615d628fbc6849151d431b0903b89` 及已核实的 PR 状态；未使用 `pim-android` 本地工作区未提交内容作为证据。`api-v26.11.1174` 是 #604 合并后的 pre-release，不是正式发布或生产部署证据。
 
 ## 状态汇总
 
@@ -22,10 +22,10 @@
 | --- | ---: | --- |
 | PASS | 0 | 无 |
 | FAIL | 82 | A01 A02 A03 A04 A05 A06 A07 A08 A09 B07 C12 C13 C16 C17 C18 C19 C20 D04 D05 E01 E02 F02 F03 F04 F06 F08 F09 F10 G01 G02 G04 G06 G07 G08 G09 G10 G12 G13 H01 H02 H03 H04 H05 H07 H08 H09 H10 H11 I03 I04 J01 J05 J06 J08 K02 K03 K04 L01 L07 L08 L10 L11 L13 M02 M03 M06 N01 O02 O03 O05 O06 P01 P05 Q03 Q04 Q05 Q06 Q08 R02 R03 R05 Z01 |
-| NOT-VERIFIED | 70 | A10 B01 B02 B03 B04 B05 B06 B08 B09 B10 B11 B12 B13 B14 B16 C01 C02 C03 C04 C05 C06 C07 C08 C09 C10 C11 C15 C22 D01 D02 D03 D06 D07 D08 F01 F05 F07 F11 G03 G05 G11 H06 I01 I02 J02 J03 J04 J07 J09 K01 L02 L03 L04 L05 L06 L09 L12 L14 M01 M04 M05 N02 N03 O01 P02 P03 P04 R01 R04 Z02 |
+| NOT-VERIFIED | 71 | A10 B01 B02 B03 B04 B05 B06 B08 B09 B10 B11 B12 B13 B14 B16 C01 C02 C03 C04 C05 C06 C07 C08 C09 C10 C11 C15 C22 D01 D02 D03 D06 D07 D08 F01 F05 F07 F11 G03 G05 G11 H06 I01 I02 J02 J03 J04 J07 J09 K01 L02 L03 L04 L05 L06 L09 L12 L14 M01 M04 M05 N02 N03 O01 P02 P03 P04 R01 R04 S01 Z02 |
 | BLOCKED | 2 | Q01 Q07 |
 | APPROVED-EXCEPTION | 6 | B15 C14 C21 E03 O04 Q02 |
-| **合计** | **160** | A–R、Z |
+| **合计** | **161** | A–R、Z、S |
 
 | 分组 | PASS | FAIL | NOT-VERIFIED | BLOCKED | APPROVED-EXCEPTION |
 | --- | ---: | ---: | ---: | ---: | ---: |
@@ -47,7 +47,10 @@
 | P 采集与定位 | 0 | 2 | 3 | 0 | 0 |
 | Q 基础服务 | 0 | 5 | 0 | 2 | 1 |
 | R MCP / API | 0 | 3 | 2 | 0 | 0 |
+| S Release / 版本与发布安全 | 0 | 0 | 1 | 0 | 0 |
 | Z 反向要求 | 0 | 1 | 1 | 0 | 0 |
+
+> 本轮新增 S01（Release/版本与发布安全）并更新 pim-api 快照；既有 A–R、Z 条目与状态不变：PASS 0、FAIL 82、NOT-VERIFIED 71（含 S01）、BLOCKED 2、APPROVED-EXCEPTION 6，合计 161。S01 仅记录 #601/#603/#604 已合并实现与 CI；真实 release dispatch、并发重跑与生产部署 NOT-VERIFIED，不记 PASS。D04 仍计 FAIL：Android #97 平台实现已合并且 CI 全绿，但 Web #594 仍 open、Windows D04 未闭合，Android 真机/OEM 与 Android↔Web 往返未验，不能销项。
 
 ## 明确阻塞
 
@@ -76,10 +79,12 @@
 | 10 | WO-Z01-USER-FACING | pim-api #577 已合并，方向不符 | 重做普通用户隐藏版本/审计 | 普通用户无数据中心/版本 ID/审计字段；真实冲突仅比较内容；管理员入口保留；浏览器验收通过 |
 | 11 | WO-M05-WINDOWS-TODAY | pim-windows #58 已合并（head `911ad809`，merge `af558d03`） | 补真实 Windows 桌面验收 | 真实桌面登录、托盘点击、刷新、新建/完成任务通过；M06 不扩大，Web 兼容入口保留 |
 | 12 | WO-Q01-Q07-DECISIONS | 产品裁决 | 解除两个 BLOCKED | Q01 范围与验收补齐；Q07 Conflict 清理语义裁决并落实现 |
+| 13 | WO-D04-CROSS-END | pim-android #97 已合并（head `cdbda8f`，merge `c7ff54f`）；pim-api Web #594 open（head `413cd17c`） | 补齐 D04 三端闭环 | Web #594 合并；Windows D04 实现/验收闭合；Android 实机/OEM 的笔、橡皮、颜色、粗细、撤销通过；Android↔Web 往返保留同一 ink JSON 与样式；正常/错误/重试/权限/冲突/恢复分支通过 |
+| 14 | WO-RELEASE-REAL-PROMOTION | pim-api #601/#603/#604 已合并（#604 head `033f3a5f`，merge `fa60b58e`） | 补真实发布提升、并发重跑与生产部署边界 | #604 之后真实 dispatch `release.yml` 的正常 bump 与 `promote_tag` 均通过；`/releases/latest` 收敛；旧 run 重跑不改正式版/`:latest`；生产从 `:latest` 拉取的实际行为有记录 |
 
 ## 全量逐项台账
 
-列说明：`验收条件` 为确认记录摘要；完整规则见交付包对应记录。`当前实现` 以 2026-11-25 三仓 master 与最近合并/开放 PR 为准；未单独复验的历史描述明确标注为“历史基线”。`证据` 只列本轮实际查到的证据，不把 demo 或旧 CI 写成当前 PASS。
+列说明：`验收条件` 为确认记录摘要；完整规则见交付包对应记录。`当前实现` 以 2026-11-25 三仓 master 与最近合并/开放 PR 为准；未单独复验的历史描述明确标注为“历史基线”。`证据` 只列本轮实际查到的证据，不把 demo 或旧 CI 写成当前 PASS。S01 是 Release/版本与发布安全补充项，不计入交付包原 160 项。
 
 ### A 笔记列表与组织
 
@@ -151,7 +156,7 @@
 | D01 | Android；Windows；Web | 按交付包 D01 的最终确认完成「手写卡片像代码块一样插在正文里」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：安卓：「+ → 手写卡片」在光标处把正文拆开，手写卡片作为一个块插在两段正文之间，和正文同一列上下排（Web 只能追加到全文末尾；Windows 手写进单独的材料列表，上传时排在全部正文之后，不在正文里）；当前 head 未发现该编号的完成变更。 | 笔迹模型、PNG 派生、画布/InkCanvas、离线材料 | Android/Windows/Web Agent | 待创建 | 交付包 D01 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | NOT-VERIFIED | 在当前 head 重跑端到端验收；旧 CI/旧 PR head 不计 PASS。 |
 | D02 | Android；Windows；Web | 按交付包 D02 的最终确认完成「右下角拖拽柄调大小，拉多大就是多大」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：安卓：卡片右下角有 48dp 拖拽柄，默认 320×240，宽高跟手指走，宽最大到当前正文列宽（≤760dp）、高最大 4096，缩小时不会裁掉已有笔迹（Web 画布固定 320×240 不能拖；Windows 弹窗画布固定 680×420）；当前 head 未发现该编号的完成变更。 | 笔迹模型、PNG 派生、画布/InkCanvas、离线材料 | Android/Windows/Web Agent | 待创建 | 交付包 D02 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | NOT-VERIFIED | 在当前 head 重跑端到端验收；旧 CI/旧 PR head 不计 PASS。 |
 | D03 | Android；Windows；Web | 按交付包 D03 的最终确认完成「手写随首个安卓可用版一起交付」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：手写 10-26 随原生笔记进主干（提交 ec59b09），笔记页在 release 用的 main 清单和底部导航里，不是 debug 专属（debug 只多一个录音探针页）；最新 release android-v26.11.1169（11-05，APK 15 MB，CI 日志显示带签名密钥构建）包含它；当前 head 未发现该编号的完成变更。 | 笔迹模型、PNG 派生、画布/InkCanvas、离线材料 | Android/Windows/Web Agent | 待创建 | 交付包 D03 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | NOT-VERIFIED | 在当前 head 重跑端到端验收；旧 CI/旧 PR head 不计 PASS。 |
-| D04 | Android；Windows；Web | 按交付包 D04 的最终确认完成「笔、橡皮、颜色、粗细、撤销」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：安卓有画笔、整笔擦除、撤销（每张卡 100 步，另有整篇撤销/重做），但颜色写死为主题蓝、粗细写死 2.5，没有颜色和粗细选择，插入后的手写卡片也没有删除按钮；Web 只有「撤销最近一笔」和「清空」，没有橡皮；Windows 只有「清除」全部，没有撤销；当前 head 未发现该编号的完成变更。 | 笔迹模型、PNG 派生、画布/InkCanvas、离线材料 | Android/Windows/Web Agent | 待创建 | 交付包 D04 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | FAIL | 补齐确认缺口后新建 PR，并在当前 head 做端到端复验。 |
+| D04 | Android；Windows；Web | 按交付包 D04 的最终确认完成「笔、橡皮、颜色、粗细、撤销」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | Android PR #97 已合并（head `cdbda8f`，merge `c7ff54f`）：逐笔四色/三档粗细、稳定笔迹 ID、局部/整笔橡皮、按手势撤销、平板默认仅手写笔、设备级画笔偏好，并以严格 ink-v1 读取/写出 Web D04 的 `strokeIds`/`strokeStyles`/inline `color,width`，保留未知字段并对不一致快照 fail-closed。Web PR #594 仍 open（head `413cd17c`，CI 绿但未合并）；Windows D04 未闭合。Android 真机/OEM 与 Android↔Web 往返未验，D04 总项不能 PASS。 | 笔迹模型、PNG 派生、画布/InkCanvas、离线材料 | Android/Windows/Web Agent | pim-android #97（merged `c7ff54f`；head `cdbda8f`）；pim-api #594（open；head `413cd17c`） | #97 required CI `45609248297`：`CI Gate`、`build-android`、`build-shell-android`、`Connected tests (API 34)`、`Contract freshness`、`Contract codegen freshness` success（`release` skipped；独立 instrumented workflow skipped）；合并后 master CI `45625276305` success（含 `release`）。独立 Gemini 复审无 Critical/Important（既有复审证据）。Android 实机/OEM、Android↔Web 同一 ink JSON 往返、异常/恢复分支未验；#594 未合并，Windows 未验。 | FAIL | Android 平台实现已合并且 CI 全绿；待 Web #594 合并、Windows D04 闭合，并在 Android 实机/OEM 与 Web 做同一 ink JSON 往返及异常/恢复验收后再评估。 |
 | D05 | Android；Windows；Web | 按交付包 D05 的最终确认完成「平板手写笔压感、防误触（掌触）」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：安卓记录了每个点的压力值，但画线时不用，粗细恒为 2.5，写出来没有轻重；防掌触只有一个手动「仅手写笔」开关，默认关、每张卡单独开、关掉笔记就忘，没有自动掌触识别（需在 OPPO Pad 实测）；Web 同样存压力不用；Windows 用系统 InkCanvas，触控笔压感很可能由系统直接画出；当前 head 未发现该编号的完成变更。 | 笔迹模型、PNG 派生、画布/InkCanvas、离线材料 | Android/Windows/Web Agent | 待创建 | 交付包 D05 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | FAIL | 补齐确认缺口后新建 PR，并在当前 head 做端到端复验。 |
 | D06 | Android；Windows；Web | 按交付包 D06 的最终确认完成「保存原始笔迹，可再次编辑」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：安卓每一笔的坐标、压力和卡片尺寸都存在 note.json 里，重开笔记点「书写」可接着写，从云端下载回来的笔记也能编辑；Web 只能编辑本次新加的卡片，已保存的手写锁定；Windows 存 PNG + .ink.json，可「编辑所选笔迹」，但从服务器打开的笔记只读；当前 head 未发现该编号的完成变更。 | 笔迹模型、PNG 派生、画布/InkCanvas、离线材料 | Android/Windows/Web Agent | 待创建 | 交付包 D06 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | NOT-VERIFIED | 在当前 head 重跑端到端验收；旧 CI/旧 PR head 不计 PASS。 |
 | D07 | Android；Windows；Web | 按交付包 D07 的最终确认完成「手写部分转成图片交给 AI」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：安卓结束时把每张手写卡渲染成 PNG 随材料上传；服务器整理时把手写图和照片一起按批发给视觉模型（每批 ≤4 张、≤8 MiB），单次整理最多 32 张，超过就出不了「完整」结果；有图时必须选支持视觉的模型；当前 head 未发现该编号的完成变更。 | 笔迹模型、PNG 派生、画布/InkCanvas、离线材料 | Android/Windows/Web Agent | 待创建 | 交付包 D07 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | NOT-VERIFIED | 在当前 head 重跑端到端验收；旧 CI/旧 PR head 不计 PASS。 |
@@ -328,6 +333,12 @@
 | R03 | API/MCP | 按交付包 R03 的最终确认完成「create_event 能写回 Outlook（#458）」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | MCP 写入仍只支持本地日历；Outlook 写回只有 REST，缺少 MCP 映射、幂等账本和安全恢复。 | MCP 契约、OpenAPI、日历/任务/Outlook/native-note 服务 | API/MCP Agent | 待创建 | 交付包 R03 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | FAIL | 补齐确认缺口后新建 PR，并在当前 head 做端到端复验。 |
 | R04 | API/MCP；Web；Android；Windows | REST 重复 status 为 OR、MCP statuses 数组、Web/Android/Windows 多选；空/重复/非法/冲突规则一致，非法整单 400/02057。 | PR #576 已合并 REST OR 多选、MCP statuses、Web 多选与整单 400/02057；Windows PR #57 已合并原生复选多选；Android PR #94 已合并原生多状态 chips、重复 `status` OR 编码和服务端规则对齐的客户端校验；真实 Windows 桌面、Android 实机/OEM 与外部独立 MCP 客户端仍未验证。 | 任务 REST/MCP 契约、Web/Android/Windows 多选入口 | API/MCP Agent；Android/Windows Agent | pim-api #576（merged `cb96fc30`）；Windows #57（merged `f278996a`，head `bd45e21e`）；Android #94（merged `1ee2fe28`，head `e3e496bc`） | PR #576；REST 19/19、MCP 14/14、Chromium 通过。Windows #57 required CI `45511045329` 全绿，合并后 CI `45511644639` 成功。Android #94 required CI `45515208111` 的 `CI Gate`、`build-android`、`build-shell-android`、`Connected tests (stable)`、`Contract freshness`、`Contract codegen freshness` 成功（`release` skipped；独立 instrumented workflow skipped）；真实 Windows 桌面、Android 实机/OEM、外部 MCP 未验。 | NOT-VERIFIED | 在真实 Windows 桌面操作多选；在 Android 实机/OEM 验证筛选、搜索/刷新保持与恢复；补外部 MCP 客户端验收并记录客户端版本与请求日志。 |
 | R05 | API/MCP | 按交付包 R05 的最终确认完成「MCP 可读写笔记」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 生产 MCP 仍只有 quicknotes；native-note 聚合读取、整包上传、处理/结果/采用/生命周期工具均未实现。 | MCP 契约、OpenAPI、日历/任务/Outlook/native-note 服务 | API/MCP Agent | 待创建 | 交付包 R05 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | FAIL | 补齐确认缺口后新建 PR，并在当前 head 做端到端复验。 |
+
+### S Release / 版本与发布安全
+
+| 编号 | 平台 | 验收条件（摘要） | 当前实现（2026-11-25） | 依赖 | 负责 Agent | PR/HEAD | 证据 | 状态 | 下一批/阻塞 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| S01 | API；Web；CI/Release | 版本号双轨可判定：`VERSION` 是显示版本唯一来源，机器 CalVer 独立；显示版本在镜像 labels、`/app/wwwroot/web-version.json`、`/api/version.webVersion`、前端 bundle、页脚/关于一致；正式版提升绑定 tag/commit/VERSION/成功 master run/资产，阻止 latest 回退；旧 CI run 重跑与并发调度不改写正式版或 `:latest`；真实 release dispatch、并发重跑与生产部署需实际执行验收。 | #601（merge `f79cc3e8`）引入 `VERSION`、`VITE_DISPLAY_VERSION`、开发 pre-release 与手动提升正式版；#603（merge `b0f92b16`）修复提升时 `make_latest` 使用 REST `databaseId`；#604（head `033f3a5f`，merge `fa60b58e`）让 `build-docker` 从运行中镜像校验 `/web-version.json`、`/api/version.webVersion` 与前端 bundle 的显示版本，并拆 `release.yml` 为 prepare/apply、共享 `pim-release-mutation` 并发组，新增 promote 目标绑定、旧 run 发布守卫与 `:latest` 守卫。 | 发布 workflow、版本台账、镜像构建、GitHub Release/API | API/CI Agent | pim-api #601（merged；head `94419049`，merge `f79cc3e8`）；#603（merged；head `776bf46e`，merge `b0f92b16`）；#604（merged；head `033f3a5f`，merge `fa60b58e`） | #601 required CI `45571854126` 全绿；#603 required CI `45589013054` 全绿；#604 required CI `45630816563` 全绿（`CI Gate`、`build-api` 6/6、`build-mcp` 3/3、`build-docker` success；`release` skipped）；合并后 master CI `45638015339`（run 1174）success，含 `build-docker` 与 `release`；pre-release `api-v26.11.1174` target `fa60b58e`，`pim-web-version.json` 为 version `1.0.0`/apiVersion `26.11.1174`/gitSha `fa60b58`；`/releases/latest` 仍为既有正式版 `api-v26.11.1157`。 | NOT-VERIFIED | #604 合并后尚未真实 dispatch `release.yml`（正常 bump 与 `promote_tag`）；GitHub 上真实并发调度/旧 run 重跑未执行；生产从 `:latest` 拉取部署未验证；`api-v26.11.1174` 仅是 pre-release，不是正式发布或生产部署。 |
 
 ### Z 反向要求
 

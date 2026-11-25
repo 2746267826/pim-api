@@ -2,7 +2,8 @@
 # ---------------------------------------------------------------------------
 # 写产物内的前端版本文件 web-version.json（REQ-2，契约）。
 #
-# 字段固定三项：version（前端版本号）/ gitSha（前端 git sha，7 位短 SHA）/ builtAt（构建时间 UTC）。
+# 字段固定三项：version（给人看的显示版本，来源 VERSION）/ gitSha（前端 git sha，7 位短 SHA）/
+# builtAt（构建时间 UTC）。机器版本（CalVer）单独在 release 台账的 apiVersion 里记录。
 # 版本号与 sha 必须与同一次构建注入的值**同源**：调用方传进来的就是 CI 注入构建的那两个值，
 # 这里不另算一份（不允许出现「注入的是 A、文件里写的是 B」）。
 #

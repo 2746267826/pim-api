@@ -15,6 +15,16 @@ public static class NoteTaskSuggestionStatuses
     public static bool IsValid(string? value) => value is Draft or Confirmed or Dismissed;
 }
 
+public static class NoteTaskSuggestionKinds
+{
+    public const string Task = "Task";
+    public const string Event = "Event";
+
+    public static readonly string[] All = [Task, Event];
+
+    public static bool IsValid(string? value) => value is Task or Event;
+}
+
 public static class NoteTaskSuggestionExtractionStatuses
 {
     public const string Queued = "Queued";
@@ -72,15 +82,21 @@ public sealed class NoteTaskSuggestionEntity : IUserOwnedEntity
     [Column("source_manifest_sha256"), MaxLength(64)] public string SourceManifestSha256 { get; set; } = "";
     [Column("source_generation_task_id")] public Guid? SourceGenerationTaskId { get; set; }
     [Column("title"), MaxLength(255)] public string Title { get; set; } = "";
+    [Column("kind"), MaxLength(32)] public string Kind { get; set; } = NoteTaskSuggestionKinds.Task;
     [Column("description"), MaxLength(20000)] public string? Description { get; set; }
     [Column("priority")] public int Priority { get; set; }
     [Column("due")] public DateTimeOffset? Due { get; set; }
+    [Column("start_at")] public DateTimeOffset? StartAt { get; set; }
+    [Column("end_at")] public DateTimeOffset? EndAt { get; set; }
+    [Column("time_zone_id"), MaxLength(100)] public string? TimeZoneId { get; set; }
     [Column("task_book_id")] public Guid? TaskBookId { get; set; }
     [Column("calendar_id")] public Guid? CalendarId { get; set; }
     [Column("status"), MaxLength(32)] public string Status { get; set; } = NoteTaskSuggestionStatuses.Draft;
     [Column("revision")] public Guid Revision { get; set; } = Guid.NewGuid();
     [Column("confirm_request_id")] public Guid? ConfirmRequestId { get; set; }
     [Column("task_id")] public Guid? TaskId { get; set; }
+    [Column("event_id")] public Guid? EventId { get; set; }
+    [Column("item_fingerprint"), MaxLength(64)] public string? ItemFingerprint { get; set; }
     [Column("created_at")] public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
     [Column("updated_at")] public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
     [Column("confirmed_at")] public DateTimeOffset? ConfirmedAt { get; set; }

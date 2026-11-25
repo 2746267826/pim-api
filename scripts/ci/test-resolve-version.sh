@@ -4,6 +4,15 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 SCRIPT="$ROOT/scripts/ci/resolve-version.sh"
 fail=0
 
+# 这个测试不能把显示版本号写死成仓库当时的 1.0.0：发版就是改 VERSION，
+# 写死会让「VERSION 已经 bump、测试还没改」看起来像产品坏了。期望值一律
+# 从仓根 VERSION / 测试夹具读取，夹具另外显式覆盖 1.1.0。
+REPO_DISPLAY_VERSION="$(head -n 1 "$ROOT/VERSION" | tr -d '\r' | tr -d '[:space:]')"
+if [[ ! "$REPO_DISPLAY_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "FAIL 仓根 VERSION 不是 x.y.z：[$REPO_DISPLAY_VERSION]"
+  exit 1
+fi
+
 # Per-run scratch dir: a fixed /tmp path collides with other users/agents that
 # run this test (the second run then fails with "Permission denied").
 WORKDIR="$(mktemp -d)"
@@ -35,7 +44,7 @@ run_case master \
       bash "$SCRIPT" --date 2026-07-12 --print-env
 assert_eq version "26.07.42" $WORKDIR/rv-master.env
 # 显示号来自仓根 VERSION 文件；master 上是干净号（正式版提升时就是它）
-assert_eq display_version "1.0.0" $WORKDIR/rv-master.env
+assert_eq display_version "$REPO_DISPLAY_VERSION" $WORKDIR/rv-master.env
 assert_eq release_tag "api-v26.07.42" $WORKDIR/rv-master.env
 assert_eq version_code "100042" $WORKDIR/rv-master.env
 assert_eq is_release "true" $WORKDIR/rv-master.env
@@ -50,7 +59,7 @@ run_case pr \
       PR_NUMBER=12 \
       bash "$SCRIPT" --date 2026-07-12 --print-env
 assert_eq version "26.07.42-pr.12+abcdef1" $WORKDIR/rv-pr.env
-assert_eq display_version "1.0.0-pr.12.abcdef1" $WORKDIR/rv-pr.env
+assert_eq display_version "${REPO_DISPLAY_VERSION}-pr.12.abcdef1" $WORKDIR/rv-pr.env
 assert_eq release_tag "api-v26.07.42" $WORKDIR/rv-pr.env
 assert_eq version_code "100042" $WORKDIR/rv-pr.env
 assert_eq is_release "false" $WORKDIR/rv-pr.env
@@ -62,7 +71,7 @@ run_case dev \
       GITHUB_EVENT_NAME=workflow_dispatch \
       bash "$SCRIPT" --date 2026-07-12 --print-env
 assert_eq version "26.07.7-dev+deadbee" $WORKDIR/rv-dev.env
-assert_eq display_version "1.0.0-dev+deadbee" $WORKDIR/rv-dev.env
+assert_eq display_version "${REPO_DISPLAY_VERSION}-dev+deadbee" $WORKDIR/rv-dev.env
 assert_eq is_release "false" $WORKDIR/rv-dev.env
 
 # client patch on master
@@ -71,8 +80,41 @@ run_case patch \
       GITHUB_EVENT_NAME=workflow_dispatch CLIENT_PATCH=android.1 \
       bash "$SCRIPT" --date 2026-07-12 --print-env
 assert_eq version "26.07.42+android.1" $WORKDIR/rv-patch.env
-assert_eq display_version "1.0.0" $WORKDIR/rv-patch.env
+assert_eq display_version "$REPO_DISPLAY_VERSION" $WORKDIR/rv-patch.env
 assert_eq is_release "true" $WORKDIR/rv-patch.env
+
+# ---- 显式覆盖 VERSION=1.1.0 的四个显示号分支 ----
+# 正式版 bump 就是把这个文件从 1.0.0 改成 1.1.0。四条路径（master / PR /
+# dev / client patch）都必须立刻跟着变，而不是只测仓库当前碰巧的那个值。
+printf '1.1.0\n' > "$WORKDIR/VERSION-1.1.0"
+
+run_case display-110-master \
+  env PIM_VERSION_FILE="$WORKDIR/VERSION-1.1.0" GITHUB_REPOSITORY=2746267826/pim-api \
+      GITHUB_REF=refs/heads/master GITHUB_RUN_NUMBER=42 GITHUB_SHA=abcdef1234567890 \
+      GITHUB_EVENT_NAME=push \
+      bash "$SCRIPT" --date 2026-07-12 --print-env
+assert_eq display_version "1.1.0" $WORKDIR/rv-display-110-master.env
+
+run_case display-110-pr \
+  env PIM_VERSION_FILE="$WORKDIR/VERSION-1.1.0" GITHUB_REPOSITORY=2746267826/pim-api \
+      GITHUB_REF=refs/pull/12/merge GITHUB_RUN_NUMBER=42 GITHUB_SHA=abcdef1234567890 \
+      GITHUB_EVENT_NAME=pull_request GITHUB_REF_NAME=12/merge PR_NUMBER=12 \
+      bash "$SCRIPT" --date 2026-07-12 --print-env
+assert_eq display_version "1.1.0-pr.12.abcdef1" $WORKDIR/rv-display-110-pr.env
+
+run_case display-110-dev \
+  env PIM_VERSION_FILE="$WORKDIR/VERSION-1.1.0" GITHUB_REPOSITORY=2746267826/pim-api \
+      GITHUB_REF=refs/heads/codex/foo GITHUB_RUN_NUMBER=7 GITHUB_SHA=deadbeefcafebabe \
+      GITHUB_EVENT_NAME=workflow_dispatch \
+      bash "$SCRIPT" --date 2026-07-12 --print-env
+assert_eq display_version "1.1.0-dev+deadbee" $WORKDIR/rv-display-110-dev.env
+
+run_case display-110-patch \
+  env PIM_VERSION_FILE="$WORKDIR/VERSION-1.1.0" GITHUB_REPOSITORY=2746267826/pim-api \
+      GITHUB_REF=refs/heads/master GITHUB_RUN_NUMBER=42 GITHUB_SHA=abcdef1234567890 \
+      GITHUB_EVENT_NAME=workflow_dispatch CLIENT_PATCH=android.1 \
+      bash "$SCRIPT" --date 2026-07-12 --print-env
+assert_eq display_version "1.1.0" $WORKDIR/rv-display-110-patch.env
 
 # ---- VERSION 文件：可覆盖、缺失/格式错误必须硬失败 ----
 # 显示号只在发版时改一次，写错了最理想的时机就是构建时立刻炸；
