@@ -55,7 +55,7 @@ public sealed class McpToolExecutor
         _httpContext = httpContext;
     }
 
-    /// <summary>Loaded 148-tool contract (name/description/inputSchema) from the embedded JSON.</summary>
+    /// <summary>Loaded 167-tool contract (name/description/inputSchema) from the embedded JSON.</summary>
     public static IReadOnlyList<McpToolContract> ToolContract => Contract.Value;
 
     /// <summary>Read-only snapshot of recent tool calls, newest first.</summary>
@@ -361,6 +361,8 @@ public sealed class McpToolExecutor
                 return await CallAsync(spec, args, accessToken, redact: false, ct);
             case McpToolKind.ExportIcs:
                 return await ExportIcsAsync(spec, args, accessToken, ct);
+            case McpToolKind.NativeNotePackage:
+                return await NativeNotePackageAsync(spec, args, accessToken, ct);
             default:
                 var redact = spec.RedactUrls && !(args.TryGetPropertyValue("redactUrls", out var redactArg) && redactArg is JsonValue redactValue && redactValue.TryGetValue<bool>(out var redactBool) && !redactBool);
                 return await CallAsync(spec, args, accessToken, redact, ct);
@@ -1086,6 +1088,67 @@ public sealed class McpToolExecutor
             QueryParams = new[] { "start", "end", "ids", "calendarId" },
         };
         return await CallAsync(icsSpec, queryArgs, accessToken, redact: false, ct);
+    }
+
+    private const long MaxInlineNativeNotePackageBytes = 16L * 1024 * 1024;
+
+    /// <summary>
+    /// Native-note packages are ZIP archives. Reading them through the normal text path would
+    /// corrupt the binary, so fetch bytes and return a base64 envelope with integrity metadata.
+    /// Very large packages stay on the REST chunked bundle endpoint instead of being inflated
+    /// into an MCP text payload.
+    /// </summary>
+    private async Task<JsonNode?> NativeNotePackageAsync(McpToolSpec spec, JsonObject args,
+        string accessToken, CancellationToken ct)
+    {
+        var (query, _) = BuildQueryAndBody(spec, args);
+        var path = BuildPath(spec.Route, args) + (query.Length > 0 ? "?" + query : string.Empty);
+        var request = new HttpRequestMessage(HttpMethod.Get, path);
+        request.Headers.TryAddWithoutValidation("Authorization", $"Bearer {accessToken}");
+        var response = await _client.SendAsync(request, ct);
+        var status = (int)response.StatusCode;
+        if (status >= 400)
+        {
+            var text = await response.Content.ReadAsStringAsync(ct);
+            var data = TryParseJson(text);
+            if (data is JsonObject obj && obj.ContainsKey("error"))
+            {
+                if (!obj.ContainsKey("code")) obj["code"] = status;
+                return obj;
+            }
+            return new JsonObject
+            {
+                ["error"] = $"HTTP {status}: {Truncate(text, 800)}",
+                ["details"] = data?.DeepClone() ?? JsonValue.Create(Truncate(text, 2000)),
+                ["code"] = status,
+            };
+        }
+
+        var bytes = await response.Content.ReadAsByteArrayAsync(ct);
+        if (bytes.LongLength > MaxInlineNativeNotePackageBytes)
+        {
+            return Error(
+                $"native-note package is {bytes.LongLength} bytes; MCP inline download is limited to " +
+                $"{MaxInlineNativeNotePackageBytes} bytes. Use GET {spec.Route} via REST for the ZIP stream.",
+                413);
+        }
+
+        var fileName = response.Content.Headers.ContentDisposition?.FileNameStar
+            ?? response.Content.Headers.ContentDisposition?.FileName?.Trim('"')
+            ?? $"{GetString(args, "noteId") ?? "note"}.pimnote.zip";
+        var sha256 = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+        return new JsonObject
+        {
+            ["code"] = 0,
+            ["data"] = new JsonObject
+            {
+                ["fileName"] = fileName,
+                ["contentType"] = response.Content.Headers.ContentType?.ToString() ?? "application/zip",
+                ["contentSha256"] = sha256,
+                ["byteLength"] = bytes.LongLength,
+                ["contentBase64"] = Convert.ToBase64String(bytes),
+            },
+        };
     }
 
     // ---- stdio 401 refresh (Python _refresh_access_token parity) ----

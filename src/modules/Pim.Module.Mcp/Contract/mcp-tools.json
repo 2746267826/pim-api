@@ -2255,6 +2255,202 @@
     }
   },
   {
+    "name": "get_native_notes",
+    "description": "List the current user's native notes with lifecycle status, revision and conflict counts. Never returns another account's notes.",
+    "inputSchema": {
+      "properties": {
+        "status": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "Active",
+                "Archived",
+                "Deleted",
+                "All"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Status"
+        },
+        "offset": {
+          "title": "Offset",
+          "type": "integer",
+          "default": 0
+        },
+        "limit": {
+          "title": "Limit",
+          "type": "integer",
+          "default": 20
+        }
+      },
+      "title": "get_native_notesArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "get_native_note",
+    "description": "Get one native note aggregate (current version, conflict candidates, processing, derived tasks/results) with a user-visible receipt.",
+    "inputSchema": {
+      "properties": {
+        "noteId": {
+          "title": "Note Id",
+          "type": "string"
+        },
+        "includeResults": {
+          "title": "Include Results",
+          "type": "boolean",
+          "default": true
+        },
+        "versionLimit": {
+          "title": "Version Limit",
+          "type": "integer",
+          "default": 20
+        }
+      },
+      "title": "get_native_noteArguments",
+      "type": "object",
+      "required": [
+        "noteId"
+      ]
+    }
+  },
+  {
+    "name": "get_native_note_versions",
+    "description": "Get the current version and every conflict candidate for one native note, plus the revision required for CAS writes.",
+    "inputSchema": {
+      "properties": {
+        "noteId": {
+          "title": "Note Id",
+          "type": "string"
+        },
+        "limit": {
+          "title": "Limit",
+          "type": "integer",
+          "default": 50
+        }
+      },
+      "title": "get_native_note_versionsArguments",
+      "type": "object",
+      "required": [
+        "noteId"
+      ]
+    }
+  },
+  {
+    "name": "get_native_note_results",
+    "description": "Get derived processing tasks and result artifacts for one native note, including failure/retry visibility.",
+    "inputSchema": {
+      "properties": {
+        "noteId": {
+          "title": "Note Id",
+          "type": "string"
+        }
+      },
+      "title": "get_native_note_resultsArguments",
+      "type": "object",
+      "required": [
+        "noteId"
+      ]
+    }
+  },
+  {
+    "name": "get_native_note_processing",
+    "description": "Get the high-level processing status for one native note version (or the current version when omitted).",
+    "inputSchema": {
+      "properties": {
+        "noteId": {
+          "title": "Note Id",
+          "type": "string"
+        },
+        "versionId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Version Id"
+        }
+      },
+      "title": "get_native_note_processingArguments",
+      "type": "object",
+      "required": [
+        "noteId"
+      ]
+    }
+  },
+  {
+    "name": "get_native_note_package",
+    "description": "Download a native-note material package as base64 ZIP with fileName, SHA-256 and byte length; 16 MB inline limit, use REST bundle for larger packages.",
+    "inputSchema": {
+      "properties": {
+        "noteId": {
+          "title": "Note Id",
+          "type": "string"
+        },
+        "versionId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Version Id"
+        }
+      },
+      "title": "get_native_note_packageArguments",
+      "type": "object",
+      "required": [
+        "noteId"
+      ]
+    }
+  },
+  {
+    "name": "get_native_note_suggestions",
+    "description": "List task/calendar suggestions extracted from one native note with their status and revision.",
+    "inputSchema": {
+      "properties": {
+        "noteId": {
+          "title": "Note Id",
+          "type": "string"
+        },
+        "status": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "Draft",
+                "Confirmed",
+                "Dismissed"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Status"
+        }
+      },
+      "title": "get_native_note_suggestionsArguments",
+      "type": "object",
+      "required": [
+        "noteId"
+      ]
+    }
+  },
+  {
     "name": "get_file_providers",
     "description": "List file providers (OneDrive is the only supported source since files v2). Returns FileProviderDto[].",
     "inputSchema": {
@@ -4774,6 +4970,544 @@
       ],
       "title": "delete_quick_note_attachmentArguments",
       "type": "object"
+    }
+  },
+  {
+    "name": "upload_native_note_package",
+    "description": "Requires write permission upload_native_note_package. Upload a complete native-note material package (base64 ZIP) and optionally promote it to current. Requires requestId; CAS via expectedCurrentVersionId/expectedRevision.",
+    "inputSchema": {
+      "properties": {
+        "noteId": {
+          "title": "Note Id",
+          "type": "string"
+        },
+        "requestId": {
+          "title": "Request Id",
+          "type": "string"
+        },
+        "packageBase64": {
+          "title": "Package Base64",
+          "type": "string"
+        },
+        "expectedCurrentVersionId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Expected Current Version Id"
+        },
+        "expectedRevision": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Expected Revision"
+        },
+        "promote": {
+          "title": "Promote",
+          "type": "boolean",
+          "default": true
+        }
+      },
+      "title": "upload_native_note_packageArguments",
+      "type": "object",
+      "required": [
+        "noteId",
+        "requestId",
+        "packageBase64"
+      ]
+    }
+  },
+  {
+    "name": "promote_native_note_version",
+    "description": "Requires write permission promote_native_note_version. Explicitly choose a verified native-note material version as current; the previous head and conflict candidates stay on disk.",
+    "inputSchema": {
+      "properties": {
+        "noteId": {
+          "title": "Note Id",
+          "type": "string"
+        },
+        "requestId": {
+          "title": "Request Id",
+          "type": "string"
+        },
+        "versionId": {
+          "title": "Version Id",
+          "type": "string"
+        },
+        "expectedCurrentVersionId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Expected Current Version Id"
+        },
+        "expectedRevision": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Expected Revision"
+        }
+      },
+      "title": "promote_native_note_versionArguments",
+      "type": "object",
+      "required": [
+        "noteId",
+        "requestId",
+        "versionId"
+      ]
+    }
+  },
+  {
+    "name": "cancel_native_note_upload",
+    "description": "Requires write permission cancel_native_note_upload. Cancel an unfinished (Uploading) native-note material upload; completed versions are never removed.",
+    "inputSchema": {
+      "properties": {
+        "noteId": {
+          "title": "Note Id",
+          "type": "string"
+        },
+        "requestId": {
+          "title": "Request Id",
+          "type": "string"
+        },
+        "versionId": {
+          "title": "Version Id",
+          "type": "string"
+        },
+        "expectedRevision": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Expected Revision"
+        }
+      },
+      "title": "cancel_native_note_uploadArguments",
+      "type": "object",
+      "required": [
+        "noteId",
+        "requestId",
+        "versionId"
+      ]
+    }
+  },
+  {
+    "name": "archive_native_note",
+    "description": "Requires write permission archive_native_note. Archive a native note; materials and derived results remain recoverable.",
+    "inputSchema": {
+      "properties": {
+        "noteId": {
+          "title": "Note Id",
+          "type": "string"
+        },
+        "requestId": {
+          "title": "Request Id",
+          "type": "string"
+        },
+        "expectedRevision": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Expected Revision"
+        }
+      },
+      "title": "archive_native_noteArguments",
+      "type": "object",
+      "required": [
+        "noteId",
+        "requestId"
+      ]
+    }
+  },
+  {
+    "name": "restore_native_note",
+    "description": "Requires write permission restore_native_note. Restore an archived or deleted native note to Active.",
+    "inputSchema": {
+      "properties": {
+        "noteId": {
+          "title": "Note Id",
+          "type": "string"
+        },
+        "requestId": {
+          "title": "Request Id",
+          "type": "string"
+        },
+        "expectedRevision": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Expected Revision"
+        }
+      },
+      "title": "restore_native_noteArguments",
+      "type": "object",
+      "required": [
+        "noteId",
+        "requestId"
+      ]
+    }
+  },
+  {
+    "name": "delete_native_note",
+    "description": "Requires write permission delete_native_note. Soft-delete a native note; the note becomes read-only for mutations until restored.",
+    "inputSchema": {
+      "properties": {
+        "noteId": {
+          "title": "Note Id",
+          "type": "string"
+        },
+        "requestId": {
+          "title": "Request Id",
+          "type": "string"
+        },
+        "expectedRevision": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Expected Revision"
+        }
+      },
+      "title": "delete_native_noteArguments",
+      "type": "object",
+      "required": [
+        "noteId",
+        "requestId"
+      ]
+    }
+  },
+  {
+    "name": "start_native_note_processing",
+    "description": "Requires write permission start_native_note_processing. Start the server-side high-level processing chain for one complete native-note version. Returns an explicit error when AI runtime is unavailable instead of faking success.",
+    "inputSchema": {
+      "properties": {
+        "noteId": {
+          "title": "Note Id",
+          "type": "string"
+        },
+        "requestId": {
+          "title": "Request Id",
+          "type": "string"
+        },
+        "versionId": {
+          "title": "Version Id",
+          "type": "string"
+        },
+        "expectedRevision": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Expected Revision"
+        }
+      },
+      "title": "start_native_note_processingArguments",
+      "type": "object",
+      "required": [
+        "noteId",
+        "requestId",
+        "versionId"
+      ]
+    }
+  },
+  {
+    "name": "retry_native_note_processing",
+    "description": "Requires write permission retry_native_note_processing. Retry selected failed native-note processing steps with duplicate-charge acknowledgement and revision CAS.",
+    "inputSchema": {
+      "properties": {
+        "noteId": {
+          "title": "Note Id",
+          "type": "string"
+        },
+        "requestId": {
+          "title": "Request Id",
+          "type": "string"
+        },
+        "taskId": {
+          "title": "Task Id",
+          "type": "string"
+        },
+        "retryId": {
+          "title": "Retry Id",
+          "type": "string"
+        },
+        "expectedRevision": {
+          "title": "Expected Revision",
+          "type": "string"
+        },
+        "stepKeys": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Step Keys",
+          "type": "array"
+        },
+        "consent": {
+          "properties": {
+            "modelId": {
+              "title": "Model Id",
+              "type": "string"
+            },
+            "modelRevision": {
+              "title": "Model Revision",
+              "type": "string"
+            },
+            "endpoint": {
+              "title": "Endpoint",
+              "type": "string"
+            },
+            "confirmed": {
+              "title": "Confirmed",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "modelId",
+            "modelRevision",
+            "endpoint",
+            "confirmed"
+          ],
+          "title": "Consent",
+          "type": "object"
+        },
+        "acknowledgePossibleDuplicateCharge": {
+          "title": "Acknowledge Possible Duplicate Charge",
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "title": "retry_native_note_processingArguments",
+      "type": "object",
+      "required": [
+        "noteId",
+        "requestId",
+        "taskId",
+        "retryId",
+        "expectedRevision",
+        "stepKeys",
+        "consent"
+      ]
+    }
+  },
+  {
+    "name": "adopt_native_note_result",
+    "description": "Requires write permission adopt_native_note_result. Adopt one derived result version as the artifact head with expected-head-revision CAS.",
+    "inputSchema": {
+      "properties": {
+        "noteId": {
+          "title": "Note Id",
+          "type": "string"
+        },
+        "requestId": {
+          "title": "Request Id",
+          "type": "string"
+        },
+        "artifactId": {
+          "title": "Artifact Id",
+          "type": "string"
+        },
+        "versionId": {
+          "title": "Version Id",
+          "type": "string"
+        },
+        "expectedHeadRevision": {
+          "title": "Expected Head Revision",
+          "type": "string"
+        }
+      },
+      "title": "adopt_native_note_resultArguments",
+      "type": "object",
+      "required": [
+        "noteId",
+        "requestId",
+        "artifactId",
+        "versionId",
+        "expectedHeadRevision"
+      ]
+    }
+  },
+  {
+    "name": "extract_native_note_suggestions",
+    "description": "Requires write permission extract_native_note_suggestions. Queue task/calendar suggestion extraction from one fixed derived result version with explicit consent.",
+    "inputSchema": {
+      "properties": {
+        "noteId": {
+          "title": "Note Id",
+          "type": "string"
+        },
+        "requestId": {
+          "title": "Request Id",
+          "type": "string"
+        },
+        "artifactId": {
+          "title": "Artifact Id",
+          "type": "string"
+        },
+        "versionId": {
+          "title": "Version Id",
+          "type": "string"
+        },
+        "expectedContentSha256": {
+          "title": "Expected Content Sha256",
+          "type": "string"
+        },
+        "consent": {
+          "properties": {
+            "modelId": {
+              "title": "Model Id",
+              "type": "string"
+            },
+            "modelRevision": {
+              "title": "Model Revision",
+              "type": "string"
+            },
+            "endpoint": {
+              "title": "Endpoint",
+              "type": "string"
+            },
+            "confirmed": {
+              "title": "Confirmed",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "modelId",
+            "modelRevision",
+            "endpoint",
+            "confirmed"
+          ],
+          "title": "Consent",
+          "type": "object"
+        },
+        "acknowledgePossibleCharge": {
+          "title": "Acknowledge Possible Charge",
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "title": "extract_native_note_suggestionsArguments",
+      "type": "object",
+      "required": [
+        "noteId",
+        "requestId",
+        "artifactId",
+        "versionId",
+        "expectedContentSha256",
+        "consent"
+      ]
+    }
+  },
+  {
+    "name": "confirm_native_note_suggestion",
+    "description": "Requires write permission confirm_native_note_suggestion. Confirm a draft task/calendar suggestion and create the corresponding task or event; requestId is idempotent.",
+    "inputSchema": {
+      "properties": {
+        "noteId": {
+          "title": "Note Id",
+          "type": "string"
+        },
+        "requestId": {
+          "title": "Request Id",
+          "type": "string"
+        },
+        "suggestionId": {
+          "title": "Suggestion Id",
+          "type": "string"
+        },
+        "expectedRevision": {
+          "title": "Expected Revision",
+          "type": "string"
+        }
+      },
+      "title": "confirm_native_note_suggestionArguments",
+      "type": "object",
+      "required": [
+        "noteId",
+        "requestId",
+        "suggestionId",
+        "expectedRevision"
+      ]
+    }
+  },
+  {
+    "name": "dismiss_native_note_suggestion",
+    "description": "Requires write permission dismiss_native_note_suggestion. Dismiss a draft task/calendar suggestion; requestId is idempotent.",
+    "inputSchema": {
+      "properties": {
+        "noteId": {
+          "title": "Note Id",
+          "type": "string"
+        },
+        "requestId": {
+          "title": "Request Id",
+          "type": "string"
+        },
+        "suggestionId": {
+          "title": "Suggestion Id",
+          "type": "string"
+        },
+        "expectedRevision": {
+          "title": "Expected Revision",
+          "type": "string"
+        }
+      },
+      "title": "dismiss_native_note_suggestionArguments",
+      "type": "object",
+      "required": [
+        "noteId",
+        "requestId",
+        "suggestionId",
+        "expectedRevision"
+      ]
     }
   },
   {

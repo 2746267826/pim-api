@@ -136,6 +136,7 @@ builder.Services.AddOptions<Pim.Infrastructure.Notes.NoteDerivedAudioContextOpti
     .Validate(options => options.IsValid(), "NativeNotes audio-context allowlist is invalid")
     .ValidateOnStart();
 builder.Services.AddSingleton<Pim.Infrastructure.Notes.NoteMaterialUploadStore>();
+builder.Services.AddSingleton<Pim.Infrastructure.Notes.NoteMcpOperationStore>();
 builder.Services.AddSingleton<Pim.Infrastructure.Notes.NoteAsrTaskStore>();
 builder.Services.AddSingleton<Pim.Infrastructure.Notes.NoteDerivedStore>();
 builder.Services.AddScoped<Pim.Core.Modules.ISearchProvider, Pim.Infrastructure.Notes.NoteSearchProvider>();
@@ -156,6 +157,7 @@ builder.Services.AddSingleton<Pim.Infrastructure.Ai.Asr.Mimo.IMimoBatchClientFac
     Pim.Infrastructure.Ai.Asr.Mimo.MimoBatchClientFactory>();
 builder.Services.AddScoped<Pim.Infrastructure.Notes.NoteDerivedService>();
 builder.Services.AddScoped<Pim.Infrastructure.Notes.NoteProcessingService>();
+builder.Services.AddScoped<Pim.Infrastructure.Notes.NativeNoteMcpService>();
 builder.Services.AddScoped<Pim.Infrastructure.Notes.NoteProcessingPreferencesService>();
 builder.Services.AddScoped<Pim.Infrastructure.Notes.NoteProcessingDispatchJob>();
 builder.Services.AddScoped<Pim.Infrastructure.Notes.NoteAsrJob>();
@@ -471,6 +473,7 @@ app.MapNoteAsrReprocessEndpoints();
 app.MapNoteAsrRoutingEndpoints();
 app.MapNoteDerivedEndpoints();
 app.MapNoteProcessingEndpoints();
+app.MapNoteMcpEndpoints();
 app.MapClientShell();
 app.MapTileEndpoints();
 

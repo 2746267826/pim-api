@@ -8,7 +8,7 @@ namespace Pim.Module.Mcp.Services;
 /// POST endpoints (data-center query/preview, recycle-bin preview, schedule preview).
 /// Every other method/path — including high-risk writes such as
 /// <c>POST /api/v1/calendar/data-center/batch/execute</c> — is denied. This closes the gap
-/// left by <see cref="McpWriteEndpointMap"/> which only knows the 50 MCP write endpoints.
+/// left by <see cref="McpWriteEndpointMap"/> which only knows the mapped MCP write endpoints.
 /// </summary>
 public static class McpReadEndpointPolicy
 {

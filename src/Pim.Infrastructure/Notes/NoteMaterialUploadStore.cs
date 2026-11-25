@@ -352,7 +352,17 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
             PartKey(fileIndex, partIndex), sha256);
     }
 
-    public async Task<NoteMaterialUploadDto> CompleteAsync(Guid userId, Guid versionId, CancellationToken ct = default)
+    public Task<NoteMaterialUploadDto> CompleteAsync(Guid userId, Guid versionId,
+        CancellationToken ct = default)
+        => CompleteAsync(userId, versionId, makeCurrent: true, ct);
+
+    /// <summary>
+    /// Verifies and publishes a version. <paramref name="makeCurrent"/> lets the MCP package
+    /// upload keep a verified version off the head (promote=false) without inventing a conflict.
+    /// A real concurrent head change is still recorded as a conflict candidate.
+    /// </summary>
+    public async Task<NoteMaterialUploadDto> CompleteAsync(Guid userId, Guid versionId,
+        bool makeCurrent, CancellationToken ct = default)
     {
         await using var lease = await LockAsync(userId, ct);
         var ledger = await LoadLedgerAsync(userId, ct);
@@ -367,7 +377,7 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
             var conflict = current != entry.BaseVersionId;
             entry = entry with { Phase = conflict ? "Conflict" : "Uploaded", HasConflict = conflict };
             ledger.Versions[Key(versionId)] = entry;
-            if (!conflict) ledger.Heads[Key(entry.NoteId)] = versionId;
+            if (!conflict && makeCurrent) ledger.Heads[Key(entry.NoteId)] = versionId;
             // Publication and head comparison share one atomic ledger write.
             await SaveLedgerAsync(userId, ledger, ct);
         }
@@ -539,6 +549,7 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
             await DeleteAudioCacheAsync(userId, key, ct);
         }
         ledger.Heads.Remove(Key(noteId));
+        ledger.Notes.Remove(Key(noteId));
         await SaveLedgerAsync(userId, ledger, ct);
         await PurgeAsync(userId, ledger, ct);
     }
@@ -568,6 +579,272 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
         {
             // The version may already be partially gone; its cache stays bounded by TTL/byte quota.
         }
+    }
+
+    /// <summary>
+    /// Owner-scoped note list for the MCP aggregate read. Existing REST callers keep using
+    /// <see cref="ListNativeNotesAsync"/>; this overload adds lifecycle status filtering and a
+    /// deterministic per-note revision used for optimistic concurrency checks.
+    /// </summary>
+    public async Task<NativeNoteMcpPageDto> ListMcpNotesAsync(Guid userId, string? status, int offset,
+        int limit, CancellationToken ct = default)
+    {
+        var normalizedStatus = NormalizeStatus(status);
+        if (offset < 0 || offset > _options.MaxVersionsPerUser || limit is < 1 or > 50)
+            throw Invalid("笔记分页范围无效，单页最多50篇且起始位置不得超过账号版本上限");
+        await using var lease = await LockAsync(userId, ct);
+        var ledger = await LoadLedgerAsync(userId, ct);
+        await PruneAsync(userId, ledger, ct);
+
+        // A note can be visible through versions without a head (for example an explicit
+        // promote=false package upload or a restored conflict candidate). Union both sources so
+        // every owner-visible material version is discoverable by the MCP list tool.
+        var noteIds = ledger.Versions.Values
+            .Select(entry => entry.NoteId)
+            .Concat(ledger.Notes.Keys
+                .Select(key => Guid.TryParseExact(key, "D", out var id) ? id : Guid.Empty))
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToArray();
+        var items = new List<NativeNoteMcpNoteSummaryDto>();
+        foreach (var noteId in noteIds)
+        {
+            var noteStatus = NoteStatus(ledger, noteId);
+            if (!StatusMatches(noteStatus, normalizedStatus))
+                continue;
+            var versions = ledger.Versions
+                .Where(item => item.Value.NoteId == noteId)
+                .OrderByDescending(item => item.Value.CreatedAt)
+                .ThenBy(item => item.Key, StringComparer.Ordinal)
+                .ToArray();
+            if (versions.Length == 0)
+                continue;
+            var headVersionId = Current(ledger, noteId);
+            if (headVersionId is { } candidate &&
+                (!ledger.Versions.TryGetValue(Key(candidate), out var headEntry) ||
+                 headEntry.NoteId != noteId))
+                headVersionId = null;
+            var titleEntry = headVersionId is { } headId
+                ? versions.First(item => item.Key == Key(headId))
+                : versions.FirstOrDefault(item => item.Value.Phase == "Uploaded");
+            if (string.IsNullOrEmpty(titleEntry.Key))
+                titleEntry = versions[0];
+            var title = ReadTitle((await RequestAsync(userId,
+                Guid.ParseExact(titleEntry.Key, "D"), ct)).InputJson);
+            var conflicts = versions.Count(item =>
+                item.Value.HasConflict || item.Value.Phase == "Conflict");
+            items.Add(new NativeNoteMcpNoteSummaryDto(
+                noteId,
+                title,
+                headVersionId,
+                RevisionOf(ledger, noteId),
+                noteStatus,
+                conflicts > 0,
+                versions.Length,
+                conflicts,
+                UpdatedAtOf(ledger, noteId)));
+        }
+
+        var ordered = items
+            .OrderByDescending(item => item.UpdatedAt)
+            .ThenBy(item => item.NoteId)
+            .ToArray();
+        return new NativeNoteMcpPageDto(ordered.Length, offset, limit,
+            ordered.Skip(offset).Take(limit).ToArray());
+    }
+
+    /// <summary>Owner-scoped aggregate material snapshot (current version + conflict candidates).</summary>
+    public async Task<NativeNoteMcpSnapshotDto> GetMcpSnapshotAsync(Guid userId, Guid noteId,
+        int versionLimit, CancellationToken ct = default)
+    {
+        if (versionLimit is < 1 or > 100) throw Invalid("版本分页范围无效，单页最多100个版本");
+        await using var lease = await LockAsync(userId, ct);
+        var ledger = await LoadLedgerAsync(userId, ct);
+        await PruneAsync(userId, ledger, ct);
+        var entries = ledger.Versions
+            .Where(item => item.Value.NoteId == noteId)
+            .OrderByDescending(item => item.Value.CreatedAt)
+            .ThenBy(item => item.Key, StringComparer.Ordinal)
+            .ToArray();
+        if (entries.Length == 0) throw new DomainException(40401, "笔记不存在");
+
+        var currentVersionId = Current(ledger, noteId);
+        if (currentVersionId is { } currentId &&
+            (!ledger.Versions.TryGetValue(Key(currentId), out var currentEntry) ||
+             currentEntry.NoteId != noteId))
+            currentVersionId = null;
+
+        KeyValuePair<string, StoredVersion> titleEntry;
+        if (currentVersionId is { } currentForTitle)
+        {
+            titleEntry = entries.First(item => item.Key == Key(currentForTitle));
+        }
+        else
+        {
+            titleEntry = entries.FirstOrDefault(item => item.Value.Phase == "Uploaded");
+            if (string.IsNullOrEmpty(titleEntry.Key)) titleEntry = entries[0];
+        }
+        var titleVersionId = Guid.ParseExact(titleEntry.Key, "D");
+        var titleRequest = await RequestAsync(userId, titleVersionId, ct);
+        var title = ReadTitle(titleRequest.InputJson);
+        var versionEntries = entries.Take(versionLimit).ToList();
+        if (currentVersionId is { } currentVersion)
+        {
+            var selectedCurrentEntry = entries.First(item => item.Key == Key(currentVersion));
+            if (versionEntries.All(item => item.Key != selectedCurrentEntry.Key))
+            {
+                if (versionEntries.Count == versionLimit)
+                    versionEntries.RemoveAt(versionEntries.Count - 1);
+                versionEntries.Add(selectedCurrentEntry);
+                versionEntries.Sort((left, right) =>
+                {
+                    var created = right.Value.CreatedAt.CompareTo(left.Value.CreatedAt);
+                    return created != 0 ? created : string.CompareOrdinal(left.Key, right.Key);
+                });
+            }
+        }
+        var allConflictEntries = entries
+            .Where(item => item.Value.HasConflict || item.Value.Phase == "Conflict")
+            .ToArray();
+        var conflictEntries = allConflictEntries.Take(100).ToArray();
+        var versions = await DescribeMcpVersionsAsync(userId, versionEntries, ledger, ct);
+        var conflicts = await DescribeMcpVersionsAsync(userId, conflictEntries, ledger, ct);
+        return new NativeNoteMcpSnapshotDto(
+            noteId,
+            title,
+            NoteStatus(ledger, noteId),
+            RevisionOf(ledger, noteId),
+            currentVersionId,
+            allConflictEntries.Length > 0,
+            entries.Length,
+            allConflictEntries.Length,
+            UpdatedAtOf(ledger, noteId),
+            versions,
+            conflicts);
+    }
+
+    /// <summary>Current lifecycle status with an existence check (404 when the note is unknown).</summary>
+    public async Task<string> GetMcpNoteStatusAsync(Guid userId, Guid noteId, CancellationToken ct = default)
+    {
+        await using var lease = await LockAsync(userId, ct);
+        var ledger = await LoadLedgerAsync(userId, ct);
+        await PruneAsync(userId, ledger, ct);
+        RequireNote(ledger, noteId);
+        return NoteStatus(ledger, noteId);
+    }
+
+    /// <summary>
+    /// Archive / restore / soft-delete a note. Versions and files stay on disk so a restore is
+    /// lossless; only the note status changes. The optional expected revision is a strict CAS:
+    /// a stale value is rejected and the caller must re-read before retrying.
+    /// </summary>
+    public async Task<NativeNoteMcpLifecycleDto> UpdateLifecycleAsync(Guid userId, Guid noteId,
+        string action, Guid? expectedRevision, CancellationToken ct = default)
+    {
+        var normalizedAction = (action ?? string.Empty).Trim().ToLowerInvariant();
+        var targetStatus = normalizedAction switch
+        {
+            "archive" => "Archived",
+            "restore" => "Active",
+            "delete" => "Deleted",
+            _ => throw Invalid("action 必须是 archive、restore 或 delete"),
+        };
+        await using var lease = await LockAsync(userId, ct);
+        var ledger = await LoadLedgerAsync(userId, ct);
+        await PruneAsync(userId, ledger, ct);
+        RequireNote(ledger, noteId);
+        var currentStatus = NoteStatus(ledger, noteId);
+        var revision = RevisionOf(ledger, noteId);
+        if (expectedRevision is { } expected && expected != revision)
+            throw Conflict("笔记版本已变化，请先重新读取 get_native_note_versions 后再试");
+        if (currentStatus == targetStatus)
+            return new NativeNoteMcpLifecycleDto(currentStatus, revision, UpdatedAtOf(ledger, noteId));
+        if (normalizedAction == "archive" && currentStatus == "Deleted")
+            throw Conflict("笔记已删除，请先恢复后再归档");
+
+        var now = _clock.GetUtcNow();
+        var state = ledger.Notes.TryGetValue(Key(noteId), out var existing)
+            ? existing
+            : new StoredNoteState(currentStatus, now);
+        var updated = state with
+        {
+            Status = targetStatus,
+            UpdatedAt = now,
+            ArchivedAt = targetStatus == "Archived" ? now : null,
+            DeletedAt = targetStatus == "Deleted" ? now : null,
+        };
+        ledger.Notes[Key(noteId)] = updated;
+        await SaveLedgerAsync(userId, ledger, ct);
+        return new NativeNoteMcpLifecycleDto(targetStatus, RevisionOf(ledger, noteId), now);
+    }
+
+    private async Task<IReadOnlyList<NoteMaterialUploadDto>> DescribeMcpVersionsAsync(Guid userId,
+        IEnumerable<KeyValuePair<string, StoredVersion>> entries, Ledger ledger, CancellationToken ct)
+    {
+        var result = new List<NoteMaterialUploadDto>();
+        foreach (var (key, entry) in entries)
+        {
+            ct.ThrowIfCancellationRequested();
+            var versionId = Guid.ParseExact(key, "D");
+            var files = NoteMaterialManifestValidator.Validate(await RequestAsync(userId, versionId, ct),
+                ReadLimits);
+            result.Add(await DescribeAsync(userId, versionId, entry, ledger, files, ct));
+        }
+        return result;
+    }
+
+    private static string NormalizeStatus(string? status)
+    {
+        var value = string.IsNullOrWhiteSpace(status) ? "Active" : status.Trim();
+        if (value.Equals("Active", StringComparison.OrdinalIgnoreCase)) return "Active";
+        if (value.Equals("Archived", StringComparison.OrdinalIgnoreCase)) return "Archived";
+        if (value.Equals("Deleted", StringComparison.OrdinalIgnoreCase)) return "Deleted";
+        if (value.Equals("All", StringComparison.OrdinalIgnoreCase)) return "All";
+        throw Invalid("status 必须是 Active、Archived、Deleted 或 All");
+    }
+
+    private static bool StatusMatches(string status, string filter)
+        => filter == "All" || string.Equals(status, filter, StringComparison.Ordinal);
+
+    private static string NoteStatus(Ledger ledger, Guid noteId)
+        => ledger.Notes.TryGetValue(Key(noteId), out var state) ? state.Status : "Active";
+
+    private static DateTimeOffset UpdatedAtOf(Ledger ledger, Guid noteId)
+    {
+        var latest = ledger.Versions
+            .Where(item => item.Value.NoteId == noteId)
+            .Select(item => item.Value.CreatedAt)
+            .DefaultIfEmpty(DateTimeOffset.MinValue)
+            .Max();
+        if (ledger.Notes.TryGetValue(Key(noteId), out var state) && state.UpdatedAt > latest)
+            latest = state.UpdatedAt;
+        return latest;
+    }
+
+    private static Guid RevisionOf(Ledger ledger, Guid noteId)
+    {
+        var builder = new StringBuilder(256);
+        builder.Append(Key(noteId)).Append('|').Append(NoteStatus(ledger, noteId));
+        foreach (var (key, entry) in ledger.Versions
+                     .Where(item => item.Value.NoteId == noteId)
+                     .OrderBy(item => item.Key, StringComparer.Ordinal))
+        {
+            builder.Append('|').Append(key).Append(':').Append(entry.Phase).Append(':')
+                .Append(entry.HasConflict ? '1' : '0').Append(':')
+                .Append(entry.CreatedAt.UtcTicks);
+        }
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(builder.ToString()));
+        var bytes = hash.AsSpan(0, 16).ToArray();
+        bytes[6] = (byte)((bytes[6] & 0x0f) | 0x50);
+        bytes[8] = (byte)((bytes[8] & 0x3f) | 0x80);
+        return new Guid(bytes);
+    }
+
+    private static void RequireNote(Ledger ledger, Guid noteId)
+    {
+        if (!ledger.Versions.Values.Any(item => item.NoteId == noteId) &&
+            !ledger.Notes.ContainsKey(Key(noteId)))
+            throw new DomainException(40401, "笔记不存在");
     }
 
     private async Task VerifyFileAsync(Guid userId, Guid versionId, int index, NoteUploadedMaterial file, CancellationToken ct)
@@ -978,7 +1255,7 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
     private async Task<Ledger> LoadLedgerAsync(Guid userId, CancellationToken ct)
     {
         var path = Path.Combine(UserFolder(userId), "ledger.json");
-        var ledger = File.Exists(path) ? await ReadAsync<Ledger>(path, ct) : new Ledger([], [], []);
+        var ledger = File.Exists(path) ? await ReadAsync<Ledger>(path, ct) : new Ledger();
         if (ledger.SchemaVersion != 1) throw new InvalidDataException("Unsupported note storage metadata");
         await PurgeAsync(userId, ledger, ct);
         return ledger;
@@ -1023,10 +1300,20 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
     private static async Task<string> HashAsync(Stream stream, CancellationToken ct) => Convert.ToHexString(await SHA256.HashDataAsync(stream, ct)).ToLowerInvariant();
     private static DomainException Invalid(string message) => new(40001, message);
     private static DomainException Conflict(string message) => new(40901, message);
-    private sealed record Ledger(Dictionary<string, StoredVersion> Versions, Dictionary<string, Guid> Heads,
-        HashSet<string> Deletions, int SchemaVersion = 1);
+    private sealed class Ledger
+    {
+        public Dictionary<string, StoredVersion> Versions { get; init; } = new(StringComparer.Ordinal);
+        public Dictionary<string, Guid> Heads { get; init; } = new(StringComparer.Ordinal);
+        public HashSet<string> Deletions { get; init; } = new(StringComparer.Ordinal);
+        public Dictionary<string, StoredNoteState> Notes { get; init; } = new(StringComparer.Ordinal);
+        public int SchemaVersion { get; init; } = 1;
+    }
+
     private sealed record StoredVersion(Guid NoteId, Guid? BaseVersionId, string Fingerprint, long SizeBytes,
         DateTimeOffset CreatedAt, DateTimeOffset ExpiresAt, string Phase, bool HasConflict = false);
+
+    private sealed record StoredNoteState(string Status, DateTimeOffset UpdatedAt,
+        DateTimeOffset? ArchivedAt = null, DateTimeOffset? DeletedAt = null);
 }
 
 internal sealed record NativeNoteSearchSource(
