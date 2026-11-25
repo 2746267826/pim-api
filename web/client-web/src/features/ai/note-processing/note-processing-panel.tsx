@@ -113,7 +113,7 @@ export function NoteProcessingPanel({ ownerId, serverBinding, noteId, versionId,
   if (status.isPending) return <Skeleton className="h-44" />
   if (status.isError || !status.data) {
     return <InlineAlert tone="crit" title="处理状态读取失败">
-      {errorText(status.error)}
+      {showVersionDetails ? errorText(status.error) : '处理状态暂时无法读取，请重试；页面不会自动重发。'}
       <Button size="sm" variant="ghost" onClick={() => void status.refetch()}>
         <RefreshCw className="size-4" aria-hidden />重试
       </Button>

@@ -307,8 +307,9 @@ function Workspace({ ownerId, role, serverBinding }: { ownerId: string; role?: s
     } catch {
       setMessage('无法在本机暂存返回位置；处理完成后可从笔记列表重新打开该笔记。')
     }
-    const query = new URLSearchParams({ noteId: selectedSource.noteId, action })
+    const query = new URLSearchParams({ noteId: selectedSource.noteId })
     if (canViewVersions) query.set('versionId', selectedSource.versionId)
+    query.set('action', action)
     navigate(`/native-notes/processing?${query.toString()}`)
   }
 
@@ -493,7 +494,7 @@ function Workspace({ ownerId, role, serverBinding }: { ownerId: string; role?: s
     <p className="text-xs leading-5 text-text-3">
       {canViewVersions
         ? '已保存版本与冲突候选都会保留。含录音的当前版本可在保留原件的前提下续写；历史版本仅供阅读。'
-        : '笔记会保存到服务器。发生真实冲突时，可先比较服务器当前内容与此设备的改动，再决定采用哪一份。'}
+        : '笔记会保存到服务器。发生真实冲突时，可先比较服务器当前内容与另一份已保存内容，再决定采用哪一份。'}
     </p>
 
     <div className="grid gap-4 xl:grid-cols-[minmax(260px,.72fr)_minmax(0,1.6fr)]">

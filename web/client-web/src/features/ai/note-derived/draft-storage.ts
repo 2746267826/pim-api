@@ -16,6 +16,8 @@ export interface NoteDerivedDraftScope {
   readonly artifactId: string
   readonly sourceVersionId: string
   readonly kind: NoteDerivedArtifactKind
+  /** Ordinary-user editing is scoped to the selected result version. */
+  readonly artifactVersionId?: string
 }
 
 export interface PendingMutationIntent {
@@ -145,13 +147,14 @@ export function sameDraftScope(left: NoteDerivedDraftScope, right: NoteDerivedDr
     left.serverBinding === right.serverBinding &&
     left.artifactId === right.artifactId &&
     left.sourceVersionId === right.sourceVersionId &&
-    left.kind === right.kind
+    left.kind === right.kind &&
+    left.artifactVersionId === right.artifactVersionId
 }
 
 export function noteDerivedDraftStorageKey(scope: NoteDerivedDraftScope): string | null {
   if (!isUsableDraftScope(scope)) return null
   const parts = [scope.ownerId, scope.serverBinding, scope.artifactId, scope.sourceVersionId, scope.kind]
-    .map((part) => encodeURIComponent(part))
+  if (scope.artifactVersionId) parts.push(scope.artifactVersionId)
   return `${STORAGE_PREFIX}/${parts.join('/')}`
 }
 
@@ -213,7 +216,8 @@ function isStoredDraft(value: unknown): value is StoredNoteDerivedDraft {
     typeof scope.serverBinding === 'string' &&
     typeof scope.artifactId === 'string' &&
     typeof scope.sourceVersionId === 'string' &&
-    (scope.kind === 'CompleteRecord' || scope.kind === 'IndependentAnalysis')
+    (scope.kind === 'CompleteRecord' || scope.kind === 'IndependentAnalysis') &&
+    (scope.artifactVersionId === undefined || typeof scope.artifactVersionId === 'string')
 }
 
 export function loadStoredDraft(

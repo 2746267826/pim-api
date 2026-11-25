@@ -230,7 +230,9 @@ export function NoteAsrStartPanel({ userId, serverBinding, versionId, onCreated,
         const storageError = saveNoteAsrBatchInitialIntent(userId, serverBinding, versionId, submitted)
         if (storageError) {
           setBatchIntentState({ kind: 'ready', value: current })
-          setError(`${storageError} 已创建的 Batch 准备任务保持原标识 ${current.taskId}，没有继续提交。`)
+          setError(showVersionDetails
+            ? `${storageError} 已创建的 Batch 准备任务保持原标识 ${current.taskId}，没有继续提交。`
+            : `${storageError} 已创建的 Batch 准备任务尚未继续提交。`)
           return
         }
         current = submitted
@@ -326,7 +328,9 @@ export function NoteAsrStartPanel({ userId, serverBinding, versionId, onCreated,
         setConfirmed(false)
         setBatchConfirmed(false)
         setNotice(existingJob.batchId
-          ? `已确认同一任务/执行快照下的 Batch 记录，供应商任务标识：${existingJob.batchId}；没有重新创建或重发。`
+          ? showVersionDetails
+            ? `已确认同一任务/执行快照下的 Batch 记录，供应商任务标识：${existingJob.batchId}；没有重新创建或重发。`
+            : '已确认同一任务/执行快照下的 Batch 记录；没有重新创建或重发。'
           : '已确认同一任务/执行快照下的 Batch/UNKNOWN 记录，但没有供应商任务标识；保留人工核对，禁止自动重建或重发。')
         onCreated?.(task)
         await qc.invalidateQueries({ queryKey: ['ai', userId, serverBinding, 'asr-batch-jobs'] })
@@ -444,7 +448,7 @@ export function NoteAsrStartPanel({ userId, serverBinding, versionId, onCreated,
         <Select id="note-asr-start-language" ariaLabel="识别语言" value={language} options={languageOptions}
           disabled={busy || Boolean(intent) || Boolean(blockedIntent)} onValueChange={(value) => { setLanguage(value); setConfirmed(false) }} /></div>
     </details>
-    {effectiveRoute === 'cloud' && savedDestination && <details className="rounded-ctl border border-border px-3 py-2 text-xs text-text-3">
+    {effectiveRoute === 'cloud' && savedDestination && showVersionDetails && <details className="rounded-ctl border border-border px-3 py-2 text-xs text-text-3">
       <summary className="cursor-pointer">诊断与服务地址</summary>
       <p className="mt-2 break-all font-mono">{savedDestination.endpoint}</p>
     </details>}

@@ -18,11 +18,12 @@ const phaseLabel: Record<string, string> = {
 }
 const label = (value: string) => phaseLabel[value.toLowerCase()] ?? value
 
-export function NoteAsrReprocessPanel({ task, userId, serverBinding, onCreated }: {
+export function NoteAsrReprocessPanel({ task, userId, serverBinding, onCreated, showVersionDetails = true }: {
   task: NoteAsrTask
   userId: string
   serverBinding: string
   onCreated?: (taskId: string) => void
+  showVersionDetails?: boolean
 }) {
   const qc = useQueryClient()
   const [offset, setOffset] = useState(0)
@@ -114,7 +115,9 @@ export function NoteAsrReprocessPanel({ task, userId, serverBinding, onCreated }
       const result = await aiApi.asrReprocess(task.taskId, body)
       clearNoteAsrReprocessIntent(userId, serverBinding, task.taskId, body.clientTaskId)
       setIntentState({ kind: 'none' })
-      setNotice(`已按原标识提交重处理；原任务与历史结果保持不变。新任务：${result.task.taskId}`)
+      setNotice(showVersionDetails
+        ? `已按原标识提交重处理；原任务与历史结果保持不变。新任务：${result.task.taskId}`
+        : '已按原提交提交重处理；原任务与历史结果保持不变。')
       setConfirmed(false)
       setReason('')
       onCreated?.(result.task.taskId)
@@ -168,7 +171,8 @@ export function NoteAsrReprocessPanel({ task, userId, serverBinding, onCreated }
         <h3 className="text-sm font-semibold text-text-1">执行尝试与停止</h3>
         <p className="mt-1 break-words text-xs text-text-3">停止只阻止后续分片继续发送；已发送或结果未知的分片不会自动重发或假定成功。</p>
       </div>
-      <Attempts taskId={task.taskId} userId={userId} serverBinding={serverBinding} attempts={attempts} />
+      <Attempts taskId={task.taskId} userId={userId} serverBinding={serverBinding} attempts={attempts}
+        showVersionDetails={showVersionDetails} />
     </Card>
 
     <Card className="min-w-0 space-y-3 p-4 sm:p-5">
@@ -195,8 +199,12 @@ export function NoteAsrReprocessPanel({ task, userId, serverBinding, onCreated }
             </InlineAlert>}
             {selectedRoute !== 'local' && selectedDestination && <div className="space-y-2 rounded-ctl border border-border p-3 text-xs text-text-2">
               <p className="break-words">目标：{selectedDestination.displayName} · {selectedDestination.model}</p>
-              <p className="break-all font-mono text-text-3">{selectedDestination.endpoint}</p>
-              <p>路由 {selectedRoute} · 预设 {selectedDestination.presetId} v{selectedDestination.presetVersion}。当前配置版本：{config.data.consentVersion}。</p>
+              {showVersionDetails
+                ? <>
+                  <p className="break-all font-mono text-text-3">{selectedDestination.endpoint}</p>
+                  <p>路由 {selectedRoute} · 预设 {selectedDestination.presetId} v{selectedDestination.presetVersion}。当前配置版本：{config.data.consentVersion}。</p>
+                </>
+                : <p>本次重处理只使用上方已确认的云端目标；旧任务与历史结果继续保留。</p>}
             </div>}
           </>}
       <div className="max-w-sm"><Label htmlFor="note-asr-reprocess-kind">重处理原因</Label>
@@ -209,8 +217,12 @@ export function NoteAsrReprocessPanel({ task, userId, serverBinding, onCreated }
           onChange={(event) => { setReason(event.target.value); setConfirmed(false) }} /></div>
       {blockedIntent && <InlineAlert tone="crit" title="原重处理状态无法确认">{blockedIntent}</InlineAlert>}
       {intent ? <div className="space-y-2 rounded-ctl border border-warn-border bg-warn-soft p-3 text-xs text-text-2">
-        <p className="break-all">已冻结原提交标识：<span className="font-mono">{intent.clientTaskId}</span>。目标、原因与路由不可在核对前更改。</p>
-        <p>原提交：{intent.route.route} · {intent.reason.kind} · {intent.reason.text}</p>
+        <p className="break-all">{showVersionDetails
+          ? <>已冻结原提交标识：<span className="font-mono">{intent.clientTaskId}</span>。目标、原因与路由不可在核对前更改。</>
+          : '已有一次重处理提交尚未确认；目标、原因与执行位置不可在核对前更改。'}</p>
+        <p>{showVersionDetails
+          ? `原提交：${intent.route.route} · ${intent.reason.kind} · ${intent.reason.text}`
+          : `原因说明：${intent.reason.text}`}</p>
         <div className="flex flex-wrap gap-2">
           <Button size="sm" loading={busy} onClick={() => void reconcileHistory()}>核对重处理历史</Button>
           <Button size="sm" variant="secondary" disabled={busy} onClick={() => void submit(intent)}>按原标识保存</Button>
@@ -242,10 +254,12 @@ export function NoteAsrReprocessPanel({ task, userId, serverBinding, onCreated }
             : <div className="space-y-2">{history.data.items.map((item) => <div key={item.taskId}
               className="min-w-0 rounded-ctl border border-border p-3 text-xs text-text-2">
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <span className="break-all font-mono">{item.taskId}</span>
+                <span className="break-all font-mono">{showVersionDetails ? item.taskId : dateTime(item.createdAt)}</span>
                 <StatusBadge size="xs" dot={false} tone={item.phase.toLowerCase() === 'succeeded' ? 'ok' : 'warn'}>{label(item.phase)}</StatusBadge>
               </div>
-              <p className="mt-1 break-words">{dateTime(item.createdAt)} · 路由 {item.route} · {item.executionMode}</p>
+              {showVersionDetails
+                ? <p className="mt-1 break-words">{dateTime(item.createdAt)} · 路由 {item.route} · {item.executionMode}</p>
+                : <p className="mt-1 break-words">{item.route === 'local' ? '本机转写' : '云端转写'}</p>}
               <p className="mt-1 break-words">原因：{item.reason || '未提供'}</p>
             </div>)}</div>}
       {history.data && history.data.total > history.data.limit && <div className="flex flex-wrap justify-end gap-2">
@@ -256,11 +270,12 @@ export function NoteAsrReprocessPanel({ task, userId, serverBinding, onCreated }
   </div>
 }
 
-function Attempts({ taskId, userId, serverBinding, attempts }: {
+function Attempts({ taskId, userId, serverBinding, attempts, showVersionDetails }: {
   taskId: string
   userId: string
   serverBinding: string
   attempts: UseQueryResult<NoteAsrAttemptDetail[]>
+  showVersionDetails: boolean
 }) {
   const qc = useQueryClient()
   const [stopId, setStopId] = useState<string | null>(null)
@@ -274,13 +289,15 @@ function Attempts({ taskId, userId, serverBinding, attempts }: {
     const terminal = ['succeeded', 'failed', 'stopped', 'cancelled'].includes(attempt.state.toLowerCase())
     return <div key={attempt.attemptId} className="min-w-0 rounded-ctl border border-border p-3 text-xs text-text-2">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <span className="break-all font-mono">{attempt.attemptId}</span>
+        <span className="break-all font-mono">{showVersionDetails
+          ? attempt.attemptId
+          : attempt.route === 'local' ? '本机转写执行' : '云端转写执行'}</span>
         <StatusBadge size="xs" dot={false} tone={attempt.state.toLowerCase() === 'succeeded' ? 'ok' : terminal ? 'warn' : 'info'}>
           {label(attempt.state)}{attempt.stopRequested ? ' · 已请求停止' : ''}
         </StatusBadge>
       </div>
-      <p className="mt-1 break-words">{attempt.route} · {attempt.completedSegments}/{attempt.expectedSegments} 片 · 失败 {attempt.failedSegments}</p>
-      <p className="mt-1 break-all font-mono text-text-3">{attempt.endpoint ?? attempt.model ?? '目标未记录'}</p>
+      <p className="mt-1 break-words">{showVersionDetails ? `${attempt.route} · ` : ''}{attempt.completedSegments}/{attempt.expectedSegments} 片 · 失败 {attempt.failedSegments}</p>
+      {showVersionDetails && <p className="mt-1 break-all font-mono text-text-3">{attempt.endpoint ?? attempt.model ?? '目标未记录'}</p>}
       {attempt.lastErrorMessage && <p className="mt-1 break-words text-warn">{attempt.lastErrorMessage}</p>}
       {!terminal && !attempt.stopRequested && <div className="mt-2">
         {stopId !== attempt.attemptId

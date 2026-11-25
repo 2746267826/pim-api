@@ -616,7 +616,7 @@ function LoadedEditor({
           </Button>
           {dirty && <StatusBadge tone="warn" dot={false}>有未保存更改</StatusBadge>}
           {!dirty && baseVersionId && (
-            <StatusBadge tone="ok" dot={false}>{showVersionDetails ? '已从服务器载入' : '正文已同步'}</StatusBadge>
+            <StatusBadge tone="ok" dot={false}>{showVersionDetails ? '已从服务器载入' : '无未保存更改'}</StatusBadge>
           )}
           {!dirty && !baseVersionId && <StatusBadge tone="neutral" dot={false}>尚未保存</StatusBadge>}
         </div>

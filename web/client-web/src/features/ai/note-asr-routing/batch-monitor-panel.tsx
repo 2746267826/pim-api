@@ -24,6 +24,7 @@ export interface BatchMonitorPanelProps {
   readOnly?: boolean
   disabled?: boolean
   pageSize?: number
+  showVersionDetails?: boolean
 }
 
 export function BatchMonitorPanel({
@@ -35,6 +36,7 @@ export function BatchMonitorPanel({
   readOnly = false,
   disabled = false,
   pageSize = 5,
+  showVersionDetails = true,
 }: BatchMonitorPanelProps) {
   const [page, setPage] = useState(1)
   const [cancelId, setCancelId] = useState<string | null>(null)
@@ -105,16 +107,16 @@ export function BatchMonitorPanel({
           <StatusBadge size="xs" dot={false} tone={meta.tone}>{meta.label}</StatusBadge>
         </div>
         <div className="mt-2 grid min-w-0 gap-1 text-xs text-text-3 sm:grid-cols-2">
-          <p className="break-words">{job.createdAtLabel} · {job.destinationLabel}</p>
+          <p className="break-words">{job.createdAtLabel}{showVersionDetails ? ` · ${job.destinationLabel}` : ''}</p>
           <p className="break-words">完成窗口 {job.completionWindowLabel} · {job.cashEstimateLabel}</p>
           <p className="break-words">进度 {job.progressLabel}</p>
           <p className="break-words">成功 {job.completedItems ?? '未知'} / 失败 {job.failedItems ?? '未知'} / 总数 {job.totalItems ?? '未知'}</p>
           <p className="break-words">输入文件保留至 {job.inputExpiresAtLabel ?? '未知'}</p>
           <p className="break-words">Batch任务截止 {job.batchExpiresAtLabel ?? '未知'}</p>
         </div>
-        {job.providerRequestId
+        {showVersionDetails && (job.providerRequestId
           ? <p className="mt-2 break-all font-mono text-[11px] text-text-4">供应商任务标识：{job.providerRequestId}</p>
-          : <InlineAlert tone="warn" title="没有可核对的供应商任务标识" className="mt-2">保持 UNKNOWN，请到MiMo平台按提交时间、文件与请求信息人工核对；不得自动创建新任务、重新上传或假定成功。</InlineAlert>}
+          : <InlineAlert tone="warn" title="没有可核对的供应商任务标识" className="mt-2">保持 UNKNOWN，请到MiMo平台按提交时间、文件与请求信息人工核对；不得自动创建新任务、重新上传或假定成功。</InlineAlert>)}
         {job.status === 'partial' && <InlineAlert tone="warn" title="部分成功" className="mt-2">
           成功请求已经产生费用并保留结果；失败请求不会自动续跑或整体重发，需逐项核对后人工决定。
         </InlineAlert>}

@@ -112,6 +112,21 @@ export function NoteVersionPanel({
         </Card>
       )
     }
+    if (versionsLoading || currentLoading) {
+      return <Card className="mb-4 space-y-3 p-4"><Skeleton className="h-16" /><Skeleton className="h-16" /></Card>
+    }
+    if (versionsError || currentError) {
+      return (
+        <Card className="mb-4 space-y-3 p-4">
+          <InlineAlert tone="crit" title="冲突状态读取失败">
+            {errorText(versionsError ?? currentError)}。为避免在旧内容上继续选择，已隐藏冲突选择。
+            <Button className="mt-2" size="sm" variant="secondary" disabled={promoteInFlight} onClick={onRefresh}>
+              重新读取并核对
+            </Button>
+          </InlineAlert>
+        </Card>
+      )
+    }
     if (!current || conflictVersions.length === 0) return null
     if (dismissedConflictKey === conflictKey) {
       return (
@@ -335,7 +350,7 @@ function ConflictComparison({
             const materialReady = Boolean(summary) && !state?.loading && !state?.error
             return <ConflictSide
               key={candidate.upload.versionId}
-              label="此设备的改动"
+              label="另一份已保存内容"
               createdAt={candidate.upload.createdAt}
               summary={summary}
               loading={state?.loading ?? false}

@@ -175,6 +175,17 @@ it('loads ordinary sources without version controls and never calls admin model 
   expect(screen.getByText('隐私与处理说明').closest('details')?.textContent).toContain('普通账号只能使用管理员启用的共享目标')
 })
 
+it('renders an ordinary processing page from note and action context without version controls', async () => {
+  auth.user.role = 'user'
+  window.history.replaceState({}, '', `/native-notes/processing?noteId=${noteId}&version=${sourceVersionId}&action=organize`)
+
+  page()
+
+  expect(await screen.findByRole('heading', { name: '继续处理这篇笔记' })).toBeTruthy()
+  await waitFor(() => expect(screen.getByRole('link', { name: '返回所选笔记' }).getAttribute('href')).toBe(`/native-notes?note=${noteId}`))
+  expect(screen.queryByRole('combobox', { name: '材料版本' })).toBeNull()
+})
+
 it('explains an empty shared destination catalogue without exposing admin configuration to ordinary users', async () => {
   auth.user.role = 'user'
   derived.destinations.mockResolvedValue({ total: 0, items: [] })
@@ -630,6 +641,48 @@ it('lets ordinary users inspect and adopt a newer result without version history
     artifactId,
     expect.objectContaining({ versionId: nextVersionId }),
   ))
+})
+
+it('shows the selected new result instead of an existing local draft and restores the draft when returning', async () => {
+  auth.user.role = 'user'
+  const nextVersionId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+  const headArtifact: NoteDerivedArtifact = {
+    ...artifact,
+    headVersionId: versionId,
+    versions: [
+      { ...artifact.versions[0]!, isHead: true },
+      {
+        ...artifact.versions[0]!,
+        versionId: nextVersionId,
+        createdAt: '2026-10-29T00:01:00Z',
+        isHead: false,
+      },
+    ],
+  }
+  const nextVersion: NoteDerivedVersion = {
+    ...version,
+    versionId: nextVersionId,
+    contentMarkdown: '新生成候选正文',
+    createdAt: '2026-10-29T00:01:00Z',
+    isHead: false,
+  }
+  derived.artifacts.mockResolvedValue([headArtifact])
+  derived.version.mockImplementation((_artifactId: string, id: string) =>
+    Promise.resolve(id === nextVersionId ? nextVersion : version))
+
+  page(); await chooseSource()
+
+  const editor = await screen.findByLabelText('完整记录正文')
+  await userEvent.clear(editor)
+  await userEvent.type(editor, '当前内容的本机旧草稿')
+  expect(screen.getByText('有未保存修改')).toBeTruthy()
+
+  await userEvent.click(screen.getByRole('button', { name: '查看新结果' }))
+  expect(await screen.findByDisplayValue('新生成候选正文')).toBeTruthy()
+  expect(screen.queryByDisplayValue('当前内容的本机旧草稿')).toBeNull()
+
+  await userEvent.click(screen.getByRole('button', { name: '返回当前内容' }))
+  expect(await screen.findByDisplayValue('当前内容的本机旧草稿')).toBeTruthy()
 })
 
 it('mounts task suggestions only for the selected owned artifact version', async () => {

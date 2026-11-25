@@ -82,4 +82,11 @@ describe('application route access', () => {
 
     expect(screen.getByText('需要管理员权限')).toBeTruthy()
   })
+
+  it('fails closed when the admin route is rendered without a confirmed user', () => {
+    render(<MemoryRouter><RequireAdmin /></MemoryRouter>)
+
+    expect(screen.getByText('需要管理员权限')).toBeTruthy()
+    expect(screen.getByText(/未确认管理员登录状态/)).toBeTruthy()
+  })
 })

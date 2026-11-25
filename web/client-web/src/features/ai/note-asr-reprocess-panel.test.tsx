@@ -95,9 +95,9 @@ beforeEach(() => {
   api.asrReprocess.mockResolvedValue({ task: { ...task, taskId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' }, parentTaskId: task.taskId, reason: 'manual' })
 })
 
-function page() {
+function page(showVersionDetails = true) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
-  return render(<QueryClientProvider client={qc}><NoteAsrReprocessPanel task={task} userId={userId} serverBinding={serverBinding} /></QueryClientProvider>)
+  return render(<QueryClientProvider client={qc}><NoteAsrReprocessPanel task={task} userId={userId} serverBinding={serverBinding} showVersionDetails={showVersionDetails} /></QueryClientProvider>)
 }
 
 describe('NoteAsrReprocessPanel', () => {
@@ -203,5 +203,17 @@ describe('NoteAsrReprocessPanel', () => {
     await userEvent.click(screen.getByRole('button', { name: '确认停止' }))
     await waitFor(() => expect(api.asrRoutingAttemptStop).toHaveBeenCalledOnce())
     expect(api.asrRoutingAttemptStop).toHaveBeenCalledWith(attempt.attemptId)
+  })
+
+  it('hides task, attempt, endpoint, preset and consent identifiers from ordinary owners', async () => {
+    page(false)
+    expect(await screen.findByText('重处理历史（不可变）')).toBeTruthy()
+    expect(await screen.findByText('云端转写执行')).toBeTruthy()
+    expect(screen.queryByText(task.taskId)).toBeNull()
+    expect(screen.queryByText(attempt.attemptId)).toBeNull()
+    expect(screen.queryByText(history.items[0]!.taskId)).toBeNull()
+    expect(screen.queryByText(destination.endpoint)).toBeNull()
+    expect(screen.queryByText(/mimo-multimodal/)).toBeNull()
+    expect(screen.queryByText(/consent-v1/)).toBeNull()
   })
 })

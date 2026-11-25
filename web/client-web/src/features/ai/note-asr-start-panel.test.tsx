@@ -49,9 +49,11 @@ const task = {
   phase: 'Queued',
 }
 
-function renderPanel() {
+function renderPanel(showVersionDetails = true) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } })
-  render(<QueryClientProvider client={client}><NoteAsrStartPanel userId={owner} serverBinding={serverBinding} versionId={versionId} /></QueryClientProvider>)
+  render(<QueryClientProvider client={client}>
+    <NoteAsrStartPanel userId={owner} serverBinding={serverBinding} versionId={versionId} showVersionDetails={showVersionDetails} />
+  </QueryClientProvider>)
   return client
 }
 async function confirmCloud() {
@@ -172,6 +174,20 @@ describe('NoteAsrStartPanel', () => {
     expect(ai.noteAsrStart.mock.calls[1]?.[0]).toEqual(ai.noteAsrStart.mock.calls[0]?.[0])
     expect(ai.noteAsrStart.mock.calls[1]?.[0].taskId).toBe(originalId)
     second.clear()
+  })
+
+  it('hides the service address and frozen task identity from ordinary owners', async () => {
+    ai.noteAsrStart.mockRejectedValueOnce(new Error('network response lost'))
+    renderPanel(false)
+    await screen.findByText(/合成云端ASR/)
+    await confirmCloud()
+
+    const taskId = ai.noteAsrStart.mock.calls[0]?.[0].taskId as string
+    expect(await screen.findByText(/已有一次转写提交尚未确认/)).toBeTruthy()
+    expect(screen.queryByText(destination.endpoint)).toBeNull()
+    expect(screen.queryByText(taskId)).toBeNull()
+    expect(screen.queryByText(destination.presetId)).toBeNull()
+    expect(screen.queryByText(/consent-1/)).toBeNull()
   })
 
   it('reconciles the existing task by id without resending', async () => {

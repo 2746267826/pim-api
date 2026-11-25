@@ -94,10 +94,10 @@ beforeEach(() => {
   api.noteAsrTaskOrNull.mockResolvedValue(null)
 })
 
-function page(taskValue = task, binding = serverBinding) {
+function page(taskValue = task, binding = serverBinding, showVersionDetails = true) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } })
   return render(<QueryClientProvider client={client}>
-    <NoteAsrOwnerBatches task={taskValue} userId={userId} serverBinding={binding} />
+    <NoteAsrOwnerBatches task={taskValue} userId={userId} serverBinding={binding} showVersionDetails={showVersionDetails} />
   </QueryClientProvider>)
 }
 
@@ -225,5 +225,42 @@ describe('NoteAsrOwnerBatches', () => {
     expect((screen.getByRole('button', { name: '创建失败项 Batch 子任务' }) as HTMLButtonElement).disabled).toBe(true)
     await userEvent.type(screen.getByLabelText('原因说明'), '不按名称猜目标')
     expect(api.asrBatchRetryFailed).not.toHaveBeenCalled()
+  })
+
+  it('hides Batch, provider, task and target internals from ordinary owners', async () => {
+    const clientTaskId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    localStorage.setItem(noteAsrBatchFailedIntentScope(userId, serverBinding, job.id), JSON.stringify({
+      kind: 'failed',
+      expectedUserId: userId,
+      sourceTaskId: task.taskId,
+      request: {
+        clientTaskId,
+        sourceJobId: job.id,
+        expectedUserId: userId,
+        route: {
+          route: 'cloud-multimodal', expectedConfigRevision: config.revision,
+          expectedConsentVersion: config.consentVersion, executionMode: 'batch',
+          batchScopeConfirmed: true, confirmed: true,
+        },
+        target: {
+          modelId: destination.modelId, modelRevision: destination.modelRevision,
+          consentRef: job.consentRef, confirmed: true, batchScopeConfirmed: true, completionWindow: '24h',
+        },
+        reason: { kind: 'manual', text: '只恢复失败分片' },
+      },
+    }))
+
+    page(task, serverBinding, false)
+    expect((await screen.findAllByText('部分成功')).length).toBeGreaterThan(0)
+    expect(screen.getByText(/已有一次失败项重试尚未确认/)).toBeTruthy()
+    expect(screen.queryByText(/供应商任务标识：/)).toBeNull()
+    expect(screen.queryByText(/已冻结失败项子任务标识/)).toBeNull()
+    expect(screen.queryByText(job.batchId!)).toBeNull()
+    expect(screen.queryByText(job.baseUrl)).toBeNull()
+    expect(screen.queryByText(clientTaskId)).toBeNull()
+    expect(screen.queryByText(job.id)).toBeNull()
+    expect(screen.queryByText(task.taskId)).toBeNull()
+    expect(screen.queryByText(/consent-2/)).toBeNull()
+    expect(screen.queryByText(/asr\.example\.test/)).toBeNull()
   })
 })

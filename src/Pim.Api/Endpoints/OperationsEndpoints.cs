@@ -119,6 +119,7 @@ public static class OperationsEndpoints
         })
         .Produces<ApiResponse<Pim.Core.Audit.AuditTimelineResponse>>(200)
         .Produces(401)
+        .Produces(403)
         .Produces<ApiResponse<string>>(400)
         .Produces<ApiResponse<string>>(500);
 
@@ -134,6 +135,7 @@ public static class OperationsEndpoints
         })
         .Produces<ApiResponse<Pim.Core.Audit.RestorePreviewResponse>>(200)
         .Produces(401)
+        .Produces(403)
         .Produces<ApiResponse<string>>(400)
         .Produces<ApiResponse<string>>(500);
 
@@ -154,6 +156,7 @@ public static class OperationsEndpoints
         })
         .Produces<ApiResponse<Pim.Core.Audit.AuditExportResponse>>(200)
         .Produces(401)
+        .Produces(403)
         .Produces<ApiResponse<string>>(400)
         .Produces<ApiResponse<string>>(500);
     }

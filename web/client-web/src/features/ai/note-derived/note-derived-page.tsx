@@ -84,8 +84,8 @@ function SectionTitle({ number, title, description }: { number?: string; title: 
   </div>
 }
 
-function bindingScope(ownerId: string, serverBinding: string, artifactId: string, sourceVersionId: string, kind: NoteDerivedArtifactKind): NoteDerivedDraftScope {
-  return { ownerId, serverBinding, artifactId, sourceVersionId, kind }
+function bindingScope(ownerId: string, serverBinding: string, artifactId: string, sourceVersionId: string, kind: NoteDerivedArtifactKind, artifactVersionId?: string): NoteDerivedDraftScope {
+  return { ownerId, serverBinding, artifactId, sourceVersionId, kind, ...(artifactVersionId ? { artifactVersionId } : {}) }
 }
 
 function loadLocalRecord(scope: NoteDerivedDraftScope): { record: StoredNoteDerivedDraft; error: string | null } {
@@ -205,12 +205,11 @@ function Workspace({ ownerId, serverBinding, role }: { ownerId: string; serverBi
   const refreshArtifacts = () => {
     void qc.invalidateQueries({ queryKey: ['note-derived', ownerId, serverBinding, 'artifacts'] })
   }
-  const returnParams = new URLSearchParams(searchParams)
+  const returnParams = canViewVersions ? new URLSearchParams(searchParams) : new URLSearchParams()
   if (canViewVersions && sourceVersionId) returnParams.set('version', sourceVersionId)
   returnParams.delete('versionId')
   returnParams.delete('action')
   if (!canViewVersions) {
-    returnParams.clear()
     const returnNoteId = source?.noteId ?? requestedNoteId
     if (returnNoteId) returnParams.set('note', returnNoteId)
   }
@@ -474,7 +473,7 @@ function StartTaskCard({ ownerId, serverBinding, role, source, destinations, des
     </div>
     {destination && <details className="text-xs text-text-3"><summary className="cursor-pointer">诊断与高级限制</summary><div className="mt-2 space-y-2 rounded-ctl bg-surface p-3">
       <p>目标能力：{destination.capabilities.join(' / ') || '由服务端判定'}</p>
-      <p className="break-all font-mono">服务地址：{destination.endpoint}</p>
+      {canViewVersions && <p className="break-all font-mono">服务地址：{destination.endpoint}</p>}
       {limits && <p>单步证据最多 {limits.maxEvidenceCharsPerStep.toLocaleString()} 字符 · 最多 {limits.maxVisionCalls} 次图片调用</p>}
     </div></details>}
     <label className="flex items-start gap-2 rounded-ctl border border-border p-3 text-xs leading-5 text-text-2">
@@ -630,7 +629,8 @@ function ArtifactCard({ artifact, ownerId, serverBinding, showVersionDetails, on
     try {
       await noteDerivedApi.select(artifact.artifactId, { expectedHeadRevision: artifact.revision, versionId: selectedVersionId })
       if (version.data) {
-        const scope = bindingScope(ownerId, serverBinding, artifact.artifactId, version.data.sourceVersionId, artifact.kind)
+        const scope = bindingScope(ownerId, serverBinding, artifact.artifactId, version.data.sourceVersionId, artifact.kind,
+          showVersionDetails ? undefined : version.data.versionId)
         const loaded = loadStoredDraft(scope)
         if (!loaded.ok) setMessage(loaded.error.message)
         else if (!loaded.value) {
@@ -715,7 +715,8 @@ function ArtifactEditor({ artifact, version, ownerId, serverBinding, showVersion
   showVersionDetails: boolean
   onChanged: () => void
 }) {
-  const scope = bindingScope(ownerId, serverBinding, artifact.artifactId, version.sourceVersionId, artifact.kind)
+  const scope = bindingScope(ownerId, serverBinding, artifact.artifactId, version.sourceVersionId, artifact.kind,
+    showVersionDetails ? undefined : version.versionId)
   const initial = loadLocalRecord(scope)
   const [stored, setStored] = useState(() => initial.record.draft.text || initial.record.pending ? initial.record : { ...initial.record, draft: createStoredDraft(scope, version.contentMarkdown, version.versionId).draft, dirty: false })
   const [error, setError] = useState(initial.error ?? '')

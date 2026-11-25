@@ -30,13 +30,13 @@ function batchStatus(job: NoteAsrBatchJob): BatchStatusView {
   }
 }
 
-function toView(job: NoteAsrBatchJob): BatchJobView {
+function toView(job: NoteAsrBatchJob, showVersionDetails: boolean): BatchJobView {
   return {
     id: job.id,
     title: `Batch ${job.model}`,
     status: batchStatus(job),
     createdAtLabel: dateTime(job.createdAt),
-    destinationLabel: job.baseUrl,
+    destinationLabel: showVersionDetails ? job.baseUrl : '已确认的云端 Batch 目标',
     completionWindowLabel: job.completionWindow,
     cashEstimateLabel: '仅成功请求按 Token 消耗现金；未执行项不计费',
     progressLabel: `${job.completedItems ?? 0}/${job.totalItems ?? 0} 项`,
@@ -57,11 +57,12 @@ const retryableTerminal = (job: NoteAsrBatchJob) => {
 }
 
 /** Owner-visible Batch monitor and failed-only retry. It never reads admin stores or raw JSONL. */
-export function NoteAsrOwnerBatches({ task, userId, serverBinding, onCreated }: {
+export function NoteAsrOwnerBatches({ task, userId, serverBinding, onCreated, showVersionDetails = true }: {
   task: NoteAsrTask
   userId: string
   serverBinding: string
   onCreated?: (task: NoteAsrTask) => void
+  showVersionDetails?: boolean
 }) {
   const qc = useQueryClient()
   const [pollError, setPollError] = useState('')
@@ -71,7 +72,7 @@ export function NoteAsrOwnerBatches({ task, userId, serverBinding, onCreated }: 
     refetchInterval: 15_000,
   })
   const taskJobs = useMemo(() => (jobs.data ?? []).filter((job) => job.taskId === task.taskId), [jobs.data, task.taskId])
-  const views = useMemo(() => taskJobs.map(toView), [taskJobs])
+  const views = useMemo(() => taskJobs.map((job) => toView(job, showVersionDetails)), [showVersionDetails, taskJobs])
   const eligible = useMemo(() => taskJobs.filter(retryableTerminal), [taskJobs])
 
   async function poll(id: string) {
@@ -100,18 +101,19 @@ export function NoteAsrOwnerBatches({ task, userId, serverBinding, onCreated }: 
     {pollError && <InlineAlert tone="crit" title="Batch 操作未确认">{pollError}；记录保持不变，不会自动重建或假报成功。</InlineAlert>}
     <BatchMonitorPanel jobs={views} loading={jobs.isPending}
       loadError={jobs.isError ? 'Batch 任务读取失败；不会自动重建或重发' : null}
-      onPoll={poll} onCancel={cancel} />
+      onPoll={poll} onCancel={cancel} showVersionDetails={showVersionDetails} />
     {eligible.length > 0 && <BatchFailedRetry task={task} jobs={eligible} userId={userId}
-      serverBinding={serverBinding} onCreated={onCreated} />}
+      serverBinding={serverBinding} onCreated={onCreated} showVersionDetails={showVersionDetails} />}
   </div>
 }
 
-function BatchFailedRetry({ task, jobs, userId, serverBinding, onCreated }: {
+function BatchFailedRetry({ task, jobs, userId, serverBinding, onCreated, showVersionDetails }: {
   task: NoteAsrTask
   jobs: NoteAsrBatchJob[]
   userId: string
   serverBinding: string
   onCreated?: (task: NoteAsrTask) => void
+  showVersionDetails: boolean
 }) {
   const qc = useQueryClient()
   const [jobId, setJobId] = useState('')
@@ -199,7 +201,9 @@ function BatchFailedRetry({ task, jobs, userId, serverBinding, onCreated }: {
       clearNoteAsrBatchFailedIntent(userId, serverBinding, frozen.request.sourceJobId, frozen.request.clientTaskId)
       setIntentState({ kind: 'none' })
       setConfirmed(false)
-      setNotice(`失败项子任务已按原标识提交：${result.task.taskId}。成功分片和旧历史保留，只重新发送失败或缺失项。`)
+      setNotice(showVersionDetails
+        ? `失败项子任务已按原标识提交：${result.task.taskId}。成功分片和旧历史保留，只重新发送失败或缺失项。`
+        : '失败项子任务已按原提交提交。成功分片和旧历史保留，只重新发送失败或缺失项。')
       onCreated?.(result.task)
       await qc.invalidateQueries({ queryKey: ['ai', userId, serverBinding, 'asr-batch-jobs'] })
       await qc.invalidateQueries({ queryKey: ['ai', userId, serverBinding, 'note-asr'] })
@@ -237,7 +241,9 @@ function BatchFailedRetry({ task, jobs, userId, serverBinding, onCreated }: {
       if (child && job) {
         clearNoteAsrBatchFailedIntent(userId, serverBinding, intent.request.sourceJobId, intent.request.clientTaskId)
         setIntentState({ kind: 'none' })
-        setNotice(`已找到失败项子任务及其 Batch 标识，没有重新发送。子任务：${child.taskId}`)
+        setNotice(showVersionDetails
+          ? `已找到失败项子任务及其 Batch 标识，没有重新发送。子任务：${child.taskId}`
+          : '已找到失败项子任务及其 Batch 记录，没有重新发送。')
         onCreated?.(child)
         await qc.invalidateQueries({ queryKey: ['ai', userId, serverBinding, 'asr-batch-jobs'] })
       } else {
@@ -272,8 +278,10 @@ function BatchFailedRetry({ task, jobs, userId, serverBinding, onCreated }: {
         </InlineAlert>}
         {destination && config.data && <div className="rounded-ctl border border-border p-3 text-xs leading-5 text-text-2">
           <p className="break-words">{destination.displayName} · {destination.model}</p>
-          <p className="break-all font-mono">{destination.endpoint}</p>
-          <p>失败项会按当前配置版本 {config.data.consentVersion} 重新确认；Batch 可能长等待并按成功 Token 消耗现金。</p>
+          {showVersionDetails && <p className="break-all font-mono">{destination.endpoint}</p>}
+          <p>{showVersionDetails
+            ? `失败项会按当前配置版本 ${config.data.consentVersion} 重新确认；Batch 可能长等待并按成功 Token 消耗现金。`
+            : '失败项会按当前共享目标重新确认；Batch 可能长等待并按成功 Token 消耗现金。'}</p>
         </div>}
         <div className="max-w-sm"><Label htmlFor="note-asr-batch-retry-kind">重试原因</Label>
           <Select id="note-asr-batch-retry-kind" ariaLabel="重试原因" value={kind}
@@ -288,8 +296,12 @@ function BatchFailedRetry({ task, jobs, userId, serverBinding, onCreated }: {
       </>}
     {blockedIntent && <InlineAlert tone="crit" title="原失败项提交状态无法确认">{blockedIntent}</InlineAlert>}
     {intent ? <div className="space-y-2 rounded-ctl border border-warn-border bg-warn-soft p-3 text-xs text-text-2">
-      <p className="break-all">已冻结失败项子任务标识：<span className="font-mono">{intent.request.clientTaskId}</span>。原 Batch 与原因不可静默更改。</p>
-      <p>原 Batch：<span className="font-mono">{intent.request.sourceJobId}</span> · {intent.request.reason.kind} · {intent.request.reason.text}</p>
+      <p className="break-all">{showVersionDetails
+        ? <>已冻结失败项子任务标识：<span className="font-mono">{intent.request.clientTaskId}</span>。原 Batch 与原因不可静默更改。</>
+        : '已有一次失败项重试尚未确认；原 Batch 与原因不可静默更改。'}</p>
+      <p>{showVersionDetails
+        ? <>原 Batch：<span className="font-mono">{intent.request.sourceJobId}</span> · {intent.request.reason.kind} · {intent.request.reason.text}</>
+        : `原因说明：${intent.request.reason.text}`}</p>
       <div className="flex flex-wrap gap-2">
         <Button size="sm" loading={busy} onClick={() => void reconcile()}>核对子任务与 Batch 标识</Button>
         <Button size="sm" variant="secondary" disabled={busy} onClick={() => void submit(intent)}>按原标识重新提交失败项</Button>

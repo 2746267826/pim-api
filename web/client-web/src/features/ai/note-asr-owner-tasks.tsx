@@ -52,9 +52,10 @@ export function NoteAsrOwnerTasks({ userId, serverBinding, versionId, selectedTa
         : !versionTasks.length ? <p className="text-sm text-text-3">{showVersionDetails ? '该材料版本还没有转写任务。' : '这篇笔记还没有转写任务。'}</p>
           : <div className="space-y-2">{versionTasks.map((task) => <TaskRow key={task.taskId} task={task} selected={task.taskId === selected} onSelect={onSelect} />)}</div>}
     {selected && <TaskDetail key={`${serverBinding}/${selected}`} id={selected} userId={userId} serverBinding={serverBinding}
-      prefix={prefix} />}
+      prefix={prefix} showVersionDetails={showVersionDetails} />}
     {selectedTask && <NoteAsrOwnerBatches key={`batches/${serverBinding}/${selectedTask.taskId}`} task={selectedTask}
-      userId={userId} serverBinding={serverBinding} onCreated={(task) => onSelect(task.taskId)} />}
+      userId={userId} serverBinding={serverBinding} showVersionDetails={showVersionDetails}
+      onCreated={(task) => onSelect(task.taskId)} />}
     {tasks.isError && <Button size="sm" onClick={() => void tasks.refetch()}>刷新任务</Button>}
     </div>
     </details>

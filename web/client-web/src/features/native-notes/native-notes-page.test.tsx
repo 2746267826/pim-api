@@ -540,7 +540,7 @@ describe('NativeNotesPage', () => {
     expect(screen.getAllByText(versionId).length).toBeGreaterThan(0)
     expect(screen.getAllByText(conflictVersionId).length).toBeGreaterThan(0)
     expect(screen.getByText('服务器当前内容')).toBeTruthy()
-    expect(screen.getByText('此设备的改动')).toBeTruthy()
+    expect(screen.getByText('另一份已保存内容')).toBeTruthy()
     expect(screen.getByText(/冲突候选笔记/)).toBeTruthy()
     expect(nativeApi.promote).not.toHaveBeenCalled()
 
@@ -557,7 +557,7 @@ describe('NativeNotesPage', () => {
     await userEvent.click(await screen.findByText('课堂笔记').then((node) => node.closest('button')!))
 
     expect(await screen.findByRole('heading', { name: '继续写这篇笔记' })).toBeTruthy()
-    expect(screen.getByText('正文已同步')).toBeTruthy()
+    expect(screen.getByText('无未保存更改')).toBeTruthy()
     expect(screen.queryByRole('heading', { name: '版本与保存编号' })).toBeNull()
     expect(screen.queryByText('版本历史')).toBeNull()
     expect(screen.queryByText('当前载入版本 ID')).toBeNull()
@@ -587,7 +587,7 @@ describe('NativeNotesPage', () => {
 
     expect(await screen.findByRole('heading', { name: '发现内容冲突' })).toBeTruthy()
     expect(screen.getByText('服务器当前内容')).toBeTruthy()
-    expect(screen.getByText('此设备的改动')).toBeTruthy()
+    expect(screen.getByText('另一份已保存内容')).toBeTruthy()
     expect(screen.getByText(/冲突候选笔记/)).toBeTruthy()
     expect(screen.queryByText(versionId)).toBeNull()
     expect(screen.queryByText(conflictVersionId)).toBeNull()
@@ -654,6 +654,20 @@ describe('NativeNotesPage', () => {
 
     await userEvent.click(screen.getByRole('button', { name: '重新读取并核对' }))
     expect(await screen.findByRole('heading', { name: '发现内容冲突' })).toBeTruthy()
+  })
+
+  it('shows ordinary users a visible retry when the first conflict-state read fails', async () => {
+    authState.role = 'user'
+    nativeApi.versions.mockRejectedValueOnce(new Error('冲突列表读取失败'))
+    page()
+    await userEvent.click(await screen.findByText('课堂笔记').then((node) => node.closest('button')!))
+
+    expect(await screen.findByText('冲突状态读取失败')).toBeTruthy()
+    expect(screen.getByText(/冲突列表读取失败/)).toBeTruthy()
+    expect(screen.queryByText(versionId)).toBeNull()
+    await userEvent.click(screen.getByRole('button', { name: '重新读取并核对' }))
+    await waitFor(() => expect(nativeApi.versions).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(screen.queryByText('冲突状态读取失败')).toBeNull())
   })
 
   it('does not claim the current version is unchanged for an unconfirmed promote failure', async () => {

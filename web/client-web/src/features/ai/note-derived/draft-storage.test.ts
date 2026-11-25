@@ -62,6 +62,22 @@ describe('note-derived local draft storage', () => {
     expect(loadStoredDraft({ ...scope, kind: 'IndependentAnalysis' })).toEqual({ ok: true, value: null })
   })
 
+  it('isolates ordinary-user drafts by the selected result version', () => {
+    const headScope = { ...scope, artifactVersionId: 'version-head' }
+    const candidateScope = { ...scope, artifactVersionId: 'version-candidate' }
+    expect(noteDerivedDraftStorageKey(headScope)).not.toBe(noteDerivedDraftStorageKey(candidateScope))
+
+    const head = editStoredDraft(createStoredDraft(headScope, '当前内容草稿'), '当前内容人工修改')
+    expect(head.ok).toBe(true)
+    if (!head.ok) return
+    expect(persistStoredDraft(head.value).ok).toBe(true)
+
+    const loaded = loadStoredDraft(headScope)
+    expect(loaded.ok && loaded.value?.draft.text).toBe('当前内容人工修改')
+    expect(loadStoredDraft(candidateScope)).toEqual({ ok: true, value: null })
+    expect(loadStoredDraft(scope)).toEqual({ ok: true, value: null })
+  })
+
   it('keeps configured base paths in the canonical server binding', () => {
     localStorage.setItem('pim.apiBase', 'https://pim-a.example/custom-base')
     expect(canonicalServerBinding('http://document.example')).toBe('https://pim-a.example/custom-base')
