@@ -80,6 +80,7 @@ jobs:
       api: ${{ steps.flags.outputs.api }}
       docker: ${{ steps.flags.outputs.docker }}
       mcp: ${{ steps.flags.outputs.mcp }}
+      version: ${{ steps.filter.outputs.version }}
       baseline_ok: ${{ steps.baseline.outputs.ok }}
       previous_tag: ${{ steps.rel.outputs.previous_tag }}
       contract_changed: ${{ steps.contract.outputs.changed }}
@@ -276,7 +277,9 @@ jobs:
   # 不再解析 ghcr.io/pim-web-dist，也不再有跨仓 workflow_dispatch。
   web-build:
     needs: [resolve-version, changes]
-    if: needs.changes.outputs.all == 'true' || needs.changes.outputs.api == 'true' || needs.changes.outputs.docker == 'true'
+    # VERSION-only PR 也要至少跑一次前端构建：显示版本注入错了不会有编译错误，
+    # 只能通过"产物里真的出现目标版本号"来证明。
+    if: needs.changes.outputs.all == 'true' || needs.changes.outputs.api == 'true' || needs.changes.outputs.docker == 'true' || needs.changes.outputs.version == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -298,6 +301,12 @@ jobs:
           bash scripts/ci/test-build-web-ledger.sh
           # 显示版本号读错了会让正式版带错号，且不影响任何编译 —— 只能靠测试拦住。
           bash scripts/ci/test-resolve-version.sh
+          # 发布链路的跨文件接线（display version → 镜像、正式 tag 不被旧 CI 降级、
+          # promote_tag 来源校验、bump PR 模板）错了不会有普通测试信号。
+          bash scripts/ci/test-release-workflow-guards.sh
+          bash scripts/ci/test-validate-promote-target.sh
+          bash scripts/ci/test-release-publish-guard.sh
+          bash scripts/ci/test-image-latest-guard.sh
           bash scripts/ci/test-validate-release-notes.sh
           # 契约变更检测与客户端通知（#415）：判定错了不会有别的信号，只会静默地不通知。
           bash scripts/ci/test-detect-contract-change.sh
@@ -352,7 +361,7 @@ jobs:
         run: |
           bash web/scripts/ci/write-web-version.sh \
             --out web/client-web/dist/web-version.json \
-            --version "${{ needs.resolve-version.outputs.version }}" \
+            --version "${{ needs.resolve-version.outputs.display_version }}" \
             --git-sha "${{ needs.resolve-version.outputs.git_sha_short }}" \
             --built-at "$PIM_WEB_BUILT_AT"
 
@@ -363,9 +372,22 @@ jobs:
           test -d web/client-web/dist/assets
           test -n "$(find web/client-web/dist/assets -type f -print -quit)"
           test -s web/client-web/dist/web-version.json
-          test "$(jq -r .version web/client-web/dist/web-version.json)" = "${{ needs.resolve-version.outputs.version }}"
+          test "$(jq -r .version web/client-web/dist/web-version.json)" = "${{ needs.resolve-version.outputs.display_version }}"
           test "$(jq -r .gitSha web/client-web/dist/web-version.json)" = "${{ needs.resolve-version.outputs.git_sha_short }}"
           echo "web-version.json: $(cat web/client-web/dist/web-version.json)"
+
+      # 显示版本注入不是"构建成功"就能证明的：Vite 变量拼错、漏传都仍然能构建。
+      # 这条断言直接查打包后的 bundle 里有没有目标版本号（VERSION-only PR 也跑）。
+      - name: Verify display version injection
+        run: |
+          set -euo pipefail
+          DISPLAY_VERSION="${{ needs.resolve-version.outputs.display_version }}"
+          test -n "$DISPLAY_VERSION"
+          if ! grep -R -q -F -- "$DISPLAY_VERSION" web/client-web/dist/assets; then
+            echo "::error::前端 dist/assets 里找不到注入的显示版本 ${DISPLAY_VERSION}"
+            exit 1
+          fi
+          echo "display version injection OK: ${DISPLAY_VERSION}"
 
       - name: Write web build summary
         if: always()
@@ -399,6 +421,7 @@ jobs:
     uses: ./.github/workflows/build-docker.yml
     with:
       version: ${{ needs.resolve-version.outputs.version }}
+      display_version: ${{ needs.resolve-version.outputs.display_version }}
       artifact_slug: ${{ needs.resolve-version.outputs.artifact_slug }}
       git_sha_short: ${{ needs.resolve-version.outputs.git_sha_short }}
       is_release: ${{ needs.resolve-version.outputs.is_release }}
@@ -499,7 +522,7 @@ jobs:
           echo "| 🐳  Docker  | ${{ needs.build-docker.result == 'success' && '✅ Built' || needs.build-docker.result == 'skipped' && '⏭️ Skipped' || '❌ Failed' }} |"
           echo "| 🤖 MCP | ${{ needs.build-mcp.result == 'success' && '✅ Built' || needs.build-mcp.result == 'skipped' && '⏭️ Skipped' || '❌ Failed' }} |"
           echo ""
-          echo "数组件判定：all=${{ needs.changes.outputs.all }} api=${{ needs.changes.outputs.api }} docker=${{ needs.changes.outputs.docker }} mcp=${{ needs.changes.outputs.mcp }}"
+          echo "数组件判定：all=${{ needs.changes.outputs.all }} api=${{ needs.changes.outputs.api }} docker=${{ needs.changes.outputs.docker }} mcp=${{ needs.changes.outputs.mcp }} version=${{ needs.changes.outputs.version }}"
           echo "显示版本（VERSION 文件）：${{ needs.resolve-version.outputs.display_version }}；机器版本：${{ needs.resolve-version.outputs.version }}"
           echo "内嵌前端（同仓）：${{ needs.web-build.outputs.version }} / ${{ needs.web-build.outputs.git_sha }}"
           echo "契约变化检测：changed=${{ needs.changes.outputs.contract_changed }}（sha256=${{ needs.changes.outputs.contract_sha256 }}，${{ needs.changes.outputs.contract_bytes }} 字节）；客户端通知 job：${{ needs.contract-notify.result }}"
@@ -551,6 +574,7 @@ jobs:
           W_API: ${{ needs.changes.outputs.api }}
           W_DOCKER: ${{ needs.changes.outputs.docker }}
           W_MCP: ${{ needs.changes.outputs.mcp }}
+          W_VERSION: ${{ needs.changes.outputs.version }}
         run: bash "$GITHUB_WORKSPACE/scripts/ci/evaluate-gate.sh"
 
   release:
@@ -567,6 +591,12 @@ jobs:
     permissions:
       contents: write
       pull-requests: read
+    # release.yml 的 apply 作业用同一个 group：CI 自动发布（pre-release / 资产刷新）
+    # 与人工正式版提升不能并发，否则提升刚把 release 改成 formal，旧 run 重跑又把它
+    # 写回 pre-release，/releases/latest 会回退。
+    concurrency:
+      group: pim-release-mutation
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
         with:
@@ -590,8 +620,55 @@ jobs:
             echo "::notice::No component changed; skipping release"
           fi
 
-      - name: Download release artifacts
+      # 旧 CI run 可能在这个 tag 被 release.yml 提升成正式版之后才重跑。
+      # 重跑如果照常执行 softprops 的 prerelease: true，会把正式 tag 降回
+      # pre-release，/releases/latest 也随之回退。
+      #
+      # 守卫脚本（可行为测试）的边界：
+      #   * 正式版 → 绝不改写；
+      #   * 已存在 release 的 commit / tag run 号不属于本次 run → 失败；
+      #   * 重跑只有在该 commit 仍是当前 master HEAD 时才刷新/补发；
+      #   * release / master HEAD API 错误 → 失败，不把「读不到」当成「不存在」。
+      # 注意：GitHub 重跑使用的是触发时那版 workflow 定义；本次变更之前的旧 run
+      # 不受新守卫回溯保护，历史 run 不应再重跑。
+      - name: Guard existing formal release
+        id: existing
         if: steps.decide.outputs.do_release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.resolve-version.outputs.release_tag }}
+          SHA: ${{ github.sha }}
+          RUN_NUMBER: ${{ github.run_number }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          bash "$GITHUB_WORKSPACE/scripts/ci/release-publish-guard.sh" \
+            --repo "$GITHUB_REPOSITORY" \
+            --tag "$TAG" \
+            --sha "$SHA" \
+            --run-number "$RUN_NUMBER" \
+            --run-attempt "$RUN_ATTEMPT"
+
+      # 跳过发布也要留下可见原因，不能变成「这次为什么没发版」的静默缺口。
+      - name: Report skipped release publication
+        if: steps.decide.outputs.do_release == 'true' && steps.existing.outputs.publish != 'true'
+        env:
+          TAG: ${{ needs.resolve-version.outputs.release_tag }}
+          REASON: ${{ steps.existing.outputs.reason }}
+        run: |
+          {
+            echo "### Release publication skipped"
+            echo ""
+            echo "| 项 | 值 |"
+            echo "| --- | --- |"
+            echo "| tag | \`${TAG}\` |"
+            echo "| reason | \`${REASON}\` |"
+            echo ""
+            echo "> 这是发布守卫的明确决策（正式版保护 / 过期重跑 / 非当前 master HEAD），不是静默失败。"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Download release artifacts
+        if: steps.decide.outputs.do_release == 'true' && steps.existing.outputs.publish == 'true'
         uses: actions/download-artifact@v8
         with:
           pattern: pim-*
@@ -602,7 +679,7 @@ jobs:
       # window. Resolved once, by version number, excluding this run's own tag
       # (on a re-run the tag already exists and must not be seen as "previous").
       - name: Resolve previous release tag
-        if: steps.decide.outputs.do_release == 'true'
+        if: steps.decide.outputs.do_release == 'true' && steps.existing.outputs.publish == 'true'
         id: prev
         env:
           GH_TOKEN: ${{ github.token }}
@@ -629,7 +706,7 @@ jobs:
       # previous release as-is (same file name and version number - the artifact
       # version stays consistent with its content).
       - name: Fill missing assets from last release
-        if: steps.decide.outputs.do_release == 'true'
+        if: steps.decide.outputs.do_release == 'true' && steps.existing.outputs.publish == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           PREVIOUS_TAG: ${{ steps.prev.outputs.tag }}
@@ -685,7 +762,7 @@ jobs:
           ls -la release-assets/
 
       - name: Build release notes from merged PRs
-        if: steps.decide.outputs.do_release == 'true'
+        if: steps.decide.outputs.do_release == 'true' && steps.existing.outputs.publish == 'true'
         id: notes
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -722,7 +799,7 @@ jobs:
           echo "EOF" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release
-        if: steps.decide.outputs.do_release == 'true'
+        if: steps.decide.outputs.do_release == 'true' && steps.existing.outputs.publish == 'true'
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.resolve-version.outputs.release_tag }}

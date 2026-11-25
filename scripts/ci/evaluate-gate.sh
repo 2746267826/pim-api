@@ -4,7 +4,7 @@
 #
 # 输入（env）：
 #   R_RESOLVE R_CHANGES R_WEBBUILD R_API R_DOCKER R_MCP   各 job 的 result
-#   W_ALL W_API W_DOCKER W_MCP                            changes 的判定
+#   W_ALL W_API W_DOCKER W_MCP W_VERSION                  changes 的判定
 # 退出码：0 = 通过；1 = 失败
 # ---------------------------------------------------------------------------
 set -uo pipefail
@@ -12,6 +12,7 @@ set -uo pipefail
 : "${R_RESOLVE:=}"; : "${R_CHANGES:=}"; : "${R_WEBBUILD:=}"
 : "${R_API:=}"; : "${R_DOCKER:=}"; : "${R_MCP:=}"
 : "${W_ALL:=false}"; : "${W_API:=false}"; : "${W_DOCKER:=false}"; : "${W_MCP:=false}"
+: "${W_VERSION:=false}"
 
 fail=0
 
@@ -24,7 +25,8 @@ should() {
 }
 
 should_docker() { should "$W_API" "$W_DOCKER"; }
-should_web() { should "$W_API" "$W_DOCKER"; }
+# VERSION-only PR 也要跑 web-build：显示版本注入必须被真实构建验证一次。
+should_web() { should "$W_API" "$W_DOCKER" "$W_VERSION"; }
 
 check() {
   local label="$1" result="$2" wanted="$3"
@@ -48,7 +50,7 @@ check "build-api"       "$R_API"     "$(should "$W_API")"
 check "build-docker"    "$R_DOCKER"  "$(should_docker)"
 check "build-mcp"       "$R_MCP"     "$(should "$W_MCP")"
 
-echo "（判定依据：all=$W_ALL api=$W_API docker=$W_DOCKER mcp=$W_MCP）"
+echo "（判定依据：all=$W_ALL api=$W_API docker=$W_DOCKER mcp=$W_MCP version=$W_VERSION）"
 
 if [ "$fail" -ne 0 ]; then
   echo ""

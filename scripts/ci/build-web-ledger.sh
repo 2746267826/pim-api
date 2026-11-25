@@ -7,6 +7,7 @@
 # 不允许重新计算——否则台账与镜像内容就会漂开。
 #
 # 前端已与 API 同仓构建；台账只记录镜像内事实与本次 API 版本。
+# 镜像内 version 是显示版本（VERSION），apiVersion 是机器 CalVer；两者不混用。
 #
 # 用法：
 #   scripts/ci/build-web-ledger.sh --api-image <ref> --api-version <v> --out <file>
