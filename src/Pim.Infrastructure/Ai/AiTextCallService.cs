@@ -251,8 +251,15 @@ public sealed class AiTextCallService(PimDbContext db, ISecretProtector secrets,
             }
             gateEntered = true;
 
-            if (usageLimits is not null && profile?.ProviderConnectionId is { } connectionId)
+            if (usageLimits is not null)
             {
+                if (activeProfile.ProviderConnectionId is not { } connectionId)
+                {
+                    row.Status = "blocked";
+                    row.ErrorCode = "usage_limit_unbound";
+                    row.ErrorMessage = "模型未绑定AI服务连接，无法纳入用量限制；请管理员重新保存模型后再试";
+                    return await FinishAsync(row);
+                }
                 var leaseTtl = TimeSpan.FromSeconds(activeProfile.TimeoutSeconds + 60);
                 var decision = await usageLimits.TryBeginAsync(connectionId, row.CorrelationId,
                     row.Purpose, leaseTtl, ct);

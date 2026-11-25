@@ -103,7 +103,7 @@ public sealed class AiModelSettingsService(PimDbContext db, ISecretProtector sec
         row.Enabled = request.Enabled; row.Capabilities = capabilities; row.TimeoutSeconds = request.TimeoutSeconds;
         if (request.ProviderConnectionId is { } connectionId)
             row.ProviderConnectionId = connectionId;
-        else if (id is null && row.ProviderConnectionId is null && usageLimits is not null)
+        else if (row.ProviderConnectionId is null && usageLimits is not null)
         {
             dedicatedConnection = await usageLimits.CreateDedicatedConnectionForModelAsync(name, row.Id, ct);
             row.ProviderConnectionId = dedicatedConnection.Id;

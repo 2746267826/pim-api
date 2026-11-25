@@ -417,8 +417,16 @@ public sealed class AiAsrJobService(
                 return;
             }
 
-            if (usageLimits is not null && log.ProviderConnectionId is { } connectionId)
+            if (usageLimits is not null)
             {
+                if (log.ProviderConnectionId is not { } connectionId)
+                {
+                    await CompleteAsync(job, log, "blocked", "usage_limit_unbound",
+                        "ASR模型未绑定AI服务连接，无法纳入用量限制；请管理员重新保存模型后再试",
+                        "usage_limit", true, "核对模型连接后明确新建请求", null, false, false, false, null,
+                        CancellationToken.None);
+                    return;
+                }
                 var decision = await usageLimits.TryBeginAsync(connectionId, log.CorrelationId,
                     log.Purpose, TimeSpan.FromSeconds(job.TimeoutSeconds + 120), ct);
                 if (!decision.Allowed)

@@ -252,6 +252,28 @@ public sealed class AiAsrJobServiceTests
     }
 
     [Fact]
+    public async Task UsageLimitRejectsAsyncAsrModelWithoutProviderConnectionBeforeProvider()
+    {
+        await using var fixture = await InMemoryFixture.CreateAsync();
+        var limits = new AiUsageLimitService(fixture.Db, fixture.Owner);
+        fixture.Profile.ProviderConnectionId = null;
+        await fixture.Db.SaveChangesAsync();
+        var preset = new ScriptedPreset();
+        var service = fixture.Service(fixture.Owner, preset, limits);
+        var accepted = await service.SubmitAsync(fixture.Request(), CancellationToken.None);
+
+        await service.ProcessAsync(fixture.Owner.UserId!.Value, accepted.ClientRequestId,
+            CancellationToken.None);
+
+        var result = await service.GetAsync(accepted.ClientRequestId, CancellationToken.None);
+        Assert.Equal(AiAsrJobStatus.Blocked, result.Status);
+        Assert.Equal("usage_limit_unbound", result.ErrorCode);
+        Assert.Equal(0, preset.Calls);
+        Assert.True(fixture.Db.AiRequestLogs.AsNoTracking()
+            .Any(x => x.Id == accepted.LogId && x.Status == "blocked"));
+    }
+
+    [Fact]
     public async Task ExpiredRunningJobRecoveryCountsAsProviderAttemptedAndFailsClosed()
     {
         await using var fixture = await InMemoryFixture.CreateAsync();

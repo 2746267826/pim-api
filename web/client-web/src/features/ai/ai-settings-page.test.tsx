@@ -433,6 +433,16 @@ describe('AI文字调用完整页面', () => {
     ))
   })
 
+  it('阻止保存已启用但没有Token上限的连接规则', async () => {
+    open('/settings/ai?tab=usage')
+    expect(await screen.findByText('连接级用量限制')).toBeTruthy()
+
+    await userEvent.click(screen.getByRole('switch', { name: '启用用量限制' }))
+    await userEvent.click(screen.getByRole('button', { name: '保存用量限制' }))
+
+    await waitFor(() => expect(fixture.api.saveConnectionUsageLimit).not.toHaveBeenCalled())
+  })
+
   it('marks ASR readiness as undetermined while presets load or fail', async () => {
     models = [...models, { id: asrId, revision, name: '课堂语音模型', baseUrl: preset.defaultBaseUrl, model: preset.defaultModel, enabled: true,
       capabilities: ['Transcription'], hasApiKey: true, timeoutSeconds: 60, maxOutputTokens: 1024, asrPresetId: preset.id,

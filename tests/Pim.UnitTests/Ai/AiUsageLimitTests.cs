@@ -142,6 +142,28 @@ public sealed class AiUsageLimitTests
     }
 
     [Fact]
+    public async Task TryBegin_RejectsLegacyEnabledRuleWithoutTokenLimit()
+    {
+        await using var db = Db();
+        var service = Service(db, new AdminUser());
+        var connection = await service.CreateConnectionAsync("旧费用规则连接", default);
+        var rule = await db.AiUsageLimitRules.SingleAsync(x => x.ConnectionId == connection.Id);
+        rule.Enabled = true;
+        rule.TokenLimit = null;
+        rule.CostLimit = 10m;
+        rule.Currency = "CNY";
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+
+        var decision = await service.TryBeginAsync(connection.Id, "legacy-cost-rule", "ai.text-call",
+            TimeSpan.FromMinutes(1), default);
+
+        Assert.False(decision.Allowed);
+        Assert.Equal("usage_limit_invalid", decision.ErrorCode);
+        Assert.Null(decision.Lease);
+    }
+
+    [Fact]
     public async Task TryBegin_ExcludesItsOwnPersistedPlaceholder_ButKeepsOtherUnknownCallsFailClosed()
     {
         await using var db = Db();

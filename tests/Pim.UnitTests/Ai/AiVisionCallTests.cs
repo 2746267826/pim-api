@@ -119,6 +119,23 @@ public sealed class AiVisionCallTests : IDisposable
     }
 
     [Fact]
+    public async Task UsageLimitRejectsVisionModelWithoutProviderConnectionBeforeProvider()
+    {
+        var request = await Request(useUsageLimits: true);
+        var profile = await _db.AiModelProfiles.SingleAsync(x => x.Id == request.Consent.ModelId);
+        profile.ProviderConnectionId = null;
+        await _db.SaveChangesAsync();
+
+        var blocked = await LimitedCaller().CallVisionAsync(request, default);
+
+        Assert.Equal(AiRequestStatus.Blocked, blocked.Status);
+        Assert.Equal("usage_limit_unbound", (await _db.AiRequestLogs.AsNoTracking()
+            .SingleAsync(x => x.Id == blocked.LogId)).ErrorCode);
+        Assert.Equal(0, _wire.Calls);
+        Assert.Equal(0, _files.Writes);
+    }
+
+    [Fact]
     public async Task RealSdkSendsEveryImageAndExactText_AuditReferencesReproduceBytes_AndReplayDoesNotCallAgain()
     {
         var request = await Request();

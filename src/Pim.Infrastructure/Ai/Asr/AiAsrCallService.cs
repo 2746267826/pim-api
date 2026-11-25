@@ -234,8 +234,15 @@ public sealed class AiAsrCallService(PimDbContext db, ISecretProtector secrets, 
         double? reportedSeconds = null;
         try
         {
-            if (usageLimits is not null && row.ProviderConnectionId is { } connectionId)
+            if (usageLimits is not null)
             {
+                if (row.ProviderConnectionId is not { } connectionId)
+                {
+                    row.Status = "blocked";
+                    row.ErrorCode = "usage_limit_unbound";
+                    row.ErrorMessage = "ASR模型未绑定AI服务连接，无法纳入用量限制；请管理员重新保存模型后再试";
+                    return await FinishUrlAsync(row);
+                }
                 var decision = await usageLimits.TryBeginAsync(connectionId, row.CorrelationId,
                     row.Purpose, leaseBudget, ct);
                 if (!decision.Allowed)
@@ -575,8 +582,15 @@ public sealed class AiAsrCallService(PimDbContext db, ISecretProtector secrets, 
             { row.Status = "blocked"; row.ErrorCode = "busy"; row.ErrorMessage = "ASR并发已达上限，请稍后明确新建调用"; row.MetadataJson = Metadata(false, false, false, false, null, false); return await FinishAsync(row); }
             gateEntered = true;
             AiUsageLimitLease? usageLease = null;
-            if (usageLimits is not null && row.ProviderConnectionId is { } connectionId)
+            if (usageLimits is not null)
             {
+                if (row.ProviderConnectionId is not { } connectionId)
+                {
+                    row.Status = "blocked";
+                    row.ErrorCode = "usage_limit_unbound";
+                    row.ErrorMessage = "ASR模型未绑定AI服务连接，无法纳入用量限制；请管理员重新保存模型后再试";
+                    return await FinishAsync(row);
+                }
                 var decision = await usageLimits.TryBeginAsync(connectionId, row.CorrelationId,
                     row.Purpose, TimeSpan.FromSeconds(profile.TimeoutSeconds + 60), ct);
                 if (!decision.Allowed)

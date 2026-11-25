@@ -148,6 +148,37 @@ public sealed class AiAsrUrlSourceTests
     }
 
     [Fact]
+    public async Task UsageLimitRejectsUrlAsrModelWithoutProviderConnectionBeforeFetchAndProvider()
+    {
+        var handler = new CountingHandler((_, _) => Task.FromResult(JsonResponse(new
+        {
+            choices = new[]
+            {
+                new { message = new { content = "synthetic transcript" }, finish_reason = "stop" }
+            }
+        })));
+        var fixture = await FixtureAsync("https://api.synthetic.invalid/v1/");
+        var (preset, registry) = Registry(() => new HttpClient(handler)
+        {
+            Timeout = Timeout.InfiniteTimeSpan
+        });
+        var sourceUrl = "https://audio.example.test/private/unbound.wav?sig=UB";
+        var fetcher = new StaticFetcher(Download(sourceUrl, BuildWave(8_000)));
+        var limits = await EnableUsageLimitAsync(fixture);
+        fixture.Profile.ProviderConnectionId = null;
+        await fixture.Db.SaveChangesAsync();
+
+        var blocked = await Service(fixture, registry, fetcher, limits)
+            .CallUrlAsync(Request(fixture, preset.Descriptor), CancellationToken.None);
+
+        Assert.Equal(AiRequestStatus.Blocked, blocked.Status);
+        Assert.Equal("usage_limit_unbound", (await fixture.Db.AiRequestLogs.AsNoTracking()
+            .SingleAsync(x => x.Id == blocked.LogId)).ErrorCode);
+        Assert.Equal(0, handler.Calls);
+        Assert.Equal(0, fetcher.Calls);
+    }
+
+    [Fact]
     public async Task Url_mode_sends_the_original_url_to_a_real_local_provider_and_persists_preflight_only()
     {
         var calls = 0;

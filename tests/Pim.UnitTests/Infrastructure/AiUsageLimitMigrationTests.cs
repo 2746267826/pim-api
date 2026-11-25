@@ -95,4 +95,74 @@ VALUES
         Assert.True(await database.Db.AiUsageLimitRules.AnyAsync(x => x.ConnectionId == profileId));
         Assert.True(await database.Db.AiUsageLimitRules.AnyAsync(x => x.ConnectionId == secondProfileId));
     }
+
+    [SkippableFact]
+    public async Task LegacyCostRulesAreNormalizedWithoutDisablingTokenRules()
+    {
+        await using var database = await TempMigrationDatabase.CreateAsync(
+            "test_ai_usage_limit_cost_normalization");
+        await database.MigrateToAsync("20261124181857_AddAiUsageLimits");
+
+        var costOnlyId = Guid.NewGuid();
+        var tokenAndCostId = Guid.NewGuid();
+        var tokenOnlyId = Guid.NewGuid();
+        var disabledCostId = Guid.NewGuid();
+        var enabledEmptyId = Guid.NewGuid();
+        var now = DateTimeOffset.UtcNow;
+        var connectionIds = new[] { costOnlyId, tokenAndCostId, tokenOnlyId, disabledCostId, enabledEmptyId };
+        foreach (var connectionId in connectionIds)
+        {
+            database.Db.AiProviderConnections.Add(new()
+            {
+                Id = connectionId,
+                Revision = Guid.NewGuid(),
+                Name = "旧连接 " + connectionId.ToString("N")[..8],
+                NormalizedName = "旧连接 " + connectionId.ToString("N")[..8],
+                CreatedAt = now,
+                UpdatedAt = now
+            });
+        }
+        database.Db.AiUsageLimitRules.AddRange(
+            Rule(costOnlyId, enabled: true, tokenLimit: null, costLimit: 10m, currency: "CNY"),
+            Rule(tokenAndCostId, enabled: true, tokenLimit: 1_000, costLimit: 5m, currency: "USD"),
+            Rule(tokenOnlyId, enabled: true, tokenLimit: 2_000, costLimit: null, currency: null),
+            Rule(disabledCostId, enabled: false, tokenLimit: null, costLimit: 3m, currency: "EUR"),
+            Rule(enabledEmptyId, enabled: true, tokenLimit: null, costLimit: null, currency: null));
+        await database.Db.SaveChangesAsync();
+        database.Db.ChangeTracker.Clear();
+
+        await database.MigrateAsync();
+
+        Assert.True(await database.HasMigrationAsync("20261125172400_NormalizeLegacyAiUsageCostRules"));
+        var rules = await database.Db.AiUsageLimitRules.AsNoTracking()
+            .Where(x => connectionIds.Contains(x.ConnectionId))
+            .ToDictionaryAsync(x => x.ConnectionId);
+        Assert.False(rules[costOnlyId].Enabled);
+        Assert.Null(rules[costOnlyId].CostLimit);
+        Assert.Null(rules[costOnlyId].Currency);
+        Assert.True(rules[tokenAndCostId].Enabled);
+        Assert.Equal(1_000L, rules[tokenAndCostId].TokenLimit);
+        Assert.Null(rules[tokenAndCostId].CostLimit);
+        Assert.Null(rules[tokenAndCostId].Currency);
+        Assert.True(rules[tokenOnlyId].Enabled);
+        Assert.Equal(2_000L, rules[tokenOnlyId].TokenLimit);
+        Assert.False(rules[disabledCostId].Enabled);
+        Assert.Null(rules[disabledCostId].CostLimit);
+        Assert.False(rules[enabledEmptyId].Enabled);
+    }
+
+    private static Pim.Infrastructure.Data.Entities.AiUsageLimitRuleEntity Rule(Guid connectionId,
+        bool enabled, long? tokenLimit, decimal? costLimit, string? currency) => new()
+    {
+        ConnectionId = connectionId,
+        Revision = Guid.NewGuid(),
+        Enabled = enabled,
+        Period = "month",
+        WarningPercent = 80,
+        TokenLimit = tokenLimit,
+        CostLimit = costLimit,
+        Currency = currency,
+        TimeZoneId = "Asia/Shanghai",
+        UpdatedAt = DateTimeOffset.UtcNow
+    };
 }

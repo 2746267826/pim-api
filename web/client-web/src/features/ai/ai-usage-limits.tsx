@@ -124,6 +124,10 @@ export function AiUsageLimits({ userId }: { userId: string }) {
       notifyError('提前提醒比例须为1–99的整数')
       return
     }
+    if (enabled && limitValue(tokenLimit) == null) {
+      notifyError('启用用量限制时必须填写Token上限；费用上限当前不可用')
+      return
+    }
     const body: SaveAiUsageLimitRule = {
       expectedRevision: selected.limit.revision,
       enabled,

@@ -241,15 +241,18 @@ public sealed class AiUsageLimitService(
             {
                 var rule = await lockDb.AiUsageLimitRules.AsNoTracking()
                     .SingleOrDefaultAsync(x => x.ConnectionId == id, ct);
-                if (rule is null || !rule.Enabled || rule.TokenLimit is null)
+                if (rule is null || !rule.Enabled)
                     return AiUsageLimitDecision.Allow();
+                if (rule.TokenLimit is not { } tokenLimit)
+                    return AiUsageLimitDecision.Deny("usage_limit_invalid",
+                        "该连接的用量限制没有Token上限，无法执行；请管理员补充Token上限或关闭限制");
 
                 var scope = ResolvePeriod(rule.Period, null, now, rule.TimeZoneId);
                 var usage = await ComputeUsageAsync(lockDb, id, "", rule, scope, key, ct);
-                if (rule.TokenLimit is { } tokenLimit && usage.TotalTokens >= tokenLimit)
+                if (usage.TotalTokens >= tokenLimit)
                     return AiUsageLimitDecision.Deny("usage_limit_reached",
                         "本周期已记录的Token用量已达到该连接上限，未发送模型请求");
-                if (rule.TokenLimit is not null && usage.TokenUnknownRequestCount > 0)
+                if (usage.TokenUnknownRequestCount > 0)
                     return AiUsageLimitDecision.Deny("usage_limit_unknown",
                         "本周期存在未上报Token的调用记录，无法确认是否低于上限；本次未发送模型请求");
 
@@ -353,6 +356,8 @@ public sealed class AiUsageLimitService(
     internal async Task<AiProviderConnectionEntity> CreateDedicatedConnectionForModelAsync(
         string modelName, Guid modelId, CancellationToken ct = default)
     {
+        var existing = await db.AiProviderConnections.FirstOrDefaultAsync(x => x.Id == modelId, ct);
+        if (existing is not null) return existing;
         var basis = CleanName(modelName);
         var name = basis;
         var normalized = name.ToUpperInvariant();
@@ -418,12 +423,12 @@ public sealed class AiUsageLimitService(
             notes.Add("其他币种或缺失币种费用不计入" + rule.Currency);
         if (rule.CostLimit is not null)
             notes.Add(rule.TokenLimit is null
-                ? "历史费用上限已停用；当前版本缺少可信的EstimatedCost/Currency来源且未配置Token上限，该规则当前不限制调用"
+                ? "历史费用上限已停用；当前版本缺少可信的EstimatedCost/Currency来源且未配置Token上限，该规则无效并会拒绝新调用"
                 : "历史费用上限已停用：当前版本缺少可信的EstimatedCost/Currency来源，仅按Token限制");
         else
             notes.Add("当前版本仅支持Token上限；费用数据只展示，不参与限制");
         if (rule.Enabled && rule.TokenLimit is null)
-            notes.Add("已启用的规则没有Token上限，当前不会阻断新调用；请补充Token上限或关闭限制");
+            notes.Add("已启用的规则没有Token上限，当前配置无效；新调用会在发送前被拒绝，请补充Token上限或关闭限制");
         notes.Add("费用只使用调用记录中的EstimatedCost，不做模型费率估算");
 
         return new AiUsageLimitUsageDto(

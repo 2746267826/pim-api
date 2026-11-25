@@ -239,6 +239,45 @@ public sealed class AiSdkTextCallTests : IDisposable
     }
 
     [Fact]
+    public async Task UsageLimitRejectsTextModelWithoutProviderConnectionBeforeProvider()
+    {
+        var settings = new AiModelSettingsService(_db, _secrets, usageLimits: UsageLimits);
+        var model = await settings.SaveAsync(null, new("未绑定文字模型", "https://fixture.invalid/v1",
+            "fixture-model", true, [AiModelCapability.Text], 60, 123, Key), default);
+        var profile = await _db.AiModelProfiles.SingleAsync(x => x.Id == model.Id);
+        profile.ProviderConnectionId = null;
+        await _db.SaveChangesAsync();
+        var current = await settings.GetSettingsAsync(default);
+        await settings.SaveSettingsAsync(new(current.Revision, true, model.Id, null, null), default);
+
+        var blocked = await LimitedCaller.CallAsync(Request(model: model.Id), default);
+
+        Assert.Equal(AiRequestStatus.Blocked, blocked.Status);
+        var oldRow = await _db.AiRequestLogs.AsNoTracking().SingleAsync();
+        Assert.Equal("usage_limit_unbound", oldRow.ErrorCode);
+        Assert.Equal(0, _wire.Calls);
+    }
+
+    [Fact]
+    public async Task EditingLegacyUnboundModelRestoresItsDedicatedConnection()
+    {
+        var settings = new AiModelSettingsService(_db, _secrets, usageLimits: UsageLimits);
+        var model = await settings.SaveAsync(null, new("旧未绑定模型", "https://fixture.invalid/v1",
+            "fixture-model", true, [AiModelCapability.Text], 60, 123, Key), default);
+        var profile = await _db.AiModelProfiles.SingleAsync(x => x.Id == model.Id);
+        var connectionId = profile.ProviderConnectionId!.Value;
+        profile.ProviderConnectionId = null;
+        await _db.SaveChangesAsync();
+
+        var saved = await settings.SaveAsync(model.Id, new(model.Name, model.BaseUrl, model.Model, true,
+            model.Capabilities, model.TimeoutSeconds, model.MaxOutputTokens, null, model.Revision), default);
+
+        Assert.Equal(connectionId, saved.ProviderConnectionId);
+        Assert.Equal(connectionId, (await _db.AiModelProfiles.AsNoTracking()
+            .SingleAsync(x => x.Id == model.Id)).ProviderConnectionId);
+    }
+
+    [Fact]
     public async Task CredentialEchoIsMarkedAndHiddenWhileOrdinaryUserContentStaysIntact()
     {
         var model = await Model(); await Enable(model);
