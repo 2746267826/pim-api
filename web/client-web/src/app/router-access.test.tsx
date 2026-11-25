@@ -44,4 +44,14 @@ describe('application route access', () => {
     const work = NAV_GROUPS.find((group) => group.label === '工作')
     expect(work?.items).toContainEqual(expect.objectContaining({ to: '/search', label: '搜索' }))
   })
+
+  it('exposes the unified recycle bin to ordinary users from the real shell route', () => {
+    const found = findRoute(router.routes, 'recycle-bin')
+    expect(found).not.toBeNull()
+    expect(found?.route.element).toBeTruthy()
+    expect(found?.ancestors.some((route) =>
+      isValidElement(route.element) && route.element.type === RequireAdmin)).toBe(false)
+    const system = NAV_GROUPS.find((group) => group.label === '系统')
+    expect(system?.items.find((item) => item.to === '/recycle-bin')?.label).toBe('回收站')
+  })
 })

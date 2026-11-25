@@ -3,10 +3,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const apiGet = vi.hoisted(() => vi.fn())
 const apiPost = vi.hoisted(() => vi.fn())
+const apiDelete = vi.hoisted(() => vi.fn())
 
 vi.mock('@/api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/api/client')>()
-  return { ...actual, apiGet, apiPost }
+  return { ...actual, apiGet, apiPost, apiDelete }
 })
 
 import { bindNativeNotesApi } from './api'
@@ -14,6 +15,7 @@ import { bindNativeNotesApi } from './api'
 beforeEach(() => {
   apiGet.mockReset()
   apiPost.mockReset()
+  apiDelete.mockReset()
 })
 
 describe('native notes workspace-bound API', () => {
@@ -61,6 +63,19 @@ describe('native notes workspace-bound API', () => {
     expect(apiPost).toHaveBeenCalledWith(
       '/api/v1/native-notes/versions/version-id/promote',
       { expectedCurrentVersionId: 'current-id' },
+      expect.objectContaining({ assertActive }),
+    )
+  })
+
+  it('soft-deletes the selected note through the recycle-bin entry', async () => {
+    const assertActive = vi.fn()
+    const api = bindNativeNotesApi({ assertActive })
+    apiDelete.mockResolvedValue({ noteId: 'note-id' })
+
+    await api.deleteNote('note/id')
+
+    expect(apiDelete).toHaveBeenCalledWith(
+      '/api/v1/native-notes/note%2Fid',
       expect.objectContaining({ assertActive }),
     )
   })

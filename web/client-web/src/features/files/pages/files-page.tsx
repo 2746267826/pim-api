@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
+import { useNavigate } from 'react-router'
 import { useQueryClient } from '@tanstack/react-query'
 import {
   ChevronRight,
@@ -54,6 +55,7 @@ const DEFAULT_MEMORY: BrowserMemory = { path: '/', sort: 'name', order: 'asc', v
 
 /** 文件页（02 §files：多网盘三栏浏览器，可在账号间切换） */
 export function FilesPage() {
+  const navigate = useNavigate()
   const [memory, setMemory] = useState<BrowserMemory>(() => ({ ...DEFAULT_MEMORY, ...getJSON<Partial<BrowserMemory>>(STORAGE_KEYS.fileBrowserMemory, {}) }))
   const [q, setQ] = useState('')
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
@@ -217,6 +219,9 @@ export function FilesPage() {
         subtitle={provider?.provider === 'local' ? '服务器持久化存储 · 无需连接云盘' : provider ? `${providerLabel(provider.provider)} · ${provider.accountName ?? '已连接'}` : '文件浏览器'}
         actions={
           <>
+            <Button variant="ghost" size="sm" onClick={() => navigate('/recycle-bin')}>
+              <Trash2 className="size-4" aria-hidden /> 回收站
+            </Button>
             {/* 账号选择：两个及以上账号时必须能切换（工单 F2.3 / AC-5） */}
             {selectableAccounts.length > 1 && (
               <label className="flex min-w-0 max-w-full items-center gap-1.5 text-xs text-text-3">

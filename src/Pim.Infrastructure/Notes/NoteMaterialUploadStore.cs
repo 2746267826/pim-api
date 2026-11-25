@@ -34,6 +34,7 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
         await using var lease = await LockAsync(userId, ct);
         var ledger = await LoadLedgerAsync(userId, ct);
         await PruneAsync(userId, ledger, ct);
+        EnsureNoteActive(ledger, request.NoteId);
         var key = Key(request.VersionId);
         if (ledger.Versions.TryGetValue(key, out var existing))
         {
@@ -87,9 +88,11 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
         await PruneAsync(userId, ledger, ct);
         var conflicts = ledger.Versions.Values.Where(item => item.Phase == "Conflict" || item.HasConflict)
             .Select(item => item.NoteId).ToHashSet();
+        var deletedNotes = DeletedNoteIds(ledger);
         var candidates = ledger.Heads.Select(head =>
             (Head: head, Parsed: Guid.TryParseExact(head.Key, "D", out var noteId) ? noteId : Guid.Empty))
             .Where(item => item.Parsed != Guid.Empty &&
+                !deletedNotes.Contains(item.Parsed) &&
                 ledger.Versions.TryGetValue(Key(item.Head.Value), out var version) &&
                 version.NoteId == item.Parsed && version.Phase == "Uploaded")
             .Select(item => (NoteId: item.Parsed, VersionId: item.Head.Value, Entry: ledger.Versions[Key(item.Head.Value)],
@@ -130,6 +133,7 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
         await using var lease = await LockAsync(userId, ct);
         var ledger = await LoadLedgerAsync(userId, ct);
         await PruneAsync(userId, ledger, ct);
+        EnsureNoteActive(ledger, noteId);
         var versionId = Current(ledger, noteId) ?? throw new DomainException(40401, "当前完整笔记不存在");
         var entry = Find(ledger, versionId);
         if (entry.NoteId != noteId || entry.Phase != "Uploaded")
@@ -149,6 +153,7 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
         await PruneAsync(userId, ledger, ct);
         var sourceEntry = Find(ledger, sourceVersionId);
         if (sourceEntry.NoteId != request.NoteId) throw new DomainException(40401, "材料版本不存在或已过期");
+        EnsureNoteActive(ledger, request.NoteId);
         var files = NoteMaterialManifestValidator.Validate(request, ReadLimits);
         if (sourceVersionId == request.VersionId) throw Invalid("新材料版本必须使用新的版本标识");
         var fingerprint = NoteMaterialManifestValidator.Hash(JsonSerializer.Serialize(request, Json));
@@ -255,6 +260,7 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
         await using var lease = await LockAsync(userId, ct);
         var ledger = await LoadLedgerAsync(userId, ct);
         await PruneAsync(userId, ledger, ct);
+        EnsureNoteActive(ledger, noteId);
         var result = new List<NoteMaterialUploadDto>();
         foreach (var (key, entry) in ledger.Versions.Where(item => item.Value.NoteId == noteId).OrderByDescending(item => item.Value.CreatedAt))
         {
@@ -274,7 +280,9 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
         if (offset < 0 || limit is < 1 or > 50) throw Invalid("材料分页范围无效");
         await using var lease = await LockAsync(owner, ct);
         var ledger = await LoadLedgerAsync(owner, ct);
-        var versions = ledger.Versions.Where(x => x.Value.Phase != "Uploading").OrderByDescending(x => x.Value.CreatedAt).ToArray();
+        var deletedNotes = DeletedNoteIds(ledger);
+        var versions = ledger.Versions.Where(x => x.Value.Phase != "Uploading" && !deletedNotes.Contains(x.Value.NoteId))
+            .OrderByDescending(x => x.Value.CreatedAt).ToArray();
         var sources = new List<(Guid VersionId, StoredVersion Entry, string Title, int Recordings, long Samples)>();
         foreach (var (key, entry) in versions)
         {
@@ -312,6 +320,7 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
         var ledger = await LoadLedgerAsync(userId, ct);
         await PruneAsync(userId, ledger, ct);
         var entry = Find(ledger, versionId);
+        EnsureNoteActive(ledger, entry.NoteId);
         var files = NoteMaterialManifestValidator.Validate(await RequestAsync(userId, versionId, ct), ReadLimits);
         var file = FileAt(files, fileIndex);
         if (partIndex < 0 || partIndex >= PartCount(file) || content.Length != PartLength(file, partIndex))
@@ -336,6 +345,7 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
         var ledger = await LoadLedgerAsync(userId, ct);
         await PruneAsync(userId, ledger, ct);
         var entry = Find(ledger, versionId);
+        EnsureNoteActive(ledger, entry.NoteId);
         var files = NoteMaterialManifestValidator.Validate(await RequestAsync(userId, versionId, ct), ReadLimits);
         for (var fileIndex = 0; fileIndex < files.Count; fileIndex++)
             await VerifyFileAsync(userId, versionId, fileIndex, files[fileIndex], ct);
@@ -358,6 +368,7 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
         await using var lease = await LockAsync(userId, ct);
         var ledger = await LoadLedgerAsync(userId, ct);
         var entry = Find(ledger, versionId);
+        EnsureNoteActive(ledger, entry.NoteId);
         if (entry.Phase == "Uploading") throw Conflict("材料尚未齐备，不能选为当前版本");
         var current = Current(ledger, entry.NoteId);
         if (current != versionId && current != expectedCurrentVersionId)
@@ -483,8 +494,93 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
             ledger.Deletions.Add(key);
         }
         ledger.Heads.Remove(Key(noteId));
+        ledger.DeletedNotes?.Remove(Key(noteId));
         await SaveLedgerAsync(userId, ledger, ct);
         await PurgeAsync(userId, ledger, ct);
+    }
+
+    public async Task<IReadOnlyList<NativeNoteDeletedItem>> ListDeletedAsync(
+        Guid userId, CancellationToken ct = default)
+    {
+        await using var lease = await LockAsync(userId, ct);
+        var ledger = await LoadLedgerAsync(userId, ct);
+        return (ledger.DeletedNotes is null
+                ? Enumerable.Empty<StoredNoteDeletion>()
+                : ledger.DeletedNotes.Values)
+            .OrderByDescending(item => item.DeletedAt)
+            .Select(Public)
+            .ToArray();
+    }
+
+    public async Task<NativeNoteDeletedItem?> GetDeletedAsync(
+        Guid userId, Guid noteId, CancellationToken ct = default)
+    {
+        await using var lease = await LockAsync(userId, ct);
+        var ledger = await LoadLedgerAsync(userId, ct);
+        return ledger.DeletedNotes is { } deleted && deleted.TryGetValue(Key(noteId), out var item)
+            ? Public(item)
+            : null;
+    }
+
+    public async Task<NativeNoteDeletedItem> SoftDeleteAsync(
+        Guid userId, Guid noteId, CancellationToken ct = default)
+    {
+        await using var lease = await LockAsync(userId, ct);
+        var ledger = await LoadLedgerAsync(userId, ct);
+        if (ledger.DeletedNotes is { } existing && existing.TryGetValue(Key(noteId), out var already))
+            return Public(already);
+        var versionId = Current(ledger, noteId) ?? throw new DomainException(40401, "当前完整笔记不存在");
+        var entry = Find(ledger, versionId);
+        if (entry.NoteId != noteId || entry.Phase != "Uploaded")
+            throw new DomainException(40401, "当前完整笔记不存在");
+        var request = await RequestAsync(userId, versionId, ct);
+        var deleted = new StoredNoteDeletion(noteId, ReadTitle(request.InputJson), _clock.GetUtcNow(), versionId);
+        ledger = ledger with { DeletedNotes = ledger.DeletedNotes ?? new(StringComparer.Ordinal) };
+        ledger.DeletedNotes[Key(noteId)] = deleted;
+        await SaveLedgerAsync(userId, ledger, ct);
+        return Public(deleted);
+    }
+
+    public async Task<bool> RestoreSoftDeletedAsync(
+        Guid userId, Guid noteId, DateTimeOffset? expectedDeletedAt = null,
+        CancellationToken ct = default)
+    {
+        await using var lease = await LockAsync(userId, ct);
+        var ledger = await LoadLedgerAsync(userId, ct);
+        if (ledger.DeletedNotes is null || !ledger.DeletedNotes.TryGetValue(Key(noteId), out var deleted))
+            return false;
+        if (expectedDeletedAt.HasValue && expectedDeletedAt.Value != deleted.DeletedAt)
+            throw new DomainException(40901, "笔记状态已变化，请刷新回收站后重试");
+        ledger.DeletedNotes.Remove(Key(noteId));
+        await SaveLedgerAsync(userId, ledger, ct);
+        return true;
+    }
+
+    public async Task<NativeNotePurgeResult> PurgeDeletedAsync(
+        Guid userId, Guid noteId, DateTimeOffset? expectedDeletedAt = null,
+        CancellationToken ct = default)
+    {
+        await using var lease = await LockAsync(userId, ct);
+        var ledger = await LoadLedgerAsync(userId, ct);
+        if (ledger.DeletedNotes is null || !ledger.DeletedNotes.TryGetValue(Key(noteId), out var deleted))
+            throw new DomainException(40901, "笔记不在回收站，不能永久删除");
+        if (expectedDeletedAt.HasValue && expectedDeletedAt.Value != deleted.DeletedAt)
+            throw new DomainException(40901, "笔记状态已变化，请刷新回收站后重试");
+        var versions = ledger.Versions.Where(item => item.Value.NoteId == noteId).Select(item => item.Key).ToArray();
+        foreach (var key in versions)
+        {
+            ledger.Versions.Remove(key);
+            ledger.Deletions.Add(key);
+        }
+        ledger.Heads.Remove(Key(noteId));
+        // Keep the recycle-bin entry until the immutable material tree is actually gone.
+        // If deleting the volume fails, the same item stays retryable instead of leaving
+        // bytes that no longer have any ledger or recycle-bin reference.
+        await SaveLedgerAsync(userId, ledger, ct);
+        await PurgeAsync(userId, ledger, ct);
+        ledger.DeletedNotes.Remove(Key(noteId));
+        await SaveLedgerAsync(userId, ledger, ct);
+        return new NativeNotePurgeResult(versions.Length, 0, 0, 0, 0, 0);
     }
 
     private async Task VerifyFileAsync(Guid userId, Guid versionId, int index, NoteUploadedMaterial file, CancellationToken ct)
@@ -638,6 +734,16 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
     private static StoredVersion Find(Ledger ledger, Guid id) => ledger.Versions.TryGetValue(Key(id), out var entry)
         ? entry : throw new DomainException(40401, "材料版本不存在或已过期");
     private static Guid? Current(Ledger ledger, Guid noteId) => ledger.Heads.TryGetValue(Key(noteId), out var id) ? id : null;
+    private static HashSet<Guid> DeletedNoteIds(Ledger ledger) => ledger.DeletedNotes is null
+        ? []
+        : ledger.DeletedNotes.Values.Select(item => item.NoteId).ToHashSet();
+    private static void EnsureNoteActive(Ledger ledger, Guid noteId)
+    {
+        if (ledger.DeletedNotes is not null && ledger.DeletedNotes.ContainsKey(Key(noteId)))
+            throw new DomainException(40901, "笔记在回收站中，请先恢复后再继续");
+    }
+    private static NativeNoteDeletedItem Public(StoredNoteDeletion item)
+        => new(item.NoteId, item.Title, item.DeletedAt, item.CurrentVersionId);
     private static string ReadTitle(string inputJson)
     {
         using var document = JsonDocument.Parse(inputJson);
@@ -655,9 +761,10 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
     private static DomainException Invalid(string message) => new(40001, message);
     private static DomainException Conflict(string message) => new(40901, message);
     private sealed record Ledger(Dictionary<string, StoredVersion> Versions, Dictionary<string, Guid> Heads,
-        HashSet<string> Deletions, int SchemaVersion = 1);
+        HashSet<string> Deletions, Dictionary<string, StoredNoteDeletion>? DeletedNotes = null, int SchemaVersion = 1);
     private sealed record StoredVersion(Guid NoteId, Guid? BaseVersionId, string Fingerprint, long SizeBytes,
         DateTimeOffset CreatedAt, DateTimeOffset ExpiresAt, string Phase, bool HasConflict = false);
+    private sealed record StoredNoteDeletion(Guid NoteId, string Title, DateTimeOffset DeletedAt, Guid CurrentVersionId);
 }
 
 internal sealed record NativeNoteSearchSource(

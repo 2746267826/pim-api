@@ -146,7 +146,7 @@ export function MoveDialog({
   )
 }
 
-/* ── 批量删除确认（含 OneDrive 回收站提示） ───────────────── */
+/* ── 批量删除确认（含来源侧回收站边界提示） ───────────────── */
 
 export function DeleteDialog({ items, onClose, onDone }: { items: FileItem[]; onClose: () => void; onDone?: () => void }) {
   const mutations = useFileMutations()
@@ -158,7 +158,7 @@ export function DeleteDialog({ items, onClose, onDone }: { items: FileItem[]; on
       onOpenChange={(o) => !o && onClose()}
       tone="danger"
       title={`删除 ${items.length} 项？`}
-      description="文件将移入 OneDrive 回收站：如需还原，请到 OneDrive 网页版操作（个人版 API 不提供还原接口）。"
+      description="文件会进入对应来源的回收站。内置存储可在 PIM 回收站中恢复；OneDrive / Google Drive 的还原需到对应网盘网页端操作，PIM 不会把外部网页恢复当作已完成。"
       impact={{
         summary: `共 ${items.length} 项${totalSize > 0 ? `，合计 ${formatBytes(totalSize)}` : ''}`,
         samples: items.map((i) => i.name),
@@ -170,7 +170,7 @@ export function DeleteDialog({ items, onClose, onDone }: { items: FileItem[]; on
           for (const item of items) {
             await mutations.remove.mutateAsync(item.id)
           }
-          notifySuccess(`已删除 ${items.length} 项`)
+          notifySuccess(`已移入回收站 ${items.length} 项`)
           onDone?.()
         } catch (err) {
           notifyError(err instanceof Error ? err.message : '删除失败')

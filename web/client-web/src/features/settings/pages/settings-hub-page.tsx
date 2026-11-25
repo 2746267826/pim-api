@@ -94,7 +94,7 @@ const SECTIONS: SettingSection[] = [
     cards: [
       { to: '/settings/data-reliability', title: '数据可信度', description: '13 规则数据体检', icon: ShieldCheck },
       { to: '/settings/calendar-data', title: '日程数据管理', description: '事件批量管理与 ICS 导入导出', icon: CalendarCog },
-      { to: '/settings/recycle-bin', title: '回收站', description: '日历域回收站与恢复预览', icon: Trash2 },
+      { to: '/recycle-bin', title: '回收站', description: '笔记、文件、任务与日历的统一恢复/清理', icon: Trash2 },
       { to: '/settings/pc-data', title: 'PC 明细查询', description: 'PC 原始记录 14 字段明细', icon: Table },
     ],
   },

@@ -16,6 +16,7 @@ import {
   ShieldCheck,
   Smartphone,
   Sunrise,
+  Trash2,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 
@@ -72,7 +73,10 @@ export const NAV_GROUPS: NavGroup[] = [
   },
   {
     label: '系统',
-    items: [{ to: '/settings', label: '设置', icon: Settings }],
+    items: [
+      { to: '/recycle-bin', label: '回收站', icon: Trash2 },
+      { to: '/settings', label: '设置', icon: Settings },
+    ],
   },
 ]
 

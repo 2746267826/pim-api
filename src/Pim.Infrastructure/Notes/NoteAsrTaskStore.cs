@@ -111,6 +111,73 @@ public sealed class NoteAsrTaskStore(IOptions<NoteMaterialUploadOptions> options
     internal static bool Active(NoteAsrState state) => CloudPipeline(state) &&
         (state.Route is null || state.AttemptId is not null) &&
         state.Steps.Any(x => x.Current.Status == "Running" || !state.StopRequested && x.Current.Status == "Queued");
+
+    internal async Task<IReadOnlyList<Guid>> ListForNoteAsync(Guid owner, Guid noteId,
+        CancellationToken ct)
+    {
+        if (noteId == Guid.Empty) throw new DomainException(40001, "笔记标识无效");
+        await using var ownerLease = await LockAsync(owner, ct);
+        return await ListForNoteUnlockedAsync(owner, noteId, ct);
+    }
+
+    private async Task<IReadOnlyList<Guid>> ListForNoteUnlockedAsync(Guid owner, Guid noteId,
+        CancellationToken ct)
+    {
+        if (!Directory.Exists(Folder(owner))) return [];
+        var result = new List<Guid>();
+        foreach (var path in Directory.EnumerateFiles(Folder(owner), "*.json"))
+        {
+            if (!Guid.TryParseExact(Path.GetFileNameWithoutExtension(path), "D", out var id)) continue;
+            var state = await ReadAsync(owner, id, ct);
+            if (state.NoteId == noteId) result.Add(id);
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// Permanently removes every ASR checkpoint owned by <paramref name="noteId"/>.
+    /// The caller must already have moved the note to the recycle bin; this method
+    /// deliberately has no separate note-deletion policy of its own.
+    /// </summary>
+    internal async Task<IReadOnlyList<Guid>> DeleteForNoteAsync(Guid owner, Guid noteId,
+        CancellationToken ct)
+    {
+        if (noteId == Guid.Empty) throw new DomainException(40001, "笔记标识无效");
+        await using var ownerLease = await LockAsync(owner, ct);
+        if (!Directory.Exists(Folder(owner))) return [];
+
+        var matching = (await ListForNoteUnlockedAsync(owner, noteId, ct))
+            .Select(id => (Id: id, Path: FilePath(owner, id)))
+            .ToArray();
+
+        var runLeases = new List<FileStream>();
+        try
+        {
+            foreach (var item in matching)
+            {
+                var lease = TryRunLease(owner, item.Id);
+                if (lease is null)
+                    throw new DomainException(40901, "笔记的转写任务正在执行，请等待任务结束或停止后重试永久删除");
+                runLeases.Add(lease);
+            }
+
+            foreach (var item in matching)
+                File.Delete(item.Path);
+        }
+        finally
+        {
+            foreach (var lease in runLeases) await lease.DisposeAsync();
+        }
+
+        foreach (var item in matching)
+        {
+            var running = item.Path + ".running";
+            if (File.Exists(running)) File.Delete(running);
+        }
+
+        return matching.Select(item => item.Id).ToArray();
+    }
+
     internal static NoteAsrTaskDto Describe(NoteAsrState state)
     {
         var done = state.Steps.Where(x => x.Current.Status == "Succeeded").ToArray();

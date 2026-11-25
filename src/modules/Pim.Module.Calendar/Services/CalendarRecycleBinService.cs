@@ -140,6 +140,18 @@ public sealed class CalendarRecycleBinService
         Guid id,
         CalendarRestoreRequest request,
         CancellationToken ct = default)
+        => await RestoreWithCasAsync(type, id, request, null, ct);
+
+    /// <summary>
+    /// Restores a calendar-domain item and, when supplied, re-checks the recycle-bin
+    /// token inside the same lock/transaction that performs the state transition.
+    /// </summary>
+    public async Task<CalendarOperationResult> RestoreWithCasAsync(
+        string type,
+        Guid id,
+        CalendarRestoreRequest request,
+        DateTimeOffset? expectedDeletedAt,
+        CancellationToken ct = default)
     {
         var normalizedType = NormalizeType(type);
         if (request.RestoreAsCopy && normalizedType is "calendar" or "task-book")
@@ -157,9 +169,12 @@ public sealed class CalendarRecycleBinService
 
         var result = normalizedType switch
         {
-            "event" => await RestoreEventAsync(id, request.RestoreAsCopy, operation, operationId, now, ct),
-            "task" => await RestoreTaskAsync(id, request.RestoreAsCopy, operation, operationId, now, ct),
-            "calendar" or "task-book" => await RestoreCalendarAsync(normalizedType, id, operation, operationId, now, ct),
+            "event" => await RestoreEventAsync(
+                id, request.RestoreAsCopy, operation, operationId, now, expectedDeletedAt, ct),
+            "task" => await RestoreTaskAsync(
+                id, request.RestoreAsCopy, operation, operationId, now, expectedDeletedAt, ct),
+            "calendar" or "task-book" => await RestoreCalendarAsync(
+                normalizedType, id, operation, operationId, now, expectedDeletedAt, ct),
             _ => throw new DomainException(02021, "不支持的回收站类型")
         };
 
@@ -238,11 +253,13 @@ public sealed class CalendarRecycleBinService
         string operation,
         Guid operationId,
         DateTimeOffset now,
+        DateTimeOffset? expectedDeletedAt,
         CancellationToken ct)
     {
         // 与任务恢复同一个道理（工单 #17 / F1）：恢复日程会把它重新加进所属**日历**的活跃成员集合，
         // 必须与「整本删除该日历」互斥（删除方会先取该日历的簿锁）。日程所属日历不会变，故锁集合可先无锁读出。
-        return RestoreEventLockedAsync(id, restoreAsCopy, operation, operationId, now, ct);
+        return RestoreEventLockedAsync(
+            id, restoreAsCopy, operation, operationId, now, expectedDeletedAt, ct);
     }
 
     private async Task<CalendarOperationResult> RestoreEventLockedAsync(
@@ -251,6 +268,7 @@ public sealed class CalendarRecycleBinService
         string operation,
         Guid operationId,
         DateTimeOffset now,
+        DateTimeOffset? expectedDeletedAt,
         CancellationToken ct)
     {
         var calendarId = await _db.Set<EventEntity>()
@@ -266,6 +284,7 @@ public sealed class CalendarRecycleBinService
             async () =>
             {
                 var evt = await LoadDeletedEventAsync(id, ct);
+                EnsureExpectedDeletedAt(evt.DeletedAt, expectedDeletedAt, "日程");
                 EnsureParentBookActive(evt.Calendar);
 
                 if (restoreAsCopy)
@@ -295,6 +314,7 @@ public sealed class CalendarRecycleBinService
         string operation,
         Guid operationId,
         DateTimeOffset now,
+        DateTimeOffset? expectedDeletedAt,
         CancellationToken ct)
     {
         // 工单 #17 / F1：恢复任务会把它重新加进所属任务簿的**活跃成员集合**，
@@ -307,7 +327,8 @@ public sealed class CalendarRecycleBinService
         // 锁内再校验父簿有效性，并在锁内落库。
         // 锁内校验失败时抛的仍是既有的 02023「请先恢复所属本」（与用户晚一步操作时的表现一致，
         // 不新增产品语义）。
-        return RestoreTaskLockedAsync(id, restoreAsCopy, operation, operationId, now, ct);
+        return RestoreTaskLockedAsync(
+            id, restoreAsCopy, operation, operationId, now, expectedDeletedAt, ct);
     }
 
     private async Task<CalendarOperationResult> RestoreTaskLockedAsync(
@@ -316,6 +337,7 @@ public sealed class CalendarRecycleBinService
         string operation,
         Guid operationId,
         DateTimeOffset now,
+        DateTimeOffset? expectedDeletedAt,
         CancellationToken ct)
     {
         // 锁集合必须覆盖「任务实际所属的那本簿」，而这个 id 只能在锁内确定，因此这里做**有界重试**：
@@ -340,6 +362,7 @@ public sealed class CalendarRecycleBinService
                 async () =>
                 {
                     var task = await LoadDeletedTaskAsync(id, ct);
+                    EnsureExpectedDeletedAt(task.DeletedAt, expectedDeletedAt, "任务");
                     if (task.CalendarId != bookId)
                         return new RestoreOutcome(null, Stale: true);
 
@@ -388,9 +411,25 @@ public sealed class CalendarRecycleBinService
         string operation,
         Guid operationId,
         DateTimeOffset now,
+        DateTimeOffset? expectedDeletedAt,
+        CancellationToken ct)
+        => await TaskRowLock.WithCalendarLockAsync(
+            _db,
+            id,
+            () => RestoreCalendarLockedAsync(type, id, operation, operationId, now, expectedDeletedAt, ct),
+            ct);
+
+    private async Task<CalendarOperationResult> RestoreCalendarLockedAsync(
+        string type,
+        Guid id,
+        string operation,
+        Guid operationId,
+        DateTimeOffset now,
+        DateTimeOffset? expectedDeletedAt,
         CancellationToken ct)
     {
         var calendar = await LoadDeletedCalendarAsync(type, id, ct);
+        EnsureExpectedDeletedAt(calendar.DeletedAt, expectedDeletedAt, "日历");
         var deletedOperationId = calendar.DeletedByOperationId;
         var samples = await BuildBookRestoreSamplesAsync(calendar, 5, ct);
         var affectedIds = new List<Guid> { calendar.Id };
@@ -452,6 +491,7 @@ public sealed class CalendarRecycleBinService
             }
         }
 
+        await _db.SaveChangesAsync(ct);
         return new CalendarOperationResult(
             operation,
             operationId,
@@ -672,6 +712,142 @@ public sealed class CalendarRecycleBinService
             ["targetType"] = targetType,
             ["affectedCount"] = affectedCount.ToString()
         };
+
+    /// <summary>
+    /// Permanently deletes one soft-deleted calendar-domain item owned by the current user.
+    /// This is the unified recycle-bin path; the existing restore/GC methods remain the
+    /// source of truth for calendar rules.
+    /// </summary>
+    public async Task<int> PurgeAsync(
+        string type,
+        Guid id,
+        DateTimeOffset? expectedDeletedAt = null,
+        CancellationToken ct = default)
+    {
+        var normalizedType = NormalizeType(type);
+        return normalizedType switch
+        {
+            "event" => await PurgeEventAsync(id, expectedDeletedAt, ct),
+            "task" => await PurgeTaskAsync(id, expectedDeletedAt, ct),
+            "calendar" or "task-book" => await PurgeCalendarAsync(normalizedType, id, expectedDeletedAt, ct),
+            _ => throw new DomainException(02021, "不支持的回收站类型")
+        };
+    }
+
+    private async Task<int> PurgeEventAsync(
+        Guid id,
+        DateTimeOffset? expectedDeletedAt,
+        CancellationToken ct)
+    {
+        var calendarId = await _db.Set<EventEntity>()
+            .IgnoreQueryFilters()
+            .Where(e => e.Id == id && e.Calendar.UserId == UserId)
+            .Select(e => (Guid?)e.CalendarId)
+            .FirstOrDefaultAsync(ct)
+            ?? throw new DomainException(02001, "日程不存在");
+
+        return await TaskRowLock.WithCalendarLockAsync(
+            _db,
+            calendarId,
+            async () =>
+            {
+                var evt = await LoadDeletedEventAsync(id, ct);
+                EnsureExpectedDeletedAt(evt.DeletedAt, expectedDeletedAt, "日程");
+                _db.Set<EventEntity>().Remove(evt);
+                await _db.SaveChangesAsync(ct);
+                await _audit.RecordSuccessAsync(
+                    UserId,
+                    "calendar.recycle_bin.purge",
+                    "calendar_event",
+                    id,
+                    Metadata(Guid.NewGuid(), "event", 1),
+                    ct);
+                return 1;
+            },
+            ct);
+    }
+
+    private async Task<int> PurgeTaskAsync(
+        Guid id,
+        DateTimeOffset? expectedDeletedAt,
+        CancellationToken ct)
+    {
+        var bookId = await _db.Set<TaskEntity>()
+            .IgnoreQueryFilters()
+            .Where(t => t.Id == id && t.UserId == UserId)
+            .Select(t => (Guid?)t.CalendarId)
+            .FirstOrDefaultAsync(ct)
+            ?? throw new DomainException(02004, "任务不存在");
+
+        return await TaskRowLock.WithTaskAndCalendarLocksAsync(
+            _db,
+            new[] { id },
+            bookId,
+            async () =>
+            {
+                var task = await LoadDeletedTaskAsync(id, ct);
+                EnsureExpectedDeletedAt(task.DeletedAt, expectedDeletedAt, "任务");
+                _db.Set<TaskEntity>().Remove(task);
+                await _db.SaveChangesAsync(ct);
+                await _audit.RecordSuccessAsync(
+                    UserId,
+                    "calendar.recycle_bin.purge",
+                    "calendar_task",
+                    id,
+                    Metadata(Guid.NewGuid(), "task", 1),
+                    ct);
+                return 1;
+            },
+            ct);
+    }
+
+    private async Task<int> PurgeCalendarAsync(
+        string type,
+        Guid id,
+        DateTimeOffset? expectedDeletedAt,
+        CancellationToken ct)
+        => await TaskRowLock.WithCalendarLockAsync(
+            _db,
+            id,
+            async () =>
+            {
+                var calendar = await LoadDeletedCalendarAsync(type, id, ct);
+                EnsureExpectedDeletedAt(calendar.DeletedAt, expectedDeletedAt, "日历");
+                var events = await _db.Set<EventEntity>()
+                    .IgnoreQueryFilters()
+                    .Where(e => e.CalendarId == id && e.Calendar.UserId == UserId)
+                    .ToListAsync(ct);
+                var tasks = await _db.Set<TaskEntity>()
+                    .IgnoreQueryFilters()
+                    .Where(t => t.UserId == UserId && t.CalendarId == id)
+                    .ToListAsync(ct);
+                if (events.Any(e => e.DeletedAt is null) || tasks.Any(t => t.DeletedAt is null))
+                    throw new DomainException(40901, "该日历仍有未删除内容，请先恢复并处理后重试永久清理");
+                _db.Set<EventEntity>().RemoveRange(events);
+                _db.Set<TaskEntity>().RemoveRange(tasks);
+                _db.Set<CalendarEntity>().Remove(calendar);
+                var affected = 1 + events.Count + tasks.Count;
+                await _db.SaveChangesAsync(ct);
+                await _audit.RecordSuccessAsync(
+                    UserId,
+                    "calendar.recycle_bin.purge",
+                    type == "task-book" ? "task_book" : "calendar_book",
+                    id,
+                    Metadata(Guid.NewGuid(), type, affected),
+                    ct);
+                return affected;
+            },
+            ct);
+    }
+
+    private static void EnsureExpectedDeletedAt(
+        DateTimeOffset? actual,
+        DateTimeOffset? expected,
+        string label)
+    {
+        if (expected.HasValue && actual != expected)
+            throw new DomainException(40901, $"{label}状态已变化，请刷新回收站后重试");
+    }
 
     /// <summary>
     /// GC：清理超过保留期的软删数据。默认仅统计；当 <paramref name="executeDelete"/> 为 true 时执行物理删除。

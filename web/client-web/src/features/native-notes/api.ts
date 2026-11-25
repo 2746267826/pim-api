@@ -1,9 +1,10 @@
-import { apiGet, apiPost, apiPutBinary, fetchBlob, fetchBoundedDownload, MAX_BOUNDED_DOWNLOAD_BYTES } from '@/api/client'
+import { apiDelete, apiGet, apiPost, apiPutBinary, fetchBlob, fetchBoundedDownload, MAX_BOUNDED_DOWNLOAD_BYTES } from '@/api/client'
 import type { components, paths } from '@/api/generated'
 import type { NoteMaterialUpload, NoteMaterialVersion } from './material-model'
 
 export type NativeNoteSummary = components['schemas']['NativeNoteSummaryDto']
 export type NativeNotePage = components['schemas']['NativeNotePageDto']
+export type NativeNoteDeleted = components['schemas']['NativeNoteDeletedItem']
 export type NativeNoteVersion = components['schemas']['NoteMaterialVersionDto']
 export type NativeNoteUpload = components['schemas']['NoteMaterialUploadDto']
 export type NoteLibrarySource = NativeNoteSummary
@@ -137,6 +138,13 @@ function createNativeNotesApi(context: NativeNotesRequestContext) {
           },
         )
       }),
+
+    deleteNote: (noteId: string, signal?: AbortSignal) =>
+      scoped(signal, (options) =>
+        apiDelete<NativeNoteDeleted>(
+          `/api/v1/native-notes/${encodeURIComponent(noteId)}`,
+          options,
+        )),
   }
 }
 

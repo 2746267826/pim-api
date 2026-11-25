@@ -131,6 +131,80 @@ public sealed class LocalFileStore(ManagedBinaryStore binaries)
             return Task.FromResult(true);
         }, true, ct);
 
+    /// <summary>
+    /// Permanently removes a trashed local entry and its trashed descendants from the
+    /// catalog. Returns blob keys that no remaining catalog entry references, so the
+    /// caller only deletes content-addressed bytes that are genuinely unreachable.
+    /// </summary>
+    public Task<IReadOnlyList<string>> PurgeTrashedAsync(Guid userId, Guid providerId, string id,
+        CancellationToken ct = default) =>
+        PurgeTrashedAsync(userId, providerId, id, static (_, _) => Task.CompletedTask, ct);
+
+    /// <summary>
+    /// Purges the catalog and invokes <paramref name="deleteBlobs"/> while the catalog
+    /// lock is still held. A restore cannot race between planning and deletion, and a
+    /// blob failure leaves the catalog untouched so the same purge can be retried.
+    /// </summary>
+    public Task<IReadOnlyList<string>> PurgeTrashedAsync(Guid userId, Guid providerId, string id,
+        Func<IReadOnlyList<string>, CancellationToken, Task> deleteBlobs,
+        CancellationToken ct = default) =>
+        TransactionAsync<IReadOnlyList<string>>(userId, providerId, async entries =>
+        {
+            var (purgeIds, removed) = PurgePlan(entries, id);
+            if (purgeIds.Count == 0) return [];
+            var unreferenced = UnreferencedBlobKeys(entries, purgeIds, removed);
+            await deleteBlobs(unreferenced, ct);
+            foreach (var key in purgeIds) entries.Remove(key);
+            return unreferenced;
+        }, true, ct);
+
+    private static (HashSet<string> Ids, IReadOnlyList<LocalFileEntry> Removed) PurgePlan(
+        IReadOnlyDictionary<string, LocalFileEntry> entries, string id)
+    {
+        if (id == RootId) throw new DomainException(5337, "不能永久删除内置存储根目录");
+        if (!entries.TryGetValue(id, out var item))
+            return (new HashSet<string>(StringComparer.Ordinal), Array.Empty<LocalFileEntry>());
+        if (!item.Trashed) throw new DomainException(40901, "文件不在回收站，不能永久删除");
+
+        var purgeIds = new HashSet<string>(StringComparer.Ordinal) { id };
+        var changed = true;
+        while (changed)
+        {
+            changed = false;
+            foreach (var candidate in entries.Values)
+            {
+                if (candidate.ParentId is not null && purgeIds.Contains(candidate.ParentId) &&
+                    purgeIds.Add(candidate.Id))
+                {
+                    changed = true;
+                }
+            }
+        }
+
+        // SetTrashedAsync always marks the complete subtree. A live descendant therefore
+        // means the catalog is inconsistent; deleting it here would destroy user data.
+        if (purgeIds.Any(key => !entries[key].Trashed))
+            throw new DomainException(40901, "目录内仍有未删除条目，请刷新文件树后重试");
+
+        return (purgeIds, purgeIds.Select(key => entries[key]).ToArray());
+    }
+
+    private static IReadOnlyList<string> UnreferencedBlobKeys(
+        IReadOnlyDictionary<string, LocalFileEntry> entries,
+        IReadOnlySet<string> purgeIds,
+        IReadOnlyList<LocalFileEntry> removed)
+    {
+        var stillReferenced = entries
+            .Where(pair => !purgeIds.Contains(pair.Key) && pair.Value.BlobKey is not null)
+            .Select(pair => pair.Value.BlobKey!)
+            .ToHashSet(StringComparer.Ordinal);
+        return removed
+            .Where(entry => entry.BlobKey is not null && !stillReferenced.Contains(entry.BlobKey))
+            .Select(entry => entry.BlobKey!)
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+    }
+
     public static string PathOf(IReadOnlyDictionary<string, LocalFileEntry> entries, LocalFileEntry item)
     {
         var parts = new List<string>(); var seen = new HashSet<string>();

@@ -8,6 +8,7 @@ import {
   Mic,
   RefreshCw,
   Sparkles,
+  Trash2,
   Upload,
 } from 'lucide-react'
 import { Button, Card, EmptyState, InlineAlert, Input, PageHeader, Skeleton, StatusBadge } from '@/components/ui'
@@ -60,6 +61,7 @@ function Workspace({ ownerId, serverBinding }: { ownerId: string; serverBinding:
   const [seed, setSeed] = useState<NoteEditorSeed | null>(null)
   const [legacyBusy, setLegacyBusy] = useState('')
   const [packageBusy, setPackageBusy] = useState(false)
+  const [deletingNote, setDeletingNote] = useState(false)
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
   const [editorDirty, setEditorDirty] = useState(false)
@@ -302,6 +304,29 @@ function Workspace({ ownerId, serverBinding }: { ownerId: string; serverBinding:
     navigate(`/native-notes/processing?${query.toString()}`)
   }
 
+  async function moveSelectedToRecycleBin() {
+    if (!selectedNoteId || deletingNote) return
+    if (editorDirty) {
+      setError('当前编辑内容尚未保存。请先保存，再把笔记移入回收站。')
+      return
+    }
+    if (!window.confirm('将这篇笔记移入回收站？原稿、材料、转写和派生结果会保留，可稍后恢复。')) return
+    setDeletingNote(true)
+    setError('')
+    setMessage('')
+    try {
+      await requestApi.deleteNote(selectedNoteId, getSessionSignal())
+      assertSessionActive()
+      await qc.invalidateQueries({ queryKey: ['native-notes', ownerId, serverBinding] })
+      changeInternalNavigation(() => setParams({}, { replace: true }))
+      setMessage('笔记已移入回收站；原稿、材料、转写与派生结果仍保留，可在回收站恢复。')
+    } catch (failure) {
+      if (!isAbortError(failure) && sessionIsActive()) setError(`移入回收站失败：${errorText(failure)}`)
+    } finally {
+      setDeletingNote(false)
+    }
+  }
+
   function openNote(noteId: string) {
     if (noteId === selectedNoteId && !seed) return
     if (blockNavigationWhilePromoting()) return
@@ -538,6 +563,15 @@ function Workspace({ ownerId, serverBinding }: { ownerId: string; serverBinding:
             : <Button size="sm" variant="secondary" disabled={editorDirty} onClick={() => openProcessing('organize')}>
               <Sparkles className="size-4" aria-hidden />整理笔记
             </Button>}
+          <Button
+            size="sm"
+            variant="danger-soft"
+            disabled={editorDirty || deletingNote}
+            loading={deletingNote}
+            onClick={() => void moveSelectedToRecycleBin()}
+          >
+            <Trash2 className="size-4" aria-hidden />移入回收站
+          </Button>
           {editorDirty && <p className="w-full text-xs text-text-3">请先保存当前编辑，再开始处理；未保存内容不会发送。</p>}
         </section>}
         {selectedNoteId && <div className="mb-4 min-w-0">
