@@ -1,4 +1,5 @@
 import type { components } from '@/api/generated'
+import { deriveStrokeId, parseInkDocument, type InkDocument } from './ink-document'
 import { extractJsonValue, replaceJsonObjectProperties, splitJsonArrayValues } from './raw-json'
 
 export type NoteMaterialVersion = components['schemas']['NoteMaterialVersionDto']
@@ -180,6 +181,7 @@ export async function buildMaterialBundle(input: BuildMaterialInput): Promise<Ma
   const rendered: string[] = []
   const files: MaterialFileSpec[] = []
   const blockIds = new Set<string>()
+  const supersededPaths = new Set<string>()
 
   for (const block of input.blocks) {
     if (!block.id || blockIds.has(block.id)) throw new Error('正文块标识重复，请刷新后重试')
@@ -222,16 +224,44 @@ export async function buildMaterialBundle(input: BuildMaterialInput): Promise<Ma
       continue
     }
 
-    validateInkDocument(block.ink)
+    const normalizedInk = parseInkDocument(block.ink, (index) => deriveStrokeId(block.id, index))
     const sourceBlockJson = sourceBlockJsonById.get(block.id)
     const sourceBlockKind = sourceBlockJson ? (JSON.parse(sourceBlockJson) as { kind?: string }).kind : undefined
     const sourceInkJson = sourceBlockKind === 'ink' && sourceBlockJson ? extractJsonValue(sourceBlockJson, ['ink']) : undefined
-    const inkJson = sourceInkJson && JSON.stringify(JSON.parse(sourceInkJson)) === JSON.stringify(block.ink) ? sourceInkJson : JSON.stringify(block.ink)
+    let sourceNormalized: InkDocument | undefined
+    if (sourceInkJson) {
+      sourceNormalized = parseInkDocument(
+        JSON.parse(sourceInkJson) as Record<string, unknown>,
+        (index) => deriveStrokeId(block.id, index),
+      )
+    }
+    const sourceUnchanged = sourceNormalized !== undefined &&
+      jsonValuesEqual(sourceNormalized, normalizedInk)
+    const inkJson = sourceUnchanged
+      ? input.preserveSourceFiles
+        ? sourceInkJson!
+        : preserveSourceInkJson(sourceInkJson!, normalizedInk)
+      : JSON.stringify(normalizedInk)
+    if (sourceUnchanged) {
+      parseInkDocument(JSON.parse(inkJson) as Record<string, unknown>, (index) => deriveStrokeId(block.id, index))
+    }
     const hash = await sha256Hex(encoder.encode(inkJson))
-    if ('sha256' in block && hash !== block.sha256) throw new Error('已保存手写卡片的摘要发生变化，未创建新版本')
+    const sourceHash = sourceInkJson
+      ? await sha256Hex(encoder.encode(sourceInkJson))
+      : undefined
+    if ('sha256' in block) {
+      const currentHash = await sha256Hex(encoder.encode(JSON.stringify(block.ink)))
+      if (block.sha256 !== sourceHash && block.sha256 !== currentHash) {
+        throw new Error('已保存手写卡片的摘要发生变化，未创建新版本')
+      }
+    }
     if (block.bytes.length > 40 * 1024 * 1024) throw new Error('单张手写预览不能超过 40 MiB')
     const path = `assets/${block.id}-${hash}.png`
-    noteBlocks.push({ ...(block.source ?? {}), id: block.id, kind: 'ink', ink: block.ink })
+    const previousPreviewHash = sourceHash ?? ('sha256' in block ? block.sha256 : undefined)
+    if (previousPreviewHash && previousPreviewHash !== hash) {
+      supersededPaths.add(`assets/${block.id}-${previousPreviewHash}.png`)
+    }
+    noteBlocks.push({ ...(block.source ?? {}), id: block.id, kind: 'ink', ink: normalizedInk })
     rawNoteBlocks.push(replaceJsonObjectProperties(sourceBlockJson ?? JSON.stringify(block.source ?? {}), { id: JSON.stringify(block.id), kind: '"ink"', ink: inkJson }))
     rendered.push(`![手写卡片](${path})\n<!-- 可编辑笔迹、身份和尺寸保存在同包 note.json 中 -->`)
     files.push({
@@ -295,6 +325,7 @@ export async function buildMaterialBundle(input: BuildMaterialInput): Promise<Ma
   for (const preserved of preservedFiles) {
     if (preservedPaths.has(preserved.path)) throw new Error(`原版本包含重复材料路径：${preserved.path}`)
     preservedPaths.add(preserved.path)
+    if (supersededPaths.has(preserved.path)) continue
     const generated = generatedByPath.get(preserved.path)
     if (generated) {
       if (generated.kind === preserved.kind && generated.sha256 === preserved.sha256 &&
@@ -347,46 +378,6 @@ export async function buildMaterialBundle(input: BuildMaterialInput): Promise<Ma
     manifestJson: JSON.stringify(manifest),
     files,
     recordedAudio: (input.preservedRecordings ?? input.recordings)?.length ?? 0,
-  }
-}
-
-function validateInkDocument(ink: Record<string, unknown>) {
-  const width = ink.width
-  const height = ink.height
-  const strokes = ink.strokes
-  if (typeof width !== 'number' || !Number.isFinite(width) || width < 80 || width > 2048 ||
-      typeof height !== 'number' || !Number.isFinite(height) || height < 80 || height > 4096 ||
-      !Array.isArray(strokes) || strokes.length > 10_000) {
-    throw new Error('手写卡片尺寸或笔画结构超出 schema-v1 范围')
-  }
-  let pointCount = 0
-  for (const stroke of strokes) {
-    if (!stroke || typeof stroke !== 'object' || Array.isArray(stroke)) {
-      throw new Error('手写卡片包含无效笔画')
-    }
-    const strokeRecord = stroke as Record<string, unknown>
-    const strokeWidth = strokeRecord.width === undefined ? 2.5 : strokeRecord.width
-    const points = strokeRecord.points
-    if (typeof strokeWidth !== 'number' || !Number.isFinite(strokeWidth) || strokeWidth < 0.5 || strokeWidth > 24 ||
-        !Array.isArray(points) || points.length === 0) {
-      throw new Error('手写卡片包含无效笔画')
-    }
-    pointCount += points.length
-    if (pointCount > 50_000) throw new Error('手写卡片超过 Web 笔迹点数上限')
-    for (const point of points) {
-      if (!point || typeof point !== 'object' || Array.isArray(point)) {
-        throw new Error('手写卡片包含无效坐标点')
-      }
-      const value = point as Record<string, unknown>
-      const x = value.x
-      const y = value.y
-      const pressure = value.pressure === undefined ? 1 : value.pressure
-      if (typeof x !== 'number' || !Number.isFinite(x) || x < 0 || x > width ||
-          typeof y !== 'number' || !Number.isFinite(y) || y < 0 || y > height ||
-          typeof pressure !== 'number' || !Number.isFinite(pressure) || pressure < 0 || pressure > 1) {
-        throw new Error('手写卡片坐标或压力超出 schema-v1 范围')
-      }
-    }
   }
 }
 
@@ -479,6 +470,7 @@ export function parseMaterialVersion(material: NoteMaterialVersion): ParsedNoteM
     if (kind === 'ink') {
       const ink = raw.ink
       if (!ink || typeof ink !== 'object' || Array.isArray(ink)) throw new Error('固定材料包含无效手写卡片')
+      parseInkDocument(ink as Record<string, unknown>, (index) => deriveStrokeId(id, index))
       const index = preservedFiles.findIndex((file) => file.kind === 'InkPreview' && file.blockId === id)
       const file = preservedFiles[index]
       if (index < 0 || !file?.path) throw new Error('固定材料缺少手写预览图')
@@ -511,6 +503,71 @@ export function parseMaterialVersion(material: NoteMaterialVersion): ParsedNoteM
 
 function nullishEqual(left: unknown, right: unknown): boolean {
   return (left ?? null) === (right ?? null)
+}
+
+export function jsonValuesEqual(left: unknown, right: unknown): boolean {
+  if (left === right) return true
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return Array.isArray(left) && Array.isArray(right) &&
+      left.length === right.length &&
+      left.every((value, index) => jsonValuesEqual(value, right[index]))
+  }
+  if (typeof left !== 'object' || typeof right !== 'object' || left === null || right === null) return false
+  const leftRecord = left as Record<string, unknown>
+  const rightRecord = right as Record<string, unknown>
+  const leftKeys = Object.keys(leftRecord)
+  const rightKeys = Object.keys(rightRecord)
+  return leftKeys.length === rightKeys.length &&
+    leftKeys.every((key) => hasOwn(rightRecord, key) && jsonValuesEqual(leftRecord[key], rightRecord[key]))
+}
+
+function preserveSourceInkJson(sourceJson: string, normalized: InkDocument): string {
+  const source = JSON.parse(sourceJson) as Record<string, unknown>
+  const sourceStrokes = Array.isArray(source.strokes)
+    ? source.strokes as Array<Record<string, unknown>>
+    : []
+  const rootReplacements: Record<string, string> = {}
+  if (!hasOwn(source, 'strokeIds')) rootReplacements.strokeIds = JSON.stringify(normalized.strokeIds)
+  if (!hasOwn(source, 'strokeStyles')) rootReplacements.strokeStyles = JSON.stringify(normalized.strokeStyles)
+  let result = Object.keys(rootReplacements).length
+    ? replaceJsonObjectProperties(sourceJson, rootReplacements)
+    : sourceJson
+
+  let strokesChanged = false
+  const patchedStrokes = splitJsonArrayValues(extractJsonValue(result, ['strokes'])).map((strokeJson, index) => {
+    const sourceStroke = sourceStrokes[index] ?? {}
+    const normalizedStroke = normalized.strokes[index]!
+    const strokeReplacements: Record<string, string> = {}
+    if (!hasOwn(sourceStroke, 'color')) strokeReplacements.color = JSON.stringify(normalizedStroke.color)
+    if (!hasOwn(sourceStroke, 'width')) strokeReplacements.width = JSON.stringify(normalizedStroke.width)
+    let next = Object.keys(strokeReplacements).length
+      ? replaceJsonObjectProperties(strokeJson, strokeReplacements)
+      : strokeJson
+    if (Object.keys(strokeReplacements).length) strokesChanged = true
+
+    const sourcePoints = Array.isArray(sourceStroke.points)
+      ? sourceStroke.points as Array<Record<string, unknown>>
+      : []
+    let pointsChanged = false
+    const patchedPoints = splitJsonArrayValues(extractJsonValue(next, ['points'])).map((pointJson, pointIndex) => {
+      if (hasOwn(sourcePoints[pointIndex] ?? {}, 'pressure')) return pointJson
+      pointsChanged = true
+      return replaceJsonObjectProperties(pointJson, { pressure: '1' })
+    })
+    if (pointsChanged) {
+      next = replaceJsonObjectProperties(next, { points: `[${patchedPoints.join(',')}]` })
+      strokesChanged = true
+    }
+    return next
+  })
+  if (strokesChanged) {
+    result = replaceJsonObjectProperties(result, { strokes: `[${patchedStrokes.join(',')}]` })
+  }
+  return result
+}
+
+function hasOwn(value: object, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(value, key)
 }
 
 export async function hydrateParsedPhotos(

@@ -89,4 +89,14 @@ describe('application route access', () => {
     expect(screen.getByText('需要管理员权限')).toBeTruthy()
     expect(screen.getByText(/未确认管理员登录状态/)).toBeTruthy()
   })
+
+  it('puts global search in the regular work navigation without an admin guard', () => {
+    const found = findRoutes(router.routes, 'search')
+    expect(found).toHaveLength(1)
+    expect(found[0]?.route.element).toBeTruthy()
+    expect(found[0]?.ancestors.some((route) =>
+      isValidElement(route.element) && route.element.type === RequireAdmin)).toBe(false)
+    const work = navGroupsForRole('user').find((group) => group.label === '工作')
+    expect(work?.items).toContainEqual(expect.objectContaining({ to: '/search', label: '搜索' }))
+  })
 })

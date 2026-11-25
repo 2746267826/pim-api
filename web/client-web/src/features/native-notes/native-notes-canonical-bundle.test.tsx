@@ -17,6 +17,7 @@ import {
   type NoteMaterialUpload,
   type NoteMaterialVersion,
 } from './material-model'
+import { extractJsonValue } from './raw-json'
 
 const nativeApi = vi.hoisted(() => ({
   limits: vi.fn(), notes: vi.fn(), current: vi.fn(), versions: vi.fn(), version: vi.fn(),
@@ -221,7 +222,26 @@ describe('Android golden consumer canonical native-note reading', () => {
     })
 
     const nextManifest = JSON.parse(request.material.manifestJson) as { files: GoldenManifestFile[] }
-    for (const expected of fixture.manifest.files.filter((file) => file.kind !== 'Document')) {
+    const nextInkBlock = nextInput.note.blocks.find((block) => block.kind === 'ink') as {
+      id: string
+      ink: Record<string, unknown>
+    }
+    const nextInkIndex = nextInput.note.blocks.findIndex((block) => block.kind === 'ink')
+    const nextInkRaw = extractJsonValue(request.material.inputJson, ['note', 'blocks', nextInkIndex, 'ink'])
+    const sourceInkIndex = fixture.input.note.blocks.findIndex((block) => block.kind === 'ink')
+    const sourceInkRaw = extractJsonValue(fixture.material.inputJson, ['note', 'blocks', sourceInkIndex, 'ink'])
+    const oldInkPreview = fixture.manifest.files.find((file) => file.kind === 'InkPreview')!
+    expect(nextInkRaw).toBe(sourceInkRaw)
+    expect(nextManifest.files).toContainEqual(expect.objectContaining({
+      path: oldInkPreview.path,
+      kind: 'InkPreview',
+      blockId: nextInkBlock.id,
+      sha256: oldInkPreview.sha256,
+      sizeBytes: oldInkPreview.sizeBytes,
+    }))
+    expect(nextManifest.files.filter((file) => file.kind === 'InkPreview')).toHaveLength(1)
+    for (const expected of fixture.manifest.files.filter((file) =>
+      file.kind !== 'Document' && file.kind !== 'Markdown' && file.kind !== 'InkPreview')) {
       expect(nextManifest.files).toContainEqual(expect.objectContaining({
         path: expected.path, kind: expected.kind, sha256: expected.sha256, sizeBytes: expected.sizeBytes,
         ...(expected.blockId ? { blockId: expected.blockId } : {}),
@@ -259,17 +279,45 @@ describe('Android golden consumer canonical native-note reading', () => {
 
     expect(next.revision).toBe(8)
     expect(next.baseVersionId).toBe(fixture.input.id)
-    expect(JSON.parse(next.inputJson).recordings).toEqual(fixture.input.recordings)
+    const nextInput = JSON.parse(next.inputJson) as GoldenInput
+    expect(nextInput.recordings).toEqual(fixture.input.recordings)
     expect(next.inputJson).toContain('320.0')
     expect(next.inputJson).toContain('12.0')
+    const nextInkBlock = nextInput.note.blocks.find((block) => block.kind === 'ink') as { id: string }
+    const sourceInkIndex = fixture.input.note.blocks.findIndex((block) => block.kind === 'ink')
+    const sourceInkRaw = extractJsonValue(fixture.material.inputJson, ['note', 'blocks', sourceInkIndex, 'ink'])
+    const nextInkIndex = nextInput.note.blocks.findIndex((block) => block.kind === 'ink')
+    const nextInkRaw = extractJsonValue(next.inputJson, ['note', 'blocks', nextInkIndex, 'ink'])
+    expect(nextInkRaw).toBe(sourceInkRaw)
+    const oldInkPreview = fixture.files.find((file) => file.kind === 'InkPreview')!
 
     const nextManifest = JSON.parse(next.manifestJson) as GoldenManifest
     expect(nextManifest.files).toHaveLength(7)
-    expect(next.files.map((file) => file.path)).toEqual(fixture.files.map((file) => file.path))
-    for (const file of fixture.files.filter((entry) => entry.kind === 'Photo' || entry.kind === 'InkPreview')) {
+    expect(new Set(next.files.map((file) => file.path))).toEqual(new Set(fixture.files.map((file) => file.path)))
+    expect(nextManifest.files).toContainEqual(expect.objectContaining({
+      path: oldInkPreview.path,
+      kind: 'InkPreview',
+      blockId: nextInkBlock.id,
+      sha256: oldInkPreview.sha256,
+      sizeBytes: oldInkPreview.sizeBytes,
+    }))
+    for (const file of fixture.files.filter((entry) => entry.kind === 'Photo')) {
       const nextFile = next.files.find((entry) => entry.path === file.path)!
       expect(nextFile.sha256).toBe(file.sha256)
       expect(await sha256Hex(nextFile.bytes)).toBe(file.sha256)
+    }
+    const preservedInkPreview = next.files.find((file) => file.path === oldInkPreview.path)!
+    expect(preservedInkPreview.sha256).toBe(oldInkPreview.sha256)
+    expect(preservedInkPreview.sizeBytes).toBe(oldInkPreview.sizeBytes)
+    expect(await sha256Hex(preservedInkPreview.bytes)).toBe(oldInkPreview.sha256)
+    for (const file of fixture.files.filter((entry) =>
+      entry.kind === 'RecordingManifest' || entry.kind === 'AudioChunk')) {
+      expect(next.files).toContainEqual(expect.objectContaining({
+        path: file.path,
+        kind: file.kind,
+        sha256: file.sha256,
+        sizeBytes: file.sizeBytes,
+      }))
     }
 
     const exportDirectory = path.resolve(process.cwd(), 'scratch/interop/web-continuation-v1')
@@ -297,5 +345,12 @@ describe('Android golden consumer canonical native-note reading', () => {
 
     expect(JSON.parse(readFileSync(path.join(exportDirectory, 'note.json'), 'utf8'))).toEqual(JSON.parse(next.inputJson).note)
     expect(readFileSync(path.join(exportDirectory, 'document.md'), 'utf8')).toContain('Web continuation')
+
+    const committedDirectory = path.resolve(process.cwd(), '../../tests/Pim.UnitTests/Fixtures/notes/web-continuation-v1')
+    const committedRequest = JSON.parse(readFileSync(path.join(committedDirectory, 'request.json'), 'utf8')) as {
+      material: { inputJson: string; manifestJson: string }
+    }
+    expect(committedRequest.material.inputJson).toBe(next.inputJson)
+    expect(committedRequest.material.manifestJson).toBe(next.manifestJson)
   })
 })

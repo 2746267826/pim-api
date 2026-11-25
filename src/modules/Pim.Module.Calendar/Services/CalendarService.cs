@@ -305,6 +305,15 @@ public class CalendarService
         return new PagedResult<EventResponse>(items, page, pageSize, totalCount, totalPages);
     }
 
+    public async Task<EventResponse> GetEventAsync(Guid id, CancellationToken ct = default)
+    {
+        var entity = await _db.Set<EventEntity>()
+            .AsNoTracking()
+            .FirstOrDefaultAsync(item => item.Id == id && item.Calendar.UserId == UserId, ct)
+            ?? throw new DomainException(40401, "日程不存在");
+        return EventResponseMapper.Map(entity);
+    }
+
     public async Task<EventResponse> CreateEventAsync(CreateEventRequest request, CancellationToken ct)
     {
         request = EventFieldValidator.ValidateAndNormalize(request);
@@ -636,11 +645,12 @@ public class CalendarService
 
         // If originalEventId provided (synthetic occurrence case), prefer master via originalEventId for scope=this/series
         EventEntity? entity = null;
-        var hasOriginal = originalEventId.HasValue && originalEventId.Value != Guid.Empty && !string.Equals(scope, "instance", StringComparison.OrdinalIgnoreCase);
+        var originalEventIdValue = originalEventId.GetValueOrDefault();
+        var hasOriginal = originalEventIdValue != Guid.Empty && !string.Equals(scope, "instance", StringComparison.OrdinalIgnoreCase);
         if (hasOriginal && (string.Equals(scope, "this", StringComparison.OrdinalIgnoreCase) || string.Equals(scope, "series", StringComparison.OrdinalIgnoreCase)))
         {
             entity = await _db.Set<EventEntity>()
-                .FirstOrDefaultAsync(e => e.Id == originalEventId.Value && e.Calendar.UserId == UserId, ct);
+                .FirstOrDefaultAsync(e => e.Id == originalEventIdValue && e.Calendar.UserId == UserId, ct);
         }
         entity ??= await _db.Set<EventEntity>()
             .FirstOrDefaultAsync(e => e.Id == id && e.Calendar.UserId == UserId, ct)
@@ -1044,11 +1054,12 @@ public class CalendarService
     public async Task DeleteEventAsync(Guid id, string? scope, string? recurrenceId, Guid? originalEventId, CancellationToken ct)
     {
         EventEntity? entity = null;
-        var hasOriginal = originalEventId.HasValue && originalEventId.Value != Guid.Empty;
+        var originalEventIdValue = originalEventId.GetValueOrDefault();
+        var hasOriginal = originalEventIdValue != Guid.Empty;
         if (hasOriginal && (string.Equals(scope, "this", StringComparison.OrdinalIgnoreCase) || string.Equals(scope, "series", StringComparison.OrdinalIgnoreCase)))
         {
             entity = await _db.Set<EventEntity>().IgnoreQueryFilters()
-                .FirstOrDefaultAsync(e => e.Id == originalEventId.Value && e.Calendar.UserId == UserId, ct);
+                .FirstOrDefaultAsync(e => e.Id == originalEventIdValue && e.Calendar.UserId == UserId, ct);
         }
         entity ??= await _db.Set<EventEntity>().IgnoreQueryFilters()
             .FirstOrDefaultAsync(e => e.Id == id && e.Calendar.UserId == UserId, ct)
@@ -1264,6 +1275,16 @@ public class CalendarService
 
         var tasks = await query.OrderBy(t => t.SortOrder).ToListAsync(ct);
         return tasks.Select(MapTask).ToList();
+    }
+
+    public async Task<TaskResponse> GetTaskAsync(Guid id, CancellationToken ct = default)
+    {
+        var task = await _db.Set<TaskEntity>()
+            .AsNoTracking()
+            .Include(item => item.SubTasks)
+            .FirstOrDefaultAsync(item => item.Id == id && item.UserId == UserId, ct)
+            ?? throw new DomainException(40401, "任务不存在");
+        return MapTask(task);
     }
 
     public async Task<PagedResult<TaskResponse>> GetTasksPagedAsync(

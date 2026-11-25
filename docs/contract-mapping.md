@@ -150,7 +150,7 @@
 
 | 方法 | 路径 | 响应（状态码:schema） |
 |---|---|---|
-| GET | `/api/v1/search` | 200:`SearchResultPagedResultApiResponse`、400:`StringApiResponse`、401、500:`StringApiResponse` |
+| GET | `/api/v1/search` | 200:`GlobalSearchResultApiResponse`、400:`StringApiResponse`、401、500:`StringApiResponse` |
 
 ### src/modules/Pim.Module.Calendar/CalendarModule.cs
 
@@ -179,6 +179,7 @@
 | GET | `/api/v1/calendar/events` | 200:`EventResponsePagedResultApiResponse`、400:`StringApiResponse`、401、500:`StringApiResponse` |
 | POST | `/api/v1/calendar/events` | 201:`EventResponseApiResponse`、400:`StringApiResponse`、401、500:`StringApiResponse` |
 | POST | `/api/v1/calendar/events/batch-delete` | 200:`CalendarOperationResultApiResponse`、400:`StringApiResponse`、401、500:`StringApiResponse` |
+| GET | `/api/v1/calendar/events/{id}` | 200:`EventResponseApiResponse`、401、404:`StringApiResponse`、500:`StringApiResponse` |
 | GET | `/api/v1/calendar/events/{eventId}/attachments/{attachmentId}/download` | 200、400:`StringApiResponse`、401、404、409:`StringApiResponse`、500:`StringApiResponse` |
 | DELETE | `/api/v1/calendar/events/{id}` | 200:`StringApiResponse`、400:`StringApiResponse`、401、500:`StringApiResponse` |
 | PUT | `/api/v1/calendar/events/{id}` | 200:`EventResponseApiResponse`、400:`StringApiResponse`、401、500:`StringApiResponse` |
@@ -232,6 +233,7 @@
 | POST | `/api/v1/calendar/tasks` | 201:`TaskResponseApiResponse`、400:`StringApiResponse`、401、500:`StringApiResponse` |
 | POST | `/api/v1/calendar/tasks/batch-delete` | 200:`CalendarOperationResultApiResponse`、400:`StringApiResponse`、401、500:`StringApiResponse` |
 | POST | `/api/v1/calendar/tasks/batch-update` | 200:`CalendarOperationResultApiResponse`、400:`StringApiResponse`、401、500:`StringApiResponse` |
+| GET | `/api/v1/calendar/tasks/{id}` | 200:`TaskResponseApiResponse`、401、404:`StringApiResponse`、500:`StringApiResponse` |
 | DELETE | `/api/v1/calendar/tasks/{id}` | 200:`CalendarOperationResultApiResponse`、400:`StringApiResponse`、401、500:`StringApiResponse` |
 | PUT | `/api/v1/calendar/tasks/{id}` | 200:`TaskResponseApiResponse`、400:`StringApiResponse`、401、500:`StringApiResponse` |
 | GET | `/api/v1/calendar/tasks/{id}/checklist` | 200:`TaskChecklistItemDtoIReadOnlyListApiResponse`、400:`StringApiResponse`、401、500:`StringApiResponse` |

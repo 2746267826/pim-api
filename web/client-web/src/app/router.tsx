@@ -24,6 +24,7 @@ const ServerSettingsPage = lazyPage(() => import('@/features/server/pages/server
 const SettingsHubPage = lazyPage(() => import('@/features/settings/pages/settings-hub-page'), 'SettingsHubPage')
 
 const TodayPage = lazyPage(() => import('@/features/today/pages/today-page'), 'TodayPage')
+const GlobalSearchPage = lazyPage(() => import('@/features/search/pages/global-search-page'), 'GlobalSearchPage')
 const CalendarPage = lazyPage(() => import('@/features/calendar/pages/calendar-page'), 'CalendarPage')
 const TasksPage = lazyPage(() => import('@/features/calendar/pages/tasks-page'), 'TasksPage')
 const ConfirmationsPage = lazyPage(() => import('@/features/operations/pages/confirmations-page'), 'ConfirmationsPage')
@@ -96,6 +97,7 @@ export const router = createBrowserRouter([
 
           // ── 工作 ──
           { path: 'today', element: <TodayPage /> },
+          { path: 'search', element: <GlobalSearchPage /> },
           { path: 'calendar', element: <CalendarPage /> },
           { path: 'calendar-styles', element: <CalendarStylesPage /> },
           { path: 'workbench', element: <WorkbenchPage /> },

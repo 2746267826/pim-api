@@ -3,7 +3,13 @@ import { useSearchParams } from 'react-router'
 import { useQueries } from '@tanstack/react-query'
 import { AnimatePresence, motion } from 'motion/react'
 import { Plus, Search, Timer } from 'lucide-react'
-import { useBatchDeleteTasks, useTaskBooks, useTasksPaged, useToggleTaskComplete } from '../queries'
+import {
+  useBatchDeleteTasks,
+  useTaskBooks,
+  useTaskDetail,
+  useTasksPaged,
+  useToggleTaskComplete,
+} from '../queries'
 import { tasksApi } from '../api'
 import { TaskEditorDialog } from '../components/task-editor-dialog'
 import { TaskSegmentsDialog } from '../components/task-segments-dialog'
@@ -16,6 +22,7 @@ import { dayEndIso, dayStartIso, formatDurationC, formatTime } from '@/lib/datet
 import { celebrateOnce } from '@/lib/celebrate'
 import { CountUp } from '@/components/motion/primitives'
 import { Button, Card, Checkbox, Chip, EmptyState, Input, PageHeader, Select, Skeleton, StatusBadge } from '@/components/ui'
+import { notifyError } from '@/lib/notify'
 import { cn } from '@/lib/utils'
 
 type QuickFilter = 'all' | 'inbox' | 'due-today' | 'planned-today' | 'high'
@@ -54,6 +61,7 @@ const PRIORITY_BADGE: Record<number, { label: string; tone: 'crit' | 'warn' | 'n
 export function TasksPage() {
   const [params, setParams] = useSearchParams()
   const taskBookId = params.get('taskBookId') ?? undefined
+  const taskId = params.get('task') ?? null
 
   const [quick, setQuick] = useState<QuickFilter>('all')
   const [statuses, setStatuses] = useState<TaskStatus[]>([])
@@ -82,6 +90,7 @@ export function TasksPage() {
     [quick, statuses, search, page],
   )
   const tasksQuery = useTasksPaged(query)
+  const taskDetailQuery = useTaskDetail(taskId)
   const data = useMemo(() => {
     if (taskBookId == null) return tasksQuery.data
     const items = (tasksQuery.data?.items ?? []).filter((t) => t.taskBookId === taskBookId)
@@ -95,6 +104,19 @@ export function TasksPage() {
   // 计时动作会让服务端任务状态变化：详情用列表里的实时对象，避免弹窗里停留陈旧快照
   const liveDetailTask = detailTask ? tasks.find((t) => t.id === detailTask.id) ?? detailTask : null
   const totalPages = data?.totalPages ?? 1
+
+  useEffect(() => {
+    if (taskDetailQuery.data) setDetailTask(taskDetailQuery.data)
+  }, [taskDetailQuery.data])
+
+  useEffect(() => {
+    if (!taskId || !taskDetailQuery.isError) return
+    notifyError(
+      taskDetailQuery.error instanceof Error
+        ? taskDetailQuery.error.message
+        : '任务不存在或当前账号无权访问',
+    )
+  }, [taskDetailQuery.error, taskDetailQuery.isError, taskId])
 
   /*
    * 庆祝时刻：完成一个任务后，若「今日到期」集合从有未完成变为 0，
@@ -136,6 +158,20 @@ export function TasksPage() {
       else next.delete(id)
       return next
     })
+  }
+
+  function clearTaskDetailParam() {
+    if (!taskId) return
+    setParams((previous) => {
+      const next = new URLSearchParams(previous)
+      next.delete('task')
+      return next
+    }, { replace: true })
+  }
+
+  function closeTaskDetail() {
+    setDetailTask(null)
+    clearTaskDetailParam()
   }
 
   const filteredBooks = taskBooks
@@ -431,9 +467,10 @@ export function TasksPage() {
       <TaskDetailDialog
         task={liveDetailTask}
         taskBookName={taskBooks.find((b) => b.id === detailTask?.taskBookId)?.name}
-        onClose={() => setDetailTask(null)}
+        onClose={closeTaskDetail}
         onEdit={(t) => {
           setDetailTask(null)
+          clearTaskDetailParam()
           setEditorTask(t)
           setEditorOpen(true)
         }}
