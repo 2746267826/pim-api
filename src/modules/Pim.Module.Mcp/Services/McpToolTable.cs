@@ -232,9 +232,9 @@ public static class McpToolTable
             S("get_version", "GET", "/api/version", kind: McpToolKind.Version),
 
             // ===================== Calendar writes (30) =====================
-            W("create_event", "POST", "/api/v1/calendar/events", req: R("calendarId", "title", "dtStart", "dtEnd")),
-            W("update_event", "PUT", "/api/v1/calendar/events/{eventId}", query: Q("scope", "recurrenceId", "originalEventId"), req: R("eventId")),
-            W("delete_event", "DELETE", "/api/v1/calendar/events/{eventId}", query: Q("scope", "recurrenceId", "originalEventId"), req: R("eventId")),
+            W("create_event", "POST", "/api/v1/calendar/events", query: Q("clientOperationId"), req: R("calendarId", "title", "dtStart", "dtEnd")),
+            W("update_event", "PUT", "/api/v1/calendar/events/{eventId}", query: Q("scope", "recurrenceId", "originalEventId", "clientOperationId", "expectedEtag"), req: R("eventId")),
+            W("delete_event", "DELETE", "/api/v1/calendar/events/{eventId}", query: Q("scope", "recurrenceId", "originalEventId", "clientOperationId", "expectedEtag"), req: R("eventId")),
             W("restore_event", "POST", "/api/v1/calendar/events/{eventId}/restore", req: R("eventId")),
             W("batch_delete_events", "POST", "/api/v1/calendar/events/batch-delete", req: R("ids")),
 

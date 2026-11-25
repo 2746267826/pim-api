@@ -70,6 +70,7 @@ public class CalendarModule : IModule
         services.AddScoped<EventAttachmentService>();
         services.AddScoped<OutlookCalendarSyncService>();
         services.AddScoped<OutlookEventWriteService>();
+        services.AddScoped<OutlookCalendarWritebackGateway>();
         services.AddScoped<OutlookCalendarSyncJob>();
     }
 
@@ -655,13 +656,28 @@ public class CalendarModule : IModule
 
         group.MapPost("/events", async (
             [FromBody] CreateEventRequest req,
-            [FromServices] CalendarService svc, CancellationToken ct) =>
+            [FromQuery] Guid? clientOperationId,
+            [FromServices] CalendarService svc,
+            [FromServices] OutlookCalendarWritebackGateway outlookWriteback,
+            [FromServices] ICurrentUserService currentUser,
+            CancellationToken ct) =>
         {
+            var operationId = clientOperationId is { } requested && requested != Guid.Empty
+                ? requested
+                : Guid.NewGuid();
+            var outlookResult = await outlookWriteback.CreateAsync(
+                currentUser.UserId!.Value, req, operationId, ct);
+            if (outlookResult is not null)
+                return MapOutlookWriteResult(outlookResult, created: true);
+
             var result = await svc.CreateEventAsync(req, ct);
             return Results.Created($"/api/v1/calendar/events/{result.Id}",
                 ApiResponse<EventResponse>.Ok(result));
         })
         .Produces<ApiResponse<EventResponse>>(201)
+        .Produces<ApiResponse<EventResponse>>(200)
+        .Produces<ApiResponse<OutlookWriteResult>>(409)
+        .Produces<ApiResponse<OutlookWriteResult>>(502)
         .Produces(401)
         .Produces<ApiResponse<string>>(400)
         .Produces<ApiResponse<string>>(500);
@@ -671,7 +687,12 @@ public class CalendarModule : IModule
             [FromQuery] string? scope,
             [FromQuery] string? recurrenceId,
             [FromQuery] Guid? originalEventId,
-            [FromServices] CalendarService svc, CancellationToken ct) =>
+            [FromQuery] Guid? clientOperationId,
+            [FromQuery] string? expectedEtag,
+            [FromServices] CalendarService svc,
+            [FromServices] OutlookCalendarWritebackGateway outlookWriteback,
+            [FromServices] ICurrentUserService currentUser,
+            CancellationToken ct) =>
         {
             string? normalizedRecurrenceId = recurrenceId;
             if (!string.IsNullOrEmpty(recurrenceId))
@@ -694,9 +715,28 @@ public class CalendarModule : IModule
                     throw new DomainException(02009, "RecurrenceId 格式无效");
                 req = req with { RecurrenceId = bodyParsed2.ToString("O") };
             }
+
+            var operationId = clientOperationId is { } requested && requested != Guid.Empty
+                ? requested
+                : Guid.NewGuid();
+            var outlookResult = await outlookWriteback.UpdateAsync(
+                currentUser.UserId!.Value,
+                id,
+                req,
+                scope,
+                normalizedRecurrenceId,
+                originalEventId,
+                operationId,
+                expectedEtag,
+                ct);
+            if (outlookResult is not null)
+                return MapOutlookWriteResult(outlookResult, created: false);
+
             return Results.Ok(ApiResponse<EventResponse>.Ok(await svc.UpdateEventAsync(id, req, scope, originalEventId, ct)));
         })
         .Produces<ApiResponse<EventResponse>>(200)
+        .Produces<ApiResponse<OutlookWriteResult>>(409)
+        .Produces<ApiResponse<OutlookWriteResult>>(502)
         .Produces(401)
         .Produces<ApiResponse<string>>(400)
         .Produces<ApiResponse<string>>(500);
@@ -706,12 +746,42 @@ public class CalendarModule : IModule
             [FromQuery] string? scope,
             [FromQuery] string? recurrenceId,
             [FromQuery] Guid? originalEventId,
-            [FromServices] CalendarService svc, CancellationToken ct) =>
+            [FromQuery] Guid? clientOperationId,
+            [FromQuery] string? expectedEtag,
+            [FromServices] CalendarService svc,
+            [FromServices] OutlookCalendarWritebackGateway outlookWriteback,
+            [FromServices] ICurrentUserService currentUser,
+            CancellationToken ct) =>
         {
+            var operationId = clientOperationId is { } requested && requested != Guid.Empty
+                ? requested
+                : Guid.NewGuid();
+            var outlookResult = await outlookWriteback.DeleteAsync(
+                currentUser.UserId!.Value,
+                id,
+                scope,
+                recurrenceId,
+                originalEventId,
+                operationId,
+                expectedEtag,
+                ct);
+            if (outlookResult is not null)
+            {
+                if (outlookResult.Status is "conflict" or "error" or "reauth-required")
+                    return MapOutlookWriteResult(outlookResult, created: false);
+                var undoHint = outlookResult.UndoAvailable
+                    ? "可在 Outlook 写回撤销端点恢复。"
+                    : "本次为重复日程的单次删除，不提供自动撤销。";
+                return Results.Ok(ApiResponse<string>.Ok(
+                    $"已从 Outlook 删除；clientOperationId={outlookResult.ClientOperationId:D}；{undoHint}"));
+            }
+
             await svc.DeleteEventAsync(id, scope, recurrenceId, originalEventId, ct);
             return Results.Ok(ApiResponse<string>.Ok("已删除"));
         })
         .Produces<ApiResponse<string>>(200)
+        .Produces<ApiResponse<OutlookWriteResult>>(409)
+        .Produces<ApiResponse<OutlookWriteResult>>(502)
         .Produces(401)
         .Produces<ApiResponse<string>>(400)
         .Produces<ApiResponse<string>>(500);
@@ -1387,13 +1457,43 @@ public class CalendarModule : IModule
             [FromServices] OutlookEventWriteService writeSvc,
             CancellationToken ct) =>
         {
-            var result = await writeSvc.ExecuteAsync(currentUser.UserId!.Value, req, ct);
-            if (result.Status == "conflict" || result.ErrorCode == "CONFLICT")
-                return Results.Conflict(ApiResponse<OutlookWriteResult>.Ok(result));
-            return Results.Ok(ApiResponse<OutlookWriteResult>.Ok(result));
+            try
+            {
+                var result = await writeSvc.ExecuteAsync(currentUser.UserId!.Value, req, ct);
+                return MapLegacyOutlookWriteResult(result);
+            }
+            catch (HttpRequestException)
+            {
+                return MapProviderUnavailable(ProviderUnavailable(req.ClientOperationId));
+            }
         })
         .Produces<ApiResponse<OutlookWriteResult>>(200)
         .Produces<ApiResponse<OutlookWriteResult>>(409)
+        .Produces<ApiResponse<OutlookWriteResult>>(502)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
+
+        group.MapPost("/outlook/events/{clientOperationId:guid}/undo", async (
+            Guid clientOperationId,
+            [FromServices] ICurrentUserService currentUser,
+            [FromServices] OutlookEventWriteService writeSvc,
+            CancellationToken ct) =>
+        {
+            try
+            {
+                var result = await writeSvc.UndoAsync(
+                    currentUser.UserId!.Value, clientOperationId, ct);
+                return MapOutlookOperationResult(result);
+            }
+            catch (HttpRequestException)
+            {
+                return MapProviderUnavailable(ProviderUnavailable(clientOperationId));
+            }
+        })
+        .Produces<ApiResponse<OutlookWriteResult>>(200)
+        .Produces<ApiResponse<OutlookWriteResult>>(409)
+        .Produces<ApiResponse<OutlookWriteResult>>(502)
         .Produces(401)
         .Produces<ApiResponse<string>>(400)
         .Produces<ApiResponse<string>>(500);
@@ -1535,6 +1635,61 @@ public class CalendarModule : IModule
         .Produces<ApiResponse<string>>(400)
         .Produces<ApiResponse<string>>(500);
     }
+
+    private static IResult MapOutlookWriteResult(OutlookWriteResult result, bool created)
+    {
+        if (result.Status is "conflict" or "reauth-required")
+            return Results.Conflict(ApiResponse<OutlookWriteResult>.Ok(result));
+        if (result.Status == "error")
+            return MapProviderUnavailable(result);
+
+        if (result.Event is null)
+            return Results.Json(
+                ApiResponse<OutlookWriteResult>.Error(02099, "Outlook 写回完成，但缺少事件回执。"),
+                statusCode: StatusCodes.Status502BadGateway);
+
+        var response = ApiResponse<EventResponse>.Ok(result.Event);
+        return created && !result.Replayed
+            ? Results.Created($"/api/v1/calendar/events/{result.Event.Id}", response)
+            : Results.Ok(response);
+    }
+
+    private static IResult MapOutlookOperationResult(OutlookWriteResult result)
+    {
+        if (result.Status is "conflict" or "reauth-required")
+            return Results.Conflict(ApiResponse<OutlookWriteResult>.Ok(result));
+        if (result.Status == "error")
+            return MapProviderUnavailable(result);
+        return Results.Ok(ApiResponse<OutlookWriteResult>.Ok(result));
+    }
+
+    /// <summary>
+    /// 兼容端点原有契约：只有冲突返回 409，其余业务结果维持 200；
+    /// provider 异常仍统一映射为脱敏 502，方便客户端使用同一 clientOperationId 重试。
+    /// </summary>
+    private static IResult MapLegacyOutlookWriteResult(OutlookWriteResult result)
+    {
+        if (result.Status == "conflict" || result.ErrorCode == "CONFLICT")
+            return Results.Conflict(ApiResponse<OutlookWriteResult>.Ok(result));
+        return Results.Ok(ApiResponse<OutlookWriteResult>.Ok(result));
+    }
+
+    private static IResult MapProviderUnavailable(OutlookWriteResult result)
+        => Results.Json(
+            new ApiResponse<OutlookWriteResult>(
+                02099,
+                result.ErrorMessage ?? "Outlook 写回失败。",
+                result,
+                DateTimeOffset.UtcNow),
+            statusCode: StatusCodes.Status502BadGateway);
+
+    private static OutlookWriteResult ProviderUnavailable(Guid clientOperationId)
+        => new(
+            "error",
+            ErrorCode: "PROVIDER_UNAVAILABLE",
+            ErrorMessage: "Outlook 服务暂时不可用，请使用同一 clientOperationId 稍后重试。",
+            ClientOperationId: clientOperationId == Guid.Empty ? null : clientOperationId,
+            UserMessage: "Outlook 服务暂时不可用，请使用同一 clientOperationId 稍后重试。");
 
     private static OutlookSettingsResponse MapSettings(OutlookConnectionEntity? connection)
     {
@@ -1691,6 +1846,7 @@ public static class CalendarEndpointPaths
     public const string OutlookCalendarsDiscover = "/api/v1/calendar/outlook/calendars/discover";
     public const string OutlookCalendarsSelection = "/api/v1/calendar/outlook/calendars/selection";
     public const string OutlookEventsWriteback = "/api/v1/calendar/outlook/events/writeback";
+    public const string OutlookEventsUndo = "/api/v1/calendar/outlook/events/{clientOperationId}/undo";
     public const string OutlookDisconnect = "/api/v1/calendar/outlook/disconnect";
     public const string OutlookLocalDataPreview = "/api/v1/calendar/outlook/local-data/preview";
     public const string OutlookLocalDataDelete = "/api/v1/calendar/outlook/local-data";

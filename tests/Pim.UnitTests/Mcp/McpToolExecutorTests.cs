@@ -712,6 +712,28 @@ public sealed class McpToolExecutorTests : IDisposable
     }
 
     [Fact]
+    public async Task CreateEvent_ClientOperationIdGoesToQueryNotBody()
+    {
+        CreateExecutor(withWritePermission: true);
+        _routes["POST /api/v1/calendar/events"] = new(200, "{\"code\":0,\"data\":{\"id\":\"e1\",\"clientOperationId\":\"op-1\"}}");
+        var operationId = Guid.NewGuid().ToString("D");
+
+        var result = await CallTool("create_event", new Dictionary<string, JsonElement>
+        {
+            ["calendarId"] = Json("\"cal-1\""),
+            ["title"] = Json("\"Demo\""),
+            ["dtStart"] = Json("\"2026-09-01T09:00:00Z\""),
+            ["dtEnd"] = Json("\"2026-09-01T10:00:00Z\""),
+            ["clientOperationId"] = Json($"\"{operationId}\"")
+        });
+
+        Assert.Equal(0, result!["code"]!.GetValue<int>());
+        var request = Assert.Single(_requests);
+        Assert.Contains($"clientOperationId={operationId}", request.Query);
+        Assert.DoesNotContain("clientOperationId", request.Body);
+    }
+
+    [Fact]
     public async Task CreateEvent_AllDayFieldsReachRestBody()
     {
         CreateExecutor(withWritePermission: true);
@@ -795,6 +817,31 @@ public sealed class McpToolExecutorTests : IDisposable
         Assert.Contains("scope=This", request.Query);
         Assert.DoesNotContain("scope", request.Body);
         Assert.Contains("\"title\":\"Renamed\"", request.Body);
+    }
+
+    [Fact]
+    public async Task UpdateEvent_ExpectedEtagAndClientOperationIdGoToQuery()
+    {
+        CreateExecutor(withWritePermission: true);
+        _routes["PUT /api/v1/calendar/events/e1"] = new(200, "{\"code\":0,\"data\":{\"id\":\"e1\"}}");
+        var operationId = Guid.NewGuid().ToString("D");
+
+        await CallTool("update_event", new Dictionary<string, JsonElement>
+        {
+            ["eventId"] = Json("\"e1\""),
+            ["calendarId"] = Json("\"cal-1\""),
+            ["title"] = Json("\"Renamed\""),
+            ["dtStart"] = Json("\"2026-09-01T09:00:00Z\""),
+            ["dtEnd"] = Json("\"2026-09-01T10:00:00Z\""),
+            ["clientOperationId"] = Json($"\"{operationId}\""),
+            ["expectedEtag"] = Json("\"W/\\\"etag-1\\\"\"")
+        });
+
+        var request = Assert.Single(_requests);
+        Assert.Contains($"clientOperationId={operationId}", request.Query);
+        Assert.Contains("expectedEtag=", request.Query);
+        Assert.DoesNotContain("expectedEtag", request.Body);
+        Assert.DoesNotContain("clientOperationId", request.Body);
     }
 
     [Fact]

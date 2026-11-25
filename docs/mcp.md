@@ -40,7 +40,8 @@
 - 覆盖 AI 常用场景：今天有啥事 / 这周效率 / 人在哪在干啥 / 找文件笔记 / 顺手把日程任务排进去。
 
 ### 不能做什么 / What it cannot do
-- 写入仅限 49 个已开放工具；`batch/execute`、`/ops/*`、Outlook 写回、端侧采集上传、confirmations 等一律不开。
+- 写入仅限 49 个已开放工具；`batch/execute`、`/ops/*`、端侧采集上传、confirmations 等一律不开。Outlook 日程写回已封装进 `create_event` / `update_event` / `delete_event`，不需要单独调用 REST 写回端点。
+- Outlook 写回当前仅覆盖日历日程；仓库没有 Microsoft To Do / Outlook 任务 provider，任务写回尚未实现。
 - 文件二进制下载 `items/{id}/download` 等流式下载不开放，只给元数据与搜索。
 - `/ops/*` 运维接口不开放。第三方限流/OAuth 不做（自家可信）。
 
@@ -3082,11 +3083,15 @@ async def get_version(-) -> Any: ...
 
 | 工具 | 方法 + 路径 | 主要参数 |
 |---|---|---|
-| `create_event` | `POST /api/v1/calendar/events` | calendarId,title,dtStart,dtEnd + 可选 description/location/rRule/attendees... |
-| `update_event` | `PUT /api/v1/calendar/events/{id}` | 同 create + query scope/recurrenceId/originalEventId |
-| `delete_event` | `DELETE /api/v1/calendar/events/{id}` | query scope/recurrenceId/originalEventId |
+| `create_event` | `POST /api/v1/calendar/events` | calendarId,title,dtStart,dtEnd + 可选 description/location/rRule/attendees...；query `clientOperationId`（UUID，幂等重试用） |
+| `update_event` | `PUT /api/v1/calendar/events/{id}` | 同 create + query scope/recurrenceId/originalEventId/clientOperationId/expectedEtag |
+| `delete_event` | `DELETE /api/v1/calendar/events/{id}` | query scope/recurrenceId/originalEventId/clientOperationId/expectedEtag |
 | `restore_event` | `POST /api/v1/calendar/events/{id}/restore` | restoreAsCopy? |
 | `batch_delete_events` | `POST /api/v1/calendar/events/batch-delete` | ids[] |
+
+> Outlook 绑定日历：上述 create/update/delete 会自动走受控写回（服务端判断，不新增工具）。写回结果带 `outlookEtag`、`clientOperationId`、`requiresConfirmation`、`undoAvailable` 与 `userMessage`；同一 `clientOperationId` 重放幂等，内容不一致返回 409；ETag 冲突返回 409 + `latestEvent`，不会静默覆盖。重复事件 `scope=this` 会先解析并写入具体的 Graph occurrence/exception，找不到时拒绝请求，绝不回退到系列主事件；单次删除不提供自动撤销。撤销普通创建/更新/删除使用 `POST /api/v1/calendar/outlook/events/{clientOperationId}/undo`（API JWT）。`batch_delete_events` 仍只支持本地日程。
+
+> provider 暂时失败返回脱敏 502，可用同一 `clientOperationId` 重试（create 依赖 Graph `transactionId`，update/delete 依赖 ETag/404 语义避免重复应用）。若进程在 Graph 成功与本地提交之间中断，账本会在 2 分钟租约后转为 `OPERATION_OUTCOME_UNKNOWN`，提示先到 Outlook 核对，不会盲目重放。
 
 **Calendar 任务 14**
 
