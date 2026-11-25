@@ -168,6 +168,12 @@ namespace Pim.Infrastructure.Data.Migrations
                 columns: new[] { "user_id", "center_latitude", "center_longitude" });
 
             migrationBuilder.CreateIndex(
+                name: "IX_mobile_saved_places_user_id_content",
+                table: "mobile_saved_places",
+                columns: new[] { "user_id", "name", "place_type", "center_latitude", "center_longitude", "radius_meters" },
+                unique: true);
+
+            migrationBuilder.CreateIndex(
                 name: "IX_mobile_saved_places_user_id_is_enabled",
                 table: "mobile_saved_places",
                 columns: new[] { "user_id", "is_enabled" });

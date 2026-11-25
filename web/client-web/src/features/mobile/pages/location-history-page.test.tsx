@@ -243,9 +243,17 @@ describe('历史位置手动纠正（真实页面，API 边界为隔离 fixture�
   })
 
   it('409 revision 冲突显示刷新提示并重新读取当前页', async () => {
-    actions.correct.mutateAsync.mockRejectedValue(
-      new ApiError('这个定位点已被其他修改更新，请刷新后重新选择。', 6204, 409),
-    )
+    actions.correct.mutateAsync
+      .mockRejectedValueOnce(
+        new ApiError('这个定位点已被其他修改更新，请刷新后重新选择。', 6204, 409),
+      )
+      .mockResolvedValueOnce({})
+    state.points.refetch.mockResolvedValue({
+      data: {
+        ...state.points.data,
+        items: [{ ...state.points.data.items[0], revision: 5 }],
+      },
+    })
     const user = userEvent.setup()
     renderPage()
     await openPoint()
@@ -256,9 +264,21 @@ describe('历史位置手动纠正（真实页面，API 边界为隔离 fixture�
     await user.click(screen.getByRole('button', { name: '保存修改' }))
 
     expect(await screen.findByText(
-      '这个定位点已被其他修改更新。已刷新数据，请重新选择后再保存。',
+      '这个定位点已被其他修改更新。已刷新到最新修订，可直接重试。',
     )).toBeTruthy()
     await waitFor(() => expect(state.points.refetch).toHaveBeenCalled())
+
+    await user.click(screen.getByRole('button', { name: '保存修改' }))
+    await waitFor(() => expect(actions.correct.mutateAsync).toHaveBeenLastCalledWith({
+      pointId: '00000000-0000-0000-0000-000000000001',
+      body: {
+        latitude: 31.25,
+        longitude: 121.473701,
+        revision: 5,
+        excluded: false,
+        reason: null,
+      },
+    }))
   })
 
   it('409 坐标重复冲突显示服务器原因，不误报 revision 冲突', async () => {
@@ -278,7 +298,7 @@ describe('历史位置手动纠正（真实页面，API 边界为隔离 fixture�
       '修改后的坐标与同一时刻的另一个定位点重复。',
     )).toBeTruthy()
     expect(screen.queryByText(
-      '这个定位点已被其他修改更新。已刷新数据，请重新选择后再保存。',
+      '这个定位点已被其他修改更新。已刷新到最新修订，可直接重试。',
     )).toBeNull()
     expect(state.points.refetch).not.toHaveBeenCalled()
   })

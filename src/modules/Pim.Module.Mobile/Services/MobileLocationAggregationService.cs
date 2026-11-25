@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Pim.Core.Exceptions;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
 using Pim.Module.Mobile.DTOs;
@@ -117,36 +118,61 @@ public sealed class MobileLocationAggregationService
         MobileLocationQueryRequest request,
         CancellationToken ct = default)
     {
+        var userId = MobileUserContext.RequireUserId(_currentUser);
         var context = _queryService.Normalize(request);
-        var segment = await GetSegmentAsync(segmentId, request, ct);
-        if (segment is null)
+        if (string.IsNullOrWhiteSpace(segmentId))
             return new MobileLocationSegmentPointPageDto([], null, false);
 
-        var segmentPointIds = segment.Path
-            .Select(point => Guid.Parse(point.Id))
-            .ToHashSet();
-        var points = await LoadRawPointsAsync(context, ct);
-        var segmentPoints = points
-            .Where(point => segmentPointIds.Contains(point.Id))
-            .OrderBy(point => point.RecordedAtUtc)
-            .ThenBy(point => point.Id)
-            .ToList();
+        var boundary = await MobileLocationSegmentBoundaries.ResolveAsync(
+            _db,
+            userId,
+            segmentId.Trim(),
+            context,
+            ct);
+        if (boundary is null)
+            return new MobileLocationSegmentPointPageDto([], null, false);
 
-        var startIndex = 0;
-        if (Guid.TryParse(context.Cursor, out var cursorId))
+        var cursor = string.IsNullOrWhiteSpace(context.Cursor)
+            ? (MobileLocationCursorValue?)null
+            : MobileLocationCursor.Parse(context.Cursor);
+        if (cursor is { Kind: MobileLocationCursorKind.LegacyPointId } legacy)
         {
-            var cursorIndex = segmentPoints.FindIndex(point => point.Id == cursorId);
-            if (cursorIndex >= 0)
-                startIndex = cursorIndex + 1;
+            var recordedAtUtc = await _db.Set<MobileLocationPointEntity>()
+                .AsNoTracking()
+                .Where(point => point.UserId == userId && point.Id == legacy.Id)
+                .Select(point => (DateTimeOffset?)point.RecordedAtUtc)
+                .SingleOrDefaultAsync(ct);
+            if (recordedAtUtc is null)
+                throw new DomainException(6208, "分页游标已失效。");
+            cursor = legacy with { Kind = MobileLocationCursorKind.Encoded, RecordedAtUtc = recordedAtUtc.Value };
         }
 
-        var page = segmentPoints
-            .Skip(startIndex)
-            .Take(context.PageSize)
-            .ToList();
-        var hasMore = startIndex + page.Count < segmentPoints.Count;
+        var query = _db.Set<MobileLocationPointEntity>()
+            .AsNoTracking()
+            .Where(point => point.UserId == userId
+                && !point.IsExcluded
+                && point.RecordedAtUtc >= context.Range.RangeStartUtc
+                && point.RecordedAtUtc < context.Range.RangeEndUtc);
+        if (!string.IsNullOrWhiteSpace(context.DeviceId))
+            query = query.Where(point => point.DeviceId == context.DeviceId);
+        query = MobileLocationSegmentBoundaries.Apply(
+            query,
+            boundary,
+            context.MaxAccuracyMeters,
+            context.IncludeRejected);
+        if (cursor is { Kind: MobileLocationCursorKind.Encoded } encoded)
+            query = MobileLocationCursor.Apply(query, encoded);
+
+        var page = await query
+            .OrderBy(point => point.RecordedAtUtc)
+            .ThenBy(point => point.Id)
+            .Take(context.PageSize + 1)
+            .ToListAsync(ct);
+        var hasMore = page.Count > context.PageSize;
+        if (hasMore)
+            page.RemoveAt(page.Count - 1);
         var nextCursor = hasMore && page.Count > 0
-            ? page[^1].Id.ToString()
+            ? MobileLocationCursor.Encode(page[^1].RecordedAtUtc, page[^1].Id)
             : null;
 
         return new MobileLocationSegmentPointPageDto(page.Select(MapPoint).ToList(), nextCursor, hasMore);

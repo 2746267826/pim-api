@@ -4,6 +4,7 @@ using Pim.Core.Exceptions;
 using Pim.Core.Operations;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
+using Pim.Infrastructure.Data.Entities;
 using Pim.Module.Mobile.DTOs;
 using Pim.Module.Mobile.Entities;
 
@@ -59,28 +60,63 @@ public sealed class MobileSavedPlaceService
         var type = NormalizeType(request.Type);
         ValidateCoordinates(request.CenterLatitude, request.CenterLongitude);
         var radius = ClampRadius(request.RadiusMeters);
+        var centerLatitude = Coordinate(request.CenterLatitude);
+        var centerLongitude = Coordinate(request.CenterLongitude);
+        var radiusMeters = Convert.ToDecimal(radius);
+        var existing = await FindDuplicateAsync(
+            userId,
+            name,
+            type,
+            centerLatitude,
+            centerLongitude,
+            radiusMeters,
+            ct);
+        if (existing is not null)
+            return Map(existing);
+
         var now = _timeProvider.GetUtcNow();
         var place = new MobileSavedPlaceEntity
         {
             UserId = userId,
             Name = name,
             PlaceType = type,
-            CenterLatitude = Coordinate(request.CenterLatitude),
-            CenterLongitude = Coordinate(request.CenterLongitude),
-            RadiusMeters = Convert.ToDecimal(radius),
+            CenterLatitude = centerLatitude,
+            CenterLongitude = centerLongitude,
+            RadiusMeters = radiusMeters,
             IsEnabled = true,
             Revision = 1,
             CreatedAt = now,
             UpdatedAt = now
         };
         _db.Set<MobileSavedPlaceEntity>().Add(place);
-        EnqueueAudit(userId, "mobile.location.place.create", place.Id, new Dictionary<string, string>
+        var audit = EnqueueAudit(userId, "mobile.location.place.create", place.Id, new Dictionary<string, string>
         {
             ["name"] = name,
             ["type"] = type,
             ["radiusMeters"] = radius.ToString(System.Globalization.CultureInfo.InvariantCulture)
         });
-        await _db.SaveChangesAsync(ct);
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateException ex) when (!ct.IsCancellationRequested
+            && MobileDbErrors.IsUniqueConstraintViolation(ex))
+        {
+            // 并发重复 POST 也可能同时越过上面的查询：撞唯一索引后按同一幂等请求返回已存在行。
+            DetachPendingInserts(place.Id, audit.Id);
+            existing = await FindDuplicateAsync(
+                userId,
+                name,
+                type,
+                centerLatitude,
+                centerLongitude,
+                radiusMeters,
+                ct);
+            if (existing is null)
+                throw;
+            return Map(existing);
+        }
+
         _cache.EvictByPrefix("/api/v1/mobile/");
         return Map(place);
     }
@@ -124,12 +160,17 @@ public sealed class MobileSavedPlaceService
         {
             throw new DomainException(6204, "这个地点已被其他修改更新，请刷新后重新选择。");
         }
+        catch (DbUpdateException ex) when (!ct.IsCancellationRequested
+            && MobileDbErrors.IsUniqueConstraintViolation(ex))
+        {
+            throw new DomainException(6205, "该地点名称已被另一个相同范围的地点使用。");
+        }
 
         _cache.EvictByPrefix("/api/v1/mobile/");
         return Map(place);
     }
 
-    private void EnqueueAudit(
+    private AuditLogDto EnqueueAudit(
         Guid userId,
         string action,
         Guid placeId,
@@ -148,6 +189,36 @@ public sealed class MobileSavedPlaceService
             metadata,
             null,
             null));
+
+    private async Task<MobileSavedPlaceEntity?> FindDuplicateAsync(
+        Guid userId,
+        string name,
+        string type,
+        decimal centerLatitude,
+        decimal centerLongitude,
+        decimal radiusMeters,
+        CancellationToken ct)
+        => await _db.Set<MobileSavedPlaceEntity>()
+            .AsNoTracking()
+            .SingleOrDefaultAsync(place => place.UserId == userId
+                && place.Name == name
+                && place.PlaceType == type
+                && place.CenterLatitude == centerLatitude
+                && place.CenterLongitude == centerLongitude
+                && place.RadiusMeters == radiusMeters, ct);
+
+    private void DetachPendingInserts(Guid placeId, Guid auditId)
+    {
+        foreach (var entry in _db.ChangeTracker.Entries()
+                     .Where(entry => entry.State == EntityState.Added)
+                     .ToList())
+        {
+            if (entry.Entity is MobileSavedPlaceEntity place && place.Id == placeId)
+                entry.State = EntityState.Detached;
+            else if (entry.Entity is AuditLogEntity audit && audit.Id == auditId)
+                entry.State = EntityState.Detached;
+        }
+    }
 
     private static MobileSavedPlaceDto Map(MobileSavedPlaceEntity place)
         => new(

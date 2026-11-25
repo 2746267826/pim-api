@@ -171,7 +171,36 @@ export function LocationHistoryPage() {
 
   async function refreshPointsAfterConflict(error: unknown): Promise<void> {
     if (!isRevisionConflict(error)) return
-    await pointsQuery.refetch()
+    const refreshed = await pointsQuery.refetch()
+    const items = refreshed.data?.items
+    if (!items) return
+
+    if (activePoint) {
+      const latest = items.find((point) => point.id === activePoint.id)
+      if (latest) {
+        // 冲突后必须把服务端最新 revision 带回编辑态；否则下一次保存仍然携带旧 revision。
+        setActivePoint((previous) => previous && previous.id === latest.id
+          ? {
+              ...previous,
+              revision: latest.revision,
+              originalLatitude: latest.originalLatitude,
+              originalLongitude: latest.originalLongitude,
+              isExcluded: latest.isExcluded,
+              updatedAtUtc: latest.updatedAtUtc,
+            }
+          : previous)
+      } else {
+        setActivePoint(null)
+        setPointError('这个定位点已被永久删除，无法继续保存。')
+      }
+    }
+
+    if (deleteTarget) {
+      const latest = items.find((point) => point.id === deleteTarget.id)
+      setDeleteTarget((previous) => previous && latest
+        ? { ...previous, revision: latest.revision }
+        : null)
+    }
   }
 
   function openPoint(point: ManagedLocationPoint): void {
@@ -211,7 +240,7 @@ export function LocationHistoryPage() {
     } catch (error) {
       const message = errorMessage(error)
       setPointError(isRevisionConflict(error)
-        ? '这个定位点已被其他修改更新。已刷新数据，请重新选择后再保存。'
+        ? '这个定位点已被其他修改更新。已刷新到最新修订，可直接重试。'
         : message)
       notifyError(isRevisionConflict(error) ? '定位点已被其他地方修改' : '保存定位点失败', { description: message })
       await refreshPointsAfterConflict(error)
@@ -232,7 +261,9 @@ export function LocationHistoryPage() {
       setActivePoint(null)
     } catch (error) {
       const message = errorMessage(error)
-      setPointError(isRevisionConflict(error) ? '这个定位点已被其他修改更新，请重新读取。' : message)
+      setPointError(isRevisionConflict(error)
+        ? '这个定位点已被其他修改更新。已刷新到最新修订，可直接重试。'
+        : message)
       notifyError('恢复原始坐标失败', { description: message })
       await refreshPointsAfterConflict(error)
     } finally {
@@ -250,7 +281,9 @@ export function LocationHistoryPage() {
       setActivePoint(null)
     } catch (error) {
       const message = errorMessage(error)
-      notifyError(isRevisionConflict(error) ? '定位点已被其他地方修改' : '删除定位点失败', { description: message })
+      notifyError(isRevisionConflict(error) ? '定位点已被其他地方修改' : '删除定位点失败', {
+        description: isRevisionConflict(error) ? '已刷新到最新修订，请再次确认删除。' : message,
+      })
       await refreshPointsAfterConflict(error)
     } finally {
       setDeleteBusy(false)
@@ -389,8 +422,28 @@ export function LocationHistoryPage() {
     } catch (error) {
       const message = errorMessage(error)
       setPlaceDialog({ ...placeDialog, busy: false, error: message })
-      notifyError(isRevisionConflict(error) ? '地点已被其他地方修改' : '保存地点名称失败', { description: message })
-      if (isRevisionConflict(error)) await places.refetch()
+      notifyError(isRevisionConflict(error) ? '地点已被其他地方修改' : '保存地点名称失败', {
+        description: isRevisionConflict(error) ? '已刷新到最新修订，可直接重试。' : message,
+      })
+      if (isRevisionConflict(error)) {
+        const savedPlaceId = placeDialog.place.savedPlaceId
+        const refreshed = await places.refetch()
+        const latest = savedPlaceId
+          ? refreshed.data?.places.find((place) => place.savedPlaceId === savedPlaceId)
+          : null
+        if (latest?.savedPlaceRevision != null) {
+          setPlaceDialog((previous) => previous && previous.place.savedPlaceId === savedPlaceId
+            ? {
+                ...previous,
+                error: message,
+                place: {
+                  ...previous.place,
+                  savedPlaceRevision: latest.savedPlaceRevision,
+                },
+              }
+            : previous)
+        }
+      }
     }
   }
 

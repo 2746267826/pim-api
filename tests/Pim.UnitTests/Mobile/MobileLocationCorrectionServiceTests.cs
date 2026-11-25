@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Caching.Memory;
 using Pim.Core.Caching;
 using Pim.Core.Exceptions;
@@ -286,10 +287,36 @@ public sealed class MobileLocationCorrectionServiceTests
     }
 
     [Fact]
-    public async Task DeleteAsync_HidesPointAndPreventsLateUploadFromResurrectingIt()
+    public async Task DeleteAsync_HidesPointPurgesRevisionsAndPreventsLateUploadFromResurrectingIt()
     {
         await using var db = MobileTestHelpers.CreateDb();
         var point = SeedPoint(db, Id(12), Now, 31.230416, 121.473701);
+        db.Set<MobileLocationPointRevisionEntity>().Add(new MobileLocationPointRevisionEntity
+        {
+            UserId = MobileTestHelpers.UserId,
+            PointId = point.Id,
+            DeviceId = DeviceId,
+            Operation = "correct",
+            RevisionBefore = 0,
+            RevisionAfter = 0,
+            OriginalLatitude = 31.230416m,
+            OriginalLongitude = 121.473701m,
+            NewLatitude = 31.24m,
+            NewLongitude = 121.48m,
+            Reason = "删除前的原因",
+            ActorUserId = MobileTestHelpers.UserId,
+            CreatedAt = Now.AddMinutes(-5)
+        });
+        db.Set<MobileLocationSegmentMergeEntity>().Add(new MobileLocationSegmentMergeEntity
+        {
+            UserId = MobileTestHelpers.UserId,
+            DeviceId = DeviceId,
+            BeforePointId = point.Id,
+            AfterPointId = point.Id,
+            Kind = "move",
+            ActorUserId = MobileTestHelpers.UserId,
+            CreatedAt = Now.AddMinutes(-4)
+        });
         await db.SaveChangesAsync();
         var correction = CreateServices(db).Correction;
         var location = new MobileLocationService(
@@ -312,7 +339,39 @@ public sealed class MobileLocationCorrectionServiceTests
         var stored = await db.Set<MobileLocationPointEntity>().IgnoreQueryFilters().SingleAsync();
         Assert.NotNull(stored.DeletedAtUtc);
         Assert.Equal(1, stored.Revision);
-        Assert.Single(await correction.GetRevisionsAsync(point.Id, CancellationToken.None));
+
+        Assert.Empty(await db.Set<MobileLocationPointRevisionEntity>().ToListAsync());
+        Assert.Empty(await db.Set<MobileLocationSegmentMergeEntity>().ToListAsync());
+        var revisionsError = await Assert.ThrowsAsync<DomainException>(
+            () => correction.GetRevisionsAsync(point.Id, CancellationToken.None));
+        Assert.Equal(40401, revisionsError.ErrorCode);
+        Assert.Equal(40401, (await Assert.ThrowsAsync<DomainException>(
+            () => correction.CorrectAsync(
+                point.Id,
+                new MobileLocationPointCorrectionRequest(31.25, 121.49, 1),
+                CancellationToken.None))).ErrorCode);
+        Assert.Equal(40401, (await Assert.ThrowsAsync<DomainException>(
+            () => correction.RestoreAsync(
+                point.Id,
+                new MobileLocationPointRestoreRequest(1),
+                CancellationToken.None))).ErrorCode);
+
+        var managed = await correction.GetPointsAsync(
+            new MobileManagedLocationQueryRequest(
+                Now.AddHours(-1),
+                Now.AddHours(1),
+                "Asia/Shanghai",
+                DeviceId,
+                null,
+                true,
+                null,
+                50),
+            CancellationToken.None);
+        Assert.Empty(managed.Items);
+        var audit = Assert.Single(await db.AuditLogs.ToListAsync());
+        Assert.DoesNotContain("latitude", audit.MetadataJson, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("longitude", audit.MetadataJson, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("recordedAtUtc", audit.MetadataJson, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -405,7 +464,12 @@ public sealed class MobileLocationCorrectionServiceTests
         var db = ctx.Db;
         SeedDevice(db, DeviceId);
         await db.SaveChangesAsync();
-        var service = CreateServices(db, audit: new RecordingAuditLog()).Correction;
+        // 本用例只验证自然键冲突与回滚；SQLite 不支持 DateTimeOffset 比较，
+        // 因此把同步重算替换成记录器，重算本身由 InMemory/PostgreSQL 翻译用例覆盖。
+        var service = CreateServices(
+            db,
+            audit: new RecordingAuditLog(),
+            recalculation: new RecordingRecalculationService()).Correction;
         var request = new MobileLocationFillRequest(
             DeviceId,
             Now.AddMinutes(-2),
@@ -691,22 +755,332 @@ public sealed class MobileLocationCorrectionServiceTests
         Assert.Empty(await db.Set<MobileLocationSegmentMergeEntity>().ToListAsync());
     }
 
+    [Fact]
+    public async Task GetPointsAsync_CursorPaginatesWithStableKeysetOrdering()
+    {
+        await using var db = MobileTestHelpers.CreateDb();
+        for (var index = 0; index < 5; index++)
+        {
+            SeedPoint(
+                db,
+                Id(500 + index),
+                Now,
+                31.230416 + index * 0.0001,
+                121.473701);
+        }
+
+        await db.SaveChangesAsync();
+        var service = CreateServices(db).Correction;
+        var request = new MobileManagedLocationQueryRequest(
+            Now.AddHours(-1),
+            Now.AddHours(1),
+            "Asia/Shanghai",
+            DeviceId,
+            null,
+            true,
+            null,
+            2);
+
+        var collected = new List<Guid>();
+        string? cursor = null;
+        var pages = 0;
+        do
+        {
+            var page = await service.GetPointsAsync(request with { Cursor = cursor }, CancellationToken.None);
+            pages++;
+            collected.AddRange(page.Items.Select(point => point.Id));
+            Assert.True(page.Items.Count <= 2);
+            cursor = page.NextCursor;
+            if (!page.HasMore)
+                Assert.Null(cursor);
+        }
+        while (cursor is not null && pages < 10);
+
+        Assert.Equal(3, pages);
+        Assert.Equal(5, collected.Distinct().Count());
+        Assert.Equal(
+            Enumerable.Range(0, 5).Select(index => Id(500 + index)).OrderBy(id => id),
+            collected.OrderBy(id => id));
+
+        var firstPage = await service.GetPointsAsync(request, CancellationToken.None);
+        Assert.True(firstPage.HasMore);
+        var legacyCursor = firstPage.Items[^1].Id.ToString();
+        var legacyPage = await service.GetPointsAsync(
+            request with { Cursor = legacyCursor },
+            CancellationToken.None);
+        Assert.Equal(
+            firstPage.NextCursor is null
+                ? []
+                : (await service.GetPointsAsync(
+                    request with { Cursor = firstPage.NextCursor },
+                    CancellationToken.None)).Items.Select(point => point.Id),
+            legacyPage.Items.Select(point => point.Id));
+    }
+
+    [Fact]
+    public async Task GetPointsAsync_InvalidCursorIsRejectedInsteadOfSilentlyRestarting()
+    {
+        await using var db = MobileTestHelpers.CreateDb();
+        SeedPoint(db, Id(520), Now, 31.230416, 121.473701);
+        await db.SaveChangesAsync();
+        var service = CreateServices(db).Correction;
+
+        var error = await Assert.ThrowsAsync<DomainException>(() => service.GetPointsAsync(
+            new MobileManagedLocationQueryRequest(
+                Now.AddHours(-1),
+                Now.AddHours(1),
+                "Asia/Shanghai",
+                DeviceId,
+                null,
+                true,
+                "not-a-cursor",
+                50),
+            CancellationToken.None));
+
+        Assert.Equal(6208, error.ErrorCode);
+    }
+
+    [Fact]
+    public async Task CorrectAsync_RecalculatesBeforeReportingSuccess()
+    {
+        await using var db = MobileTestHelpers.CreateDb();
+        var point = SeedPoint(db, Id(530), Now, 31.230416, 121.473701);
+        await db.SaveChangesAsync();
+        var recalculation = new RecordingRecalculationService();
+        var service = CreateServices(db, recalculation: recalculation).Correction;
+
+        var result = await service.CorrectAsync(
+            point.Id,
+            new MobileLocationPointCorrectionRequest(31.24, 121.48, 0),
+            CancellationToken.None);
+
+        var scope = Assert.Single(recalculation.Scopes);
+        Assert.Equal(DeviceId, scope.DeviceId);
+        Assert.InRange(Now, scope.RangeStartUtc, scope.RangeEndUtc.AddTicks(-1));
+        Assert.Equal(Now, result.RecomputedAtUtc);
+    }
+
+    [Fact]
+    public async Task CorrectAsync_RecalculationFailureRollsBackMutationAndAudit()
+    {
+        await using var ctx = await DeviceManagementTestDb.CreateAsync();
+        var db = ctx.Db;
+        var point = SeedPoint(db, Id(531), Now, 31.230416, 121.473701);
+        await db.SaveChangesAsync();
+        var recalculation = new RecordingRecalculationService(
+            new InvalidOperationException("aggregation failed"));
+        var service = CreateServices(db, recalculation: recalculation).Correction;
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => service.CorrectAsync(
+            point.Id,
+            new MobileLocationPointCorrectionRequest(31.24, 121.48, 0),
+            CancellationToken.None));
+
+        Assert.Equal("aggregation failed", error.Message);
+        db.ChangeTracker.Clear();
+        var stored = await db.Set<MobileLocationPointEntity>().SingleAsync();
+        Assert.Equal(31.230416m, stored.Latitude);
+        Assert.Equal(121.473701m, stored.Longitude);
+        Assert.Equal(0, stored.Revision);
+        Assert.Empty(await db.Set<MobileLocationPointRevisionEntity>().ToListAsync());
+        Assert.Empty(await db.AuditLogs.ToListAsync());
+    }
+
+    [Fact]
+    public async Task CorrectAsync_ConcurrentRevisionTokenRejectsStaleWriteAndRollsBackAudit()
+    {
+        var interceptor = new BumpRevisionBeforeSaveInterceptor();
+        await using var ctx = await DeviceManagementTestDb.CreateAsync(interceptor);
+        var db = ctx.Db;
+        var point = SeedPoint(db, Id(532), Now, 31.230416, 121.473701);
+        await db.SaveChangesAsync();
+        interceptor.Arm();
+        var service = CreateServices(db).Correction;
+
+        var error = await Assert.ThrowsAsync<DomainException>(() => service.CorrectAsync(
+            point.Id,
+            new MobileLocationPointCorrectionRequest(31.24, 121.48, 0),
+            CancellationToken.None));
+
+        Assert.Equal(6204, error.ErrorCode);
+        db.ChangeTracker.Clear();
+        var stored = await db.Set<MobileLocationPointEntity>().SingleAsync();
+        Assert.Equal(31.230416m, stored.Latitude);
+        Assert.Equal(121.473701m, stored.Longitude);
+        Assert.Equal(0, stored.Revision);
+        Assert.Empty(await db.Set<MobileLocationPointRevisionEntity>().ToListAsync());
+        Assert.Empty(await db.AuditLogs.ToListAsync());
+    }
+
+    [Fact]
+    public async Task DeleteAsync_RecalculatesAffectedDayBeforeReportingSuccess()
+    {
+        await using var db = MobileTestHelpers.CreateDb();
+        var point = SeedPoint(db, Id(533), Now, 31.230416, 121.473701);
+        await db.SaveChangesAsync();
+        var recalculation = new RecordingRecalculationService();
+        var service = CreateServices(db, recalculation: recalculation).Correction;
+
+        var result = await service.DeleteAsync(point.Id, 0, CancellationToken.None);
+
+        var scope = Assert.Single(recalculation.Scopes);
+        Assert.Equal(DeviceId, scope.DeviceId);
+        Assert.InRange(Now, scope.RangeStartUtc, scope.RangeEndUtc.AddTicks(-1));
+        Assert.Equal(Now, result.RecomputedAtUtc);
+        Assert.Empty(await db.Set<MobileLocationPointRevisionEntity>().ToListAsync());
+    }
+
+    [Fact]
+    public async Task DeleteAsync_RecalculationFailureRollsBackDeletionPurgeAndAudit()
+    {
+        await using var ctx = await DeviceManagementTestDb.CreateAsync();
+        var db = ctx.Db;
+        var point = SeedPoint(db, Id(534), Now, 31.230416, 121.473701);
+        db.Set<MobileLocationPointRevisionEntity>().Add(new MobileLocationPointRevisionEntity
+        {
+            UserId = MobileTestHelpers.UserId,
+            PointId = point.Id,
+            DeviceId = DeviceId,
+            Operation = "correct",
+            RevisionBefore = 0,
+            RevisionAfter = 1,
+            ActorUserId = MobileTestHelpers.UserId,
+            CreatedAt = Now.AddMinutes(-1)
+        });
+        await db.SaveChangesAsync();
+        var service = CreateServices(
+            db,
+            recalculation: new RecordingRecalculationService(
+                new InvalidOperationException("aggregation failed"))).Correction;
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => service.DeleteAsync(point.Id, 0, CancellationToken.None));
+
+        Assert.Equal("aggregation failed", error.Message);
+        db.ChangeTracker.Clear();
+        var stored = await db.Set<MobileLocationPointEntity>().IgnoreQueryFilters().SingleAsync();
+        Assert.Null(stored.DeletedAtUtc);
+        Assert.Equal(0, stored.Revision);
+        Assert.Single(await db.Set<MobileLocationPointRevisionEntity>().ToListAsync());
+        Assert.Empty(await db.AuditLogs.ToListAsync());
+    }
+
+    [Fact]
+    public async Task DeleteAsync_RetryAfterSuccessIsIdempotentAndDoesNotAdvanceRevision()
+    {
+        await using var db = MobileTestHelpers.CreateDb();
+        var point = SeedPoint(db, Id(535), Now, 31.230416, 121.473701);
+        await db.SaveChangesAsync();
+        var service = CreateServices(db).Correction;
+
+        var first = await service.DeleteAsync(point.Id, 0, CancellationToken.None);
+        var retried = await service.DeleteAsync(point.Id, 0, CancellationToken.None);
+
+        Assert.Equal(first.PointId, retried.PointId);
+        Assert.Equal(first.DeletedAtUtc, retried.DeletedAtUtc);
+        db.ChangeTracker.Clear();
+        var stored = await db.Set<MobileLocationPointEntity>().IgnoreQueryFilters().SingleAsync();
+        Assert.NotNull(stored.DeletedAtUtc);
+        Assert.Equal(1, stored.Revision);
+        Assert.Single(await db.AuditLogs.ToListAsync());
+    }
+
+    [Fact]
+    public async Task SavePointMutation_NonUniqueDbUpdateExceptionKeepsServerErrorSemantics()
+    {
+        var options = new DbContextOptionsBuilder<PimDbContext>()
+            .UseInMemoryDatabase($"mobile-throwing-{Guid.NewGuid()}")
+            .Options;
+        await using var db = new ThrowingDbContext(options);
+        var point = SeedPoint(db, Id(540), Now, 31.230416, 121.473701);
+        await db.SaveChangesAsync();
+        db.FailNextSave = true;
+        var service = CreateServices(db).Correction;
+
+        var error = await Record.ExceptionAsync(() => service.CorrectAsync(
+            point.Id,
+            new MobileLocationPointCorrectionRequest(31.24, 121.48, 0),
+            CancellationToken.None));
+
+        Assert.IsType<DbUpdateException>(error);
+        Assert.IsNotType<DomainException>(error);
+    }
+
+    [Fact]
+    public async Task CreateSavedPlace_RepeatedRequestReturnsTheSameRow()
+    {
+        await using var ctx = await DeviceManagementTestDb.CreateAsync();
+        var db = ctx.Db;
+        var service = CreateServices(db).SavedPlace;
+        var request = new MobileSavedPlaceCreateRequest(
+            "家",
+            "home",
+            31.230416,
+            121.473701,
+            120);
+
+        var first = await service.CreateAsync(request, CancellationToken.None);
+        var retried = await service.CreateAsync(request, CancellationToken.None);
+
+        Assert.Equal(first.Id, retried.Id);
+        Assert.Single(await db.Set<MobileSavedPlaceEntity>().ToListAsync());
+        Assert.Single(await db.AuditLogs.ToListAsync());
+    }
+
+    [Fact]
+    public async Task UpdateSavedPlace_DuplicateContentIsRejectedAsNaturalKeyConflict()
+    {
+        await using var ctx = await DeviceManagementTestDb.CreateAsync();
+        var db = ctx.Db;
+        var service = CreateServices(db).SavedPlace;
+        var first = await service.CreateAsync(
+            new MobileSavedPlaceCreateRequest("家", "home", 31.230416, 121.473701, 120),
+            CancellationToken.None);
+        var second = await service.CreateAsync(
+            new MobileSavedPlaceCreateRequest("公司", "other", 31.230416, 121.473701, 120),
+            CancellationToken.None);
+
+        var error = await Assert.ThrowsAsync<DomainException>(() => service.UpdateAsync(
+            second.Id,
+            new MobileSavedPlaceUpdateRequest("家", "home", second.Revision),
+            CancellationToken.None));
+
+        Assert.Equal(6205, error.ErrorCode);
+        db.ChangeTracker.Clear();
+        var stored = await db.Set<MobileSavedPlaceEntity>().SingleAsync(place => place.Id == second.Id);
+        Assert.Equal("公司", stored.Name);
+        Assert.Equal(second.Revision, stored.Revision);
+        Assert.Equal(first.Id, (await db.Set<MobileSavedPlaceEntity>().SingleAsync(place => place.Name == "家")).Id);
+    }
+
     private static Services CreateServices(
         PimDbContext db,
         Guid? userId = null,
-        IAuditLogService? audit = null)
+        IAuditLogService? audit = null,
+        IMobileLocationRecalculationService? recalculation = null)
     {
         var user = MobileTestHelpers.CurrentUser(userId);
         var time = MobileTestHelpers.Time(Now);
         var query = new MobileLocationQueryService(time);
         var aggregation = new MobileLocationAggregationService(db, user, query, time);
+        var frequentPlace = new MobileFrequentPlaceService(db, user, query);
+        var recalculationService = recalculation
+            ?? new MobileLocationRecalculationService(aggregation, frequentPlace, time);
         var auditService = audit ?? new AuditLogService(db);
         var cache = new MemoryAggregateResultCache(new MemoryCache(new MemoryCacheOptions()), time);
         return new Services(
-            new MobileLocationCorrectionService(db, user, query, aggregation, auditService, cache, time),
+            new MobileLocationCorrectionService(
+                db,
+                user,
+                query,
+                aggregation,
+                recalculationService,
+                auditService,
+                cache,
+                time),
             new MobileSavedPlaceService(db, user, auditService, cache, time),
             aggregation,
-            new MobileFrequentPlaceService(db, user, query));
+            frequentPlace);
     }
 
     private static MobileLocationPointEntity SeedPoint(
@@ -835,5 +1209,74 @@ public sealed class MobileLocationCorrectionServiceTests
             CreateAuditLogRequest request,
             CancellationToken ct = default)
             => Task.FromResult(Enqueue(request));
+    }
+
+    private sealed class RecordingRecalculationService : IMobileLocationRecalculationService
+    {
+        private readonly Exception? _failure;
+
+        public RecordingRecalculationService(Exception? failure = null)
+        {
+            _failure = failure;
+        }
+
+        public List<MobileLocationRecalculationScope> Scopes { get; } = [];
+
+        public Task<DateTimeOffset> RecalculateAsync(
+            IReadOnlyCollection<MobileLocationRecalculationScope> scopes,
+            CancellationToken ct = default)
+        {
+            Scopes.AddRange(scopes);
+            return _failure is null
+                ? Task.FromResult(Now)
+                : Task.FromException<DateTimeOffset>(_failure);
+        }
+    }
+
+    private sealed class ThrowingDbContext(DbContextOptions<PimDbContext> options) : PimDbContext(options)
+    {
+        public bool FailNextSave { get; set; }
+
+        public override Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
+            => FailNextSave
+                ? Task.FromException<int>(new DbUpdateException(
+                    "write failed",
+                    new InvalidOperationException("disk full")))
+                : base.SaveChangesAsync(cancellationToken);
+
+        public override Task<int> SaveChangesAsync(
+            bool acceptAllChangesOnSuccess,
+            CancellationToken cancellationToken = default)
+            => FailNextSave
+                ? Task.FromException<int>(new DbUpdateException(
+                    "write failed",
+                    new InvalidOperationException("disk full")))
+                : base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
+    }
+
+    /// <summary>
+    /// 在业务 SaveChanges 发起前，用同一事务把 revision 从 0 改成 1。
+    /// 服务随后携带旧 revision=0 更新时只能影响 0 行，触发真实的数据库 CAS 冲突。
+    /// </summary>
+    private sealed class BumpRevisionBeforeSaveInterceptor : SaveChangesInterceptor
+    {
+        private int _armed;
+
+        public void Arm() => Interlocked.Exchange(ref _armed, 1);
+
+        public override async ValueTask<InterceptionResult<int>> SavingChangesAsync(
+            DbContextEventData eventData,
+            InterceptionResult<int> result,
+            CancellationToken cancellationToken = default)
+        {
+            if (Interlocked.Exchange(ref _armed, 0) == 1 && eventData.Context is not null)
+            {
+                await eventData.Context.Database.ExecuteSqlRawAsync(
+                    "UPDATE mobile_location_points SET revision = revision + 1",
+                    cancellationToken);
+            }
+
+            return result;
+        }
     }
 }

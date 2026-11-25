@@ -28,6 +28,7 @@ public sealed class MobileLocationCorrectionService
     private readonly ICurrentUserService _currentUser;
     private readonly MobileLocationQueryService _queryService;
     private readonly MobileLocationAggregationService _aggregationService;
+    private readonly IMobileLocationRecalculationService _recalculationService;
     private readonly IAuditLogService _auditLog;
     private readonly IAggregateResultCache _cache;
     private readonly TimeProvider _timeProvider;
@@ -37,6 +38,7 @@ public sealed class MobileLocationCorrectionService
         ICurrentUserService currentUser,
         MobileLocationQueryService queryService,
         MobileLocationAggregationService aggregationService,
+        IMobileLocationRecalculationService recalculationService,
         IAuditLogService auditLog,
         IAggregateResultCache cache,
         TimeProvider timeProvider)
@@ -45,6 +47,7 @@ public sealed class MobileLocationCorrectionService
         _currentUser = currentUser;
         _queryService = queryService;
         _aggregationService = aggregationService;
+        _recalculationService = recalculationService;
         _auditLog = auditLog;
         _cache = cache;
         _timeProvider = timeProvider;
@@ -63,6 +66,7 @@ public sealed class MobileLocationCorrectionService
             PageSize: request.PageSize,
             Cursor: request.Cursor));
 
+        var cursor = ResolveCursor(context.Cursor);
         var query = _db.Set<MobileLocationPointEntity>()
             .AsNoTracking()
             .Where(point => point.UserId == userId
@@ -73,50 +77,65 @@ public sealed class MobileLocationCorrectionService
         if (!string.IsNullOrWhiteSpace(context.DeviceId))
             query = query.Where(point => point.DeviceId == context.DeviceId);
 
-        var points = await query
-            .OrderBy(point => point.RecordedAtUtc)
-            .ThenBy(point => point.Id)
-            .ToListAsync(ct);
-
         if (!request.IncludeExcluded && !string.IsNullOrWhiteSpace(request.SegmentId))
         {
-            var segment = await _aggregationService.GetSegmentAsync(
+            var boundary = await MobileLocationSegmentBoundaries.ResolveAsync(
+                _db,
+                userId,
                 request.SegmentId.Trim(),
-                new MobileLocationQueryRequest(
-                    request.RangeStartUtc,
-                    request.RangeEndUtc,
-                    request.Timezone,
-                    request.DeviceId,
-                    PageSize: request.PageSize,
-                    Cursor: request.Cursor),
+                context,
                 ct);
-            if (segment is null)
+            if (boundary is null)
                 return new MobileManagedLocationPointPageDto([], null, false);
 
-            var segmentPointIds = segment.Path
-                .Select(point => Guid.Parse(point.Id))
-                .ToHashSet();
-            points = points.Where(point => segmentPointIds.Contains(point.Id)).ToList();
+            query = MobileLocationSegmentBoundaries.Apply(
+                query,
+                boundary,
+                context.MaxAccuracyMeters,
+                context.IncludeRejected);
         }
 
-        var startIndex = 0;
-        if (Guid.TryParse(context.Cursor, out var cursorId))
+        if (cursor is { Kind: MobileLocationCursorKind.LegacyPointId } legacy)
         {
-            var cursorIndex = points.FindIndex(point => point.Id == cursorId);
-            if (cursorIndex >= 0)
-                startIndex = cursorIndex + 1;
+            var recordedAtUtc = await _db.Set<MobileLocationPointEntity>()
+                .AsNoTracking()
+                .Where(point => point.UserId == userId && point.Id == legacy.Id)
+                .Select(point => (DateTimeOffset?)point.RecordedAtUtc)
+                .SingleOrDefaultAsync(ct);
+            if (recordedAtUtc is null)
+                throw new DomainException(6208, "分页游标已失效。");
+            cursor = legacy with { Kind = MobileLocationCursorKind.Encoded, RecordedAtUtc = recordedAtUtc.Value };
         }
 
-        var page = points.Skip(startIndex).Take(context.PageSize).ToList();
-        var hasMore = startIndex + page.Count < points.Count;
-        var nextCursor = hasMore && page.Count > 0 ? page[^1].Id.ToString() : null;
+        if (cursor is { Kind: MobileLocationCursorKind.Encoded } encoded)
+            query = MobileLocationCursor.Apply(query, encoded);
+
+        var page = await query
+            .OrderBy(point => point.RecordedAtUtc)
+            .ThenBy(point => point.Id)
+            .Take(context.PageSize + 1)
+            .ToListAsync(ct);
+        var hasMore = page.Count > context.PageSize;
+        if (hasMore)
+            page.RemoveAt(page.Count - 1);
+        var nextCursor = hasMore && page.Count > 0
+            ? MobileLocationCursor.Encode(page[^1].RecordedAtUtc, page[^1].Id)
+            : null;
         return new MobileManagedLocationPointPageDto(page.Select(MapPoint).ToList(), nextCursor, hasMore);
     }
 
-    public async Task<MobileLocationPointMutationResult> CorrectAsync(
+    public Task<MobileLocationPointMutationResult> CorrectAsync(
         Guid pointId,
         MobileLocationPointCorrectionRequest request,
         CancellationToken ct = default)
+        => ExecuteMutationAsync(
+            token => CorrectAttemptAsync(pointId, request, token),
+            ct);
+
+    private async Task<MobileLocationPointMutationResult> CorrectAttemptAsync(
+        Guid pointId,
+        MobileLocationPointCorrectionRequest request,
+        CancellationToken ct)
     {
         var userId = MobileUserContext.RequireUserId(_currentUser);
         ValidateCoordinates(request.Latitude, request.Longitude);
@@ -131,7 +150,7 @@ public sealed class MobileLocationCorrectionService
         // 网络失败后客户端会带旧 revision 重试；如果目标状态已经落库，按幂等成功返回，
         // 而不是把“已成功但丢回执”的请求误报成冲突。
         if (coordsMatch && exclusionMatch)
-            return new MobileLocationPointMutationResult(MapPoint(point), now);
+            return new MobileLocationPointMutationResult(MapPoint(point), point.UpdatedAt ?? now);
 
         EnsureRevision(point, request.Revision);
 
@@ -147,7 +166,7 @@ public sealed class MobileLocationCorrectionService
         var coordsChanged = !coordsMatch;
         var excludedChanged = request.Excluded is not null && request.Excluded.Value != point.IsExcluded;
         if (!coordsChanged && !excludedChanged)
-            return new MobileLocationPointMutationResult(MapPoint(point), now);
+            return new MobileLocationPointMutationResult(MapPoint(point), point.UpdatedAt ?? now);
 
         var revisionBefore = point.Revision;
         var excludedBefore = point.IsExcluded;
@@ -195,14 +214,24 @@ public sealed class MobileLocationCorrectionService
         });
 
         await SavePointMutationAsync(ct);
-        _cache.EvictByPrefix("/api/v1/mobile/");
-        return new MobileLocationPointMutationResult(MapPoint(point), now);
+        var recomputedAtUtc = await RecalculateAsync(
+            [LocalDayScope(point.DeviceId, point.RecordedAtUtc)],
+            ct);
+        return new MobileLocationPointMutationResult(MapPoint(point), recomputedAtUtc);
     }
 
-    public async Task<MobileLocationPointMutationResult> RestoreAsync(
+    public Task<MobileLocationPointMutationResult> RestoreAsync(
         Guid pointId,
         MobileLocationPointRestoreRequest request,
         CancellationToken ct = default)
+        => ExecuteMutationAsync(
+            token => RestoreAttemptAsync(pointId, request, token),
+            ct);
+
+    private async Task<MobileLocationPointMutationResult> RestoreAttemptAsync(
+        Guid pointId,
+        MobileLocationPointRestoreRequest request,
+        CancellationToken ct)
     {
         var userId = MobileUserContext.RequireUserId(_currentUser);
         var reason = NormalizeReason(request.Reason);
@@ -214,7 +243,7 @@ public sealed class MobileLocationCorrectionService
         var targetLatitude = point.OriginalLatitude.Value;
         var targetLongitude = point.OriginalLongitude.Value;
         if (point.Latitude == targetLatitude && point.Longitude == targetLongitude)
-            return new MobileLocationPointMutationResult(MapPoint(point), now);
+            return new MobileLocationPointMutationResult(MapPoint(point), point.UpdatedAt ?? now);
 
         EnsureRevision(point, request.Revision);
 
@@ -249,13 +278,22 @@ public sealed class MobileLocationCorrectionService
         });
 
         await SavePointMutationAsync(ct);
-        _cache.EvictByPrefix("/api/v1/mobile/");
-        return new MobileLocationPointMutationResult(MapPoint(point), now);
+        var recomputedAtUtc = await RecalculateAsync(
+            [LocalDayScope(point.DeviceId, point.RecordedAtUtc)],
+            ct);
+        return new MobileLocationPointMutationResult(MapPoint(point), recomputedAtUtc);
     }
 
-    public async Task<MobileLocationBatchMutationResult> SetExclusionAsync(
+    public Task<MobileLocationBatchMutationResult> SetExclusionAsync(
         MobileLocationPointExclusionRequest request,
         CancellationToken ct = default)
+        => ExecuteMutationAsync(
+            token => SetExclusionAttemptAsync(request, token),
+            ct);
+
+    private async Task<MobileLocationBatchMutationResult> SetExclusionAttemptAsync(
+        MobileLocationPointExclusionRequest request,
+        CancellationToken ct)
     {
         var userId = MobileUserContext.RequireUserId(_currentUser);
         var reason = NormalizeReason(request.Reason);
@@ -321,16 +359,27 @@ public sealed class MobileLocationCorrectionService
                     ["count"] = changed.Count.ToString(CultureInfo.InvariantCulture)
                 });
             await SavePointMutationAsync(ct);
-            _cache.EvictByPrefix("/api/v1/mobile/");
+            var recomputedAtUtc = await RecalculateAsync(
+                changed.Select(point => LocalDayScope(point.DeviceId, point.RecordedAtUtc)).ToList(),
+                ct);
+            return new MobileLocationBatchMutationResult(changed.Count, results, recomputedAtUtc);
         }
 
         return new MobileLocationBatchMutationResult(changed.Count, results, now);
     }
 
-    public async Task<MobileLocationPointDeleteResult> DeleteAsync(
+    public Task<MobileLocationPointDeleteResult> DeleteAsync(
         Guid pointId,
         int revision,
         CancellationToken ct = default)
+        => ExecuteMutationAsync(
+            token => DeleteAttemptAsync(pointId, revision, token),
+            ct);
+
+    private async Task<MobileLocationPointDeleteResult> DeleteAttemptAsync(
+        Guid pointId,
+        int revision,
+        CancellationToken ct)
     {
         var userId = MobileUserContext.RequireUserId(_currentUser);
         var point = await _db.Set<MobileLocationPointEntity>()
@@ -339,7 +388,23 @@ public sealed class MobileLocationCorrectionService
             ?? throw new DomainException(40401, "定位点不存在。");
         var now = _timeProvider.GetUtcNow();
         if (point.DeletedAtUtc is not null)
-            return new MobileLocationPointDeleteResult(point.Id, point.DeletedAtUtc.Value, now);
+        {
+            // 旧数据可能还留有删除前的修订行；幂等重试也要把它们清干净，
+            // 保证任何历史接口都无法从已删除点读回坐标、原因或操作者。
+            if (await QueueDeletedPointHistoryPurgeAsync(userId, point.Id, ct))
+            {
+                await SavePointMutationAsync(ct);
+                var purgedAtUtc = await RecalculateAsync(
+                    [LocalDayScope(point.DeviceId, point.RecordedAtUtc)],
+                    ct);
+                return new MobileLocationPointDeleteResult(point.Id, point.DeletedAtUtc.Value, purgedAtUtc);
+            }
+
+            return new MobileLocationPointDeleteResult(
+                point.Id,
+                point.DeletedAtUtc.Value,
+                point.UpdatedAt ?? point.DeletedAtUtc.Value);
+        }
 
         EnsureRevision(point, revision);
         var revisionBefore = point.Revision;
@@ -347,36 +412,29 @@ public sealed class MobileLocationCorrectionService
         point.DeletedByUserId = userId;
         point.Revision++;
         point.UpdatedAt = now;
-        _db.Set<MobileLocationPointRevisionEntity>().Add(new MobileLocationPointRevisionEntity
-        {
-            UserId = userId,
-            PointId = point.Id,
-            DeviceId = point.DeviceId,
-            Operation = "delete",
-            RevisionBefore = revisionBefore,
-            RevisionAfter = point.Revision,
-            ExcludedBefore = point.IsExcluded,
-            ExcludedAfter = point.IsExcluded,
-            ActorUserId = userId,
-            CreatedAt = now
-        });
+        await QueueDeletedPointHistoryPurgeAsync(userId, point.Id, ct);
         EnqueueAudit(userId, "mobile.location.delete", point.Id, new Dictionary<string, string>
         {
-            ["deviceId"] = point.DeviceId,
-            ["recordedAtUtc"] = point.RecordedAtUtc.ToString("O", CultureInfo.InvariantCulture),
-            ["latitude"] = point.Latitude.ToString(CultureInfo.InvariantCulture),
-            ["longitude"] = point.Longitude.ToString(CultureInfo.InvariantCulture),
             ["revisionBefore"] = revisionBefore.ToString(CultureInfo.InvariantCulture)
         });
 
         await SavePointMutationAsync(ct);
-        _cache.EvictByPrefix("/api/v1/mobile/");
-        return new MobileLocationPointDeleteResult(point.Id, now, now);
+        var recomputedAtUtc = await RecalculateAsync(
+            [LocalDayScope(point.DeviceId, point.RecordedAtUtc)],
+            ct);
+        return new MobileLocationPointDeleteResult(point.Id, now, recomputedAtUtc);
     }
 
-    public async Task<MobileLocationPointMutationResult> FillAsync(
+    public Task<MobileLocationPointMutationResult> FillAsync(
         MobileLocationFillRequest request,
         CancellationToken ct = default)
+        => ExecuteMutationAsync(
+            token => FillAttemptAsync(request, token),
+            ct);
+
+    private async Task<MobileLocationPointMutationResult> FillAttemptAsync(
+        MobileLocationFillRequest request,
+        CancellationToken ct)
     {
         var userId = MobileUserContext.RequireUserId(_currentUser);
         ValidateCoordinates(request.Latitude, request.Longitude);
@@ -441,18 +499,28 @@ public sealed class MobileLocationCorrectionService
         {
             await _db.SaveChangesAsync(ct);
         }
-        catch (DbUpdateException) when (!ct.IsCancellationRequested)
+        catch (DbUpdateException ex) when (!ct.IsCancellationRequested
+            && MobileDbErrors.IsUniqueConstraintViolation(ex))
         {
             throw new DomainException(6205, "该设备在这个时刻已经存在相同坐标的定位点。");
         }
 
-        _cache.EvictByPrefix("/api/v1/mobile/");
-        return new MobileLocationPointMutationResult(MapPoint(point), now);
+        var recomputedAtUtc = await RecalculateAsync(
+            [LocalDayScope(point.DeviceId, point.RecordedAtUtc)],
+            ct);
+        return new MobileLocationPointMutationResult(MapPoint(point), recomputedAtUtc);
     }
 
-    public async Task<MobileLocationSegmentMergeResult> MergeAdjacentSegmentsAsync(
+    public Task<MobileLocationSegmentMergeResult> MergeAdjacentSegmentsAsync(
         MobileLocationSegmentMergeRequest request,
         CancellationToken ct = default)
+        => ExecuteMutationAsync(
+            token => MergeAdjacentSegmentsAttemptAsync(request, token),
+            ct);
+
+    private async Task<MobileLocationSegmentMergeResult> MergeAdjacentSegmentsAttemptAsync(
+        MobileLocationSegmentMergeRequest request,
+        CancellationToken ct)
     {
         var userId = MobileUserContext.RequireUserId(_currentUser);
         var segmentIds = (request.SegmentIds ?? []).Where(id => !string.IsNullOrWhiteSpace(id)).Distinct().ToList();
@@ -519,14 +587,28 @@ public sealed class MobileLocationCorrectionService
             ["kind"] = kind,
             ["segmentIds"] = string.Join(',', segmentIds)
         });
-        await _db.SaveChangesAsync(ct);
-        _cache.EvictByPrefix("/api/v1/mobile/");
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateException ex) when (!ct.IsCancellationRequested
+            && MobileDbErrors.IsUniqueConstraintViolation(ex))
+        {
+            throw new DomainException(6205, "这个分段边界已被其他修改更新，请刷新后重试。");
+        }
+
+        var recomputedAtUtc = await RecalculateAsync(
+            [new MobileLocationRecalculationScope(
+                first.DeviceId,
+                request.RangeStartUtc,
+                request.RangeEndUtc)],
+            ct);
         return new MobileLocationSegmentMergeResult(
             kind,
             boundaryPointId,
             first.StartUtc,
             second.EndUtc,
-            now);
+            recomputedAtUtc);
     }
 
     public async Task<IReadOnlyList<MobileLocationPointRevisionDto>> GetRevisionsAsync(
@@ -535,7 +617,6 @@ public sealed class MobileLocationCorrectionService
     {
         var userId = MobileUserContext.RequireUserId(_currentUser);
         var pointExists = await _db.Set<MobileLocationPointEntity>()
-            .IgnoreQueryFilters()
             .AnyAsync(point => point.UserId == userId && point.Id == pointId, ct);
         if (!pointExists)
             throw new DomainException(40401, "定位点不存在。");
@@ -588,6 +669,35 @@ public sealed class MobileLocationCorrectionService
         point.ExcludedByUserId = excluded ? userId : null;
     }
 
+    /// <summary>
+    /// 位置写操作统一的事务边界：每次执行策略重试都清空跟踪器并重新加载，
+    /// 业务行、修订、审计和同步重算在同一事务内完成；只有全部成功并提交后才驱逐聚合缓存。
+    /// 这样重算失败不会留下“写入已生效但接口报错”的半完成状态。
+    /// </summary>
+    private async Task<T> ExecuteMutationAsync<T>(
+        Func<CancellationToken, Task<T>> attempt,
+        CancellationToken ct)
+    {
+        var strategy = _db.Database.CreateExecutionStrategy();
+        var result = await strategy.ExecuteAsync(
+            async token =>
+            {
+                _db.ChangeTracker.Clear();
+                await using var transaction = _db.Database.IsRelational()
+                    ? await _db.Database.BeginTransactionAsync(token)
+                    : null;
+                var value = await attempt(token);
+                if (transaction is not null)
+                    await transaction.CommitAsync(token);
+                return value;
+            },
+            ct);
+
+        // 提交后再驱逐，避免并发读把提交前的结果回填到新代际缓存。
+        _cache.EvictByPrefix("/api/v1/mobile/");
+        return result;
+    }
+
     private async Task SavePointMutationAsync(CancellationToken ct)
     {
         try
@@ -598,9 +708,73 @@ public sealed class MobileLocationCorrectionService
         {
             throw new DomainException(6204, "这个定位点已被其他修改更新，请刷新后重新选择。");
         }
-        catch (DbUpdateException) when (!ct.IsCancellationRequested)
+        catch (DbUpdateException ex) when (!ct.IsCancellationRequested
+            && MobileDbErrors.IsUniqueConstraintViolation(ex))
         {
             throw new DomainException(6205, "修改后的坐标与同一时刻的另一个定位点重复。");
+        }
+    }
+
+    /// <summary>
+    /// 永久删除点后，修订行与依赖该边界点的分段合并覆盖都必须一起消失。
+    /// 只排队删除，由调用方与点状态/审计一起提交，避免出现“点已删除、历史仍可读”的中间态。
+    /// </summary>
+    private async Task<bool> QueueDeletedPointHistoryPurgeAsync(
+        Guid userId,
+        Guid pointId,
+        CancellationToken ct)
+    {
+        var revisions = await _db.Set<MobileLocationPointRevisionEntity>()
+            .Where(revision => revision.UserId == userId && revision.PointId == pointId)
+            .ToListAsync(ct);
+        var merges = await _db.Set<MobileLocationSegmentMergeEntity>()
+            .Where(merge => merge.UserId == userId
+                && (merge.BeforePointId == pointId || merge.AfterPointId == pointId))
+            .ToListAsync(ct);
+        if (revisions.Count == 0 && merges.Count == 0)
+            return false;
+
+        _db.Set<MobileLocationPointRevisionEntity>().RemoveRange(revisions);
+        _db.Set<MobileLocationSegmentMergeEntity>().RemoveRange(merges);
+        return true;
+    }
+
+    private static MobileLocationCursorValue? ResolveCursor(string? cursor)
+        => string.IsNullOrWhiteSpace(cursor) ? null : MobileLocationCursor.Parse(cursor);
+
+    private async Task<DateTimeOffset> RecalculateAsync(
+        IReadOnlyCollection<MobileLocationRecalculationScope> scopes,
+        CancellationToken ct)
+        => await _recalculationService.RecalculateAsync(scopes, ct);
+
+    private static MobileLocationRecalculationScope LocalDayScope(
+        string deviceId,
+        DateTimeOffset recordedAtUtc)
+    {
+        var timeZone = ResolveTimeZone(MobileAnalyticsDefaults.DefaultTimezone);
+        var localDate = TimeZoneInfo.ConvertTime(recordedAtUtc, timeZone).Date;
+        var startUtc = TimeZoneInfo.ConvertTimeToUtc(
+            DateTime.SpecifyKind(localDate, DateTimeKind.Unspecified),
+            timeZone);
+        return new MobileLocationRecalculationScope(
+            deviceId,
+            new DateTimeOffset(startUtc, TimeSpan.Zero),
+            new DateTimeOffset(startUtc.AddDays(1), TimeSpan.Zero));
+    }
+
+    private static TimeZoneInfo ResolveTimeZone(string timezone)
+    {
+        try
+        {
+            return TimeZoneInfo.FindSystemTimeZoneById(timezone);
+        }
+        catch (TimeZoneNotFoundException)
+        {
+            return TimeZoneInfo.FindSystemTimeZoneById("China Standard Time");
+        }
+        catch (InvalidTimeZoneException)
+        {
+            return TimeZoneInfo.FindSystemTimeZoneById("China Standard Time");
         }
     }
 

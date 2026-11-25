@@ -6513,6 +6513,10 @@ namespace Pim.Infrastructure.Data.Migrations
 
                     b.HasIndex("UserId", "CenterLatitude", "CenterLongitude");
 
+                    b.HasIndex("UserId", "Name", "PlaceType", "CenterLatitude", "CenterLongitude", "RadiusMeters")
+                        .IsUnique()
+                        .HasDatabaseName("IX_mobile_saved_places_user_id_content");
+
                     b.ToTable("mobile_saved_places");
                 });
 

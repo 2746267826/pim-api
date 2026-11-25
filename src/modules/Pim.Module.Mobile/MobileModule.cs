@@ -41,6 +41,7 @@ public sealed class MobileModule : IModule
         services.AddScoped<MobileSessionInterpreter>();
         services.AddScoped<MobileLocationService>();
         services.AddScoped<MobileLocationCorrectionService>();
+        services.AddScoped<IMobileLocationRecalculationService, MobileLocationRecalculationService>();
         services.AddScoped<MobileSavedPlaceService>();
         services.AddScoped<MobileLocationQueryService>();
         services.AddScoped<MobileLocationAggregationService>();

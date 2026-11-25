@@ -1,5 +1,6 @@
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.EntityFrameworkCore.Storage;
 using Pim.Core.Exceptions;
 using Pim.Infrastructure.Data;
@@ -22,14 +23,16 @@ namespace Pim.UnitTests.Mobile;
 /// </summary>
 internal static class DeviceManagementTestDb
 {
-    public static async Task<SqliteContext> CreateAsync()
+    public static async Task<SqliteContext> CreateAsync(IInterceptor? interceptor = null)
     {
         MobileTestHelpers.RegisterMobileModule();
         var connection = new SqliteConnection("DataSource=:memory:");
         await connection.OpenAsync();
-        var options = new DbContextOptionsBuilder<PimDbContext>()
-            .UseSqlite(connection, o => o.ExecutionStrategy(d => new DeclaredRetryingExecutionStrategy(d)))
-            .Options;
+        var builder = new DbContextOptionsBuilder<PimDbContext>()
+            .UseSqlite(connection, o => o.ExecutionStrategy(d => new DeclaredRetryingExecutionStrategy(d)));
+        if (interceptor is not null)
+            builder.AddInterceptors(interceptor);
+        var options = builder.Options;
         var db = new MobileSqliteDbContext(options);
         await db.Database.EnsureCreatedAsync();
         return new SqliteContext(db, connection);

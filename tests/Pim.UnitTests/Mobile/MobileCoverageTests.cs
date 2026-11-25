@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Pim.Core.Exceptions;
 using Pim.Core.Operations;
 using Pim.Infrastructure.Data.Entities;
 using Pim.Module.Mobile.DTOs;
@@ -364,6 +365,9 @@ public sealed class MobileCoverageTests
         Assert.NotNull(page1.NextCursor);
         var page2 = await svc.GetSegmentPointsAsync(segmentId, new MobileLocationQueryRequest(DateTimeOffset.Parse("2026-07-07T00:00:00Z"), DateTimeOffset.Parse("2026-07-08T00:00:00Z"), Cursor: page1.NextCursor, PageSize: 2));
         Assert.Equal(2, page2.Items.Count);
+        Assert.Equal(
+            new[] { "33333333-3333-3333-3333-333333333333", "44444444-4444-4444-4444-444444444444" },
+            page2.Items.Select(point => point.Id).ToArray());
         Assert.False(page2.HasMore);
     }
 
@@ -426,7 +430,7 @@ public sealed class MobileCoverageTests
     }
 
     [Fact]
-    public async Task LocAgg_GetSegmentPoints_InvalidCursor_ReturnsFirstPage()
+    public async Task LocAgg_GetSegmentPoints_InvalidCursor_IsRejected()
     {
         await using var db = ServiceTestBase.CreateDb();
         SeedLoc(db, "11111111-1111-1111-1111-111111111111", "2026-07-07T10:00:00Z", 31.230416, 121.473701, 10, "usable");
@@ -435,9 +439,39 @@ public sealed class MobileCoverageTests
         var svc = CreateLocAgg(db, BaseTime);
         var tracks = await svc.GetTracksAsync(new MobileLocationQueryRequest(DateTimeOffset.Parse("2026-07-07T00:00:00Z"), DateTimeOffset.Parse("2026-07-08T00:00:00Z")));
         var segId = tracks[0].Segments[0].Id;
-        var page = await svc.GetSegmentPointsAsync(segId, new MobileLocationQueryRequest(DateTimeOffset.Parse("2026-07-07T00:00:00Z"), DateTimeOffset.Parse("2026-07-08T00:00:00Z"), Cursor: "not-a-guid", PageSize: 10));
-        Assert.Equal(2, page.Items.Count);
-        Assert.False(page.HasMore);
+        var error = await Assert.ThrowsAsync<DomainException>(() => svc.GetSegmentPointsAsync(
+            segId,
+            new MobileLocationQueryRequest(
+                DateTimeOffset.Parse("2026-07-07T00:00:00Z"),
+                DateTimeOffset.Parse("2026-07-08T00:00:00Z"),
+                Cursor: "not-a-guid",
+                PageSize: 10)));
+        Assert.Equal(6208, error.ErrorCode);
+    }
+
+    [Fact]
+    public async Task LocAgg_GetSegmentPoints_IncludeRejectedMatchesSegmentPath()
+    {
+        await using var db = ServiceTestBase.CreateDb();
+        SeedLoc(db, "11111111-1111-1111-1111-111111111111", "2026-07-07T10:00:00Z", 31.230416, 121.473701, 10, "usable");
+        const string rejectedId = "22222222-2222-2222-2222-222222222222";
+        SeedLoc(db, rejectedId, "2026-07-07T10:00:30Z", 31.230516, 121.473701, 180, "rejected");
+        SeedLoc(db, "33333333-3333-3333-3333-333333333333", "2026-07-07T10:01:00Z", 31.230616, 121.473701, 10, "usable");
+        await db.SaveChangesAsync();
+        var svc = CreateLocAgg(db, BaseTime);
+        var query = new MobileLocationQueryRequest(
+            DateTimeOffset.Parse("2026-07-07T00:00:00Z"),
+            DateTimeOffset.Parse("2026-07-08T00:00:00Z"),
+            IncludeRejected: true);
+        var tracks = await svc.GetTracksAsync(query);
+        var segment = tracks[0].Segments.First(candidate => candidate.Path.Any(point => point.Id == rejectedId));
+        Assert.Contains(segment.Path, point => point.Id == rejectedId);
+
+        var page = await svc.GetSegmentPointsAsync(segment.Id, query);
+
+        Assert.Equal(
+            segment.Path.Select(point => point.Id).ToArray(),
+            page.Items.Select(point => point.Id).ToArray());
     }
 
     // ===== MobileFrequentPlaceService =====

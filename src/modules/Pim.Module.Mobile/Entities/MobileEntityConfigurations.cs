@@ -164,6 +164,19 @@ public sealed class MobileSavedPlaceEntityConfiguration
         builder.Property(e => e.Revision).IsConcurrencyToken();
         builder.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
         builder.Property(e => e.UpdatedAt).HasDefaultValueSql("now()");
+        // 重复保存同一地点（网络重试/双击）必须返回同一条记录，而不是叠加行。
+        // 服务层先查后插；唯一索引负责并发请求下的最后一道幂等保证。
+        builder.HasIndex(e => new
+            {
+                e.UserId,
+                e.Name,
+                e.PlaceType,
+                e.CenterLatitude,
+                e.CenterLongitude,
+                e.RadiusMeters
+            })
+            .IsUnique()
+            .HasDatabaseName("IX_mobile_saved_places_user_id_content");
         builder.HasIndex(e => new { e.UserId, e.IsEnabled });
         builder.HasIndex(e => new { e.UserId, e.CenterLatitude, e.CenterLongitude });
     }
