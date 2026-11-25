@@ -303,6 +303,9 @@ export class UploadEngine {
         try {
           res = await fetch(target.url, {
             method: 'PUT',
+            // 不跟随服务端返回的重定向：初始地址即使为 HTTPS，也不能让 3xx
+            // 把分片带到 HTTP、其他主机或未知协议。
+            redirect: 'error',
             // 不带账号 Authorization；只向服务端返回的临时会话地址发送分片。
             headers: { 'Content-Range': contentRangeHeader(item.fileSize, chunk), 'Content-Type': 'application/octet-stream' },
             body: blob,

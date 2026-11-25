@@ -11,7 +11,15 @@ public sealed record CorsOriginFilterResult(
 public static class CorsOriginPolicy
 {
     private static readonly HashSet<string> LoopbackHosts =
-        new(StringComparer.OrdinalIgnoreCase) { "127.0.0.1", "localhost", "::1", "[::1]" };
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            "127.0.0.1",
+            "localhost",
+            "::1",
+            "[::1]",
+            // Android 模拟器访问宿主机的固定别名，与客户端/Android network-security-config 的开发例外一致。
+            "10.0.2.2",
+        };
 
     public static CorsOriginFilterResult Filter(string? raw)
     {

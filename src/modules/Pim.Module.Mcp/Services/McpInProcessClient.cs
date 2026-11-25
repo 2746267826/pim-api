@@ -41,6 +41,10 @@ public sealed class McpInProcessDispatcher : HttpMessageHandler
         using var scope = _rootServices.CreateScope();
         var context = new DefaultHttpContext();
         context.RequestServices = scope.ServiceProvider;
+        // Q04：进程内调用不经过网络，也没有可降级的传输；标记为 HTTPS 免得
+        // 生产环境的明文门禁把 MCP 工具自身对 /api/v1/* 的调用拒绝。
+        context.Connection.RemoteIpAddress = IPAddress.Loopback;
+        context.Request.Scheme = Uri.UriSchemeHttps;
         context.Request.Method = request.Method.Method;
         // The server normally registers this feature; without it the JSON body binder in
         // RequestDelegateFactory skips reading the request body entirely.

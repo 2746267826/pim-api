@@ -9,8 +9,14 @@ services:
       - ASPNETCORE_ENVIRONMENT=Production
       - ASPNETCORE_URLS=http://+:5000
       # 反代必须在本机 / pim-net 内，并且发出的 X-Forwarded-Proto 才会被信任。
-      # 现有 1Panel OpenResty 如从宿主机转发，请把其实际来源 IP/CIDR 加进 PIM_TRUSTED_PROXIES。
-      - PIM_TRUSTED_PROXIES=${PIM_TRUSTED_PROXIES:-127.0.0.1/32,::1/128,172.31.240.0/24}
+      # 现有 1Panel OpenResty 如从宿主机转发，容器看到的来源通常是 PIM_NETWORK_SUBNET 网关；
+      # 请只填实际反代 IP/CIDR，不要使用 0.0.0.0/0。
+      - PIM_TRUSTED_PROXIES=${PIM_TRUSTED_PROXIES:-127.0.0.1/32,::1/128,172.31.240.1/32}
+      # 生产默认拒绝所有明文数据请求（含回环反代）；仅健康检查、版本和 ACME 挑战保留明文。
+      # 回环反代必须正确发送可信的 X-Forwarded-Proto: https，不能依赖“来源是本机”绕过门禁。
+      - PIM_REQUIRE_HTTPS=${PIM_REQUIRE_HTTPS:-true}
+      - PIM_ALLOW_LOOPBACK_CLEARTEXT=${PIM_ALLOW_LOOPBACK_CLEARTEXT:-false}
+      - PIM_HSTS_MAX_AGE_SECONDS=${PIM_HSTS_MAX_AGE_SECONDS:-31536000}
       # 跨域浏览器来源只能是 HTTPS；同源部署无需配置。留空时仅保留本机开发来源。
       - PIM_CORS_ORIGINS=${PIM_CORS_ORIGINS:-}
       - TZ=Asia/Shanghai
@@ -114,4 +120,4 @@ networks:
     ipam:
       config:
         # 固定网段让 PIM_TRUSTED_PROXIES 的默认容器网络边界可复现。
-        - subnet: 172.31.240.0/24
+        - subnet: ${PIM_NETWORK_SUBNET:-172.31.240.0/24}

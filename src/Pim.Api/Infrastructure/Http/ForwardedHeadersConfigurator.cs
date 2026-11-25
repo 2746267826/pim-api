@@ -44,7 +44,14 @@ public static class ForwardedHeadersConfigurator
                     $"可信代理配置项无效：{token}。请填写 IP 或 CIDR，例如 127.0.0.1/32 或 172.31.240.0/24。");
             }
 
-            options.KnownNetworks.Add(new IPNetwork(networkAddress, prefixLength));
+            if (prefixLength == 0)
+            {
+                throw new InvalidOperationException(
+                    $"可信代理配置不能使用默认路由（{token}）；请填写实际反向代理 IP 或最小 CIDR。");
+            }
+
+            options.KnownNetworks.Add(
+                new Microsoft.AspNetCore.HttpOverrides.IPNetwork(networkAddress, prefixLength));
         }
 
         if (options.KnownProxies.Count == 0 && options.KnownNetworks.Count == 0)

@@ -82,6 +82,7 @@ describe('云盘预授权直传传输门禁（Q04）', () => {
     expect(fetchMock.mock.calls[0]![0]).toBe('https://upload.example.com/session?sig=SECRET-SIGNATURE')
     const init = fetchMock.mock.calls[0]![1] as RequestInit
     expect((init.headers as Record<string, string>).Authorization).toBeUndefined()
+    expect(init.redirect).toBe('error')
     expect(filesApiMock.completeUploadSession).toHaveBeenCalledWith(
       '/',
       'big.bin',

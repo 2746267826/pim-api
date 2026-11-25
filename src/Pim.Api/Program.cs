@@ -302,6 +302,14 @@ var app = builder.Build();
 var forwardedHeadersOptions = ForwardedHeadersConfigurator.Create(
     builder.Configuration[ForwardedHeadersConfigurator.ConfigurationKey]
     ?? Environment.GetEnvironmentVariable(ForwardedHeadersConfigurator.EnvironmentVariable));
+var transportSecurityOptions = TransportSecurityOptions.FromConfiguration(
+    builder.Configuration,
+    app.Environment);
+Log.Information(
+    "传输安全门禁：EnforceHttps={EnforceHttps}, AllowLoopbackCleartext={AllowLoopbackCleartext}, HstsMaxAgeSeconds={HstsMaxAgeSeconds}",
+    transportSecurityOptions.EnforceHttps,
+    transportSecurityOptions.AllowLoopbackCleartext,
+    transportSecurityOptions.HstsMaxAgeSeconds);
 app.UseForwardedHeaders(forwardedHeadersOptions);
 app.UseMiddleware<RequestSchemeHeaderMiddleware>();
 app.UseMiddleware<CorrelationIdMiddleware>();
@@ -317,6 +325,7 @@ app.UseSerilogRequestLogging(options =>
     options.MessageTemplate = "{RemoteIpAddress} {RequestMethod} {RequestPath} responded {StatusCode} in {Elapsed:0.000} ms";
 });
 app.UseMiddleware<ExceptionMiddleware>();
+app.UseMiddleware<TransportSecurityMiddleware>(transportSecurityOptions);
 app.UseCors();
 app.UseAuthentication();
 app.UseMiddleware<OpsRateLimitMiddleware>();

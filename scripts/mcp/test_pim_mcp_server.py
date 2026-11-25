@@ -6,9 +6,28 @@ Run from the repo root:  python3 -m pytest scripts/mcp/test_pim_mcp_server.py -q
 import os
 import sys
 
+import pytest
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import pim_mcp_server as s
+
+
+def test_pim_api_url_allows_local_http():
+    assert s._validate_pim_api_url("http://127.0.0.1:5858/") == "http://127.0.0.1:5858"
+    assert s._validate_pim_api_url("http://localhost:5858") == "http://localhost:5858"
+    assert s._validate_pim_api_url("http://[::1]:5858") == "http://[::1]:5858"
+
+
+def test_pim_api_url_allows_remote_https():
+    assert s._validate_pim_api_url("https://pim.example.com/api/v1") == "https://pim.example.com/api/v1"
+
+
+def test_pim_api_url_rejects_remote_http_and_credentials():
+    with pytest.raises(RuntimeError, match="HTTPS"):
+        s._validate_pim_api_url("http://203.0.113.8:5858")
+    with pytest.raises(RuntimeError, match="账号或密码"):
+        s._validate_pim_api_url("https://user:password@pim.example.com")
 
 
 def test_strip_bearer():

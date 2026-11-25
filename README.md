@@ -28,9 +28,18 @@ docker compose --env-file .env.prod -f docker-compose.prod.yml ps
 
 > **HTTPS 边界（Q04）**：生产编排只把 API 端口绑定到 `127.0.0.1:${PIM_HTTP_PORT}`，公网入口由现有
 > OpenResty/1Panel 反代提供。反代必须为所有 PIM 路径设置 `X-Forwarded-Proto: https`，并把实际来源
-> IP/CIDR 填进 `PIM_TRUSTED_PROXIES`；API 只采信这些来源的转发头。容器内 `/health` 仍走 HTTP，
+> IP/CIDR 填进 `PIM_TRUSTED_PROXIES`（默认只信任回环和固定网段网关，禁止 `0.0.0.0/0`）；
+> API 只采信这些来源的转发头。生产环境默认对所有明文数据请求（包括回环反代漏传头）
+> 返回 `426` 与
+> `X-Pim-Transport: https-required`，仅 `/health`、`/health/live|ready`、`/api/version`
+> 与 `/.well-known/acme-challenge/` 保留明文；HTTPS 响应带 HSTS（可用 `PIM_HSTS_MAX_AGE_SECONDS` 调整或置 0 关闭）。
+> 本机 `docker-compose.yml` 与 `Development` 环境显式保留回环明文用于开发；
+> 生产 compose 可用 `PIM_ALLOW_LOOPBACK_CLEARTEXT` 覆盖，但不建议开启。
+> 容器内 `/health` 仍走 HTTP，
 > 公网入口另有独立探测：
 > `bash scripts/deploy/verify-public-https.sh https://pim.example.com`。
+> 仓库自带 nginx 配置可用隔离拓扑验证（自签名证书、真实 nginx TLS/转发行为，不代表公网证书）：
+> `bash scripts/deploy/verify-https-topology.sh`。
 > Web 同源部署留空 API 地址；跨域浏览器来源只接受 HTTPS（本机回环 HTTP 仅开发用），
 > 需在 `.env.prod` 用 `PIM_CORS_ORIGINS` 明确列出。
 > Web、Windows 与 Android 都会在保存服务器地址和测试连接前拒绝远程 HTTP；仅本机回环
