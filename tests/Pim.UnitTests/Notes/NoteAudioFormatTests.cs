@@ -108,6 +108,216 @@ public sealed class NoteAudioFormatTests
     {
         Validate(OggOpusTestData.Valid(1600), 1600);
         Validate(OggOpusTestData.Valid(1600, family: 1), 1600);
+
+        var family0 = TinyOpus();
+        var family1 = OggOpusTestData.TinyFamily1Opus();
+        Validate(family0, 1600);
+        Validate(family1, 1600);
+        Assert.Equal(1, family0[26]);
+        Assert.Equal(19, family0[27]);
+        Assert.Equal(1, family1[26]);
+        Assert.Equal(22, family1[27]);
+        var family1Head = 27 + family1[26];
+        Assert.Equal(1, family1[family1Head + 18]);
+        Assert.Equal(1, family1[family1Head + 19]);
+        Assert.Equal(0, family1[family1Head + 20]);
+        Assert.Equal(0, family1[family1Head + 21]);
+    }
+
+    [Fact]
+    public void Ogg_validation_accepts_multipage_tags_streamed_at_structural_boundaries()
+    {
+        var vendorSplit = OggOpusTestData.OpusTags(new string('v', 300),
+            new string('c', 233), new string('d', 100));
+        Assert.Equal(657, vendorSplit.Length);
+        var vendorSplitStream = TagsStream(vendorSplit, 255, 510);
+        Validate(vendorSplitStream, 1600);
+        ValidateStreaming(vendorSplitStream, 64 * 1024, 1600);
+        ValidateStreaming(vendorSplitStream, 7, 1600);
+
+        // The comment count field starts at 252 and is split across the 255-byte page boundary.
+        var countSplit = OggOpusTestData.OpusTags(new string('v', 240), "x");
+        Assert.Equal(261, countSplit.Length);
+        var countSplitStream = TagsStream(countSplit, 255);
+        Validate(countSplitStream, 1600);
+        ValidateStreaming(countSplitStream, 64 * 1024, 1600);
+
+        // The second comment length field starts at 253 and is split across the page boundary.
+        var lengthSplit = OggOpusTestData.OpusTags("", new string('a', 233), new string('b', 10));
+        Assert.Equal(267, lengthSplit.Length);
+        var lengthSplitStream = TagsStream(lengthSplit, 255);
+        Validate(lengthSplitStream, 1600);
+        ValidateStreaming(lengthSplitStream, 64 * 1024, 1600);
+
+        var emptyVendor = TagsStream(OggOpusTestData.OpusTags(""));
+        Validate(emptyVendor, 1600);
+        var emptyComment = TagsStream(OggOpusTestData.OpusTags("v", ""));
+        Validate(emptyComment, 1600);
+    }
+
+    [Fact]
+    public void Ogg_validation_streams_maximum_page_and_64k_boundaries()
+    {
+        const uint serial = 0x12345678;
+        var maximumPage = new byte[255 * 255 + 10];
+        Array.Fill(maximumPage, (byte)0x42);
+        var maximumPageStream = OggOpusTestData.Concat([
+            OggOpusTestData.Page(0x02, serial, 0, 0, OggOpusTestData.OpusHead()),
+            OggOpusTestData.Page(0, serial, 1, 0, OggOpusTestData.OpusTags()),
+            OggOpusTestData.PageWithLacing(0, serial, 2, ulong.MaxValue,
+                Enumerable.Repeat((byte)255, 255).ToArray(), maximumPage[..(255 * 255)]),
+            OggOpusTestData.PageWithLacing(0x01 | 0x04, serial, 3, 5112, [10],
+                maximumPage[(255 * 255)..])
+        ]);
+        Assert.Equal(NoteOggOpus.MaxPageBytes, 27 + 255 + 255 * 255);
+        Validate(maximumPageStream, 1600);
+        ValidateStreaming(maximumPageStream, 64 * 1024, 1600);
+        ValidateStreaming(maximumPageStream, 4096, 1600);
+
+        // A packet whose length is an exact multiple of 255 is terminated by a zero lacing
+        // value on the next page. The continuation page must not reset the accumulated size.
+        var exactMultiple = OggOpusTestData.Concat([
+            OggOpusTestData.Page(0x02, serial, 0, 0, OggOpusTestData.OpusHead()),
+            OggOpusTestData.Page(0, serial, 1, 0, OggOpusTestData.OpusTags()),
+            OggOpusTestData.PageWithLacing(0, serial, 2, ulong.MaxValue, [255], new byte[255]),
+            OggOpusTestData.PageWithLacing(0x01 | 0x04, serial, 3, 5112, [0], [])
+        ]);
+        Validate(exactMultiple, 1600);
+        ValidateStreaming(exactMultiple, 64 * 1024, 1600);
+    }
+
+    [Fact]
+    public void Ogg_validation_rejects_half_packets_bad_continuation_and_malicious_lacing()
+    {
+        const uint serial = 0x12345678;
+        var head = OggOpusTestData.Page(0x02, serial, 0, 0, OggOpusTestData.OpusHead());
+        var tags = OggOpusTestData.Page(0, serial, 1, 0, OggOpusTestData.OpusTags());
+        var audio = OggOpusTestData.Page(0x04, serial, 2, 5112, OggOpusTestData.AudioPacket());
+
+        AssertRejected(OggOpusTestData.Concat([
+            head, tags,
+            OggOpusTestData.PageWithLacing(0x04, serial, 2, 5112, [255], new byte[255])
+        ]), 1600);
+
+        AssertRejected(OggOpusTestData.Concat([
+            head, tags,
+            OggOpusTestData.PageWithLacing(0x01 | 0x04, serial, 2, 5112, [3],
+                OggOpusTestData.AudioPacket())
+        ]), 1600);
+
+        var maximumPage = OggOpusTestData.PageWithLacing(0, serial, 2, ulong.MaxValue,
+            Enumerable.Repeat((byte)255, 255).ToArray(), new byte[255 * 255]);
+        AssertRejected(OggOpusTestData.Concat([
+            head, tags, maximumPage,
+            OggOpusTestData.PageWithLacing(0x04, serial, 3, 5112, [10], new byte[10])
+        ]), 1600);
+        AssertRejected(OggOpusTestData.Concat([
+            head, tags, maximumPage[..^1]
+        ]), 1600);
+
+        AssertRejected(OggOpusTestData.Concat([
+            OggOpusTestData.PageWithLacing(0x02, serial, 0, 0, [19, 0],
+                OggOpusTestData.OpusHead()),
+            tags, audio
+        ]), 1600);
+        AssertRejected(OggOpusTestData.Concat([
+            OggOpusTestData.PageWithLacing(0x02, serial, 0, 1, [19], OggOpusTestData.OpusHead()),
+            tags, audio
+        ]), 1600);
+        AssertRejected(OggOpusTestData.Concat([
+            OggOpusTestData.PageWithLacing(0x02, serial, 0, 0, [255], new byte[255]),
+            tags, audio
+        ]), 1600);
+
+        var multipageTags = OggOpusTestData.OpusTags(new string('v', 200), new string('c', 100));
+        AssertRejected(OggOpusTestData.Concat([
+            head,
+            OggOpusTestData.PageWithLacing(0, serial, 1, ulong.MaxValue, [255], multipageTags[..255]),
+            OggOpusTestData.PageWithLacing(0x04, serial, 2, 5112, [65, 3],
+                OggOpusTestData.Concat([multipageTags[255..], OggOpusTestData.AudioPacket()]))
+        ]), 1600);
+        AssertRejected(OggOpusTestData.Concat([
+            head,
+            OggOpusTestData.PageWithLacing(0, serial, 1, 0, [255], multipageTags[..255]),
+            OggOpusTestData.PageWithLacing(0x01 | 0x04, serial, 2, 0, [65], multipageTags[255..])
+        ]), 1600);
+        AssertRejected(OggOpusTestData.Concat([
+            head,
+            OggOpusTestData.PageWithLacing(0, serial, 1, ulong.MaxValue, [255], multipageTags[..255]),
+            OggOpusTestData.PageWithLacing(0x01, serial, 2, ulong.MaxValue, [65], multipageTags[255..]),
+            OggOpusTestData.Page(0x04, serial, 3, 5112, OggOpusTestData.AudioPacket())
+        ]), 1600);
+        AssertRejected(OggOpusTestData.Concat([
+            head,
+            OggOpusTestData.PageWithLacing(0, serial, 1, ulong.MaxValue, [255], multipageTags[..255]),
+            OggOpusTestData.PageWithLacing(0x04, serial, 2, 0, [65], multipageTags[255..])
+        ]), 1600);
+
+        AssertRejected(OggOpusTestData.Concat([
+            head, tags,
+            OggOpusTestData.PageWithLacing(0x04, serial, 2, 5112, [0], [])
+        ]), 1600);
+        AssertRejected(OggOpusTestData.Concat([
+            head, tags,
+            OggOpusTestData.PageWithLacing(0x04, serial, 2, ulong.MaxValue, [3],
+                OggOpusTestData.AudioPacket())
+        ]), 1600);
+        AssertRejected(OggOpusTestData.Concat([
+            head, tags,
+            OggOpusTestData.PageWithLacing(0, serial, 2, 0, [255], new byte[255])
+        ]), 1600);
+
+        AssertRejected(OggOpusTestData.Concat([
+            head,
+            OggOpusTestData.PageWithLacing(0, serial, 1, ulong.MaxValue, [], []),
+            OggOpusTestData.PageWithLacing(0, serial, 2, 0, [65], OggOpusTestData.OpusTags()),
+            OggOpusTestData.Page(0x04, serial, 3, 5112, OggOpusTestData.AudioPacket())
+        ]), 1600);
+    }
+
+    [Fact]
+    public void Ogg_validation_rejects_malformed_multipage_tags_tables()
+    {
+        const uint serial = 0x12345678;
+        var head = OggOpusTestData.Page(0x02, serial, 0, 0, OggOpusTestData.OpusHead());
+        var audio = OggOpusTestData.Page(0x04, serial, 2, 5112, OggOpusTestData.AudioPacket());
+
+        var extraData = OggOpusTestData.Concat([OggOpusTestData.OpusTags(), [0x00]]);
+        AssertRejected(OggOpusTestData.Concat([
+            head, OggOpusTestData.Page(0, serial, 1, 0, extraData), audio
+        ]), 1600);
+
+        var missingComment = OggOpusTestData.OpusTags("", "first");
+        BinaryPrimitives.WriteUInt32LittleEndian(missingComment.AsSpan(12), 2);
+        AssertRejected(OggOpusTestData.Concat([
+            head, OggOpusTestData.Page(0, serial, 1, 0, missingComment), audio
+        ]), 1600);
+
+        var oversizedVendor = OggOpusTestData.OpusTags("v");
+        BinaryPrimitives.WriteUInt32LittleEndian(oversizedVendor.AsSpan(8), uint.MaxValue);
+        AssertRejected(OggOpusTestData.Concat([
+            head, OggOpusTestData.Page(0, serial, 1, 0, oversizedVendor), audio
+        ]), 1600);
+
+        var oversizedComment = OggOpusTestData.OpusTags(new string('v', 250), new string('c', 100));
+        BinaryPrimitives.WriteUInt32LittleEndian(oversizedComment.AsSpan(16 + 250), uint.MaxValue);
+        AssertRejected(OggOpusTestData.Concat([
+            head,
+            OggOpusTestData.PageWithLacing(0, serial, 1, ulong.MaxValue, [255],
+                oversizedComment[..255]),
+            OggOpusTestData.PageWithLacing(0x01 | 0x04, serial, 2, 0, [115],
+                oversizedComment[255..])
+        ]), 1600);
+
+        var emptyPackets = OggOpusTestData.Concat([OggOpusTestData.OpusTags("v"), [0, 0, 0]]);
+        AssertRejected(OggOpusTestData.Concat([
+            head, OggOpusTestData.Page(0, serial, 1, 0, emptyPackets), audio
+        ]), 1600);
+
+        var noMagic = OggOpusTestData.Concat(["OpusTag!"u8.ToArray(), new byte[8]]);
+        AssertRejected(OggOpusTestData.Concat([
+            head, OggOpusTestData.Page(0, serial, 1, 0, noMagic), audio
+        ]), 1600);
     }
 
     [Fact]
@@ -215,6 +425,56 @@ public sealed class NoteAudioFormatTests
     {
         var error = Assert.Throws<DomainException>(() => Validate(bytes, samples));
         Assert.Equal(40001, error.ErrorCode);
+    }
+
+    private static void ValidateStreaming(byte[] bytes, int chunkSize, long samples)
+    {
+        var validator = new NoteOggOpus.Validator();
+        for (var offset = 0; offset < bytes.Length; offset += chunkSize)
+            validator.Write(bytes.AsSpan(offset, Math.Min(chunkSize, bytes.Length - offset)));
+        validator.Complete(samples);
+    }
+
+    private static byte[] TagsStream(byte[] tags, params int[] boundaries)
+    {
+        const uint serial = 0x12345678;
+        var pages = new List<byte[]>
+        {
+            OggOpusTestData.Page(0x02, serial, 0, 0, OggOpusTestData.OpusHead())
+        };
+        var offset = 0;
+        uint sequence = 1;
+        foreach (var end in boundaries.Append(tags.Length))
+        {
+            if (end <= offset || end > tags.Length)
+                throw new InvalidOperationException("Invalid test tags boundary");
+            var chunk = tags[offset..end];
+            var last = end == tags.Length;
+            if (!last && chunk.Length % 255 != 0)
+                throw new InvalidOperationException("Intermediate Ogg packet pages must end at 255 bytes");
+            var lacing = last
+                ? Lacing(chunk.Length)
+                : Enumerable.Repeat((byte)255, chunk.Length / 255).ToArray();
+            pages.Add(OggOpusTestData.PageWithLacing(sequence == 1 ? (byte)0 : (byte)0x01,
+                serial, sequence, last ? 0 : ulong.MaxValue, lacing, chunk));
+            offset = end;
+            sequence++;
+        }
+        pages.Add(OggOpusTestData.Page(0x04, serial, sequence, 5112,
+            OggOpusTestData.AudioPacket()));
+        return OggOpusTestData.Concat(pages);
+    }
+
+    private static byte[] Lacing(int length)
+    {
+        var lacing = new List<byte>();
+        while (length >= 255)
+        {
+            lacing.Add(255);
+            length -= 255;
+        }
+        lacing.Add((byte)length);
+        return lacing.ToArray();
     }
 
     private static byte[] TinyOpus() => OggOpusTestData.TinyOpus();

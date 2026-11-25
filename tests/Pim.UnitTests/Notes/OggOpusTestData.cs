@@ -12,6 +12,13 @@ internal static class OggOpusTestData
 
     internal static byte[] TinyOpus() => Convert.FromBase64String(TinyOpusBase64);
 
+    // The same 0.1 s mono 16 kHz fixture encoded with FFmpeg 8.0.1 libopus using
+    // -mapping_family 1. Its real OpusHead packet is 22 bytes with mapping[0] = 0.
+    internal const string TinyFamily1OpusBase64 =
+        "T2dnUwACAAAAAAAAAABqQZwyAAAAAMigaVsBFk9wdXNIZWFkAQE4AYA+AAAAAAEBAABPZ2dTAAAAAAAAAAAAAGpBnDIBAAAA9uhzqwE9T3B1c1RhZ3MMAAAATGF2ZjYyLjMuMTAwAQAAAB0AAABlbmNvZGVyPUxhdmM2Mi4xMS4xMDAgbGlib3B1c09nZ1MABPgTAAAAAAAAakGcMgIAAABfKPPeBlk5MzUyHEiBpvLzsXG9AAACYp3ZkJXjhYg0l606lMSHGIOVxjeLVWKIaqIm5rL4bKykFTvE+sGu/joO97UMI0xeQeFMHMENrYH1GoWy4HyyQvna6hdszmNRurmqsrcoSJzWQef8lU1Ojxf/h8BquEZZg3CPuquZnfYRFx9n8BkrItOLwHR2g6K7FDevqPn+xsjzeIaKVyNASJnCX3Mt0jNUYMc+Hu3M95QzSP4hZOd/mGZRDGwcq2OtOVnWB+r2JnalrcnQyNmF1LagSJnCX3Mt0jFJEG58946LzT9mC/jtOK4qXyDMrGIsbZwwmbNP/FbFIgBcNrJGNHRGCYchOyBImcJfcy3SMTOyYOdYSts506bJiH1eyyEzG1eUTkN4JzwPoSJ1We6l87v4Q4WDLSTybEgFjIXwEebi9YcS+aojl2jgFoEcVelni7xiMoA=";
+
+    internal static byte[] TinyFamily1Opus() => Convert.FromBase64String(TinyFamily1OpusBase64);
+
     internal static byte[] Valid(int samples = 1600, int family = 0, uint serial = 0x12345678,
         bool includeTags = true, bool includeAudio = true, bool eos = true)
     {
@@ -53,9 +60,28 @@ internal static class OggOpusTestData
         return page;
     }
 
+    internal static byte[] PageWithLacing(byte flags, uint serial, uint sequence, ulong granule,
+        byte[] lacing, byte[] body)
+    {
+        var page = new byte[27 + lacing.Length + body.Length];
+        "OggS"u8.CopyTo(page);
+        page[4] = 0;
+        page[5] = flags;
+        BinaryPrimitives.WriteUInt64LittleEndian(page.AsSpan(6), granule);
+        BinaryPrimitives.WriteUInt32LittleEndian(page.AsSpan(14), serial);
+        BinaryPrimitives.WriteUInt32LittleEndian(page.AsSpan(18), sequence);
+        page[26] = (byte)lacing.Length;
+        lacing.CopyTo(page.AsSpan(27));
+        body.CopyTo(page.AsSpan(27 + lacing.Length));
+        BinaryPrimitives.WriteUInt32LittleEndian(page.AsSpan(22), Crc32(page));
+        return page;
+    }
+
     internal static byte[] OpusHead(int family = 0)
     {
-        var size = family == 1 ? 23 : 19;
+        // RFC 7845: a mono Mapping Family 1 header is 19 + stream count + coupled count +
+        // channel mapping = 22 bytes. The single mapping value 0 selects mono.
+        var size = family == 1 ? 22 : 19;
         var head = new byte[size];
         "OpusHead"u8.CopyTo(head);
         head[8] = 1;
@@ -67,19 +93,29 @@ internal static class OggOpusTestData
         {
             head[19] = 1;
             head[20] = 0;
-            head[21] = 1;
-            head[22] = 0;
+            head[21] = 0;
         }
         return head;
     }
 
-    internal static byte[] OpusTags(string vendor = "Lavf62.3.100")
+    internal static byte[] OpusTags(string vendor = "Lavf62.3.100", params string[] comments)
     {
         var vendorBytes = Encoding.UTF8.GetBytes(vendor);
-        var tags = new byte[16 + vendorBytes.Length];
+        var commentBytes = comments.Select(Encoding.UTF8.GetBytes).ToArray();
+        var tags = new byte[16 + vendorBytes.Length + commentBytes.Sum(x => 4 + x.Length)];
         "OpusTags"u8.CopyTo(tags);
         BinaryPrimitives.WriteUInt32LittleEndian(tags.AsSpan(8), (uint)vendorBytes.Length);
         vendorBytes.CopyTo(tags.AsSpan(12));
+        var position = 12 + vendorBytes.Length;
+        BinaryPrimitives.WriteUInt32LittleEndian(tags.AsSpan(position), (uint)commentBytes.Length);
+        position += 4;
+        foreach (var comment in commentBytes)
+        {
+            BinaryPrimitives.WriteUInt32LittleEndian(tags.AsSpan(position), (uint)comment.Length);
+            position += 4;
+            comment.CopyTo(tags.AsSpan(position));
+            position += comment.Length;
+        }
         return tags;
     }
 

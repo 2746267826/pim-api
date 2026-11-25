@@ -523,6 +523,100 @@ public sealed class NoteAsrTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task AdaptiveConfigurationRejectionAfterPreparationPersistsTerminalAttemptWithoutProviderCall()
+    {
+        var multimodal = await Data<AiModelDto>(await _client.PostAsJsonAsync("/api/v1/ai/models",
+            new SaveAiModelRequest("多模态提示词缺失", _provider.Urls.Single() + "/v1/",
+                "mimo-v2.6-flash", true, [AiModelCapability.Transcription], 30, 1024,
+                "synthetic-multimodal-key", AsrPresetId: "mimo-multimodal")));
+        var current = await Data<NoteAsrRouteConfigDto>(await _client.GetAsync(
+            "/api/v1/native-notes/asr-routing/config"));
+        var routeConfig = await Data<NoteAsrRouteConfigDto>(await _client.PutAsJsonAsync(
+            "/api/v1/native-notes/asr-routing/config", new UpdateNoteAsrRouteConfigRequest(
+                current.Revision, NoteAsrRoute.CloudMultimodal, null, null, multimodal.Id, "batch-v1")));
+        var fixture = NoteMaterialUploadStoreTests.Fixture.Create(16_000 * 60);
+        await Upload(fixture);
+        var consent = new AiAsrDestinationConsent(multimodal.Id, multimodal.Revision,
+            multimodal.BaseUrl + "chat/completions", "mimo-multimodal", "1", true);
+        var start = new StartNoteAsrRequest(Guid.NewGuid(), _owner, fixture.Request.VersionId, consent, "zh",
+            new NoteAsrRouteConsent(NoteAsrRoute.CloudMultimodal, routeConfig.Revision,
+                routeConfig.ConsentVersion, true, NoteAsrExecutionMode.Realtime));
+        var task = await Data<NoteAsrTaskDto>(await _client.PostAsJsonAsync(Route, start));
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
+            var attempt = await db.NoteAsrAttempts.SingleAsync(x => x.Id == task.AttemptId);
+            attempt.PromptRendered = null;
+            attempt.PromptSha256 = null;
+            attempt.PromptRevision = null;
+            attempt.PromptTemplateSha256 = null;
+            attempt.PromptTemplateRevision = null;
+            await db.SaveChangesAsync();
+        }
+
+        await Run(task.TaskId);
+
+        Assert.Equal(0, _calls);
+        Assert.True((await Get(task.TaskId)).StopRequested);
+        var segment = Assert.Single((await Segments(task.TaskId)).Items);
+        Assert.Equal("Blocked", segment.Status);
+        Assert.DoesNotContain(segment.Attempts, x => x.Status == "Running");
+        Assert.DoesNotContain(segment.Attempts, x => x.Status == "Unknown");
+        Assert.All(segment.Attempts, x => Assert.DoesNotContain("http",
+            (x.ErrorMessage ?? "").ToLowerInvariant()));
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
+            Assert.Equal(0, await db.AiRequestLogs.CountAsync(x => x.UserId == _owner &&
+                x.SourceObjectId == task.TaskId.ToString()));
+            Assert.Equal("Failed", await db.NoteAsrAttempts.Where(x => x.Id == task.AttemptId)
+                .Select(x => x.State).SingleAsync());
+        }
+    }
+
+    [Fact]
+    public async Task AdaptiveStopAfterChildPreparationTerminalizesRunningAttemptAndKeepsTaskStopped()
+    {
+        _block = true;
+        var multimodal = await Data<AiModelDto>(await _client.PostAsJsonAsync("/api/v1/ai/models",
+            new SaveAiModelRequest("多模态停止竞态", _provider.Urls.Single() + "/v1/",
+                "mimo-v2.6-flash", true, [AiModelCapability.Transcription], 30, 1024,
+                "synthetic-multimodal-key", AsrPresetId: "mimo-multimodal")));
+        var current = await Data<NoteAsrRouteConfigDto>(await _client.GetAsync(
+            "/api/v1/native-notes/asr-routing/config"));
+        var routeConfig = await Data<NoteAsrRouteConfigDto>(await _client.PutAsJsonAsync(
+            "/api/v1/native-notes/asr-routing/config", new UpdateNoteAsrRouteConfigRequest(
+                current.Revision, NoteAsrRoute.CloudMultimodal, null, null, multimodal.Id, "batch-v1")));
+        var fixture = NoteMaterialUploadStoreTests.Fixture.Create(16_000 * 60);
+        await Upload(fixture);
+        var consent = new AiAsrDestinationConsent(multimodal.Id, multimodal.Revision,
+            multimodal.BaseUrl + "chat/completions", "mimo-multimodal", "1", true);
+        var start = new StartNoteAsrRequest(Guid.NewGuid(), _owner, fixture.Request.VersionId, consent, "zh",
+            new NoteAsrRouteConsent(NoteAsrRoute.CloudMultimodal, routeConfig.Revision,
+                routeConfig.ConsentVersion, true, NoteAsrExecutionMode.Realtime));
+        var task = await Data<NoteAsrTaskDto>(await _client.PostAsJsonAsync(Route, start));
+
+        var running = Run(task.TaskId);
+        Assert.True(await WaitForRunningChild(task.TaskId, TimeSpan.FromSeconds(10)));
+        var stopped = await Data<NoteAsrTaskDto>(await _client.PostAsync(
+            $"{Route}/{task.TaskId}/stop", null));
+        Assert.True(stopped.StopRequested);
+        _release.TrySetResult();
+        await running;
+
+        var completed = await Get(task.TaskId);
+        Assert.True(completed.StopRequested);
+        Assert.Equal("Stopped", completed.Phase);
+        var segment = Assert.Single((await Segments(task.TaskId)).Items);
+        Assert.DoesNotContain(segment.Attempts, x => x.Status is "Running" or "Unknown");
+        using var scope = _factory.Services.CreateScope();
+        var attempt = await scope.ServiceProvider.GetRequiredService<PimDbContext>()
+            .NoteAsrAttempts.AsNoTracking().SingleAsync(x => x.Id == task.AttemptId);
+        Assert.True(attempt.StopRequested);
+        Assert.NotEqual("Succeeded", attempt.State);
+    }
+
+    [Fact]
     public async Task RoutedCloudOpusDecodeFailureBlocksBeforeProviderWithoutUnknownOrRunningAttempt()
     {
         var multimodal = await Data<AiModelDto>(await _client.PostAsJsonAsync("/api/v1/ai/models",
@@ -814,6 +908,22 @@ public sealed class NoteAsrTests : IAsyncLifetime
     private async Task Run(Guid id) => await RunAs(_owner, id);
     private async Task RunAs(Guid owner, Guid id)
     { using var scope = _factory.Services.CreateScope(); await scope.ServiceProvider.GetRequiredService<NoteAsrJob>().RunAsync(owner, id, default); }
+    private async Task<bool> WaitForRunningChild(Guid id, TimeSpan timeout)
+    {
+        var tasks = _factory.Services.GetRequiredService<NoteAsrTaskStore>();
+        var deadline = DateTime.UtcNow + timeout;
+        while (DateTime.UtcNow < deadline)
+        {
+            var state = await tasks.ReadAsync(_owner, id, CancellationToken.None);
+            if (state.Steps.SelectMany(x => x.Attempts).Any(HasRunningChild))
+                return true;
+            await Task.Delay(25);
+        }
+        return false;
+
+        static bool HasRunningChild(NoteAsrAttempt attempt) =>
+            attempt.Status == "Running" || attempt.Children.Any(HasRunningChild);
+    }
     private async Task<NoteAsrTaskDto> Get(Guid id) => await Data<NoteAsrTaskDto>(await _client.GetAsync($"{Route}/{id}"));
     private async Task<NoteAsrSegmentsDto> Segments(Guid id) => await Data<NoteAsrSegmentsDto>(await _client.GetAsync($"{Route}/{id}/segments"));
     private string TaskPath(Guid id) => TaskPath(_owner, id);

@@ -121,12 +121,14 @@ public sealed class NoteAsrJob(NoteAsrTaskStore tasks, NoteMaterialUploadStore m
                     }
                     var adaptive = await RunAdaptiveAsync(owner, id, state, step,
                         Math.Min(NoteAsrAdaptiveOptions.Default.MaxCalls, remaining), ct);
+                    var latest = await tasks.ReadAsync(owner, id, ct);
+                    if (latest.AttemptId != state.AttemptId) return;
                     if (adaptive.Status == NoteAsrAdaptiveRunStatus.Succeeded)
                     {
                         await RecordAdaptiveSuccessAsync(owner, id, state, step, adaptive, ct);
                         continue;
                     }
-                    await RecordAdaptiveFailureAsync(owner, id, step, adaptive, ct);
+                    await RecordAdaptiveFailureAsync(owner, id, state.AttemptId!.Value, step, adaptive, ct);
                     return;
                 }
                 byte[] bytes;
@@ -289,9 +291,42 @@ public sealed class NoteAsrJob(NoteAsrTaskStore tasks, NoteMaterialUploadStore m
         NoteAsrState rootState, NoteAsrStep rootStep, NoteAsrAdaptiveRequest request,
         Dictionary<Guid, byte[]> preparedAudio, CancellationToken ct)
     {
-        var current = await tasks.ReadAsync(owner, taskId, ct);
-        if (current.StopRequested)
-            return new(NoteAsrAdaptiveOutcome.Cancelled, ReasonCode: "stop_requested");
+        NoteAsrState current;
+        NoteAsrAttemptEntity? routedAttempt;
+        try
+        {
+            current = await tasks.ReadAsync(owner, taskId, ct);
+            if (current.AttemptId != rootState.AttemptId)
+            {
+                // A retry rebind can happen after preparation marked the child Running. The stale
+                // pass must not call the provider, and the old child must not stay Running forever.
+                try
+                {
+                    await PersistAdaptiveAttemptAsync(owner, taskId, rootStep.Index,
+                        request.ChildRequestId, "Cancelled", "任务执行快照已变化，此调用未发送", null,
+                        CancellationToken.None);
+                }
+                catch (InvalidDataException)
+                {
+                    // A completed rebind may already have discarded the stale child attempt.
+                }
+                return new(NoteAsrAdaptiveOutcome.Cancelled, ReasonCode: "attempt_changed");
+            }
+            if (current.StopRequested)
+            {
+                await PersistAdaptiveAttemptAsync(owner, taskId, rootStep.Index, request.ChildRequestId,
+                    "Cancelled", "任务已停止，此调用未发送", null, CancellationToken.None);
+                return new(NoteAsrAdaptiveOutcome.Cancelled, ReasonCode: "stop_requested");
+            }
+            routedAttempt = await db.NoteAsrAttempts.AsNoTracking().SingleOrDefaultAsync(x =>
+                x.Id == rootState.AttemptId && x.OwnerId == owner, ct);
+        }
+        catch (OperationCanceledException)
+        {
+            await PersistAdaptiveAttemptAsync(owner, taskId, rootStep.Index, request.ChildRequestId,
+                "Cancelled", "任务已停止或调用取消，此调用未发送", null, CancellationToken.None);
+            throw;
+        }
         if (!preparedAudio.Remove(request.ChildRequestId, out var bytes))
         {
             await PersistAdaptiveAttemptAsync(owner, taskId, rootStep.Index, request.ChildRequestId,
@@ -299,19 +334,33 @@ public sealed class NoteAsrJob(NoteAsrTaskStore tasks, NoteMaterialUploadStore m
             return new(NoteAsrAdaptiveOutcome.PreparationFailed,
                 ReasonCode: "input_not_prepared", Reason: "本地音频输入尚未准备完成");
         }
-        var routedAttempt = await db.NoteAsrAttempts.AsNoTracking().SingleOrDefaultAsync(x =>
-            x.Id == rootState.AttemptId && x.OwnerId == owner, ct)
-            ?? throw new DomainException(40901, "ASR 执行快照不存在");
+        if (routedAttempt is null)
+        {
+            await PersistAdaptiveAttemptAsync(owner, taskId, rootStep.Index, request.ChildRequestId,
+                "Blocked", "ASR 执行快照不存在，本片未发送", null, CancellationToken.None);
+            return new(NoteAsrAdaptiveOutcome.ConfigurationRejected,
+                ReasonCode: "attempt_missing", Reason: "ASR 执行快照不存在");
+        }
         if (!CanDispatchAttempt(routedAttempt, owner, taskId, rootState))
+        {
+            await PersistAdaptiveAttemptAsync(owner, taskId, rootStep.Index, request.ChildRequestId,
+                "Blocked", "ASR 执行快照已停止或处于不可执行状态，本片未发送", null,
+                CancellationToken.None);
             return new(NoteAsrAdaptiveOutcome.ConfigurationRejected,
                 ReasonCode: "attempt_not_dispatchable",
                 Reason: "ASR 执行快照已停止或处于不可执行状态");
+        }
         if (string.IsNullOrWhiteSpace(routedAttempt.PromptRendered) ||
             string.IsNullOrWhiteSpace(routedAttempt.PromptSha256) ||
             string.IsNullOrWhiteSpace(routedAttempt.PromptRevision) ||
             string.IsNullOrWhiteSpace(routedAttempt.PromptTemplateSha256) ||
             string.IsNullOrWhiteSpace(routedAttempt.PromptTemplateRevision))
-            throw new DomainException(40901, "ASR 提示词快照缺失，不能在当前配置下重发");
+        {
+            await PersistAdaptiveAttemptAsync(owner, taskId, rootStep.Index, request.ChildRequestId,
+                "Blocked", "ASR 提示词快照缺失，本片未发送", null, CancellationToken.None);
+            return new(NoteAsrAdaptiveOutcome.ConfigurationRejected,
+                ReasonCode: "prompt_snapshot_missing", Reason: "ASR 提示词快照缺失");
+        }
         var prompt = new AiAsrPromptSnapshot(routedAttempt.PromptRendered,
             rootState.Request.Language, routedAttempt.PromptSha256, routedAttempt.PromptRevision,
             routedAttempt.PromptTemplateSha256, routedAttempt.PromptTemplateRevision);
@@ -490,8 +539,8 @@ public sealed class NoteAsrJob(NoteAsrTaskStore tasks, NoteMaterialUploadStore m
         await db.SaveChangesAsync(ct);
     }
 
-    private async Task RecordAdaptiveFailureAsync(Guid owner, Guid taskId, NoteAsrStep step,
-        NoteAsrAdaptiveRun run, CancellationToken ct)
+    private async Task RecordAdaptiveFailureAsync(Guid owner, Guid taskId, Guid expectedAttemptId,
+        NoteAsrStep step, NoteAsrAdaptiveRun run, CancellationToken ct)
     {
         if (run.StopResult?.Outcome == NoteAsrAdaptiveOutcome.TransientFailure)
         {
@@ -521,6 +570,7 @@ public sealed class NoteAsrJob(NoteAsrTaskStore tasks, NoteMaterialUploadStore m
             using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, budget.Token);
             await tasks.UpdateAsync(owner, taskId, current =>
             {
+                if (current.AttemptId != expectedAttemptId) return;
                 if (current.Steps.Count <= step.Index) return;
                 var target = current.Steps[step.Index].Current;
                 target.Status = nextStatus;
