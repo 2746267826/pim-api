@@ -1,7 +1,6 @@
 import { Inflate, zipSync } from 'fflate'
 import { deriveStrokeId, parseInkDocument } from './ink-document'
 import {
-  jsonValuesEqual,
   sha256Hex,
   type MaterialBundle,
   type MaterialDraftBlock,
@@ -429,10 +428,9 @@ function validateExportedNoteInk(bytes: Uint8Array) {
   for (const raw of note.blocks) {
     if (!isRecord(raw) || raw.kind !== 'ink') continue
     if (!isRecord(raw.ink)) throw new Error('手写向量不符合 Android schema-v1 尺寸或笔画结构')
-    const normalized = parseInkDocument(raw.ink, (index) => deriveStrokeId(String(raw.id ?? ''), index))
-    if (!jsonValuesEqual(normalized, raw.ink)) {
-      throw new Error('手写向量未按 D04 规范写入，拒绝导出')
-    }
+    // Keep the raw source ink byte-for-byte. Parsing accepts legacy defaults and
+    // case variants while still rejecting malformed D04 data before export.
+    parseInkDocument(raw.ink, (index) => deriveStrokeId(String(raw.id ?? ''), index))
   }
 }
 

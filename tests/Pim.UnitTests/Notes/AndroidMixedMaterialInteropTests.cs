@@ -148,10 +148,29 @@ public sealed class AndroidMixedMaterialInteropTests : IDisposable
     public async Task StoreAndHttpContinueFromTheRealWebBundleWithoutReuploadingPreservedFiles()
     {
         var fixture = ContinuationFixture.Load();
+        // native-notes-canonical-bundle.test.tsx asserts this fixture is byte-for-byte
+        // what the Web buildMaterialBundle produces for a title/Markdown continuation.
+        var original = AndroidFixture.Load();
+        var legacyInkPath = original.Paths[3];
+        Assert.Equal(legacyInkPath, fixture.Paths[3]);
+        using (var originalInput = JsonDocument.Parse(original.Request.InputJson))
+        using (var continuationInput = JsonDocument.Parse(fixture.Request.InputJson))
+        {
+            static string InkRaw(JsonDocument document) => document.RootElement
+                .GetProperty("note").GetProperty("blocks").EnumerateArray()
+                .Single(block => block.GetProperty("kind").GetString() == "ink")
+                .GetProperty("ink").GetRawText();
+            Assert.Equal(InkRaw(originalInput), InkRaw(continuationInput));
+        }
+        using (var continuationManifest = JsonDocument.Parse(fixture.Request.ManifestJson))
+        {
+            var inkPreview = continuationManifest.RootElement.GetProperty("files").EnumerateArray()
+                .Single(file => file.GetProperty("kind").GetString() == "InkPreview");
+            Assert.Equal(legacyInkPath, inkPreview.GetProperty("path").GetString());
+        }
 
         var owner = Guid.NewGuid();
         var store = NewStore();
-        var original = AndroidFixture.Load();
         var originalUpload = await store.BeginAsync(owner, original.Request);
         await UploadAllAsync(store, owner, original);
         await store.CompleteAsync(owner, original.Request.VersionId);
@@ -160,6 +179,8 @@ public sealed class AndroidMixedMaterialInteropTests : IDisposable
             new CloneNoteMaterialVersionRequest(original.Request.VersionId, fixture.Request));
         Assert.Equal(original.Request.VersionId, cloned.CurrentVersionId);
         Assert.Equal(fixture.Request.BaseVersionId, cloned.BaseVersionId);
+        Assert.Contains(cloned.Files, file => file.Path == legacyInkPath && file.Kind == "InkPreview" &&
+            file.UploadedParts.Count == file.PartCount);
         AssertCloneParts(originalUpload, cloned);
         await UploadMissingPartsAsync(store, owner, fixture, cloned);
         var completed = await store.CompleteAsync(owner, fixture.Request.VersionId);
@@ -178,6 +199,8 @@ public sealed class AndroidMixedMaterialInteropTests : IDisposable
         Assert.Equal(HttpStatusCode.OK, cloneResponse.StatusCode);
         var httpClone = (await cloneResponse.Content.ReadFromJsonAsync<ApiResponse<NoteMaterialUploadDto>>())!.Data!;
         Assert.Equal(original.Request.VersionId, httpClone.CurrentVersionId);
+        Assert.Contains(httpClone.Files, file => file.Path == legacyInkPath && file.Kind == "InkPreview" &&
+            file.UploadedParts.Count == file.PartCount);
         AssertCloneParts(originalHttp, httpClone);
         await UploadMissingPartsHttpAsync(client, fixture, httpClone);
         await CompleteHttpAsync(client, fixture.Request.VersionId);

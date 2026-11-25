@@ -228,15 +228,19 @@ export async function buildMaterialBundle(input: BuildMaterialInput): Promise<Ma
     const sourceBlockJson = sourceBlockJsonById.get(block.id)
     const sourceBlockKind = sourceBlockJson ? (JSON.parse(sourceBlockJson) as { kind?: string }).kind : undefined
     const sourceInkJson = sourceBlockKind === 'ink' && sourceBlockJson ? extractJsonValue(sourceBlockJson, ['ink']) : undefined
-    let sourceInk: Record<string, unknown> | undefined
+    let sourceNormalized: InkDocument | undefined
     if (sourceInkJson) {
-      sourceInk = JSON.parse(sourceInkJson) as Record<string, unknown>
-      parseInkDocument(sourceInk, (index) => deriveStrokeId(block.id, index))
+      sourceNormalized = parseInkDocument(
+        JSON.parse(sourceInkJson) as Record<string, unknown>,
+        (index) => deriveStrokeId(block.id, index),
+      )
     }
-    const sourceUnchanged = sourceInk !== undefined && sourceInkJson !== undefined &&
-      jsonValuesEqual(sourceInk, block.ink)
+    const sourceUnchanged = sourceNormalized !== undefined &&
+      jsonValuesEqual(sourceNormalized, normalizedInk)
     const inkJson = sourceUnchanged
-      ? preserveSourceInkJson(sourceInkJson!, normalizedInk)
+      ? input.preserveSourceFiles
+        ? sourceInkJson!
+        : preserveSourceInkJson(sourceInkJson!, normalizedInk)
       : JSON.stringify(normalizedInk)
     if (sourceUnchanged) {
       parseInkDocument(JSON.parse(inkJson) as Record<string, unknown>, (index) => deriveStrokeId(block.id, index))

@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest'
 import { Zip, ZipDeflate, unzipSync, zipSync } from 'fflate'
-import { buildMaterialBundle, jsonValuesEqual, sha256Hex } from './material-model'
+import { buildMaterialBundle, jsonValuesEqual, sha256Hex, type MaterialBundle } from './material-model'
 import {
   assertAndroidNotePackageSize,
   exportAndroidNotePackage,
@@ -303,6 +303,67 @@ describe('Android schema-v1 note package', () => {
   ])('rejects imported ink with $name', async ({ ink, message }) => {
     const archive = await inkArchive(JSON.stringify(ink))
     await expect(importAndroidNotePackage(archive)).rejects.toThrow(message)
+  })
+
+  it('exports valid uppercase colors and stroke IDs without rejecting their raw source', async () => {
+    const encoder = new TextEncoder()
+    const uppercaseStrokeId = inkStrokeId.toUpperCase()
+    const inkJson = `{"width":320.0,"height":240.0,"rootExtension":{"keep":true},"strokeIds":["${uppercaseStrokeId}"],"strokeStyles":[{"color":"#B8373C","width":2.5,"styleExtension":"keep"}],"strokes":[{"color":"#B8373C","width":2.5,"points":[{"x":12.0,"y":20.0,"pressure":0.4,"pointExtension":"keep"}],"strokeExtension":"keep"}]}`
+    const inkHash = await sha256Hex(encoder.encode(inkJson))
+    const inkPath = `assets/${inkId}-${inkHash}.png`
+    const previewBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 5])
+    const noteJson = `{"schemaVersion":1,"id":"${noteId}","revision":1,"title":"Uppercase D04","createdAtMillis":1,"blocks":[{"id":"${inkId}","kind":"ink","ink":${inkJson}}]}`
+    const document = `![手写卡片](${inkPath})\n<!-- 可编辑笔迹、身份和尺寸保存在同包 note.json 中 -->`
+    const noteBytes = encoder.encode(noteJson)
+    const documentBytes = encoder.encode(document)
+    const previewHash = await sha256Hex(previewBytes)
+    const bundle: MaterialBundle = {
+      versionId,
+      noteId,
+      baseVersionId: null,
+      revision: 1,
+      inputJson: `{"schemaVersion":1,"id":"${versionId}","createdAtMillis":2,"note":${noteJson},"recordings":[]}`,
+      manifestJson: '{}',
+      recordedAudio: 0,
+      files: [
+        { path: 'note.json', kind: 'Document', bytes: noteBytes, sha256: await sha256Hex(noteBytes), sizeBytes: noteBytes.length },
+        { path: 'document.md', kind: 'Markdown', bytes: documentBytes, sha256: await sha256Hex(documentBytes), sizeBytes: documentBytes.length },
+        { path: inkPath, kind: 'InkPreview', bytes: previewBytes, sha256: previewHash, sizeBytes: previewBytes.length, blockId: inkId },
+      ],
+    }
+
+    const archive = await exportAndroidNotePackage(bundle)
+    const unzipped = unzipSync(archive)
+    const exportedNote = new TextDecoder().decode(unzipped['note.json'])
+    expect(exportedNote).toContain(`"strokeIds":["${uppercaseStrokeId}"]`)
+    expect(exportedNote).toContain('"color":"#B8373C"')
+
+    const imported = await importAndroidNotePackage(archive)
+    expect(imported.blocks[0]).toMatchObject({
+      kind: 'ink',
+      ink: {
+        rootExtension: { keep: true },
+        strokeIds: [inkStrokeId],
+        strokeStyles: [{ color: '#b8373c', width: 2.5, styleExtension: 'keep' }],
+        strokes: [{
+          color: '#b8373c',
+          width: 2.5,
+          strokeExtension: 'keep',
+          points: [{ x: 12, y: 20, pressure: 0.4, pointExtension: 'keep' }],
+        }],
+      },
+    })
+    const rebuilt = await buildMaterialBundle({
+      versionId: '99999999-9999-4999-8999-999999999999',
+      noteId,
+      baseVersionId: null,
+      revision: 2,
+      title: imported.title,
+      noteCreatedAtMillis: 1,
+      createdAtMillis: 3,
+      blocks: imported.blocks,
+    })
+    await expect(exportAndroidNotePackage(rebuilt)).resolves.toBeInstanceOf(Uint8Array)
   })
 
   it('rejects exporting a note whose ink fails strict D04 validation', async () => {
