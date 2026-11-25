@@ -181,6 +181,196 @@ public sealed class OutlookEventWriteServiceTests
     }
 
     [Fact]
+    public async Task Update_LegacyAllDayMetadata_PreservesAbsoluteBoundsWithoutInventingDates()
+    {
+        await using var db = CreateDb();
+        var (_, bindingId, calendarId, eventId) = await SetupUpdateAsync(db, UserId);
+        var existing = await db.Set<EventEntity>().FirstAsync(e => e.Id == eventId);
+        existing.IsAllDay = true;
+        existing.AllDayStartDate = null;
+        existing.AllDayEndDateExclusive = null;
+        existing.DtStart = new DateTimeOffset(2026, 7, 12, 1, 30, 0, TimeSpan.Zero);
+        existing.DtEnd = new DateTimeOffset(2026, 7, 13, 1, 30, 0, TimeSpan.Zero);
+        await db.SaveChangesAsync();
+
+        var handler = new ScriptedHttpMessageHandler();
+        handler.Enqueue(HttpStatusCode.OK, """
+        {
+            "@odata.etag": "updated-etag",
+            "id": "graph-event-1",
+            "subject": "Renamed legacy all day",
+            "body": {"contentType": "text", "content": "Test desc"},
+            "start": {"dateTime": "2026-07-12T01:30:00.0000000Z", "timeZone": "UTC"},
+            "end": {"dateTime": "2026-07-13T01:30:00.0000000Z", "timeZone": "UTC"},
+            "location": {"displayName": "Room A"},
+            "isAllDay": true,
+            "type": "singleInstance",
+            "seriesMasterId": null,
+            "recurrence": null,
+            "iCalUId": "ical-1",
+            "changeKey": "change-updated",
+            "originalStartTimeZone": "UTC",
+            "originalEndTimeZone": "UTC"
+        }
+        """);
+        var service = CreateService(db, handler);
+        var request = new OutlookWriteRequest(
+            "update",
+            bindingId,
+            eventId,
+            MakeDraft(calendarId) with
+            {
+                Title = "Renamed legacy all day",
+                IsAllDay = true,
+                DtStart = existing.DtStart,
+                DtEnd = existing.DtEnd,
+            },
+            "instance",
+            OpId,
+            ExpectedEtag: "W/\"expected-etag\"");
+
+        var result = await service.ExecuteAsync(UserId, request, default);
+
+        Assert.Equal("updated", result.Status);
+        var body = await Assert.Single(handler.Requests).Content!.ReadAsStringAsync();
+        using var json = JsonDocument.Parse(body);
+        var start = json.RootElement.GetProperty("start");
+        var end = json.RootElement.GetProperty("end");
+        Assert.Equal("2026-07-12T01:30:00.0000000", start.GetProperty("dateTime").GetString());
+        Assert.Equal("2026-07-13T01:30:00.0000000", end.GetProperty("dateTime").GetString());
+        Assert.Equal("UTC", start.GetProperty("timeZone").GetString());
+        Assert.Equal("UTC", end.GetProperty("timeZone").GetString());
+    }
+
+    [Fact]
+    public async Task Update_AllDayWithIndependentDates_MissingDraftDates_FailsBeforeGraphCall()
+    {
+        await using var db = CreateDb();
+        var (_, bindingId, calendarId, eventId) = await SetupUpdateAsync(db, UserId);
+        var existing = await db.Set<EventEntity>().FirstAsync(e => e.Id == eventId);
+        existing.IsAllDay = true;
+        existing.AllDayStartDate = new DateOnly(2026, 7, 12);
+        existing.AllDayEndDateExclusive = new DateOnly(2026, 7, 13);
+        existing.DtStart = new DateTimeOffset(2026, 7, 11, 16, 0, 0, TimeSpan.Zero);
+        existing.DtEnd = new DateTimeOffset(2026, 7, 12, 16, 0, 0, TimeSpan.Zero);
+        await db.SaveChangesAsync();
+
+        var handler = new ScriptedHttpMessageHandler();
+        var service = CreateService(db, handler);
+        var request = new OutlookWriteRequest(
+            "update",
+            bindingId,
+            eventId,
+            MakeDraft(calendarId) with
+            {
+                IsAllDay = true,
+                DtStart = existing.DtStart,
+                DtEnd = existing.DtEnd,
+            },
+            "instance",
+            OpId,
+            ExpectedEtag: "W/\"expected-etag\"");
+
+        var exception = await Assert.ThrowsAsync<DomainException>(
+            () => service.ExecuteAsync(UserId, request, default));
+
+        Assert.Equal(02009, exception.ErrorCode);
+        Assert.Empty(handler.Requests);
+        Assert.Empty(await db.Set<OutlookSyncBatchEntity>().ToListAsync());
+    }
+
+    [Fact]
+    public async Task Update_TimedToAllDay_MissingDraftDates_FailsBeforeGraphCall()
+    {
+        await using var db = CreateDb();
+        var (_, bindingId, calendarId, eventId) = await SetupUpdateAsync(db, UserId);
+        var existing = await db.Set<EventEntity>().FirstAsync(e => e.Id == eventId);
+        Assert.False(existing.IsAllDay);
+
+        var handler = new ScriptedHttpMessageHandler();
+        var service = CreateService(db, handler);
+        var request = new OutlookWriteRequest(
+            "update",
+            bindingId,
+            eventId,
+            MakeDraft(calendarId) with
+            {
+                IsAllDay = true,
+                DtStart = new DateTimeOffset(2026, 7, 8, 0, 0, 0, TimeSpan.Zero),
+                DtEnd = new DateTimeOffset(2026, 7, 9, 0, 0, 0, TimeSpan.Zero),
+            },
+            "instance",
+            OpId,
+            ExpectedEtag: "W/\"expected-etag\"");
+
+        var exception = await Assert.ThrowsAsync<DomainException>(
+            () => service.ExecuteAsync(UserId, request, default));
+
+        Assert.Equal(02009, exception.ErrorCode);
+        Assert.Empty(handler.Requests);
+        Assert.Empty(await db.Set<OutlookSyncBatchEntity>().ToListAsync());
+    }
+
+    [Fact]
+    public async Task Update_LegacyAllDay_ChangedAbsoluteBoundsWithoutDates_FailsBeforeGraphCall()
+    {
+        await using var db = CreateDb();
+        var (_, bindingId, calendarId, eventId) = await SetupUpdateAsync(db, UserId);
+        var existing = await db.Set<EventEntity>().FirstAsync(e => e.Id == eventId);
+        existing.IsAllDay = true;
+        existing.AllDayStartDate = null;
+        existing.AllDayEndDateExclusive = null;
+        existing.DtStart = new DateTimeOffset(2026, 7, 12, 1, 30, 0, TimeSpan.Zero);
+        existing.DtEnd = new DateTimeOffset(2026, 7, 13, 1, 30, 0, TimeSpan.Zero);
+        await db.SaveChangesAsync();
+
+        var handler = new ScriptedHttpMessageHandler();
+        var service = CreateService(db, handler);
+        var request = new OutlookWriteRequest(
+            "update",
+            bindingId,
+            eventId,
+            MakeDraft(calendarId) with
+            {
+                IsAllDay = true,
+                DtStart = existing.DtStart.AddHours(1),
+                DtEnd = existing.DtEnd.AddHours(1),
+            },
+            "instance",
+            OpId,
+            ExpectedEtag: "W/\"expected-etag\"");
+
+        var exception = await Assert.ThrowsAsync<DomainException>(
+            () => service.ExecuteAsync(UserId, request, default));
+
+        Assert.Equal(02009, exception.ErrorCode);
+        Assert.Empty(handler.Requests);
+        Assert.Empty(await db.Set<OutlookSyncBatchEntity>().ToListAsync());
+    }
+
+    [Fact]
+    public async Task Create_AllDayWithoutIndependentDates_RejectedBeforeGraphCall()
+    {
+        await using var db = CreateDb();
+        var (_, bindingId, calendarId) = await SetupStandardAsync(db, UserId);
+        var handler = new ScriptedHttpMessageHandler();
+        var service = CreateService(db, handler);
+        var request = new OutlookWriteRequest(
+            "create",
+            bindingId,
+            null,
+            MakeDraft(calendarId) with { IsAllDay = true },
+            "instance",
+            OpId);
+
+        var exception = await Assert.ThrowsAsync<DomainException>(
+            () => service.ExecuteAsync(UserId, request, default));
+
+        Assert.Equal(02009, exception.ErrorCode);
+        Assert.Empty(handler.Requests);
+    }
+
+    [Fact]
     public async Task Create_GraphFailure_NoLocalEventAndFailedHistoryPersisted()
     {
         await using var db = CreateDb();

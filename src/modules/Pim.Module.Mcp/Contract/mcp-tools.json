@@ -483,16 +483,18 @@
   },
   {
     "name": "get_events",
-    "description": "List calendar events in a required explicit start/end ISO 8601 range, maximum 366 days. Always returns PagedResult<EventResponse>, default page=1/pageSize=20; follow totalPages. Missing dates are rejected instead of querying all history. dtStart/dtEnd offsets identify instants: convert once to your display timezone; timeZoneId/sourceTimeZoneId describe source metadata (null means unavailable), not an instruction to add hours again. All-day events use their date semantics, not a timed-event conversion.",
+    "description": "List calendar events in a required start/end ISO 8601 range, maximum 366 days; the exact 366-day span is allowed and one second longer is rejected. Always returns PagedResult<EventResponse>, default page=1/pageSize=20; follow totalPages. Missing dates are rejected instead of querying all history. Date-only or offset-less start/end values are interpreted as UTC; explicit offsets identify absolute instants, and both are normalized to explicit UTC before the API call. get_events does not accept a timezone/timeZoneId argument: encode the absolute instant in start/end. dtStart/dtEnd offsets identify instants: convert once to your display timezone; timeZoneId/sourceTimeZoneId describe source metadata (null means unavailable), not an instruction to add hours again. All-day events use their date semantics, not a timed-event conversion.",
     "inputSchema": {
       "properties": {
         "start": {
           "type": "string",
-          "title": "Start"
+          "title": "Start",
+          "description": "ISO 8601 date/time. Date-only or offset-less values are interpreted as UTC; an explicit offset identifies the absolute instant."
         },
         "end": {
           "type": "string",
-          "title": "End"
+          "title": "End",
+          "description": "ISO 8601 date/time. Must not be earlier than start and must not exceed a 366-day span (plus one second is rejected)."
         },
         "calendarId": {
           "anyOf": [
@@ -802,7 +804,7 @@
   },
   {
     "name": "get_event_by_id",
-    "description": "Get single event by id. Tries direct fetch, falls back to filtered list. Returns Event. Note: fallback scans 730-day window page 1 only; if not found try broader search via search_pim.",
+    "description": "Get single event by id. Tries direct fetch, falls back to filtered list. Returns Event. Note: fallback scans one legal 366-day window (page 1 only); if not found use search_calendar_events or a narrower get_events range.",
     "inputSchema": {
       "properties": {
         "eventId": {
@@ -922,7 +924,7 @@
   },
   {
     "name": "search_calendar_events",
-    "description": "Search calendar events by keyword with optional time range. Returns Event[]. Uses /calendar/events?search and falls back to /search.",
+    "description": "Search calendar events by keyword with optional time range. Returns Event[]. Uses /calendar/events?search and falls back to /search. Omitted ranges use a legal 366-day window centered on now; if only start or end is supplied, the other boundary is filled to keep the same 366-day maximum.",
     "inputSchema": {
       "properties": {
         "q": {
@@ -2709,7 +2711,7 @@
   },
   {
     "name": "create_event",
-    "description": "Create a calendar event. Requires write permission create_event. Returns the created EventResponse. LOCAL EVENTS ONLY: Outlook-bound calendars/events require the existing confirmed Outlook writeback flow, which this MCP tool does NOT expose. Calendar canEdit does not imply event-write support. If all available calendars are Outlook-bound, this tool cannot perform the operation; do not retry with different credentials or bypass confirmation.",
+    "description": "Create a calendar event. Requires write permission create_event. Returns the created EventResponse. All-day events must provide allDayStartDate and allDayEndDateExclusive; timed events must omit both. LOCAL EVENTS ONLY: Outlook-bound calendars/events require the existing confirmed Outlook writeback flow, which this MCP tool does NOT expose. Calendar canEdit does not imply event-write support. If all available calendars are Outlook-bound, this tool cannot perform the operation; do not retry with different credentials or bypass confirmation.",
     "inputSchema": {
       "properties": {
         "calendarId": {
@@ -2780,6 +2782,32 @@
           "default": false,
           "title": "Isallday",
           "type": "boolean"
+        },
+        "allDayStartDate": {
+          "anyOf": [
+            {
+              "format": "date",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Alldaystartdate"
+        },
+        "allDayEndDateExclusive": {
+          "anyOf": [
+            {
+              "format": "date",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Alldayenddateexclusive"
         },
         "timeZoneId": {
           "anyOf": [
@@ -2944,7 +2972,7 @@
   },
   {
     "name": "update_event",
-    "description": "Update a calendar event. scope=This/Series with recurrenceId updates repeating events. Requires write permission update_event. LOCAL EVENTS ONLY: Outlook-bound calendars/events require the existing confirmed Outlook writeback flow, which this MCP tool does NOT expose. Calendar canEdit does not imply event-write support. If all available calendars are Outlook-bound, this tool cannot perform the operation; do not retry with different credentials or bypass confirmation.",
+    "description": "Update a calendar event. scope=This/Series with recurrenceId updates repeating events. Requires write permission update_event. All-day writes validate allDayStartDate/allDayEndDateExclusive as a pair; timed events must omit both. LOCAL EVENTS ONLY: Outlook-bound calendars/events require the existing confirmed Outlook writeback flow, which this MCP tool does NOT expose. Calendar canEdit does not imply event-write support. If all available calendars are Outlook-bound, this tool cannot perform the operation; do not retry with different credentials or bypass confirmation.",
     "inputSchema": {
       "properties": {
         "eventId": {
@@ -3050,6 +3078,32 @@
           ],
           "default": null,
           "title": "Isallday"
+        },
+        "allDayStartDate": {
+          "anyOf": [
+            {
+              "format": "date",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Alldaystartdate"
+        },
+        "allDayEndDateExclusive": {
+          "anyOf": [
+            {
+              "format": "date",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Alldayenddateexclusive"
         },
         "timeZoneId": {
           "anyOf": [

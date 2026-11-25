@@ -1,3 +1,4 @@
+using Pim.Core.Exceptions;
 using Pim.Module.Calendar.DTOs;
 using Pim.Module.Calendar.Services;
 using Xunit;
@@ -46,6 +47,71 @@ public sealed class EventFieldValidatorTests
         Assert.Null(GetProp(normalized, "OnlineMeetingUrl"));
         Assert.Null(GetProp(normalized, "ExternalLink"));
         Assert.Null(GetProp(normalized, "Organizer"));
+    }
+
+    [Fact]
+    public void CreateAllDayRequiresIndependentDateRange()
+    {
+        var request = new CreateEventRequest(
+            Guid.NewGuid(), "All day", null, null, Start, End, null,
+            IsAllDay: true);
+
+        var exception = Assert.Throws<DomainException>(() => EventFieldValidator.ValidateAndNormalize(request));
+        Assert.Equal(02009, exception.ErrorCode);
+    }
+
+    [Fact]
+    public void TimeZoneSourceValueIsNotTrimmedOrInvented()
+    {
+        var source = " Eastern Standard Time ";
+        var request = new CreateEventRequest(
+            Guid.NewGuid(), "Timed", null, null, Start, End, null,
+            TimeZoneId: source);
+
+        var normalized = EventFieldValidator.ValidateAndNormalize(request);
+
+        Assert.Equal(source, normalized.TimeZoneId);
+    }
+
+    [Fact]
+    public void OutlookDraftRejectsAllDayFieldsForTimedEvent()
+    {
+        var draft = new OutlookEventDraft(
+            Guid.NewGuid(), "Timed", null, null, null, Start, End,
+            false, null, null, null, null, null, null, null, null, null, null,
+            null, null, null, null,
+            AllDayStartDate: new DateOnly(2026, 7, 22),
+            AllDayEndDateExclusive: new DateOnly(2026, 7, 23));
+
+        var exception = Assert.Throws<DomainException>(() =>
+            EventFieldValidator.ValidateAndNormalize(draft));
+
+        Assert.Equal(02009, exception.ErrorCode);
+    }
+
+    [Fact]
+    public void OutlookDraftAllDayRangeIsSymmetricAndOrdered()
+    {
+        var missingEnd = new OutlookEventDraft(
+            Guid.NewGuid(), "All day", null, null, null, Start, End,
+            true, null, null, null, null, null, null, null, null, null, null,
+            null, null, null, null,
+            AllDayStartDate: new DateOnly(2026, 7, 22));
+        var reversed = missingEnd with
+        {
+            AllDayStartDate = new DateOnly(2026, 7, 23),
+            AllDayEndDateExclusive = new DateOnly(2026, 7, 23),
+        };
+
+        Assert.Equal(02009, Assert.Throws<DomainException>(() =>
+            EventFieldValidator.ValidateAndNormalize(missingEnd)).ErrorCode);
+        Assert.Equal(02009, Assert.Throws<DomainException>(() =>
+            EventFieldValidator.ValidateAndNormalize(reversed)).ErrorCode);
+
+        var valid = missingEnd with { AllDayEndDateExclusive = new DateOnly(2026, 7, 23) };
+        var normalized = EventFieldValidator.ValidateAndNormalize(valid);
+        Assert.Equal(new DateOnly(2026, 7, 22), normalized.AllDayStartDate);
+        Assert.Equal(new DateOnly(2026, 7, 23), normalized.AllDayEndDateExclusive);
     }
 
     private static object? GetProp(object target, string name) =>

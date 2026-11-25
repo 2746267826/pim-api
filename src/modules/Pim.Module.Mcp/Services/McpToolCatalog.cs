@@ -59,7 +59,7 @@ public static class McpToolCatalog
         Add(tools, "calendar", "get_reports", "List reports.");
         Add(tools, "calendar", "get_report", "Get a report by id.");
         Add(tools, "calendar", "get_calendars", "List calendars.");
-        Add(tools, "calendar", "get_events", "List events in an explicit start/end range (maximum 366 days), with stable pagination (default page 1, pageSize 20).");
+        Add(tools, "calendar", "get_events", "List events in an explicit ISO 8601 start/end range (maximum 366 days, exact boundary allowed), with stable pagination. Offsets are absolute instants; no timezone argument is accepted.");
         Add(tools, "calendar", "get_tasks", "List tasks with pagination. statuses is an OR array; empty means all, duplicates are ignored. status remains a deprecated single-value alias.");
         Add(tools, "calendar", "get_task_segments", "Task execution segments.");
         Add(tools, "calendar", "get_recycle_bin", "Recycle bin items.");

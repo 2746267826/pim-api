@@ -1,5 +1,6 @@
 using Pim.Module.Calendar.Entities;
 using Pim.Module.Calendar.Services;
+using Pim.Core.Exceptions;
 using Xunit;
 
 namespace Pim.UnitTests.Services;
@@ -123,5 +124,73 @@ public class IcsServiceTests
         var ics = _service.ExportEvents(new[] { evt });
 
         Assert.Contains("RRULE:FREQ=WEEKLY;BYDAY=MO", ics);
+    }
+
+    [Fact]
+    public void ExportEvents_ResolvedTimeZone_UsesLocalWallClockAndTzid()
+    {
+        var evt = new EventEntity
+        {
+            Uid = "new-york@example.com",
+            Title = "New York morning",
+            DtStart = new DateTimeOffset(2026, 7, 12, 13, 0, 0, TimeSpan.Zero),
+            DtEnd = new DateTimeOffset(2026, 7, 12, 14, 0, 0, TimeSpan.Zero),
+            DtStamp = new DateTimeOffset(2026, 7, 1, 0, 0, 0, TimeSpan.Zero),
+            TimeZoneId = "America/New_York",
+            SourceTimeZoneId = "Eastern Standard Time",
+            Status = "CONFIRMED"
+        };
+
+        var ics = _service.ExportEvents(new[] { evt });
+
+        Assert.Contains("DTSTART;TZID=America/New_York:20260712T090000", ics);
+        Assert.Contains("DTEND;TZID=America/New_York:20260712T100000", ics);
+        Assert.Contains("TZID:America/New_York", ics);
+        var parsed = Assert.Single(_service.ImportEvents(ics));
+        Assert.Equal(evt.DtStart, parsed.Start);
+        Assert.Equal(evt.DtEnd, parsed.End);
+    }
+
+    [Fact]
+    public void ExportEvents_UnknownSourceZone_DoesNotInventTzid()
+    {
+        var evt = new EventEntity
+        {
+            Uid = "unknown-zone@example.com",
+            Title = "Unknown source",
+            DtStart = new DateTimeOffset(2026, 7, 12, 13, 0, 0, TimeSpan.Zero),
+            DtEnd = new DateTimeOffset(2026, 7, 12, 14, 0, 0, TimeSpan.Zero),
+            DtStamp = new DateTimeOffset(2026, 7, 1, 0, 0, 0, TimeSpan.Zero),
+            SourceTimeZoneId = "Outlook Custom Zone",
+            Status = "CONFIRMED"
+        };
+
+        var ics = _service.ExportEvents(new[] { evt });
+
+        Assert.Contains("DTSTART:20260712T130000Z", ics);
+        Assert.DoesNotContain("Outlook Custom Zone", ics);
+        Assert.DoesNotContain("BEGIN:VTIMEZONE", ics);
+    }
+
+    [Fact]
+    public void ExportEvents_LegacyAllDayWithoutIndependentDates_ReturnsBusinessError()
+    {
+        var evt = new EventEntity
+        {
+            Id = Guid.NewGuid(),
+            Uid = "legacy-all-day-export@example.com",
+            Title = "Legacy all day",
+            DtStart = new DateTimeOffset(2026, 7, 12, 0, 0, 0, TimeSpan.Zero),
+            DtEnd = new DateTimeOffset(2026, 7, 13, 0, 0, 0, TimeSpan.Zero),
+            DtStamp = new DateTimeOffset(2026, 7, 1, 0, 0, 0, TimeSpan.Zero),
+            IsAllDay = true,
+            Status = "CONFIRMED"
+        };
+
+        var exception = Assert.Throws<DomainException>(() => _service.ExportEvents(new[] { evt }));
+
+        Assert.Equal(02009, exception.ErrorCode);
+        Assert.Contains("独立日期范围", exception.Message);
+        Assert.Contains(evt.Uid, exception.Message);
     }
 }

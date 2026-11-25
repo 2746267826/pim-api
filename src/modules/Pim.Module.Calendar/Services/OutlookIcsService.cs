@@ -32,10 +32,22 @@ public sealed class OutlookIcsService
             var raw = index < rawComponents.Count ? rawComponents[index] : string.Empty;
             var startUtc = e.Start?.AsUtc;
             var endUtc = e.End?.AsUtc;
-            var invalidReason = HasRawDateProperty(raw) && (startUtc is null || endUtc is null)
+            var sourceTimeZoneId = GetSourceTimeZoneId(e);
+            var isAllDay = IsAllDay(e);
+            var hasRawDtEnd = GetRawPropertyValues(raw, "DTEND").Any();
+            DateOnly? allDayStartDate = isAllDay ? e.Start!.Date : null;
+            var allDayEndDateExclusive = isAllDay
+                ? (hasRawDtEnd ? e.End?.Date : null) ?? allDayStartDate!.Value.AddDays(1)
+                : (DateOnly?)null;
+            if (isAllDay && allDayStartDate.HasValue)
+            {
+                startUtc ??= allDayStartDate.Value.ToDateTime(TimeOnly.MinValue);
+                endUtc ??= allDayEndDateExclusive!.Value.ToDateTime(TimeOnly.MinValue);
+            }
+            var invalidReason = HasRawDateProperty(raw)
+                && (startUtc is null || (hasRawDtEnd && endUtc is null) || (!isAllDay && endUtc is null))
                 ? "parse_error"
                 : null;
-            var sourceTimeZoneId = GetSourceTimeZoneId(e);
             var recurrenceId = GetRawPropertyValues(raw, "RECURRENCE-ID").FirstOrDefault()
                 ?? GetPropertyValue(e, "RECURRENCE-ID");
             var exDates = GetRawPropertyValues(raw, "EXDATE").ToList();
@@ -58,14 +70,16 @@ public sealed class OutlookIcsService
 #pragma warning disable CS0618
                 e.RecurrenceRules.FirstOrDefault()?.ToString(),
 #pragma warning restore CS0618
-                IsAllDay(e),
+                isAllDay,
                 sourceTimeZoneId,
                 raw,
                 JsonSerializer.Serialize(BuildMetadata(calendar.Method, e, raw), JsonOptions),
                 recurrenceId,
                 JsonSerializer.Serialize(exDates, JsonOptions),
                 JsonSerializer.Serialize(recurrenceMetadata, JsonOptions),
-                invalidReason);
+                invalidReason,
+                allDayStartDate,
+                allDayEndDateExclusive);
         }).ToList();
 
         return new OutlookIcsParseResult(events);
@@ -242,5 +256,7 @@ public sealed record OutlookIcsParsedEvent(
     string? RecurrenceId,
     string ExDatesJson,
     string RecurrenceMetadataJson,
-    string? InvalidReason = null
+    string? InvalidReason = null,
+    DateOnly? AllDayStartDate = null,
+    DateOnly? AllDayEndDateExclusive = null
 );

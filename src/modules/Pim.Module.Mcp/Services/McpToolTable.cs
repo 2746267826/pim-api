@@ -19,7 +19,7 @@ public enum McpToolKind
     /// <summary>HEAD then GET attachment download endpoint, return metadata only.</summary>
     AttachmentMeta,
 
-    /// <summary>GET event by id with data-center + 730-day scan fallback.</summary>
+    /// <summary>GET event by id with data-center + one legal 366-day scan fallback.</summary>
     EventById,
 
     /// <summary>GET task by id with data-center + list-scan fallback.</summary>

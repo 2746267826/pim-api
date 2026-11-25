@@ -20,11 +20,19 @@ import { TaskEditorDialog } from '../components/task-editor-dialog'
 import { InboxPanel } from '../components/inbox-panel'
 import { EventListView } from '../components/event-list-view'
 import type { EventResponse, LayerItem } from '../types'
-import { dayEndIso, dayStartIso, durationToMinutes, formatTime, toUtcIso } from '@/lib/datetime'
+import { durationToMinutes } from '@/lib/datetime'
 import { summarizeLines } from '@/lib/text'
 import { Chip, Button, Drawer, DrawerContent, PageHeader, Segmented } from '@/components/ui'
 import { cn } from '@/lib/utils'
 import { notifyError, notifySuccess } from '@/lib/notify'
+import {
+  CALENDAR_DISPLAY_OFFSET_MS,
+  CALENDAR_DISPLAY_TIME_ZONE,
+  calendarAxisRangeForToday,
+  calendarAxisToInstant,
+  formatInstantInZone,
+  toCalendarAxisValue,
+} from '../event-timezone'
 
 interface FcEvent {
   id: string
@@ -55,12 +63,10 @@ const SHOW_AS_LABEL: Record<string, string> = {
 /** 凌晨策略持久化键 */
 const DAWN_STORAGE_KEY = 'pim.calendarDawn'
 
-/** 业务日墙钟时区偏移：+08:00（与时间线组件同一口径，不依赖浏览器时区） */
-const CST_OFFSET_MS = 8 * 3600_000
-/** 时刻 → +08:00 墙钟分钟（0..1440） */
+/** FullCalendar 用 UTC 承载北京时间墙钟值，因此直接读取 UTC 分钟字段。 */
 function wallMinutes(ms: number): number {
   const dayMs = 86_400_000
-  return (((ms + CST_OFFSET_MS) % dayMs) + dayMs) % dayMs / 60_000
+  return ((ms % dayMs) + dayMs) % dayMs / 60_000
 }
 
 /** 墙钟分钟 → 'HH:MM:00'（FullCalendar scrollTime/slotTime 格式） */
@@ -117,11 +123,13 @@ export function CalendarPage() {
   const plan = usePlanTask()
 
   const calendarRef = useRef<FullCalendar>(null)
-  const [range, setRange] = useState(() => ({
-    start: dayStartIso(new Date()),
-    end: dayEndIso(new Date()),
-    title: '',
-  }))
+  const [calendarAxisNow, setCalendarAxisNow] = useState(() => new Date(Date.now() + CALENDAR_DISPLAY_OFFSET_MS))
+  const [range, setRange] = useState(() => ({ ...calendarAxisRangeForToday(), title: '' }))
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setCalendarAxisNow(new Date(Date.now() + CALENDAR_DISPLAY_OFFSET_MS)), 30_000)
+    return () => window.clearInterval(timer)
+  }, [])
 
   const eventsQuery = useEvents(range.start, range.end, layerToggles.events)
   const layersQuery = useLayers(
@@ -151,7 +159,7 @@ export function CalendarPage() {
   }
 
   const [eventEditor, setEventEditor] = useState<
-    { mode: 'create'; initial: { start: Date; end: Date } } | { mode: 'edit'; event: EventResponse } | null
+    { mode: 'create'; initial: { start: Date; end: Date; allDay?: boolean } } | { mode: 'edit'; event: EventResponse } | null
   >(null)
   /* 只读详情：点击卡片先看详情，再决定是否编辑 */
   const [detail, setDetail] = useState<EventResponse | null>(null)
@@ -164,12 +172,13 @@ export function CalendarPage() {
     if (layerToggles.events) {
       for (const ev of eventsQuery.data?.items ?? []) {
         if (calendarId && ev.calendarId !== calendarId) continue
+        if (ev.isAllDay && (!ev.allDayStartDate || !ev.allDayEndDateExclusive)) continue
         const color = calendars.find((c) => c.id === ev.calendarId)?.color ?? '#3B82F6'
         list.push({
           id: `event:${ev.id}`,
           title: ev.title,
-          start: ev.dtStart,
-          end: ev.dtEnd,
+          start: ev.isAllDay ? ev.allDayStartDate ?? undefined : toCalendarAxisValue(ev.dtStart),
+          end: ev.isAllDay ? ev.allDayEndDateExclusive ?? undefined : toCalendarAxisValue(ev.dtEnd),
           allDay: ev.isAllDay,
           backgroundColor: color,
           borderColor: 'transparent',
@@ -184,8 +193,8 @@ export function CalendarPage() {
       list.push({
         id: item.id,
         title: item.title,
-        start: item.startsAt,
-        end: item.endsAt,
+        start: toCalendarAxisValue(item.startsAt),
+        end: toCalendarAxisValue(item.endsAt),
         backgroundColor: color,
         borderColor: color,
         extendedProps: { kind: 'layer' },
@@ -222,18 +231,20 @@ export function CalendarPage() {
 
   /* 智能滚动的目标分钟（+08:00 墙钟）：今天 → 当前时刻前 30 分钟；非今天 → 首个日程前 30 分钟；无日程 → 08:00 */
   const smartMinutes = useMemo(() => {
-    const nowMs = Date.now()
+    const nowMs = calendarAxisNow.getTime()
+    const rangeStartMs = Date.parse(toCalendarAxisValue(range.start))
+    const rangeEndMs = Date.parse(toCalendarAxisValue(range.end))
     const inRange =
-      Date.parse(range.start) <= nowMs && nowMs <= Date.parse(range.end) + 86_399_000
+      rangeStartMs <= nowMs && nowMs < rangeEndMs
     if (inRange) return wallMinutes(nowMs) - 30
     let first = Infinity
     for (const e of fcEvents) {
       if (e.allDay || !e.start) continue
       const s = Date.parse(e.start)
-      if (Number.isFinite(s) && s >= Date.parse(range.start)) first = Math.min(first, s)
+      if (Number.isFinite(s) && s >= rangeStartMs) first = Math.min(first, s)
     }
     return Number.isFinite(first) ? wallMinutes(first) - 30 : 8 * 60
-  }, [range.start, range.end, fcEvents])
+  }, [range.start, range.end, fcEvents, calendarAxisNow])
 
   /*
    * 滚动执行：日历 height="auto"，时间网格由外层 .skin-gcal 容器整体滚动——
@@ -281,8 +292,9 @@ export function CalendarPage() {
    * 时段切分逻辑与时间线一致（+08:00 墙钟、跨小时段拆分）。
    */
   const strip = useMemo(() => {
-    const CST = 8 * 3600_000
     const DAY = 86_400_000
+    const rangeStartMs = Date.parse(toCalendarAxisValue(range.start))
+    const rangeEndMs = Date.parse(toCalendarAxisValue(range.end))
     const cells = Array.from({ length: 24 }, () => ({ minutes: 0, color: null as string | null }))
     const perHourColor = new Map<number, Map<string, number>>() // hour → (color → minutes)
     for (const e of fcEvents) {
@@ -291,12 +303,12 @@ export function CalendarPage() {
       const en = e.end ? Date.parse(e.end) : s + 3600_000
       if (!Number.isFinite(s) || !Number.isFinite(en) || en <= s) continue
       const color = e.backgroundColor
-      let cursor = Math.max(s, Date.parse(range.start))
-      const cap = Math.min(en, Date.parse(range.end) + DAY)
+      let cursor = Math.max(s, rangeStartMs)
+      const cap = Math.min(en, rangeEndMs)
       let guard = 0
       while (cursor < cap && guard < 200) {
         guard += 1
-        const wallMs = ((cursor + CST) % DAY + DAY) % DAY
+        const wallMs = ((cursor % DAY) + DAY) % DAY
         const hour = Math.floor(wallMs / 3600_000)
         const hourEndMs = cursor + (3600_000 - (wallMs % 3600_000))
         const seg = Math.min(cap, hourEndMs) - cursor
@@ -333,9 +345,8 @@ export function CalendarPage() {
   }
 
   function onDatesSet(arg: DatesSetArg) {
-    // FullCalendar 的 startStr/endStr 带本地偏移（+08:00），后端 DateTime 解析会 500 → 归一到 UTC
-    const start = toUtcIso(arg.startStr) ?? dayStartIso(new Date())
-    const end = toUtcIso(arg.endStr) ?? dayEndIso(new Date())
+    const start = calendarAxisToInstant(arg.start).toISOString()
+    const end = calendarAxisToInstant(arg.end).toISOString()
     setRange({ start, end, title: arg.view.title })
   }
 
@@ -408,7 +419,14 @@ export function CalendarPage() {
 
   /* 拖选空白时段 → 预填日程编辑弹窗（仅时间轴视图） */
   function onSelect(info: { start: Date; end: Date; allDay: boolean }) {
-    setEventEditor({ mode: 'create', initial: { start: info.start, end: info.end } })
+    setEventEditor({
+      mode: 'create',
+      initial: {
+        start: info.allDay ? info.start : calendarAxisToInstant(info.start),
+        end: info.allDay ? info.end : calendarAxisToInstant(info.end),
+        allDay: info.allDay,
+      },
+    })
   }
 
   /*
@@ -439,7 +457,7 @@ export function CalendarPage() {
   function onEventReceive(info: EventReceiveArg) {
     const taskId = info.draggedEl.getAttribute('data-task-id')
     // 落位时间取 FC 计算好的事件起点（已吸附到时间槽）
-    const start = info.event.start ?? undefined
+    const start = info.event.start ? calendarAxisToInstant(info.event.start) : undefined
     // 立即移除镜像事件：日历上的真实呈现由 /calendar/layers 的 task-segments 提供
     info.event.remove()
     if (!taskId) return
@@ -465,6 +483,9 @@ export function CalendarPage() {
   }
 
   const truncated = (eventsQuery.data?.totalCount ?? 0) > (eventsQuery.data?.items.length ?? 0)
+  const missingAllDayDateCount = (eventsQuery.data?.items ?? []).filter(
+    (event) => event.isAllDay && (!event.allDayStartDate || !event.allDayEndDateExclusive),
+  ).length
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -486,7 +507,7 @@ export function CalendarPage() {
             <Button variant="secondary" size="sm" onClick={() => setTaskEditorOpen(true)}>
               新建任务
             </Button>
-            <Button variant="primary" size="sm" onClick={() => setEventEditor({ mode: 'create', initial: { start: new Date(), end: new Date(Date.now() + 3600_000) } })}>
+            <Button variant="primary" size="sm" onClick={() => setEventEditor({ mode: 'create', initial: { start: nextHour(), end: nextHourPlus() } })}>
               <CalendarPlus className="size-4" aria-hidden /> 新建日程
             </Button>
           </>
@@ -541,6 +562,11 @@ export function CalendarPage() {
       {view !== 'list' && truncated && (
         <div className="mb-2 rounded-ctl border border-warn-border bg-warn-soft px-3 py-1.5 text-xs text-warn">
           当前窗口事件超过 100 条，仅显示前 100 条（可缩小时间范围查看更多）。
+        </div>
+      )}
+      {view !== 'list' && missingAllDayDateCount > 0 && (
+        <div className="mb-2 rounded-ctl border border-warn-border bg-warn-soft px-3 py-1.5 text-xs text-warn">
+          {missingAllDayDateCount} 个全天日程缺少独立日期，未从绝对时刻推断，因此未放入网格。
         </div>
       )}
 
@@ -604,6 +630,9 @@ export function CalendarPage() {
             plugins={[dayGridPlugin, timeGridPlugin, listPlugin, interactionPlugin]}
             locale={zhCnLocale}
             headerToolbar={false}
+            timeZone="UTC"
+            now={calendarAxisNow}
+            initialDate={calendarAxisNow}
             initialView={CAL_VIEW_TYPES[view]}
             datesSet={onDatesSet}
             events={fcEvents}
@@ -628,29 +657,33 @@ export function CalendarPage() {
               const ev = arg.event.extendedProps.event as EventResponse | undefined
               const cancelled = arg.event.extendedProps.cancelled as boolean | undefined
               const repeated = arg.event.extendedProps.repeated as boolean | undefined
+              const localTime = calendarEventLocalTime(ev)
               // 月视图：GCal 圆点行（彩点 + 时间 + 标题）
               if (arg.view.type.startsWith('dayGrid')) {
                 return (
-                  <div className="flex min-w-0 items-center gap-1.5 px-0.5 py-0.5">
-                    {!cancelled && (
-                      <span
-                        className="size-1.5 shrink-0 rounded-full"
-                        style={{ backgroundColor: arg.event.backgroundColor }}
-                        aria-hidden
-                      />
-                    )}
-                    {arg.timeText && (
-                      <span className="tnum shrink-0 text-[11px] text-text-3">{arg.timeText}</span>
-                    )}
-                    <span
-                      className={cn(
-                        'truncate text-[12px] leading-4 font-medium',
-                        cancelled ? 'text-text-4 line-through' : 'text-text-1',
+                  <div className="min-w-0 px-0.5 py-0.5" title={[arg.timeText && `北京 ${arg.timeText}`, localTime, arg.event.title].filter(Boolean).join(' · ')}>
+                    <div className="flex min-w-0 items-center gap-1.5">
+                      {!cancelled && (
+                        <span
+                          className="size-1.5 shrink-0 rounded-full"
+                          style={{ backgroundColor: arg.event.backgroundColor }}
+                          aria-hidden
+                        />
                       )}
-                    >
-                      {repeated && <span className="mr-0.5 text-text-3">↻</span>}
-                      {arg.event.title}
-                    </span>
+                      {arg.timeText && (
+                        <span className="tnum shrink-0 text-[11px] text-text-3">北京 {arg.timeText}</span>
+                      )}
+                      <span
+                        className={cn(
+                          'truncate text-[12px] leading-4 font-medium',
+                          cancelled ? 'text-text-4 line-through' : 'text-text-1',
+                        )}
+                      >
+                        {repeated && <span className="mr-0.5 text-text-3">↻</span>}
+                        {arg.event.title}
+                      </span>
+                    </div>
+                    {localTime && <span className="block truncate pl-3 text-[10px] leading-3 text-text-4">{localTime}</span>}
                   </div>
                 )
               }
@@ -658,7 +691,7 @@ export function CalendarPage() {
               // 顶部对齐；行数由 data-density（eventDidMount 实测高度写入）经 CSS 逐级放开
               const lines = summarizeLines(ev?.description, { exclude: [ev?.location, ev?.title], maxLines: 5 })
               const metaLine = [ev?.location, showAsLabel(ev?.showAs)].filter(Boolean).join(' · ')
-              const whenText = arg.timeText || (ev ? formatTime(ev.dtStart) : '')
+              const whenText = [arg.timeText && `北京 ${arg.timeText}`, localTime].filter(Boolean).join(' · ')
               return (
                 <div className="flex h-full min-w-0 flex-col overflow-hidden rounded-[inherit] py-1 pr-1.5 pl-1">
                   {cancelled ? (
@@ -755,14 +788,30 @@ export function CalendarPage() {
 }
 
 function nextHour(): Date {
-  const d = new Date()
-  d.setHours(d.getHours() + 1, 0, 0, 0)
-  return d
+  const axis = new Date(Date.now() + CALENDAR_DISPLAY_OFFSET_MS)
+  axis.setUTCHours(axis.getUTCHours() + 1, 0, 0, 0)
+  return calendarAxisToInstant(axis)
 }
 function nextHourPlus(): Date {
-  const d = nextHour()
-  d.setHours(d.getHours() + 1)
-  return d
+  return new Date(nextHour().getTime() + 60 * 60_000)
+}
+
+function calendarEventLocalTime(event: EventResponse | undefined): string | null {
+  if (!event || event.isAllDay) return null
+  if (event.timeZoneResolution === 'resolved' && event.timeZoneId && event.localStart && event.localEnd) {
+    return `${shortTimeZoneLabel(event.timeZoneId)} ${event.localStart.slice(5, 16).replace('T', ' ')}–${event.localEnd.slice(11, 16)}`
+  }
+  const displayZone = event.displayTimeZoneId ?? CALENDAR_DISPLAY_TIME_ZONE
+  const start = event.displayLocalStart ?? formatInstantInZone(event.dtStart, displayZone)
+  const end = event.displayLocalEnd ?? formatInstantInZone(event.dtEnd, displayZone)
+  return `时区未知 · ${displayZone} ${start.slice(5, 16).replace('T', ' ')}–${end.slice(11, 16)}`
+}
+
+function shortTimeZoneLabel(timeZoneId: string): string {
+  if (timeZoneId === 'Asia/Shanghai') return '上海'
+  if (timeZoneId === 'America/New_York') return '纽约'
+  if (timeZoneId === 'America/Los_Angeles') return '洛杉矶'
+  return timeZoneId
 }
 
 function CalendarSegmented({ view, onChange }: { view: CalView; onChange: (v: CalView) => void }) {

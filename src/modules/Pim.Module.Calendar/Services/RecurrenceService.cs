@@ -5,6 +5,7 @@ using Ical.Net.CalendarComponents;
 using Ical.Net.DataTypes;
 using Ical.Net.Evaluation;
 using Microsoft.Extensions.Logging;
+using Pim.Core.Exceptions;
 using Pim.Module.Calendar.Entities;
 
 namespace Pim.Module.Calendar.Services;
@@ -27,6 +28,7 @@ public class RecurrenceService
     }
 
     private const int MaxOccurrences = 500;
+    private const int MaxOccurrencesPerSeries = 10_000;
     private const int MaxWindowDays = 1825;
 
     private DateTimeOffset GetEffectiveRangeEnd(DateTimeOffset rangeStart, DateTimeOffset rangeEnd)
@@ -65,6 +67,9 @@ public class RecurrenceService
         DateTimeOffset rangeEnd)
     {
         var effectiveRangeEnd = GetEffectiveRangeEnd(rangeStart, rangeEnd);
+        var capUnbounded = rangeEnd == DateTimeOffset.MaxValue || rangeStart == DateTimeOffset.MinValue;
+        var displayDateStart = EventTimeZoneResolver.DisplayDate(rangeStart);
+        var displayDateEndExclusive = EventTimeZoneResolver.DisplayDateEndExclusive(effectiveRangeEnd);
         var all = events.ToList();
         // normalize RecurrenceId to O format for stable matching
         string Normalize(string? v)
@@ -124,15 +129,23 @@ public class RecurrenceService
             if (string.IsNullOrEmpty(entity.RRule))
             {
                 simple++;
-                if (entity.DtEnd > rangeStart && entity.DtStart < effectiveRangeEnd)
-                    results.Add(new ExpandedEvent(entity, entity.Id, entity.DtStart, entity.DtEnd, entity.RecurrenceId, entity.IsSeriesMaster, entity.IsException, entity.SeriesMasterId));
+                var simpleEvent = BuildSimpleExpandedEvent(entity);
+                if (OccursInWindow(simpleEvent, rangeStart, effectiveRangeEnd, displayDateStart, displayDateEndExclusive))
+                    results.Add(simpleEvent);
                 continue;
             }
 
             // Recurring master (or legacy RRule without IsSeriesMaster flag)
             recurring++;
             var exDates = ParseExDates(entity.ExDatesJson);
-            var expanded = ExpandRecurring(entity, rangeStart, effectiveRangeEnd, exDates);
+            var expanded = ExpandRecurring(
+                entity,
+                rangeStart,
+                effectiveRangeEnd,
+                displayDateStart,
+                displayDateEndExclusive,
+                exDates,
+                capUnbounded);
             if (expanded.Count == 0 && entity.RRule is not null)
                 errors++;
 
@@ -146,16 +159,18 @@ public class RecurrenceService
                     if (map.TryGetValue(recurrenceId, out var exception))
                     {
                         exceptionsApplied++;
-                        // Use exception entity's own time and status; keep original recurrenceId
-                        overlaid.Add(new ExpandedEvent(
-                            exception,
-                            exception.Id,
-                            exception.DtStart,
-                            exception.DtEnd,
-                            exception.RecurrenceId,
-                            exception.IsSeriesMaster,
-                            exception.IsException,
-                            exception.SeriesMasterId));
+                        // Use exception entity's own time and status; keep original recurrenceId.
+                        // A moved exception outside the query window must not leak into the page.
+                        var exceptionEvent = BuildSimpleExpandedEvent(exception);
+                        if (OccursInWindow(
+                                exceptionEvent,
+                                rangeStart,
+                                effectiveRangeEnd,
+                                displayDateStart,
+                                displayDateEndExclusive))
+                        {
+                            overlaid.Add(exceptionEvent);
+                        }
                     }
                     else
                     {
@@ -168,7 +183,10 @@ public class RecurrenceService
                             recurrenceId,
                             false,
                             false,
-                            entity.Id));
+                            entity.Id,
+                            null,
+                            occ.AllDayStartDate,
+                            occ.AllDayEndDateExclusive));
                     }
                 }
                 // Add exceptions that have no matching generated occurrence (e.g., out of range but still in window, or standalone)
@@ -177,10 +195,14 @@ public class RecurrenceService
                     if (!expanded.Any(o => (o.RecurrenceId ?? o.OccurrenceStart.ToString("O")) == kv.Key))
                     {
                         var ex = kv.Value;
-                        if (ex.DtEnd > rangeStart && ex.DtStart < effectiveRangeEnd)
-                        {
-                            overlaid.Add(new ExpandedEvent(ex, ex.Id, ex.DtStart, ex.DtEnd, ex.RecurrenceId, ex.IsSeriesMaster, ex.IsException, ex.SeriesMasterId));
-                        }
+                        var exceptionEvent = BuildSimpleExpandedEvent(ex);
+                        if (OccursInWindow(
+                                exceptionEvent,
+                                rangeStart,
+                                effectiveRangeEnd,
+                                displayDateStart,
+                                displayDateEndExclusive))
+                            overlaid.Add(exceptionEvent);
                     }
                 }
                 results.AddRange(overlaid);
@@ -199,7 +221,10 @@ public class RecurrenceService
                         recurrenceId,
                         false,
                         false,
-                        entity.Id));
+                        entity.Id,
+                        null,
+                        occ.AllDayStartDate,
+                        occ.AllDayEndDateExclusive));
                 }
             }
         }
@@ -227,26 +252,68 @@ public class RecurrenceService
         EventEntity entity,
         DateTimeOffset rangeStart,
         DateTimeOffset rangeEnd,
-        HashSet<string>? exDates = null)
+        DateOnly displayDateStart,
+        DateOnly displayDateEndExclusive,
+        HashSet<string>? exDates = null,
+        bool capUnbounded = true)
     {
         var results = new List<ExpandedEvent>();
-        var duration = entity.DtEnd - entity.DtStart;
+        var timeZone = EventTimeZoneResolver.Resolve(entity.TimeZoneId, entity.SourceTimeZoneId, entity.OriginalStartTimeZone);
+        var isAllDay = entity.IsAllDay && entity.AllDayStartDate.HasValue && entity.AllDayEndDateExclusive.HasValue;
+        var duration = isAllDay
+            ? entity.AllDayEndDateExclusive!.Value.DayNumber - entity.AllDayStartDate!.Value.DayNumber
+            : Math.Max(0, (entity.DtEnd - entity.DtStart).TotalMinutes);
 
         try
         {
-            var calEvent = new CalendarEvent
+            CalendarEvent calEvent;
+            CalDateTime evaluationStart;
+            if (isAllDay)
             {
-                DtStart = new CalDateTime(entity.DtStart.UtcDateTime),
-                DtEnd = new CalDateTime(entity.DtEnd.UtcDateTime),
-            };
+                var allDayStart = entity.AllDayStartDate!.Value.ToDateTime(TimeOnly.MinValue);
+                var allDayEnd = entity.AllDayEndDateExclusive!.Value.ToDateTime(TimeOnly.MinValue);
+                var allDayZone = timeZone.Zone ?? EventTimeZoneResolver.DisplayZone;
+                calEvent = new CalendarEvent
+                {
+                    DtStart = new CalDateTime(allDayStart),
+                    DtEnd = new CalDateTime(allDayEnd),
+                };
+                var rangeStartDate = DateOnly.FromDateTime(
+                    TimeZoneInfo.ConvertTime(rangeStart, allDayZone).DateTime);
+                evaluationStart = new CalDateTime(
+                    rangeStartDate.AddDays(-Math.Max(1, (int)duration)).ToDateTime(TimeOnly.MinValue));
+            }
+            else if (timeZone.IsResolved)
+            {
+                var localStart = TimeZoneInfo.ConvertTime(entity.DtStart, timeZone.Zone!).DateTime;
+                var localEnd = TimeZoneInfo.ConvertTime(entity.DtEnd, timeZone.Zone!).DateTime;
+                calEvent = new CalendarEvent
+                {
+                    DtStart = new CalDateTime(localStart, timeZone.Id),
+                    DtEnd = new CalDateTime(localEnd, timeZone.Id),
+                };
+                var lookback = TimeSpan.FromMinutes(duration).Add(TimeSpan.FromDays(1));
+                var evaluation = rangeStart - lookback;
+                evaluationStart = new CalDateTime(
+                    TimeZoneInfo.ConvertTime(evaluation, timeZone.Zone!).DateTime,
+                    timeZone.Id);
+            }
+            else
+            {
+                calEvent = new CalendarEvent
+                {
+                    DtStart = new CalDateTime(entity.DtStart.UtcDateTime),
+                    DtEnd = new CalDateTime(entity.DtEnd.UtcDateTime),
+                };
+                var lookback = TimeSpan.FromMinutes(duration).Add(TimeSpan.FromDays(1));
+                evaluationStart = new CalDateTime((rangeStart - lookback).UtcDateTime);
+            }
 #pragma warning disable CS0618
             calEvent.RecurrenceRules.Add(new RecurrencePattern(entity.RRule));
 #pragma warning restore CS0618
 
             var options = new EvaluationOptions { MaxUnmatchedIncrementsLimit = 500 };
-            var startDt = new CalDateTime(entity.DtStart.UtcDateTime);
-
-            var occurrences = calEvent.GetOccurrences(startDt, options);
+            var occurrences = calEvent.GetOccurrences(evaluationStart, options);
 
             // Only cap infinite rules (no COUNT and no UNTIL); finite rules respect their COUNT even if >500
             var rruleUpper = entity.RRule ?? string.Empty;
@@ -255,21 +322,63 @@ public class RecurrenceService
 
             foreach (var occ in occurrences)
             {
-                if (isInfinite && results.Count >= MaxOccurrences)
-                    break;
-                var start = new DateTimeOffset(occ.Period.StartTime.Value, TimeSpan.Zero);
-                if (start < rangeStart)
-                    continue;
-                if (start >= rangeEnd)
+                if (capUnbounded && isInfinite && results.Count >= MaxOccurrences)
                     break;
 
-                var end = new DateTimeOffset(occ.Period.EndTime?.Value ?? start.Add(duration).UtcDateTime, TimeSpan.Zero);
+                DateOnly? occurrenceStartDate = null;
+                DateOnly? occurrenceEndDate = null;
+                DateTimeOffset start;
+                DateTimeOffset end;
+                if (isAllDay)
+                {
+                    occurrenceStartDate = DateOnly.FromDateTime(occ.Period.StartTime.Value);
+                    occurrenceEndDate = occurrenceStartDate.Value.AddDays(Math.Max(1, (int)duration));
+                    var allDayZone = timeZone.Zone ?? EventTimeZoneResolver.DisplayZone;
+                    start = EventTimeZoneResolver.StartOfLocalDate(
+                        occurrenceStartDate.Value,
+                        allDayZone,
+                        allDayZone.GetUtcOffset(occurrenceStartDate.Value.ToDateTime(TimeOnly.MinValue)));
+                    end = EventTimeZoneResolver.StartOfLocalDate(
+                        occurrenceEndDate.Value,
+                        allDayZone,
+                        allDayZone.GetUtcOffset(occurrenceEndDate.Value.ToDateTime(TimeOnly.MinValue)));
+                }
+                else
+                {
+                    var startUtc = occ.Period.StartTime.AsUtc;
+                    start = new DateTimeOffset(DateTime.SpecifyKind(startUtc, DateTimeKind.Utc), TimeSpan.Zero);
+                    var endUtc = occ.Period.EndTime?.AsUtc;
+                    end = endUtc.HasValue
+                        ? new DateTimeOffset(DateTime.SpecifyKind(endUtc.Value, DateTimeKind.Utc), TimeSpan.Zero)
+                        : start.AddMinutes(duration);
+                }
+
+                var inWindow = start < rangeEnd && end > rangeStart;
+                if (!inWindow)
+                {
+                    if (start >= rangeEnd)
+                        break;
+                    continue;
+                }
+
                 var recurrenceId = start.ToString("O");
                 if (exDates != null && exDates.Contains(recurrenceId))
                     continue;
                 // Also support ExDates stored as date-only or without millis
-                if (exDates != null && exDates.Any(d => string.Equals(d, start.ToString("yyyy-MM-ddTHH:mm:ssZ"), StringComparison.Ordinal) || string.Equals(d, start.UtcDateTime.ToString("O"), StringComparison.Ordinal)))
+                if (exDates != null && exDates.Any(d =>
+                        string.Equals(d, start.ToString("yyyy-MM-ddTHH:mm:ssZ"), StringComparison.Ordinal)
+                        || string.Equals(d, start.UtcDateTime.ToString("O"), StringComparison.Ordinal)
+                        || (occurrenceStartDate.HasValue
+                            && (string.Equals(d, occurrenceStartDate.Value.ToString("yyyy-MM-dd"), StringComparison.Ordinal)
+                                || string.Equals(d, occurrenceStartDate.Value.ToString("yyyyMMdd"), StringComparison.Ordinal)))))
                     continue;
+
+                if (results.Count >= MaxOccurrencesPerSeries)
+                {
+                    throw new DomainException(
+                        02009,
+                        $"重复规则展开超出安全预算（单系列最多 {MaxOccurrencesPerSeries} 次），请缩小查询窗口或降低重复频率。");
+                }
 
                 results.Add(new ExpandedEvent(
                     entity,
@@ -278,16 +387,73 @@ public class RecurrenceService
                     recurrenceId,
                     entity.IsSeriesMaster,
                     entity.IsException,
-                    entity.SeriesMasterId));
+                    entity.SeriesMasterId,
+                    null,
+                    occurrenceStartDate,
+                    occurrenceEndDate));
             }
+        }
+        catch (DomainException)
+        {
+            throw;
         }
         catch
         {
-            if (entity.DtEnd > rangeStart && entity.DtStart < rangeEnd)
-                results.Add(new ExpandedEvent(entity, entity.Id, entity.DtStart, entity.DtEnd, entity.RecurrenceId, entity.IsSeriesMaster, entity.IsException, entity.SeriesMasterId));
+            var fallback = BuildSimpleExpandedEvent(entity);
+            if (OccursInWindow(fallback, rangeStart, rangeEnd, displayDateStart, displayDateEndExclusive))
+                results.Add(fallback);
         }
 
         return results;
+    }
+
+    private static ExpandedEvent BuildSimpleExpandedEvent(EventEntity entity)
+    {
+        if (!entity.IsAllDay
+            || !entity.AllDayStartDate.HasValue
+            || !entity.AllDayEndDateExclusive.HasValue)
+        {
+            return new ExpandedEvent(
+                entity,
+                entity.Id,
+                entity.DtStart,
+                entity.DtEnd,
+                entity.RecurrenceId,
+                entity.IsSeriesMaster,
+                entity.IsException,
+                entity.SeriesMasterId);
+        }
+
+        var startDate = entity.AllDayStartDate.Value;
+        var endDate = entity.AllDayEndDateExclusive.Value;
+        var zone = EventTimeZoneResolver.Resolve(
+            entity.TimeZoneId,
+            entity.SourceTimeZoneId,
+            entity.OriginalStartTimeZone).Zone ?? EventTimeZoneResolver.DisplayZone;
+        return new ExpandedEvent(
+            entity,
+            entity.Id,
+            EventTimeZoneResolver.StartOfLocalDate(
+                startDate, zone, zone.GetUtcOffset(startDate.ToDateTime(TimeOnly.MinValue))),
+            EventTimeZoneResolver.StartOfLocalDate(
+                endDate, zone, zone.GetUtcOffset(endDate.ToDateTime(TimeOnly.MinValue))),
+            entity.RecurrenceId,
+            entity.IsSeriesMaster,
+            entity.IsException,
+            entity.SeriesMasterId,
+            null,
+            startDate,
+            endDate);
+    }
+
+    private static bool OccursInWindow(
+        ExpandedEvent expanded,
+        DateTimeOffset rangeStart,
+        DateTimeOffset rangeEnd,
+        DateOnly displayDateStart,
+        DateOnly displayDateEndExclusive)
+    {
+        return expanded.OccurrenceStart < rangeEnd && expanded.OccurrenceEnd > rangeStart;
     }
 
     private static Guid DeriveOccurrenceId(Guid eventId, DateTimeOffset occurrenceStart)
@@ -309,8 +475,21 @@ public class ExpandedEvent
     public bool IsException { get; }
     public Guid? SeriesMasterId { get; }
     public bool IsCancelled { get; }
+    public DateOnly? AllDayStartDate { get; }
+    public DateOnly? AllDayEndDateExclusive { get; }
 
-    public ExpandedEvent(EventEntity entity, Guid occurrenceId, DateTimeOffset occurrenceStart, DateTimeOffset occurrenceEnd, string? recurrenceId = null, bool isSeriesMaster = false, bool isException = false, Guid? seriesMasterId = null, bool? isCancelled = null)
+    public ExpandedEvent(
+        EventEntity entity,
+        Guid occurrenceId,
+        DateTimeOffset occurrenceStart,
+        DateTimeOffset occurrenceEnd,
+        string? recurrenceId = null,
+        bool isSeriesMaster = false,
+        bool isException = false,
+        Guid? seriesMasterId = null,
+        bool? isCancelled = null,
+        DateOnly? allDayStartDate = null,
+        DateOnly? allDayEndDateExclusive = null)
     {
         Entity = entity;
         OccurrenceId = occurrenceId;
@@ -321,5 +500,7 @@ public class ExpandedEvent
         IsException = isException;
         SeriesMasterId = seriesMasterId;
         IsCancelled = isCancelled ?? string.Equals(entity.Status, "CANCELLED", StringComparison.OrdinalIgnoreCase);
+        AllDayStartDate = allDayStartDate;
+        AllDayEndDateExclusive = allDayEndDateExclusive;
     }
 }

@@ -76,15 +76,31 @@ public class PlanningModelService
         if (requestedLayers.Contains("events"))
         {
             var minValidDate = DateTimeOffset.MinValue.AddYears(100);
+            var (allDayStartDate, allDayEndDateExclusive) =
+                EventQueryContract.GetAllDayDateCandidateWindow(query.Start, query.End);
             var eventEntities = await _db.Set<EventEntity>()
                 .AsNoTracking()
                 .Include(e => e.Calendar)
                 .Where(e => e.Calendar.UserId == userId
-                    && e.DtStart > minValidDate
-                    && e.DtEnd > minValidDate
-                    && ((e.DtStart < query.End && e.DtEnd > query.Start)
-                        || !string.IsNullOrEmpty(e.RRule)
-                        || e.IsException))
+                    && (
+                        (e.IsAllDay
+                         && ((e.AllDayStartDate != null
+                              && e.AllDayEndDateExclusive != null
+                              && ((e.AllDayEndDateExclusive > allDayStartDate
+                                   && e.AllDayStartDate < allDayEndDateExclusive)
+                                  || !string.IsNullOrEmpty(e.RRule)
+                                  || e.IsException))
+                             || ((e.AllDayStartDate == null || e.AllDayEndDateExclusive == null)
+                                 && ((e.DtStart < query.End && e.DtEnd > query.Start)
+                                     || !string.IsNullOrEmpty(e.RRule)
+                                     || e.IsException))))
+                        || (!e.IsAllDay
+                            && e.DtStart > minValidDate
+                            && e.DtEnd > minValidDate
+                            && ((e.DtStart < query.End && e.DtEnd > query.Start)
+                                || !string.IsNullOrEmpty(e.RRule)
+                                || e.IsException))
+                    ))
                 .ToListAsync(ct);
 
             var expanded = _recurrence.ExpandEventsV2(eventEntities, query.Start, query.End);
