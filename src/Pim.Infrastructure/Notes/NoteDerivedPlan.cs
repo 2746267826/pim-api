@@ -19,6 +19,7 @@ internal sealed class NoteDerivedPlanner : INoteDerivedPlanner
         }
 
         ValidateTranscripts(input.Transcripts, issues);
+        ValidateAudio(input.Audio, issues);
         var imageKeys = steps.Where(x => x.Kind == NoteDerivedStepKind.ImageEvidence)
             .Select(x => x.Key).ToArray();
         var recordPrompt = NoteDerivedPrompts.Record(input, []);
@@ -150,6 +151,46 @@ internal sealed class NoteDerivedPlanner : INoteDerivedPlanner
         }
     }
 
+    private static void ValidateAudio(IReadOnlyList<NoteDerivedAudioInput> audio,
+        List<NoteDerivedIssueDto> issues)
+    {
+        if (audio.Count == 0) return;
+        if (audio.Count > NoteDerivedAudioContext.MaxSlices)
+            issues.Add(new("audio_context_slice_limit",
+                $"原始录音上下文包含 {audio.Count} 个片段，超过上限 {NoteDerivedAudioContext.MaxSlices}；未截断"));
+
+        var ordinals = new HashSet<int>();
+        var identities = new HashSet<(Guid RecordingId, int Segment, int Chunk, long Offset)>();
+        long total = 0;
+        foreach (var item in audio.OrderBy(x => x.Ordinal))
+        {
+            if (!ordinals.Add(item.Ordinal))
+                issues.Add(new("audio_context_duplicate_ordinal", "原始录音上下文顺序标识重复"));
+            if (item.RecordingId == Guid.Empty || item.RecordingSegment <= 0 ||
+                item.ChunkIndex <= 0 || item.FileIndex < 0 ||
+                item.SourceOffsetSamples < 0 || item.Samples <= 0 ||
+                item.SizeBytes != NoteDerivedAudioContext.ByteSize(item.Samples) ||
+                string.IsNullOrWhiteSpace(item.Path) ||
+                string.IsNullOrWhiteSpace(item.Name) ||
+                item.Name.Any(char.IsControl) ||
+                item.Name.Contains('/') || item.Name.Contains('\\') ||
+                !NoteMaterialManifestValidator.IsDigest(item.SourceSha256))
+            {
+                issues.Add(new("audio_context_invalid",
+                    "原始录音上下文缺少固定录音、材料文件或摘要身份", item.Path));
+                continue;
+            }
+            if (!identities.Add((item.RecordingId, item.RecordingSegment, item.ChunkIndex,
+                    item.SourceOffsetSamples)))
+                issues.Add(new("audio_context_duplicate",
+                    "原始录音上下文包含重复片段", item.Path));
+            total = checked(total + item.SizeBytes);
+        }
+        if (total > NoteDerivedAudioContext.MaxBytes)
+            issues.Add(new("audio_context_too_large",
+                $"原始录音上下文合计 {total} 字节，超过单次 {NoteDerivedAudioContext.MaxBytes} 字节上限；未截断"));
+    }
+
     private static List<NoteDerivedIssueDto> DistinctIssues(IEnumerable<NoteDerivedIssueDto> issues) =>
         issues.DistinctBy(x => (x.Code, x.Message, x.SourcePath, x.BlockId, x.StepKey)).ToList();
 }
@@ -261,7 +302,7 @@ internal static class NoteDerivedPrompts
         text.AppendLine("## 全部成功 ASR 转写");
         if (input.Transcripts.Count == 0)
         {
-            text.AppendLine("（本固定材料没有录音，也没有 ASR 转写片段。）");
+            text.AppendLine("（本固定材料没有成功 ASR 转写片段。）");
         }
         else
         {
@@ -278,6 +319,7 @@ internal static class NoteDerivedPrompts
                     : transcript.Text);
             }
         }
+        NoteDerivedAudioContext.AppendPrompt(text, input.Audio);
 
         text.AppendLine();
         text.AppendLine("## 全部图片视觉证据");

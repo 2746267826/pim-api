@@ -51,6 +51,19 @@ internal sealed record NoteDerivedImageInput(
     string ContentType,
     string? BlockId);
 
+internal sealed record NoteDerivedAudioInput(
+    int Ordinal,
+    Guid RecordingId,
+    int RecordingSegment,
+    int ChunkIndex,
+    int FileIndex,
+    string Path,
+    string SourceSha256,
+    long SourceOffsetSamples,
+    long Samples,
+    long SizeBytes,
+    string Name);
+
 internal sealed record NoteDerivedInputSnapshot(
     Guid Owner,
     Guid NoteId,
@@ -64,7 +77,10 @@ internal sealed record NoteDerivedInputSnapshot(
     IReadOnlyList<NoteDerivedTextInput> TextBlocks,
     IReadOnlyList<NoteDerivedTranscriptInput> Transcripts,
     IReadOnlyList<NoteDerivedImageInput> Images,
-    IReadOnlyList<NoteDerivedIssueDto> Issues);
+    IReadOnlyList<NoteDerivedIssueDto> Issues)
+{
+    public IReadOnlyList<NoteDerivedAudioInput> Audio { get; init; } = [];
+}
 
 internal sealed record NoteDerivedPlanStep(
     string Key,

@@ -59,7 +59,7 @@ public static class AiAsrJobRecovery
                         ELSE 'worker_lost'
                     END,
                     outcome_known = (status = 'preparing'),
-                    provider_attempted = CASE WHEN status = 'preparing' THEN false ELSE provider_attempted END,
+                    provider_attempted = CASE WHEN status = 'preparing' THEN false ELSE true END,
                     response_body_complete = false,
                     error_code = CASE
                         WHEN status = 'preparing' THEN 'preparation_interrupted'
@@ -93,7 +93,13 @@ public static class AiAsrJobRecovery
                             error_code = {row.ErrorCode},
                             error_message = {row.ErrorMessage},
                             finished_at = {now},
-                            execution_expires_at = NULL
+                            execution_expires_at = NULL,
+                            metadata_json = jsonb_set(
+                                CASE WHEN jsonb_typeof(metadata_json) = 'object'
+                                    THEN metadata_json ELSE jsonb_build_object() END,
+                                ARRAY['providerAttempted'],
+                                to_jsonb({row.ProviderAttempted}),
+                                true)
                         WHERE id = {row.LogId}
                           AND user_id = {row.OwnerId}
                           AND status IN ('preparing', 'running', 'cancelling')
@@ -127,6 +133,7 @@ public static class AiAsrJobRecovery
             row.Status = "cancelled";
             row.AbortSource = "user_cancel_worker_lost";
             row.OutcomeKnown = false;
+            row.ProviderAttempted = true;
             row.ErrorCode = "user_cancel_outcome_unknown";
             row.ErrorMessage = WorkerLostMessage;
             row.NextAction = "核对调用记录；如需再次调用，请明确新建请求";
@@ -136,6 +143,7 @@ public static class AiAsrJobRecovery
             row.Status = "incomplete";
             row.AbortSource = "worker_lost";
             row.OutcomeKnown = false;
+            row.ProviderAttempted = true;
             row.ErrorCode = "worker_lost_outcome_unknown";
             row.ErrorMessage = WorkerLostMessage;
             row.NextAction = "核对调用记录；如需再次调用，请明确新建请求";
@@ -149,5 +157,7 @@ public static class AiAsrJobRecovery
         log.ErrorMessage = row.ErrorMessage;
         log.FinishedAt = now;
         log.ExecutionExpiresAt = null;
+        log.MetadataJson = AiAsrJobService.SetProviderAttemptedMetadata(
+            log.MetadataJson, row.ProviderAttempted);
     }
 }

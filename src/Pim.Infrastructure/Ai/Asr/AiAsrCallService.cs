@@ -16,7 +16,7 @@ namespace Pim.Infrastructure.Ai.Asr;
 
 public sealed class AiAsrCallService(PimDbContext db, ISecretProtector secrets, ICurrentUserService currentUser,
     AiTextCallGate gate, AiAsrPresetRegistry presets, AiAsrMaterialService materials,
-    IRemoteAudioFetcher? remoteAudio = null)
+    IRemoteAudioFetcher? remoteAudio = null, AiUsageLimitService? usageLimits = null)
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     public async Task<AiTextCallResultDto> CallAsync(AiAsrCallRequest request, CancellationToken ct)
@@ -149,11 +149,13 @@ public sealed class AiAsrCallService(PimDbContext db, ISecretProtector secrets, 
             Model = profile.Model,
             ModelProfileId = profile.Id,
             ModelProfileName = profile.Name,
+            ProviderConnectionId = profile.ProviderConnectionId,
             ModelRevision = profile.Revision,
             ModelEndpoint = operation,
             CorrelationId = Guid.NewGuid().ToString("N"),
             Status = configurationError is null ? "running" : "blocked",
             StartedAt = now,
+            InitiatedAt = now,
             FinishedAt = configurationError is null ? null : now,
             ExecutionExpiresAt = now + leaseBudget,
             AttemptNumber = 1,
@@ -200,6 +202,7 @@ public sealed class AiAsrCallService(PimDbContext db, ISecretProtector secrets, 
         }
 
         if (configurationError is not null) return UrlResult(row, false);
+        var gateEntered = false;
         if (!gate.TryEnter(asr: true))
         {
             row.Status = "blocked";
@@ -207,6 +210,7 @@ public sealed class AiAsrCallService(PimDbContext db, ISecretProtector secrets, 
             row.ErrorMessage = "ASR并发已达上限，请稍后明确新建URL调用";
             return await FinishUrlAsync(row);
         }
+        gateEntered = true;
 
         AiAsrInput? audio = null;
         AiCallAudioEntity? storedAudio = null;
@@ -215,12 +219,27 @@ public sealed class AiAsrCallService(PimDbContext db, ISecretProtector secrets, 
         var abortSource = "none";
         var outcomeKnown = false;
         int? upstreamStatus = null;
+        AiUsageLimitLease? usageLease = null;
         using var total = new CancellationTokenSource(operationBudget);
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(total.Token, ct);
         using var wire = new AiTextWireCapture();
         double? reportedSeconds = null;
         try
         {
+            if (usageLimits is not null && row.ProviderConnectionId is { } connectionId)
+            {
+                var decision = await usageLimits.TryBeginAsync(connectionId, row.CorrelationId,
+                    row.Purpose, leaseBudget, ct);
+                if (!decision.Allowed)
+                {
+                    row.Status = "blocked";
+                    row.ErrorCode = decision.ErrorCode ?? "usage_limit_blocked";
+                    row.ErrorMessage = decision.Message ?? "AI用量限制拒绝本次调用";
+                    return await FinishUrlAsync(row);
+                }
+                usageLease = decision.Lease;
+            }
+
             var download = await fetcher.FetchAsync(sourceUrl,
                 new RemoteAudioExpectation(request.Audio.Format, expectedSha256), linked.Token);
             var fetched = AiAsrMaterialService.AcceptRemote(safeName, request.Audio.Format,
@@ -389,7 +408,12 @@ public sealed class AiAsrCallService(PimDbContext db, ISecretProtector secrets, 
             }
             finally
             {
-                gate.Exit(asr: true);
+                if (usageLease is not null)
+                {
+                    try { await usageLimits!.EndAsync(usageLease, CancellationToken.None); }
+                    catch { /* The durable TTL still expires; never mask the actual call outcome. */ }
+                }
+                if (gateEntered) gate.Exit(asr: true);
             }
         }
         var result = await FinishUrlAsync(row);
@@ -503,8 +527,10 @@ public sealed class AiAsrCallService(PimDbContext db, ISecretProtector secrets, 
                 Module = taskId is null ? "system" : "notes", Purpose = "ai.asr-call",
                 SourceObjectType = taskId is null ? "ai-model" : "native-note-asr-task", SourceObjectId = (taskId ?? profile.Id).ToString(),
                 Provider = description.Id, Model = profile.Model, ModelProfileId = profile.Id, ModelProfileName = profile.Name,
+                ProviderConnectionId = profile.ProviderConnectionId,
                 ModelRevision = profile.Revision, ModelEndpoint = operation, CorrelationId = Guid.NewGuid().ToString("N"),
-                Status = configurationError is null ? "running" : "blocked", StartedAt = now, FinishedAt = configurationError is null ? null : now,
+                Status = configurationError is null ? "running" : "blocked", StartedAt = now, InitiatedAt = now,
+                FinishedAt = configurationError is null ? null : now,
                 ExecutionExpiresAt = now.AddSeconds(profile.TimeoutSeconds + 60), AttemptNumber = 1, MaxAttempts = 1,
                 ErrorCode = configurationError is null ? null : "configuration_unavailable", ErrorMessage = configurationError };
             var storedAudio = AiAsrMaterialService.Describe(row.Id, audio);
@@ -530,6 +556,20 @@ public sealed class AiAsrCallService(PimDbContext db, ISecretProtector secrets, 
             if (!gateEntered && !gate.TryEnter(asr: true))
             { row.Status = "blocked"; row.ErrorCode = "busy"; row.ErrorMessage = "ASR并发已达上限，请稍后明确新建调用"; row.MetadataJson = Metadata(false, false, false, false, null, false); return await FinishAsync(row); }
             gateEntered = true;
+            AiUsageLimitLease? usageLease = null;
+            if (usageLimits is not null && row.ProviderConnectionId is { } connectionId)
+            {
+                var decision = await usageLimits.TryBeginAsync(connectionId, row.CorrelationId,
+                    row.Purpose, TimeSpan.FromSeconds(profile.TimeoutSeconds + 60), ct);
+                if (!decision.Allowed)
+                {
+                    row.Status = "blocked";
+                    row.ErrorCode = decision.ErrorCode ?? "usage_limit_blocked";
+                    row.ErrorMessage = decision.Message ?? "AI用量限制拒绝本次调用";
+                    return await FinishAsync(row);
+                }
+                usageLease = decision.Lease;
+            }
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(profile.TimeoutSeconds));
             using var linked = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token, ct);
             using var wire = new AiTextWireCapture();
@@ -539,6 +579,7 @@ public sealed class AiAsrCallService(PimDbContext db, ISecretProtector secrets, 
             int? upstreamStatus = null;
             double? reportedSeconds = null;
             string? parsedResponse = null;
+            AiTextCallResultDto? result = null;
             try
             {
                 await materials.StoreForOwnerAsync(owner, storedAudio, audio, linked.Token); prepared = true;
@@ -695,10 +736,18 @@ public sealed class AiAsrCallService(PimDbContext db, ISecretProtector secrets, 
                     row.MetadataJson = Metadata(storedAudio.ObjectKey is not null, wire.ProviderAttempted, wire.RequestBody is not null,
                         wire.ResponseBody is not null, reportedSeconds, wire.ResponseTooLarge,
                         abortSource, outcomeKnown, upstreamStatus);
+                    result = await FinishAsync(row);
                 }
-                finally { gate.Exit(asr: true); gateEntered = false; }
+                finally
+                {
+                    if (usageLease is not null)
+                    {
+                        try { await usageLimits!.EndAsync(usageLease, CancellationToken.None); }
+                        catch { /* The durable TTL still expires; never mask the actual call outcome. */ }
+                    }
+                }
             }
-            return await FinishAsync(row);
+            return result!;
         }
         finally { if (gateEntered) gate.Exit(asr: true); }
 

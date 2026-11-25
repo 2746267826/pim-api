@@ -26,8 +26,11 @@ public sealed class AiAsrPresetTests : IDisposable
     private IAiProfileChatClientFactory Factory => new AiProfileChatClientFactory(_wire);
     private AiAsrPresetRegistry Registry => new([new MimoAsrPreset(Factory)]);
     private AiModelSettingsService Settings => new(_db, _secrets, Registry);
+    private AiUsageLimitService UsageLimits => new(_db, _owner);
     private AiAsrMaterialService Materials => new(_db, _files, _owner);
     private AiAsrCallService Caller => new(_db, _secrets, _owner, _gate, Registry, Materials);
+    private AiAsrCallService LimitedCaller => new(_db, _secrets, _owner, _gate, Registry, Materials,
+        usageLimits: UsageLimits);
     public AiAsrPresetTests()
     {
         _db.Users.Add(new UserEntity { Id = _owner.UserId!.Value, Username = _owner.Username!, Role = "admin", IsActive = true });
@@ -40,15 +43,77 @@ public sealed class AiAsrPresetTests : IDisposable
         writer.Write(16000); writer.Write(32000); writer.Write((short)2); writer.Write((short)16); writer.Write("data"u8); writer.Write(320);
         for (var i = 0; i < 160; i++) writer.Write((short)(i % 32 * 10)); return stream.ToArray();
     }
-    private async Task<(AiAsrCallRequest Request, AiModelDto Model)> Setup(int timeout = 30)
+    private async Task<(AiAsrCallRequest Request, AiModelDto Model)> Setup(int timeout = 30,
+        bool useUsageLimits = false)
     {
-        var model = await Settings.SaveAsync(null, new("MiMo配置", "http://synthetic-asr.invalid/v1/chat/completions", "mimo-v2.5-asr", true,
+        var settings = useUsageLimits
+            ? new AiModelSettingsService(_db, _secrets, Registry, UsageLimits)
+            : Settings;
+        var model = await settings.SaveAsync(null, new("MiMo配置", "http://synthetic-asr.invalid/v1/chat/completions", "mimo-v2.5-asr", true,
             [AiModelCapability.Transcription], timeout, 123, "synthetic-asr-key", AsrPresetId: "mimo-asr"), default);
-        var runtime = await Settings.GetSettingsAsync(default);
-        await Settings.SaveSettingsAsync(new(runtime.Revision, true, null, null, model.Id), default);
+        var runtime = await settings.GetSettingsAsync(default);
+        await settings.SaveSettingsAsync(new(runtime.Revision, true, null, null, model.Id), default);
         var preset = Registry.Resolve(model.AsrPresetId).Descriptor;
         return (new(Guid.NewGuid(), _owner.UserId!.Value, new("示例.wav", "wav", Convert.ToBase64String(Wave())),
             new(model.Id, model.Revision, AiAsrPresetRegistry.OperationEndpoint(model.BaseUrl, preset), preset.Id, preset.Version, true), "zh"), model);
+    }
+
+    [Fact]
+    public async Task UsageLimitAllowsSynchronousAsrProviderAfterItsPersistedPlaceholder()
+    {
+        var (request, model) = await Setup(useUsageLimits: true);
+        var profile = await _db.AiModelProfiles.AsNoTracking().SingleAsync(x => x.Id == model.Id);
+        var limit = await UsageLimits.GetRuleAsync(profile.ProviderConnectionId!.Value, default);
+        await UsageLimits.SaveRuleAsync(profile.ProviderConnectionId.Value,
+            new(limit.Revision, true, AiUsageLimitPeriods.Month, 80, 100, null, null,
+                "Asia/Shanghai"), default);
+
+        var result = await LimitedCaller.CallAsync(request, default);
+
+        Assert.Equal(AiRequestStatus.Succeeded, result.Status);
+        Assert.Equal(1, _wire.Calls);
+        Assert.Equal(21, (await _db.AiRequestLogs.AsNoTracking()
+            .SingleAsync(x => x.Id == result.LogId)).TotalTokens);
+    }
+
+    [Fact]
+    public async Task UsageLimitRejectionReleasesSynchronousAsrGate()
+    {
+        var (request, model) = await Setup(useUsageLimits: true);
+        var profile = await _db.AiModelProfiles.AsNoTracking().SingleAsync(x => x.Id == model.Id);
+        var connectionId = profile.ProviderConnectionId!.Value;
+        var limit = await UsageLimits.GetRuleAsync(connectionId, default);
+        await UsageLimits.SaveRuleAsync(connectionId,
+            new(limit.Revision, true, AiUsageLimitPeriods.Month, 80, 100, null, null,
+                "Asia/Shanghai"), default);
+        _db.AiRequestLogs.Add(new AiRequestLogEntity
+        {
+            UserId = _owner.UserId,
+            Purpose = "ai.asr-call",
+            ProviderConnectionId = connectionId,
+            Status = "succeeded",
+            StartedAt = DateTimeOffset.UtcNow,
+            InitiatedAt = DateTimeOffset.UtcNow,
+            CorrelationId = Guid.NewGuid().ToString("N"),
+            MetadataJson = "{\"providerAttempted\":true}",
+            TotalTokens = 100
+        });
+        await _db.SaveChangesAsync();
+
+        var blocked = await LimitedCaller.CallAsync(request, default);
+        Assert.Equal(AiRequestStatus.Blocked, blocked.Status);
+        Assert.Equal("usage_limit_reached",
+            (await _db.AiRequestLogs.AsNoTracking().SingleAsync(x => x.Id == blocked.LogId)).ErrorCode);
+        Assert.Equal(0, _wire.Calls);
+
+        var current = await UsageLimits.GetRuleAsync(connectionId, default);
+        await UsageLimits.SaveRuleAsync(connectionId,
+            new(current.Revision, false, current.Period, current.WarningPercent,
+                current.TokenLimit, current.CostLimit, current.Currency, current.TimeZoneId), default);
+
+        var allowed = await LimitedCaller.CallAsync(request with { ClientRequestId = Guid.NewGuid() }, default);
+        Assert.Equal(AiRequestStatus.Succeeded, allowed.Status);
+        Assert.Equal(1, _wire.Calls);
     }
 
     [Theory]

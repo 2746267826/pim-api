@@ -74,6 +74,41 @@ public static class AiModelEndpoints
         group.MapPut("/model-settings", async (SaveAiModelSettingsRequest request, [FromServices] AiModelSettingsService service, CancellationToken ct) =>
             Results.Ok(ApiResponse<AiModelSettingsDto>.Ok(await service.SaveSettingsAsync(request, ct))))
             .Produces<ApiResponse<AiModelSettingsDto>>(200).Produces(400).Produces(401).Produces(403).Produces(409);
+        group.MapGet("/connections", async ([FromServices] AiUsageLimitService service, CancellationToken ct) =>
+            Results.Ok(ApiResponse<IReadOnlyList<AiProviderConnectionDto>>.Ok(await service.ListConnectionsAsync(ct))))
+            .Produces<ApiResponse<IReadOnlyList<AiProviderConnectionDto>>>(200).Produces(401).Produces(403);
+        group.MapPost("/connections", async (SaveAiProviderConnectionRequest request,
+            [FromServices] AiUsageLimitService service, CancellationToken ct) =>
+            Results.Ok(ApiResponse<AiProviderConnectionDto>.Ok(await service.CreateConnectionAsync(request.Name, ct))))
+            .WithMetadata(new RequestSizeLimitAttribute(16 * 1024))
+            .Produces<ApiResponse<AiProviderConnectionDto>>(200).Produces(400).Produces(401).Produces(403).Produces(409).Produces(413);
+        group.MapPut("/connections/{id:guid}", async (Guid id, SaveAiProviderConnectionRequest request,
+            [FromServices] AiUsageLimitService service, CancellationToken ct) =>
+            Results.Ok(ApiResponse<AiProviderConnectionDto>.Ok(await service.UpdateConnectionAsync(id, request, ct))))
+            .WithMetadata(new RequestSizeLimitAttribute(16 * 1024))
+            .Produces<ApiResponse<AiProviderConnectionDto>>(200).Produces(400).Produces(401).Produces(403).Produces(404).Produces(409).Produces(413);
+        group.MapGet("/connections/{id:guid}/usage-limit", async (Guid id,
+            [FromServices] AiUsageLimitService service, CancellationToken ct) =>
+            Results.Ok(ApiResponse<AiUsageLimitRuleDto>.Ok(await service.GetRuleAsync(id, ct))))
+            .Produces<ApiResponse<AiUsageLimitRuleDto>>(200).Produces(401).Produces(403).Produces(404);
+        group.MapPut("/connections/{id:guid}/usage-limit", async (Guid id, SaveAiUsageLimitRuleRequest request,
+            [FromServices] AiUsageLimitService service, CancellationToken ct) =>
+            Results.Ok(ApiResponse<AiUsageLimitRuleDto>.Ok(await service.SaveRuleAsync(id, request, ct))))
+            .WithMetadata(new RequestSizeLimitAttribute(16 * 1024))
+            .Produces<ApiResponse<AiUsageLimitRuleDto>>(200).Produces(400).Produces(401).Produces(403).Produces(404).Produces(409).Produces(413);
+        group.MapGet("/connections/{id:guid}/usage", async (Guid id, string? period, string? cycleKey,
+            [FromServices] AiUsageLimitService service, CancellationToken ct) =>
+            Results.Ok(ApiResponse<AiUsageLimitUsageDto>.Ok(await service.GetUsageAsync(id, period, cycleKey, ct))))
+            .Produces<ApiResponse<AiUsageLimitUsageDto>>(200).Produces(400).Produces(401).Produces(403).Produces(404);
+        group.MapGet("/usage-reminders", async (Guid? connectionId, bool? unreadOnly, int? limit,
+            [FromServices] AiUsageLimitService service, CancellationToken ct) =>
+            Results.Ok(ApiResponse<IReadOnlyList<AiUsageReminderDto>>.Ok(
+                await service.ListRemindersAsync(connectionId, unreadOnly ?? false, limit ?? 50, ct))))
+            .Produces<ApiResponse<IReadOnlyList<AiUsageReminderDto>>>(200).Produces(400).Produces(401).Produces(403);
+        group.MapPost("/usage-reminders/{eventId:guid}/read", async (Guid eventId,
+            [FromServices] AiUsageLimitService service, CancellationToken ct) =>
+            Results.Ok(ApiResponse<bool>.Ok(await service.MarkReminderReadAsync(eventId, ct))))
+            .Produces<ApiResponse<bool>>(200).Produces(401).Produces(403).Produces(404);
         group.MapPost("/text-calls", async (AiTextCallRequest request, [FromServices] AiTextCallService service, CancellationToken ct) =>
             Results.Ok(ApiResponse<AiTextCallResultDto>.Ok(await service.CallAsync(request, ct))))
             .WithMetadata(new RequestSizeLimitAttribute(1024 * 1024))

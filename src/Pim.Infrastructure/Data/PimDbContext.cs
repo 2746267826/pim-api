@@ -73,6 +73,11 @@ public class PimDbContext : DbContext
         Set<AiAsrTransportObservationEntity>();
     public DbSet<AiModelProfileEntity> AiModelProfiles => Set<AiModelProfileEntity>();
     public DbSet<AiModelRuntimeEntity> AiModelRuntime => Set<AiModelRuntimeEntity>();
+    public DbSet<AiProviderConnectionEntity> AiProviderConnections => Set<AiProviderConnectionEntity>();
+    public DbSet<AiUsageLimitRuleEntity> AiUsageLimitRules => Set<AiUsageLimitRuleEntity>();
+    public DbSet<AiUsageLimitLeaseEntity> AiUsageLimitLeases => Set<AiUsageLimitLeaseEntity>();
+    public DbSet<AiUsageReminderEventEntity> AiUsageReminderEvents => Set<AiUsageReminderEventEntity>();
+    public DbSet<AiUsageReminderEventReadEntity> AiUsageReminderEventReads => Set<AiUsageReminderEventReadEntity>();
     public DbSet<NoteAsrRouteConfigEntity> NoteAsrRouteConfigs => Set<NoteAsrRouteConfigEntity>();
     public DbSet<NoteProcessingPreferenceEntity> NoteProcessingPreferences => Set<NoteProcessingPreferenceEntity>();
     public DbSet<NoteAsrNodeEntity> NoteAsrNodes => Set<NoteAsrNodeEntity>();
@@ -220,8 +225,12 @@ public class PimDbContext : DbContext
             e.HasIndex(a => a.Model);
             e.HasIndex(a => a.Status);
             e.HasIndex(a => a.StartedAt);
+            e.HasIndex(a => new { a.ProviderConnectionId, a.InitiatedAt });
+            e.HasIndex(a => new { a.ProviderConnectionId, a.StartedAt });
             e.HasIndex(a => new { a.SourceObjectType, a.SourceObjectId });
             e.HasIndex(a => a.CorrelationId);
+            e.HasOne<AiProviderConnectionEntity>().WithMany()
+                .HasForeignKey(a => a.ProviderConnectionId).OnDelete(DeleteBehavior.SetNull);
         });
 
         modelBuilder.Entity<AiCallImageEntity>(e =>
@@ -254,6 +263,39 @@ public class PimDbContext : DbContext
         {
             e.HasIndex(a => a.NormalizedName).IsUnique();
             e.Property(a => a.Revision).IsConcurrencyToken();
+            e.HasOne<AiProviderConnectionEntity>().WithMany()
+                .HasForeignKey(a => a.ProviderConnectionId).OnDelete(DeleteBehavior.SetNull);
+        });
+        modelBuilder.Entity<AiProviderConnectionEntity>(e =>
+        {
+            e.HasIndex(x => x.NormalizedName).IsUnique();
+            e.Property(x => x.Revision).IsConcurrencyToken();
+        });
+        modelBuilder.Entity<AiUsageLimitRuleEntity>(e =>
+        {
+            e.Property(x => x.Revision).IsConcurrencyToken();
+            e.Property(x => x.CostLimit).HasPrecision(18, 8);
+            e.HasOne<AiProviderConnectionEntity>().WithOne()
+                .HasForeignKey<AiUsageLimitRuleEntity>(x => x.ConnectionId).OnDelete(DeleteBehavior.Cascade);
+        });
+        modelBuilder.Entity<AiUsageLimitLeaseEntity>(e =>
+        {
+            e.HasIndex(x => new { x.ConnectionId, x.RequestKey }).IsUnique();
+            e.HasIndex(x => new { x.ConnectionId, x.ExpiresAt });
+            e.HasOne<AiProviderConnectionEntity>().WithMany()
+                .HasForeignKey(x => x.ConnectionId).OnDelete(DeleteBehavior.Cascade);
+        });
+        modelBuilder.Entity<AiUsageReminderEventEntity>(e =>
+        {
+            e.HasIndex(x => new { x.ConnectionId, x.Period, x.CycleKey, x.Level }).IsUnique();
+            e.HasOne<AiProviderConnectionEntity>().WithMany()
+                .HasForeignKey(x => x.ConnectionId).OnDelete(DeleteBehavior.Restrict);
+        });
+        modelBuilder.Entity<AiUsageReminderEventReadEntity>(e =>
+        {
+            e.HasIndex(x => new { x.EventId, x.UserId }).IsUnique();
+            e.HasOne<AiUsageReminderEventEntity>().WithMany()
+                .HasForeignKey(x => x.EventId).OnDelete(DeleteBehavior.Cascade);
         });
         modelBuilder.Entity<AiModelRuntimeEntity>(e =>
         {

@@ -75,6 +75,7 @@ public sealed class AiRequestLogWriter(PimDbContext db) : IAiRequestLogWriter
             AttemptNumber = model.AttemptNumber,
             MaxAttempts = model.MaxAttempts,
             StartedAt = model.StartedAt,
+            InitiatedAt = model.StartedAt,
             FinishedAt = model.FinishedAt,
             DurationMs = (long)(model.FinishedAt - model.StartedAt).TotalMilliseconds,
             RequestMessagesJson = redactedMessages,

@@ -129,7 +129,9 @@ public sealed record AiRequestLogDetailDto(
     string? ModelEndpoint = null,
     Guid? ModelRevision = null,
     string? FinishReason = null,
-    bool? ContentRedacted = null);
+    bool? ContentRedacted = null,
+    Guid? ProviderConnectionId = null,
+    DateTimeOffset? InitiatedAt = null);
 
 public sealed record AiUsageGroupDto(
     string GroupKey,

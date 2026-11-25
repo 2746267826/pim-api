@@ -5,11 +5,13 @@ import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, useLocation } from 'react-router'
 import { AiSettingsPage } from './ai-settings-page'
-import type { AsrPreset, CallDetail, Model, ModelSettings } from './api'
+import type { AiProviderConnection, AsrPreset, CallDetail, Model, ModelSettings } from './api'
 
 const fixture = vi.hoisted(() => ({
   user: { id: '11111111-1111-4111-8111-111111111111', role: 'admin' },
-  api: { models: vi.fn(), settings: vi.fn(), saveModel: vi.fn(), removeModel: vi.fn(), saveSettings: vi.fn(),
+  api: { models: vi.fn(), settings: vi.fn(), connections: vi.fn(), createConnection: vi.fn(), updateConnection: vi.fn(),
+    connectionUsageLimit: vi.fn(), saveConnectionUsageLimit: vi.fn(), connectionUsage: vi.fn(), usageReminders: vi.fn(),
+    markUsageReminderRead: vi.fn(), saveModel: vi.fn(), removeModel: vi.fn(), saveSettings: vi.fn(),
     call: vi.fn(), lookup: vi.fn(), history: vi.fn(), detail: vi.fn(), usage: vi.fn(), legacy: vi.fn(), asrPresets: vi.fn() },
 }))
 vi.mock('./api', () => ({ aiApi: fixture.api }))
@@ -24,6 +26,7 @@ const preset: AsrPreset = { id: 'mimo-asr', version: '1', name: 'MiMo 语音识�
   languages: ['auto', 'zh', 'en'], maxAudioBytes: 4 * 1024 * 1024, streaming: false }
 let models: Model[]
 let settings: ModelSettings
+let connections: AiProviderConnection[]
 let client: QueryClient
 
 function LocationProbe() {
@@ -38,12 +41,23 @@ function open(path = '/settings/ai') {
 
 beforeEach(() => {
   vi.resetAllMocks(); fixture.user.role = 'admin'
+  Object.defineProperties(HTMLElement.prototype, {
+    hasPointerCapture: { configurable: true, value: () => false },
+    setPointerCapture: { configurable: true, value: () => undefined },
+    releasePointerCapture: { configurable: true, value: () => undefined },
+    scrollIntoView: { configurable: true, value: () => undefined },
+  })
   models = [{ id, revision, name: '文字主模型', baseUrl: 'https://model.fixture/v1/', model: 'fixture-model', enabled: true,
     capabilities: ['Text'], hasApiKey: true, timeoutSeconds: 60, maxOutputTokens: 1024,
     createdAt: '2026-10-27T00:00:00Z', updatedAt: '2026-10-27T00:00:00Z' }]
   settings = { revision, enabled: true, textModelId: id, visionModelId: null, transcriptionModelId: null }
+  connections = [{ id: '88888888-8888-4888-8888-888888888888', revision, name: '共享模型连接', modelCount: 1,
+    limit: { connectionId: '88888888-8888-4888-8888-888888888888', revision, enabled: false, period: 'month', warningPercent: 80,
+      tokenLimit: null, costLimit: null, currency: null, timeZoneId: 'Asia/Shanghai' },
+    updatedAt: '2026-10-27T00:00:00Z' }]
   fixture.api.models.mockImplementation(async () => [...models])
   fixture.api.settings.mockImplementation(async () => ({ ...settings }))
+  fixture.api.connections.mockImplementation(async () => [...connections])
   fixture.api.saveSettings.mockImplementation(async (body) => {
     settings = { ...settings, ...body, revision: '55555555-5555-4555-8555-555555555555' }; return settings
   })
@@ -59,6 +73,13 @@ beforeEach(() => {
   fixture.api.usage.mockResolvedValue({ requestCount: 3, successCount: 1, failureCount: 1, runningCount: 1,
     promptTokens: 7, completionTokens: 11, totalTokens: 18, estimatedCost: 0, byModel: [], byModule: [], byPurpose: [], byStatus: [],
     unknownTokenUsageCount: 2, knownCostRequestCount: 0, averageDurationMs: 123 })
+  fixture.api.connectionUsage.mockResolvedValue({ connectionId: connections[0].id, connectionName: connections[0].name,
+    period: 'month', cycleKey: '2026-11', startsAt: '2026-11-01T00:00:00Z', endsAt: '2026-12-01T00:00:00Z',
+    timeZoneId: 'Asia/Shanghai', requestCount: 0, runningRequestCount: 0, incompleteRequestCount: 0,
+    tokenReportedRequestCount: 0, tokenUnknownRequestCount: 0, totalTokens: 0, costKnownRequestCount: 0,
+    costUnknownRequestCount: 0, estimatedCost: 0, currency: null, tokenLimit: null, costLimit: null,
+    warningPercent: 80, tokenStatus: 'unknown', costStatus: 'unknown', status: 'unknown', coverageNotes: [] })
+  fixture.api.usageReminders.mockResolvedValue([])
 })
 afterEach(() => { cleanup(); client?.clear() })
 
@@ -76,6 +97,23 @@ describe('AI文字调用完整页面', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
     expect(fixture.api.saveModel).toHaveBeenCalledWith(undefined, expect.objectContaining({ name: '新模型', apiKey: 'fake-ui-key', capabilities: ['Text', 'Vision'] }))
     expect(screen.queryByDisplayValue('fake-ui-key')).toBeNull()
+  })
+
+  it('新模型可以绑定已有AI服务连接，保存后纳入连接级用量限制', async () => {
+    open(); await screen.findByRole('button', { name: '编辑 文字主模型' })
+    await userEvent.click(screen.getByRole('button', { name: '添加模型' }))
+    const dialog = screen.getByRole('dialog')
+    await userEvent.type(within(dialog).getByLabelText('配置名称'), '共享连接模型')
+    await userEvent.type(within(dialog).getByLabelText('API 根地址'), 'https://shared.fixture/v1')
+    await userEvent.type(within(dialog).getByLabelText('模型标识'), 'shared-model')
+    await userEvent.type(within(dialog).getByLabelText('API Key'), 'shared-key')
+    await userEvent.click(within(dialog).getByRole('combobox', { name: 'AI服务连接' }))
+    await userEvent.click(await screen.findByRole('option', { name: /共享模型连接/ }))
+    await userEvent.click(within(dialog).getByRole('button', { name: '保存模型' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(fixture.api.saveModel).toHaveBeenCalledWith(undefined, expect.objectContaining({
+      providerConnectionId: connections[0].id,
+    }))
   })
 
   it('编辑不回显或伪造凭据，留空保留旧密钥并携带版本', async () => {
@@ -185,6 +223,19 @@ describe('AI文字调用完整页面', () => {
 
     await userEvent.click(screen.getByText('统计', { exact: true }))
     expect(screen.getByTestId('location').textContent).toBe('/settings/ai?tab=usage')
+  })
+
+  it('统计页展示连接级限制、周期用量与提醒入口', async () => {
+    open('/settings/ai?tab=usage')
+    expect(await screen.findByText('连接级用量限制')).toBeTruthy()
+    expect(await screen.findByText('共享模型连接')).toBeTruthy()
+    expect(await screen.findByText('当前周期用量')).toBeTruthy()
+    expect(fixture.api.connectionUsage).toHaveBeenCalledWith(
+      connections[0].id, 'month', undefined, expect.any(AbortSignal),
+    )
+    expect(fixture.api.usageReminders).toHaveBeenCalledWith(
+      { connectionId: connections[0].id, limit: 50 }, expect.any(AbortSignal),
+    )
   })
 
   it('marks ASR readiness as undetermined while presets load or fail', async () => {

@@ -23,10 +23,12 @@ const taskSuggestions = vi.hoisted(() => ({
   list: vi.fn(), get: vi.fn(), startExtraction: vi.fn(), extraction: vi.fn(),
   update: vi.fn(), confirm: vi.fn(), dismiss: vi.fn(),
 }))
+const calendarApi = vi.hoisted(() => ({ list: vi.fn() }))
 vi.mock('@/features/auth/auth-context', () => ({ useAuth: () => auth }))
 vi.mock('./api', () => ({ noteDerivedApi: derived }))
 vi.mock('../api', () => ({ aiApi: assistant }))
 vi.mock('./note-task-suggestions/api', () => ({ noteTaskSuggestionsApi: taskSuggestions }))
+vi.mock('@/features/calendar/api', () => ({ calendarsApi: calendarApi }))
 
 const owner = auth.user.id
 const noteId = '22222222-2222-4222-8222-222222222222'
@@ -148,6 +150,7 @@ beforeEach(() => {
   assistant.asrReprocessHistory.mockResolvedValue({ parentTaskId: asrTask.taskId, total: 0, offset: 0, limit: 10, items: [] })
   assistant.asrRoutingAttempts.mockResolvedValue([])
   taskSuggestions.list.mockResolvedValue({ total: 0, items: [] })
+  calendarApi.list.mockResolvedValue([])
 })
 afterEach(() => { cleanup(); client?.clear() })
 
