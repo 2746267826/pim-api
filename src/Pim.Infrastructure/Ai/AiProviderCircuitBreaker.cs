@@ -13,6 +13,7 @@ public sealed class AiProviderCircuitBreaker
     public const int FailureThreshold = 3;
     public static readonly TimeSpan BreakDuration = TimeSpan.FromSeconds(30);
 
+    private static readonly AsyncLocal<Func<bool>?> CallerCancelledSlot = new();
     private readonly ConcurrentDictionary<string, Entry> _entries = new(StringComparer.Ordinal);
     private readonly TimeProvider _clock;
 
@@ -20,6 +21,27 @@ public sealed class AiProviderCircuitBreaker
     {
         _clock = clock ?? TimeProvider.System;
     }
+
+    public static IDisposable EnterCallerScope(CancellationToken callerToken) =>
+        EnterCallerScope(() => callerToken.IsCancellationRequested);
+
+    public static IDisposable EnterCallerScope(Func<bool> isCallerCancelled)
+    {
+        ArgumentNullException.ThrowIfNull(isCallerCancelled);
+        var previous = CallerCancelledSlot.Value;
+        CallerCancelledSlot.Value = isCallerCancelled;
+        return new CallerScope(previous);
+    }
+
+    public static IDisposable EnterCallerScopeIfUnscoped(CancellationToken callerToken) =>
+        CallerCancelledSlot.Value is null
+            ? EnterCallerScope(callerToken)
+            : NoopScope.Instance;
+
+    internal static bool IsCallerCancellation(CancellationToken requestCancellationToken) =>
+        CallerCancelledSlot.Value is { } isCallerCancelled
+            ? isCallerCancelled()
+            : requestCancellationToken.IsCancellationRequested;
 
     public AiProviderCircuitDecision Enter(string key)
     {
@@ -83,6 +105,24 @@ public sealed class AiProviderCircuitBreaker
         public DateTimeOffset? OpenUntil;
         public bool ProbeInFlight;
     }
+
+    private sealed class CallerScope(Func<bool>? previous) : IDisposable
+    {
+        private bool _disposed;
+
+        public void Dispose()
+        {
+            if (_disposed) return;
+            _disposed = true;
+            CallerCancelledSlot.Value = previous;
+        }
+    }
+
+    private sealed class NoopScope : IDisposable
+    {
+        public static readonly NoopScope Instance = new();
+        public void Dispose() { }
+    }
 }
 
 public sealed record AiProviderCircuitDecision(bool Allowed, TimeSpan RetryAfter, int FailureCount)
@@ -126,7 +166,7 @@ public sealed class AiProviderCircuitBreakerHandler(AiProviderCircuitBreaker bre
                 breaker.Reachable(key);
             return response;
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException) when (AiProviderCircuitBreaker.IsCallerCancellation(cancellationToken))
         {
             breaker.AbandonProbe(key);
             throw;

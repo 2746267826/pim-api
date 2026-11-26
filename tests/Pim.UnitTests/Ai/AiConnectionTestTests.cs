@@ -325,6 +325,161 @@ public sealed class AiConnectionTestTests : IDisposable
     }
 
     [Fact]
+    public async Task ThreeTimeoutsOpenTheCircuitAndHalfOpenTimeoutReopensWithoutReleasing()
+    {
+        var clock = new ManualTimeProvider();
+        _wire.Breaker = new AiProviderCircuitBreaker(clock);
+        _wire.WaitForCancellation = true;
+        var model = await Model(timeout: 1);
+        await Enable(model);
+
+        for (var index = 0; index < 3; index++)
+        {
+            var timedOut = await Service().TestAsync(model.Id,
+                new(Guid.NewGuid(), model.Revision, AiModelCapability.Text), default);
+            Assert.Equal(AiConnectionTestStatus.TimedOut, timedOut.Status);
+            Assert.Equal("timeout", timedOut.ErrorCode);
+            Assert.True(timedOut.ProviderAttempted);
+        }
+        Assert.Equal(3, _wire.Calls);
+
+        var blocked = await Service().TestAsync(model.Id,
+            new(Guid.NewGuid(), model.Revision, AiModelCapability.Text), default);
+
+        Assert.Equal(AiConnectionTestStatus.Blocked, blocked.Status);
+        Assert.Equal("circuit_open", blocked.ErrorCode);
+        Assert.False(blocked.ProviderAttempted);
+        Assert.Equal(3, _wire.Calls);
+
+        clock.Advance(TimeSpan.FromSeconds(31));
+        var probeTimedOut = await Service().TestAsync(model.Id,
+            new(Guid.NewGuid(), model.Revision, AiModelCapability.Text), default);
+
+        Assert.Equal(AiConnectionTestStatus.TimedOut, probeTimedOut.Status);
+        Assert.Equal("timeout", probeTimedOut.ErrorCode);
+        Assert.True(probeTimedOut.ProviderAttempted);
+        Assert.Equal(4, _wire.Calls);
+
+        // A timed-out half-open probe must re-open the breaker instead of abandoning the probe.
+        var blockedAfterProbeTimeout = await Service().TestAsync(model.Id,
+            new(Guid.NewGuid(), model.Revision, AiModelCapability.Text), default);
+
+        Assert.Equal(AiConnectionTestStatus.Blocked, blockedAfterProbeTimeout.Status);
+        Assert.Equal("circuit_open", blockedAfterProbeTimeout.ErrorCode);
+        Assert.False(blockedAfterProbeTimeout.ProviderAttempted);
+        Assert.Equal(4, _wire.Calls);
+
+        _wire.WaitForCancellation = false;
+        _wire.Status = HttpStatusCode.OK;
+        clock.Advance(TimeSpan.FromSeconds(31));
+        var recovered = await Service().TestAsync(model.Id,
+            new(Guid.NewGuid(), model.Revision, AiModelCapability.Text), default);
+
+        Assert.Equal(AiConnectionTestStatus.Succeeded, recovered.Status);
+        Assert.True(recovered.ProviderAttempted);
+        Assert.Equal(5, _wire.Calls);
+    }
+
+    [Fact]
+    public async Task HalfOpenCallerCancellationAbandonsProbeWithoutTrippingOrReopeningCircuit()
+    {
+        var clock = new ManualTimeProvider();
+        _wire.Breaker = new AiProviderCircuitBreaker(clock);
+        _wire.Status = HttpStatusCode.InternalServerError;
+        var model = await Model(timeout: 30);
+        await Enable(model);
+
+        for (var index = 0; index < 3; index++)
+        {
+            var failed = await Service().TestAsync(model.Id,
+                new(Guid.NewGuid(), model.Revision, AiModelCapability.Text), default);
+            Assert.Equal(AiConnectionTestStatus.Failed, failed.Status);
+        }
+        Assert.Equal(3, _wire.Calls);
+
+        clock.Advance(TimeSpan.FromSeconds(31));
+        _wire.WaitForCancellation = true;
+        _wire.ResetStarted();
+        using var cancellation = new CancellationTokenSource();
+        var probe = Service().TestAsync(model.Id,
+            new(Guid.NewGuid(), model.Revision, AiModelCapability.Text), cancellation.Token);
+        await _wire.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        cancellation.Cancel();
+        var cancelled = await probe;
+
+        Assert.Equal(AiConnectionTestStatus.Cancelled, cancelled.Status);
+        Assert.Equal("cancelled", cancelled.ErrorCode);
+        Assert.Equal(4, _wire.Calls);
+
+        _wire.WaitForCancellation = false;
+        _wire.Status = HttpStatusCode.OK;
+        var next = await Service().TestAsync(model.Id,
+            new(Guid.NewGuid(), model.Revision, AiModelCapability.Text), default);
+
+        Assert.Equal(AiConnectionTestStatus.Succeeded, next.Status);
+        Assert.True(next.ProviderAttempted);
+        Assert.Equal(5, _wire.Calls);
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.TooManyRequests, "rate_limited", false)]
+    [InlineData(HttpStatusCode.OK, "connection_failed", true)]
+    public async Task RateLimitAndConnectionFailuresOpenCircuitAndPreserveBehavior(
+        HttpStatusCode status, string errorCode, bool throwConnectionFailure)
+    {
+        var clock = new ManualTimeProvider();
+        _wire.Breaker = new AiProviderCircuitBreaker(clock);
+        _wire.Status = status;
+        _wire.ThrowConnectionFailure = throwConnectionFailure;
+        var model = await Model();
+        await Enable(model);
+
+        for (var index = 0; index < 3; index++)
+        {
+            var failed = await Service().TestAsync(model.Id,
+                new(Guid.NewGuid(), model.Revision, AiModelCapability.Text), default);
+            Assert.Equal(AiConnectionTestStatus.Failed, failed.Status);
+            Assert.Equal(errorCode, failed.ErrorCode);
+            Assert.True(failed.ProviderAttempted);
+        }
+
+        var blocked = await Service().TestAsync(model.Id,
+            new(Guid.NewGuid(), model.Revision, AiModelCapability.Text), default);
+
+        Assert.Equal(AiConnectionTestStatus.Blocked, blocked.Status);
+        Assert.Equal("circuit_open", blocked.ErrorCode);
+        Assert.False(blocked.ProviderAttempted);
+        Assert.Equal(3, _wire.Calls);
+    }
+
+    [Fact]
+    public async Task DirectChatClientNetworkTimeoutTripsCircuitBreakerWithoutServiceScope()
+    {
+        var clock = new ManualTimeProvider();
+        _wire.Breaker = new AiProviderCircuitBreaker(clock);
+        _wire.WaitForCancellation = true;
+        var factory = new AiProfileChatClientFactory(_wire);
+
+        for (var index = 0; index < 3; index++)
+        {
+            using var lease = factory.Create(new AiModelConnection(
+                "https://fixture.invalid/v1", "fixture-model", Key, 1, 64));
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+                lease.Client.GetResponseAsync(
+                    [new Microsoft.Extensions.AI.ChatMessage(Microsoft.Extensions.AI.ChatRole.User, "ping")],
+                    cancellationToken: CancellationToken.None));
+        }
+
+        using var blockedLease = factory.Create(new AiModelConnection(
+            "https://fixture.invalid/v1", "fixture-model", Key, 1, 64));
+        await Assert.ThrowsAsync<AiProviderCircuitOpenException>(() =>
+            blockedLease.Client.GetResponseAsync(
+                [new Microsoft.Extensions.AI.ChatMessage(Microsoft.Extensions.AI.ChatRole.User, "ping")],
+                cancellationToken: CancellationToken.None));
+        Assert.Equal(3, _wire.Calls);
+    }
+
+    [Fact]
     public async Task UsageLimitBlocksBeforeNetworkAndIsAudited()
     {
         var connection = new AiProviderConnectionEntity
@@ -476,9 +631,13 @@ public sealed class AiConnectionTestTests : IDisposable
         public string? RawBody { get; set; }
         public string? ExtraJson { get; set; }
         public bool WaitForCancellation { get; set; }
+        public bool ThrowConnectionFailure { get; set; }
         public AiProviderCircuitBreaker? Breaker { get; set; }
-        public TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Started { get; private set; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public string? Authorization { get; private set; }
+
+        public void ResetStarted() =>
+            Started = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public HttpClient CreateClient(string name)
         {
@@ -494,6 +653,7 @@ public sealed class AiConnectionTestTests : IDisposable
             Calls++;
             Authorization = request.Headers.Authorization?.ToString();
             Started.TrySetResult();
+            if (ThrowConnectionFailure) throw new HttpRequestException("fixture connection failure");
             if (WaitForCancellation) await Task.Delay(Timeout.Infinite, ct);
             var body = RawBody ?? (Status != HttpStatusCode.OK
                 ? JsonSerializer.Serialize(new { error = new { message = "fixture failure" } })
@@ -513,12 +673,18 @@ public sealed class AiConnectionTestTests : IDisposable
                         }
                     },
                     usage = new { prompt_tokens = 2, completion_tokens = 2, total_tokens = 4 },
-                    fixture = ExtraJson is null ? null : JsonDocument.Parse(ExtraJson).RootElement
+                    fixture = ExtraJson is null ? (JsonElement?)null : ParseClone(ExtraJson)
                 }));
             return new(statusCode: Status)
             {
                 Content = new StringContent(body, Encoding.UTF8, "application/json")
             };
+        }
+
+        private static JsonElement ParseClone(string json)
+        {
+            using var document = JsonDocument.Parse(json);
+            return document.RootElement.Clone();
         }
     }
 

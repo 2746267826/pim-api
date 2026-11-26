@@ -442,9 +442,12 @@ public sealed class AiAsrJobService(
             wire.SetAsrAudit(body => preset.AuditRequest(body, connection, audio, audioRow.Id,
                     job.Language, prompt), RequestBudgetBytes(description.MaxAudioBytes));
             using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(job.TimeoutSeconds + 60));
-            using var execution = CancellationTokenSource.CreateLinkedTokenSource(ct, deadline.Token);
+            using var userCancel = new CancellationTokenSource();
+            using var execution = CancellationTokenSource.CreateLinkedTokenSource(ct, userCancel.Token, deadline.Token);
+            using var callerScope = AiProviderCircuitBreaker.EnterCallerScope(() =>
+                ct.IsCancellationRequested || userCancel.IsCancellationRequested);
             using var monitorStop = new CancellationTokenSource();
-            var monitor = MonitorCancellationAsync(owner, clientRequestId, execution, monitorStop.Token);
+            var monitor = MonitorCancellationAsync(owner, clientRequestId, userCancel, monitorStop.Token);
             string? parsedResponse = null;
             double? reportedSeconds = null;
             var providerPhase = false;

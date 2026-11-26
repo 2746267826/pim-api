@@ -265,6 +265,7 @@ public sealed class AiTextCallService(PimDbContext db, ISecretProtector secrets,
                 usageLease = decision.Lease;
             }
 
+            using var callerScope = AiProviderCircuitBreaker.EnterCallerScope(ct);
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(activeProfile.TimeoutSeconds));
             using var linked = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token, ct);
             using var wire = new AiTextWireCapture(audio: audio);

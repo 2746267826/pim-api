@@ -221,6 +221,7 @@ public sealed class AiAsrCallService(PimDbContext db, ISecretProtector secrets, 
         var outcomeKnown = false;
         int? upstreamStatus = null;
         AiUsageLimitLease? usageLease = null;
+        using var callerScope = AiProviderCircuitBreaker.EnterCallerScope(ct);
         using var total = new CancellationTokenSource(operationBudget);
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(total.Token, ct);
         using var wire = new AiTextWireCapture();
@@ -581,6 +582,7 @@ public sealed class AiAsrCallService(PimDbContext db, ISecretProtector secrets, 
                 }
                 usageLease = decision.Lease;
             }
+            using var callerScope = AiProviderCircuitBreaker.EnterCallerScope(ct);
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(profile.TimeoutSeconds));
             using var linked = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token, ct);
             using var wire = new AiTextWireCapture();

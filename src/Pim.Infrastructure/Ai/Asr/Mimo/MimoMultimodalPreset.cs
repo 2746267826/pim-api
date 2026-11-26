@@ -103,6 +103,7 @@ public sealed class MimoMultimodalPreset(Func<HttpMessageHandler?, HttpClient> i
             Content = new StringContent(payload, Encoding.UTF8, "application/json")
         };
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", connection.ApiKey);
+        using var callerScope = AiProviderCircuitBreaker.EnterCallerScopeIfUnscoped(ct);
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(TimeSpan.FromSeconds(connection.TimeoutSeconds));
         try

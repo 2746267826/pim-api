@@ -3,6 +3,7 @@ using OpenAI;
 using OpenAI.Chat;
 using System.ClientModel;
 using System.ClientModel.Primitives;
+using System.Runtime.CompilerServices;
 using System.Text.Json.Nodes;
 using Pim.Core.Ai;
 
@@ -130,10 +131,31 @@ public sealed class AiProfileChatClientFactory(IHttpClientFactory http) : IAiPro
                 RetryPolicy = new ClientRetryPolicy(0),
                 NetworkTimeout = TimeSpan.FromSeconds(connection.TimeoutSeconds)
             };
-            var client = new ChatClient(connection.Model, new ApiKeyCredential(connection.ApiKey), options).AsIChatClient();
+            var client = new CallerScopeChatClient(
+                new ChatClient(connection.Model, new ApiKeyCredential(connection.ApiKey), options).AsIChatClient());
             return new(client, transport);
         }
         catch { transport.Dispose(); throw; }
+    }
+
+    private sealed class CallerScopeChatClient(IChatClient innerClient) : DelegatingChatClient(innerClient)
+    {
+        public override async Task<ChatResponse> GetResponseAsync(
+            IEnumerable<Microsoft.Extensions.AI.ChatMessage> messages, ChatOptions? options = null,
+            CancellationToken cancellationToken = default)
+        {
+            using var callerScope = AiProviderCircuitBreaker.EnterCallerScopeIfUnscoped(cancellationToken);
+            return await base.GetResponseAsync(messages, options, cancellationToken);
+        }
+
+        public override async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
+            IEnumerable<Microsoft.Extensions.AI.ChatMessage> messages, ChatOptions? options = null,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            using var callerScope = AiProviderCircuitBreaker.EnterCallerScopeIfUnscoped(cancellationToken);
+            await foreach (var update in base.GetStreamingResponseAsync(messages, options, cancellationToken))
+                yield return update;
+        }
     }
 }
 

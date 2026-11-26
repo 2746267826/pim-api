@@ -179,6 +179,7 @@ public sealed class AiConnectionTestService(
                 usageLease = decision.Lease;
             }
 
+            using var callerScope = AiProviderCircuitBreaker.EnterCallerScope(ct);
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(profile.TimeoutSeconds));
             using var linked = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token, ct);
             using var wire = new AiTextWireCapture();
