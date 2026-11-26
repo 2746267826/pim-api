@@ -106,7 +106,7 @@ public sealed class OutlookEventWriteService
         if (request.Operation == "create" && request.Scope != "instance")
             throw new DomainException(02009, "创建操作 Scope 仅支持 instance。");
 
-        var payloadHash = ComputePayloadHash(request, undoOfOperationId);
+        var payloadHash = ResolvePayloadHash(request, binding.Id, undoOfOperationId);
         var existing = await _db.Set<OutlookWritebackOperationEntity>()
             .FirstOrDefaultAsync(
                 o => o.UserId == userId && o.ClientOperationId == request.ClientOperationId,
@@ -235,6 +235,7 @@ public sealed class OutlookEventWriteService
             await _db.SaveChangesAsync(ct);
             return ReplayCached(priorUndo);
         }
+        var conflictLatestEtag = GetConflictLatestEtag(priorUndo);
 
         original.UndoState = "in-progress";
         original.UpdatedAt = _timeProvider.GetUtcNow();
@@ -290,7 +291,7 @@ public sealed class OutlookEventWriteService
                         DeserializeDraft(original.PreviousDraftJson),
                         original.Scope,
                         undoClientOperationId,
-                        ExpectedEtag: eventEntity.OutlookEtag);
+                        ExpectedEtag: conflictLatestEtag ?? eventEntity.OutlookEtag);
                     break;
                 }
                 case "delete":
@@ -350,6 +351,7 @@ public sealed class OutlookEventWriteService
         Guid clientOperationId,
         Guid? requestEventId,
         string? scope,
+        string requestPayloadHash,
         CancellationToken ct)
     {
         var operation = await _db.Set<OutlookWritebackOperationEntity>()
@@ -367,6 +369,11 @@ public sealed class OutlookEventWriteService
             return IdempotencyConflict(operation);
         if (!string.IsNullOrWhiteSpace(scope)
             && !string.Equals(operation.Scope, scope, StringComparison.OrdinalIgnoreCase))
+            return IdempotencyConflict(operation);
+        var boundRequestHash = BindPayloadHash(operation.CalendarBindingId, requestPayloadHash);
+        if (string.IsNullOrWhiteSpace(requestPayloadHash)
+            || (!string.Equals(operation.PayloadHash, requestPayloadHash, StringComparison.Ordinal)
+                && !string.Equals(operation.PayloadHash, boundRequestHash, StringComparison.Ordinal)))
             return IdempotencyConflict(operation);
 
         return operation.State switch
@@ -2389,6 +2396,22 @@ public sealed class OutlookEventWriteService
         };
     }
 
+    private static string? GetConflictLatestEtag(
+        OutlookWritebackOperationEntity? operation)
+    {
+        if (operation is not { State: "conflict" }
+            || string.IsNullOrWhiteSpace(operation.ResultJson))
+            return null;
+        try
+        {
+            return DeserializeResult(operation.ResultJson)?.LatestEtag;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
     private OutlookWriteResult BuildSuccessResult(
         OutlookWritebackOperationEntity operation,
         string status,
@@ -2464,6 +2487,19 @@ public sealed class OutlookEventWriteService
             recurrenceId = request.RecurrenceId,
             undoOfOperationId
         }, JsonOptions);
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical)))
+            .ToLowerInvariant();
+    }
+
+    private static string ResolvePayloadHash(
+        OutlookWriteRequest request, Guid bindingId, Guid? undoOfOperationId)
+        => undoOfOperationId is null && !string.IsNullOrWhiteSpace(request.RequestPayloadHash)
+            ? BindPayloadHash(bindingId, request.RequestPayloadHash)
+            : ComputePayloadHash(request, undoOfOperationId);
+
+    private static string BindPayloadHash(Guid bindingId, string requestPayloadHash)
+    {
+        var canonical = $"{bindingId:D}:{requestPayloadHash}";
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical)))
             .ToLowerInvariant();
     }

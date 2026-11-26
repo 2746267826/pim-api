@@ -3294,7 +3294,13 @@ public sealed class OutlookEventWriteServiceTests
         handler.Enqueue(HttpStatusCode.PreconditionFailed);
         handler.Enqueue(HttpStatusCode.OK, LatestGraphEventJson);
         handler.Enqueue(HttpStatusCode.OK, """{"value":[]}""");
-        handler.Enqueue(HttpStatusCode.OK, RestoredOriginalEventJson());
+        handler.Enqueue(request => request.Headers.IfMatch.ToString() == "latest-etag"
+            ? new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(
+                    RestoredOriginalEventJson(), Encoding.UTF8, "application/json")
+            }
+            : new HttpResponseMessage(HttpStatusCode.PreconditionFailed));
         var service = CreateService(db, handler);
 
         await service.ExecuteAsync(
@@ -3325,7 +3331,7 @@ public sealed class OutlookEventWriteServiceTests
         Assert.Equal(deterministicUndoId, retried.ClientOperationId);
         Assert.Equal(5, handler.Requests.Count);
         Assert.Equal(HttpMethod.Patch, handler.Requests[^1].Method);
-        Assert.Equal("updated-etag", handler.Requests[^1].Headers.IfMatch.ToString());
+        Assert.Equal("latest-etag", handler.Requests[^1].Headers.IfMatch.ToString());
 
         db.ChangeTracker.Clear();
         var stored = await db.Set<EventEntity>().IgnoreQueryFilters()
@@ -3455,6 +3461,76 @@ public sealed class OutlookEventWriteServiceTests
         Assert.Equal("PROVIDER_UNAVAILABLE", result.ErrorCode);
         Assert.DoesNotContain("super-secret", result.ErrorMessage);
         Assert.DoesNotContain("RAW-GRAPH-BODY-MARKER", result.UserMessage);
+    }
+
+    [Fact]
+    public async Task Gateway_UpdateReplayWithoutEvent_ValidatesPayloadHash()
+    {
+        await using var db = CreateDb();
+        var (_, _, calendarId, eventId) = await SetupUpdateAsync(db, UserId);
+        var handler = new ScriptedHttpMessageHandler();
+        handler.Enqueue(HttpStatusCode.OK, UpdatedEventJson());
+        var service = CreateService(db, handler);
+        var gateway = new OutlookCalendarWritebackGateway(db, service);
+        var request = new UpdateEventRequest(
+            CalendarId: calendarId,
+            Title: "Updated Subject",
+            Description: "Updated desc",
+            Location: "Room C",
+            DtStart: new DateTimeOffset(2026, 7, 8, 14, 0, 0, TimeSpan.Zero),
+            DtEnd: new DateTimeOffset(2026, 7, 8, 15, 0, 0, TimeSpan.Zero),
+            RRule: null,
+            TimeZoneId: "UTC");
+
+        async Task<OutlookWriteResult?> UpdateAsync(UpdateEventRequest body)
+            => await gateway.UpdateAsync(
+                UserId,
+                eventId,
+                body,
+                "instance",
+                recurrenceId: null,
+                originalEventId: null,
+                clientOperationId: OpId,
+                expectedEtag: "W/\"original-etag\"",
+                ct: default);
+
+        var updated = (await UpdateAsync(request))!;
+        Assert.Equal("updated", updated.Status);
+        Assert.Single(handler.Requests);
+
+        var stored = await db.Set<EventEntity>().IgnoreQueryFilters()
+            .SingleAsync(e => e.Id == eventId);
+        stored.DeletedAt = DateTimeOffset.UtcNow;
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+
+        var replay = (await UpdateAsync(request))!;
+        Assert.Equal("updated", replay.Status);
+        Assert.True(replay.Replayed);
+        Assert.Single(handler.Requests);
+
+        var conflict = (await UpdateAsync(
+            request with { Title = "Different Subject" }))!;
+        Assert.Equal("conflict", conflict.Status);
+        Assert.Equal("IDEMPOTENCY_CONFLICT", conflict.ErrorCode);
+        Assert.Single(handler.Requests);
+
+        var removed = await db.Set<EventEntity>().IgnoreQueryFilters()
+            .SingleAsync(e => e.Id == eventId);
+        db.Set<EventEntity>().Remove(removed);
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+
+        var replayAfterRemove = (await UpdateAsync(request))!;
+        Assert.Equal("updated", replayAfterRemove.Status);
+        Assert.True(replayAfterRemove.Replayed);
+        Assert.Single(handler.Requests);
+
+        var conflictAfterRemove = (await UpdateAsync(
+            request with { Title = "Different Subject" }))!;
+        Assert.Equal("conflict", conflictAfterRemove.Status);
+        Assert.Equal("IDEMPOTENCY_CONFLICT", conflictAfterRemove.ErrorCode);
+        Assert.Single(handler.Requests);
     }
 
     [Fact]

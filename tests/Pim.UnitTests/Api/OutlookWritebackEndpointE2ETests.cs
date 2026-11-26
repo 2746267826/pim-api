@@ -874,7 +874,14 @@ public sealed class OutlookWritebackEndpointE2ETests
         Assert.Equal("conflict", undoOperation.State);
         var deterministicUndoId = undoOperation.ClientOperationId;
 
-        graph.Enqueue(HttpStatusCode.OK, UndoRestoredEventJson);
+        graph.Enqueue(request =>
+            request.Headers.IfMatch.ToString() == "W/\"latest-etag\""
+                ? new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(
+                        UndoRestoredEventJson, Encoding.UTF8, "application/json")
+                }
+                : new HttpResponseMessage(HttpStatusCode.PreconditionFailed));
         var retried = await client.PostAsync(
             $"/api/v1/calendar/outlook/events/{operationId:D}/undo", null);
         Assert.Equal(HttpStatusCode.OK, retried.StatusCode);
@@ -897,6 +904,7 @@ public sealed class OutlookWritebackEndpointE2ETests
         Assert.Equal(
             new[] { "PATCH", "PATCH", "GET", "PATCH" },
             graph.CoreRequests.Select(request => request.Method).ToList());
+        Assert.Equal("W/\"latest-etag\"", graph.CoreRequests[^1].IfMatch);
 
         var stored = await temp.Db.Set<EventEntity>().IgnoreQueryFilters()
             .SingleAsync(e => e.Id == eventId);
@@ -904,6 +912,62 @@ public sealed class OutlookWritebackEndpointE2ETests
 
         _output.WriteLine(
             "Undo 412 retried with the same deterministic undo clientOperationId, reached Graph again, completed, and did not return a forged IDEMPOTENCY_CONFLICT.");
+    }
+
+    [SkippableFact]
+    public async Task SoftDeletedUpdateReplay_ValidatesPayloadHash_OverHttp()
+    {
+        var graph = new GraphQueueHandler();
+        var (temp, factory) = await NewIsolatedHostAsync(graph);
+        await using var _ = temp;
+        using var factoryScope = factory;
+        var seed = await SeedAsync(temp);
+        var eventId = await SeedSimpleEventAsync(
+            temp, seed, "Replay Target", "graph-event-1");
+        var client = Authed(factory, seed.UserId);
+        var operationId = Guid.NewGuid();
+        var body = $$"""
+        {
+          "calendarId": "{{seed.CalendarId}}",
+          "title": "Updated Subject",
+          "dtStart": "2026-11-30T11:00:00Z",
+          "dtEnd": "2026-11-30T12:00:00Z"
+        }
+        """;
+        var url =
+            $"/api/v1/calendar/events/{eventId:D}" +
+            $"?expectedEtag=W%2F%22etag%22&clientOperationId={operationId:D}";
+
+        graph.Enqueue(HttpStatusCode.OK, UpdatedEventJson);
+        var updated = await client.PutAsync(url, Json(body));
+        Assert.Equal(HttpStatusCode.OK, updated.StatusCode);
+        Assert.Single(graph.CoreRequests);
+
+        temp.Db.ChangeTracker.Clear();
+        var stored = await temp.Db.Set<EventEntity>().IgnoreQueryFilters()
+            .SingleAsync(e => e.Id == eventId);
+        stored.DeletedAt = DateTimeOffset.UtcNow;
+        await temp.Db.SaveChangesAsync();
+        temp.Db.ChangeTracker.Clear();
+
+        var replay = await client.PutAsync(url, Json(body));
+        Assert.Equal(HttpStatusCode.OK, replay.StatusCode);
+        var replayData = await ReadDataAsync(replay);
+        Assert.True(replayData.GetProperty("replayed").GetBoolean());
+        Assert.Equal("Updated Subject", replayData.GetProperty("title").GetString());
+        Assert.Single(graph.CoreRequests);
+
+        var changedBody = body.Replace(
+            "\"Updated Subject\"", "\"Different Subject\"", StringComparison.Ordinal);
+        var conflict = await client.PutAsync(url, Json(changedBody));
+        Assert.Equal(HttpStatusCode.Conflict, conflict.StatusCode);
+        var conflictData = await ReadDataAsync(conflict);
+        Assert.Equal("IDEMPOTENCY_CONFLICT",
+            conflictData.GetProperty("errorCode").GetString());
+        Assert.Single(graph.CoreRequests);
+
+        _output.WriteLine(
+            "A soft-deleted update replay with the same payload returned the cached receipt; a different payload with the same clientOperationId returned 409 IDEMPOTENCY_CONFLICT without another Graph call.");
     }
 
     [SkippableFact]
@@ -1326,6 +1390,12 @@ public sealed class OutlookWritebackEndpointE2ETests
         {
             lock (_queue)
                 _queue.Enqueue(_ => throw exception);
+        }
+
+        public void Enqueue(Func<HttpRequestMessage, HttpResponseMessage> script)
+        {
+            lock (_queue)
+                _queue.Enqueue(script);
         }
 
         protected override Task<HttpResponseMessage> SendAsync(

@@ -1,3 +1,6 @@
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Pim.Core.Exceptions;
 using Pim.Infrastructure.Data;
@@ -13,6 +16,9 @@ namespace Pim.Module.Calendar.Services;
 /// </summary>
 public sealed class OutlookCalendarWritebackGateway
 {
+    private static readonly JsonSerializerOptions PayloadHashJsonOptions =
+        new(JsonSerializerDefaults.Web);
+
     private readonly PimDbContext _db;
     private readonly OutlookEventWriteService _writeService;
 
@@ -45,6 +51,8 @@ public sealed class OutlookCalendarWritebackGateway
             return null;
 
         var draft = request with { CalendarId = calendar.Id };
+        var requestPayloadHash = ComputeRequestPayloadHash(
+            "create", null, request, null, null, null, null);
         return await ExecuteSafelyAsync(
             userId,
             new OutlookWriteRequest(
@@ -53,7 +61,10 @@ public sealed class OutlookCalendarWritebackGateway
                 null,
                 draft,
                 "instance",
-                clientOperationId),
+                clientOperationId)
+            {
+                RequestPayloadHash = requestPayloadHash
+            },
             clientOperationId,
             ct);
     }
@@ -70,6 +81,15 @@ public sealed class OutlookCalendarWritebackGateway
         CancellationToken ct)
     {
         var effectiveRecurrenceId = recurrenceId ?? request.RecurrenceId;
+        var scopeHint = NormalizeScopeHint(scope);
+        var requestPayloadHash = ComputeRequestPayloadHash(
+            "update",
+            eventId,
+            request,
+            scopeHint,
+            originalEventId,
+            effectiveRecurrenceId,
+            expectedEtag);
         var entity = await ResolveEventAsync(
             userId, eventId, scope, originalEventId, effectiveRecurrenceId, ct);
         if (entity is null)
@@ -79,7 +99,8 @@ public sealed class OutlookCalendarWritebackGateway
                 "update",
                 clientOperationId,
                 eventId,
-                NormalizeScopeHint(scope),
+                scopeHint,
+                requestPayloadHash,
                 ct);
         }
 
@@ -105,7 +126,10 @@ public sealed class OutlookCalendarWritebackGateway
                 clientOperationId,
                 ExpectedEtag: expectedEtag,
                 OriginalEventId: originalEventId,
-                RecurrenceId: effectiveRecurrenceId),
+                RecurrenceId: effectiveRecurrenceId)
+            {
+                RequestPayloadHash = requestPayloadHash
+            },
             clientOperationId,
             ct);
     }
@@ -120,6 +144,9 @@ public sealed class OutlookCalendarWritebackGateway
         string? expectedEtag,
         CancellationToken ct)
     {
+        var scopeHint = NormalizeScopeHint(scope);
+        var requestPayloadHash = ComputeRequestPayloadHash(
+            "delete", eventId, null, scopeHint, originalEventId, recurrenceId, expectedEtag);
         var entity = await ResolveEventAsync(
             userId, eventId, scope, originalEventId, recurrenceId, ct);
         if (entity is null)
@@ -129,7 +156,8 @@ public sealed class OutlookCalendarWritebackGateway
                 "delete",
                 clientOperationId,
                 eventId,
-                NormalizeScopeHint(scope),
+                scopeHint,
+                requestPayloadHash,
                 ct);
         }
 
@@ -148,7 +176,10 @@ public sealed class OutlookCalendarWritebackGateway
                 clientOperationId,
                 ExpectedEtag: expectedEtag,
                 OriginalEventId: originalEventId,
-                RecurrenceId: recurrenceId),
+                RecurrenceId: recurrenceId)
+            {
+                RequestPayloadHash = requestPayloadHash
+            },
             clientOperationId,
             ct);
     }
@@ -250,5 +281,28 @@ public sealed class OutlookCalendarWritebackGateway
         if (string.Equals(scope, "series", StringComparison.OrdinalIgnoreCase))
             return "series";
         return scope.Trim();
+    }
+
+    private static string ComputeRequestPayloadHash(
+        string operation,
+        Guid? eventId,
+        object? payload,
+        string? scopeHint,
+        Guid? originalEventId,
+        string? recurrenceId,
+        string? expectedEtag)
+    {
+        var canonical = JsonSerializer.Serialize(new
+        {
+            operation,
+            eventId,
+            payload,
+            scope = scopeHint ?? "auto",
+            originalEventId,
+            recurrenceId,
+            expectedEtag = string.IsNullOrWhiteSpace(expectedEtag) ? null : expectedEtag.Trim()
+        }, PayloadHashJsonOptions);
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical)))
+            .ToLowerInvariant();
     }
 }
