@@ -279,9 +279,10 @@ public sealed class NoteDerivedPlanTests
     public void SingleSliceAboveTheSingleCallLimitBlocksWithoutDividingByZero()
     {
         var material = NoteDerivedFixture.CreateMaterial();
+        const long samples = (NoteDerivedAudioContext.MaxBytes - 44) / 2 + 1;
         var audio = new NoteDerivedAudioInput(0, Guid.NewGuid(), 1, 1, 0,
             "recordings/recording-0.wav", NoteDerivedFixture.Digest([7]), 0,
-            NoteDerivedAudioContext.MaxBytes, NoteDerivedAudioContext.MaxBytes + 1,
+            samples, NoteDerivedAudioContext.ByteSize(samples),
             "recording-0.wav");
 
         var plan = new NoteDerivedPlanner().Build(
