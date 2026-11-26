@@ -830,8 +830,11 @@ public sealed class OutlookWritebackEndpointE2ETests
             "Synthetic occurrence lookup 404/403/429/5xx/timeout all produced structured receipts and failed ledger rows without touching the series master or escaping as 500.");
     }
 
-    [SkippableFact]
-    public async Task SyntheticOccurrenceMalformed2xx_IsLedgeredInsteadOfEscapingAs500()
+    [SkippableTheory]
+    [InlineData("update")]
+    [InlineData("delete")]
+    public async Task SyntheticOccurrenceMalformedPreflightResponse_CreatesFailedLedgerWithoutMasterWrite(
+        string operation)
     {
         var graph = new GraphQueueHandler();
         var (temp, factory) = await NewIsolatedHostAsync(graph);
@@ -841,104 +844,461 @@ public sealed class OutlookWritebackEndpointE2ETests
         var (masterId, recurrenceId) = await SeedSeriesMasterAsync(temp, seed);
         var client = Authed(factory, seed.UserId);
         var syntheticOccurrenceId = SyntheticOccurrenceId(masterId, recurrenceId);
-        var operationId = Guid.NewGuid();
+        var operationIds = new List<Guid>();
 
-        graph.Enqueue(HttpStatusCode.OK, $$"""
+        var malformedResponses = new (string Name, string Body)[]
         {
-          "value": [
+            ("invalid-json", """{"value":["""),
+            ("missing-fields", """
             {
-              "@odata.etag": "W/\"occ-etag\"",
-              "id": "graph-occ-malformed",
-              "subject": "Malformed occurrence",
-              "start": {"dateTime": "2026-11-30T09:00:00.0000000Z", "timeZone": "UTC"},
-              "originalStart": "{{recurrenceId}}"
+                "value": [{
+                    "id": "graph-occ-real-1",
+                    "seriesMasterId": "graph-series-1",
+                    "originalStart": "2026-11-30T09:00:00Z"
+                }]
             }
-          ]
+            """),
+            ("bad-date", """
+            {
+                "value": [{
+                    "@odata.etag": "W/\"occ-etag\"",
+                    "id": "graph-occ-real-1",
+                    "subject": "Series Master",
+                    "body": {"contentType": "text", "content": "Occurrence description"},
+                    "start": {"dateTime": "not-a-date", "timeZone": "UTC"},
+                    "end": {"dateTime": "2026-11-30T10:00:00Z", "timeZone": "UTC"},
+                    "location": {"displayName": "Room A"},
+                    "isAllDay": false,
+                    "type": "occurrence",
+                    "seriesMasterId": "graph-series-1",
+                    "originalStart": "2026-11-30T09:00:00Z",
+                    "originalStartTimeZone": "UTC",
+                    "originalEndTimeZone": "UTC",
+                    "iCalUId": "ical-series",
+                    "changeKey": "change-occ",
+                    "recurrence": null
+                }]
+            }
+            """)
+        };
+
+        var updateBody = $$"""
+        {
+          "calendarId": "{{seed.CalendarId}}",
+          "title": "Changed occurrence",
+          "dtStart": "2026-11-30T09:00:00Z",
+          "dtEnd": "2026-11-30T10:00:00Z"
         }
-        """);
+        """;
 
-        var response = await client.DeleteAsync(
-            $"/api/v1/calendar/events/{syntheticOccurrenceId:D}" +
-            $"?scope=instance&originalEventId={masterId:D}" +
-            $"&recurrenceId={Uri.EscapeDataString(recurrenceId)}" +
-            $"&clientOperationId={operationId:D}");
+        foreach (var malformed in malformedResponses)
+        {
+            var operationId = Guid.NewGuid();
+            operationIds.Add(operationId);
+            graph.Enqueue(HttpStatusCode.OK, malformed.Body);
+            var url =
+                $"/api/v1/calendar/events/{syntheticOccurrenceId:D}" +
+                $"?scope=instance&originalEventId={masterId:D}" +
+                $"&recurrenceId={Uri.EscapeDataString(recurrenceId)}" +
+                $"&clientOperationId={operationId:D}";
+            var response = operation == "update"
+                ? await client.PutAsync(url, Json(updateBody))
+                : await client.DeleteAsync(url);
 
-        Assert.Equal(HttpStatusCode.BadGateway, response.StatusCode);
-        var receipt = await ReadDataAsync(response);
-        Assert.Equal(operationId, receipt.GetProperty("clientOperationId").GetGuid());
-        Assert.Equal("PROVIDER_UNAVAILABLE",
-            receipt.GetProperty("errorCode").GetString());
-        Assert.True(receipt.GetProperty("noChangesApplied").GetBoolean());
+            Assert.True(
+                response.StatusCode == HttpStatusCode.BadGateway,
+                $"{malformed.Name}: expected 502, got {(int)response.StatusCode} " +
+                await response.Content.ReadAsStringAsync());
+            var receipt = await ReadDataAsync(response);
+            Assert.Equal("GRAPH_INVALID_RESPONSE",
+                receipt.GetProperty("errorCode").GetString());
+            Assert.Equal(operationId,
+                receipt.GetProperty("clientOperationId").GetGuid());
+            Assert.True(receipt.GetProperty("noChangesApplied").GetBoolean());
+            Assert.Contains("clientOperationId",
+                receipt.GetProperty("userMessage").GetString());
+        }
+
+        Assert.Equal(malformedResponses.Length, graph.Requests.Count);
+        Assert.All(graph.Requests, request => Assert.Equal("GET", request.Method));
 
         temp.Db.ChangeTracker.Clear();
-        var operation = await temp.Db.Set<OutlookWritebackOperationEntity>()
-            .SingleAsync(o => o.ClientOperationId == operationId);
-        Assert.Equal("failed", operation.State);
-        Assert.Equal("PROVIDER_UNAVAILABLE", operation.ErrorCode);
-
-        var batch = await temp.Db.Set<OutlookSyncBatchEntity>().SingleAsync();
-        Assert.Equal("failed", batch.Status);
-        Assert.Contains("PROVIDER_UNAVAILABLE", batch.ErrorsJson);
+        var operations = await temp.Db.Set<OutlookWritebackOperationEntity>()
+            .Where(o => operationIds.Contains(o.ClientOperationId))
+            .ToListAsync();
+        Assert.Equal(malformedResponses.Length, operations.Count);
+        Assert.All(operations, stored =>
+        {
+            Assert.Equal("failed", stored.State);
+            Assert.Equal("GRAPH_INVALID_RESPONSE", stored.ErrorCode);
+        });
+        var batches = await temp.Db.Set<OutlookSyncBatchEntity>()
+            .Where(b => b.UserId == seed.UserId)
+            .ToListAsync();
+        Assert.Equal(malformedResponses.Length, batches.Count);
+        Assert.All(batches, batch =>
+        {
+            Assert.Equal("failed", batch.Status);
+            Assert.Contains("GRAPH_INVALID_RESPONSE", batch.ErrorsJson);
+        });
 
         var master = await temp.Db.Set<EventEntity>().IgnoreQueryFilters()
             .SingleAsync(e => e.Id == masterId);
         Assert.Equal("Series Master", master.Title);
         Assert.Null(master.DeletedAt);
+        Assert.Equal("W/\"master-etag\"", master.OutlookEtag);
         Assert.Empty(await temp.Db.Set<EventEntity>().IgnoreQueryFilters()
             .Where(e => e.SeriesMasterId == masterId && e.IsException)
             .ToListAsync());
 
         _output.WriteLine(
-            "A malformed 200 instances body produced a structured 502 receipt and a failed operation/batch ledger row instead of a 500 with no ledger.");
+            "Malformed/partial 2xx occurrence preflight bodies (invalid JSON, missing fields, bad date) returned GRAPH_INVALID_RESPONSE, created failed operation+batch rows and left the series master untouched without any write request.");
     }
 
     [SkippableFact]
-    public async Task DeleteSeries_GraphSuccessThenLocalReadFailure_IsLedgeredNotLeftProcessing()
+    public async Task DeleteLocalCommitFailure_RetryCompletesWithoutSecondGraphDelete()
     {
         var graph = new GraphQueueHandler();
         var (temp, factory) = await NewIsolatedHostAsync(graph);
         await using var _ = temp;
         using var factoryScope = factory;
         var seed = await SeedAsync(temp);
-        var (masterId, _) = await SeedSeriesMasterAsync(temp, seed);
+        var eventId = await SeedSimpleEventAsync(
+            temp, seed, "Local Commit Target", "graph-delete-local");
         var client = Authed(factory, seed.UserId);
         var operationId = Guid.NewGuid();
+        var url =
+            $"/api/v1/calendar/events/{eventId:D}?clientOperationId={operationId:D}";
 
-        graph.AfterResponse = async request =>
-        {
-            if (request.Method == "DELETE")
-            {
-                await temp.Db.Database.ExecuteSqlRawAsync(
-                    "ALTER TABLE events RENAME TO events_writeback_local_failure");
-            }
-        };
+        await temp.ExecuteAsync("""
+            CREATE OR REPLACE FUNCTION r03_fail_event_update() RETURNS trigger AS $$
+            BEGIN
+                IF NEW.deleted_at IS NOT NULL AND OLD.deleted_at IS NULL THEN
+                    RAISE EXCEPTION 'r03 forced local state failure';
+                END IF;
+                RETURN NEW;
+            END;
+            $$ LANGUAGE plpgsql;
+            """);
+        await temp.ExecuteAsync("""
+            CREATE TRIGGER r03_fail_event_update
+            BEFORE UPDATE ON events
+            FOR EACH ROW EXECUTE FUNCTION r03_fail_event_update();
+            """);
+
         graph.Enqueue(HttpStatusCode.NoContent);
-
-        var response = await client.DeleteAsync(
-            $"/api/v1/calendar/events/{masterId:D}" +
-            $"?scope=series&clientOperationId={operationId:D}");
-
-        Assert.Equal(HttpStatusCode.BadGateway, response.StatusCode);
-        var receipt = await ReadDataAsync(response);
-        Assert.Equal(operationId, receipt.GetProperty("clientOperationId").GetGuid());
-        Assert.Equal("LOCAL_STATE_PENDING", receipt.GetProperty("errorCode").GetString());
-        Assert.False(receipt.GetProperty("noChangesApplied").GetBoolean());
+        var failed = await client.DeleteAsync(url);
+        Assert.Equal(HttpStatusCode.BadGateway, failed.StatusCode);
+        var failedReceipt = await ReadDataAsync(failed);
+        Assert.Equal("LOCAL_STATE_PENDING",
+            failedReceipt.GetProperty("errorCode").GetString());
+        Assert.False(failedReceipt.GetProperty("noChangesApplied").GetBoolean());
 
         temp.Db.ChangeTracker.Clear();
-        var operation = await temp.Db.Set<OutlookWritebackOperationEntity>()
+        var failedOperation = await temp.Db.Set<OutlookWritebackOperationEntity>()
             .SingleAsync(o => o.ClientOperationId == operationId);
-        Assert.Equal("failed", operation.State);
-        Assert.Equal("LOCAL_STATE_PENDING", operation.ErrorCode);
-        Assert.Null(operation.CompletedAt);
+        Assert.Equal("failed", failedOperation.State);
+        Assert.Equal("LOCAL_STATE_PENDING", failedOperation.ErrorCode);
+        Assert.Contains("graphTargetId", failedOperation.ResultJson);
+        var failedBatch = await temp.Db.Set<OutlookSyncBatchEntity>()
+            .SingleAsync(b => b.UserId == seed.UserId);
+        Assert.Equal("failed", failedBatch.Status);
+        Assert.Contains("local-state-pending", failedBatch.ErrorsJson);
+        Assert.Null((await temp.Db.Set<EventEntity>().IgnoreQueryFilters()
+            .SingleAsync(e => e.Id == eventId)).DeletedAt);
+        Assert.Single(graph.Requests);
+        Assert.Equal("DELETE", graph.Requests[0].Method);
 
-        var batch = await temp.Db.Set<OutlookSyncBatchEntity>().SingleAsync();
-        Assert.Equal("failed", batch.Status);
-        Assert.Contains("local-state-pending", batch.ErrorsJson);
-        Assert.Contains("graph-delete", batch.StepsJson);
-        Assert.Contains("success", batch.StepsJson);
+        await temp.ExecuteAsync("DROP TRIGGER r03_fail_event_update ON events");
+        await temp.ExecuteAsync("DROP FUNCTION r03_fail_event_update()");
+
+        var retried = await client.DeleteAsync(url);
+        Assert.Equal(HttpStatusCode.OK, retried.StatusCode);
+        var retriedReceipt = await ReadDataAsync(retried);
+        Assert.Equal("deleted", retriedReceipt.GetProperty("status").GetString());
+        Assert.Equal(operationId,
+            retriedReceipt.GetProperty("clientOperationId").GetGuid());
+
+        Assert.Single(graph.Requests);
+        Assert.Equal("DELETE", graph.Requests[0].Method);
+
+        temp.Db.ChangeTracker.Clear();
+        var completedOperation = await temp.Db.Set<OutlookWritebackOperationEntity>()
+            .SingleAsync(o => o.ClientOperationId == operationId);
+        Assert.Equal("completed", completedOperation.State);
+        Assert.Equal(2, completedOperation.AttemptCount);
+        Assert.Equal("completed",
+            (await temp.Db.Set<OutlookSyncBatchEntity>()
+                .SingleAsync(b => b.UserId == seed.UserId)).Status);
+        Assert.NotNull((await temp.Db.Set<EventEntity>().IgnoreQueryFilters()
+            .SingleAsync(e => e.Id == eventId)).DeletedAt);
 
         _output.WriteLine(
-            "A local read failure after Graph DELETE success was persisted as LOCAL_STATE_PENDING/failed instead of leaving the operation in processing or escaping as 500.");
+            "Graph DELETE succeeded once; the forced local save failure persisted LOCAL_STATE_PENDING, and the same clientOperationId retry completed local state with the Graph DELETE count still at 1.");
+    }
+
+    [SkippableFact]
+    public async Task SyntheticOccurrenceDeleteLocalInsertFailure_RetryUsesStoredTargetWithoutGraphWrite()
+    {
+        var graph = new GraphQueueHandler();
+        var (temp, factory) = await NewIsolatedHostAsync(graph);
+        await using var _ = temp;
+        using var factoryScope = factory;
+        var seed = await SeedAsync(temp);
+        var (masterId, recurrenceId) = await SeedSeriesMasterAsync(temp, seed);
+        var client = Authed(factory, seed.UserId);
+        var operationId = Guid.NewGuid();
+        var url =
+            $"/api/v1/calendar/events/{SyntheticOccurrenceId(masterId, recurrenceId):D}" +
+            $"?scope=instance&originalEventId={masterId:D}" +
+            $"&recurrenceId={Uri.EscapeDataString(recurrenceId)}" +
+            $"&clientOperationId={operationId:D}";
+
+        await temp.ExecuteAsync("""
+            CREATE OR REPLACE FUNCTION r03_fail_event_insert() RETURNS trigger AS $$
+            BEGIN
+                RAISE EXCEPTION 'r03 forced local occurrence insert failure';
+            END;
+            $$ LANGUAGE plpgsql;
+            """);
+        await temp.ExecuteAsync("""
+            CREATE TRIGGER r03_fail_event_insert
+            BEFORE INSERT ON events
+            FOR EACH ROW EXECUTE FUNCTION r03_fail_event_insert();
+            """);
+
+        graph.Enqueue(HttpStatusCode.OK, SeriesOccurrenceListJson);
+        graph.Enqueue(HttpStatusCode.NoContent);
+        var failed = await client.DeleteAsync(url);
+        Assert.Equal(HttpStatusCode.BadGateway, failed.StatusCode);
+        var failedReceipt = await ReadDataAsync(failed);
+        Assert.Equal("LOCAL_STATE_PENDING",
+            failedReceipt.GetProperty("errorCode").GetString());
+
+        temp.Db.ChangeTracker.Clear();
+        var failedOperation = await temp.Db.Set<OutlookWritebackOperationEntity>()
+            .SingleAsync(o => o.ClientOperationId == operationId);
+        Assert.Equal("failed", failedOperation.State);
+        Assert.Equal("LOCAL_STATE_PENDING", failedOperation.ErrorCode);
+        Assert.Contains("graphTargetId", failedOperation.ResultJson);
+        Assert.Equal(2, graph.Requests.Count);
+        Assert.Equal(new[] { "GET", "DELETE" },
+            graph.Requests.Select(request => request.Method).ToList());
+
+        var masterBeforeRetry = await temp.Db.Set<EventEntity>().IgnoreQueryFilters()
+            .SingleAsync(e => e.Id == masterId);
+        Assert.Equal("Series Master", masterBeforeRetry.Title);
+        Assert.Null(masterBeforeRetry.DeletedAt);
+        Assert.Empty(await temp.Db.Set<EventEntity>().IgnoreQueryFilters()
+            .Where(e => e.SeriesMasterId == masterId && e.IsException)
+            .ToListAsync());
+
+        await temp.ExecuteAsync("DROP TRIGGER r03_fail_event_insert ON events");
+        await temp.ExecuteAsync("DROP FUNCTION r03_fail_event_insert()");
+
+        var retried = await client.DeleteAsync(url);
+        Assert.Equal(HttpStatusCode.OK, retried.StatusCode);
+        var retriedReceipt = await ReadDataAsync(retried);
+        Assert.Equal("deleted", retriedReceipt.GetProperty("status").GetString());
+
+        Assert.Equal(2, graph.Requests.Count);
+        Assert.Equal(new[] { "GET", "DELETE" },
+            graph.Requests.Select(request => request.Method).ToList());
+
+        temp.Db.ChangeTracker.Clear();
+        var master = await temp.Db.Set<EventEntity>().IgnoreQueryFilters()
+            .SingleAsync(e => e.Id == masterId);
+        Assert.Equal("Series Master", master.Title);
+        Assert.Null(master.DeletedAt);
+        var cancelled = await temp.Db.Set<EventEntity>().IgnoreQueryFilters()
+            .SingleAsync(e => e.OutlookEventId == "graph-occ-real-1");
+        Assert.Equal("CANCELLED", cancelled.Status);
+        Assert.True(cancelled.IsException);
+        Assert.Equal(masterId, cancelled.SeriesMasterId);
+        Assert.Equal(recurrenceId, cancelled.RecurrenceId);
+
+        var completedOperation = await temp.Db.Set<OutlookWritebackOperationEntity>()
+            .SingleAsync(o => o.ClientOperationId == operationId);
+        Assert.Equal("completed", completedOperation.State);
+        Assert.Equal(2, completedOperation.AttemptCount);
+        Assert.Equal(cancelled.Id, completedOperation.ResultEventId);
+
+        _output.WriteLine(
+            "Synthetic occurrence DELETE completed remotely once; the forced local insert failure persisted the pending target, and the same clientOperationId retry converged the local CANCELLED exception without another Graph request.");
+    }
+
+    [SkippableTheory]
+    [InlineData("series")]
+    [InlineData("instance")]
+    public async Task DeleteLocalReadFailure_RetryCompletesWithoutSecondGraphDelete(
+        string scope)
+    {
+        var graph = new GraphQueueHandler();
+        var (temp, factory) = await NewIsolatedHostAsync(graph);
+        await using var _ = temp;
+        using var factoryScope = factory;
+        var seed = await SeedAsync(temp);
+        var (masterId, recurrenceId) = await SeedSeriesMasterAsync(temp, seed);
+        var client = Authed(factory, seed.UserId);
+        var operationId = Guid.NewGuid();
+        var url = scope == "series"
+            ? $"/api/v1/calendar/events/{masterId:D}" +
+              $"?scope=series&clientOperationId={operationId:D}"
+            : $"/api/v1/calendar/events/{SyntheticOccurrenceId(masterId, recurrenceId):D}" +
+              $"?scope=instance&originalEventId={masterId:D}" +
+              $"&recurrenceId={Uri.EscapeDataString(recurrenceId)}" +
+              $"&clientOperationId={operationId:D}";
+        var expectedGraphCalls = scope == "instance" ? 2 : 1;
+
+        if (scope == "instance")
+            graph.Enqueue(HttpStatusCode.OK, SeriesOccurrenceListJson);
+        graph.Enqueue(_request =>
+        {
+            temp.ExecuteAsync(
+                    "ALTER TABLE events RENAME TO events_r03_read_failure")
+                .GetAwaiter()
+                .GetResult();
+            return new HttpResponseMessage(HttpStatusCode.NoContent);
+        });
+
+        var failed = await client.DeleteAsync(url);
+        Assert.Equal(HttpStatusCode.BadGateway, failed.StatusCode);
+        var failedReceipt = await ReadDataAsync(failed);
+        Assert.Equal("LOCAL_STATE_PENDING",
+            failedReceipt.GetProperty("errorCode").GetString());
+        Assert.False(failedReceipt.GetProperty("noChangesApplied").GetBoolean());
+
+        Assert.Equal(expectedGraphCalls, graph.Requests.Count);
+        Assert.Equal("DELETE", graph.Requests[^1].Method);
+
+        temp.Db.ChangeTracker.Clear();
+        var failedOperation = await temp.Db.Set<OutlookWritebackOperationEntity>()
+            .SingleAsync(o => o.ClientOperationId == operationId);
+        Assert.Equal("failed", failedOperation.State);
+        Assert.Equal("LOCAL_STATE_PENDING", failedOperation.ErrorCode);
+        Assert.Contains("graphTargetId", failedOperation.ResultJson);
+        Assert.Equal("failed",
+            (await temp.Db.Set<OutlookSyncBatchEntity>()
+                .SingleAsync(b => b.UserId == seed.UserId)).Status);
+
+        await temp.ExecuteAsync(
+            "ALTER TABLE events_r03_read_failure RENAME TO events");
+
+        var masterBeforeRetry = await temp.Db.Set<EventEntity>().IgnoreQueryFilters()
+            .SingleAsync(e => e.Id == masterId);
+        Assert.Equal("Series Master", masterBeforeRetry.Title);
+        Assert.Null(masterBeforeRetry.DeletedAt);
+
+        var retried = await client.DeleteAsync(url);
+        Assert.Equal(HttpStatusCode.OK, retried.StatusCode);
+        var retriedReceipt = await ReadDataAsync(retried);
+        Assert.Equal("deleted", retriedReceipt.GetProperty("status").GetString());
+
+        Assert.Equal(expectedGraphCalls, graph.Requests.Count);
+        Assert.Equal("DELETE", graph.Requests[^1].Method);
+
+        temp.Db.ChangeTracker.Clear();
+        var completedOperation = await temp.Db.Set<OutlookWritebackOperationEntity>()
+            .SingleAsync(o => o.ClientOperationId == operationId);
+        Assert.Equal("completed", completedOperation.State);
+        Assert.Equal(2, completedOperation.AttemptCount);
+        Assert.Equal("completed",
+            (await temp.Db.Set<OutlookSyncBatchEntity>()
+                .SingleAsync(b => b.UserId == seed.UserId)).Status);
+
+        var master = await temp.Db.Set<EventEntity>().IgnoreQueryFilters()
+            .SingleAsync(e => e.Id == masterId);
+        if (scope == "series")
+        {
+            Assert.NotNull(master.DeletedAt);
+        }
+        else
+        {
+            Assert.Null(master.DeletedAt);
+            var cancelled = await temp.Db.Set<EventEntity>().IgnoreQueryFilters()
+                .SingleAsync(e => e.OutlookEventId == "graph-occ-real-1");
+            Assert.Equal("CANCELLED", cancelled.Status);
+            Assert.Equal(masterId, cancelled.SeriesMasterId);
+        }
+
+        var localRead = scope == "series" ? "Series list" : "Occurrence lookup";
+        _output.WriteLine(
+            $"{localRead} failure after Graph DELETE persisted LOCAL_STATE_PENDING; " +
+            "the same clientOperationId retry completed local state with the Graph DELETE count unchanged at 1.");
+    }
+
+    [SkippableFact]
+    public async Task PendingDeleteRetry_WhenEventWasHardDeleted_CompletesWithoutGraphDelete()
+    {
+        var graph = new GraphQueueHandler();
+        var (temp, factory) = await NewIsolatedHostAsync(graph);
+        await using var _ = temp;
+        using var factoryScope = factory;
+        var seed = await SeedAsync(temp);
+        var eventId = await SeedSimpleEventAsync(
+            temp, seed, "Hard Deleted Pending Target", "graph-hard-deleted-pending");
+        var client = Authed(factory, seed.UserId);
+        var operationId = Guid.NewGuid();
+        var url =
+            $"/api/v1/calendar/events/{eventId:D}?clientOperationId={operationId:D}";
+
+        await temp.ExecuteAsync("""
+            CREATE OR REPLACE FUNCTION r03_fail_pending_event_update() RETURNS trigger AS $$
+            BEGIN
+                IF NEW.deleted_at IS NOT NULL AND OLD.deleted_at IS NULL THEN
+                    RAISE EXCEPTION 'r03 forced pending update failure';
+                END IF;
+                RETURN NEW;
+            END;
+            $$ LANGUAGE plpgsql;
+            """);
+        await temp.ExecuteAsync("""
+            CREATE TRIGGER r03_fail_pending_event_update
+            BEFORE UPDATE ON events
+            FOR EACH ROW EXECUTE FUNCTION r03_fail_pending_event_update();
+            """);
+
+        graph.Enqueue(HttpStatusCode.NoContent);
+        var failed = await client.DeleteAsync(url);
+        Assert.Equal(HttpStatusCode.BadGateway, failed.StatusCode);
+        var failedReceipt = await ReadDataAsync(failed);
+        Assert.Equal("LOCAL_STATE_PENDING",
+            failedReceipt.GetProperty("errorCode").GetString());
+
+        temp.Db.ChangeTracker.Clear();
+        var pendingOperation = await temp.Db.Set<OutlookWritebackOperationEntity>()
+            .SingleAsync(o => o.ClientOperationId == operationId);
+        Assert.Equal("failed", pendingOperation.State);
+        Assert.Equal("LOCAL_STATE_PENDING", pendingOperation.ErrorCode);
+        Assert.Single(graph.Requests);
+        Assert.Equal("DELETE", graph.Requests[0].Method);
+
+        await temp.ExecuteAsync("DROP TRIGGER r03_fail_pending_event_update ON events");
+        await temp.ExecuteAsync("DROP FUNCTION r03_fail_pending_event_update()");
+        await temp.Db.Database.ExecuteSqlRawAsync(
+            "DELETE FROM events WHERE id = {0}", eventId);
+
+        var retried = await client.DeleteAsync(url);
+        Assert.Equal(HttpStatusCode.OK, retried.StatusCode);
+        var retriedReceipt = await ReadDataAsync(retried);
+        Assert.Equal("deleted", retriedReceipt.GetProperty("status").GetString());
+        Assert.Equal(operationId,
+            retriedReceipt.GetProperty("clientOperationId").GetGuid());
+
+        Assert.Single(graph.Requests);
+        Assert.Equal("DELETE", graph.Requests[0].Method);
+
+        temp.Db.ChangeTracker.Clear();
+        var completedOperation = await temp.Db.Set<OutlookWritebackOperationEntity>()
+            .SingleAsync(o => o.ClientOperationId == operationId);
+        Assert.Equal("completed", completedOperation.State);
+        Assert.Equal(2, completedOperation.AttemptCount);
+        Assert.Equal("completed",
+            (await temp.Db.Set<OutlookSyncBatchEntity>()
+                .SingleAsync(b => b.UserId == seed.UserId)).Status);
+
+        _output.WriteLine(
+            "A pending delete retry after the event row disappeared completed through the stored target and did not issue another Graph DELETE.");
     }
 
     [SkippableFact]

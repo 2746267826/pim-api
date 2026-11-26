@@ -1010,7 +1010,6 @@ public sealed class OutlookEventWriteServiceTests
         db.ThrowOnCallNumber = 2;
         var handler = new ScriptedHttpMessageHandler();
         handler.Enqueue(HttpStatusCode.NoContent);
-        handler.Enqueue(HttpStatusCode.NotFound);
         var service = CreateService(db, handler);
         var request = new OutlookWriteRequest(
             "delete", bindingId, eventId, null, "instance", OpId,
@@ -1036,12 +1035,14 @@ public sealed class OutlookEventWriteServiceTests
         var retried = await service.ExecuteAsync(UserId, request, default);
 
         Assert.Equal("deleted", retried.Status);
-        Assert.Equal(2, handler.Requests.Count);
-        Assert.Equal(HttpMethod.Delete, handler.Requests[1].Method);
+        Assert.Single(handler.Requests);
+        Assert.Equal(HttpMethod.Delete, handler.Requests[0].Method);
         db.ChangeTracker.Clear();
         var operation = await db.Set<OutlookWritebackOperationEntity>().SingleAsync();
         Assert.Equal("completed", operation.State);
         Assert.Equal(2, operation.AttemptCount);
+        Assert.Equal("completed",
+            (await db.Set<OutlookSyncBatchEntity>().SingleAsync()).Status);
         Assert.NotNull((await db.Set<EventEntity>().IgnoreQueryFilters()
             .SingleAsync(e => e.Id == eventId)).DeletedAt);
     }
