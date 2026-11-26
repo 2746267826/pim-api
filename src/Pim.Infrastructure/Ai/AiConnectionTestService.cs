@@ -293,6 +293,13 @@ public sealed class AiConnectionTestService(
                     AiConnectionTestStatus.Failed, null, HttpErrorCode(error.StatusCode),
                     HttpErrorMessage(error.StatusCode), providerAttempted: true);
             }
+            catch (DomainException error) when (error.ErrorCode == 50206)
+            {
+                return await FinishAsync(row, profile, probe, request.Capability,
+                    AiConnectionTestStatus.Failed, null, "connection_failed",
+                    "MiMo多模态连接异常，结果未确认；请核对API地址、TLS/网络与访问权限，本次未自动重试。",
+                    providerAttempted || wire.ProviderAttempted, key);
+            }
             catch (DomainException error) when (error.ErrorCode is 50401 or 50402)
             {
                 return await FinishAsync(row, profile, probe, request.Capability,

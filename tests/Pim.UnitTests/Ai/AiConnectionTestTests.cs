@@ -7,6 +7,7 @@ using Pim.Core.Ai;
 using Pim.Core.Exceptions;
 using Pim.Infrastructure.Ai;
 using Pim.Infrastructure.Ai.Asr;
+using Pim.Infrastructure.Ai.Asr.Mimo;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
 using Pim.Infrastructure.Data.Entities;
@@ -594,9 +595,42 @@ public sealed class AiConnectionTestTests : IDisposable
         Assert.Equal(0, _wire.Calls);
     }
 
-    private AiConnectionTestService Service(AiUsageLimitService? usageLimits = null) =>
+    [Fact]
+    public async Task MimoMultimodalTransportFailureIsClassifiedAsConnectionFailed()
+    {
+        var handler = new MimoConnectionFailureHandler();
+        var preset = new MimoMultimodalPreset(_ => new HttpClient(handler)
+        {
+            Timeout = Timeout.InfiniteTimeSpan
+        });
+        var presets = new AiAsrPresetRegistry([preset]);
+        var settings = new AiModelSettingsService(_db, _secrets, presets);
+        var model = await settings.SaveAsync(null, new("MiMo ASR" + Guid.NewGuid().ToString("N"),
+            "https://fixture.invalid/v1", MimoMultimodalPreset.FlashModel, true,
+            [AiModelCapability.Transcription], 5, 128, Key,
+            AsrPresetId: MimoMultimodalPreset.PresetId), default);
+        var current = await settings.GetSettingsAsync(default);
+        await settings.SaveSettingsAsync(new(current.Revision, true, null, null, model.Id), default);
+
+        var result = await Service(presets: presets).TestAsync(model.Id,
+            new(Guid.NewGuid(), model.Revision, AiModelCapability.Transcription), default);
+
+        Assert.Equal(AiConnectionTestStatus.Failed, result.Status);
+        Assert.Equal("connection_failed", result.ErrorCode);
+        Assert.True(result.ProviderAttempted);
+        Assert.Equal(1, handler.Calls);
+        Assert.Equal(0, _wire.Calls);
+        Assert.DoesNotContain(Key, JsonSerializer.Serialize(result));
+        var log = await _db.AiRequestLogs.AsNoTracking().SingleAsync();
+        Assert.Equal("failed", log.Status);
+        Assert.Equal("connection_failed", log.ErrorCode);
+        Assert.DoesNotContain(Key, JsonSerializer.Serialize(log));
+    }
+
+    private AiConnectionTestService Service(AiUsageLimitService? usageLimits = null,
+        AiAsrPresetRegistry? presets = null) =>
         new(_db, _secrets, new AiProfileChatClientFactory(_wire), _owner,
-            new AiAsrPresetRegistry([_asr]), _gate, usageLimits);
+            presets ?? new AiAsrPresetRegistry([_asr]), _gate, usageLimits);
 
     private async Task<AiModelDto> Model(int timeout = 60) =>
         await _settings.SaveAsync(null, new("模型" + Guid.NewGuid().ToString("N"),
@@ -726,6 +760,19 @@ public sealed class AiConnectionTestTests : IDisposable
             Received = audio;
             return Task.FromResult(new AiAsrProviderResult(Text, "stop", 10, 2, 12, "{}",
                 !string.IsNullOrWhiteSpace(Text), 1.3));
+        }
+    }
+
+    private sealed class MimoConnectionFailureHandler : HttpMessageHandler
+    {
+        public int Calls { get; private set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            Calls++;
+            return Task.FromException<HttpResponseMessage>(
+                new HttpRequestException("synthetic MiMo connection failure"));
         }
     }
 }

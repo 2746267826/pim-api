@@ -83,7 +83,7 @@ dotnet src/Pim.Api.dll --urls http://127.0.0.1:5858
 PIM_ACCESS_TOKEN=<jwt> dotnet src/Pim.Api.dll --mcp-stdio
 ```
 - `--mcp-stdio` 模式下 stdout 只承载 MCP 协议，日志走 stderr 与文件。
-- 自检：`dotnet test tests/Pim.UnitTests` 的 `Mcp*` 用例覆盖 148 工具契约等价性。
+- 自检：`dotnet test tests/Pim.UnitTests/Pim.UnitTests.csproj --filter "FullyQualifiedName~Pim.UnitTests.Mcp"` 覆盖 148 工具契约等价性。
 - 生产部署（HTTP 模式）：见 §6「生产部署 / Production deployment」——Pim.Api 单容器直接对外。
 
 ### 客户端配置 / Client configs
@@ -3507,7 +3507,7 @@ A: 所有聚合按 `timezone` 切天，默认为 `Asia/Shanghai`。传入 `timez
 | v5.0 | 2026-09-20 | 文件模块 v2（P4）：新增 `read_file_text`（元数据搜索之外的内容级读取，交 Hermes 现取现抽）；退役 `get_file_versions`/`get_file_trash`/`index_file`（WebDAV 与内容索引线随 OneDrive 切换取消）→ 149 工具（读 100 / 写 49）；Python 参考服务同步 |
 | v5.1 | 2026-11-23 | MCP 参数统一为 camelCase；`task_id`/`file_id`/`from_time` 等旧名保留为 `deprecated` 兼容别名，双写法冲突值返回 400；`required` 仅声明 camelCase（WO-R01-CAMEL / #460） |
 | v5.2 | 2026-11-25 | R01 收口：移除 14 个 snake_case 兼容别名（`report_id`、`task_id`、`event_id`、`habit_id`、`calendar_id`、`note_id`、`attachment_id`、`file_id`、`from_time`）；旧名在鉴权与分发前直接返回 400 并给出 camelCase 替代名，契约不再声明旧属性 |
-| v5.3 | 2026-11-26 | J05：移除旧 AI 网关 `get_ai_status` 读工具（`GET /ai/status`），工具总数 149 → 148（读 100 → 99 / 写 49）；Python 参考服务与契约同步 |
+| v5.3 | 2026-11-26 | J05：移除旧 AI 网关 `get_ai_status` 读工具（`GET /ai/status`），.NET 工具总数 149 → 148（读 100 → 99 / 写 49）；Python 参考服务同步移除该工具后为 147（读 98 / 写 49，仍少 `get_mobile_liveness_summary`），契约同步 .NET 148 |
 
 ---
 
