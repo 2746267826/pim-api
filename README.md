@@ -49,6 +49,8 @@ docker compose --env-file .env.prod -f docker-compose.prod.yml ps
 > 本地生产模式实例（`PIM_REQUIRE_HTTPS=true`、`PIM_ALLOW_LOOPBACK_CLEARTEXT=false`）可用
 > `PIM_OPS_KEY=... bash scripts/deploy/verify-transport-gate.sh http://127.0.0.1:5858`
 > 验证 `/health`、OpsKey 保护的 `/metrics`、数据路径 426，以及可信转发头放行数据路径。
+> 该生产模式探测由维护者在本地或隔离环境手动执行，仓库 CI 不启动生产模式容器；
+> CI 只覆盖常规镜像 smoke 与单元/集成测试。
 > Web 同源部署留空 API 地址；跨域浏览器来源只接受 HTTPS（本机回环 HTTP 仅开发用），
 > 需在 `.env.prod` 用 `PIM_CORS_ORIGINS` 明确列出。
 > Web、Windows 与 Android 都会在保存服务器地址和测试连接前拒绝远程 HTTP；仅本机回环
