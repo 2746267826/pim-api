@@ -3490,7 +3490,7 @@ A: 事件可能被软删除进回收站，用 `get_recycle_bin(type='event')` �
 A: `>50KB` 自动加 `truncated`，用 `nextPage` 分页继续。或缩小时间范围、加 `calendarId` 过滤。
 
 **Q: 需要写入怎么办？ / Need writes?**
-A: 已支持：HTTP 模式（v3）提供 50 个写入工具（`create_*`/`update_*`/`delete_*` 等），需在 WebUI 设置 → MCP 管理 → 客户端权限中开启对应写权限；stdio 模式仍为只读（v2 兼容）。
+A: 已支持：HTTP 模式（v3）提供 49 个写入工具（`create_*`/`update_*`/`delete_*` 等），需在 WebUI 设置 → MCP 管理 → 客户端权限中开启对应写权限；stdio 模式仍为只读（v2 兼容）。
 
 **Q: 时区跨天不准？ / Timezone day cut?**
 A: 所有聚合按 `timezone` 切天，默认为 `Asia/Shanghai`。传入 `timezone=UTC` 可按 UTC 切天。

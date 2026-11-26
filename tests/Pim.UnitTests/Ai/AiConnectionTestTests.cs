@@ -97,7 +97,7 @@ public sealed class AiConnectionTestTests : IDisposable
     }
 
     [Fact]
-    public async Task LatestByRequestIdReturnsThatRequestInsteadOfAnOlderSuccess()
+    public async Task LatestByRequestIdReturnsOnlyTheRequestedRecord()
     {
         var model = await Model();
         await Enable(model);
@@ -126,14 +126,22 @@ public sealed class AiConnectionTestTests : IDisposable
 
         var latestForRevision = await Service().GetLatestAsync(model.Id, model.Revision,
             AiModelCapability.Text, default);
+        var olderByRequestId = await Service().GetLatestAsync(model.Id, model.Revision,
+            AiModelCapability.Text, default, older.ClientRequestId);
         var current = await Service().GetLatestAsync(model.Id, model.Revision,
             AiModelCapability.Text, default, currentRequestId);
+        var missing = await Service().GetLatestAsync(model.Id, model.Revision,
+            AiModelCapability.Text, default, Guid.NewGuid());
 
         Assert.NotNull(latestForRevision);
-        Assert.Equal(older.ClientRequestId, latestForRevision.ClientRequestId);
+        Assert.Equal(currentRequestId, latestForRevision.ClientRequestId);
+        Assert.NotNull(olderByRequestId);
+        Assert.Equal(older.ClientRequestId, olderByRequestId.ClientRequestId);
+        Assert.Equal(AiConnectionTestStatus.Succeeded, olderByRequestId.Status);
         Assert.NotNull(current);
         Assert.Equal(currentRequestId, current.ClientRequestId);
         Assert.Equal(AiConnectionTestStatus.Running, current.Status);
+        Assert.Null(missing);
         Assert.NotEqual(older.LogId, current.LogId);
         Assert.Equal(1, _wire.Calls);
     }

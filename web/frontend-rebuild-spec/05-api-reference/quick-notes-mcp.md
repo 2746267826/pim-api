@@ -364,14 +364,14 @@
 - 响应 data：`McpCatalog`
   | 字段 | 类型 | 说明 |
   | --- | --- | --- |
-  | read | McpToolInfo[] | 读工具列表，101 个 |
+  | read | McpToolInfo[] | 读工具列表，99 个 |
   | write | McpToolInfo[] | 写工具列表，49 个 |
   | read[]/write[].name | string | 工具名（如 `get_calendar_layers`、`create_quick_note`） |
   | read[]/write[].group | string | 工具分组（如 `calendar`、`quicknotes`） |
   | read[]/write[].description | string | 英文一句话描述 |
   | read[]/write[].isWrite | boolean | 是否写工具 |
 - 来源：后端 `src/modules/Pim.Module.Mcp/McpModule.cs:104-106`；服务 `src/modules/Pim.Module.Mcp/Services/McpClientService.cs:270-273`、目录 `src/modules/Pim.Module.Mcp/Services/McpToolCatalog.cs:12-14, 43-245`（quicknotes 组 ：131-133, 208-212）；DTO `src/modules/Pim.Module.Mcp/DTOs/McpDtos.cs:11-13`；前端 `src/client-web/src/api/mcp.ts:38-41`
-- 备注：合计 150 个工具（与嵌入契约 `src/modules/Pim.Module.Mcp/Contract/mcp-tools.json` 的 150 条一致；DTO 注释写"151-tool"为陈旧描述）。目录是静态代码定义，非实时探测。
+- 备注：合计 148 个工具（与嵌入契约 `src/modules/Pim.Module.Mcp/Contract/mcp-tools.json` 的 148 条一致）。目录是静态代码定义，非实时探测。
 
 ### POST /api/v1/mcp/verify
 - 用途：MCP 服务器在每次工具调用前校验客户端 token 并换取受限 REST JWT（内部专用）。
@@ -407,11 +407,11 @@
 ## MCP 协议端点
 
 ### POST /mcp（MCP Streamable HTTP 端点）
-- 用途：MCP Streamable HTTP 传输端点——POST 承载 JSON-RPC 2.0 消息（initialize / tools/list / tools/call 等），供外部 MCP 客户端（Claude Code、Codex、Hermes 等）接入 PIM 全部 150 个工具。
+- 用途：MCP Streamable HTTP 传输端点——POST 承载 JSON-RPC 2.0 消息（initialize / tools/list / tools/call 等），供外部 MCP 客户端（Claude Code、Codex、Hermes 等）接入 PIM 全部 148 个工具。
 - 认证：MCP token（Bearer）——见下方「认证与错误行为」；路径可由配置 `MCP:Path` 调整（默认 `/mcp`），总开关 `MCP:Enabled`（默认 true，关闭时整个端点族不映射）。
 - Web 前端使用：否（消费方：外部 MCP 客户端，连接配置见 POST /api/v1/mcp/clients 备注；另有 stdio 形态 `dotnet Pim.Api.dll --mcp-stdio` 复用同一工具注册表）
 - Path 参数 / Query 参数 / Body：无路径参数；POST Body 为 JSON-RPC 2.0 消息（`tools/list` 无参数；`tools/call` 参数为 `{ name, arguments }`）。服务端身份：`ServerInfo = { name: "pim-mcp-server", version: "2.0.0" }`，仅声明 tools 能力。
-- 响应 data：POST 成功返回 JSON-RPC 结果（`tools/list` 返回嵌入契约 `Contract/mcp-tools.json` 的 150 条 name/description/inputSchema 原文；`tools/call` 返回工具执行结果文本）；GET 成功返回 `text/event-stream`（SSE）。
+- 响应 data：POST 成功返回 JSON-RPC 结果（`tools/list` 返回嵌入契约 `Contract/mcp-tools.json` 的 148 条 name/description/inputSchema 原文；`tools/call` 返回工具执行结果文本）；GET 成功返回 `text/event-stream`（SSE）。
 - 认证与错误行为（全部来自源码）：
   | 场景 | HTTP | 行为 |
   | --- | --- | --- |
