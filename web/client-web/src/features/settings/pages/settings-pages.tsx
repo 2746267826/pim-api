@@ -15,6 +15,8 @@ import type { EventResponse } from '@/features/calendar/types'
 import { buildCalendarDataEventsPath, buildCalendarDataWindow } from '@/features/settings/calendar-data-window'
 import { cn } from '@/lib/utils'
 
+import { initialMcpPermissions } from './mcp-permission-state'
+
 /* ── /settings/data-reliability 数据可信度 ─────────────────── */
 
 interface InspectionRule {
@@ -545,8 +547,8 @@ function McpPermissionDialog({
   onClose: () => void
   onSaved: () => void
 }) {
-  const [read, setRead] = useState<Record<string, boolean>>(() => ({ ...Object.fromEntries(catalog.read.map((t) => [t.name, t.defaultEnabled ?? false])), ...client.permissions.read }))
-  const [write, setWrite] = useState<Record<string, boolean>>(() => ({ ...Object.fromEntries(catalog.write.map((t) => [t.name, false])), ...client.permissions.write }))
+  const [read, setRead] = useState<Record<string, boolean>>(() => initialMcpPermissions(catalog.read, client.permissions.read))
+  const [write, setWrite] = useState<Record<string, boolean>>(() => initialMcpPermissions(catalog.write, client.permissions.write))
   const [tab, setTab] = useState<'read' | 'write'>('read')
 
   const tools = tab === 'read' ? catalog.read : catalog.write

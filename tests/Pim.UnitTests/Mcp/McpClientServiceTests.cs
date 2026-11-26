@@ -136,6 +136,27 @@ public sealed class McpClientServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task VerifyAsync_LegacyClientWithoutReadSection_UsesPerToolDefaults()
+    {
+        var created = await _service.CreateAsync("NoReadSection", _owner);
+        var stored = _db.Set<Pim.Module.Mcp.Entities.McpClientEntity>()
+            .Single(e => e.Id == created.Client.Id);
+        var write = stored.Permissions["write"];
+        stored.Permissions = new Dictionary<string, Dictionary<string, bool>>(StringComparer.Ordinal)
+        {
+            ["write"] = write,
+        };
+        await _db.SaveChangesAsync();
+
+        var nativeDenied = await _service.VerifyAsync(created.Token, "get_native_note", null);
+        Assert.Equal(403, nativeDenied.HttpStatus);
+        Assert.Equal("permission denied: get_native_note", nativeDenied.Error);
+
+        var ordinaryAllowed = await _service.VerifyAsync(created.Token, "get_tasks", null);
+        Assert.Equal(0, ordinaryAllowed.HttpStatus);
+    }
+
+    [Fact]
     public async Task VerifyAsync_ValidReadTool_ReturnsJwtAndTracksActivity()
     {
         var created = await _service.CreateAsync("Reader", _owner);
