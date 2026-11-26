@@ -65,6 +65,29 @@ public class TransportSecurityMiddlewareTests
     }
 
     [Fact]
+    public async Task MetricsCleartextReachesEndpointAndKeepsCleartextMarker()
+    {
+        var context = new DefaultHttpContext();
+        context.Connection.RemoteIpAddress = IPAddress.Parse("203.0.113.10");
+        context.Request.Scheme = Uri.UriSchemeHttp;
+        context.Request.Path = "/metrics";
+        var nextCalled = false;
+
+        var middleware = CreateMiddleware(_ =>
+        {
+            nextCalled = true;
+            return Task.CompletedTask;
+        });
+
+        await middleware.InvokeAsync(context);
+
+        Assert.True(nextCalled);
+        Assert.Equal(
+            TransportSecurityMiddleware.CleartextValue,
+            context.Response.Headers[TransportSecurityMiddleware.TransportHeaderName]);
+    }
+
+    [Fact]
     public async Task HttpsResponseGetsHstsHeader()
     {
         var context = new DefaultHttpContext();

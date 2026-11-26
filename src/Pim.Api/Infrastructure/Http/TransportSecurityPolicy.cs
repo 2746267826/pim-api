@@ -4,8 +4,9 @@ using Microsoft.AspNetCore.Http;
 namespace Pim.Api.Infrastructure.Http;
 
 /// <summary>
-/// Q04 明文传输判定。公网只允许 HTTPS；仅健康检查、版本探测和 ACME 挑战这类
-/// 不含用户数据的路径保留明文，且本机回环访问继续放行以支持本地开发与容器探活。
+/// Q04 明文传输判定。公网只允许 HTTPS；仅健康检查、版本探测、ACME 挑战和
+/// 受 OpsKey/admin 鉴权保护的 Prometheus 指标这类不含用户数据的路径保留明文。
+/// 本机回环访问是否放行由 <see cref="TransportSecurityOptions.AllowLoopbackCleartext"/> 决定。
 /// </summary>
 public static class TransportSecurityPolicy
 {
@@ -15,6 +16,9 @@ public static class TransportSecurityPolicy
         "/health/live",
         "/health/ready",
         "/api/version",
+        // Prometheus 在 pim-net 内直接以 HTTP 抓取；该端点自身强制 OpsKey/admin 鉴权，
+        // 不承载用户数据。不要在这里加入登录、笔记、文件等数据路径。
+        "/metrics",
     ];
 
     public static bool IsExemptPath(PathString path)

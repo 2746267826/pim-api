@@ -56,6 +56,29 @@ if ! grep -q '"version"' "$body"; then
   exit 1
 fi
 
+# 数据路径（非豁免）才真正证明反代的 X-Forwarded-Proto 被 API 采信。
+# 未登录读取应得到 401；426 表示 API 仍认为这是明文请求，即反代/信任配置有缺口。
+data_headers="$tmpdir/data-headers"
+data_body="$tmpdir/data-body"
+data_code="$(curl --proto '=https' --tlsv1.2 --silent --show-error \
+  --max-time 15 --dump-header "$data_headers" --output "$data_body" \
+  --write-out '%{http_code}' "$base/api/v1/native-notes" || true)"
+if [[ "$data_code" == "426" ]]; then
+  echo "FAIL：数据路径 /api/v1/native-notes 返回 426，说明 API 未采信 HTTPS 转发头。" >&2
+  echo "检查反代是否覆盖 X-Forwarded-Proto: https，以及 PIM_TRUSTED_PROXIES 是否包含反代实际地址。" >&2
+  exit 1
+fi
+if [[ "$data_code" != "401" ]]; then
+  echo "FAIL：数据路径 /api/v1/native-notes 未登录探测期望 401，实际 $data_code。" >&2
+  sed -n '1,20p' "$data_body" >&2 || true
+  exit 1
+fi
+data_transport="$(awk 'BEGIN { IGNORECASE = 1 } /^x-pim-transport:/ { gsub(/[[:space:]\r]/, "", $2); print tolower($2) }' "$data_headers" | tail -n 1)"
+if [[ "$data_transport" == "cleartext" ]]; then
+  echo "FAIL：数据路径仍被 API 按明文处理（X-Pim-Transport=cleartext）。" >&2
+  exit 1
+fi
+
 # The plain HTTP entry must be closed or redirect to HTTPS; a 200 on either
 # endpoint means the API/reverse proxy is also serving an unencrypted public entry.
 http_base="${PIM_PUBLIC_HTTP_URL:-}"
@@ -75,7 +98,7 @@ else
   http_base="http://$http_host"
 fi
 
-for path in /health /api/version; do
+for path in /health /api/version /api/v1/native-notes; do
   http_url="$http_base$path"
   http_code="$(curl --silent --show-error --max-time 10 --output /dev/null \
     --write-out '%{http_code}' "$http_url" 2>/dev/null || true)"

@@ -157,9 +157,22 @@ assert payload["xForwardedHost"], payload
 assert payload["xForwardedPort"] == port, payload
 ' "$https_port"
 
+# 数据路径也必须带上可信转发头；只验 /api/version（豁免路径）证明不了
+# 真实数据请求在反代后会被 API 视为 HTTPS。
+data_json="$(curl --silent --show-error --max-time 5 \
+  --cacert "$work/certs/fullchain.pem" \
+  "https://localhost:$https_port/api/v1/native-notes")"
+printf '%s' "$data_json" | python3 -c '
+import json, sys
+payload = json.load(sys.stdin)
+assert payload["path"] == "/api/v1/native-notes", payload
+assert payload["xForwardedProto"] == "https", payload
+assert payload["xForwardedHost"], payload
+'
+
 if curl --silent --show-error --max-time 5 --tls-max 1.1 \
   --cacert "$work/certs/fullchain.pem" \
-  "https://localhost:$https_port/api/version" >/dev/null 2>&1; then
+  "https://localhost:$https_port/api/v1/native-notes" >/dev/null 2>&1; then
   echo "FAIL：TLS 1.1 仍可连接" >&2
   exit 1
 fi

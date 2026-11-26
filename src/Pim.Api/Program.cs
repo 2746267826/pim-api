@@ -301,7 +301,9 @@ var app = builder.Build();
 
 var forwardedHeadersOptions = ForwardedHeadersConfigurator.Create(
     builder.Configuration[ForwardedHeadersConfigurator.ConfigurationKey]
-    ?? Environment.GetEnvironmentVariable(ForwardedHeadersConfigurator.EnvironmentVariable));
+    ?? Environment.GetEnvironmentVariable(ForwardedHeadersConfigurator.EnvironmentVariable),
+    builder.Configuration[ForwardedHeadersConfigurator.NetworkSubnetEnvironmentVariable]
+    ?? Environment.GetEnvironmentVariable(ForwardedHeadersConfigurator.NetworkSubnetEnvironmentVariable));
 var transportSecurityOptions = TransportSecurityOptions.FromConfiguration(
     builder.Configuration,
     app.Environment);
@@ -433,27 +435,10 @@ app.MapHealthChecks("/health/ready", new Microsoft.AspNetCore.Diagnostics.Health
     ResponseWriter = Pim.Api.Health.PimHealthChecks.WriteReadyResponse
 }).AllowAnonymous();
 
-// Prometheus 指标端点：admin JWT 或 OpsKey（X-PIM-Ops-Key / Bearer）鉴权，不公开
-app.MapMetrics("/metrics").AddEndpointFilter(async (context, next) =>
-{
-    var http = context.HttpContext;
-    if (http.User.IsInRole("admin"))
-        return await next(context);
-
-    var cfg = http.RequestServices.GetRequiredService<IConfiguration>();
-    var validator = new OpsKeyValidator(cfg["PIM_OPS_KEY"] ?? cfg["Ops:Key"]);
-    var key = http.Request.Headers["X-PIM-Ops-Key"].FirstOrDefault();
-    if (string.IsNullOrWhiteSpace(key))
-    {
-        var auth = http.Request.Headers.Authorization.FirstOrDefault();
-        if (auth?.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase) == true)
-            key = auth["Bearer ".Length..];
-    }
-    if (validator.HasKeys && validator.IsValid(key))
-        return await next(context);
-
-    return Results.Text("{\"code\":40101,\"message\":\"MetricsAuthRequired\"}", "application/json", statusCode: 401);
-});
+// Prometheus 指标端点：admin JWT 或 OpsKey（X-PIM-Ops-Key / Bearer）鉴权，不公开。
+// 传输门禁将 /metrics 视为运营端点豁免明文（见 TransportSecurityPolicy），
+// 但鉴权仍由该过滤器强制执行——Prometheus 以 HTTP 抓取时也必须携带 OpsKey。
+app.MapMetrics("/metrics").AddEndpointFilter(MetricsAuthorizationFilter.InvokeAsync);
 
 // Ops endpoints
 app.MapOpsLogsEndpoints();

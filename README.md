@@ -28,11 +28,17 @@ docker compose --env-file .env.prod -f docker-compose.prod.yml ps
 
 > **HTTPS 边界（Q04）**：生产编排只把 API 端口绑定到 `127.0.0.1:${PIM_HTTP_PORT}`，公网入口由现有
 > OpenResty/1Panel 反代提供。反代必须为所有 PIM 路径设置 `X-Forwarded-Proto: https`，并把实际来源
-> IP/CIDR 填进 `PIM_TRUSTED_PROXIES`（默认只信任回环和固定网段网关，禁止 `0.0.0.0/0`）；
-> API 只采信这些来源的转发头。生产环境默认对所有明文数据请求（包括回环反代漏传头）
-> 返回 `426` 与
-> `X-Pim-Transport: https-required`，仅 `/health`、`/health/live|ready`、`/api/version`
-> 与 `/.well-known/acme-challenge/` 保留明文；HTTPS 响应带 HSTS（可用 `PIM_HSTS_MAX_AGE_SECONDS` 调整或置 0 关闭）。
+> IP/CIDR 填进 `PIM_TRUSTED_PROXIES`（禁止 `0.0.0.0/0`）；API 只采信这些来源的转发头。
+> `PIM_TRUSTED_PROXIES` 留空时，API 默认信任 `127.0.0.1/32`、`::1/128`，并从
+> `PIM_NETWORK_SUBNET` 推导 compose 网关（网络地址 + 1）；修改网段只需改
+> `PIM_NETWORK_SUBNET`。若反代是 `pim-net` 内的另一个容器，或显式覆盖了
+> `PIM_TRUSTED_PROXIES`，必须自行包含实际反代 IP/CIDR，否则所有反代请求都会 426。
+> 生产环境默认对所有明文数据请求（包括回环反代漏传头）返回 `426`、JSON `code=42600`、
+> `X-Pim-Transport: https-required` 和 `Upgrade: TLS/1.2`；仅 `/health`、`/health/live|ready`、
+> `/api/version`、`/.well-known/acme-challenge/` 以及受 OpsKey/admin 鉴权保护的 `/metrics`
+> 保留明文。`/metrics` 只豁免传输门禁，不豁免鉴权：Prometheus 必须继续通过
+> `bearer_token_file` 携带 `PIM_OPS_KEY` 之一，否则返回 401。HTTPS 响应带 HSTS
+> （可用 `PIM_HSTS_MAX_AGE_SECONDS` 调整或置 0 关闭）。
 > 本机 `docker-compose.yml` 与 `Development` 环境显式保留回环明文用于开发；
 > 生产 compose 可用 `PIM_ALLOW_LOOPBACK_CLEARTEXT` 覆盖，但不建议开启。
 > 容器内 `/health` 仍走 HTTP，
@@ -40,6 +46,9 @@ docker compose --env-file .env.prod -f docker-compose.prod.yml ps
 > `bash scripts/deploy/verify-public-https.sh https://pim.example.com`。
 > 仓库自带 nginx 配置可用隔离拓扑验证（自签名证书、真实 nginx TLS/转发行为，不代表公网证书）：
 > `bash scripts/deploy/verify-https-topology.sh`。
+> 本地生产模式实例（`PIM_REQUIRE_HTTPS=true`、`PIM_ALLOW_LOOPBACK_CLEARTEXT=false`）可用
+> `PIM_OPS_KEY=... bash scripts/deploy/verify-transport-gate.sh http://127.0.0.1:5858`
+> 验证 `/health`、OpsKey 保护的 `/metrics`、数据路径 426，以及可信转发头放行数据路径。
 > Web 同源部署留空 API 地址；跨域浏览器来源只接受 HTTPS（本机回环 HTTP 仅开发用），
 > 需在 `.env.prod` 用 `PIM_CORS_ORIGINS` 明确列出。
 > Web、Windows 与 Android 都会在保存服务器地址和测试连接前拒绝远程 HTTP；仅本机回环

@@ -8,10 +8,12 @@ services:
     environment:
       - ASPNETCORE_ENVIRONMENT=Production
       - ASPNETCORE_URLS=http://+:5000
-      # 反代必须在本机 / pim-net 内，并且发出的 X-Forwarded-Proto 才会被信任。
-      # 现有 1Panel OpenResty 如从宿主机转发，容器看到的来源通常是 PIM_NETWORK_SUBNET 网关；
-      # 请只填实际反代 IP/CIDR，不要使用 0.0.0.0/0。
-      - PIM_TRUSTED_PROXIES=${PIM_TRUSTED_PROXIES:-127.0.0.1/32,::1/128,172.31.240.1/32}
+      # 反代/抓取器必须在本机或 pim-net 内，发出的 X-Forwarded-Proto 才会被信任。
+      # 未显式设置 PIM_TRUSTED_PROXIES 时，API 从 PIM_NETWORK_SUBNET 推导网关
+      # （网络地址 + 1）作为可信来源；改网段只需改 PIM_NETWORK_SUBNET，不会留下旧网关。
+      # 若反代是 pim-net 内的另一个容器，需显式填写它的 IP/CIDR；禁止 0.0.0.0/0 或 ::/0。
+      - PIM_NETWORK_SUBNET=${PIM_NETWORK_SUBNET:-172.31.240.0/24}
+      - PIM_TRUSTED_PROXIES=${PIM_TRUSTED_PROXIES:-}
       # 生产默认拒绝所有明文数据请求（含回环反代）；仅健康检查、版本和 ACME 挑战保留明文。
       # 回环反代必须正确发送可信的 X-Forwarded-Proto: https，不能依赖“来源是本机”绕过门禁。
       - PIM_REQUIRE_HTTPS=${PIM_REQUIRE_HTTPS:-true}
@@ -119,5 +121,5 @@ networks:
     driver: bridge
     ipam:
       config:
-        # 固定网段让 PIM_TRUSTED_PROXIES 的默认容器网络边界可复现。
+        # 固定网段让 API 能推导默认网关；改这里会同步改变可信代理的默认边界。
         - subnet: ${PIM_NETWORK_SUBNET:-172.31.240.0/24}

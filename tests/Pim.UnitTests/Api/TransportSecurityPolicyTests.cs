@@ -24,6 +24,44 @@ public class TransportSecurityPolicyTests
     }
 
     [Fact]
+    public void ForwardedHeaders_DerivesComposeGatewayFromConfiguredSubnet()
+    {
+        var options = ForwardedHeadersConfigurator.Create(null, "172.31.240.0/24");
+
+        Assert.Contains(IPAddress.Parse("172.31.240.1"), options.KnownProxies);
+        Assert.Equal(2, options.KnownNetworks.Count);
+    }
+
+    [Fact]
+    public void ForwardedHeaders_ChangingSubnetMovesTheDerivedGateway()
+    {
+        var options = ForwardedHeadersConfigurator.Create(null, "10.77.32.0/20");
+
+        Assert.Contains(IPAddress.Parse("10.77.32.1"), options.KnownProxies);
+        Assert.DoesNotContain(IPAddress.Parse("172.31.240.1"), options.KnownProxies);
+    }
+
+    [Fact]
+    public void ForwardedHeaders_ExplicitConfigurationOverridesSubnetDerivation()
+    {
+        var options = ForwardedHeadersConfigurator.Create("10.0.0.5/32", "172.31.240.0/24");
+
+        Assert.DoesNotContain(IPAddress.Parse("172.31.240.1"), options.KnownProxies);
+        Assert.Contains(IPAddress.Parse("10.0.0.5"), options.KnownProxies);
+    }
+
+    [Theory]
+    [InlineData("172.31.240.0")]
+    [InlineData("172.31.240.0/0")]
+    [InlineData("172.31.240.0/33")]
+    [InlineData("not-a-subnet")]
+    public void ForwardedHeaders_RejectsInvalidNetworkSubnet(string subnet)
+    {
+        Assert.Throws<InvalidOperationException>(
+            () => ForwardedHeadersConfigurator.Create(null, subnet));
+    }
+
+    [Fact]
     public void ForwardedHeaders_AcceptsExplicitIpAndCidr()
     {
         var options = ForwardedHeadersConfigurator.Create("127.0.0.1, 172.31.240.0/24, ::1/128");
@@ -49,6 +87,7 @@ public class TransportSecurityPolicyTests
         var options = ForwardedHeadersConfigurator.Create("10.0.0.1/32");
         var context = new DefaultHttpContext();
         context.Connection.RemoteIpAddress = IPAddress.Parse("203.0.113.10");
+        context.Request.Scheme = Uri.UriSchemeHttp;
         context.Request.Headers["X-Forwarded-Proto"] = "https";
 
         var middleware = new ForwardedHeadersMiddleware(
@@ -116,7 +155,7 @@ public class TransportSecurityPolicyTests
     [InlineData("/mcp", true)]
     [InlineData("/mcp/", true)]
     [InlineData("/hangfire", true)]
-    [InlineData("/metrics", true)]
+    [InlineData("/metrics", false)]
     [InlineData("/today", true)]
     public void ProtectedPathClassification(string path, bool expected)
     {
