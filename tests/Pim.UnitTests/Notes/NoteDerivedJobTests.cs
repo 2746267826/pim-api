@@ -50,6 +50,7 @@ public sealed class NoteDerivedJobTests : IAsyncLifetime
     private bool _failFirstAudioBatchOnce;
     private readonly Dictionary<int, int> _audioBatchAttempts = [];
     private readonly List<(int Index, string Body)> _audioBatchBodies = [];
+    private readonly List<(int Index, string Text)> _audioBatchResults = [];
 
     public async Task InitializeAsync()
     {
@@ -94,7 +95,9 @@ public sealed class NoteDerivedJobTests : IAsyncLifetime
                         return Completion(call, "synthetic upstream failure");
                     }
                     lock (_audioBatchBodies) _audioBatchBodies.Add((batch, root.GetRawText()));
-                    return Completion(call, $"批次证据 {batch}：本批录音已按时间顺序整理。");
+                    var evidence = $"批次证据 {batch}：本批录音已按时间顺序整理。";
+                    lock (_audioBatchResults) _audioBatchResults.Add((batch, evidence));
+                    return Completion(call, evidence);
                 }
                 finally
                 {
@@ -111,13 +114,13 @@ public sealed class NoteDerivedJobTests : IAsyncLifetime
             {
                 lock (_recordBodies) _recordBodies.Add(root.GetRawText());
                 _recordRecordingPrompt = prompt;
-                return Completion(call, "## 完整记录\n\n全部 Markdown、ASR 与图片证据均已纳入。");
+                return Completion(call, RecordCompletion());
             }
             if (content.ValueKind == JsonValueKind.Array &&
                 content.EnumerateArray().Any(part => part.TryGetProperty("input_audio", out _)))
                 return Completion(call, "Successful ASR transcript for derived fixture");
             _recordRecordingPrompt = prompt;
-            return Completion(call, "## 完整记录\n\n全部 Markdown、ASR 与图片证据均已纳入。");
+            return Completion(call, RecordCompletion());
         });
         await _provider.StartAsync();
 
@@ -647,6 +650,17 @@ public sealed class NoteDerivedJobTests : IAsyncLifetime
         return string.Join("\n", content.EnumerateArray()
             .Where(part => part.TryGetProperty("text", out _))
             .Select(part => part.GetProperty("text").GetString()));
+    }
+
+    private string RecordCompletion()
+    {
+        var text = new StringBuilder("## 完整记录\n\n全部 Markdown、ASR 与图片证据均已纳入。");
+        lock (_audioBatchResults)
+        {
+            foreach (var batch in _audioBatchResults.OrderBy(x => x.Index))
+                text.Append($"\n\n### 录音批次 {batch.Index}\n{batch.Text}");
+        }
+        return text.ToString();
     }
 
     private static int AudioBatchNumber(string prompt)

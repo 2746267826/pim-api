@@ -428,7 +428,8 @@ internal static class NoteDerivedReceipts
     /// the public receipt verification, so a failure cannot be bypassed by retrying record.
     /// </summary>
     internal static IReadOnlyList<NoteDerivedIssueDto> ValidateAudioBatchReceipt(
-        NoteDerivedTaskState state, NoteDerivedStepState step, AiRequestLogEntity log)
+        NoteDerivedTaskState state, NoteDerivedStepState step, AiRequestLogEntity log,
+        Guid? pendingLogId = null)
     {
         var issues = new List<NoteDerivedIssueDto>();
         var batchIndex = AudioBatchIndex(step.Key);
@@ -442,7 +443,7 @@ internal static class NoteDerivedReceipts
             expectedPrompt, step.Audio);
         CheckCommonLog(issues, log, state, step.Current.RequestId,
             NoteDerivedPrompts.AudioBatchPurpose, "audio_batch", step.Key);
-        if (step.Current.LogId != log.Id)
+        if ((step.Current.LogId ?? pendingLogId) != log.Id)
             AddIssue(issues, "audio_batch_log_id_mismatch",
                 "录音批次保存的调用记录标识与实际回执不一致", stepKey: step.Key);
         if (log.InputHash != expectedInput)

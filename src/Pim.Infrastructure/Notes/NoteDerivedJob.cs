@@ -612,7 +612,7 @@ public sealed class NoteDerivedJob(
         var audioBatched = state.Steps.Any(x => x.Kind == NoteDerivedStepKind.AudioBatchEvidence);
         if (step.Kind == NoteDerivedStepKind.RecordSynthesis)
         {
-            var coverage = await BuildCoverageAsync(state, ct);
+            var coverage = await BuildCoverageAsync(state, ct, subjectStepKey: step.Key);
             if (!coverage.Coverage.Complete)
                 return PreparedCall.Failed(Issue("record_coverage_incomplete",
                     "完整记录只能在全部 Markdown、ASR、照片和手写预览覆盖齐备后生成", step.Key));
@@ -799,6 +799,23 @@ public sealed class NoteDerivedJob(
                         "Failed", ct, stopTask: false, cancelDependentsOnly: true);
                     return StepOutcome.Continue;
                 }
+                var wireIssues = NoteDerivedReceipts.ValidateAudioBatchReceipt(
+                    state, step, receipt, receipt.Id);
+                if (wireIssues.Count > 0)
+                {
+                    await StopWithIssueAsync(owner, taskId, stepKey, wireIssues[0].Code,
+                        wireIssues[0].Message, "Failed", ct,
+                        stopTask: false, cancelDependentsOnly: true);
+                    return StepOutcome.Continue;
+                }
+                if (!string.Equals(receipt.ResponseText, result.ResponseText, StringComparison.Ordinal) ||
+                    receipt.OutputHash != Digest(result.ResponseText))
+                {
+                    await StopWithIssueAsync(owner, taskId, stepKey, "audio_batch_output_mismatch",
+                        "录音批次成功回执正文或输出摘要与本次结果不一致；未标记成功，也不会触发下游合成",
+                        "Failed", ct, stopTask: false, cancelDependentsOnly: true);
+                    return StepOutcome.Continue;
+                }
             }
             if (step.Kind == NoteDerivedStepKind.ImageEvidence &&
                 result.ResponseText.Length > NoteDerivedLimits.MaxEvidenceCharsPerStep)
@@ -838,7 +855,7 @@ public sealed class NoteDerivedJob(
             }
             else if (step.Kind != NoteDerivedStepKind.AudioBatchEvidence)
             {
-                var coverage = await BuildCoverageAsync(state, ct, stepKey);
+                var coverage = await BuildCoverageAsync(state, ct, stepKey, stepKey);
                 if (!coverage.Coverage.Complete)
                 {
                     await StopWithIssueAsync(owner, taskId, stepKey, "synthesis_coverage_incomplete",
@@ -1070,13 +1087,15 @@ public sealed class NoteDerivedJob(
     }
 
     private async Task<CoverageCheck> BuildCoverageAsync(NoteDerivedTaskState state, CancellationToken ct,
-        string? successfulStepKey = null)
+        string? successfulStepKey = null, string? subjectStepKey = null)
     {
         var transcripts = await ValidateTranscriptsAsync(state, ct);
         var issues = new List<NoteDerivedIssueDto>(state.Plan.InitialCoverage.Issues);
         issues.AddRange(transcripts.Issues);
+        var relevant = subjectStepKey is null ? null : UpstreamStepKeys(state, subjectStepKey);
         foreach (var step in state.Steps.Where(x => x.Key != successfulStepKey &&
-            (x.Current.Status is "Failed" or "Unknown" or "Blocked" or "Cancelled")))
+            (x.Current.Status is "Failed" or "Unknown" or "Blocked" or "Cancelled") &&
+            (relevant is null || relevant.Contains(x.Key))))
         {
             issues.Add(Issue("step_" + step.Current.Status.ToLowerInvariant(),
                 step.Current.ErrorMessage ?? "派生步骤未成功", stepKey: step.Key));
@@ -1087,6 +1106,21 @@ public sealed class NoteDerivedJob(
         var states = state.Steps.ToDictionary(x => x.Key, StringComparer.Ordinal);
         return new(NoteDerivedCoverage.Reconcile(state.Plan.Input, planned, states, actual.Images,
             transcripts.CompletedLogIds, NoteDerivedCoverage.DistinctIssues(issues)));
+    }
+
+    private static HashSet<string> UpstreamStepKeys(NoteDerivedTaskState state, string stepKey)
+    {
+        var byKey = state.Steps.ToDictionary(x => x.Key, StringComparer.Ordinal);
+        var relevant = new HashSet<string>(StringComparer.Ordinal);
+        var pending = new Stack<string>();
+        pending.Push(stepKey);
+        while (pending.TryPop(out var key))
+        {
+            if (!relevant.Add(key) || !byKey.TryGetValue(key, out var step)) continue;
+            foreach (var dependency in step.DependsOn)
+                pending.Push(dependency);
+        }
+        return relevant;
     }
 
     private async Task<ActualImageCheck> ReadActualImagesAsync(NoteDerivedTaskState state,
