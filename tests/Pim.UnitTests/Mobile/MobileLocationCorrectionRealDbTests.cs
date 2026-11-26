@@ -56,6 +56,7 @@ public sealed class MobileLocationCorrectionRealDbTests
         Assert.Equal(CompetitorCreatedAt, result.RecomputedAtUtc);
         Assert.Equal(1, scenario.Db.SaveAttemptCount);
         Assert.Equal(1, scenario.Db.CompetitorInsertCount);
+        Assert.Equal("23505", scenario.Db.LastSaveSqlState);
 
         scenario.Db.ChangeTracker.Clear();
         var merge = Assert.Single(await scenario.Db.Set<MobileLocationSegmentMergeEntity>()
@@ -86,6 +87,7 @@ public sealed class MobileLocationCorrectionRealDbTests
         Assert.Equal(6205, error.ErrorCode);
         Assert.Equal(1, scenario.Db.SaveAttemptCount);
         Assert.Equal(1, scenario.Db.CompetitorInsertCount);
+        Assert.Equal("23505", scenario.Db.LastSaveSqlState);
 
         scenario.Db.ChangeTracker.Clear();
         var merge = Assert.Single(await scenario.Db.Set<MobileLocationSegmentMergeEntity>()
@@ -263,6 +265,7 @@ public sealed class MobileLocationCorrectionRealDbTests
         private int _armed;
         private int _saveAttempts;
         private int _competitorInsertCount;
+        private string? _lastSaveSqlState;
         private Guid _boundaryPointId;
         private string _competitorKind = "move";
 
@@ -273,6 +276,8 @@ public sealed class MobileLocationCorrectionRealDbTests
         public int SaveAttemptCount => Volatile.Read(ref _saveAttempts);
 
         public int CompetitorInsertCount => Volatile.Read(ref _competitorInsertCount);
+
+        public string? LastSaveSqlState => Volatile.Read(ref _lastSaveSqlState);
 
         public void ResetSaveAttempts() => Interlocked.Exchange(ref _saveAttempts, 0);
 
@@ -292,7 +297,26 @@ public sealed class MobileLocationCorrectionRealDbTests
                 Interlocked.Increment(ref _competitorInsertCount);
             }
 
-            return await base.SaveChangesAsync(cancellationToken);
+            try
+            {
+                return await base.SaveChangesAsync(cancellationToken);
+            }
+            catch (DbUpdateException ex)
+            {
+                Volatile.Write(ref _lastSaveSqlState, FindPostgresSqlState(ex));
+                throw;
+            }
+        }
+
+        private static string? FindPostgresSqlState(Exception exception)
+        {
+            for (var current = exception; current is not null; current = current.InnerException)
+            {
+                if (current is PostgresException postgres)
+                    return postgres.SqlState;
+            }
+
+            return null;
         }
 
         private async Task InsertCompetitorAsync(CancellationToken cancellationToken)
