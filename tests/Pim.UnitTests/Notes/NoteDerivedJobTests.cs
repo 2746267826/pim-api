@@ -397,7 +397,7 @@ public sealed class NoteDerivedJobTests : IAsyncLifetime
         var ordered = _audioBatchBodies.OrderBy(x => x.Index).ToArray();
         Assert.Equal(new[] { 1, 2, 3 }, ordered.Select(x => x.Index));
         var payloads = ordered.Select(item => AudioPayloads(item.Body)).ToArray();
-        Assert.Equal(new[] { 1, 1, 1 }, payloads.Select(x => x.Count));
+        Assert.Equal(new[] { 1, 1, 2 }, payloads.Select(x => x.Count));
         var pcm = payloads.SelectMany(x => x)
             .SelectMany(wav => wav.AsSpan(44).ToArray()).ToArray();
         var expected = material.Content[^1].AsSpan(44).ToArray();
@@ -553,6 +553,13 @@ public sealed class NoteDerivedJobTests : IAsyncLifetime
                 x.Key == "record-synthesis").Current.Status);
             Assert.Equal("Cancelled", state.Steps.Single(x =>
                 x.Key == "analysis-synthesis").Current.Status);
+            Assert.Empty(_recordBodies);
+            Assert.Empty(_analysisBodies);
+            var unmetPrerequisite = await _client.PostAsJsonAsync(
+                $"{DerivedRoute}/{task.TaskId}/retry",
+                new RetryNoteDerivedTaskRequest(Guid.NewGuid(), _owner, state.Revision,
+                    ["record-synthesis"], state.Request.Consent, true));
+            Assert.Equal(HttpStatusCode.Conflict, unmetPrerequisite.StatusCode);
             Assert.Empty(_recordBodies);
             Assert.Empty(_analysisBodies);
             var downstreamRetry = await Data<NoteDerivedTaskDto>(await _client.PostAsJsonAsync(

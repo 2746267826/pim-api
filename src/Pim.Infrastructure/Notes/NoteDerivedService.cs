@@ -177,6 +177,7 @@ public sealed class NoteDerivedService(
             }
             if (state.Revision != request.ExpectedRevision)
                 throw Conflict("任务进度已变化，请刷新后核对");
+            var selected = request.StepKeys.ToHashSet(StringComparer.Ordinal);
             foreach (var key in request.StepKeys)
             {
                 var step = state.Steps.SingleOrDefault(x => x.Key == key)
@@ -185,10 +186,16 @@ public sealed class NoteDerivedService(
                     throw Conflict("不能重跑成功或执行中的步骤");
                 if (step.Attempts.Count >= 10)
                     throw new DomainException(41301, "单步尝试次数已达10次，原结果保留");
+                var unmet = step.DependsOn.Where(dependency => !selected.Contains(dependency) &&
+                    state.Steps.SingleOrDefault(x => x.Key == dependency)?.Current.Status !=
+                    "Succeeded").ToArray();
+                if (unmet.Length > 0)
+                    throw Conflict($"所选步骤 {key} 的前序步骤尚未成功，请同时显式选择：{string.Join("、", unmet)}");
             }
-            // Retry only replays the steps explicitly listed by the client. The Web client
-            // expands cancelled downstream steps into the same request and shows them before
-            // confirmation; the server never adds provider calls behind the user's back.
+            // Retry only replays the steps explicitly listed by the client. A selected step
+            // whose prerequisite is still failed must name that prerequisite too; the server
+            // never adds provider calls behind the user's back. The Web client expands
+            // cancelled downstream steps into the same request before confirmation.
             foreach (var key in request.StepKeys)
             {
                 var step = state.Steps.Single(x => x.Key == key);

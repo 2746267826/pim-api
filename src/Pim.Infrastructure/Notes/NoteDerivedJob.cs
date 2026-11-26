@@ -118,13 +118,27 @@ public sealed class NoteDerivedJob(
         var latest = await tasks.ReadTaskAsync(owner, taskId, ct);
         if (latest.Steps.Any(x => x.Current.Status is "Queued" or "Running")) return;
         var coverage = await BuildCoverageAsync(latest, ct);
-        if (coverage.Coverage == latest.Coverage) return;
+        if (SameCoverage(coverage.Coverage, latest.Coverage)) return;
         await tasks.UpdateTaskAsync(owner, taskId, current =>
         {
             current.Coverage = coverage.Coverage;
             current.Issues = coverage.Coverage.Issues.ToList();
         }, ct);
     }
+
+    private static bool SameCoverage(NoteDerivedCoverageDto left, NoteDerivedCoverageDto right) =>
+        left.TextBlocks == right.TextBlocks &&
+        left.TranscriptSegments == right.TranscriptSegments &&
+        left.CompletedTranscriptSegments == right.CompletedTranscriptSegments &&
+        left.Photos == right.Photos &&
+        left.CompletedPhotos == right.CompletedPhotos &&
+        left.InkPreviews == right.InkPreviews &&
+        left.CompletedInkPreviews == right.CompletedInkPreviews &&
+        left.VisionBatches == right.VisionBatches &&
+        left.CompletedVisionBatches == right.CompletedVisionBatches &&
+        left.Complete == right.Complete &&
+        left.Issues.Count == right.Issues.Count &&
+        left.Issues.All(right.Issues.Contains);
 
     private async Task<StepOutcome> RunStepInScopeAsync(Guid owner, Guid taskId, string stepKey,
         CancellationToken ct)
