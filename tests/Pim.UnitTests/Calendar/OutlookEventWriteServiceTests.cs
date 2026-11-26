@@ -1471,7 +1471,7 @@ public sealed class OutlookEventWriteServiceTests
     [Theory]
     [InlineData("update")]
     [InlineData("delete")]
-    public async Task DeletedCalendar_RejectsWriteInsteadOfTreatingEventAsSynthetic(string operation)
+    public async Task DeletedCalendar_RejectsWriteBeforeSyntheticFallback(string operation)
     {
         await using var db = CreateDb();
         var (_, bindingId, calendarId, eventId) = await SetupUpdateAsync(db, UserId);
@@ -1490,8 +1490,8 @@ public sealed class OutlookEventWriteServiceTests
         var ex = await Assert.ThrowsAsync<DomainException>(
             () => service.ExecuteAsync(UserId, request, default));
 
-        Assert.Equal(02009, ex.ErrorCode);
-        Assert.Contains("日历已被删除", ex.Message);
+        Assert.Equal(02005, ex.ErrorCode);
+        Assert.Contains("日历不存在", ex.Message);
         Assert.Empty(handler.Requests);
         db.ChangeTracker.Clear();
         Assert.Empty(await db.Set<OutlookSyncBatchEntity>().ToListAsync());
@@ -4142,9 +4142,9 @@ public sealed class OutlookEventWriteServiceTests
         Assert.Equal("failed", batch.Status);
         Assert.DoesNotContain(secretMessage, batch.ErrorsJson);
         Assert.DoesNotContain(secretMessage, batch.ErrorSummary);
-        Assert.Contains("Graph write request failed", batch.ErrorSummary);
-        Assert.Contains("graph-500", batch.ErrorSummary);
-        Assert.Contains("graph-500", batch.ErrorsJson);
+        Assert.Contains("Outlook writeback request failed", batch.ErrorSummary);
+        Assert.Contains("PROVIDER_UNAVAILABLE", batch.ErrorSummary);
+        Assert.Contains("PROVIDER_UNAVAILABLE", batch.ErrorsJson);
     }
 
     [Fact]
