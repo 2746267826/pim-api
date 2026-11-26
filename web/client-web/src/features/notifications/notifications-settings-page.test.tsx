@@ -178,7 +178,10 @@ describe('NotificationsSettingsPage', () => {
 
     await user.click(screen.getByRole('button', { name: '重试' }))
     await waitFor(() =>
-      expect(fixture.api.retryDelivery).toHaveBeenCalledWith(deliveries.items[0].id),
+      expect(fixture.api.retryDelivery).toHaveBeenCalledWith(
+        deliveries.items[0].id,
+        expect.anything(),
+      ),
     )
   })
 
@@ -190,7 +193,10 @@ describe('NotificationsSettingsPage', () => {
     await user.click(screen.getByRole('button', { name: /撤销订阅 fcm\.googleapis\.com/ }))
 
     await waitFor(() =>
-      expect(fixture.api.revoke).toHaveBeenCalledWith(activeSubscription.id),
+      expect(fixture.api.revoke).toHaveBeenCalledWith(
+        activeSubscription.id,
+        expect.anything(),
+      ),
     )
   })
 
