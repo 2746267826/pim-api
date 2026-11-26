@@ -3089,9 +3089,9 @@ async def get_version(-) -> Any: ...
 | `restore_event` | `POST /api/v1/calendar/events/{id}/restore` | restoreAsCopy? |
 | `batch_delete_events` | `POST /api/v1/calendar/events/batch-delete` | ids[] |
 
-> Outlook 绑定日历：上述 create/update/delete 会自动走受控写回（服务端判断，不新增工具）。写回结果带 `outlookEtag`、`clientOperationId`、`requiresConfirmation`、`undoAvailable` 与 `userMessage`；同一 `clientOperationId` 重放幂等，内容不一致返回 409；ETag 冲突返回 409 + `latestEvent`，不会静默覆盖。重复事件 `scope=this` 会先解析并写入具体的 Graph occurrence/exception，找不到时拒绝请求，绝不回退到系列主事件；单次删除不提供自动撤销。撤销普通创建/更新/删除使用 `POST /api/v1/calendar/outlook/events/{clientOperationId}/undo`（API JWT）。`batch_delete_events` 仍只支持本地日程。
+> Outlook 绑定日历：上述 create/update/delete 会自动走受控写回（服务端判断，不新增工具）。写回结果带 `outlookEtag`、`clientOperationId`、`requiresConfirmation`、`undoAvailable` 与 `userMessage`；同一 `clientOperationId` 重放幂等，内容不一致返回 409；ETag 冲突返回 409 + `latestEvent`/`latestEtag`/`noChangesApplied`，不会静默覆盖。MCP `tools/call` 会同时把这些可操作字段平铺到结果顶层，`details.data` 仍保留完整原始回执。重复事件 `scope=this` 会先解析并写入具体的 Graph occurrence/exception，找不到时拒绝请求，绝不回退到系列主事件；单次删除不提供自动撤销。撤销普通创建/更新/删除使用 `POST /api/v1/calendar/outlook/events/{clientOperationId}/undo`（API JWT）。`batch_delete_events` 仍只支持本地日程。
 
-> provider 暂时失败返回脱敏 502，可用同一 `clientOperationId` 重试（create 依赖 Graph `transactionId`，update/delete 依赖 ETag/404 语义避免重复应用）。若进程在 Graph 成功与本地提交之间中断，账本会在 2 分钟租约后转为 `OPERATION_OUTCOME_UNKNOWN`，提示先到 Outlook 核对，不会盲目重放。
+> provider 暂时失败返回脱敏 502，`noChangesApplied=false`，可用同一 `clientOperationId` 重试（create 依赖 Graph `transactionId`，update/delete 依赖 ETag/404 语义避免重复应用）。若进程在 create/update 的 Graph 成功与本地提交之间中断，账本会在 2 分钟租约后转为 `OPERATION_OUTCOME_UNKNOWN`，提示先到 Outlook 核对，不会盲目重放。单次删除不同：Graph DELETE 成功即视为远端已删除，本地提交失败会落 `LOCAL_STATE_PENDING`（`failed`，可重试），同一 `clientOperationId` 重试时 404 视为已完成，不再误报 unknown。
 
 **Calendar 任务 14**
 

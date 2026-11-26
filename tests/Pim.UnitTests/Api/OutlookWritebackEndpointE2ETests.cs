@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Headers;
+using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.Hosting;
@@ -9,8 +10,10 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
+using Pim.Infrastructure.Data.Entities;
 using Pim.Module.Calendar.Entities;
 using Pim.Module.Calendar.Services;
+using Pim.Module.Mcp.Services;
 using Pim.UnitTests.Harness.RealDb;
 using Xunit;
 using Xunit.Abstractions;
@@ -222,8 +225,10 @@ public sealed class OutlookWritebackEndpointE2ETests
         Assert.Equal(HttpStatusCode.Conflict, conflict.StatusCode);
         using (var conflictDoc = JsonDocument.Parse(await conflict.Content.ReadAsStringAsync()))
         {
-            var latest = conflictDoc.RootElement.GetProperty("data").GetProperty("latestEvent");
+            var data = conflictDoc.RootElement.GetProperty("data");
+            var latest = data.GetProperty("latestEvent");
             Assert.Equal("Latest Remote Subject", latest.GetProperty("title").GetString());
+            Assert.True(data.GetProperty("noChangesApplied").GetBoolean());
         }
         temp.Db.ChangeTracker.Clear();
         Assert.Equal("Updated Subject",
@@ -299,6 +304,11 @@ public sealed class OutlookWritebackEndpointE2ETests
         Assert.DoesNotContain("TOKEN-MUST-NOT-LEAK", failedText);
         Assert.DoesNotContain("RAW-GRAPH-BODY", failedText);
         Assert.Contains("PROVIDER_UNAVAILABLE", failedText);
+        using (var failedDoc = JsonDocument.Parse(failedText))
+        {
+            Assert.False(failedDoc.RootElement
+                .GetProperty("data").GetProperty("noChangesApplied").GetBoolean());
+        }
 
         graph.Enqueue(HttpStatusCode.Created, GraphEventJson);
         var retried = await client.PostAsync(
@@ -383,6 +393,124 @@ public sealed class OutlookWritebackEndpointE2ETests
         Assert.DoesNotContain("/graph-series-1", new Uri(core[2].Uri).AbsolutePath);
     }
 
+    [SkippableFact]
+    public async Task SyntheticOccurrenceDelete_ReusesLegacyOccurrenceRow_WithoutUniqueViolation()
+    {
+        var graph = new GraphQueueHandler();
+        var (temp, factory) = await NewIsolatedHostAsync(graph);
+        await using var _ = temp;
+        using var factoryScope = factory;
+        var seed = await SeedAsync(temp);
+        var (masterId, recurrenceId) = await SeedSeriesMasterAsync(temp, seed);
+        var legacyOccurrenceId = await SeedLegacyOccurrenceAsync(temp, seed, masterId, recurrenceId);
+        var client = Authed(factory, seed.UserId);
+        var operationId = Guid.NewGuid();
+
+        graph.Enqueue(HttpStatusCode.OK, SeriesOccurrenceListJson);
+        graph.Enqueue(HttpStatusCode.NoContent);
+        var delete = await client.DeleteAsync(
+            $"/api/v1/calendar/events/{Guid.NewGuid():D}" +
+            $"?scope=instance&originalEventId={masterId:D}" +
+            $"&recurrenceId={Uri.EscapeDataString(recurrenceId)}" +
+            $"&clientOperationId={operationId:D}");
+
+        Assert.Equal(HttpStatusCode.OK, delete.StatusCode);
+        Assert.Contains(operationId.ToString("D"), await delete.Content.ReadAsStringAsync());
+
+        temp.Db.ChangeTracker.Clear();
+        var rows = await temp.Db.Set<EventEntity>().IgnoreQueryFilters()
+            .Where(e => e.OutlookEventId == "graph-occ-real-1")
+            .ToListAsync();
+        var occurrence = Assert.Single(rows);
+        Assert.Equal(legacyOccurrenceId, occurrence.Id);
+        Assert.True(occurrence.IsException);
+        Assert.False(occurrence.IsSeriesMaster);
+        Assert.Equal(masterId, occurrence.SeriesMasterId);
+        Assert.Equal(recurrenceId, occurrence.RecurrenceId);
+        Assert.Equal("CANCELLED", occurrence.Status);
+        Assert.Null(occurrence.DeletedAt);
+
+        var operation = await temp.Db.Set<OutlookWritebackOperationEntity>()
+            .AsNoTracking().SingleAsync(o => o.ClientOperationId == operationId);
+        Assert.Equal("completed", operation.State);
+        Assert.Single(graph.Requests, r => r.Method == "DELETE");
+    }
+
+    [SkippableFact]
+    public async Task McpToolsCall_WritebackSuccess409And502_ExposeActionableReceipts()
+    {
+        var graph = new GraphQueueHandler();
+        var (temp, factory) = await NewIsolatedHostAsync(graph);
+        await using var _ = temp;
+        using var factoryScope = factory;
+        var seed = await SeedAsync(temp);
+        var rest = Authed(factory, seed.UserId);
+        var mcpToken = await CreateMcpWriteClientAsync(rest);
+        var mcp = factory.CreateClient();
+        mcp.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", mcpToken);
+
+        var createOperationId = Guid.NewGuid();
+        graph.Enqueue(HttpStatusCode.Created, GraphEventJson);
+        var created = await CallMcpToolAsync(mcp, "create_event", new
+        {
+            calendarId = seed.CalendarId,
+            title = "Created Subject",
+            dtStart = "2026-11-30T09:00:00Z",
+            dtEnd = "2026-11-30T10:00:00Z",
+            clientOperationId = createOperationId,
+        });
+        Assert.False(created.IsError);
+        Assert.Equal(0, created.Payload.GetProperty("code").GetInt32());
+        var createdData = created.Payload.GetProperty("data");
+        var eventId = createdData.GetProperty("id").GetGuid();
+        Assert.Equal("W/\"etag-1\"", createdData.GetProperty("outlookEtag").GetString());
+        Assert.Equal(createOperationId, createdData.GetProperty("clientOperationId").GetGuid());
+        Assert.True(createdData.GetProperty("undoAvailable").GetBoolean());
+        Assert.False(createdData.GetProperty("requiresConfirmation").GetBoolean());
+
+        graph.Enqueue(HttpStatusCode.PreconditionFailed);
+        graph.Enqueue(HttpStatusCode.OK, LatestEventJson);
+        var conflict = await CallMcpToolAsync(mcp, "update_event", new
+        {
+            eventId,
+            calendarId = seed.CalendarId,
+            title = "Updated Subject",
+            dtStart = "2026-11-30T11:00:00Z",
+            dtEnd = "2026-11-30T12:00:00Z",
+            scope = "instance",
+            expectedEtag = "W/\"stale-etag\"",
+        });
+        Assert.True(conflict.IsError);
+        Assert.Equal(409, conflict.Payload.GetProperty("code").GetInt32());
+        Assert.Equal("Latest Remote Subject",
+            conflict.Payload.GetProperty("latestEvent").GetProperty("title").GetString());
+        Assert.Equal("W/\"latest-etag\"",
+            conflict.Payload.GetProperty("latestEtag").GetString());
+        Assert.True(conflict.Payload.GetProperty("noChangesApplied").GetBoolean());
+        Assert.Equal("CONFLICT", conflict.Payload.GetProperty("errorCode").GetString());
+
+        graph.EnqueueException(new HttpRequestException(
+            "token=TOKEN-MUST-NOT-LEAK RAW-GRAPH-BODY"));
+        var failed = await CallMcpToolAsync(mcp, "create_event", new
+        {
+            calendarId = seed.CalendarId,
+            title = "Provider failure",
+            dtStart = "2026-11-30T09:00:00Z",
+            dtEnd = "2026-11-30T10:00:00Z",
+            clientOperationId = Guid.NewGuid(),
+        });
+        Assert.True(failed.IsError);
+        Assert.Equal(502, failed.Payload.GetProperty("code").GetInt32());
+        Assert.Equal("PROVIDER_UNAVAILABLE",
+            failed.Payload.GetProperty("errorCode").GetString());
+        Assert.False(failed.Payload.GetProperty("noChangesApplied").GetBoolean());
+        Assert.DoesNotContain("TOKEN-MUST-NOT-LEAK", failed.Payload.GetRawText());
+        Assert.DoesNotContain("RAW-GRAPH-BODY", failed.Payload.GetRawText());
+
+        _output.WriteLine(
+            "MCP /mcp tools/call wrote through the real HTTP/PostgreSQL pipeline: success exposed outlookEtag/clientOperationId/undoAvailable; 409 exposed latestEvent/latestEtag/noChangesApplied directly; 502 exposed PROVIDER_UNAVAILABLE without leaking Graph secrets. Graph remained a deterministic fake.");
+    }
+
     private static async Task<(TempMigrationDatabase Db, WebApplicationFactory<Program> Factory)>
         NewIsolatedHostAsync(GraphQueueHandler graph)
     {
@@ -418,12 +546,78 @@ public sealed class OutlookWritebackEndpointE2ETests
         return client;
     }
 
+    private static async Task<string> CreateMcpWriteClientAsync(HttpClient rest)
+    {
+        var created = await rest.PostAsJsonAsync(
+            "/api/v1/mcp/clients", new { name = $"r03-mcp-{Guid.NewGuid():N}" });
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+        using var document = JsonDocument.Parse(await created.Content.ReadAsStringAsync());
+        var data = document.RootElement.GetProperty("data");
+        var clientId = data.GetProperty("client").GetProperty("id").GetGuid();
+        var token = data.GetProperty("token").GetString()!;
+
+        var permissions = McpToolCatalog.DefaultPermissions();
+        permissions["write"] = permissions["write"].ToDictionary(
+            entry => entry.Key, _ => true);
+        var updated = await rest.PutAsJsonAsync(
+            $"/api/v1/mcp/clients/{clientId:D}", new { permissions });
+        Assert.Equal(HttpStatusCode.OK, updated.StatusCode);
+        return token;
+    }
+
+    private static async Task<(bool IsError, JsonElement Payload)> CallMcpToolAsync(
+        HttpClient mcp, string name, object arguments)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/mcp")
+        {
+            Content = new StringContent(
+                JsonSerializer.Serialize(new
+                {
+                    jsonrpc = "2.0",
+                    id = 1,
+                    method = "tools/call",
+                    @params = new { name, arguments }
+                }),
+                Encoding.UTF8,
+                "application/json")
+        };
+        request.Headers.Accept.ParseAdd("application/json, text/event-stream");
+
+        var response = await mcp.SendAsync(request);
+        var raw = await response.Content.ReadAsStringAsync();
+        Assert.True(response.IsSuccessStatusCode, $"HTTP {(int)response.StatusCode}: {raw}");
+        var dataLine = raw.Split('\n')
+            .Select(line => line.Trim())
+            .FirstOrDefault(line => line.StartsWith("data:", StringComparison.Ordinal));
+        using var document = JsonDocument.Parse(
+            dataLine is null ? raw : dataLine["data:".Length..].Trim());
+        var root = document.RootElement;
+        Assert.False(root.TryGetProperty("error", out _), root.GetRawText());
+        var result = root.GetProperty("result");
+        var isError = result.TryGetProperty("isError", out var flag) && flag.GetBoolean();
+        var text = result.GetProperty("content").EnumerateArray()
+            .First(block => block.GetProperty("type").GetString() == "text")
+            .GetProperty("text")
+            .GetString();
+        using var payload = JsonDocument.Parse(text!);
+        return (isError, payload.RootElement.Clone());
+    }
+
     private static async Task<Seed> SeedAsync(TempMigrationDatabase temp)
     {
         var userId = Guid.NewGuid();
         var calendarId = Guid.NewGuid();
         var connectionId = Guid.NewGuid();
         var bindingId = Guid.NewGuid();
+        temp.Db.Add(new UserEntity
+        {
+            Id = userId,
+            Username = $"r03-{userId:N}",
+            Email = $"r03-{userId:N}@example.test",
+            PasswordHash = "test-only",
+            Role = "user",
+            IsActive = true
+        });
         temp.Db.Add(new CalendarEntity
         {
             Id = calendarId,
@@ -489,6 +683,38 @@ public sealed class OutlookWritebackEndpointE2ETests
         });
         await temp.Db.SaveChangesAsync();
         return (masterId, recurrenceId);
+    }
+
+    private static async Task<Guid> SeedLegacyOccurrenceAsync(
+        TempMigrationDatabase temp, Seed seed, Guid masterId, string recurrenceId)
+    {
+        var connectionId = await temp.Db.Set<OutlookCalendarBindingEntity>()
+            .Where(b => b.Id == seed.BindingId)
+            .Select(b => b.ConnectionId)
+            .SingleAsync();
+        var occurrenceId = Guid.NewGuid();
+        temp.Db.Add(new EventEntity
+        {
+            Id = occurrenceId,
+            CalendarId = seed.CalendarId,
+            Uid = "ical-series",
+            Title = "Legacy occurrence",
+            DtStart = new DateTimeOffset(2026, 11, 30, 9, 0, 0, TimeSpan.Zero),
+            DtEnd = new DateTimeOffset(2026, 11, 30, 10, 0, 0, TimeSpan.Zero),
+            Source = "outlook",
+            Status = "CONFIRMED",
+            IsException = false,
+            IsSeriesMaster = false,
+            SeriesMasterId = masterId,
+            RecurrenceId = recurrenceId,
+            OutlookEventId = "graph-occ-real-1",
+            OutlookCalendarBindingId = seed.BindingId,
+            OutlookConnectionId = connectionId,
+            OutlookEventType = "occurrence",
+            OutlookSeriesMasterId = "graph-series-1"
+        });
+        await temp.Db.SaveChangesAsync();
+        return occurrenceId;
     }
 
     private static async Task<HashSet<string>> ReadIndexNamesAsync(TempMigrationDatabase temp)
