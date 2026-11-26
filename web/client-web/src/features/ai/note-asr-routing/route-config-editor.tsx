@@ -89,8 +89,18 @@ export function RouteConfigEditor({
   const cloudProfile = cloudModels.find((model) => model.id === selectedCloud && usable(model) &&
     model.cloudConfigured !== false)
   const followsGlobalCloud = selectedCloud === ''
+  // effective* follows the persisted override until the save is confirmed. Only the explicit
+  // global fields may describe the "follow global default" draft after an override is cleared.
+  const globalDescribed = config.globalCloudModelId !== undefined ||
+    config.globalCloudModelName !== undefined || config.globalCloudRoute !== undefined
+  const globalCloudModelId = globalDescribed
+    ? config.globalCloudModelId ?? null
+    : config.cloudModelId === null ? config.effectiveCloudModelId ?? null : null
+  const globalCloudModelName = globalDescribed
+    ? config.globalCloudModelName ?? null
+    : config.cloudModelId === null ? config.effectiveCloudModelName ?? null : null
   const cloudReadyNow = followsGlobalCloud
-    ? Boolean(config.effectiveCloudModelId)
+    ? Boolean(globalCloudModelId)
     : Boolean(cloudProfile && (config.cloudConfigured || cloudProfile.cloudConfigured === true))
   const defaultLocalBlocked = selectedRoute === 'local' && !localProfile
   const defaultCloudBlocked = selectedRoute === 'cloud' && !cloudReadyNow
@@ -181,8 +191,8 @@ export function RouteConfigEditor({
     </div>
     <p className="text-xs text-text-3">
       本机与云端配置彼此独立保存；默认路由只决定新任务默认使用哪一个。云端留空时跟随管理员默认语音转写模型，选择具体模型则作为本账号覆盖。
-      {followsGlobalCloud && config.effectiveCloudModelName
-        ? ` 当前全局目标：${config.effectiveCloudModelName}。`
+      {followsGlobalCloud && globalCloudModelName
+        ? ` 当前全局目标：${globalCloudModelName}。`
         : ''}
       已开始的任务保持发起时固定的目标与版本。
     </p>

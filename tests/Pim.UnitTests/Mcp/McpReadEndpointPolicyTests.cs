@@ -34,7 +34,7 @@ public sealed class McpReadEndpointPolicyTests
     [Fact]
     public void ReadTokens_DenyWrites_IncludingUnmappedHighRisk()
     {
-        // High-risk write not in the 50-tool map — must still be denied for read tokens.
+        // High-risk write not in the 50-endpoint map — must still be denied for read tokens.
         Assert.False(McpReadEndpointPolicy.IsReadAllowed("POST", "/api/v1/calendar/data-center/batch/execute"));
         Assert.False(McpReadEndpointPolicy.IsReadAllowed("POST", "/api/v1/calendar/events"));
         Assert.False(McpReadEndpointPolicy.IsReadAllowed("PUT", "/api/v1/calendar/events/x"));

@@ -97,6 +97,48 @@ public sealed class AiConnectionTestTests : IDisposable
     }
 
     [Fact]
+    public async Task LatestByRequestIdReturnsThatRequestInsteadOfAnOlderSuccess()
+    {
+        var model = await Model();
+        await Enable(model);
+        var older = await Service().TestAsync(model.Id,
+            new(Guid.NewGuid(), model.Revision, AiModelCapability.Text), default);
+        Assert.Equal(AiConnectionTestStatus.Succeeded, older.Status);
+
+        var currentRequestId = Guid.NewGuid();
+        _db.AiRequestLogs.Add(new AiRequestLogEntity
+        {
+            UserId = _owner.UserId,
+            ClientRequestId = currentRequestId,
+            Purpose = "ai.connection-test",
+            SourceObjectType = "ai-model",
+            SourceObjectId = model.Id.ToString(),
+            ModelProfileId = model.Id,
+            ModelRevision = model.Revision,
+            Model = model.Model,
+            Status = "running",
+            StartedAt = DateTimeOffset.UtcNow.AddMinutes(1),
+            ExecutionExpiresAt = DateTimeOffset.UtcNow.AddMinutes(10),
+            MetadataJson = """{"probe":"text-minimal","capability":"Text","providerAttempted":true}""",
+            InputHash = "current-request-fixture"
+        });
+        await _db.SaveChangesAsync();
+
+        var latestForRevision = await Service().GetLatestAsync(model.Id, model.Revision,
+            AiModelCapability.Text, default);
+        var current = await Service().GetLatestAsync(model.Id, model.Revision,
+            AiModelCapability.Text, default, currentRequestId);
+
+        Assert.NotNull(latestForRevision);
+        Assert.Equal(older.ClientRequestId, latestForRevision.ClientRequestId);
+        Assert.NotNull(current);
+        Assert.Equal(currentRequestId, current.ClientRequestId);
+        Assert.Equal(AiConnectionTestStatus.Running, current.Status);
+        Assert.NotEqual(older.LogId, current.LogId);
+        Assert.Equal(1, _wire.Calls);
+    }
+
+    [Fact]
     public async Task ExpiredRunningRecordIsReportedAsUnknownWithoutCallingTheProviderAgain()
     {
         var model = await Model();

@@ -151,6 +151,65 @@ describe('RouteConfigEditor', () => {
     })
   })
 
+  it('显式覆盖清空后显示并校验明确的全局默认，而不是旧覆盖目标', async () => {
+    const save = vi.fn().mockResolvedValue(undefined)
+    const overridden = {
+      ...config,
+      cloudConfigured: true,
+      cloudModelId: 'cloud-model-1',
+      effectiveCloudModelId: 'cloud-model-1',
+      effectiveCloudModelName: '账号覆盖 MiMo Flash',
+      effectiveCloudRoute: 'cloud-asr',
+      globalCloudModelId: '00000000-0000-4000-8000-00000000b009',
+      globalCloudModelName: '全局多模态 ASR',
+      globalCloudRoute: 'cloud-multimodal',
+    }
+    render(<RouteConfigEditor config={overridden} accountScope="user-1" loading={false} loadError={null}
+      onReload={() => {}} localModels={localModels} cloudModels={cloudModels} onSave={save} />)
+
+    expect(screen.queryByText(/账号覆盖 MiMo Flash/)).toBeNull()
+    await choose('云端模型', '跟随全局默认')
+    expect(screen.getByText(/当前全局目标：全局多模态 ASR/)).toBeTruthy()
+    expect(screen.queryByText(/账号覆盖 MiMo Flash/)).toBeNull()
+    await choose('默认转写路由', '默认云端执行')
+    expect(screen.queryByText('云端尚未配置')).toBeNull()
+
+    await userEvent.click(screen.getByRole('checkbox', { name: '确认保存路由设置' }))
+    expect((screen.getByRole('button', { name: '保存路由设置' }) as HTMLButtonElement).disabled).toBe(false)
+    await userEvent.click(screen.getByRole('button', { name: '保存路由设置' }))
+
+    await waitFor(() => expect(save).toHaveBeenCalledOnce())
+    expect(save.mock.calls[0]?.[0]).toMatchObject({
+      defaultRouteId: 'cloud', cloudModelId: null, confirmed: true,
+    })
+  })
+
+  it('清除显式覆盖时若全局默认不存在，不能把旧覆盖当成全局目标', async () => {
+    const save = vi.fn()
+    const overridden = {
+      ...config,
+      cloudConfigured: true,
+      cloudModelId: 'cloud-model-1',
+      effectiveCloudModelId: 'cloud-model-1',
+      effectiveCloudModelName: '账号覆盖 MiMo Flash',
+      effectiveCloudRoute: 'cloud-asr',
+      globalCloudModelId: null,
+      globalCloudModelName: null,
+      globalCloudRoute: null,
+    }
+    render(<RouteConfigEditor config={overridden} accountScope="user-1" loading={false} loadError={null}
+      onReload={() => {}} localModels={localModels} cloudModels={cloudModels} onSave={save} />)
+
+    await choose('云端模型', '跟随全局默认')
+    await choose('默认转写路由', '默认云端执行')
+    expect(screen.getByText('云端尚未配置')).toBeTruthy()
+    expect(screen.getByText(/管理员尚未配置可用的全局语音转写默认模型/)).toBeTruthy()
+    expect(screen.queryByText(/当前全局目标：账号覆盖 MiMo Flash/)).toBeNull()
+    expect((screen.getByRole('button', { name: '保存路由设置' }) as HTMLButtonElement).disabled).toBe(true)
+    await userEvent.click(screen.getByRole('button', { name: '保存路由设置' }))
+    expect(save).not.toHaveBeenCalled()
+  })
+
   it('选择云端会让未配置状态立即阻止保存', async () => {
     const save = vi.fn()
     render(<RouteConfigEditor config={config} accountScope="user-1" loading={false} loadError={null}

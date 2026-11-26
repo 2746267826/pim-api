@@ -40,7 +40,7 @@
 - 覆盖 AI 常用场景：今天有啥事 / 这周效率 / 人在哪在干啥 / 找文件笔记 / 顺手把日程任务排进去。
 
 ### 不能做什么 / What it cannot do
-- 写入仅限 50 个已开放工具；`batch/execute`、`/ops/*`、Outlook 写回、端侧采集上传、confirmations 等一律不开。
+- 写入仅限 49 个已开放工具；`batch/execute`、`/ops/*`、Outlook 写回、端侧采集上传、confirmations 等一律不开。
 - 文件二进制下载 `items/{id}/download` 等流式下载不开放，只给元数据与搜索。
 - `/ops/*` 运维接口不开放。第三方限流/OAuth 不做（自家可信）。
 
@@ -188,7 +188,7 @@ Content-Type: application/json
 
 ## 5. 工具全表 / Tools
 
-**总览 100**：`Calendar 31 | PcTracker 26 | Mobile 19 | QuickNotes 3 | Files 7 | Core 14`。
+**总览 99**：`Calendar 31 | PcTracker 26 | Mobile 19 | QuickNotes 3 | Files 7 | Core/Infra 13`。
 
 > **参数命名 / Parameter names**：规范形态统一为 camelCase。历史 snake_case 参数（`task_id`、`file_id`、`from_time`、`event_id`、`calendar_id`、`habit_id`、`note_id`、`attachment_id`、`report_id`）没有兼容期：任一旧名都会在鉴权与分发前返回 `400`，并在 `error` 中给出对应的 camelCase 替代名。工具 schema 不再声明这些旧属性，`required` 只声明 camelCase。`get_tasks.status` 仍是独立的 deprecated 单值别名，请优先使用 `statuses`。
 >
@@ -198,10 +198,10 @@ Content-Type: application/json
 |---|---|---|
 | Calendar | 31 | `get_events`, `get_tasks`, `get_calendar_layers`, `search_calendar_events`, `get_calendars` |
 | PcTracker | 26 | `get_pc_timeline_v2`, `get_pc_productivity_range`, `get_pc_focus_blocks`, `get_pc_category_distribution`, `get_pc_quality` |
-| Mobile | 18 | `get_mobile_timeline`, `get_mobile_location_latest`, `get_mobile_analytics_overview`, `get_mobile_quality` |
+| Mobile | 19 | `get_mobile_timeline`, `get_mobile_location_latest`, `get_mobile_analytics_overview`, `get_mobile_quality` |
 | QuickNotes | 3 | `get_quick_notes`, `get_quick_note` |
-| Files | 8 | `search_files`, `get_files`, `get_file` |
-| Core | 14 | `get_today_sections`, `search_pim`, `get_version` |
+| Files | 7 | `search_files`, `get_files`, `get_file` |
+| Core/Infra | 13 | `get_today_sections`, `search_pim`, `get_version` |
 
 > 提示：工具数多易胀上下文，日常对话按场景选 20 常用即可（见 §6）。
 
@@ -3500,9 +3500,9 @@ A: 所有聚合按 `timezone` 切天，默认为 `Asia/Shanghai`。传入 `timez
 | 版本 | 日期 | 变更 |
 |---|---|---|
 | v1.0 | 2026-08-15 | 24 工具：`PcTracker 16 + Mobile 位置 4 + Today/Search/Status 4` |
-| v2.0 | 2026-08-31 | 新增 77 工具 → 101 工具闭环：`Calendar 31 + PcTracker +11 + Mobile +14 + QuickNotes 3 + Files 8 + Core/Infra +10`，兼容 v1，写入 0 |
-| v3.0 | 2026-09-01 | 新增写入 50 工具 + HTTP（Streamable HTTP）多客户端 + 客户端级 Token 鉴权 + 工具级权限（读 101/写 50）+ WebUI MCP 管理页；stdio 模式兼容 v2 |
-| v4.0 | 2026-09-01 | MCP Server 集成进 Pim.Api（.NET 8）进程内：`/mcp` Streamable HTTP + `--mcp-stdio`，151 工具契约与 Python 版等价；Python 独立服务退役（源码保留作行为基准） |
+| v2.0 | 2026-08-31 | 当时新增 77 工具 → 101 工具闭环：`Calendar 31 + PcTracker +11 + Mobile +14 + QuickNotes 3 + Files 8 + Core/Infra +10`，兼容 v1，写入 0 |
+| v3.0 | 2026-09-01 | 当时新增写入 50 工具 + HTTP（Streamable HTTP）多客户端 + 客户端级 Token 鉴权 + 工具级权限（当时读 101/写 50；当前 .NET 为 99/49）+ WebUI MCP 管理页；stdio 模式兼容 v2 |
+| v4.0 | 2026-09-01 | MCP Server 集成进 Pim.Api（.NET 8）进程内：`/mcp` Streamable HTTP + `--mcp-stdio`；当时为 151 工具契约，后续 J05/REQ-6 调整后当前 .NET 为 148（99 读 / 49 写）、退役 Python 基准为 147（98 读 / 49 写，缺 `get_mobile_liveness_summary`），不声称两者等价；Python 独立服务退役（源码保留作行为基准） |
 | v3.1 | 2026-09-01 | 修复 mcp>=2.0 兼容（构造参数/HTTP app/请求头获取适配，--check/stdio/HTTP 三种模式可用，issue #179）+ 生产部署模板（systemd + OpenResty `/mcp` 反代，issue #178）|
 | v5.0 | 2026-09-20 | 文件模块 v2（P4）：新增 `read_file_text`（元数据搜索之外的内容级读取，交 Hermes 现取现抽）；退役 `get_file_versions`/`get_file_trash`/`index_file`（WebDAV 与内容索引线随 OneDrive 切换取消）→ 149 工具（读 100 / 写 49）；Python 参考服务同步 |
 | v5.1 | 2026-11-23 | MCP 参数统一为 camelCase；`task_id`/`file_id`/`from_time` 等旧名保留为 `deprecated` 兼容别名，双写法冲突值返回 400；`required` 仅声明 camelCase（WO-R01-CAMEL / #460） |

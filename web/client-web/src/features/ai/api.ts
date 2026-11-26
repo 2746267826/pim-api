@@ -202,8 +202,9 @@ export const aiApi = {
   testConnection: (id: string, body: ConnectionTestRequest) =>
     apiPost<ConnectionTestResult>(`/api/v1/ai/models/${encodeURIComponent(id)}/connection-test`, body),
   connectionTestLatest: async (id: string, revision: string, capability: Capability,
-    signal?: AbortSignal): Promise<ConnectionTestResult | null> => {
+    clientRequestId?: string, signal?: AbortSignal): Promise<ConnectionTestResult | null> => {
     const query = new URLSearchParams({ revision, capability })
+    if (clientRequestId) query.set('clientRequestId', clientRequestId)
     try {
       return await apiGet<ConnectionTestResult>(
         `/api/v1/ai/models/${encodeURIComponent(id)}/connection-tests/latest?${query}`, { signal })

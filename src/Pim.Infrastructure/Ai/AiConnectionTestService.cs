@@ -20,7 +20,7 @@ public interface IAiConnectionTestService
     Task<AiConnectionTestResultDto> TestAsync(Guid modelId, AiConnectionTestRequest request,
         CancellationToken ct);
     Task<AiConnectionTestResultDto?> GetLatestAsync(Guid modelId, Guid revision,
-        AiModelCapability capability, CancellationToken ct);
+        AiModelCapability capability, CancellationToken ct, Guid? clientRequestId = null);
     Task<IReadOnlyList<AiConnectionTestSummaryDto>> ListLatestAsync(CancellationToken ct);
 }
 
@@ -449,12 +449,15 @@ public sealed class AiConnectionTestService(
     }
 
     public async Task<AiConnectionTestResultDto?> GetLatestAsync(Guid modelId, Guid revision,
-        AiModelCapability capability, CancellationToken ct)
+        AiModelCapability capability, CancellationToken ct, Guid? clientRequestId = null)
     {
         await AiCallRecovery.RecoverExpiredAsync(db, ct);
-        var rows = await db.AiRequestLogs.AsNoTracking()
+        var query = db.AiRequestLogs.AsNoTracking()
             .Where(x => x.Purpose == PurposeKey && x.ModelProfileId == modelId &&
-                x.ModelRevision == revision && x.ClientRequestId != null)
+                x.ModelRevision == revision && x.ClientRequestId != null);
+        if (clientRequestId is { } requestId)
+            query = query.Where(x => x.ClientRequestId == requestId);
+        var rows = await query
             .OrderByDescending(x => x.StartedAt).ThenByDescending(x => x.Id)
             .Take(64).ToListAsync(ct);
         foreach (var row in rows)

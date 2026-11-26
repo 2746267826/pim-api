@@ -1300,22 +1300,28 @@ public sealed class NoteAsrRoutingService(PimDbContext db, ICurrentUserService u
 
     private async Task<NoteAsrRouteConfigDto> DescribeAsync(NoteAsrRouteConfigEntity? x, CancellationToken ct)
     {
+        var global = await GlobalCloudProfileAsync(ct);
         var effective = x?.CloudModelId is { } overrideId
             ? await db.AiModelProfiles.AsNoTracking().SingleOrDefaultAsync(profile =>
                 profile.Id == overrideId && profile.Enabled &&
                 (profile.Capabilities & AiModelCapabilityFlags.Transcription) != 0, ct)
-            : await GlobalCloudProfileAsync(ct);
-        var effectiveRoute = effective?.AsrPresetId == "mimo-multimodal"
-            ? NoteAsrRoute.CloudMultimodal
-            : effective is null ? null : NoteAsrRoute.CloudAsr;
+            : global;
+        var effectiveRoute = RouteOf(effective);
+        var globalRoute = RouteOf(global);
         var defaultRoute = x?.DefaultRoute ?? NoteAsrRoute.Local;
         if (x?.CloudModelId is null && NoteAsrRoute.IsCloud(defaultRoute) && effectiveRoute is not null)
             defaultRoute = effectiveRoute;
         return new(x?.Revision ?? Guid.Empty, defaultRoute,
             x?.LocalModelId, x?.LocalModelRevision, x?.CloudModelId is not null,
             x?.ConsentVersion ?? "", x?.UpdatedAt ?? DateTimeOffset.MinValue, x?.CloudModelId,
-            effective?.Id, effective?.Name, effectiveRoute);
+            effective?.Id, effective?.Name, effectiveRoute,
+            global?.Id, global?.Name, globalRoute);
     }
+
+    private static string? RouteOf(AiModelProfileEntity? profile) =>
+        profile?.AsrPresetId == "mimo-multimodal"
+            ? NoteAsrRoute.CloudMultimodal
+            : profile is null ? null : NoteAsrRoute.CloudAsr;
 
     private async Task<AiModelProfileEntity?> GlobalCloudProfileAsync(CancellationToken ct)
     {

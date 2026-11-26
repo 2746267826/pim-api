@@ -19,7 +19,8 @@ public static class NoteAsrExecutionMode
 public sealed record NoteAsrRouteConfigDto(Guid Revision, string DefaultRoute, string? LocalModelId,
     string? LocalModelRevision, bool CloudConfigured, string ConsentVersion, DateTimeOffset UpdatedAt,
     Guid? CloudModelId = null, Guid? EffectiveCloudModelId = null,
-    string? EffectiveCloudModelName = null, string? EffectiveCloudRoute = null);
+    string? EffectiveCloudModelName = null, string? EffectiveCloudRoute = null,
+    Guid? GlobalCloudModelId = null, string? GlobalCloudModelName = null, string? GlobalCloudRoute = null);
 
 public sealed record UpdateNoteAsrRouteConfigRequest(Guid ExpectedRevision, string? DefaultRoute,
     string? LocalModelId, string? LocalModelRevision, Guid? CloudModelId, string? ConsentVersion);

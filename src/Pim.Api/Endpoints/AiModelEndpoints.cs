@@ -82,12 +82,12 @@ public static class AiModelEndpoints
             .Produces<ApiResponse<IReadOnlyList<AiConnectionTestSummaryDto>>>(200)
             .Produces(401).Produces(403);
         group.MapGet("/models/{id:guid}/connection-tests/latest", async (Guid id, Guid revision,
-            AiModelCapability capability, [FromServices] IAiConnectionTestService service,
-            CancellationToken ct) =>
+            AiModelCapability capability, Guid? clientRequestId,
+            [FromServices] IAiConnectionTestService service, CancellationToken ct) =>
         {
             if (revision == Guid.Empty)
                 return Results.BadRequest(ApiResponse<string>.Error(40001, "必须指定模型配置修订"));
-            var result = await service.GetLatestAsync(id, revision, capability, ct);
+            var result = await service.GetLatestAsync(id, revision, capability, ct, clientRequestId);
             return result is null
                 ? Results.NotFound(ApiResponse<string>.Error(40401, "当前修订尚无该能力的测试记录"))
                 : Results.Ok(ApiResponse<AiConnectionTestResultDto>.Ok(result));

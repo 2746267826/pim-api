@@ -17101,6 +17101,19 @@
             "nullable": true,
             "type": "string"
           },
+          "globalCloudModelId": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          },
+          "globalCloudModelName": {
+            "nullable": true,
+            "type": "string"
+          },
+          "globalCloudRoute": {
+            "nullable": true,
+            "type": "string"
+          },
           "localModelId": {
             "nullable": true,
             "type": "string"
@@ -28262,6 +28275,14 @@
             "required": true,
             "schema": {
               "$ref": "#/components/schemas/AiModelCapability"
+            }
+          },
+          {
+            "in": "query",
+            "name": "clientRequestId",
+            "schema": {
+              "format": "uuid",
+              "type": "string"
             }
           }
         ],

@@ -92,13 +92,23 @@ export function ConnectionTestDialog({ model, close, onShowLog }: {
     }
   }
 
-  async function check() {
+  async function check(requestIdentity: string) {
     if (busy) return
     setBusy(true); setError('')
     try {
-      const latest = await aiApi.connectionTestLatest(model.id, model.revision, capability)
-      if (latest) setResult(latest)
-      else setError('尚无本修订的测试结果；原请求可能仍在处理或被服务端拒绝。请保留原请求标识，稍后再核对。')
+      const latest = await aiApi.connectionTestLatest(model.id, model.revision, capability, requestIdentity)
+      if (!latest) {
+        setResult(null)
+        setError('尚无本次请求的测试结果；原请求可能仍在处理或被服务端拒绝。请保留原请求标识，稍后再核对。')
+        return
+      }
+      if (latest.clientRequestId !== requestIdentity || latest.modelRevision !== model.revision ||
+        latest.capability !== capability) {
+        setResult(null)
+        setError('核对结果与本次请求标识不一致，已拒绝显示其他请求或修订的结果；请保留原请求标识后再核对。')
+        return
+      }
+      setResult(latest)
     } catch (failure) {
       setError(failure instanceof Error ? `核对失败：${failure.message}` : '核对失败，请稍后重试。')
     } finally {
@@ -173,13 +183,13 @@ export function ConnectionTestDialog({ model, close, onShowLog }: {
         {result
           ? <div className="flex flex-wrap gap-2">
               {result.status === 'Running' && <Button type="button" variant="secondary" loading={busy}
-                onClick={() => void check()}>核对最新结果</Button>}
+                onClick={() => void check(result.clientRequestId)}>核对最新结果</Button>}
               <Button type="button" variant="primary" loading={busy} onClick={restart}>重新测试（新请求）</Button>
             </div>
           : attempted
             ? <div className="flex flex-wrap gap-2">
                 <Button type="button" variant="secondary" loading={busy}
-                  onClick={() => void check()}>用同一标识核对</Button>
+                  onClick={() => void check(requestId)}>用同一标识核对</Button>
                 <Button type="button" variant="primary" loading={busy}
                   onClick={restart}>重新测试（新请求）</Button>
               </div>

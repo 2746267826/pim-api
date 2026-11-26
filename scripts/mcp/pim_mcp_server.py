@@ -1615,7 +1615,7 @@ async def search_calendar_tasks(
     return res
 
 
-# ===================== PcTracker 27 =====================
+# ===================== PcTracker 26 =====================
 
 @mcp.tool()
 async def get_pc_summary(
@@ -2289,7 +2289,7 @@ async def get_quick_note_attachment_meta(attachment_id: str) -> Any:
         return {"error": f"request failed: {e}", "code": 500}
 
 
-# ===================== Files 8 =====================
+# ===================== Files 7 =====================
 
 @mcp.tool()
 async def get_file_providers() -> Any:
@@ -3099,7 +3099,7 @@ async def delete_quick_note_attachment(attachmentId: str) -> Any:
     return await _call_api("DELETE", f"/api/v1/quick-notes/attachments/{attachmentId}")
 
 
-# ===================== Files Writes (6) =====================
+# ===================== Files Writes (5) =====================
 
 @mcp.tool()
 async def upload_file(providerId: str, path: str, fileContentBase64: str, fileName: str) -> Any:

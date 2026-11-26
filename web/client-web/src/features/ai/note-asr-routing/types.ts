@@ -92,6 +92,9 @@ export interface RouteConfigView {
   effectiveCloudModelId?: string | null
   effectiveCloudModelName?: string | null
   effectiveCloudRoute?: string | null
+  globalCloudModelId?: string | null
+  globalCloudModelName?: string | null
+  globalCloudRoute?: string | null
   consentVersion: string
   updatedAtLabel: string
 }
