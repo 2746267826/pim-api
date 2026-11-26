@@ -4,6 +4,7 @@ using Pim.Core.Common;
 using Pim.Core.Exceptions;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
+using Pim.Infrastructure.Notifications;
 using Pim.Module.Calendar.DTOs;
 using Pim.Module.Calendar.Entities;
 
@@ -22,6 +23,7 @@ public class CalendarService
     private readonly TimeProvider _timeProvider;
     private readonly CalendarAuditWriter? _audit;
     private readonly ILogger<CalendarService>? _logger;
+    private readonly NotificationEventWriter? _notificationEvents;
 
     public CalendarService(PimDbContext db, ICurrentUserService currentUser, RecurrenceService recurrence)
         : this(db, currentUser, recurrence, new EventAttachmentService(db), TimeProvider.System, null)
@@ -35,7 +37,8 @@ public class CalendarService
         EventAttachmentService attachments,
         TimeProvider? timeProvider = null,
         CalendarAuditWriter? audit = null,
-        ILogger<CalendarService>? logger = null)
+        ILogger<CalendarService>? logger = null,
+        NotificationEventWriter? notificationEvents = null)
     {
         _db = db;
         _currentUser = currentUser;
@@ -44,6 +47,7 @@ public class CalendarService
         _timeProvider = timeProvider ?? TimeProvider.System;
         _audit = audit;
         _logger = logger;
+        _notificationEvents = notificationEvents;
     }
 
     private Guid UserId => _currentUser.UserId ?? throw new DomainException(01002, "未登录");
@@ -1427,6 +1431,8 @@ public class CalendarService
 
         _db.Set<TaskEntity>().Add(task);
         await _db.SaveChangesAsync(ct);
+        if (status == TaskStatuses.Completed)
+            await NotifyTaskCompletedAsync(task, ct);
         return MapTask(task);
     }
 
@@ -1538,9 +1544,11 @@ public class CalendarService
             task.PercentComplete = request.PercentComplete!.Value;
         if ((dtStartProvided && finalStart.HasValue) || (calendarIdProvided && calendarId.HasValue))
             task.IsInbox = false;
+        var notifyCompleted = false;
         if (statusProvided && request.Status is not null)
         {
             var statusChangedAt = _timeProvider.GetUtcNow();
+            var wasCompleted = task.Status == TaskStatuses.Completed;
             task.Status = request.Status;
             // 与批量更新（BatchUpdateTasksAsync）口径对齐：离开 COMPLETED 时不再留着旧的完成时刻。
             task.CompletedAt = request.Status == TaskStatuses.Completed ? statusChangedAt : null;
@@ -1553,10 +1561,14 @@ public class CalendarService
                     statusChangedAt,
                     ct);
             }
+            if (!wasCompleted && request.Status == TaskStatuses.Completed)
+                notifyCompleted = true;
         }
         task.UpdatedAt = _timeProvider.GetUtcNow();
 
         await _db.SaveChangesAsync(ct);
+        if (notifyCompleted)
+            await NotifyTaskCompletedAsync(task, ct);
         return MapTask(task);
     }
 
@@ -1667,12 +1679,16 @@ public class CalendarService
                 ct);
         }
 
+        var newlyCompleted = new List<TaskEntity>();
         foreach (var task in tasks)
         {
             if (request.Status is not null)
             {
+                var wasCompleted = task.Status == TaskStatuses.Completed;
                 task.Status = request.Status;
                 task.CompletedAt = request.Status == TaskStatuses.Completed ? now : null;
+                if (!wasCompleted && request.Status == TaskStatuses.Completed)
+                    newlyCompleted.Add(task);
             }
 
             if (request.Priority.HasValue)
@@ -1689,7 +1705,11 @@ public class CalendarService
         }
 
         if (tasks.Count > 0)
+        {
             await _db.SaveChangesAsync(ct);
+            foreach (var completed in newlyCompleted)
+                await NotifyTaskCompletedAsync(completed, ct);
+        }
 
         if (tasks.Count == 0)
         {
@@ -2042,6 +2062,25 @@ public class CalendarService
         => taskStatus == TaskStatuses.Cancelled
             ? TaskSegmentStatuses.Cancelled
             : TaskSegmentStatuses.Completed;
+
+    private async Task NotifyTaskCompletedAsync(TaskEntity task, CancellationToken ct)
+    {
+        if (_notificationEvents is null || task.CompletedAt is null) return;
+        try
+        {
+            _ = await _notificationEvents.TryEnqueueAsync(
+                task.UserId,
+                NotificationEventDrafts.TaskCompleted(
+                    task.Id, task.CompletedAt.Value, task.Title),
+                ct);
+        }
+        catch (Exception error) when (error is not OperationCanceledException)
+        {
+            _logger?.LogWarning(
+                "Task completion notification could not be enqueued ({ErrorType})",
+                error.GetType().Name);
+        }
+    }
 
     private static TimeSpan? ParseEstimatedDuration(string? value)
     {

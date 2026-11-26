@@ -20,6 +20,10 @@ services:
       - Kopia__Password=${KOPIA_PASSWORD}
       - DataProtection__KeysPath=/data/data-protection
       - Tika__BaseUrl=${TIKA_BASE_URL:-}
+      # 可选：Web Push VAPID（base64url 无填充）；留空时站内通知/SSE 正常，推送安全降级为 Skipped。
+      - Notifications__WebPush__PublicKey=${PIM_WEBPUSH_PUBLIC_KEY:-}
+      - Notifications__WebPush__PrivateKey=${PIM_WEBPUSH_PRIVATE_KEY:-}
+      - Notifications__WebPush__Subject=${PIM_WEBPUSH_SUBJECT:-mailto:admin@example.invalid}
       - PIM_OPS_KEY=${PIM_OPS_KEY:-}
       # 日志最低级别；不设置时用配置里的 Logging:LogLevel:Default（Development 默认 Debug）
       - PIM_LOG_LEVEL=${PIM_LOG_LEVEL:-}

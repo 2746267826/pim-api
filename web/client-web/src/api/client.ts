@@ -100,6 +100,8 @@ export interface FetchOptions {
   signal?: AbortSignal
   /** Additional session fence for long-lived flows that must not cross owner/server changes. */
   assertActive?: () => void
+  /** 额外请求头（用于不进 OpenAPI 的设备协商字段等）。 */
+  headers?: Record<string, string>
 }
 
 interface RawInit {
@@ -113,6 +115,9 @@ interface RawInit {
 async function rawFetch(path: string, init: RawInit, opts: FetchOptions): Promise<Response> {
   assertRequestActive(opts)
   const headers = new Headers(init.headers)
+  for (const [name, value] of Object.entries(opts.headers ?? {})) {
+    headers.set(name, value)
+  }
   const isForm = init.bodyKind === 'form' ||
     (init.bodyKind == null && typeof FormData !== 'undefined' && init.body instanceof FormData)
   const isBinary = init.bodyKind === 'binary'

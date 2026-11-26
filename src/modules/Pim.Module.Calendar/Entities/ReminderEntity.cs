@@ -25,6 +25,7 @@ public class ReminderEntity : ISoftDeletable, IUserOwnedEntity
 
     [Column("dnd_end")][MaxLength(16)] public string? DoNotDisturbEnd { get; set; }
     [Column("scheduled_at")] public DateTimeOffset ScheduledAt { get; set; }
+    [Column("notified_scheduled_at")] public DateTimeOffset? NotifiedScheduledAt { get; set; }
     [Column("status")][MaxLength(40)] public string Status { get; set; } = "Open";
     [Column("created_at")] public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
     [Column("updated_at")] public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
