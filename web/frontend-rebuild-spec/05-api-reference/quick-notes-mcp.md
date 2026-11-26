@@ -302,7 +302,7 @@
 - 响应 data：`McpClient`（字段同 GET /mcp/clients 列表项）
 - 错误：400 code 40401「客户端不存在」；403 code 40301「无权操作该客户端」（非本人创建）；改名校验 40001/40002/40003。
 - 来源：后端 `src/modules/Pim.Module.Mcp/McpModule.cs:59-70`；服务 `src/modules/Pim.Module.Mcp/Services/McpClientService.cs:78-128`（权限合并 102-124、白名单清洗 275-294）；DTO `src/modules/Pim.Module.Mcp/DTOs/McpDtos.cs:35-37`；前端 `src/client-web/src/api/mcp.ts:24-27`
-- 备注：整个 `read`/`write` section 缺省时该 section 原样保留；权限目录以 `McpToolCatalog`（101 个读工具 + 49 个写工具）为唯一事实来源。
+- 备注：整个 `read`/`write` section 缺省时该 section 原样保留；权限目录以 `McpToolCatalog`（99 个读工具 + 49 个写工具）为唯一事实来源。
 
 ### POST /api/v1/mcp/clients/{id}/revoke
 - 用途：吊销客户端 token（立即失效）。
