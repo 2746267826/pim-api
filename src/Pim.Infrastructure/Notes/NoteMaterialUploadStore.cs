@@ -33,6 +33,11 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
     public NoteMaterialUploadLimitsDto Limits => new(NoteMaterialUploadOptions.PartSizeBytes, NoteMaterialUploadOptions.MaxMetadataCharacters,
         _options.MaxVersionBytes, _options.MaxUserReservedBytes, _options.MaxFiles,
         _options.MaxPendingVersions, _options.MaxVersionsPerUser, _options.UploadExpiryHours);
+    public static IReadOnlyList<string> DownloadContentTypes { get; } =
+    [
+        "audio/wav", "audio/ogg", "image/png", "image/jpeg", "image/webp",
+        "application/json", "text/markdown; charset=utf-8", "application/octet-stream"
+    ];
     public static string ContentType(string path) => NoteAudioFormats.ContentType(path);
 
     public async Task<NoteMaterialUploadDto> BeginAsync(Guid userId, BeginNoteMaterialUploadRequest request, CancellationToken ct = default)

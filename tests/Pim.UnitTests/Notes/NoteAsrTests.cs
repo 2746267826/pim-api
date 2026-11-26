@@ -185,18 +185,26 @@ public sealed class NoteAsrTests : IAsyncLifetime
         var running = Run(task.TaskId);
         Assert.True(await WaitForRunningChild(task.TaskId, TimeSpan.FromSeconds(10)));
         await _started.Task.WaitAsync(TimeSpan.FromSeconds(10));
-        var before = await Get(task.TaskId);
-        var epochBefore = JsonNode.Parse(await File.ReadAllTextAsync(TaskPath(task.TaskId)))!
-            ["steps"]![0]!["executionEpoch"]!.GetValue<string>();
+        var stopped = await Data<NoteAsrTaskDto>(await _client.PostAsync(
+            $"{Route}/{task.TaskId}/stop", null));
+        Assert.True(stopped.StopRequested);
+        var checkpoint = JsonNode.Parse(await File.ReadAllTextAsync(TaskPath(task.TaskId)))!;
+        var stepBefore = checkpoint["steps"]![0]!;
+        var epochBefore = stepBefore["executionEpoch"]!.GetValue<string>();
+        // Simulate the checkpoint already recording the provider failure while the old call is
+        // still blocked in flight. Retry must supersede this execution, not wait for its result.
+        stepBefore["attempts"]![0]!["status"] = "Failed";
+        stepBefore["attempts"]![0]!["errorMessage"] = "模拟供应商返回前已记录失败";
+        await File.WriteAllTextAsync(TaskPath(task.TaskId), checkpoint.ToJsonString());
         var retried = await Data<NoteAsrTaskDto>(await _client.PostAsJsonAsync(
             $"{Route}/{task.TaskId}/retry", new RetryNoteAsrRequest(Guid.NewGuid(), _owner,
-                before.Revision, [0], consent, true)));
+                stopped.Revision, [0], consent, true)));
         Assert.Equal("Queued", retried.Phase);
-        var checkpoint = JsonNode.Parse(await File.ReadAllTextAsync(TaskPath(task.TaskId)))!;
-        var step = checkpoint["steps"]![0]!;
+        var afterRetry = JsonNode.Parse(await File.ReadAllTextAsync(TaskPath(task.TaskId)))!;
+        var step = afterRetry["steps"]![0]!;
         Assert.NotEqual(epochBefore, step["executionEpoch"]!.GetValue<string>());
         Assert.Equal(2, step["attempts"]!.AsArray().Count);
-        Assert.Equal("Cancelled", step["attempts"]![0]!["status"]!.GetValue<string>());
+        Assert.Equal("Failed", step["attempts"]![0]!["status"]!.GetValue<string>());
         Assert.Equal("Queued", step["attempts"]![1]!["status"]!.GetValue<string>());
 
         _release.TrySetResult();
@@ -205,7 +213,7 @@ public sealed class NoteAsrTests : IAsyncLifetime
         var settledByOldExecution = await Get(task.TaskId);
         Assert.Equal("Queued", settledByOldExecution.Phase);
         var afterOld = JsonNode.Parse(await File.ReadAllTextAsync(TaskPath(task.TaskId)))!;
-        Assert.Equal("Cancelled",
+        Assert.Equal("Failed",
             afterOld["steps"]![0]!["attempts"]![0]!["status"]!.GetValue<string>());
         Assert.Equal("Queued",
             afterOld["steps"]![0]!["attempts"]![1]!["status"]!.GetValue<string>());

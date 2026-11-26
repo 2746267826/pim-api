@@ -494,7 +494,7 @@ public sealed class NoteAsrJob(NoteAsrTaskStore tasks, NoteMaterialUploadStore m
         // Retry uses the same account-scoped task lock. Holding it across the epoch check,
         // evidence insert and checkpoint update makes stale adaptive success either fully win
         // before the retry or observe the retry and write nothing.
-        await tasks.WithLockAsync(owner, async lockedCt =>
+        var recorded = await tasks.WithLockAsync(owner, async lockedCt =>
         {
             var current = await tasks.ReadAsync(owner, taskId, lockedCt);
             if (!EpochMatches(current, step.Index, executionEpoch))
@@ -548,7 +548,13 @@ public sealed class NoteAsrJob(NoteAsrTaskStore tasks, NoteMaterialUploadStore m
             }, lockedCt);
             return true;
         }, ct);
-        if (evidenceId == Guid.Empty) return;
+        if (!recorded || evidenceId == Guid.Empty)
+        {
+            // A stop or attempt change prevents the step checkpoint, but the durable attempt
+            // still needs to leave StopAttemptAsync's non-terminal Unknown state.
+            await SyncCloudAttemptAsync(owner, taskId, ct, step.Index, executionEpoch);
+            return;
+        }
         var completed = await db.NoteAsrSegmentEvidence.AsNoTracking().Where(x =>
                 x.OwnerId == owner && x.AttemptId == attemptEntity.Id &&
                 x.FencingToken == attemptEntity.FencingToken)
