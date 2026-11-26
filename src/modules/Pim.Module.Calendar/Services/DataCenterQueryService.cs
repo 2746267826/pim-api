@@ -11,6 +11,8 @@ namespace Pim.Module.Calendar.Services;
 
 public sealed class DataCenterQueryService
 {
+    private const string GenericConfirmationSummary = "待确认操作";
+
     private static readonly HashSet<string> PendingStatuses = new(StringComparer.OrdinalIgnoreCase)
     {
         OperationConfirmationStatus.Pending.ToString(),
@@ -35,6 +37,7 @@ public sealed class DataCenterQueryService
         CancellationToken ct = default)
     {
         var userId = UserId;
+        var isAdmin = await IsCurrentActiveAdminAsync(ct);
         var page = Math.Max(1, request.Page);
         var pageSize = Math.Clamp(request.PageSize, 1, 100);
         var items = new List<DataCenterItem>();
@@ -46,7 +49,8 @@ public sealed class DataCenterQueryService
         // Fast path: single ObjectType → DB-level pagination to avoid full load
         if (!string.IsNullOrWhiteSpace(filterType))
         {
-            var single = await QuerySingleTypeAsync(userId, filterType!, searchTerm, filterSource, request, page, pageSize, ct);
+            var single = await QuerySingleTypeAsync(userId, isAdmin, filterType!, searchTerm, filterSource,
+                request, page, pageSize, ct);
             if (single != null) return single;
         }
 
@@ -79,13 +83,22 @@ public sealed class DataCenterQueryService
         {
             var q = _db.Set<TaskExecutionSegmentEntity>().AsNoTracking().Include(s => s.Task).Where(s => s.UserId == userId);
             if (!string.IsNullOrWhiteSpace(filterSource)) q = q.Where(s => s.Source == filterSource);
-            if (!string.IsNullOrWhiteSpace(searchTerm)) q = q.Where(s =>
-                s.Task.Title.ToLower().Contains(searchTerm.ToLower())
-                || s.PlanningReason != null && s.PlanningReason.ToLower().Contains(searchTerm.ToLower())
-                || s.Source.ToLower().Contains(searchTerm.ToLower())
-                || s.Status.ToLower().Contains(searchTerm.ToLower()));
+            if (!string.IsNullOrWhiteSpace(searchTerm))
+            {
+                var term = searchTerm.ToLower();
+                q = isAdmin
+                    ? q.Where(s => s.Task.Title.ToLower().Contains(term)
+                        || s.PlanningReason != null && s.PlanningReason.ToLower().Contains(term)
+                        || s.Source.ToLower().Contains(term)
+                        || s.Status.ToLower().Contains(term))
+                    : q.Where(s => s.Task.Title.ToLower().Contains(term)
+                        || s.Source.ToLower().Contains(term)
+                        || s.Status.ToLower().Contains(term));
+            }
             var segments = await q.Take(2000).ToListAsync(ct);
-            items.AddRange(segments.Select(s => new DataCenterItem("task-segment", s.Id, s.Task.Title, s.Source, s.Status, s.StartsAt, s.EndsAt, FirstText(s.PlanningReason, s.Task.Description))));
+            items.AddRange(segments.Select(s => new DataCenterItem("task-segment", s.Id, s.Task.Title, s.Source,
+                s.Status, s.StartsAt, s.EndsAt,
+                isAdmin ? FirstText(s.PlanningReason, s.Task.Description) : FirstText(s.Task.Description))));
         }
         if (ShouldInclude("habit"))
         {
@@ -98,7 +111,9 @@ public sealed class DataCenterQueryService
                 || h.Source.ToLower().Contains(searchTerm.ToLower())
                 || h.Status.ToLower().Contains(searchTerm.ToLower()));
             var habits = await q.Take(2000).ToListAsync(ct);
-            items.AddRange(habits.Select(h => new DataCenterItem("habit", h.Id, h.Title, h.Source, h.Status, h.CreatedAt, h.UpdatedAt, FirstText(h.Description, h.Cadence, h.RuleJson))));
+            items.AddRange(habits.Select(h => new DataCenterItem("habit", h.Id, h.Title, h.Source, h.Status,
+                h.CreatedAt, h.UpdatedAt,
+                isAdmin ? FirstText(h.Description, h.Cadence, h.RuleJson) : FirstText(h.Description, h.Cadence))));
         }
         if (ShouldInclude("habit-occurrence"))
         {
@@ -131,18 +146,28 @@ public sealed class DataCenterQueryService
                 || p.Source.ToLower().Contains(searchTerm.ToLower())
                 || p.Status.ToLower().Contains(searchTerm.ToLower()));
             var placeholders = await q.Take(2000).ToListAsync(ct);
-            items.AddRange(placeholders.Select(p => new DataCenterItem("ai-placeholder", p.Id, p.Title, p.Source, p.Status, p.StartsAt, p.EndsAt, p.Reason)));
+            items.AddRange(placeholders.Select(p => new DataCenterItem("ai-placeholder", p.Id, p.Title, p.Source,
+                p.Status, p.StartsAt, p.EndsAt, isAdmin ? p.Reason : "计划占位")));
         }
         if (ShouldInclude("reminder"))
         {
             var q = _db.Set<ReminderEntity>().AsNoTracking().Where(r => r.UserId == userId);
-            if (!string.IsNullOrWhiteSpace(searchTerm)) q = q.Where(r =>
-                r.Title.ToLower().Contains(searchTerm.ToLower())
-                || r.TriggerReason != null && r.TriggerReason.ToLower().Contains(searchTerm.ToLower())
-                || r.Body != null && r.Body.ToLower().Contains(searchTerm.ToLower())
-                || r.Status.ToLower().Contains(searchTerm.ToLower()));
+            if (!string.IsNullOrWhiteSpace(searchTerm))
+            {
+                var term = searchTerm.ToLower();
+                q = isAdmin
+                    ? q.Where(r => r.Title.ToLower().Contains(term)
+                        || r.TriggerReason != null && r.TriggerReason.ToLower().Contains(term)
+                        || r.Body != null && r.Body.ToLower().Contains(term)
+                        || r.Status.ToLower().Contains(term))
+                    : q.Where(r => r.Title.ToLower().Contains(term)
+                        || r.Body != null && r.Body.ToLower().Contains(term)
+                        || r.Status.ToLower().Contains(term));
+            }
             var reminders = await q.Take(2000).ToListAsync(ct);
-            items.AddRange(reminders.Select(r => new DataCenterItem("reminder", r.Id, r.Title, "reminder", r.Status, r.ScheduledAt, null, FirstText(r.TriggerReason, r.Body, r.RiskLevel))));
+            items.AddRange(reminders.Select(r => new DataCenterItem("reminder", r.Id, r.Title, "reminder",
+                r.Status, r.ScheduledAt, null,
+                isAdmin ? FirstText(r.TriggerReason, r.Body, r.RiskLevel) : FirstText(r.Body))));
         }
         if (ShouldInclude("reminder-delivery"))
         {
@@ -152,29 +177,49 @@ public sealed class DataCenterQueryService
                 || d.Channel.ToLower().Contains(searchTerm.ToLower())
                 || d.Status.ToLower().Contains(searchTerm.ToLower()));
             var reminderDeliveries = await q.Take(2000).ToListAsync(ct);
-            items.AddRange(reminderDeliveries.Select(d => new DataCenterItem("reminder-delivery", d.Id, d.Reminder.Title, d.Channel, d.Status, d.CreatedAt, d.RespondedAt, FirstText(d.Action, d.PayloadJson))));
+            items.AddRange(reminderDeliveries.Select(d => new DataCenterItem("reminder-delivery", d.Id,
+                d.Reminder.Title, d.Channel, d.Status, d.CreatedAt, d.RespondedAt,
+                isAdmin ? FirstText(d.Action, d.PayloadJson) : FirstText(d.Action))));
         }
         if (ShouldInclude("report"))
         {
             var q = _db.Set<ReportArtifactEntity>().AsNoTracking().Where(r => r.UserId == userId);
-            if (!string.IsNullOrWhiteSpace(searchTerm)) q = q.Where(r =>
-                r.Kind.ToLower().Contains(searchTerm.ToLower())
-                || r.Status.ToLower().Contains(searchTerm.ToLower())
-                || r.ContentMarkdown != null && r.ContentMarkdown.ToLower().Contains(searchTerm.ToLower())
-                || r.MetricsJson != null && r.MetricsJson.ToLower().Contains(searchTerm.ToLower()));
+            if (!string.IsNullOrWhiteSpace(searchTerm))
+            {
+                var term = searchTerm.ToLower();
+                q = isAdmin
+                    ? q.Where(r => r.Kind.ToLower().Contains(term)
+                        || r.Status.ToLower().Contains(term)
+                        || r.ContentMarkdown != null && r.ContentMarkdown.ToLower().Contains(term)
+                        || r.MetricsJson != null && r.MetricsJson.ToLower().Contains(term))
+                    : q.Where(r => r.Kind.ToLower().Contains(term)
+                        || r.Status.ToLower().Contains(term)
+                        || r.ContentMarkdown != null && r.ContentMarkdown.ToLower().Contains(term));
+            }
             var reports = await q.Take(2000).ToListAsync(ct);
-            items.AddRange(reports.Select(r => new DataCenterItem("report", r.Id, $"{r.Kind} report", "report", r.Status, r.GeneratedAt, null, FirstText(r.ContentMarkdown, r.MetricsJson))));
+            items.AddRange(reports.Select(r => new DataCenterItem("report", r.Id, $"{r.Kind} report", "report",
+                r.Status, r.GeneratedAt, null,
+                isAdmin ? FirstText(r.ContentMarkdown, r.MetricsJson) : FirstText(r.ContentMarkdown, "报告"))));
         }
         if (ShouldInclude("report-suggestion"))
         {
             var q = _db.Set<ReportSuggestionEntity>().AsNoTracking().Include(s => s.Report).Where(s => s.UserId == userId);
-            if (!string.IsNullOrWhiteSpace(searchTerm)) q = q.Where(s =>
-                s.Action.ToLower().Contains(searchTerm.ToLower())
-                || s.Status.ToLower().Contains(searchTerm.ToLower())
-                || s.Summary != null && s.Summary.ToLower().Contains(searchTerm.ToLower())
-                || s.PayloadJson != null && s.PayloadJson.ToLower().Contains(searchTerm.ToLower()));
+            if (!string.IsNullOrWhiteSpace(searchTerm))
+            {
+                var term = searchTerm.ToLower();
+                q = isAdmin
+                    ? q.Where(s => s.Action.ToLower().Contains(term)
+                        || s.Status.ToLower().Contains(term)
+                        || s.Summary != null && s.Summary.ToLower().Contains(term)
+                        || s.PayloadJson != null && s.PayloadJson.ToLower().Contains(term))
+                    : q.Where(s => s.Action.ToLower().Contains(term)
+                        || s.Status.ToLower().Contains(term)
+                        || s.Summary != null && s.Summary.ToLower().Contains(term));
+            }
             var reportSuggestions = await q.Take(2000).ToListAsync(ct);
-            items.AddRange(reportSuggestions.Select(s => new DataCenterItem("report-suggestion", s.Id, s.Action, "report", s.Status, s.CreatedAt, s.UpdatedAt, FirstText(s.Summary, s.PayloadJson))));
+            items.AddRange(reportSuggestions.Select(s => new DataCenterItem("report-suggestion", s.Id, s.Action,
+                "report", s.Status, s.CreatedAt, s.UpdatedAt,
+                isAdmin ? FirstText(s.Summary, s.PayloadJson) : FirstText(s.Summary))));
         }
         if (ShouldInclude("sync-connection"))
         {
@@ -184,7 +229,9 @@ public sealed class DataCenterQueryService
                 c.Provider.ToLower().Contains(searchTerm.ToLower())
                 || c.Status.ToLower().Contains(searchTerm.ToLower()));
             var outlookConnections = await q.Take(2000).ToListAsync(ct);
-            items.AddRange(outlookConnections.Select(c => new DataCenterItem("sync-connection", c.Id, c.Provider, c.Provider, c.Status, c.LastSyncedAt ?? c.CreatedAt, c.AccessTokenExpiresAt, FirstText(c.TokenHealth, c.LastError))));
+            items.AddRange(outlookConnections.Select(c => new DataCenterItem("sync-connection", c.Id, c.Provider,
+                c.Provider, c.Status, c.LastSyncedAt ?? c.CreatedAt, c.AccessTokenExpiresAt,
+                isAdmin ? FirstText(c.TokenHealth, c.LastError) : "同步连接")));
         }
         if (ShouldInclude("sync-batch"))
         {
@@ -194,7 +241,11 @@ public sealed class DataCenterQueryService
                 b.Provider.ToLower().Contains(searchTerm.ToLower())
                 || b.Status.ToLower().Contains(searchTerm.ToLower()));
             var syncBatches = await q.Take(2000).ToListAsync(ct);
-            items.AddRange(syncBatches.Select(b => new DataCenterItem("sync-batch", b.Id, $"{b.Provider} sync batch", b.Provider, b.Status, b.StartedAt, b.FinishedAt, $"read={b.ReadCount}; created={b.CreatedCount}; updated={b.UpdatedCount}; conflicts={b.ConflictCount}; failures={b.FailureCount}")));
+            items.AddRange(syncBatches.Select(b => new DataCenterItem("sync-batch", b.Id,
+                $"{b.Provider} sync batch", b.Provider, b.Status, b.StartedAt, b.FinishedAt,
+                isAdmin
+                    ? $"read={b.ReadCount}; created={b.CreatedCount}; updated={b.UpdatedCount}; conflicts={b.ConflictCount}; failures={b.FailureCount}"
+                    : "同步批次")));
         }
         if (ShouldInclude("sync-conflict"))
         {
@@ -205,9 +256,14 @@ public sealed class DataCenterQueryService
                 || c.Provider.ToLower().Contains(searchTerm.ToLower())
                 || c.Status.ToLower().Contains(searchTerm.ToLower()));
             var syncConflicts = await q.Take(2000).ToListAsync(ct);
-            items.AddRange(syncConflicts.Select(c => new DataCenterItem("sync-conflict", c.Id, c.ConflictKind, c.Provider, c.Status, c.CreatedAt, c.UpdatedAt, FirstText(AuditSnapshotSanitizer.SanitizeJson(c.PimSnapshotJson), AuditSnapshotSanitizer.SanitizeJson(c.ExternalSnapshotJson)))));
+            items.AddRange(syncConflicts.Select(c => new DataCenterItem("sync-conflict", c.Id, c.ConflictKind,
+                c.Provider, c.Status, c.CreatedAt, c.UpdatedAt,
+                isAdmin
+                    ? FirstText(AuditSnapshotSanitizer.SanitizeJson(c.PimSnapshotJson),
+                        AuditSnapshotSanitizer.SanitizeJson(c.ExternalSnapshotJson))
+                    : "同步冲突需核对")));
         }
-        if (ShouldInclude("audit-version"))
+        if (isAdmin && ShouldInclude("audit-version"))
         {
             var q = _db.Set<AuditVersionEntity>().AsNoTracking().Where(v => v.UserId == userId);
             if (!string.IsNullOrWhiteSpace(filterSource)) q = q.Where(v => v.Source == filterSource);
@@ -222,20 +278,32 @@ public sealed class DataCenterQueryService
         }
         if (ShouldInclude("confirmation"))
         {
-            var q = _db.OperationConfirmations.AsNoTracking().Where(c => c.RequestedByUserId == null || c.RequestedByUserId == userId);
+            var q = _db.OperationConfirmations.AsNoTracking().AsQueryable();
+            q = isAdmin
+                ? q.Where(c => c.RequestedByUserId == null || c.RequestedByUserId == userId)
+                : q.Where(c => c.RequestedByUserId == userId);
             if (!string.IsNullOrWhiteSpace(filterSource)) q = q.Where(c => c.Source == filterSource);
-            if (!string.IsNullOrWhiteSpace(searchTerm)) q = q.Where(c =>
-                c.OperationType.ToLower().Contains(searchTerm.ToLower())
-                || c.Source.ToLower().Contains(searchTerm.ToLower())
-                || c.Status.ToLower().Contains(searchTerm.ToLower())
-                || c.Summary != null && c.Summary.ToLower().Contains(searchTerm.ToLower()));
+            if (!string.IsNullOrWhiteSpace(searchTerm))
+            {
+                var term = searchTerm.ToLower();
+                q = isAdmin
+                    ? q.Where(c => c.OperationType.ToLower().Contains(term)
+                        || c.Source.ToLower().Contains(term)
+                        || c.Status.ToLower().Contains(term)
+                        || c.Summary != null && c.Summary.ToLower().Contains(term))
+                    : q.Where(c => c.OperationType.ToLower().Contains(term)
+                        || c.Source.ToLower().Contains(term)
+                        || c.Status.ToLower().Contains(term));
+            }
             if (request.PendingOnly)
             {
                 var now = _timeProvider.GetUtcNow();
                 q = q.Where(c => PendingStatuses.Contains(c.Status) && c.ExpiresAt > now);
             }
             var confirmations = await q.Take(2000).ToListAsync(ct);
-            items.AddRange(confirmations.Select(c => new DataCenterItem("confirmation", c.Id, c.OperationType, c.Source, c.Status, c.CreatedAt, c.ExpiresAt, c.Summary)));
+            items.AddRange(confirmations.Select(c => new DataCenterItem("confirmation", c.Id, c.OperationType,
+                c.Source, c.Status, c.CreatedAt, c.ExpiresAt,
+                isAdmin ? c.Summary : GenericConfirmationSummary)));
         }
         if (ShouldInclude("recycle-bin"))
         {
@@ -259,7 +327,7 @@ public sealed class DataCenterQueryService
             items.AddRange(deletedTasks.Select(t => new DataCenterItem("recycle-bin", t.Id, t.Title, "manual", "deleted", t.DtStart, t.PlannedEnd ?? t.Due, FirstText(t.Description, t.Calendar?.Name, $"Deleted at {t.DeletedAt:O}"))));
         }
 
-        var filtered = ApplyFilters(items, request)
+        var filtered = ApplyStructuralFilters(items, request)
             .OrderBy(i => i.StartsAt ?? DateTimeOffset.MaxValue)
             .ThenBy(i => i.EndsAt ?? DateTimeOffset.MaxValue)
             .ThenBy(i => i.ObjectType)
@@ -276,7 +344,9 @@ public sealed class DataCenterQueryService
         return new DataCenterQueryResponse(pageItems, page, pageSize, totalCount);
     }
 
-    private async Task<DataCenterQueryResponse?> QuerySingleTypeAsync(Guid userId, string filterType, string? searchTerm, string? filterSource, DataCenterQueryRequest request, int page, int pageSize, CancellationToken ct)
+    private async Task<DataCenterQueryResponse?> QuerySingleTypeAsync(Guid userId, bool isAdmin,
+        string filterType, string? searchTerm, string? filterSource, DataCenterQueryRequest request, int page,
+        int pageSize, CancellationToken ct)
     {
         // 为最常见的单类型查询提供真正的 DB pagination，避免全量
         switch (filterType)
@@ -302,8 +372,18 @@ public sealed class DataCenterQueryService
             }
             case "confirmation":
             {
-                var q = _db.OperationConfirmations.AsNoTracking().Where(c => c.RequestedByUserId == null || c.RequestedByUserId == userId);
-                if (!string.IsNullOrWhiteSpace(searchTerm)) q = q.Where(c => c.OperationType.ToLower().Contains(searchTerm!.ToLower()) || c.Summary != null && c.Summary.ToLower().Contains(searchTerm!.ToLower()));
+                var q = _db.OperationConfirmations.AsNoTracking().AsQueryable();
+                q = isAdmin
+                    ? q.Where(c => c.RequestedByUserId == null || c.RequestedByUserId == userId)
+                    : q.Where(c => c.RequestedByUserId == userId);
+                if (!string.IsNullOrWhiteSpace(searchTerm))
+                {
+                    var term = searchTerm.ToLower();
+                    q = isAdmin
+                        ? q.Where(c => c.OperationType.ToLower().Contains(term)
+                            || c.Summary != null && c.Summary.ToLower().Contains(term))
+                        : q.Where(c => c.OperationType.ToLower().Contains(term));
+                }
                 if (!string.IsNullOrWhiteSpace(filterSource)) q = q.Where(c => c.Source == filterSource);
                 if (request.PendingOnly)
                 {
@@ -312,28 +392,20 @@ public sealed class DataCenterQueryService
                 }
                 var total = await q.CountAsync(ct);
                 var rows = await q.OrderBy(c => c.CreatedAt).ThenBy(c => c.Id).Skip((page-1)*pageSize).Take(pageSize).ToListAsync(ct);
-                var items = rows.Select(c => new DataCenterItem("confirmation", c.Id, c.OperationType, c.Source, c.Status, c.CreatedAt, c.ExpiresAt, c.Summary)).ToList();
+                var items = rows.Select(c => new DataCenterItem("confirmation", c.Id, c.OperationType,
+                    c.Source, c.Status, c.CreatedAt, c.ExpiresAt,
+                    isAdmin ? c.Summary : GenericConfirmationSummary)).ToList();
                 return new DataCenterQueryResponse(items, page, pageSize, total);
             }
             default: return null;
         }
     }
 
-    private IEnumerable<DataCenterItem> ApplyFilters(
+    private IEnumerable<DataCenterItem> ApplyStructuralFilters(
         IEnumerable<DataCenterItem> items,
         DataCenterQueryRequest request)
     {
         var filtered = items;
-
-        if (!string.IsNullOrWhiteSpace(request.Search))
-        {
-            var term = request.Search.Trim();
-            filtered = filtered.Where(i =>
-                ContainsIgnoreCase(i.Title, term)
-                || ContainsIgnoreCase(i.Summary, term)
-                || ContainsIgnoreCase(i.Source, term)
-                || ContainsIgnoreCase(i.Status, term));
-        }
 
         if (!string.IsNullOrWhiteSpace(request.ObjectType))
         {
@@ -359,8 +431,14 @@ public sealed class DataCenterQueryService
         return filtered;
     }
 
-    private static bool ContainsIgnoreCase(string? value, string term)
-        => value?.Contains(term, StringComparison.OrdinalIgnoreCase) ?? false;
+    private async Task<bool> IsCurrentActiveAdminAsync(CancellationToken ct)
+    {
+        if (_currentUser.UserId is not Guid userId ||
+            !string.Equals(_currentUser.Role, AdminBootstrap.AdminRole, StringComparison.OrdinalIgnoreCase))
+            return false;
+        return await _db.Users.AsNoTracking().AnyAsync(x =>
+            x.Id == userId && x.IsActive && x.Role == AdminBootstrap.AdminRole, ct);
+    }
 
     private static string FirstText(params string?[] values)
         => values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value)) ?? string.Empty;

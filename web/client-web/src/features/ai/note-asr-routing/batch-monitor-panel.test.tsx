@@ -100,4 +100,60 @@ describe('BatchMonitorPanel', () => {
     expect(screen.getByText('第 2 / 2 页')).toBeTruthy()
     expect(screen.getByText('Batch 5')).toBeTruthy()
   })
+
+  it('hides provider names, raw status and backend errors from ordinary users', () => {
+    const job = {
+      ...unknownJob,
+      title: '课堂长音频任务',
+      destinationLabel: 'MiMo Flash 云端',
+      providerRequestId: 'batch_provider_123',
+      errorLabel: 'MiMo provider raw batch failure',
+    }
+    render(<BatchMonitorPanel jobs={[job]} showVersionDetails={false} onPoll={vi.fn()} />)
+
+    expect(screen.getByText('批量转写任务')).toBeTruthy()
+    expect(screen.getByText('结果待核对')).toBeTruthy()
+    expect(screen.getByText('上游能力待验收')).toBeTruthy()
+    expect(screen.getByText('本次处理未完整成功，请刷新核对；页面不会自动重发。')).toBeTruthy()
+    expect(screen.queryByText(/MiMo/)).toBeNull()
+    expect(screen.queryByText(/供应商/)).toBeNull()
+    expect(screen.queryByText(/UNKNOWN/)).toBeNull()
+    expect(screen.queryByText(/NOT-VERIFIED/)).toBeNull()
+    expect(screen.queryByText(/batch_provider_123/)).toBeNull()
+    expect(screen.queryByText(/MiMo provider raw batch failure/)).toBeNull()
+  })
+
+  it('keeps provider identity and diagnostics for admins', () => {
+    const job = {
+      ...unknownJob,
+      providerRequestId: 'batch_provider_123',
+      errorLabel: 'provider diagnostic detail',
+    }
+    render(<BatchMonitorPanel jobs={[job]} onPoll={vi.fn()} />)
+
+    expect(screen.getByText('MiMo Batch 长任务')).toBeTruthy()
+    expect(screen.getByText('UNKNOWN 待人工核对')).toBeTruthy()
+    expect(screen.getByText('音频能力 NOT-VERIFIED')).toBeTruthy()
+    expect(screen.getByText('供应商任务标识：batch_provider_123')).toBeTruthy()
+    expect(screen.getByText('provider diagnostic detail')).toBeTruthy()
+  })
+
+  it('does not expose callback errors to ordinary users', async () => {
+    const poll = vi.fn().mockRejectedValue(new Error('MiMo raw poll failure'))
+    render(<BatchMonitorPanel jobs={[waitingJob]} onPoll={poll} showVersionDetails={false} />)
+
+    await userEvent.click(screen.getByRole('button', { name: '立即查询状态' }))
+
+    expect(await screen.findByText(/查询状态未确认，请刷新核对/)).toBeTruthy()
+    expect(screen.queryByText(/MiMo raw poll failure/)).toBeNull()
+  })
+
+  it('keeps callback errors visible to admins', async () => {
+    const poll = vi.fn().mockRejectedValue(new Error('provider poll diagnostic'))
+    render(<BatchMonitorPanel jobs={[waitingJob]} onPoll={poll} />)
+
+    await userEvent.click(screen.getByRole('button', { name: '立即查询状态' }))
+
+    expect(await screen.findByText(/provider poll diagnostic/)).toBeTruthy()
+  })
 })

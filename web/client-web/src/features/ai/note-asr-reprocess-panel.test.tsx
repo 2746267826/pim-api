@@ -95,9 +95,9 @@ beforeEach(() => {
   api.asrReprocess.mockResolvedValue({ task: { ...task, taskId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' }, parentTaskId: task.taskId, reason: 'manual' })
 })
 
-function page() {
+function page(showVersionDetails = true) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
-  return render(<QueryClientProvider client={qc}><NoteAsrReprocessPanel task={task} userId={userId} serverBinding={serverBinding} /></QueryClientProvider>)
+  return render(<QueryClientProvider client={qc}><NoteAsrReprocessPanel task={task} userId={userId} serverBinding={serverBinding} showVersionDetails={showVersionDetails} /></QueryClientProvider>)
 }
 
 describe('NoteAsrReprocessPanel', () => {
@@ -203,5 +203,62 @@ describe('NoteAsrReprocessPanel', () => {
     await userEvent.click(screen.getByRole('button', { name: '确认停止' }))
     await waitFor(() => expect(api.asrRoutingAttemptStop).toHaveBeenCalledOnce())
     expect(api.asrRoutingAttemptStop).toHaveBeenCalledWith(attempt.attemptId)
+  })
+
+  it('hides task, attempt, endpoint, preset and consent identifiers from ordinary owners', async () => {
+    api.asrReprocessHistory.mockResolvedValue({
+      ...history,
+      items: [{ ...history.items[0]!, phase: 'VendorHistoryState' }],
+    })
+    api.asrRoutingAttempts.mockResolvedValue([{
+      ...attempt,
+      state: 'VendorQueued',
+      lastErrorMessage: 'MiMo provider raw attempt error',
+    }])
+    page(false)
+    expect(await screen.findByText('重处理历史（不可变）')).toBeTruthy()
+    expect(await screen.findByText('云端转写执行')).toBeTruthy()
+    expect((await screen.findAllByText('处理状态待核对')).length).toBeGreaterThan(0)
+    expect(screen.getByText('执行未完整成功，请刷新核对；页面不会自动重试。')).toBeTruthy()
+    expect(screen.queryByText(task.taskId)).toBeNull()
+    expect(screen.queryByText(attempt.attemptId)).toBeNull()
+    expect(screen.queryByText(history.items[0]!.taskId)).toBeNull()
+    expect(screen.queryByText(destination.endpoint)).toBeNull()
+    expect(screen.queryByText(new RegExp(destination.model))).toBeNull()
+    expect(screen.queryByText(/mimo-multimodal/)).toBeNull()
+    expect(screen.queryByText(/consent-v1/)).toBeNull()
+    expect(screen.queryByText(/VendorQueued/)).toBeNull()
+    expect(screen.queryByText(/VendorHistoryState/)).toBeNull()
+    expect(screen.queryByText(/MiMo provider raw attempt error/)).toBeNull()
+  })
+
+  it('keeps raw execution status and diagnostics for admins', async () => {
+    api.asrReprocessHistory.mockResolvedValue({
+      ...history,
+      items: [{ ...history.items[0]!, phase: 'VendorHistoryState' }],
+    })
+    api.asrRoutingAttempts.mockResolvedValue([{
+      ...attempt,
+      state: 'VendorQueued',
+      lastErrorMessage: 'provider diagnostic detail',
+    }])
+
+    page(true)
+
+    expect(await screen.findByText('VendorQueued')).toBeTruthy()
+    expect(await screen.findByText('VendorHistoryState')).toBeTruthy()
+    expect(await screen.findByText('provider diagnostic detail')).toBeTruthy()
+  })
+
+  it('uses a generic stop failure message for ordinary owners', async () => {
+    api.asrRoutingAttemptStop.mockRejectedValueOnce(new Error('MiMo raw stop failure'))
+    page(false)
+
+    await userEvent.click(await screen.findByRole('button', { name: '停止该执行' }))
+    await userEvent.click(screen.getByRole('checkbox', { name: '确认停止后续分片' }))
+    await userEvent.click(screen.getByRole('button', { name: '确认停止' }))
+
+    expect(await screen.findByText(/停止状态未确认，请刷新核对/)).toBeTruthy()
+    expect(screen.queryByText(/MiMo raw stop failure/)).toBeNull()
   })
 })

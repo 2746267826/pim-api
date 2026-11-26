@@ -23,16 +23,19 @@ import {
 import { actualCloudRoute, isActualCloudRoute } from './route-config-adapter'
 
 const languageNames: Record<string, string> = { auto: '自动识别', zh: '中文', en: '英语' }
+const failureText = (error: unknown, showVersionDetails: boolean, fallback: string) =>
+  showVersionDetails && error instanceof Error && error.message.trim() ? error.message : fallback
 
 /**
  * Ordinary-user ASR start entry. It consumes only the public destination
  * catalog and per-account routing config; it never reads admin model settings.
  */
-export function NoteAsrStartPanel({ userId, serverBinding, versionId, onCreated }: {
+export function NoteAsrStartPanel({ userId, serverBinding, versionId, onCreated, showVersionDetails = true }: {
   userId: string
   serverBinding: string
   versionId: string
   onCreated?: (task: NoteAsrTask) => void
+  showVersionDetails?: boolean
 }) {
   const qc = useQueryClient()
   const [route, setRoute] = useState<'default' | 'local' | 'cloud'>('default')
@@ -141,7 +144,7 @@ export function NoteAsrStartPanel({ userId, serverBinding, versionId, onCreated 
       onCreated?.(task)
       await qc.invalidateQueries({ queryKey: ['ai', userId, serverBinding, 'note-asr'] })
     } catch (failure) {
-      setError(`${failure instanceof Error ? failure.message : '创建任务失败'}。任务可能已经保存，请先用原任务标识核对；页面不会分配新任务或自动重试。`)
+      setError(`${failureText(failure, showVersionDetails, '创建任务未确认，请刷新核对')}。任务可能已经保存，请先核对；页面不会分配新任务或自动重试。`)
     } finally {
       setBusy(false)
     }
@@ -229,7 +232,9 @@ export function NoteAsrStartPanel({ userId, serverBinding, versionId, onCreated 
         const storageError = saveNoteAsrBatchInitialIntent(userId, serverBinding, versionId, submitted)
         if (storageError) {
           setBatchIntentState({ kind: 'ready', value: current })
-          setError(`${storageError} 已创建的 Batch 准备任务保持原标识 ${current.taskId}，没有继续提交。`)
+          setError(showVersionDetails
+            ? `${storageError} 已创建的 Batch 准备任务保持原标识 ${current.taskId}，没有继续提交。`
+            : `${storageError} 已创建的批量准备任务尚未继续提交。`)
           return
         }
         current = submitted
@@ -241,7 +246,9 @@ export function NoteAsrStartPanel({ userId, serverBinding, versionId, onCreated 
       setBatchIntentState({ kind: 'none' })
       setConfirmed(false)
       setBatchConfirmed(false)
-      setNotice(`Batch 预览已按同一任务标识提交，进入可长达 ${result.job.completionWindow} 的闲时等待；音频上游尚未验收，需管理员显式启用，按成功请求消耗现金。`)
+      setNotice(showVersionDetails
+        ? `Batch 预览已按同一任务标识提交，进入可长达 ${result.job.completionWindow} 的闲时等待；音频上游尚未验收，需管理员显式启用，按成功请求消耗现金。`
+        : `云端批量转写已按同一提交标识受理，最长等待 ${result.job.completionWindow}；页面不会自动改用实时执行或重复提交。`)
       onCreated?.(result.task)
       await qc.invalidateQueries({ queryKey: ['ai', userId, serverBinding, 'note-asr'] })
     } catch (failure) {
@@ -249,7 +256,7 @@ export function NoteAsrStartPanel({ userId, serverBinding, versionId, onCreated 
         ? Number((failure as { code?: unknown }).code)
         : -1
       setBatchConflict(code === 40901)
-      setError(`${failure instanceof Error ? failure.message : 'Batch 提交未确认'}。已冻结同一任务标识，不会自动改用实时执行、创建新任务或重复提交。`)
+      setError(`${failureText(failure, showVersionDetails, '批量转写提交状态未确认，请刷新核对')}。已冻结同一提交标识，不会自动改用实时执行、创建新任务或重复提交。`)
     } finally {
       setBusy(false)
     }
@@ -297,7 +304,7 @@ export function NoteAsrStartPanel({ userId, serverBinding, versionId, onCreated 
         setNotice('服务端未找到原任务；可以按同一标识重新保存，不会生成新任务。')
       }
     } catch (failure) {
-      setError(`${failure instanceof Error ? failure.message : '核对失败'}。保留原任务标识，请刷新后重试。`)
+      setError(`${failureText(failure, showVersionDetails, '核对未确认，请刷新核对')}。保留原提交标识，请刷新后重试。`)
     } finally {
       setBusy(false)
     }
@@ -325,8 +332,12 @@ export function NoteAsrStartPanel({ userId, serverBinding, versionId, onCreated 
         setConfirmed(false)
         setBatchConfirmed(false)
         setNotice(existingJob.batchId
-          ? `已确认同一任务/执行快照下的 Batch 记录，供应商任务标识：${existingJob.batchId}；没有重新创建或重发。`
-          : '已确认同一任务/执行快照下的 Batch/UNKNOWN 记录，但没有供应商任务标识；保留人工核对，禁止自动重建或重发。')
+          ? showVersionDetails
+            ? `已确认同一任务/执行快照下的 Batch 记录，供应商任务标识：${existingJob.batchId}；没有重新创建或重发。`
+            : '已确认同一任务/执行快照下的提交记录；没有重新创建或重发。'
+          : showVersionDetails
+            ? '已确认同一任务/执行快照下的 Batch/UNKNOWN 记录，但没有供应商任务标识；保留人工核对，禁止自动重建或重发。'
+            : '已确认同一任务/执行快照下的提交记录；暂无可核对的执行标识，保留人工核对，不会自动重建或重发。')
         onCreated?.(task)
         await qc.invalidateQueries({ queryKey: ['ai', userId, serverBinding, 'asr-batch-jobs'] })
         await qc.invalidateQueries({ queryKey: ['ai', userId, serverBinding, 'note-asr'] })
@@ -360,10 +371,12 @@ export function NoteAsrStartPanel({ userId, serverBinding, versionId, onCreated 
         return
       }
       setBatchIntentState({ kind: 'ready', value: refreshed })
-      setNotice('未发现同一 task/attempt 的 Batch 记录；已用同一任务标识刷新当前 revision。没有自动提交，请显式确认后重试。')
+      setNotice(showVersionDetails
+        ? '未发现同一 task/attempt 的 Batch 记录；已用同一任务标识刷新当前 revision。没有自动提交，请显式确认后重试。'
+        : '未发现同一提交记录；已刷新当前状态。没有自动提交，请显式确认后重试。')
       onCreated?.(task)
     } catch (failure) {
-      setError(`${failure instanceof Error ? failure.message : '核对失败'}。保留原任务标识，请刷新后重试。`)
+      setError(`${failureText(failure, showVersionDetails, '核对未确认，请刷新核对')}。保留原提交标识，请刷新后重试。`)
     } finally {
       setBusy(false)
     }
@@ -377,16 +390,21 @@ export function NoteAsrStartPanel({ userId, serverBinding, versionId, onCreated 
   return <Card className="min-w-0 space-y-3 p-4 sm:p-5">
     <div>
       <h3 className="text-sm font-semibold text-text-1">启动录音转写</h3>
-      <p className="mt-1 break-words text-xs text-text-3">只为当前固定材料版本创建新任务。本机不可用时保持排队且不会自动改用云端；云端执行必须单独确认出域与费用。旧任务和结果不会覆盖。</p>
+      <p className="mt-1 break-words text-xs text-text-3">
+        {showVersionDetails
+          ? '只为当前固定材料版本创建新任务。'
+          : '只为这篇笔记的当前内容创建新任务。'}
+        本机不可用时保持排队且不会自动改用云端；云端执行必须单独确认出域与费用。旧任务和结果不会覆盖。
+      </p>
     </div>
     <div role="group" aria-label="本次转写执行位置、目标与费用" className="space-y-2 rounded-ctl border border-border bg-surface p-3 text-xs leading-5 text-text-2">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <span className="font-medium text-text-1">当前执行位置</span>
         <StatusBadge size="xs" dot={false} tone={effectiveRoute === 'cloud' ? 'warn' : localConfigured ? 'ok' : 'warn'}>{executionLabel}</StatusBadge>
       </div>
-      <p>发送范围：当前固定版本的全部录音。</p>
+      <p>发送范围：{showVersionDetails ? '当前固定版本' : '这篇笔记当前内容'}的全部录音。</p>
       {effectiveRoute === 'cloud' && savedDestination && <>
-        <p className="break-words">目标：{savedDestination.displayName} · {savedDestination.model}</p>
+        <p className="break-words">目标：{savedDestination.displayName}{showVersionDetails ? ` · ${savedDestination.model}` : ''}</p>
         <p className="font-medium text-warn">音频将离开本机；服务商可能按成功请求或 Token 收取现金费用。</p>
       </>}
       {effectiveRoute === 'cloud' && !savedDestination && <InlineAlert tone="warn" title={cloudInvalid ? '已保存云端目标失效' : '云端尚未配置'}>
@@ -420,7 +438,10 @@ export function NoteAsrStartPanel({ userId, serverBinding, versionId, onCreated 
       <div className="mt-3 max-w-sm"><Label htmlFor="note-asr-start-execution-mode">执行方式</Label>
         <Select id="note-asr-start-execution-mode" ariaLabel="执行方式" value={executionMode}
           disabled={busy || Boolean(intent) || Boolean(batchIntent) || Boolean(blockedIntent)}
-          options={[{ value: 'realtime', label: '实时云端转写' }, { value: 'batch', label: 'MiMo Batch 闲时批量（预览）' }]}
+          options={[
+            { value: 'realtime', label: '实时云端转写' },
+            { value: 'batch', label: showVersionDetails ? 'MiMo Batch 闲时批量（预览）' : '云端批量转写（闲时预览）' },
+          ]}
           onValueChange={(value) => {
             setExecutionMode(value as 'realtime' | 'batch')
             setConfirmed(false)
@@ -428,7 +449,9 @@ export function NoteAsrStartPanel({ userId, serverBinding, versionId, onCreated 
             setNotice('')
             setError('')
           }} />
-        <p className="mt-1 text-xs leading-5 text-text-3">Batch 只提交已冻结的多模态任务，可能等待数小时；没有供应商任务标识时保持 UNKNOWN 并人工核对。</p>
+        <p className="mt-1 text-xs leading-5 text-text-3">{showVersionDetails
+          ? 'Batch 只提交已冻结的多模态任务，可能等待数小时；没有供应商任务标识时保持 UNKNOWN 并人工核对。'
+          : '批量转写只提交已冻结的内容，可能等待数小时；缺少可核对记录时需人工核对，页面不会自动重发。'}</p>
       </div>
     </details>}
     {blockedIntent && <InlineAlert tone="crit" title="原提交状态无法确认">{blockedIntent}</InlineAlert>}
@@ -438,23 +461,29 @@ export function NoteAsrStartPanel({ userId, serverBinding, versionId, onCreated 
         <Select id="note-asr-start-language" ariaLabel="识别语言" value={language} options={languageOptions}
           disabled={busy || Boolean(intent) || Boolean(blockedIntent)} onValueChange={(value) => { setLanguage(value); setConfirmed(false) }} /></div>
     </details>
-    {effectiveRoute === 'cloud' && savedDestination && <details className="rounded-ctl border border-border px-3 py-2 text-xs text-text-3">
+    {effectiveRoute === 'cloud' && savedDestination && showVersionDetails && <details className="rounded-ctl border border-border px-3 py-2 text-xs text-text-3">
       <summary className="cursor-pointer">诊断与服务地址</summary>
       <p className="mt-2 break-all font-mono">{savedDestination.endpoint}</p>
     </details>}
     {intent ? <div className="space-y-2 rounded-ctl border border-warn-border bg-warn-soft p-3 text-xs text-text-2">
-      <p className="break-all">已冻结原任务标识：<span className="font-mono">{intent.taskId}</span>。目标与原因不可在核对前静默更改。</p>
+      <p className="break-all">{showVersionDetails
+        ? <>已冻结原任务标识：<span className="font-mono">{intent.taskId}</span>。目标与原因不可在核对前静默更改。</>
+        : '已有一次转写提交尚未确认；目标与范围在核对前不可更改。'}</p>
       <div className="flex flex-wrap gap-2">
-        <Button size="sm" loading={busy} onClick={() => void reconcile()}>核对原任务</Button>
-        <Button size="sm" variant="secondary" disabled={busy} onClick={() => void submit(intent)}>按原标识保存</Button>
+        <Button size="sm" loading={busy} onClick={() => void reconcile()}>{showVersionDetails ? '核对原任务' : '核对原提交'}</Button>
+        <Button size="sm" variant="secondary" disabled={busy} onClick={() => void submit(intent)}>{showVersionDetails ? '按原标识保存' : '继续原提交'}</Button>
       </div>
     </div> : batchIntent ? <div className="space-y-2 rounded-ctl border border-warn-border bg-warn-soft p-3 text-xs text-text-2">
-      <p className="break-all">已冻结 Batch 任务标识：<span className="font-mono">{batchIntent.taskId}</span>。准备成功不会清空标识；目标、整批范围与 24h 窗口在核对前不可更改。</p>
+      <p className="break-all">{showVersionDetails
+        ? <>已冻结 Batch 任务标识：<span className="font-mono">{batchIntent.taskId}</span>。准备成功不会清空标识；目标、整批范围与 24h 窗口在核对前不可更改。</>
+        : '已有一次 Batch 提交尚未确认；目标、整批范围与 24h 窗口在核对前不可更改。'}</p>
       <p>{batchIntent.phase === 'prepare' ? '阶段：等待核对/创建准备任务（尚未提交 Batch）' : '阶段：已准备，等待/核对 Batch 提交'}</p>
       <div className="flex flex-wrap gap-2">
-        <Button size="sm" loading={busy} onClick={() => void reconcileBatch()}>核对原 Batch 任务</Button>
+        <Button size="sm" loading={busy} onClick={() => void reconcileBatch()}>{showVersionDetails ? '核对原 Batch 任务' : '核对原 Batch 提交'}</Button>
         <Button size="sm" variant="secondary" disabled={busy} onClick={() => void submitBatchIntent(batchIntent)}>
-          {batchIntent.phase === 'prepare' ? '按原标识准备并提交 Batch' : '按原标识重新提交 Batch'}
+          {batchIntent.phase === 'prepare'
+            ? showVersionDetails ? '按原标识准备并提交 Batch' : '准备并提交原 Batch'
+            : showVersionDetails ? '按原标识重新提交 Batch' : '重新提交原 Batch'}
         </Button>
       </div>
     </div> : <>
@@ -462,10 +491,10 @@ export function NoteAsrStartPanel({ userId, serverBinding, versionId, onCreated 
         <Checkbox ariaLabel="确认创建录音转写任务" checked={confirmed} disabled={!targetReady || busy || Boolean(blockedIntent)}
           onCheckedChange={(value) => { setConfirmed(value); if (!value) setBatchConfirmed(false) }} />
         <span>{batchReady
-          ? '确认将上述当前固定版本全部录音发送至上方所列 MiMo 多模态目标作为整批请求，理解闲时调度、长等待、可能仅部分成功与现金费用'
+          ? `确认将上述${showVersionDetails ? '当前固定版本' : '这篇笔记当前内容'}全部录音发送至上方所列${showVersionDetails ? ' MiMo 多模态' : '云端批量'}目标作为整批请求，理解闲时调度、长等待、可能仅部分成功与现金费用`
           : effectiveRoute === 'local'
           ? '确认按上方执行位置创建本机转写任务；音频不发送云端，本机不可用时只排队'
-          : '确认将上述当前固定版本全部录音发送至上方所列云端目标，理解音频出域与可能产生的服务商费用'}</span>
+          : `确认将上述${showVersionDetails ? '当前固定版本' : '这篇笔记当前内容'}全部录音发送至上方所列云端目标，理解音频出域与可能产生的服务商费用`}</span>
       </label>
       {batchReady && <label className="flex items-start gap-2 text-xs text-text-2">
         <Checkbox ariaLabel="确认Batch整批范围与现金计费" checked={batchConfirmed} disabled={!confirmed || busy || Boolean(blockedIntent)}
@@ -474,16 +503,20 @@ export function NoteAsrStartPanel({ userId, serverBinding, versionId, onCreated 
       </label>}
       <Button variant="primary" loading={busy} disabled={!canSubmit} onClick={() => void start()}>
         {batchReady
-          ? batchIntent ? '使用原标识继续 Batch' : '准备并提交 MiMo Batch'
+          ? batchIntent
+            ? showVersionDetails ? '使用原标识继续 Batch' : '继续原批量提交'
+            : showVersionDetails ? '准备并提交 MiMo Batch' : '准备并提交云端批量任务'
           : effectiveRoute === 'cloud' && cloudInvalid
           ? '云端目标失效'
           : effectiveRoute === 'local' ? '创建本机排队任务' : '确认创建云端任务'}
       </Button>
     </>}
     {effectiveRoute === 'cloud' && savedDestination && !intent && !batchIntent && <StatusBadge size="xs" dot={false} tone="warn">云端出域 · 可能计费</StatusBadge>}
-    {batchReady && !intent && !batchIntent && <StatusBadge size="xs" dot={false} tone="warn">Batch 预览 · 音频上游未验收</StatusBadge>}
+    {batchReady && !intent && !batchIntent && <StatusBadge size="xs" dot={false} tone="warn">{showVersionDetails ? 'Batch 预览 · 音频上游未验收' : '批量转写预览'}</StatusBadge>}
     {effectiveRoute === 'local' && !intent && !batchIntent && <StatusBadge size="xs" dot={false} tone={localConfigured ? 'ok' : 'warn'}>{localConfigured ? '本机队列' : '未配置本机模型'}</StatusBadge>}
     {notice && <InlineAlert tone="ok">{notice}</InlineAlert>}
-    {error && <InlineAlert tone="crit" title={batchConflict ? 'Batch 能力未开放或状态冲突' : '任务创建未确认'}>{error}</InlineAlert>}
+    {error && <InlineAlert tone="crit" title={batchConflict
+      ? showVersionDetails ? 'Batch 能力未开放或状态冲突' : '批量转写暂不可用或状态冲突'
+      : '任务创建未确认'}>{error}</InlineAlert>}
   </Card>
 }

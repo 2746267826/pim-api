@@ -1,10 +1,13 @@
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Routing;
 using Microsoft.EntityFrameworkCore;
-using Pim.Infrastructure.Auth;
+using Microsoft.Extensions.DependencyInjection;
 using Pim.Infrastructure.Data;
 
-namespace Pim.Api.Endpoints;
+namespace Pim.Infrastructure.Auth;
 
-internal static class AdminEndpointAuthorization
+public static class AdminAuthorizationExtensions
 {
     public static RouteGroupBuilder RequireCurrentActiveAdmin(this RouteGroupBuilder group)
     {

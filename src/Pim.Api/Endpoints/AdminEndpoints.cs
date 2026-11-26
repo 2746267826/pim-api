@@ -13,7 +13,8 @@ public static class AdminEndpoints
     public static void MapAdminEndpoints(this IEndpointRouteBuilder endpoints)
     {
         var group = endpoints.MapGroup("/api/v1/admin")
-            .RequireAuthorization(new AuthorizeAttribute { Roles = AdminBootstrap.AdminRole });
+            .RequireAuthorization(new AuthorizeAttribute { Roles = AdminBootstrap.AdminRole })
+            .RequireCurrentActiveAdmin();
 
         group.MapGet("/users", async (IAdminUserService svc, CancellationToken ct) =>
             Results.Ok(ApiResponse<IReadOnlyList<AdminUserDto>>.Ok(await svc.ListUsersAsync(ct))))

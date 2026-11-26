@@ -1,5 +1,6 @@
 using Hangfire;
 using Microsoft.AspNetCore.HttpOverrides;
+using Microsoft.AspNetCore.Routing;
 using Microsoft.EntityFrameworkCore;
 using Pim.Api;
 using Pim.Api.Endpoints;
@@ -27,6 +28,8 @@ using Serilog;
 var isMcpStdio = args.Contains("--mcp-stdio", StringComparer.Ordinal);
 
 var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.Configure<RouteHandlerOptions>(options => options.ThrowOnBadRequest = true);
 
 // 可选 Loki 日志聚合：设置 LOKI_URL（如 http://loki:3100）即启用，未设置时仅文件 + 控制台
 var lokiUrl = Environment.GetEnvironmentVariable("LOKI_URL")

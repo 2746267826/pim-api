@@ -117,10 +117,18 @@ export const router = createBrowserRouter([
           { path: 'files', element: <FilesPage /> },
 
           // ── 治理 ──
-          { path: 'data-center', element: <DataCenterPage /> },
           { path: 'reminders', element: <RemindersPage /> },
           { path: 'reports', element: <ReportsPage /> },
           { path: 'habits', element: <HabitsPage /> },
+
+          {
+            // 数据中心与审计台账只对管理员/运维开放；普通笔记冲突仍走笔记页，不依赖这些入口。
+            element: <RequireAdmin />,
+            children: [
+              { path: 'data-center', element: <DataCenterPage /> },
+              { path: 'audit/:objectType/:objectId', element: <AuditTimelinePage /> },
+            ],
+          },
 
           // ── 系统 ──
           { path: 'status', element: <StatusPage /> },
@@ -148,7 +156,6 @@ export const router = createBrowserRouter([
           // ── 其它 ──
           { path: 'app-knowledge-base', element: <AppKnowledgeBasePage /> },
           { path: 'app-knowledge-base/categories', element: <CategoryTreePage /> },
-          { path: 'audit/:objectType/:objectId', element: <AuditTimelinePage /> },
           { path: 'endpoint-shell', element: <EndpointShellPage /> },
           { path: 'exhibition', element: <UnderConstruction title="展览馆" subtitle="图表组件陈列馆（P2 阶段实现）" /> },
           { path: 'devices', element: <DevicesPage /> },

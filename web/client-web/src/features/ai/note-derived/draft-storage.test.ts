@@ -62,6 +62,86 @@ describe('note-derived local draft storage', () => {
     expect(loadStoredDraft({ ...scope, kind: 'IndependentAnalysis' })).toEqual({ ok: true, value: null })
   })
 
+  it('isolates ordinary-user drafts by the selected result version', () => {
+    const headScope = { ...scope, artifactVersionId: 'version-head' }
+    const candidateScope = { ...scope, artifactVersionId: 'version-candidate' }
+    expect(noteDerivedDraftStorageKey(headScope)).not.toBe(noteDerivedDraftStorageKey(candidateScope))
+
+    const head = editStoredDraft(createStoredDraft(headScope, '当前内容草稿'), '当前内容人工修改')
+    expect(head.ok).toBe(true)
+    if (!head.ok) return
+    expect(persistStoredDraft(head.value).ok).toBe(true)
+
+    const loaded = loadStoredDraft(headScope)
+    expect(loaded.ok && loaded.value?.draft.text).toBe('当前内容人工修改')
+    expect(loadStoredDraft(candidateScope)).toEqual({ ok: true, value: null })
+    expect(loadStoredDraft(scope)).toEqual({ ok: true, value: null })
+  })
+
+  it('reads legacy encoded keys and keeps pending charge intents attached to the same draft', () => {
+    const legacyKey = 'pim.noteDerivedDraft.v1/11111111-1111-4111-8111-111111111111/https%3A%2F%2Fpim-a.example/22222222-2222-4222-8222-222222222222/33333333-3333-4333-8333-333333333333/CompleteRecord'
+    expect(noteDerivedDraftStorageKey(scope)).toBe(legacyKey)
+
+    const stored: StoredNoteDerivedDraft = {
+      ...createStoredDraft(scope, '旧版本地草稿', 'head-1'),
+      pending: {
+        kind: 'manual-save',
+        intentId: '44444444-4444-4444-8444-444444444444',
+        reservedAt: '2026-11-25T00:00:00Z',
+        submittedText: '旧版本地草稿',
+        submittedBaseToken: 'head-1',
+      },
+    }
+    localStorage.setItem(legacyKey, JSON.stringify(stored))
+
+    const loaded = loadStoredDraft(scope)
+    expect(loaded.ok && loaded.value?.draft.text).toBe('旧版本地草稿')
+    expect(loaded.ok && loaded.value?.pending?.intentId).toBe('44444444-4444-4444-8444-444444444444')
+  })
+
+  it('migrates a legacy draft only to the result version it was based on', () => {
+    const legacy = createStoredDraft(scope, '旧 head 的本机草稿', 'version-head')
+    expect(persistStoredDraft(legacy).ok).toBe(true)
+
+    const headScope = { ...scope, artifactVersionId: 'version-head' }
+    const migrated = loadStoredDraft(headScope)
+    expect(migrated.ok && migrated.value?.draft.text).toBe('旧 head 的本机草稿')
+    expect(migrated.ok && migrated.value?.binding.artifactVersionId).toBe('version-head')
+
+    // The legacy key has no version scope, so it must never mask a different result.
+    expect(loadStoredDraft({ ...scope, artifactVersionId: 'version-candidate' }))
+      .toEqual({ ok: true, value: null })
+    expect(loadStoredDraft({ ...scope, artifactVersionId: 'version-without-base' }))
+      .toEqual({ ok: true, value: null })
+  })
+
+  it('reports a corrupt legacy draft instead of silently starting empty', () => {
+    const key = noteDerivedDraftStorageKey(scope)
+    expect(key).toBeTruthy()
+    localStorage.setItem(key!, '{"broken":')
+
+    expect(loadStoredDraft({ ...scope, artifactVersionId: 'version-head' }))
+      .toEqual(expect.objectContaining({
+        ok: false,
+        error: expect.objectContaining({ code: 'corrupt' }),
+      }))
+  })
+
+  it('encodes every storage-key segment, including URL bindings and result versions', () => {
+    const scoped = {
+      ...scope,
+      serverBinding: 'https://pim-a.example/custom-base',
+      artifactVersionId: 'version/candidate?source=1#fragment',
+    }
+    const key = noteDerivedDraftStorageKey(scoped)
+    expect(key).toContain(
+      '/https%3A%2F%2Fpim-a.example%2Fcustom-base/',
+    )
+    expect(key).toMatch(/\/version%2Fcandidate%3Fsource%3D1%23fragment$/)
+    expect(key).not.toContain('/https://pim-a.example/')
+    expect(key).not.toContain('/version/candidate')
+  })
+
   it('keeps configured base paths in the canonical server binding', () => {
     localStorage.setItem('pim.apiBase', 'https://pim-a.example/custom-base')
     expect(canonicalServerBinding('http://document.example')).toBe('https://pim-a.example/custom-base')
