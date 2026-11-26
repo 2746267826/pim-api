@@ -2187,6 +2187,7 @@ public sealed class OutlookEventWriteServiceTests
     {
         var db = CreateCountingDb();
         var (_, bindingId, calendarId) = await SetupStandardAsync(db, UserId);
+        db.ResetSaveCallCount();
 
         var handler = new ScriptedHttpMessageHandler();
         handler.Enqueue(HttpStatusCode.Created, GraphEventJson);
@@ -2227,6 +2228,7 @@ public sealed class OutlookEventWriteServiceTests
     {
         var db = CreateCountingDb();
         var (_, bindingId, calendarId) = await SetupStandardAsync(db, UserId);
+        db.ResetSaveCallCount();
         var handler = new ScriptedHttpMessageHandler();
         handler.Enqueue(HttpStatusCode.Created, GraphEventJson);
         var service = CreateService(db, handler);
@@ -4510,6 +4512,8 @@ public sealed class OutlookEventWriteServiceTests
         public int? ThrowOnCallNumber { get; set; }
 
         public SaveCountingDbContext(DbContextOptions<PimDbContext> options) : base(options) { }
+
+        public void ResetSaveCallCount() => SaveCallCount = 0;
 
         public override Task<int> SaveChangesAsync(bool acceptAllChangesOnSuccess, CancellationToken cancellationToken = default)
         {
