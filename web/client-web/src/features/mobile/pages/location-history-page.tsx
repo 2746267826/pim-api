@@ -36,6 +36,7 @@ import type { FrequentPlace, ManagedLocationPoint } from '../types'
 
 type RangeDays = 1 | 7 | 30
 type PlaceType = 'home' | 'office' | 'other'
+type ConflictRefreshOutcome = 'none' | 'refreshed' | 'needs-confirmation' | 'removed'
 
 const RANGE_OPTS: { d: RangeDays; label: string }[] = [
   { d: 1, label: '今天' },
@@ -89,6 +90,16 @@ function isRevisionConflict(error: unknown): boolean {
   return error instanceof ApiError && error.status === 409 && error.code === 6204
 }
 
+function revisionConflictMessage(outcome: ConflictRefreshOutcome): string {
+  if (outcome === 'needs-confirmation') {
+    return '这个定位点已被其他修改更新。你的坐标修改尚未保存；请确认是否用当前输入覆盖服务端最新坐标，或载入最新坐标后重试。'
+  }
+  if (outcome === 'refreshed') {
+    return '这个定位点已被其他修改更新。已载入服务端最新坐标，可直接重试。'
+  }
+  return '这个定位点已被其他修改更新，请刷新后重新选择。'
+}
+
 /** 历史位置（02 §location-history：Leaflet 轨迹 + 段选择 + 原始点管理 + 常去地点） */
 export function LocationHistoryPage() {
   const [days, setDays] = useState<RangeDays>(7)
@@ -138,6 +149,8 @@ export function LocationHistoryPage() {
   const [activePoint, setActivePoint] = useState<ManagedLocationPoint | null>(null)
   const [pointLatitude, setPointLatitude] = useState('')
   const [pointLongitude, setPointLongitude] = useState('')
+  const [pointCoordsDirty, setPointCoordsDirty] = useState(false)
+  const [pointOverwritePending, setPointOverwritePending] = useState(false)
   const [pointExcluded, setPointExcluded] = useState(false)
   const [pointReason, setPointReason] = useState('')
   const [pointError, setPointError] = useState<string | null>(null)
@@ -169,36 +182,40 @@ export function LocationHistoryPage() {
 
   const o = overview.data
 
-  async function refreshPointsAfterConflict(error: unknown): Promise<void> {
-    if (!isRevisionConflict(error)) return
+  async function refreshPointsAfterConflict(error: unknown): Promise<ConflictRefreshOutcome> {
+    if (!isRevisionConflict(error)) return 'none'
     const refreshed = await pointsQuery.refetch()
     const items = refreshed.data?.items
-    if (!items) return
+    if (!items) return 'none'
 
+    let outcome: ConflictRefreshOutcome = 'none'
     if (activePoint) {
       const latest = items.find((point) => point.id === activePoint.id)
       if (latest && latest.deletedAtUtc == null) {
         // 冲突后必须把服务端最新 revision 带回编辑态；否则下一次保存仍然携带旧 revision。
-        // 排除态、更新时间与删除态也必须以服务端为准；坐标保留用户正在编辑的输入。
-        setActivePoint((previous) => previous && previous.id === latest.id
-          ? {
-              ...previous,
-              revision: latest.revision,
-              originalLatitude: latest.originalLatitude,
-              originalLongitude: latest.originalLongitude,
-              isExcluded: latest.isExcluded,
-              isCorrected: latest.isCorrected,
-              excludedAtUtc: latest.excludedAtUtc,
-              updatedAtUtc: latest.updatedAtUtc,
-              deletedAtUtc: latest.deletedAtUtc,
-            }
-          : previous)
+        // 排除态、更新时间与删除态也必须以服务端为准。
+        // 坐标是否回填取决于用户是否改过：未改过时直接用最新坐标，避免用旧输入覆盖他处修改；
+        // 已改过时保留输入，但后续保存必须先由用户明确确认覆盖。
+        setActivePoint((previous) => previous && previous.id === latest.id ? latest : previous)
         setPointExcluded(latest.isExcluded)
+        if (pointCoordsDirty) {
+          setPointOverwritePending(true)
+          outcome = 'needs-confirmation'
+        } else {
+          setPointLatitude(String(latest.latitude))
+          setPointLongitude(String(latest.longitude))
+          setPointCoordsDirty(false)
+          setPointOverwritePending(false)
+          outcome = 'refreshed'
+        }
       } else {
         setActivePoint(null)
+        setPointCoordsDirty(false)
+        setPointOverwritePending(false)
         setPointError(latest
           ? '这个定位点已被永久删除，无法继续保存。'
           : '这个定位点已不存在或已不在当前筛选结果中，无法继续保存。')
+        outcome = 'removed'
       }
     }
 
@@ -215,19 +232,34 @@ export function LocationHistoryPage() {
           }
         : null)
     }
+    return outcome
   }
 
   function openPoint(point: ManagedLocationPoint): void {
     setActivePoint(point)
     setPointLatitude(String(point.latitude))
     setPointLongitude(String(point.longitude))
+    setPointCoordsDirty(false)
+    setPointOverwritePending(false)
     setPointExcluded(point.isExcluded)
     setPointReason('')
     setPointError(null)
   }
 
-  async function savePoint(): Promise<void> {
+  function loadLatestPointCoordinates(): void {
     if (!activePoint) return
+    setPointLatitude(String(activePoint.latitude))
+    setPointLongitude(String(activePoint.longitude))
+    setPointCoordsDirty(false)
+    setPointOverwritePending(false)
+    setPointError(null)
+  }
+
+  async function savePoint(forceOverwrite = false): Promise<void> {
+    if (!activePoint) return
+    // 冲突后用户改过坐标时，不能直接用旧 revision 重试：必须先确认要用当前输入覆盖服务端最新坐标。
+    if (pointOverwritePending && !forceOverwrite) return
+    if (forceOverwrite) setPointOverwritePending(false)
     const latitude = parseNumber(pointLatitude)
     const longitude = parseNumber(pointLongitude)
     const validation = validateCoordinates(latitude, longitude)
@@ -250,14 +282,18 @@ export function LocationHistoryPage() {
         },
       })
       notifySuccess('定位点已保存', '轨迹、分段和统计已重新计算')
+      setPointCoordsDirty(false)
+      setPointOverwritePending(false)
       setActivePoint(null)
     } catch (error) {
       const message = errorMessage(error)
-      setPointError(isRevisionConflict(error)
-        ? '这个定位点已被其他修改更新。已刷新到最新修订，可直接重试。'
-        : message)
+      const outcome = isRevisionConflict(error)
+        ? await refreshPointsAfterConflict(error)
+        : 'none'
+      if (outcome !== 'removed') {
+        setPointError(isRevisionConflict(error) ? revisionConflictMessage(outcome) : message)
+      }
       notifyError(isRevisionConflict(error) ? '定位点已被其他地方修改' : '保存定位点失败', { description: message })
-      await refreshPointsAfterConflict(error)
     } finally {
       setPointSaving(false)
     }
@@ -275,11 +311,13 @@ export function LocationHistoryPage() {
       setActivePoint(null)
     } catch (error) {
       const message = errorMessage(error)
-      setPointError(isRevisionConflict(error)
-        ? '这个定位点已被其他修改更新。已刷新到最新修订，可直接重试。'
-        : message)
+      const outcome = isRevisionConflict(error)
+        ? await refreshPointsAfterConflict(error)
+        : 'none'
+      if (outcome !== 'removed') {
+        setPointError(isRevisionConflict(error) ? revisionConflictMessage(outcome) : message)
+      }
       notifyError('恢复原始坐标失败', { description: message })
-      await refreshPointsAfterConflict(error)
     } finally {
       setPointSaving(false)
     }
@@ -743,11 +781,27 @@ export function LocationHistoryPage() {
                 <div className="grid grid-cols-2 gap-3">
                   <label className="space-y-1 text-xs text-text-3">
                     <span>纬度</span>
-                    <Input aria-label="纬度" value={pointLatitude} onChange={(event) => setPointLatitude(event.target.value)} inputMode="decimal" />
+                    <Input
+                      aria-label="纬度"
+                      value={pointLatitude}
+                      onChange={(event) => {
+                        setPointLatitude(event.target.value)
+                        setPointCoordsDirty(true)
+                      }}
+                      inputMode="decimal"
+                    />
                   </label>
                   <label className="space-y-1 text-xs text-text-3">
                     <span>经度</span>
-                    <Input aria-label="经度" value={pointLongitude} onChange={(event) => setPointLongitude(event.target.value)} inputMode="decimal" />
+                    <Input
+                      aria-label="经度"
+                      value={pointLongitude}
+                      onChange={(event) => {
+                        setPointLongitude(event.target.value)
+                        setPointCoordsDirty(true)
+                      }}
+                      inputMode="decimal"
+                    />
                   </label>
                 </div>
                 <label className="space-y-1 text-xs text-text-3">
@@ -783,7 +837,16 @@ export function LocationHistoryPage() {
             </Button>
             <div className="flex gap-2">
               <Button variant="secondary" disabled={pointSaving} onClick={() => setActivePoint(null)}>取消</Button>
-              <Button loading={pointSaving} onClick={() => void savePoint()}>保存修改</Button>
+              {pointOverwritePending ? (
+                <>
+                  <Button variant="secondary" disabled={pointSaving} onClick={loadLatestPointCoordinates}>
+                    载入最新坐标
+                  </Button>
+                  <Button loading={pointSaving} onClick={() => void savePoint(true)}>确认覆盖并保存</Button>
+                </>
+              ) : (
+                <Button loading={pointSaving} onClick={() => void savePoint()}>保存修改</Button>
+              )}
             </div>
           </DialogFooter>
         </DialogContent>

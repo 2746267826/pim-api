@@ -243,7 +243,7 @@ describe('历史位置手动纠正（真实页面，API 边界为隔离 fixture�
     expect(actions.correct.mutateAsync).not.toHaveBeenCalled()
   })
 
-  it('409 revision 冲突显示刷新提示并重新读取当前页', async () => {
+  it('6204 且用户未改坐标时回填服务端最新坐标，不保留旧输入', async () => {
     actions.correct.mutateAsync
       .mockRejectedValueOnce(
         new ApiError('这个定位点已被其他修改更新，请刷新后重新选择。', 6204, 409),
@@ -254,9 +254,109 @@ describe('历史位置手动纠正（真实页面，API 边界为隔离 fixture�
         ...state.points.data,
         items: [{
           ...state.points.data.items[0],
+          latitude: 31.26,
+          longitude: 121.5,
           revision: 5,
           isExcluded: true,
           excludedAtUtc: '2026-11-25T10:30:00Z',
+        }],
+      },
+    })
+    const user = userEvent.setup()
+    renderPage()
+    await openPoint()
+
+    await user.click(screen.getByRole('checkbox', {
+      name: '标记为误报，从轨迹和统计中排除',
+    }))
+    await user.click(screen.getByRole('button', { name: '保存修改' }))
+
+    expect(await screen.findByText(
+      '这个定位点已被其他修改更新。已载入服务端最新坐标，可直接重试。',
+    )).toBeTruthy()
+    await waitFor(() => expect(state.points.refetch).toHaveBeenCalled())
+    await waitFor(() => expect((screen.getByRole('checkbox', {
+      name: '标记为误报，从轨迹和统计中排除',
+    }) as HTMLInputElement).checked).toBe(true))
+    expect((screen.getByLabelText('纬度') as HTMLInputElement).value).toBe('31.26')
+    expect((screen.getByLabelText('经度') as HTMLInputElement).value).toBe('121.5')
+
+    await user.click(screen.getByRole('button', { name: '保存修改' }))
+    await waitFor(() => expect(actions.correct.mutateAsync).toHaveBeenLastCalledWith({
+      pointId: '00000000-0000-0000-0000-000000000001',
+      body: {
+        latitude: 31.26,
+        longitude: 121.5,
+        revision: 5,
+        excluded: true,
+        reason: null,
+      },
+    }))
+  })
+
+  it('6204 且用户已改坐标时保留输入并阻止直接重试，确认后才覆盖', async () => {
+    actions.correct.mutateAsync
+      .mockRejectedValueOnce(
+        new ApiError('这个定位点已被其他修改更新，请刷新后重新选择。', 6204, 409),
+      )
+      .mockResolvedValueOnce({})
+    state.points.refetch.mockResolvedValue({
+      data: {
+        ...state.points.data,
+        items: [{
+          ...state.points.data.items[0],
+          latitude: 31.26,
+          longitude: 121.5,
+          revision: 5,
+        }],
+      },
+    })
+    const user = userEvent.setup()
+    renderPage()
+    await openPoint()
+
+    const latitude = screen.getByLabelText('纬度')
+    const longitude = screen.getByLabelText('经度')
+    await user.clear(latitude)
+    await user.type(latitude, '31.25')
+    await user.clear(longitude)
+    await user.type(longitude, '121.49')
+    await user.click(screen.getByRole('button', { name: '保存修改' }))
+
+    expect(await screen.findByText(
+      '这个定位点已被其他修改更新。你的坐标修改尚未保存；请确认是否用当前输入覆盖服务端最新坐标，或载入最新坐标后重试。',
+    )).toBeTruthy()
+    await waitFor(() => expect(state.points.refetch).toHaveBeenCalled())
+    expect((screen.getByLabelText('纬度') as HTMLInputElement).value).toBe('31.25')
+    expect((screen.getByLabelText('经度') as HTMLInputElement).value).toBe('121.49')
+    expect(screen.queryByRole('button', { name: '保存修改' })).toBeNull()
+    expect(actions.correct.mutateAsync).toHaveBeenCalledTimes(1)
+
+    await user.click(screen.getByRole('button', { name: '确认覆盖并保存' }))
+    await waitFor(() => expect(actions.correct.mutateAsync).toHaveBeenLastCalledWith({
+      pointId: '00000000-0000-0000-0000-000000000001',
+      body: {
+        latitude: 31.25,
+        longitude: 121.49,
+        revision: 5,
+        excluded: false,
+        reason: null,
+      },
+    }))
+  })
+
+  it('6204 后用户可放弃本地坐标修改并载入最新坐标', async () => {
+    actions.correct.mutateAsync.mockRejectedValueOnce(
+      new ApiError('这个定位点已被其他修改更新，请刷新后重新选择。', 6204, 409),
+    )
+    state.points.refetch.mockResolvedValue({
+      data: {
+        ...state.points.data,
+        items: [{
+          ...state.points.data.items[0],
+          latitude: 31.26,
+          longitude: 121.5,
+          revision: 5,
         }],
       },
     })
@@ -268,26 +368,15 @@ describe('历史位置手动纠正（真实页面，API 边界为隔离 fixture�
     await user.clear(latitude)
     await user.type(latitude, '31.25')
     await user.click(screen.getByRole('button', { name: '保存修改' }))
+    await screen.findByText(
+      '这个定位点已被其他修改更新。你的坐标修改尚未保存；请确认是否用当前输入覆盖服务端最新坐标，或载入最新坐标后重试。',
+    )
 
-    expect(await screen.findByText(
-      '这个定位点已被其他修改更新。已刷新到最新修订，可直接重试。',
-    )).toBeTruthy()
-    await waitFor(() => expect(state.points.refetch).toHaveBeenCalled())
-    await waitFor(() => expect((screen.getByRole('checkbox', {
-      name: '标记为误报，从轨迹和统计中排除',
-    }) as HTMLInputElement).checked).toBe(true))
-
-    await user.click(screen.getByRole('button', { name: '保存修改' }))
-    await waitFor(() => expect(actions.correct.mutateAsync).toHaveBeenLastCalledWith({
-      pointId: '00000000-0000-0000-0000-000000000001',
-      body: {
-        latitude: 31.25,
-        longitude: 121.473701,
-        revision: 5,
-        excluded: true,
-        reason: null,
-      },
-    }))
+    await user.click(screen.getByRole('button', { name: '载入最新坐标' }))
+    expect((screen.getByLabelText('纬度') as HTMLInputElement).value).toBe('31.26')
+    expect((screen.getByLabelText('经度') as HTMLInputElement).value).toBe('121.5')
+    expect(screen.getByRole('button', { name: '保存修改' })).toBeTruthy()
+    expect(actions.correct.mutateAsync).toHaveBeenCalledTimes(1)
   })
 
   it('409 后服务端已永久删除该点时关闭编辑，不允许用旧状态再次提交', async () => {
