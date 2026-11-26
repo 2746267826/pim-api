@@ -980,19 +980,32 @@ public sealed class NoteDerivedJobTests : IAsyncLifetime
         var state = await store.ReadTaskAsync(_owner, taskId, default);
         var record = state.Steps.Single(x => x.Key == "record-synthesis");
         var batch = state.Steps.First(x => x.Kind == NoteDerivedStepKind.AudioBatchEvidence);
+        var vision = state.Steps
+            .Where(x => x.Kind == NoteDerivedStepKind.ImageEvidence &&
+                x.Current.Status == "Succeeded" && x.Current.LogId is not null)
+            .ToArray();
         var batches = state.Steps
             .Where(x => x.Kind == NoteDerivedStepKind.AudioBatchEvidence)
             .OrderBy(x => x.Key, StringComparer.Ordinal)
             .ToArray();
-        var batchIds = batches.Select(x => x.Current.LogId!.Value).ToArray();
-        var batchReceipts = await db.AiRequestLogs.AsNoTracking()
-            .Where(x => x.UserId == _owner && batchIds.Contains(x.Id))
+        var receiptIds = vision.Concat(batches)
+            .Select(x => x.Current.LogId!.Value)
+            .ToArray();
+        var receipts = await db.AiRequestLogs.AsNoTracking()
+            .Where(x => x.UserId == _owner && receiptIds.Contains(x.Id))
             .ToDictionaryAsync(x => x.Id);
-        var evidence = batches.Select(step =>
-        {
-            var receipt = batchReceipts[step.Current.LogId!.Value];
-            return new NoteDerivedEvidence(step.Key, receipt.Id, receipt.ResponseText!, []);
-        }).ToArray();
+        var evidence = vision.Select(step =>
+            {
+                var receipt = receipts[step.Current.LogId!.Value];
+                return new NoteDerivedEvidence(step.Key, receipt.Id, receipt.ResponseText!,
+                    step.Images);
+            })
+            .Concat(batches.Select(step =>
+            {
+                var receipt = receipts[step.Current.LogId!.Value];
+                return new NoteDerivedEvidence(step.Key, receipt.Id, receipt.ResponseText!, []);
+            }))
+            .ToArray();
         var prompt = NoteDerivedPrompts.Record(state.Plan.Input, evidence, audioBatched: true);
         var inputHash = NoteDerivedReceipts.SynthesisInputFingerprint(state, record, prompt);
         var receipt = new AiRequestLogEntity
