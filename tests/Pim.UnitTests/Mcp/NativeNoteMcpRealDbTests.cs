@@ -11,9 +11,11 @@ using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Pim.Core.Common;
+using Pim.Core.Notes;
 using Pim.Infrastructure.Data;
 using Pim.Infrastructure.Notes;
 using Pim.Module.Mcp.Services;
+using Pim.Module.NoteTaskSuggestions.Entities;
 using Pim.UnitTests.Api;
 using Pim.UnitTests.Harness.RealDb;
 using Pim.UnitTests.Notes;
@@ -157,6 +159,14 @@ public sealed class NativeNoteMcpRealDbTests
             .GetProperty("upload").GetProperty("versionId").GetGuid());
         Assert.Equal(1, (await host.CallAsync(host.McpARead, "get_native_note_versions",
                 new { noteId })).Payload.GetProperty("data").GetProperty("total").GetInt32());
+
+        var activity = await host.RestA.GetFromJsonAsync<JsonElement>("/api/v1/mcp/activity");
+        Assert.Equal(0, activity.GetProperty("code").GetInt32());
+        var uploadActivity = activity.GetProperty("data").EnumerateArray()
+            .Last(item => item.GetProperty("toolName").GetString() == "upload_native_note_package");
+        Assert.Contains("[redacted base64", uploadActivity.GetProperty("argumentsSummary").GetString());
+        Assert.DoesNotContain(Convert.ToBase64String(package)[..32],
+            uploadActivity.GetProperty("argumentsSummary").GetString());
 
         var mismatchedReplay = await host.CallAsync(host.McpAWrite, "upload_native_note_package",
             new
@@ -302,6 +312,25 @@ public sealed class NativeNoteMcpRealDbTests
         var afterPromote = await host.CallAsync(host.McpARead, "get_native_note_versions", new { noteId });
         Assert.False(afterPromote.Payload.GetProperty("data").GetProperty("hasConflict").GetBoolean());
 
+        var pending = NoteMaterialUploadStoreTests.Fixture.Create(noteId: noteId);
+        await host.Store.BeginAsync(host.UserA, pending.Request);
+        var cancelRequestId = Guid.NewGuid().ToString("D");
+        var cancelled = await host.CallAsync(host.McpAWrite, "cancel_native_note_upload", new
+        {
+            noteId, requestId = cancelRequestId, versionId = pending.Request.VersionId,
+        });
+        Assert.False(cancelled.IsError, cancelled.Payload.GetRawText());
+        Assert.True(cancelled.Payload.GetProperty("data").GetProperty("result")
+            .GetProperty("removed").GetBoolean());
+        var cancelReplay = await host.CallAsync(host.McpAWrite, "cancel_native_note_upload", new
+        {
+            noteId, requestId = cancelRequestId, versionId = pending.Request.VersionId,
+        });
+        Assert.True(cancelReplay.Payload.GetProperty("data").GetProperty("receipt")
+            .GetProperty("replayed").GetBoolean());
+        Assert.Equal(2, (await host.CallAsync(host.McpARead, "get_native_note_versions",
+                new { noteId })).Payload.GetProperty("data").GetProperty("total").GetInt32());
+
         var active = await host.ReadNoteAsync(host.McpARead, noteId);
         var activeRevision = active.GetProperty("data").GetProperty("revision").GetGuid();
         var archiveRequestId = Guid.NewGuid().ToString("D");
@@ -441,6 +470,20 @@ public sealed class NativeNoteMcpRealDbTests
         });
         Assert.True(retry.IsError);
         Assert.Contains(retry.Payload.GetProperty("code").GetInt32(), new[] { 404, 409 });
+        var retryWithoutConsent = await host.CallAsync(host.McpAWrite,
+            "retry_native_note_processing", new
+            {
+                noteId,
+                requestId = Guid.NewGuid().ToString("D"),
+                taskId = Guid.NewGuid().ToString("D"),
+                retryId = Guid.NewGuid().ToString("D"),
+                expectedRevision = Guid.NewGuid().ToString("D"),
+                stepKeys = Array.Empty<string>(),
+                consent = (object?)null,
+                acknowledgePossibleDuplicateCharge = false,
+            });
+        Assert.True(retryWithoutConsent.IsError);
+        Assert.Equal(400, retryWithoutConsent.Payload.GetProperty("code").GetInt32());
 
         var adopt = await host.CallAsync(host.McpAWrite, "adopt_native_note_result", new
         {
@@ -493,6 +536,137 @@ public sealed class NativeNoteMcpRealDbTests
         Assert.Equal(404, dismiss.Payload.GetProperty("code").GetInt32());
         Assert.Equal(0, (await host.CallAsync(host.McpARead, "get_native_note_suggestions",
                 new { noteId })).Payload.GetProperty("data").GetProperty("result")
+            .GetProperty("total").GetInt32());
+    }
+
+    [SkippableFact]
+    public async Task AdoptAndSuggestionMutations_SucceedWithReceiptsAndIdempotentReplay()
+    {
+        await using var host = await McpHost.CreateAsync();
+        var fixture = await host.SeedNoteAsync(host.UserA);
+        var noteId = fixture.Request.NoteId;
+
+        var artifact = await host.DerivedStore.EnsureArtifactAsync(host.UserA, noteId,
+            NoteDerivedArtifactKind.CompleteRecord, default);
+        var derivedVersionId = Guid.NewGuid();
+        await host.DerivedStore.AppendGeneratedAsync(host.UserA, artifact.ArtifactId,
+            new NoteDerivedVersionDraft(
+                derivedVersionId,
+                NoteDerivedArtifactKind.CompleteRecord,
+                null,
+                null,
+                fixture.Request.VersionId,
+                null,
+                "# 采用测试\n\n已覆盖真实 PostgreSQL 派生版本。",
+                new string('a', 64),
+                new string('b', 64),
+                "plan-v1",
+                "prompt-v1",
+                null,
+                null,
+                null,
+                null,
+                null),
+            default);
+
+        var adoptRequestId = Guid.NewGuid();
+        var adoptArgs = new
+        {
+            noteId,
+            requestId = adoptRequestId.ToString("D"),
+            artifactId = artifact.ArtifactId.ToString("D"),
+            versionId = derivedVersionId.ToString("D"),
+            expectedHeadRevision = artifact.HeadRevision.ToString("D"),
+        };
+        var adopted = await host.CallAsync(host.McpAWrite, "adopt_native_note_result", adoptArgs);
+        Assert.False(adopted.IsError, adopted.Payload.GetRawText());
+        var adoptedData = adopted.Payload.GetProperty("data");
+        Assert.Equal("adopt_native_note_result",
+            adoptedData.GetProperty("receipt").GetProperty("operation").GetString());
+        Assert.False(adoptedData.GetProperty("receipt").GetProperty("replayed").GetBoolean());
+        Assert.Equal(derivedVersionId,
+            adoptedData.GetProperty("result").GetProperty("versionId").GetGuid());
+        Assert.Equal(derivedVersionId,
+            adoptedData.GetProperty("result").GetProperty("artifact")
+                .GetProperty("headVersionId").GetGuid());
+        Assert.False(adoptedData.GetProperty("result").GetProperty("hasConflict").GetBoolean());
+
+        var adoptedReplay = await host.CallAsync(host.McpAWrite, "adopt_native_note_result",
+            adoptArgs);
+        Assert.False(adoptedReplay.IsError, adoptedReplay.Payload.GetRawText());
+        Assert.True(adoptedReplay.Payload.GetProperty("data").GetProperty("receipt")
+            .GetProperty("replayed").GetBoolean());
+        Assert.Equal(derivedVersionId, adoptedReplay.Payload.GetProperty("data")
+            .GetProperty("result").GetProperty("artifact").GetProperty("headVersionId").GetGuid());
+        var adoptConflict = await host.CallAsync(host.McpAWrite, "adopt_native_note_result",
+            new
+            {
+                noteId,
+                requestId = adoptRequestId.ToString("D"),
+                artifactId = artifact.ArtifactId.ToString("D"),
+                versionId = Guid.NewGuid().ToString("D"),
+                expectedHeadRevision = artifact.HeadRevision.ToString("D"),
+            });
+        Assert.True(adoptConflict.IsError);
+        Assert.Equal(409, adoptConflict.Payload.GetProperty("code").GetInt32());
+
+        var dismissTarget = await host.SeedSuggestionAsync(host.UserA, noteId, "待忽略建议");
+        var dismissRequestId = Guid.NewGuid();
+        var dismissArgs = new
+        {
+            noteId,
+            requestId = dismissRequestId.ToString("D"),
+            suggestionId = dismissTarget.SuggestionId.ToString("D"),
+            expectedRevision = dismissTarget.Revision.ToString("D"),
+        };
+        var dismissed = await host.CallAsync(host.McpAWrite,
+            "dismiss_native_note_suggestion", dismissArgs);
+        Assert.False(dismissed.IsError, dismissed.Payload.GetRawText());
+        Assert.Equal("Dismissed", dismissed.Payload.GetProperty("data").GetProperty("result")
+            .GetProperty("status").GetString());
+        var dismissedReplay = await host.CallAsync(host.McpAWrite,
+            "dismiss_native_note_suggestion", dismissArgs);
+        Assert.True(dismissedReplay.Payload.GetProperty("data").GetProperty("receipt")
+            .GetProperty("replayed").GetBoolean());
+
+        var confirmTarget = await host.SeedSuggestionAsync(host.UserA, noteId, "待确认建议");
+        var confirmRequestId = Guid.NewGuid();
+        var confirmArgs = new
+        {
+            noteId,
+            requestId = confirmRequestId.ToString("D"),
+            suggestionId = confirmTarget.SuggestionId.ToString("D"),
+            expectedRevision = confirmTarget.Revision.ToString("D"),
+        };
+        var confirmed = await host.CallAsync(host.McpAWrite,
+            "confirm_native_note_suggestion", confirmArgs);
+        Assert.False(confirmed.IsError, confirmed.Payload.GetRawText());
+        var confirmedResult = confirmed.Payload.GetProperty("data").GetProperty("result");
+        Assert.Equal("Confirmed", confirmedResult.GetProperty("status").GetString());
+        var taskId = confirmedResult.GetProperty("taskId").GetGuid();
+        Assert.NotEqual(Guid.Empty, taskId);
+        var confirmedReplay = await host.CallAsync(host.McpAWrite,
+            "confirm_native_note_suggestion", confirmArgs);
+        Assert.True(confirmedReplay.Payload.GetProperty("data").GetProperty("receipt")
+            .GetProperty("replayed").GetBoolean());
+        Assert.Equal(taskId, confirmedReplay.Payload.GetProperty("data")
+            .GetProperty("result").GetProperty("taskId").GetGuid());
+
+        var ownerBCannotConfirm = await host.CallAsync(host.McpBWrite,
+            "confirm_native_note_suggestion", new
+            {
+                noteId,
+                requestId = Guid.NewGuid().ToString("D"),
+                suggestionId = confirmTarget.SuggestionId.ToString("D"),
+                expectedRevision = confirmedResult.GetProperty("revision").GetGuid().ToString("D"),
+            });
+        Assert.True(ownerBCannotConfirm.IsError);
+        Assert.Equal(404, ownerBCannotConfirm.Payload.GetProperty("code").GetInt32());
+
+        var suggestions = await host.CallAsync(host.McpARead, "get_native_note_suggestions",
+            new { noteId });
+        Assert.False(suggestions.IsError);
+        Assert.Equal(2, suggestions.Payload.GetProperty("data").GetProperty("result")
             .GetProperty("total").GetInt32());
     }
 
@@ -608,6 +782,7 @@ public sealed class NativeNoteMcpRealDbTests
         public Guid UserA { get; }
         public Guid UserB { get; }
         public NoteMaterialUploadStore Store => Factory.Services.GetRequiredService<NoteMaterialUploadStore>();
+        public NoteDerivedStore DerivedStore => Factory.Services.GetRequiredService<NoteDerivedStore>();
 
         public static async Task<McpHost> CreateAsync()
         {
@@ -677,6 +852,59 @@ public sealed class NativeNoteMcpRealDbTests
             var call = await CallAsync(mcp, "get_native_note", new { noteId });
             Assert.False(call.IsError, call.Payload.GetRawText());
             return call.Payload;
+        }
+
+        public async Task<(Guid SuggestionId, Guid Revision)> SeedSuggestionAsync(Guid owner,
+            Guid noteId, string title)
+        {
+            await using var scope = Factory.Services.CreateAsyncScope();
+            var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
+            var now = DateTimeOffset.UtcNow;
+            var extraction = new NoteTaskSuggestionExtractionEntity
+            {
+                UserId = owner,
+                RequestId = Guid.NewGuid(),
+                RequestFingerprint = new string('0', 64),
+                NoteId = noteId,
+                ArtifactId = Guid.NewGuid(),
+                ArtifactVersionId = Guid.NewGuid(),
+                SourceContentSha256 = new string('0', 64),
+                SourceInputSha256 = new string('0', 64),
+                SourceManifestSha256 = new string('0', 64),
+                SourceContentMarkdown = "# 测试",
+                ModelProfileId = Guid.NewGuid(),
+                ModelRevision = Guid.NewGuid(),
+                ModelEndpoint = "http://127.0.0.1/unused",
+                PromptVersion = "test",
+                Status = NoteTaskSuggestionExtractionStatuses.Succeeded,
+                CreatedAt = now,
+                UpdatedAt = now,
+                FinishedAt = now,
+            };
+            var suggestion = new NoteTaskSuggestionEntity
+            {
+                UserId = owner,
+                ExtractionId = extraction.Id,
+                Ordinal = 0,
+                NoteId = noteId,
+                ArtifactId = extraction.ArtifactId,
+                ArtifactVersionId = extraction.ArtifactVersionId,
+                SourceContentSha256 = extraction.SourceContentSha256,
+                SourceInputSha256 = extraction.SourceInputSha256,
+                SourceManifestSha256 = extraction.SourceManifestSha256,
+                Title = title,
+                Kind = NoteTaskSuggestionKinds.Task,
+                Description = "真实 HTTP + PostgreSQL 测试建议",
+                Priority = 5,
+                Status = NoteTaskSuggestionStatuses.Draft,
+                Revision = Guid.NewGuid(),
+                CreatedAt = now,
+                UpdatedAt = now,
+            };
+            db.Set<NoteTaskSuggestionExtractionEntity>().Add(extraction);
+            db.Set<NoteTaskSuggestionEntity>().Add(suggestion);
+            await db.SaveChangesAsync();
+            return (suggestion.Id, suggestion.Revision);
         }
 
         public async Task<ToolCall> CallAsync(HttpClient mcp, string name, object args)
