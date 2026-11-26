@@ -19,7 +19,7 @@ public sealed class NotificationDeliveryRealDbTests
     public async Task EventAndSubscription_AreIdempotent_AndCiphertextDoesNotLeakSecrets()
     {
         var (temp, clock, user, fake) = await NewDatabaseAsync();
-        await using var _ = temp;
+        await using var databaseScope = temp;
         var endpoint = $"https://fcm.googleapis.com/wp/{Guid.NewGuid():N}";
         await using (var db = NotificationTestSupport.NewDbContext(temp.ConnectionString))
         {
@@ -247,7 +247,7 @@ public sealed class NotificationDeliveryRealDbTests
     public async Task DevicePreference_SuppressesOnlyThatDevicesPush()
     {
         var (temp, clock, user, fake) = await NewDatabaseAsync();
-        await using var _ = temp;
+        await using var databaseScope = temp;
         Guid deviceBSubscriptionId;
 
         await using (var db = NotificationTestSupport.NewDbContext(temp.ConnectionString))
@@ -306,7 +306,7 @@ public sealed class NotificationDeliveryRealDbTests
     public async Task CategoryDisabledAtCreation_IsPersistedSuppressed_AndDoesNotReplay()
     {
         var (temp, clock, user, fake) = await NewDatabaseAsync();
-        await using var _ = temp;
+        await using var databaseScope = temp;
         var draft = NotificationEventDrafts.TaskCompleted(
             Guid.NewGuid(), clock.UtcNow, "关闭期间完成的任务");
 

@@ -108,8 +108,8 @@ public sealed class NotificationEndpointsE2ETests
         Assert.Equal(1, subscriptions.GetArrayLength());
 
         var stranger = Authed(factory, Guid.NewGuid());
-        Assert.Empty(await ReadDataAsync(
-            await stranger.GetAsync("/api/v1/notifications/subscriptions")).EnumerateArray());
+        Assert.Empty((await ReadDataAsync(
+            await stranger.GetAsync("/api/v1/notifications/subscriptions"))).EnumerateArray());
         var denied = await stranger.DeleteAsync(
             $"/api/v1/notifications/subscriptions/{subscriptionId}");
         Assert.Equal(HttpStatusCode.NotFound, denied.StatusCode);
