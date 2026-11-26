@@ -159,6 +159,71 @@ public sealed class NoteAsrTests : IAsyncLifetime
         await Run(task.TaskId); Assert.Equal(2, _calls); Assert.Equal("Succeeded", (await Get(task.TaskId)).Phase);
     }
 
+    [Fact]
+    public async Task RetrySupersedesAnInFlightAdaptiveCallAndTheOldResultCannotOverwriteTheNewStep()
+    {
+        _block = true;
+        var multimodal = await Data<AiModelDto>(await _client.PostAsJsonAsync("/api/v1/ai/models",
+            new SaveAiModelRequest("多模态恢复竞态", _provider.Urls.Single() + "/v1/",
+                "mimo-v2.6-flash", true, [AiModelCapability.Transcription], 30, 1024,
+                "synthetic-multimodal-key", AsrPresetId: "mimo-multimodal")));
+        var current = await Data<NoteAsrRouteConfigDto>(await _client.GetAsync(
+            "/api/v1/native-notes/asr-routing/config"));
+        var routeConfig = await Data<NoteAsrRouteConfigDto>(await _client.PutAsJsonAsync(
+            "/api/v1/native-notes/asr-routing/config", new UpdateNoteAsrRouteConfigRequest(
+                current.Revision, NoteAsrRoute.CloudMultimodal, null, null, multimodal.Id, "batch-v1")));
+        var fixture = NoteMaterialUploadStoreTests.Fixture.Create(16_000 * 60);
+        await Upload(fixture);
+        var consent = new AiAsrDestinationConsent(multimodal.Id, multimodal.Revision,
+            multimodal.BaseUrl + "chat/completions", "mimo-multimodal", "1", true);
+        var start = new StartNoteAsrRequest(Guid.NewGuid(), _owner, fixture.Request.VersionId,
+            consent, "zh", new NoteAsrRouteConsent(NoteAsrRoute.CloudMultimodal,
+                routeConfig.Revision, routeConfig.ConsentVersion, true,
+                NoteAsrExecutionMode.Realtime));
+        var task = await Data<NoteAsrTaskDto>(await _client.PostAsJsonAsync(Route, start));
+
+        var running = Run(task.TaskId);
+        Assert.True(await WaitForRunningChild(task.TaskId, TimeSpan.FromSeconds(10)));
+        await _started.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        var before = await Get(task.TaskId);
+        var epochBefore = JsonNode.Parse(await File.ReadAllTextAsync(TaskPath(task.TaskId)))!
+            ["steps"]![0]!["executionEpoch"]!.GetValue<string>();
+        var retried = await Data<NoteAsrTaskDto>(await _client.PostAsJsonAsync(
+            $"{Route}/{task.TaskId}/retry", new RetryNoteAsrRequest(Guid.NewGuid(), _owner,
+                before.Revision, [0], consent, true)));
+        Assert.Equal("Queued", retried.Phase);
+        var checkpoint = JsonNode.Parse(await File.ReadAllTextAsync(TaskPath(task.TaskId)))!;
+        var step = checkpoint["steps"]![0]!;
+        Assert.NotEqual(epochBefore, step["executionEpoch"]!.GetValue<string>());
+        Assert.Equal(2, step["attempts"]!.AsArray().Count);
+        Assert.Equal("Cancelled", step["attempts"]![0]!["status"]!.GetValue<string>());
+        Assert.Equal("Queued", step["attempts"]![1]!["status"]!.GetValue<string>());
+
+        _release.TrySetResult();
+        await running;
+
+        var settledByOldExecution = await Get(task.TaskId);
+        Assert.Equal("Queued", settledByOldExecution.Phase);
+        var afterOld = JsonNode.Parse(await File.ReadAllTextAsync(TaskPath(task.TaskId)))!;
+        Assert.Equal("Cancelled",
+            afterOld["steps"]![0]!["attempts"]![0]!["status"]!.GetValue<string>());
+        Assert.Equal("Queued",
+            afterOld["steps"]![0]!["attempts"]![1]!["status"]!.GetValue<string>());
+
+        _block = false;
+        await Run(task.TaskId);
+        var completed = await Get(task.TaskId);
+        Assert.Equal("Succeeded", completed.Phase);
+        Assert.Equal(2, _calls);
+        var segment = Assert.Single((await Segments(task.TaskId)).Items);
+        Assert.Equal("Succeeded", segment.Status);
+        Assert.Contains("合成分片转写 2", segment.Transcript);
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
+        Assert.Single(await db.NoteAsrSegmentEvidence.Where(x => x.OwnerId == _owner &&
+            x.TaskId == task.TaskId).ToListAsync());
+    }
+
     [Theory]
     [InlineData(100)]
     [InlineData(180)]

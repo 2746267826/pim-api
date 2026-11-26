@@ -6,69 +6,81 @@ using Pim.Core.Exceptions;
 namespace Pim.Infrastructure.Notes;
 
 /// <summary>
-/// Converts one immutable Ogg Opus source file into a bounded, sample-exact 16 kHz mono
-/// WAV slice. The provider never receives the compressed source and no shell is involved.
-/// FFmpeg diagnostics stay in memory and are never copied into task errors or logs.
+/// Converts one immutable Ogg Opus source file into bounded, sample-exact 16 kHz mono PCM.
+/// A file is decoded at most once by the upload store's PCM cache; this type only enforces
+/// the process-wide decode allowance and the exact output length. The provider never
+/// receives the compressed source and no shell is involved. FFmpeg diagnostics stay in
+/// memory and are never copied into task errors or logs.
 /// </summary>
 internal sealed class NoteAudioDecoder(NoteMaterialUploadOptions options)
 {
-    internal async Task<byte[]> DecodeOpusSliceAsync(string sourcePath, long offsetSamples,
-        long samples, CancellationToken ct)
+    private readonly SemaphoreSlim _concurrency = new(
+        options.MaxConcurrentAudioDecodes is >= 1 and <= 16 ? options.MaxConcurrentAudioDecodes : 2);
+
+    internal async Task DecodeOpusFileAsync(string sourcePath, Stream output, long samples,
+        CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
         var executable = DecoderPath();
         var decodeTimeout = DecodeTimeout();
-        var expectedBytes = checked((int)samples * 2);
-        var start = BuildStartInfo(executable, sourcePath, offsetSamples, samples);
-        Process process;
+        var expectedBytes = checked(samples * 2);
+        var start = BuildStartInfo(executable, sourcePath);
+        await _concurrency.WaitAsync(ct);
         try
         {
-            process = Process.Start(start) ?? throw new Win32Exception("process start returned null");
-        }
-        catch (Exception error) when (error is Win32Exception or FileNotFoundException or
-            UnauthorizedAccessException or InvalidOperationException)
-        {
-            throw new DomainException(50303,
-                "服务器 Ogg Opus 解码器不可用；WAV 录音不受影响，请联系管理员检查 FFmpeg");
-        }
-
-        using (process)
-        using (var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct))
-        {
-            timeout.CancelAfter(decodeTimeout);
-            var stderr = DrainAsync(process.StandardError.BaseStream, timeout.Token);
+            Process process;
             try
             {
-                var pcm = await ReadBoundedAsync(process.StandardOutput.BaseStream,
-                    expectedBytes, timeout.Token);
-                await process.WaitForExitAsync(timeout.Token);
-                if (process.ExitCode != 0)
+                process = Process.Start(start) ?? throw new Win32Exception("process start returned null");
+            }
+            catch (Exception error) when (error is Win32Exception or FileNotFoundException or
+                UnauthorizedAccessException or InvalidOperationException)
+            {
+                throw new DomainException(50303,
+                    "服务器 Ogg Opus 解码器不可用；WAV 录音不受影响，请联系管理员检查 FFmpeg");
+            }
+
+            using (process)
+            using (var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct))
+            {
+                timeout.CancelAfter(decodeTimeout);
+                var stderr = DrainAsync(process.StandardError.BaseStream, timeout.Token);
+                try
+                {
+                    await CopyBoundedAsync(process.StandardOutput.BaseStream, output, expectedBytes,
+                        timeout.Token);
+                    await process.WaitForExitAsync(timeout.Token);
+                    if (process.ExitCode != 0)
+                        throw new DomainException(40001,
+                            "Ogg Opus 录音无法安全解码，未发送至转写服务；请确认录音完整后重试");
+                }
+                catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                {
+                    Kill(process);
+                    throw new DomainException(40001,
+                        "Ogg Opus 录音解码超时，未发送至转写服务；请确认录音完整后重试");
+                }
+                catch (IOException)
+                {
+                    Kill(process);
                     throw new DomainException(40001,
                         "Ogg Opus 录音无法安全解码，未发送至转写服务；请确认录音完整后重试");
-                return Wav(pcm);
+                }
+                catch
+                {
+                    Kill(process);
+                    throw;
+                }
+                finally
+                {
+                    try { await stderr; }
+                    catch { }
+                }
             }
-            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
-            {
-                Kill(process);
-                throw new DomainException(40001,
-                    "Ogg Opus 录音解码超时，未发送至转写服务；请确认录音完整后重试");
-            }
-            catch (IOException)
-            {
-                Kill(process);
-                throw new DomainException(40001,
-                    "Ogg Opus 录音无法安全解码，未发送至转写服务；请确认录音完整后重试");
-            }
-            catch
-            {
-                Kill(process);
-                throw;
-            }
-            finally
-            {
-                try { await stderr; }
-                catch { }
-            }
+        }
+        finally
+        {
+            _concurrency.Release();
         }
     }
 
@@ -88,8 +100,7 @@ internal sealed class NoteAudioDecoder(NoteMaterialUploadOptions options)
     private static DomainException Unavailable() => new(50303,
         "服务器 Ogg Opus 解码器不可用；WAV 录音不受影响，请联系管理员检查 FFmpeg");
 
-    private static ProcessStartInfo BuildStartInfo(string executable, string sourcePath,
-        long offsetSamples, long samples)
+    private static ProcessStartInfo BuildStartInfo(string executable, string sourcePath)
     {
         var start = new ProcessStartInfo(executable)
         {
@@ -106,48 +117,37 @@ internal sealed class NoteAudioDecoder(NoteMaterialUploadOptions options)
                      "-probesize", "1048576", "-analyzeduration", "2000000",
                      "-protocol_whitelist", "file,pipe", "-f", "ogg", "-i", sourcePath,
                      "-map", "0:a:0", "-vn", "-sn", "-dn", "-ac", "1", "-ar",
-                     NoteAsrPlan.SampleRate.ToString(CultureInfo.InvariantCulture), "-af",
-                     $"aresample={NoteAsrPlan.SampleRate},atrim=start_sample=" +
-                     $"{offsetSamples.ToString(CultureInfo.InvariantCulture)}:end_sample=" +
-                     $"{checked(offsetSamples + samples).ToString(CultureInfo.InvariantCulture)}",
+                     NoteAsrPlan.SampleRate.ToString(CultureInfo.InvariantCulture),
                      "-f", "s16le", "-acodec", "pcm_s16le", "pipe:1"
                  })
             start.ArgumentList.Add(argument);
         return start;
     }
 
-    private static async Task<byte[]> ReadBoundedAsync(Stream source, int expectedBytes,
+    private static async Task CopyBoundedAsync(Stream source, Stream output, long expectedBytes,
         CancellationToken ct)
     {
-        using var output = new MemoryStream(expectedBytes);
         var buffer = new byte[64 * 1024];
+        long total = 0;
         while (true)
         {
             var read = await source.ReadAsync(buffer, ct);
             if (read == 0) break;
-            if (output.Length + read > expectedBytes)
+            total += read;
+            if (total > expectedBytes)
                 throw new DomainException(40001,
                     "Ogg Opus 录音解码后的样本数与固定材料不一致，未发送至转写服务");
-            output.Write(buffer, 0, read);
+            await output.WriteAsync(buffer.AsMemory(0, read), ct);
         }
-        if (output.Length != expectedBytes)
+        if (total != expectedBytes)
             throw new DomainException(40001,
                 "Ogg Opus 录音解码后的样本数与固定材料不一致，未发送至转写服务");
-        return output.ToArray();
     }
 
     private static async Task DrainAsync(Stream source, CancellationToken ct)
     {
         var buffer = new byte[1024];
         while (await source.ReadAsync(buffer, ct) != 0) { }
-    }
-
-    private static byte[] Wav(byte[] pcm)
-    {
-        var bytes = new byte[checked(44 + pcm.Length)];
-        NoteAudioFormats.WriteWavHeader(bytes, pcm.Length);
-        pcm.CopyTo(bytes, 44);
-        return bytes;
     }
 
     private static void Kill(Process process)

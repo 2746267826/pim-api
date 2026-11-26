@@ -27,7 +27,12 @@ namespace Pim.UnitTests.Notes;
 public sealed class NoteAsrBatchPersistenceTests
 {
     private static readonly Uri Origin = new("https://batch-api-cn.xiaomimimo.com/v1/");
-    private static string? ConnectionString => Environment.GetEnvironmentVariable("PIM_ASR516_PG");
+    // PIM_ASR516_PG remains the dedicated local/reviewer switch. CI provisions the same
+    // disposable PostgreSQL through PIM_TEST_CONN, so the Batch suite must run there rather
+    // than disappearing as skipped evidence. Both point at throwaway databases only.
+    private static string? ConnectionString =>
+        Environment.GetEnvironmentVariable("PIM_ASR516_PG") ??
+        Environment.GetEnvironmentVariable("PIM_TEST_CONN");
 
     [SkippableFact]
     public async Task Input_is_bounded_and_custom_ids_cannot_escape_attempt_segments()
@@ -1581,7 +1586,9 @@ public sealed class NoteAsrBatchPersistenceTests
     public async Task Decode_failure_during_service_generation_keeps_child_queued_without_batch_or_provider()
     {
         Skip.If(string.IsNullOrWhiteSpace(ConnectionString), "PIM_ASR516_PG is not configured");
-        Skip.IfNot(FfmpegAvailable(), "FFmpeg is required to verify the service-level decode failure");
+        Skip.IfNot(FfmpegAvailable(),
+            "CI waiver: GitHub-hosted ubuntu-latest in this workflow does not install FFmpeg; " +
+            "service-level failure handling is covered by the missing-decoder test instead");
         var samples = NoteAsrPlan.SampleRate;
         var (owner, material, profile) = await SeedRealBatchOwnerAsync(samples, "decode-failure",
             opus: true, opusAudio: UndecodableOpus(samples));

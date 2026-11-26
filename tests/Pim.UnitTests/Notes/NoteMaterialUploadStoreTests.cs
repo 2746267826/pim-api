@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using System.Diagnostics;
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Encodings.Web;
@@ -683,7 +684,9 @@ public sealed class NoteMaterialUploadStoreTests : IDisposable
     [SkippableFact]
     public async Task Opus_slice_is_decoded_to_exact_16k_wav_and_recovers_after_the_decoder_is_fixed()
     {
-        Skip.IfNot(FfmpegAvailable(), "FFmpeg is required to verify the Opus decode boundary");
+        Skip.IfNot(FfmpegAvailable(),
+            "CI waiver: GitHub-hosted ubuntu-latest in this workflow does not install FFmpeg; " +
+            "the deterministic fake-decoder tests below still exercise cache, offsets and concurrency");
         var fixture = OpusFixture();
         var store = Store();
         await store.BeginAsync(_user, fixture.Request);
@@ -715,8 +718,165 @@ public sealed class NoteMaterialUploadStoreTests : IDisposable
         Assert.Equal(fixture.Content[5], output.ToArray());
     }
 
+    [SkippableFact]
+    public async Task Long_opus_file_is_verified_copied_and_decoded_once_for_all_slices()
+    {
+        Skip.If(OperatingSystem.IsWindows(),
+            "The deterministic decoder fixture is a POSIX shell script");
+        const int samples = 1_920_000;
+        const uint serial = 0x12345678;
+        var ogg = OggOpusTestData.Concat([
+            OggOpusTestData.Page(0x02, serial, 0, 0, OggOpusTestData.OpusHead()),
+            OggOpusTestData.Page(0, serial, 1, 0, OggOpusTestData.OpusTags()),
+            OggOpusTestData.Page(0x04, serial, 2, 312UL + (ulong)samples * 3,
+                OggOpusTestData.AudioPacket())
+        ]);
+        var fixture = Fixture.Create(audioSamples: samples, audio: ogg, audioFormat: "opus");
+        var upload = Store();
+        await upload.BeginAsync(_user, fixture.Request);
+        await UploadAll(upload, fixture);
+        await upload.CompleteAsync(_user, fixture.Request.VersionId);
+        var pcm = new byte[checked(samples * 2)];
+        for (var index = 0; index < samples; index++)
+            BinaryPrimitives.WriteInt16LittleEndian(pcm.AsSpan(index * 2), (short)(index % 30_000));
+        var decoder = Store(options: DecoderOptions(FakeDecoder("decode-once", pcm)));
+
+        var first = await decoder.ReadAudioSliceAsync(_user, fixture.Request.VersionId, 5, 0,
+            NoteAsrPlan.SamplesPerCall, CancellationToken.None);
+        var second = await decoder.ReadAudioSliceAsync(_user, fixture.Request.VersionId, 5,
+            NoteAsrPlan.SamplesPerCall, NoteAsrPlan.SamplesPerCall, CancellationToken.None);
+
+        AssertWav(first, NoteAsrPlan.SamplesPerCall);
+        AssertWav(second, NoteAsrPlan.SamplesPerCall);
+        Assert.Equal(pcm.AsSpan(0, NoteAsrPlan.SamplesPerCall * 2).ToArray(),
+            first.AsSpan(44).ToArray());
+        Assert.Equal(pcm.AsSpan(NoteAsrPlan.SamplesPerCall * 2).ToArray(),
+            second.AsSpan(44).ToArray());
+        Assert.Equal(1, Invocations("decode-once"));
+        var cache = Path.Combine(_root, "audio-cache",
+            Hash(ogg) + "-" + samples.ToString(CultureInfo.InvariantCulture) + ".pcm");
+        Assert.True(File.Exists(cache));
+        Assert.Equal(pcm.Length, new FileInfo(cache).Length);
+        Assert.Empty(Directory.EnumerateFiles(Path.Combine(_root, "audio-work")));
+    }
+
+    [SkippableFact]
+    public async Task Audio_decode_concurrency_is_capped_and_crash_residue_is_pruned()
+    {
+        Skip.If(OperatingSystem.IsWindows(),
+            "The deterministic decoder fixture is a POSIX shell script");
+        var firstFixture = Fixture.Create(audioSamples: 1600,
+            audio: OggOpusTestData.Valid(1600, serial: 0x12345678), audioFormat: "opus");
+        var secondFixture = Fixture.Create(audioSamples: 1600,
+            audio: OggOpusTestData.Valid(1600, serial: 0x87654321), audioFormat: "opus");
+        var upload = Store();
+        await upload.BeginAsync(_user, firstFixture.Request);
+        await UploadAll(upload, firstFixture);
+        await upload.CompleteAsync(_user, firstFixture.Request.VersionId);
+        await upload.BeginAsync(_user, secondFixture.Request);
+        await UploadAll(upload, secondFixture);
+        await upload.CompleteAsync(_user, secondFixture.Request.VersionId);
+        var options = DecoderOptions(FakeDecoder("capped", new byte[1600 * 2], sleepSeconds: 0.4));
+        options.MaxConcurrentAudioDecodes = 1;
+        var store = Store(options: options);
+
+        await Task.WhenAll(
+            store.ReadAudioSliceAsync(_user, firstFixture.Request.VersionId, 5, 0, 1600,
+                CancellationToken.None),
+            store.ReadAudioSliceAsync(_user, secondFixture.Request.VersionId, 5, 0, 1600,
+                CancellationToken.None));
+
+        Assert.Equal(2, Invocations("capped"));
+        Assert.Equal(1, MaxConcurrentDecodes("capped"));
+
+        var work = Path.Combine(_root, "audio-work");
+        Directory.CreateDirectory(work);
+        var stale = Path.Combine(work, "stale.opus");
+        var fresh = Path.Combine(work, "fresh.opus");
+        await File.WriteAllTextAsync(stale, "stale");
+        await File.WriteAllTextAsync(fresh, "fresh");
+        File.SetLastWriteTimeUtc(stale, DateTime.UtcNow.AddHours(-2));
+        var cache = Path.Combine(_root, "audio-cache");
+        var expired = Path.Combine(cache, "expired.pcm");
+        await File.WriteAllTextAsync(expired, "expired");
+        File.SetLastWriteTimeUtc(expired, DateTime.UtcNow.AddHours(-25));
+
+        store.PruneAudioStorage(force: true);
+
+        Assert.False(File.Exists(stale));
+        Assert.True(File.Exists(fresh));
+        Assert.False(File.Exists(expired));
+        Assert.True(Directory.GetFiles(cache, "*.pcm").Sum(path => new FileInfo(path).Length) > 0);
+
+        var budget = DecoderOptions(Path.Combine(_root, "unused-ffmpeg"));
+        budget.AudioCacheMaxBytes = 100;
+        Store(options: budget).PruneAudioStorage(force: true);
+        Assert.True(Directory.GetFiles(cache, "*.pcm").Sum(path => new FileInfo(path).Length) <= 100);
+    }
+
     private NoteMaterialUploadStore Store(TimeProvider? time = null, NoteMaterialUploadOptions? options = null) =>
         new(Options.Create(options ?? _options), time);
+
+    private NoteMaterialUploadOptions DecoderOptions(string ffmpeg) => new()
+    {
+        StorageRoot = _root, MaxVersionBytes = 32 * 1024 * 1024,
+        MaxUserReservedBytes = 64 * 1024 * 1024, FfmpegPath = ffmpeg
+    };
+
+    private string FakeDecoder(string tag, byte[] pcm, double sleepSeconds = 0)
+    {
+        var folder = Path.Combine(_root, "fake-ffmpeg-" + tag);
+        Directory.CreateDirectory(folder);
+        var pcmPath = Path.Combine(folder, "pcm.bin");
+        File.WriteAllBytes(pcmPath, pcm);
+        var countPath = Path.Combine(folder, "count");
+        var eventsPath = Path.Combine(folder, "events");
+        var script = Path.Combine(folder, "ffmpeg");
+        var sleep = sleepSeconds > 0
+            ? "sleep " + sleepSeconds.ToString("0.0", CultureInfo.InvariantCulture) + "\n"
+            : "";
+        File.WriteAllText(script,
+            "#!/bin/sh\n" +
+            "printf 'S %s %s\\n' \"$$\" \"$(date +%s%N)\" >> " + ShellQuote(eventsPath) + "\n" +
+            sleep +
+            "printf x >> " + ShellQuote(countPath) + "\n" +
+            "cat " + ShellQuote(pcmPath) + "\n" +
+            "printf 'E %s %s\\n' \"$$\" \"$(date +%s%N)\" >> " + ShellQuote(eventsPath) + "\n");
+        if (!OperatingSystem.IsWindows())
+            File.SetUnixFileMode(script,
+                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        return script;
+    }
+
+    private int Invocations(string tag)
+    {
+        var path = Path.Combine(_root, "fake-ffmpeg-" + tag, "count");
+        return File.Exists(path) ? File.ReadAllText(path).Length : 0;
+    }
+
+    private int MaxConcurrentDecodes(string tag)
+    {
+        var path = Path.Combine(_root, "fake-ffmpeg-" + tag, "events");
+        if (!File.Exists(path)) return 0;
+        var events = File.ReadAllLines(path)
+            .Select(line => line.Split(' '))
+            .Where(parts => parts.Length == 3 && (parts[0] is "S" or "E"))
+            .Select(parts => (At: long.Parse(parts[2], CultureInfo.InvariantCulture),
+                Delta: parts[0] == "S" ? 1 : -1))
+            .OrderBy(item => item.At)
+            .ToArray();
+        var current = 0;
+        var maximum = 0;
+        foreach (var item in events)
+        {
+            current += item.Delta;
+            maximum = Math.Max(maximum, current);
+        }
+        return maximum;
+    }
+
+    private static string ShellQuote(string value) =>
+        "'" + value.Replace("'", "'\"'\"'", StringComparison.Ordinal) + "'";
 
     private async Task AssertOpusRejected(Fixture fixture)
     {

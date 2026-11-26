@@ -28,7 +28,8 @@ internal static class NoteAsrPlan
                 for (long offset = 0; offset < count; offset += samplesPerCall)
                 {
                     if (steps.Count >= 5_000) throw new DomainException(41301, "本次转写超过5000片，请按材料版本分批处理；原录音保留");
-                    steps.Add(new() { Index = steps.Count, RecordingId = recordingId, RecordingSegment = segment,
+                    steps.Add(new() { Index = steps.Count, ExecutionEpoch = Guid.NewGuid(),
+                        RecordingId = recordingId, RecordingSegment = segment,
                         ChunkIndex = index, FileIndex = file.Index, Path = file.Path, Sha256 = file.Sha256,
                         SourceOffset = offset, RecordingOffset = position + offset, TimelineOffset = timeline + position + offset,
                         Samples = Math.Min(samplesPerCall, count - offset), Attempts = [new()] });
@@ -90,6 +91,9 @@ internal sealed class NoteAsrRetryIntent
 internal sealed class NoteAsrStep
 {
     public int Index { get; set; }
+    // Every manual retry advances this epoch, including a retry of a still-Queued step. A job
+    // pass that started before the retry can therefore never write into the new attempt.
+    public Guid? ExecutionEpoch { get; set; }
     public Guid RecordingId { get; set; }
     public int RecordingSegment { get; set; }
     public int ChunkIndex { get; set; }

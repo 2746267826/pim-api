@@ -245,7 +245,15 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
                 if (index < 0 || index >= state.Steps.Count || state.Steps[index].Current.Status is "Succeeded" or "Running" ||
                     state.Steps[index].Attempts.Count >= 10) throw new DomainException(40901, "不能重跑成功/执行中分片，或已达单片10次上限");
             foreach (var index in request.SegmentIndexes)
-                if (state.Steps[index].Current.Status != "Queued") state.Steps[index].Attempts.Add(new());
+            {
+                var step = state.Steps[index];
+                // A retry is a new execution identity even when the previous pass is still Queued:
+                // an in-flight adaptive call or receipt from the old RequestId must never settle
+                // the new attempt. Superseding only open attempts keeps terminal history intact.
+                SupersedeOpenAttempts(step.Current);
+                step.Attempts.Add(new());
+                step.ExecutionEpoch = Guid.NewGuid();
+            }
             state.Retries.Add(request.RetryId, fingerprint); state.StopRequested = false;
             if (retryIntent is not null) state.RetryIntents[request.RetryId] = retryIntent;
         }, ct);
@@ -258,6 +266,16 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
             updated = await tasks.ReadAsync(owner, id, ct);
         }
         return Describe(updated);
+    }
+
+    private static void SupersedeOpenAttempts(NoteAsrAttempt attempt)
+    {
+        if (attempt.Status is "Queued" or "Running")
+        {
+            attempt.Status = "Cancelled";
+            attempt.ErrorMessage = "已由人工恢复取代，旧执行结果不会写回";
+        }
+        foreach (var child in attempt.Children) SupersedeOpenAttempts(child);
     }
 
     private async Task RequireRetryAttemptAsync(Guid owner, NoteAsrState state, NoteAsrRetryIntent intent,

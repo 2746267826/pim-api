@@ -33,9 +33,11 @@ Opus 分片的规范扩展名是 `.opus`，媒体类型是 `audio/ogg`；客户�
 
 这些条件在 `complete` 时校验，非法或截断文件返回 `40001`，不会发布为完整版本。Android 侧把录音分片调整为 15 秒只是客户端采集策略；服务端不把 15 秒写进协议或 ASR 计划，而是继续按声明样本数切片，单次 ASR 预算仍由服务端现有 60 秒常量（或已解析路由的预算）决定。15 秒对应 240,000 个 16 kHz 样本，服务端会按实际样本数处理，不假定分片长度。
 
-原始 Opus/Ogg 字节按上传内容原样保存、下载和导出，不做有损再编码；WAV 用户和历史数据继续走原有直接读取路径。进入 ASR、Batch 或派生音频上下文前，服务端用 `ffmpeg` 把所需样本范围严格解码为 16 kHz 单声道 PCM，再包装成现有 WAV 输入，provider 不会收到压缩容器。解码输出字节数必须与声明样本数完全一致，否则以 `40001` 拒绝且不发送 provider 请求。FFmpeg stderr 只留在内存中丢弃，不写入日志、任务错误或客户端响应。运行镜像安装 `ffmpeg`；可用 `NativeNotes:FfmpegPath`（默认 `ffmpeg`）和 `NativeNotes:AudioDecodeTimeoutSeconds`（默认 120 秒）配置。解码器缺失、路径非法、超时配置越界或进程启动失败返回 `50303`（HTTP 503），任务进入可解释的阻断状态，WAV 不受影响；人工重试前应先修复运行环境。临时解码文件位于系统临时目录，使用随机文件名，创建时在非 Windows 平台限制为当前用户可读写，完成后删除。
+原始 Opus/Ogg 字节按上传内容原样保存、下载和导出，不做有损再编码；WAV 用户和历史数据继续走原有直接读取路径。进入 ASR、Batch 或派生音频上下文前，服务端用 `ffmpeg` 把**整个 Opus 文件**严格解码为 16 kHz 单声道 PCM，再按请求的样本偏移包装成现有 WAV 输入，provider 不会收到压缩容器。解码输出字节数必须与声明样本数完全一致，否则以 `40001` 拒绝且不发送 provider 请求。FFmpeg stderr 只留在内存中丢弃，不写入日志、任务错误或客户端响应。运行镜像安装 `ffmpeg`；可用 `NativeNotes:FfmpegPath`（默认 `ffmpeg`）、`NativeNotes:AudioDecodeTimeoutSeconds`（默认 120 秒）和 `NativeNotes:MaxConcurrentAudioDecodes`（默认 2，范围 1–16）配置。解码器缺失、路径非法、超时配置越界或进程启动失败返回 `50303`（HTTP 503），任务进入可解释的阻断状态，WAV 不受影响；人工重试前应先修复运行环境。
 
-隔离测试覆盖格式白名单、MIME 冲突、旧 WAV 默认兼容、Opus 容器结构/样本数、64 MiB 边界、15 秒样本切片、解码失败安全信息和配置修复后的恢复。真实 Android/Windows 采集器、真实 Opus 编码器输出及第三方 ASR provider 的端到端链路尚未在本机验证；包含恶意压缩音频沙箱逃逸、FFmpeg 漏洞面或长期 DoS 的结论也不能由这些测试替代。
+长单文件不再按分片重复哈希、复制和从头解码。文件内容按 `sha256 + samples` 只解码一次，PCM 写入 `NativeNotes:StorageRoot/audio-cache/<sha256>-<samples>.pcm`，同一内容的并发读取由进程内单飞门闩串行化；后续分片只按偏移读取缓存。校验结果按不可变分块的长度与修改时间签名缓存，内容未变化时不重复计算全文件 SHA-256。解码前先把分块复制到 `NativeNotes:StorageRoot/audio-work` 下的随机私有文件，解码结束立即删除；崩溃残留超过 1 小时会在后续账号操作或解码时清理。缓存按 `NativeNotes:AudioCacheMaxAgeHours`（默认 24 小时）和 `NativeNotes:AudioCacheMaxBytes`（默认 2 GiB，且必须不小于单个最大解码文件 345,600,000 字节）清理，每 5 分钟最多执行一次，并在每次解码后强制执行；清理不会删除刚写入的当前缓存。单文件仍受 64 MiB 容器上限与 172,800,000 个 16 kHz 样本（约 3 小时）上限约束。
+
+隔离测试覆盖格式白名单、MIME 参数与冲突、旧 WAV 默认兼容、Opus 容器结构/样本数/granule 边界、64 MiB 边界、15 秒样本切片、长文件一次解码与偏移读取、FFmpeg 并发上限、崩溃残留/缓存清理、解码失败安全信息、配置修复后的恢复，以及人工重试与在途自适应调用之间的 epoch 竞态。真实 FFmpeg 解码用例需要在 CI runner 上安装 `ffmpeg`；当前 workflow 未安装时会在 shard 日志中显式 `[SKIP]`，PR 同时记录 waiver。真实 Android/Windows 采集器、真实 Opus 编码器输出及第三方 ASR provider 的端到端链路尚未在本机验证；包含恶意压缩音频沙箱逃逸、FFmpeg 漏洞面或长期 DoS 的结论也不能由这些测试替代。
 
 ## 存储与限额
 
@@ -53,6 +55,9 @@ Opus 分片的规范扩展名是 `.opus`，媒体类型是 `audio/ogg`；客户�
 | `NativeNotes:UploadExpiryHours` | 168 小时 | 未完成上传到期后，在该账号后续操作时清理并释放预留容量 |
 | `NativeNotes:FfmpegPath` | `ffmpeg` | Opus/Ogg 解码器路径；缺失或非法时 `50303`，WAV 不受影响 |
 | `NativeNotes:AudioDecodeTimeoutSeconds` | 120 秒 | 单次 Opus 解码超时；越界配置按解码器不可用返回 `50303`，运行超时按 `40001` 拒绝且不发送 provider |
+| `NativeNotes:MaxConcurrentAudioDecodes` | 2 | 进程内同时运行的 FFmpeg 解码数，范围 1–16 |
+| `NativeNotes:AudioCacheMaxAgeHours` | 24 小时 | 解码 PCM 缓存保留时间，范围 1–720 小时 |
+| `NativeNotes:AudioCacheMaxBytes` | 2 GiB | 解码 PCM 缓存字节上限；不得小于单个最大解码文件 345,600,000 字节 |
 | 照片/手写派生图 | 32 / 40 MiB | 单文件固定格式上限；照片仍须与原稿关联 |
 | Opus/Ogg 录音分片 | 64 MiB | 单文件上限；还须满足 Ogg Opus 结构、单声道和声明样本数 |
 

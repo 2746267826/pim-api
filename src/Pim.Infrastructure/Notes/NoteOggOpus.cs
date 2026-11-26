@@ -153,6 +153,10 @@ internal static class NoteOggOpus
                 // pages themselves must contain data. A page cannot introduce OpusTags later.
                 if (!_sawTags)
                     throw Invalid("Ogg Opus 录音的 OpusTags 必须从第二页开始");
+                if (granule != ulong.MaxValue)
+                    throw Invalid("Ogg Opus 录音无数据页的 granule 必须为 -1");
+                if (eos)
+                    throw Invalid("Ogg Opus 录音结束页必须包含完成的数据包");
             }
             else
             {
@@ -226,7 +230,12 @@ internal static class NoteOggOpus
                     if (completedAudioPackets > 0 && granule == ulong.MaxValue)
                         throw Invalid("Ogg Opus 录音音频页缺少可用的 granule");
                 }
-                if (completedAudioPackets > 0) _lastGranule = granule;
+                if (completedAudioPackets > 0)
+                {
+                    if (granule < _lastGranule)
+                        throw Invalid("Ogg Opus 录音的 granule 必须单调不减");
+                    _lastGranule = granule;
+                }
 
                 void StartAudioPacket()
                 {
@@ -242,6 +251,8 @@ internal static class NoteOggOpus
                 throw Invalid("Ogg Opus 录音结束页包含未完成的数据包");
             if (eos && _tagsOpen)
                 throw Invalid("Ogg Opus 录音结束页前 OpusTags 数据包不完整");
+            if (eos && completedAudioPackets == 0)
+                throw Invalid("Ogg Opus 录音结束页必须包含完成的音频数据包");
             _previousPageEndedWithContinuation = pageEndsWithContinuation;
             if (eos) _sawEos = true;
             _pageIndex++;

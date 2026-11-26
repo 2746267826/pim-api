@@ -31,6 +31,8 @@ public sealed class NoteAudioFormatTests
     [InlineData("""{"mimeType":"audio/ogg; codecs=opus"}""", "opus")]
     [InlineData("""{"mimeType":"audio/opus"}""", "opus")]
     [InlineData("""{"format":"opus","mimeType":"audio/ogg"}""", "opus")]
+    [InlineData("""{"mimeType":"audio/ogg; codecs=\"opus\"; rate=48000"}""", "opus")]
+    [InlineData("""{"mimeType":"audio/wav; codecs=\"pcm_s16le\""}""", "wav")]
     public void Explicit_wav_and_opus_formats_are_recognized(string json, string expected)
     {
         Assert.Equal(expected, NoteAudioFormats.Parse(Chunk(json)).ToString().ToLowerInvariant());
@@ -44,10 +46,33 @@ public sealed class NoteAudioFormatTests
     [InlineData("""{"format":"opus","mimeType":"audio/wav"}""")]
     [InlineData("""{"format":42}""")]
     [InlineData("""{"mimeType":true}""")]
+    [InlineData("""{"mimeType":"audio/ogg; codecs=mp3"}""")]
+    [InlineData("""{"mimeType":"audio/ogg; codecs=opus,opus"}""")]
+    [InlineData("""{"mimeType":"audio/wav; codecs=opus"}""")]
+    [InlineData("""{"mimeType":"audio/ogg; codecs=\"x"}""")]
+    [InlineData("""{"mimeType":"audio/ogg; =opus"}""")]
+    [InlineData("""{"mimeType":"audio/ogg; codecs"}""")]
+    [InlineData("""{"mimeType":"audio/ogg; codecs=\"opus"}""")]
+    [InlineData("""{"mimeType":"audio/ogg; codecs=opus; codecs=opus"}""")]
+    [InlineData("""{"mimeType":"audio/ogg; code cs=opus"}""")]
+    [InlineData("""{"mimeType":"audio/ogg; codecs=opus;"}""")]
     public void Unknown_or_conflicting_formats_are_rejected(string json)
     {
         var error = Assert.Throws<DomainException>(() => NoteAudioFormats.Parse(Chunk(json)));
         Assert.Equal(40001, error.ErrorCode);
+    }
+
+    [Fact]
+    public void Mime_type_length_and_format_length_are_bounded()
+    {
+        var longMime = new string('a', NoteAudioFormats.MaxMimeCharacters + 1);
+        var mime = Assert.Throws<DomainException>(() =>
+            NoteAudioFormats.Parse(Chunk(JsonSerializer.Serialize(new { mimeType = longMime }))));
+        Assert.Equal(40001, mime.ErrorCode);
+        var longFormat = new string('o', 17);
+        var format = Assert.Throws<DomainException>(() =>
+            NoteAudioFormats.Parse(Chunk(JsonSerializer.Serialize(new { format = longFormat }))));
+        Assert.Equal(40001, format.ErrorCode);
     }
 
     [Fact]
@@ -273,6 +298,63 @@ public sealed class NoteAudioFormatTests
             OggOpusTestData.PageWithLacing(0, serial, 2, 0, [65], OggOpusTestData.OpusTags()),
             OggOpusTestData.Page(0x04, serial, 3, 5112, OggOpusTestData.AudioPacket())
         ]), 1600);
+    }
+
+    [Fact]
+    public void Ogg_validation_enforces_zero_segment_granule_eos_and_monotonic_audio_granule()
+    {
+        const uint serial = 0x12345678;
+        var head = OggOpusTestData.Page(0x02, serial, 0, 0, OggOpusTestData.OpusHead());
+        var tags = OggOpusTestData.Page(0, serial, 1, 0, OggOpusTestData.OpusTags());
+        var audio = OggOpusTestData.Page(0, serial, 2, 5112, OggOpusTestData.AudioPacket());
+        var eos = OggOpusTestData.Page(0x04, serial, 3, 5112, OggOpusTestData.AudioPacket());
+
+        AssertRejected(OggOpusTestData.Concat([
+            head, tags, audio,
+            OggOpusTestData.PageWithLacing(0, serial, 3, 0, [], []),
+            OggOpusTestData.Page(0x04, serial, 4, 5112, OggOpusTestData.AudioPacket())
+        ]), 1600);
+        Validate(OggOpusTestData.Concat([
+            head, tags, audio,
+            OggOpusTestData.PageWithLacing(0, serial, 3, ulong.MaxValue, [], []),
+            OggOpusTestData.Page(0x04, serial, 4, 5112, OggOpusTestData.AudioPacket())
+        ]), 1600);
+        AssertRejected(OggOpusTestData.Concat([
+            head, tags, audio,
+            OggOpusTestData.PageWithLacing(0x04, serial, 3, ulong.MaxValue, [], [])
+        ]), 1600);
+
+        // The last granule still maps to the declared 1,600 samples, but it is lower than the
+        // first audio page's granule, so a decoder would see a non-monotonic timestamp.
+        AssertRejected(OggOpusTestData.Concat([
+            OggOpusTestData.Page(0x02, serial, 0, 0, OggOpusTestData.OpusHead()),
+            OggOpusTestData.Page(0, serial, 1, 0, OggOpusTestData.OpusTags()),
+            OggOpusTestData.Page(0, serial, 2, 5200, OggOpusTestData.AudioPacket()),
+            eos
+        ]), 1600);
+    }
+
+    [Fact]
+    public void Decoded_audio_cache_limits_cover_one_maximum_opus_file()
+    {
+        var options = new NoteMaterialUploadOptions
+        {
+            StorageRoot = Path.Combine(Path.GetTempPath(), "pim-audio-options")
+        };
+        Assert.True(options.IsValid());
+        Assert.Equal(checked(NoteAudioFormats.MaxSamplesPerChunk * 2),
+            NoteAudioFormats.MaxDecodedOpusFileBytes);
+
+        options.AudioCacheMaxBytes = NoteAudioFormats.MaxDecodedOpusFileBytes - 1;
+        Assert.False(options.IsValid());
+        options.AudioCacheMaxBytes = NoteAudioFormats.MaxDecodedOpusFileBytes;
+        options.MaxConcurrentAudioDecodes = 0;
+        Assert.False(options.IsValid());
+        options.MaxConcurrentAudioDecodes = 16;
+        options.AudioCacheMaxAgeHours = 721;
+        Assert.False(options.IsValid());
+        options.AudioCacheMaxAgeHours = 24;
+        Assert.True(options.IsValid());
     }
 
     [Fact]
