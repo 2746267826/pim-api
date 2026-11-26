@@ -16124,6 +16124,11 @@
             },
             "type": "array"
           },
+          "revision": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          },
           "state": {
             "type": "string"
           },
@@ -16302,6 +16307,11 @@
           },
           "consent": {
             "$ref": "#/components/schemas/NoteDerivedGenerationConsent"
+          },
+          "expectedRevision": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
           },
           "requestId": {
             "format": "uuid",

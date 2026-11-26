@@ -3128,7 +3128,7 @@ async def get_version(-) -> Any: ...
 | `delete_native_note` | `POST .../{noteId}/recycle` | 移入回收站；停止排队/在途处理 |
 | `restore_native_note` | `POST .../{noteId}/restore` | 从回收站恢复；处理保持停止，需手动继续 |
 | `start_native_note_processing` | `POST .../{noteId}/processing/start` | 发起高层处理 |
-| `retry_native_note_processing` | `POST .../{noteId}/processing/retry` | 按逻辑 `stepKeys` 重试整理步骤 |
+| `retry_native_note_processing` | `POST .../{noteId}/processing/retry` | 按逻辑 `stepKeys` 重试整理步骤；可选 `expectedRevision` 校验笔记快照或 `organization.revision` |
 | `adopt_native_note_result` | `POST .../{noteId}/results/{artifactId}/adopt` | 采用结果版本 |
 | `extract_native_note_suggestions` | `POST .../{noteId}/suggestions/extractions` | 提取建议 |
 | `confirm_native_note_suggestion` | `POST .../{noteId}/suggestions/{suggestionId}/confirm` | 采用建议 |

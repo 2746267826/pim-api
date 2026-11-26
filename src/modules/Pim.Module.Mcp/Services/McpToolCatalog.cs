@@ -253,7 +253,7 @@ public static class McpToolCatalog
         AddW(tools, "native-notes", "start_native_note_processing",
             "Start the server-side high-level processing chain for one complete native-note version. Returns an explicit error when AI runtime is unavailable instead of faking success.");
         AddW(tools, "native-notes", "retry_native_note_processing",
-            "Retry selected failed native-note processing steps with duplicate-charge acknowledgement and revision CAS.");
+            "Retry selected failed native-note processing steps with duplicate-charge acknowledgement. Optional expectedRevision CAS accepts the current note snapshot revision or organization task revision; stale values return 409.");
         AddW(tools, "native-notes", "adopt_native_note_result",
             "Adopt one derived result version as the artifact head with expected-head-revision CAS.");
         AddW(tools, "native-notes", "extract_native_note_suggestions",

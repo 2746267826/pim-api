@@ -180,4 +180,23 @@ public sealed class McpToolContractTests
         Assert.Contains("chunkSha256", package.Description, StringComparison.Ordinal);
         Assert.Contains("contentSha256", package.Description, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public void Contract_NativeNoteRetryExposesOptionalExpectedRevisionCas()
+    {
+        var retry = McpToolExecutor.ToolContract.Single(
+            t => t.Name == "retry_native_note_processing");
+        var properties = retry.InputSchema.GetProperty("properties");
+        Assert.True(properties.TryGetProperty("expectedRevision", out var expectedRevision));
+        Assert.True(expectedRevision.GetProperty("anyOf").EnumerateArray()
+            .Any(item => item.GetProperty("type").GetString() == "null"));
+        Assert.Contains("expectedRevision", retry.Description, StringComparison.Ordinal);
+        Assert.Contains("snapshot revision", retry.Description, StringComparison.Ordinal);
+        Assert.Contains("task revision", retry.Description, StringComparison.Ordinal);
+        Assert.DoesNotContain("expectedRevision",
+            retry.InputSchema.GetProperty("required").EnumerateArray()
+                .Select(item => item.GetString()));
+        Assert.DoesNotContain("expectedRevision",
+            McpToolTable.TryGet("retry_native_note_processing")!.Required);
+    }
 }
