@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
@@ -239,7 +240,12 @@ public sealed class OutlookWritebackEndpointE2ETests
         var delete = await client.DeleteAsync(
             $"/api/v1/calendar/events/{eventId}?clientOperationId={deleteOperationId:D}");
         Assert.Equal(HttpStatusCode.OK, delete.StatusCode);
-        Assert.Contains(deleteOperationId.ToString("D"), await delete.Content.ReadAsStringAsync());
+        var deleteReceipt = await ReadDataAsync(delete);
+        Assert.Equal("deleted", deleteReceipt.GetProperty("status").GetString());
+        Assert.Equal(deleteOperationId, deleteReceipt.GetProperty("clientOperationId").GetGuid());
+        Assert.True(deleteReceipt.GetProperty("undoAvailable").GetBoolean());
+        Assert.False(deleteReceipt.GetProperty("noChangesApplied").GetBoolean());
+        Assert.Contains("撤销", deleteReceipt.GetProperty("userMessage").GetString());
         temp.Db.ChangeTracker.Clear();
         Assert.NotNull(await temp.Db.Set<EventEntity>().IgnoreQueryFilters()
             .Where(e => e.Id == eventId).Select(e => e.DeletedAt).SingleAsync());
@@ -247,7 +253,10 @@ public sealed class OutlookWritebackEndpointE2ETests
         var deleteReplay = await client.DeleteAsync(
             $"/api/v1/calendar/events/{eventId}?clientOperationId={deleteOperationId:D}");
         Assert.Equal(HttpStatusCode.OK, deleteReplay.StatusCode);
-        Assert.Contains("clientOperationId=", await deleteReplay.Content.ReadAsStringAsync());
+        var deleteReplayReceipt = await ReadDataAsync(deleteReplay);
+        Assert.Equal("deleted", deleteReplayReceipt.GetProperty("status").GetString());
+        Assert.True(deleteReplayReceipt.GetProperty("replayed").GetBoolean());
+        Assert.True(deleteReplayReceipt.GetProperty("undoAvailable").GetBoolean());
         Assert.Equal(5, graph.CoreRequests.Count);
 
         graph.Enqueue(HttpStatusCode.Created, RestoredEventJson);
@@ -334,7 +343,7 @@ public sealed class OutlookWritebackEndpointE2ETests
         var seed = await SeedAsync(temp);
         var (masterId, recurrenceId) = await SeedSeriesMasterAsync(temp, seed);
         var client = Authed(factory, seed.UserId);
-        var syntheticOccurrenceId = Guid.NewGuid();
+        var syntheticOccurrenceId = SyntheticOccurrenceId(masterId, recurrenceId);
         var updateOperationId = Guid.NewGuid();
 
         graph.Enqueue(HttpStatusCode.OK, SeriesOccurrenceListJson);
@@ -409,13 +418,15 @@ public sealed class OutlookWritebackEndpointE2ETests
         graph.Enqueue(HttpStatusCode.OK, SeriesOccurrenceListJson);
         graph.Enqueue(HttpStatusCode.NoContent);
         var delete = await client.DeleteAsync(
-            $"/api/v1/calendar/events/{Guid.NewGuid():D}" +
+            $"/api/v1/calendar/events/{SyntheticOccurrenceId(masterId, recurrenceId):D}" +
             $"?scope=instance&originalEventId={masterId:D}" +
             $"&recurrenceId={Uri.EscapeDataString(recurrenceId)}" +
             $"&clientOperationId={operationId:D}");
 
         Assert.Equal(HttpStatusCode.OK, delete.StatusCode);
-        Assert.Contains(operationId.ToString("D"), await delete.Content.ReadAsStringAsync());
+        var receipt = await ReadDataAsync(delete);
+        Assert.Equal(operationId, receipt.GetProperty("clientOperationId").GetGuid());
+        Assert.Equal("deleted", receipt.GetProperty("status").GetString());
 
         temp.Db.ChangeTracker.Clear();
         var rows = await temp.Db.Set<EventEntity>().IgnoreQueryFilters()
@@ -509,6 +520,136 @@ public sealed class OutlookWritebackEndpointE2ETests
 
         _output.WriteLine(
             "MCP /mcp tools/call wrote through the real HTTP/PostgreSQL pipeline: success exposed outlookEtag/clientOperationId/undoAvailable; 409 exposed latestEvent/latestEtag/noChangesApplied directly; 502 exposed PROVIDER_UNAVAILABLE without leaking Graph secrets. Graph remained a deterministic fake.");
+    }
+
+    [SkippableFact]
+    public async Task OriginalEventIdMismatch_RejectsUpdateAndDeleteWithoutGraphOrLocalChange()
+    {
+        var graph = new GraphQueueHandler();
+        var (temp, factory) = await NewIsolatedHostAsync(graph);
+        await using var _ = temp;
+        using var factoryScope = factory;
+        var seed = await SeedAsync(temp);
+        var firstEventId = await SeedSimpleEventAsync(
+            temp, seed, "First Event", "graph-first");
+        var secondEventId = await SeedSimpleEventAsync(
+            temp, seed, "Second Event", "graph-second");
+        var client = Authed(factory, seed.UserId);
+
+        var updateBody = $$"""
+        {
+          "calendarId": "{{seed.CalendarId}}",
+          "title": "Must not be applied",
+          "dtStart": "2026-11-30T09:00:00Z",
+          "dtEnd": "2026-11-30T10:00:00Z"
+        }
+        """;
+        var update = await client.PutAsync(
+            $"/api/v1/calendar/events/{secondEventId:D}" +
+            $"?scope=instance&originalEventId={firstEventId:D}" +
+            $"&clientOperationId={Guid.NewGuid():D}",
+            Json(updateBody));
+        Assert.Equal(HttpStatusCode.BadRequest, update.StatusCode);
+
+        var delete = await client.DeleteAsync(
+            $"/api/v1/calendar/events/{secondEventId:D}" +
+            $"?scope=instance&originalEventId={firstEventId:D}" +
+            $"&clientOperationId={Guid.NewGuid():D}");
+        Assert.Equal(HttpStatusCode.BadRequest, delete.StatusCode);
+
+        var (masterId, recurrenceId) = await SeedSeriesMasterAsync(temp, seed);
+        var unrelatedOccurrence = DateTimeOffset.Parse(
+                recurrenceId, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind)
+            .AddHours(1)
+            .ToString("O");
+        var mismatchedOccurrenceId = SyntheticOccurrenceId(masterId, unrelatedOccurrence);
+        var syntheticDelete = await client.DeleteAsync(
+            $"/api/v1/calendar/events/{mismatchedOccurrenceId:D}" +
+            $"?scope=instance&originalEventId={masterId:D}" +
+            $"&recurrenceId={Uri.EscapeDataString(recurrenceId)}" +
+            $"&clientOperationId={Guid.NewGuid():D}");
+        Assert.Equal(HttpStatusCode.BadRequest, syntheticDelete.StatusCode);
+
+        Assert.Empty(graph.Requests);
+        temp.Db.ChangeTracker.Clear();
+        var first = await temp.Db.Set<EventEntity>().IgnoreQueryFilters()
+            .SingleAsync(e => e.Id == firstEventId);
+        var second = await temp.Db.Set<EventEntity>().IgnoreQueryFilters()
+            .SingleAsync(e => e.Id == secondEventId);
+        Assert.Equal("First Event", first.Title);
+        Assert.Equal("Second Event", second.Title);
+        Assert.Null(first.DeletedAt);
+        Assert.Null(second.DeletedAt);
+
+        _output.WriteLine(
+            "originalEventId mismatches were rejected with 400 before Graph; neither target event was modified or soft-deleted.");
+    }
+
+    [SkippableFact]
+    public async Task UpdateProviderFailures_MapGraphStatusesToDocumentedHttpSemantics()
+    {
+        var graph = new GraphQueueHandler();
+        var (temp, factory) = await NewIsolatedHostAsync(graph);
+        await using var _ = temp;
+        using var factoryScope = factory;
+        var seed = await SeedAsync(temp);
+        var eventId = await SeedSimpleEventAsync(
+            temp, seed, "Provider Status Target", "graph-status");
+        var client = Authed(factory, seed.UserId);
+        var body = $$"""
+        {
+          "calendarId": "{{seed.CalendarId}}",
+          "title": "Attempted update",
+          "dtStart": "2026-11-30T09:00:00Z",
+          "dtEnd": "2026-11-30T10:00:00Z"
+        }
+        """;
+
+        var cases = new (Action Enqueue, HttpStatusCode Expected, string ErrorCode, bool NoChangesApplied, bool RetryHint)[]
+        {
+            (() => graph.Enqueue(HttpStatusCode.BadRequest), HttpStatusCode.BadRequest,
+                "GRAPH_BAD_REQUEST", true, false),
+            (() => graph.Enqueue(HttpStatusCode.Forbidden), HttpStatusCode.Forbidden,
+                "GRAPH_FORBIDDEN", true, false),
+            (() => graph.Enqueue(HttpStatusCode.NotFound), HttpStatusCode.NotFound,
+                "GRAPH_EVENT_NOT_FOUND", true, false),
+            (() => graph.Enqueue(HttpStatusCode.TooManyRequests), HttpStatusCode.BadGateway,
+                "PROVIDER_RATE_LIMITED", false, true),
+            (() => graph.Enqueue(HttpStatusCode.InternalServerError), HttpStatusCode.BadGateway,
+                "PROVIDER_UNAVAILABLE", false, true),
+            (() => graph.EnqueueException(new OperationCanceledException("provider timeout")),
+                HttpStatusCode.BadGateway, "PROVIDER_TIMEOUT", false, true)
+        };
+
+        foreach (var testCase in cases)
+        {
+            var operationId = Guid.NewGuid();
+            testCase.Enqueue();
+            var response = await client.PutAsync(
+                $"/api/v1/calendar/events/{eventId:D}" +
+                $"?expectedEtag=W%2F%22etag%22&clientOperationId={operationId:D}",
+                Json(body));
+            Assert.Equal(testCase.Expected, response.StatusCode);
+            var receipt = await ReadDataAsync(response);
+            Assert.Equal(testCase.ErrorCode, receipt.GetProperty("errorCode").GetString());
+            Assert.Equal(operationId, receipt.GetProperty("clientOperationId").GetGuid());
+            Assert.Equal(testCase.NoChangesApplied,
+                receipt.GetProperty("noChangesApplied").GetBoolean());
+            var message = receipt.GetProperty("userMessage").GetString()!;
+            if (testCase.RetryHint)
+                Assert.Contains("clientOperationId", message);
+            else
+                Assert.DoesNotContain("同一 clientOperationId", message);
+        }
+
+        temp.Db.ChangeTracker.Clear();
+        var stored = await temp.Db.Set<EventEntity>().IgnoreQueryFilters()
+            .SingleAsync(e => e.Id == eventId);
+        Assert.Equal("Provider Status Target", stored.Title);
+        Assert.Null(stored.DeletedAt);
+
+        _output.WriteLine(
+            "Graph 400/403/404 mapped to 400/403/404 with noChangesApplied=true and no same-id retry hint; 429/5xx/timeout mapped to structured 502 retry receipts with clientOperationId and noChangesApplied=false.");
     }
 
     private static async Task<(TempMigrationDatabase Db, WebApplicationFactory<Program> Factory)>
@@ -684,6 +825,42 @@ public sealed class OutlookWritebackEndpointE2ETests
         await temp.Db.SaveChangesAsync();
         return (masterId, recurrenceId);
     }
+
+    private static async Task<Guid> SeedSimpleEventAsync(
+        TempMigrationDatabase temp, Seed seed, string title, string graphEventId)
+    {
+        var connectionId = await temp.Db.Set<OutlookCalendarBindingEntity>()
+            .Where(b => b.Id == seed.BindingId)
+            .Select(b => b.ConnectionId)
+            .SingleAsync();
+        var eventId = Guid.NewGuid();
+        temp.Db.Add(new EventEntity
+        {
+            Id = eventId,
+            CalendarId = seed.CalendarId,
+            Uid = $"{graphEventId}@outlook",
+            Title = title,
+            DtStart = new DateTimeOffset(2026, 11, 30, 9, 0, 0, TimeSpan.Zero),
+            DtEnd = new DateTimeOffset(2026, 11, 30, 10, 0, 0, TimeSpan.Zero),
+            Source = "outlook",
+            Status = "CONFIRMED",
+            OutlookEventId = graphEventId,
+            OutlookCalendarBindingId = seed.BindingId,
+            OutlookConnectionId = connectionId,
+            OutlookEventType = "singleInstance",
+            OutlookEtag = "W/\"etag\""
+        });
+        await temp.Db.SaveChangesAsync();
+        return eventId;
+    }
+
+    private static Guid SyntheticOccurrenceId(Guid masterId, string recurrenceId)
+        => RecurrenceService.DeriveOccurrenceId(
+            masterId,
+            DateTimeOffset.Parse(
+                recurrenceId,
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.RoundtripKind));
 
     private static async Task<Guid> SeedLegacyOccurrenceAsync(
         TempMigrationDatabase temp, Seed seed, Guid masterId, string recurrenceId)

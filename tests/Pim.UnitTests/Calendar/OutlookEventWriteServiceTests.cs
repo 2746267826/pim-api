@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Net;
 using System.Text;
 using System.Text.Json;
@@ -124,6 +125,34 @@ public sealed class OutlookEventWriteServiceTests
     }
     """;
 
+    private const string SeriesMasterCreatedJson = """
+    {
+        "@odata.etag": "W/\"series-etag\"",
+        "id": "graph-series-new",
+        "subject": "Recurring Created",
+        "body": {"contentType": "text", "content": "Recurring description"},
+        "start": {"dateTime": "2026-07-08T09:00:00.0000000Z", "timeZone": "UTC"},
+        "end": {"dateTime": "2026-07-08T10:00:00.0000000Z", "timeZone": "UTC"},
+        "location": {"displayName": "Room A"},
+        "isAllDay": false,
+        "type": "seriesMaster",
+        "seriesMasterId": null,
+        "recurrence": {
+            "pattern": {"type": "daily", "interval": 1},
+            "range": {
+                "type": "numbered",
+                "startDate": "2026-07-08",
+                "numberOfOccurrences": 5,
+                "recurrenceTimeZone": "UTC"
+            }
+        },
+        "iCalUId": "ical-series-new",
+        "changeKey": "change-series",
+        "originalStartTimeZone": "UTC",
+        "originalEndTimeZone": "UTC"
+    }
+    """;
+
     // ---------- Tests ----------
 
     [Fact]
@@ -170,6 +199,54 @@ public sealed class OutlookEventWriteServiceTests
         var batch = Assert.Single(batches);
         Assert.Equal("completed", batch.Status);
         Assert.Equal(1, batch.CreatedCount);
+    }
+
+    [Fact]
+    public async Task Create_SeriesMaster_UndoDeletesTheActualSeries()
+    {
+        await using var db = CreateDb();
+        var (_, bindingId, calendarId) = await SetupStandardAsync(db, UserId);
+        var handler = new ScriptedHttpMessageHandler();
+        handler.Enqueue(HttpStatusCode.Created, SeriesMasterCreatedJson);
+        handler.Enqueue(HttpStatusCode.NoContent);
+        var service = CreateService(db, handler);
+
+        var request = new OutlookWriteRequest(
+            "create", bindingId, null,
+            MakeDraft(calendarId) with { RRule = "FREQ=DAILY;COUNT=5" },
+            "instance", OpId);
+
+        var created = await service.ExecuteAsync(UserId, request, default);
+
+        Assert.Equal("created", created.Status);
+        Assert.True(created.UndoAvailable);
+        Assert.Contains("重复日程系列", created.UserMessage);
+        Assert.True(created.Event!.IsSeriesMaster);
+        Assert.Equal("seriesMaster", created.Event.OutlookEventType);
+        Assert.Contains("recurrence", await Assert.Single(handler.Requests).Content!.ReadAsStringAsync());
+
+        var undo = await service.UndoAsync(UserId, OpId, default);
+
+        Assert.Equal("deleted", undo.Status);
+        Assert.False(undo.UndoAvailable);
+        Assert.Equal(2, handler.Requests.Count);
+        var delete = handler.Requests[1];
+        Assert.Equal(HttpMethod.Delete, delete.Method);
+        Assert.Contains("/events/graph-series-new", delete.RequestUri!.AbsoluteUri);
+        Assert.DoesNotContain("/instances", delete.RequestUri.AbsoluteUri);
+        Assert.Equal("W/\"series-etag\"", delete.Headers.IfMatch.ToString());
+
+        db.ChangeTracker.Clear();
+        var master = await db.Set<EventEntity>().IgnoreQueryFilters()
+            .SingleAsync(e => e.OutlookEventId == "graph-series-new");
+        Assert.NotNull(master.DeletedAt);
+        var originalOperation = await db.Set<OutlookWritebackOperationEntity>().SingleAsync(
+            o => o.ClientOperationId == OpId);
+        Assert.Equal("used", originalOperation.UndoState);
+        var undoOperation = await db.Set<OutlookWritebackOperationEntity>().SingleAsync(
+            o => o.UndoOfOperationId == originalOperation.Id);
+        Assert.Equal("completed", undoOperation.State);
+        Assert.Equal("series", undoOperation.Scope);
     }
 
     // ---------- 工单 04：Outlook 写回链路也要能设置 PIM 原生「期间静音」 ----------
@@ -435,9 +512,12 @@ public sealed class OutlookEventWriteServiceTests
         var request = new OutlookWriteRequest(
             "create", bindingId, null, MakeDraft(calendarId), "instance", OpId);
 
-        var ex = await Assert.ThrowsAsync<GraphRequestException>(() =>
-            service.ExecuteAsync(UserId, request, default));
-        Assert.Equal(HttpStatusCode.InternalServerError, ex.StatusCode);
+        var result = await service.ExecuteAsync(UserId, request, default);
+        Assert.Equal("error", result.Status);
+        Assert.Equal("PROVIDER_UNAVAILABLE", result.ErrorCode);
+        Assert.Equal(OpId, result.ClientOperationId);
+        Assert.False(result.NoChangesApplied);
+        Assert.Contains("clientOperationId", result.UserMessage);
 
         Assert.False(await db.Set<EventEntity>().AnyAsync());
 
@@ -446,6 +526,74 @@ public sealed class OutlookEventWriteServiceTests
         Assert.Equal("failed", batch.Status);
         Assert.Equal(1, batch.FailureCount);
         Assert.Equal(0, batch.ConfirmationCount);
+    }
+
+    [Theory]
+    [InlineData(400, "invalid-request", "GRAPH_BAD_REQUEST", true, false)]
+    [InlineData(403, "forbidden", "GRAPH_FORBIDDEN", true, false)]
+    [InlineData(404, "not-found", "GRAPH_EVENT_NOT_FOUND", true, false)]
+    [InlineData(409, "conflict", "CONFLICT", true, false)]
+    [InlineData(429, "error", "PROVIDER_RATE_LIMITED", false, true)]
+    [InlineData(500, "error", "PROVIDER_UNAVAILABLE", false, true)]
+    [InlineData(503, "error", "PROVIDER_UNAVAILABLE", false, true)]
+    public async Task Create_GraphFailure_ClassifiesDeterministicAndRetryableStatuses(
+        int statusCode, string expectedStatus, string expectedCode,
+        bool noChangesApplied, bool retryHint)
+    {
+        await using var db = CreateDb();
+        var (_, bindingId, calendarId) = await SetupStandardAsync(db, UserId);
+        var handler = new ScriptedHttpMessageHandler();
+        handler.Enqueue((HttpStatusCode)statusCode);
+        var service = CreateService(db, handler);
+
+        var request = new OutlookWriteRequest(
+            "create", bindingId, null, MakeDraft(calendarId), "instance", OpId);
+
+        var result = await service.ExecuteAsync(UserId, request, default);
+
+        Assert.Equal(expectedStatus, result.Status);
+        Assert.Equal(expectedCode, result.ErrorCode);
+        Assert.Equal(OpId, result.ClientOperationId);
+        Assert.Equal(noChangesApplied, result.NoChangesApplied);
+        Assert.False(await db.Set<EventEntity>().AnyAsync());
+        if (retryHint)
+            Assert.Contains("clientOperationId", result.UserMessage);
+        else
+            Assert.DoesNotContain("同一 clientOperationId", result.UserMessage);
+
+        var batch = Assert.Single(await db.Set<OutlookSyncBatchEntity>().ToListAsync());
+        Assert.Equal("failed", batch.Status);
+        Assert.Contains(expectedCode, batch.ErrorsJson);
+    }
+
+    [Fact]
+    public async Task Create_CallerCancellation_RethrowsButPersistsCancelledLedger()
+    {
+        await using var db = CreateDb();
+        var (_, bindingId, calendarId) = await SetupStandardAsync(db, UserId);
+        var handler = new ScriptedHttpMessageHandler();
+        using var callerCts = new CancellationTokenSource();
+        handler.Enqueue(_ =>
+        {
+            callerCts.Cancel();
+            throw new OperationCanceledException(callerCts.Token);
+        });
+        var service = CreateService(db, handler);
+
+        var request = new OutlookWriteRequest(
+            "create", bindingId, null, MakeDraft(calendarId), "instance", OpId);
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => service.ExecuteAsync(UserId, request, callerCts.Token));
+
+        db.ChangeTracker.Clear();
+        var operation = await db.Set<OutlookWritebackOperationEntity>().SingleAsync();
+        Assert.Equal("failed", operation.State);
+        Assert.Equal("CANCELLED", operation.ErrorCode);
+        Assert.False(await db.Set<EventEntity>().AnyAsync());
+        var batch = await db.Set<OutlookSyncBatchEntity>().SingleAsync();
+        Assert.Equal("failed", batch.Status);
+        Assert.Contains("cancelled", batch.ErrorsJson, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -523,8 +671,10 @@ public sealed class OutlookEventWriteServiceTests
             "update", bindingId, eventId, MakeDraft(calId), "instance", OpId,
             ExpectedEtag: "W/\"etag\"");
 
-        await Assert.ThrowsAsync<GraphRequestException>(() =>
-            service.ExecuteAsync(UserId, request, default));
+        var result = await service.ExecuteAsync(UserId, request, default);
+        Assert.Equal("error", result.Status);
+        Assert.Equal("PROVIDER_UNAVAILABLE", result.ErrorCode);
+        Assert.False(result.NoChangesApplied);
 
         db.ChangeTracker.Clear();
         var stored = await db.Set<EventEntity>().IgnoreQueryFilters().FirstAsync(e => e.Id == eventId);
@@ -1237,6 +1387,117 @@ public sealed class OutlookEventWriteServiceTests
         Assert.Contains("graph-event-1", req.RequestUri!.AbsoluteUri);
     }
 
+    [Theory]
+    [InlineData("update")]
+    [InlineData("delete")]
+    public async Task OriginalEventIdPointingAtAnotherEvent_IsRejectedBeforeGraph(string operation)
+    {
+        await using var db = CreateDb();
+        var (connectionId, bindingId, calendarId, firstEventId) = await SetupUpdateAsync(db, UserId);
+        var secondEventId = Guid.NewGuid();
+        db.Set<EventEntity>().Add(new EventEntity
+        {
+            Id = secondEventId,
+            CalendarId = calendarId,
+            Uid = "second@outlook",
+            Title = "Second Event",
+            DtStart = new DateTimeOffset(2026, 7, 8, 11, 0, 0, TimeSpan.Zero),
+            DtEnd = new DateTimeOffset(2026, 7, 8, 12, 0, 0, TimeSpan.Zero),
+            Source = "outlook",
+            Status = "CONFIRMED",
+            OutlookEventId = "graph-event-2",
+            OutlookCalendarBindingId = bindingId,
+            OutlookConnectionId = connectionId,
+            OutlookEventType = "singleInstance",
+            OutlookEtag = "W/\"second-etag\""
+        });
+        await db.SaveChangesAsync();
+
+        var handler = new ScriptedHttpMessageHandler();
+        var service = CreateService(db, handler);
+        var request = operation == "update"
+            ? new OutlookWriteRequest(
+                "update", bindingId, secondEventId, MakeDraft(calendarId),
+                "instance", OpId, OriginalEventId: firstEventId)
+            : new OutlookWriteRequest(
+                "delete", bindingId, secondEventId, null,
+                "instance", OpId, OriginalEventId: firstEventId);
+
+        var ex = await Assert.ThrowsAsync<DomainException>(
+            () => service.ExecuteAsync(UserId, request, default));
+
+        Assert.Equal(02009, ex.ErrorCode);
+        Assert.Contains("originalEventId", ex.Message);
+        Assert.Empty(handler.Requests);
+        Assert.Empty(await db.Set<OutlookSyncBatchEntity>().ToListAsync());
+        Assert.Empty(await db.Set<OutlookWritebackOperationEntity>().ToListAsync());
+        db.ChangeTracker.Clear();
+        var first = await db.Set<EventEntity>().IgnoreQueryFilters()
+            .SingleAsync(e => e.Id == firstEventId);
+        var second = await db.Set<EventEntity>().IgnoreQueryFilters()
+            .SingleAsync(e => e.Id == secondEventId);
+        Assert.Equal("Original Title", first.Title);
+        Assert.Equal("Second Event", second.Title);
+        Assert.Null(first.DeletedAt);
+        Assert.Null(second.DeletedAt);
+    }
+
+    [Fact]
+    public async Task OriginalEventIdPointingAtNonMaster_IsRejectedBeforeGraph()
+    {
+        await using var db = CreateDb();
+        var (_, bindingId, _, eventId) = await SetupUpdateAsync(db, UserId);
+        var handler = new ScriptedHttpMessageHandler();
+        var service = CreateService(db, handler);
+        var request = new OutlookWriteRequest(
+            "delete",
+            bindingId,
+            Guid.NewGuid(),
+            null,
+            "instance",
+            OpId,
+            OriginalEventId: eventId,
+            RecurrenceId: "2026-07-09T09:00:00.0000000Z");
+
+        var ex = await Assert.ThrowsAsync<DomainException>(
+            () => service.ExecuteAsync(UserId, request, default));
+
+        Assert.Equal(02009, ex.ErrorCode);
+        Assert.Contains("系列主事件", ex.Message);
+        Assert.Empty(handler.Requests);
+        Assert.Empty(await db.Set<OutlookSyncBatchEntity>().ToListAsync());
+    }
+
+    [Theory]
+    [InlineData("update")]
+    [InlineData("delete")]
+    public async Task DeletedCalendar_RejectsWriteInsteadOfTreatingEventAsSynthetic(string operation)
+    {
+        await using var db = CreateDb();
+        var (_, bindingId, calendarId, eventId) = await SetupUpdateAsync(db, UserId);
+        var calendar = await db.Set<CalendarEntity>().SingleAsync(c => c.Id == calendarId);
+        calendar.DeletedAt = new DateTimeOffset(2026, 7, 8, 0, 0, 0, TimeSpan.Zero);
+        await db.SaveChangesAsync();
+
+        var handler = new ScriptedHttpMessageHandler();
+        var service = CreateService(db, handler);
+        var request = operation == "update"
+            ? new OutlookWriteRequest(
+                "update", bindingId, eventId, MakeDraft(calendarId), "instance", OpId)
+            : new OutlookWriteRequest(
+                "delete", bindingId, eventId, null, "instance", OpId);
+
+        var ex = await Assert.ThrowsAsync<DomainException>(
+            () => service.ExecuteAsync(UserId, request, default));
+
+        Assert.Equal(02009, ex.ErrorCode);
+        Assert.Contains("日历已被删除", ex.Message);
+        Assert.Empty(handler.Requests);
+        db.ChangeTracker.Clear();
+        Assert.Empty(await db.Set<OutlookSyncBatchEntity>().ToListAsync());
+        Assert.Empty(await db.Set<OutlookWritebackOperationEntity>().ToListAsync());
+    }
+
     [Fact]
     public async Task Update_SyntheticOccurrence_ResolvesOccurrenceId_PersistsException_NotMaster()
     {
@@ -1244,7 +1505,7 @@ public sealed class OutlookEventWriteServiceTests
         var (connectionId, bindingId, calendarId) = await SetupStandardAsync(db, UserId);
         var (masterId, recurrenceId) = await SeedSyntheticOccurrenceSeriesAsync(
             db, connectionId, bindingId, calendarId);
-        var syntheticOccurrenceId = Guid.NewGuid();
+        var syntheticOccurrenceId = SyntheticOccurrenceId(masterId, recurrenceId);
         var handler = new ScriptedHttpMessageHandler();
         handler.Enqueue(HttpStatusCode.OK, SeriesOccurrenceListJson);
         handler.Enqueue(HttpStatusCode.OK, SeriesOccurrenceExceptionJson);
@@ -1303,7 +1564,7 @@ public sealed class OutlookEventWriteServiceTests
         var request = new OutlookWriteRequest(
             "update",
             bindingId,
-            Guid.NewGuid(),
+            SyntheticOccurrenceId(masterId, recurrenceId),
             MakeDraft(calendarId),
             "instance",
             OpId,
@@ -1335,7 +1596,7 @@ public sealed class OutlookEventWriteServiceTests
         var request = new OutlookWriteRequest(
             "update",
             bindingId,
-            Guid.NewGuid(),
+            SyntheticOccurrenceId(masterId, recurrenceId),
             MakeDraft(calendarId) with
             {
                 Title = "Changed occurrence",
@@ -1386,7 +1647,7 @@ public sealed class OutlookEventWriteServiceTests
         var (connectionId, bindingId, calendarId) = await SetupStandardAsync(db, UserId);
         var (masterId, recurrenceId) = await SeedSyntheticOccurrenceSeriesAsync(
             db, connectionId, bindingId, calendarId);
-        var syntheticOccurrenceId = Guid.NewGuid();
+        var syntheticOccurrenceId = SyntheticOccurrenceId(masterId, recurrenceId);
         var handler = new ScriptedHttpMessageHandler();
         handler.Enqueue(HttpStatusCode.OK, SeriesOccurrenceListJson);
         handler.Enqueue(HttpStatusCode.NoContent);
@@ -1475,7 +1736,7 @@ public sealed class OutlookEventWriteServiceTests
         var request = new OutlookWriteRequest(
             "update",
             bindingId,
-            Guid.NewGuid(),
+            SyntheticOccurrenceId(masterId, recurrenceId),
             MakeDraft(calendarId),
             "instance",
             OpId,
@@ -2044,7 +2305,7 @@ public sealed class OutlookEventWriteServiceTests
     // ---------- Fix 3: Cancellation and post-Graph persistence ----------
 
     [Fact]
-    public async Task Create_GraphTimeout_FailedBatchPersisted_OperationCanceledRethrown()
+    public async Task Create_GraphTimeout_ReturnsStructuredUnknownRetryReceipt()
     {
         await using var db = CreateDb();
         var (_, bindingId, calendarId) = await SetupStandardAsync(db, UserId);
@@ -2055,8 +2316,13 @@ public sealed class OutlookEventWriteServiceTests
         var request = new OutlookWriteRequest(
             "create", bindingId, null, MakeDraft(calendarId), "instance", OpId);
 
-        await Assert.ThrowsAsync<OperationCanceledException>(() =>
-            service.ExecuteAsync(UserId, request, default));
+        var result = await service.ExecuteAsync(UserId, request, default);
+
+        Assert.Equal("unknown", result.Status);
+        Assert.Equal("PROVIDER_TIMEOUT", result.ErrorCode);
+        Assert.Equal(OpId, result.ClientOperationId);
+        Assert.False(result.NoChangesApplied);
+        Assert.Contains("clientOperationId", result.UserMessage);
 
         Assert.False(await db.Set<EventEntity>().AnyAsync());
         var batches = await db.Set<OutlookSyncBatchEntity>().ToListAsync();
@@ -2067,7 +2333,7 @@ public sealed class OutlookEventWriteServiceTests
     }
 
     [Fact]
-    public async Task Update_GraphTimeout_FailedBatchPersisted_OperationCanceledRethrown()
+    public async Task Update_GraphTimeout_ReturnsStructuredUnknownRetryReceipt()
     {
         await using var db = CreateDb();
         var (_, bindingId, calendarId, eventId) = await SetupUpdateAsync(db, UserId);
@@ -2081,8 +2347,12 @@ public sealed class OutlookEventWriteServiceTests
             "update", bindingId, eventId, MakeDraft(calendarId), "instance", OpId,
             ExpectedEtag: "W/\"etag\"");
 
-        await Assert.ThrowsAsync<OperationCanceledException>(() =>
-            service.ExecuteAsync(UserId, request, default));
+        var result = await service.ExecuteAsync(UserId, request, default);
+
+        Assert.Equal("unknown", result.Status);
+        Assert.Equal("PROVIDER_TIMEOUT", result.ErrorCode);
+        Assert.Equal(OpId, result.ClientOperationId);
+        Assert.False(result.NoChangesApplied);
 
         db.ChangeTracker.Clear();
         var stored = await db.Set<EventEntity>().IgnoreQueryFilters().FirstAsync(e => e.Id == eventId);
@@ -2097,7 +2367,7 @@ public sealed class OutlookEventWriteServiceTests
     // ---------- Fix 1 (task): 412 recovery cancellation ----------
 
     [Fact]
-    public async Task Update412BecauseOfCancelDuringGetEvent_FailedBatch_OperationCanceledRethrown()
+    public async Task Update412BecauseOfTimeoutDuringGetEvent_ReturnsStructuredFailure()
     {
         await using var db = CreateDb();
         var (_, bindingId, calendarId, eventId) = await SetupUpdateAsync(db, UserId);
@@ -2113,8 +2383,12 @@ public sealed class OutlookEventWriteServiceTests
             "update", bindingId, eventId, MakeDraft(calendarId), "instance", OpId,
             ExpectedEtag: "W/\"stale-etag\"");
 
-        await Assert.ThrowsAsync<OperationCanceledException>(() =>
-            service.ExecuteAsync(UserId, request, default));
+        var result = await service.ExecuteAsync(UserId, request, default);
+
+        Assert.Equal("unknown", result.Status);
+        Assert.Equal("PROVIDER_TIMEOUT", result.ErrorCode);
+        Assert.True(result.NoChangesApplied);
+        Assert.Equal(OpId, result.ClientOperationId);
 
         db.ChangeTracker.Clear();
         var stored = await db.Set<EventEntity>().IgnoreQueryFilters().FirstAsync(e => e.Id == eventId);
@@ -2130,7 +2404,7 @@ public sealed class OutlookEventWriteServiceTests
     }
 
     [Fact]
-    public async Task Delete412BecauseOfCancelDuringGetEvent_FailedBatch_OperationCanceledRethrown()
+    public async Task Delete412BecauseOfTimeoutDuringGetEvent_ReturnsStructuredFailure()
     {
         await using var db = CreateDb();
         var (_, bindingId, _, eventId) = await SetupUpdateAsync(db, UserId);
@@ -2145,8 +2419,12 @@ public sealed class OutlookEventWriteServiceTests
             "delete", bindingId, eventId, null, "instance", OpId,
             ExpectedEtag: "W/\"stale-etag\"");
 
-        await Assert.ThrowsAsync<OperationCanceledException>(() =>
-            service.ExecuteAsync(UserId, request, default));
+        var result = await service.ExecuteAsync(UserId, request, default);
+
+        Assert.Equal("unknown", result.Status);
+        Assert.Equal("PROVIDER_TIMEOUT", result.ErrorCode);
+        Assert.True(result.NoChangesApplied);
+        Assert.Equal(OpId, result.ClientOperationId);
 
         db.ChangeTracker.Clear();
         var stored = await db.Set<EventEntity>().IgnoreQueryFilters().FirstAsync(e => e.Id == eventId);
@@ -2269,7 +2547,7 @@ public sealed class OutlookEventWriteServiceTests
     }
 
     [Fact]
-    public async Task Create_CompletionSaveFailure_MarksOutcomeUnknownAndBlocksReplay()
+    public async Task Create_CompletionSaveFailure_ReturnsStructuredUnknownAndBlocksReplay()
     {
         var db = CreateCountingDb();
         var (_, bindingId, calendarId) = await SetupStandardAsync(db, UserId);
@@ -2282,8 +2560,13 @@ public sealed class OutlookEventWriteServiceTests
         var request = new OutlookWriteRequest(
             "create", bindingId, null, MakeDraft(calendarId), "instance", OpId);
 
-        await Assert.ThrowsAsync<InvalidOperationException>(
-            () => service.ExecuteAsync(UserId, request, default));
+        var first = await service.ExecuteAsync(UserId, request, default);
+
+        Assert.Equal("unknown", first.Status);
+        Assert.Equal("OPERATION_OUTCOME_UNKNOWN", first.ErrorCode);
+        Assert.Equal(OpId, first.ClientOperationId);
+        Assert.False(first.NoChangesApplied);
+        Assert.Contains("先在 Outlook 核对", first.UserMessage);
 
         db.ChangeTracker.Clear();
         var operation = await db.Set<OutlookWritebackOperationEntity>().SingleAsync();
@@ -2293,7 +2576,7 @@ public sealed class OutlookEventWriteServiceTests
         Assert.Single(handler.Requests);
 
         var replay = await service.ExecuteAsync(UserId, request, default);
-        Assert.Equal("conflict", replay.Status);
+        Assert.Equal("unknown", replay.Status);
         Assert.Equal("OPERATION_OUTCOME_UNKNOWN", replay.ErrorCode);
         Assert.Single(handler.Requests);
     }
@@ -2625,8 +2908,8 @@ public sealed class OutlookEventWriteServiceTests
         var request = new OutlookWriteRequest(
             "create", bindingId, null, MakeDraft(calendarId), "instance", OpId);
 
-        await Assert.ThrowsAsync<GraphRequestException>(
-            () => service.ExecuteAsync(UserId, request, default));
+        var failed = await service.ExecuteAsync(UserId, request, default);
+        Assert.Equal("error", failed.Status);
         var operation = await db.Set<OutlookWritebackOperationEntity>().SingleAsync();
         operation.State = "processing";
         await db.SaveChangesAsync();
@@ -2650,8 +2933,8 @@ public sealed class OutlookEventWriteServiceTests
         var request = new OutlookWriteRequest(
             "create", bindingId, null, MakeDraft(calendarId), "instance", OpId);
 
-        await Assert.ThrowsAsync<GraphRequestException>(
-            () => service.ExecuteAsync(UserId, request, default));
+        var failed = await service.ExecuteAsync(UserId, request, default);
+        Assert.Equal("error", failed.Status);
         var operation = await db.Set<OutlookWritebackOperationEntity>().SingleAsync();
         operation.State = "processing";
         operation.UpdatedAt = clock.GetUtcNow() - TimeSpan.FromMinutes(3);
@@ -2659,7 +2942,7 @@ public sealed class OutlookEventWriteServiceTests
 
         var replay = await service.ExecuteAsync(UserId, request, default);
 
-        Assert.Equal("conflict", replay.Status);
+        Assert.Equal("unknown", replay.Status);
         Assert.Equal("OPERATION_OUTCOME_UNKNOWN", replay.ErrorCode);
         Assert.Single(handler.Requests);
         Assert.Equal("unknown", operation.State);
@@ -2678,8 +2961,9 @@ public sealed class OutlookEventWriteServiceTests
         var request = new OutlookWriteRequest(
             "create", bindingId, null, MakeDraft(calendarId), "instance", OpId);
 
-        await Assert.ThrowsAsync<GraphRequestException>(
-            () => service.ExecuteAsync(UserId, request, default));
+        var failed = await service.ExecuteAsync(UserId, request, default);
+        Assert.Equal("error", failed.Status);
+        Assert.Equal("PROVIDER_UNAVAILABLE", failed.ErrorCode);
         var result = await service.ExecuteAsync(UserId, request, default);
 
         Assert.Equal("created", result.Status);
@@ -4436,6 +4720,14 @@ public sealed class OutlookEventWriteServiceTests
         return new OutlookEventWriteService(
             db, graph, audit, timeProvider, logger);
     }
+
+    private static Guid SyntheticOccurrenceId(Guid masterId, string recurrenceId)
+        => RecurrenceService.DeriveOccurrenceId(
+            masterId,
+            DateTimeOffset.Parse(
+                recurrenceId,
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.RoundtripKind));
 
     private static CreateEventRequest MakeDraft(Guid calendarId) => new(
         CalendarId: calendarId,
