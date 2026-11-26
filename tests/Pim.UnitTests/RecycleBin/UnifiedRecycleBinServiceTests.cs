@@ -308,6 +308,57 @@ public sealed class UnifiedRecycleBinServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task Operation_StaleProcessingTokenCannotRenewCompleteOrReleaseNewClaim()
+    {
+        var operationKey = Guid.NewGuid();
+        var first = await _service.ClaimOperationAsync(
+            operationKey, "restore", "payload", default);
+        var staleToken = first.Operation.ProcessingToken;
+        Assert.Null(first.Replay);
+
+        first.Operation.LeaseExpiresAt = DateTimeOffset.UtcNow.AddMinutes(-1);
+        await _db.SaveChangesAsync();
+
+        var second = await _service.ClaimOperationAsync(
+            operationKey, "restore", "payload", default);
+        var newToken = second.Operation.ProcessingToken;
+        Assert.NotEqual(staleToken, newToken);
+
+        await _service.ReleaseOperationAsync(first.Operation.Id, staleToken, default);
+        var afterRelease = await _db.RecycleBinOperations.AsNoTracking()
+            .SingleAsync(row => row.Id == first.Operation.Id);
+        Assert.Equal(RecycleBinOperationStatuses.Running, afterRelease.Status);
+        Assert.Equal(newToken, afterRelease.ProcessingToken);
+        Assert.True(afterRelease.LeaseExpiresAt > DateTimeOffset.UtcNow);
+
+        var staleRenew = await Assert.ThrowsAsync<DomainException>(() =>
+            _service.RenewOperationLeaseAsync(first.Operation.Id, staleToken, default));
+        Assert.Equal(40904, staleRenew.ErrorCode);
+
+        var receipt = new RecycleBinBatchReceiptDto(
+            Guid.NewGuid(), operationKey, "restore", 0, 0, 0, []);
+        var staleComplete = await Assert.ThrowsAsync<DomainException>(() =>
+            _service.CompleteOperationAsync(
+                first.Operation.Id, staleToken, receipt, default));
+        Assert.Equal(40904, staleComplete.ErrorCode);
+
+        var afterStale = await _db.RecycleBinOperations.AsNoTracking()
+            .SingleAsync(row => row.Id == first.Operation.Id);
+        Assert.Equal(RecycleBinOperationStatuses.Running, afterStale.Status);
+        Assert.Equal(newToken, afterStale.ProcessingToken);
+        Assert.Null(afterStale.ReceiptJson);
+
+        await _service.RenewOperationLeaseAsync(first.Operation.Id, newToken, default);
+        var completed = await _service.CompleteOperationAsync(
+            first.Operation.Id, newToken, receipt, default);
+        Assert.Equal(receipt.ReceiptId, completed.ReceiptId);
+        var final = await _db.RecycleBinOperations.AsNoTracking()
+            .SingleAsync(row => row.Id == first.Operation.Id);
+        Assert.Equal(RecycleBinOperationStatuses.Completed, final.Status);
+        Assert.NotNull(final.ReceiptJson);
+    }
+
+    [Fact]
     public async Task BatchRestore_StaleExpectedDeletedAtFailsClosed()
     {
         var note = await SeedNoteAsync(_user, "需要刷新的笔记");
@@ -688,6 +739,189 @@ public sealed class UnifiedRecycleBinServiceTests : IDisposable
         Assert.Equal(RecycleBinPurgePhases.Abandoned,
             (await _db.RecycleBinPurgeIntents.AsNoTracking()
                 .SingleAsync(row => row.Id == pending.Id)).Phase);
+    }
+
+    [Fact]
+    public async Task NotePurge_ContributorFailureThenRestore_OldTokenRetryFailsClosed()
+    {
+        var note = await SeedNoteAsync(_user, "贡献者预检失败后恢复的笔记");
+        await _notes.SoftDeleteAsync(_user, note.NoteId);
+        var deleted = await _materials.GetDeletedAsync(_user, note.NoteId);
+        var failingNotes = new NativeNoteRecycleService(
+            _db,
+            _materials,
+            _derived,
+            _asr,
+            _audit,
+            purgeContributors: [new ThrowingPurgeContributor()]);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            failingNotes.PurgeAsync(_user, note.NoteId, deleted!.DeletedAt));
+
+        var pending = await _db.RecycleBinPurgeIntents.AsNoTracking()
+            .SingleAsync(row => row.UserId == _user
+                && row.Domain == "note"
+                && row.ItemId == note.NoteId);
+        Assert.Equal(RecycleBinPurgePhases.Pending, pending.Phase);
+        Assert.Null(pending.LeaseToken);
+        Assert.NotNull(pending.LastError);
+
+        var restored = await _service.RestoreAsync(
+            Batch((RecycleBinDomains.Note, note.NoteId)));
+        Assert.Equal(RecycleBinItemStatuses.Success, Assert.Single(restored.Items).Status);
+
+        var withOldToken = await _service.PurgeAsync(new RecycleBinBatchRequest(
+        [
+            new RecycleBinItemRef(RecycleBinDomains.Note, note.NoteId, deleted.DeletedAt)
+        ]));
+        var withoutToken = await _service.PurgeAsync(
+            Batch((RecycleBinDomains.Note, note.NoteId)));
+        var oldTokenResult = Assert.Single(withOldToken.Items);
+        var tokenlessResult = Assert.Single(withoutToken.Items);
+        Assert.Equal(RecycleBinItemStatuses.Failed, oldTokenResult.Status);
+        Assert.Equal(40901, oldTokenResult.ErrorCode);
+        Assert.Equal(RecycleBinItemStatuses.Failed, tokenlessResult.Status);
+        Assert.Equal(40901, tokenlessResult.ErrorCode);
+
+        var current = await _materials.GetCurrentAsync(_user, note.NoteId);
+        Assert.Equal(note.VersionId, current.Upload.VersionId);
+        Assert.NotNull(await _materials.GetAsync(_user, note.VersionId));
+        Assert.Contains((await _materials.ListNativeNotesAsync(_user, 0, 50)).Items,
+            item => item.NoteId == note.NoteId);
+        Assert.Empty(await _db.AuditLogs
+            .Where(row => row.Action == "recycle_bin.note.purge"
+                && row.ResourceId == note.NoteId.ToString("D"))
+            .ToListAsync());
+        Assert.Equal(RecycleBinPurgePhases.Abandoned,
+            (await _db.RecycleBinPurgeIntents.AsNoTracking()
+                .SingleAsync(row => row.Id == pending.Id)).Phase);
+    }
+
+    [Fact]
+    public async Task PurgeIntent_StaleLeaseTokenCannotRenewCompleteOrReleaseNewClaim()
+    {
+        var note = await SeedNoteAsync(_user, "清理租约令牌回归");
+        await _notes.SoftDeleteAsync(_user, note.NoteId);
+        var deleted = await _materials.GetDeletedAsync(_user, note.NoteId);
+
+        var first = await _notes.ClaimIntentAsync(
+            _user, note.NoteId, deleted!.DeletedAt, deleted.Title, default);
+        var staleToken = first.LeaseToken!.Value;
+        first.LeaseExpiresAt = DateTimeOffset.UtcNow.AddMinutes(-1);
+        await _db.SaveChangesAsync();
+
+        var second = await _notes.ClaimIntentAsync(
+            _user, note.NoteId, deleted.DeletedAt, deleted.Title, default);
+        var newToken = second.LeaseToken!.Value;
+        Assert.NotEqual(staleToken, newToken);
+
+        await _notes.ReleaseIntentAsync(first.Id, staleToken, "stale release", default);
+        var afterRelease = await _db.RecycleBinPurgeIntents.AsNoTracking()
+            .SingleAsync(row => row.Id == first.Id);
+        Assert.Equal(RecycleBinPurgePhases.Pending, afterRelease.Phase);
+        Assert.Equal<Guid?>(newToken, afterRelease.LeaseToken);
+        Assert.True(afterRelease.LeaseExpiresAt > DateTimeOffset.UtcNow);
+        Assert.Null(afterRelease.LastError);
+
+        var staleRenew = await Assert.ThrowsAsync<DomainException>(() =>
+            _notes.RenewIntentLeaseAsync(first.Id, staleToken, default));
+        Assert.Equal(40901, staleRenew.ErrorCode);
+        var staleComplete = await Assert.ThrowsAsync<DomainException>(() =>
+            _notes.MarkCompletedAsync(first.Id, staleToken, default));
+        Assert.Equal(40901, staleComplete.ErrorCode);
+
+        var afterStale = await _db.RecycleBinPurgeIntents.AsNoTracking()
+            .SingleAsync(row => row.Id == first.Id);
+        Assert.Equal(RecycleBinPurgePhases.Pending, afterStale.Phase);
+        Assert.Equal<Guid?>(newToken, afterStale.LeaseToken);
+
+        await _notes.RenewIntentLeaseAsync(first.Id, newToken, default);
+        await _notes.MarkCompletedAsync(first.Id, newToken, default);
+        var completed = await _db.RecycleBinPurgeIntents.AsNoTracking()
+            .SingleAsync(row => row.Id == first.Id);
+        Assert.Equal(RecycleBinPurgePhases.Completed, completed.Phase);
+        Assert.Null(completed.LeaseToken);
+    }
+
+    [Fact]
+    public async Task PurgeIntent_LeaseWithoutExpiryCannotBeStolen()
+    {
+        var note = await SeedNoteAsync(_user, "无过期时间的清理租约");
+        await _notes.SoftDeleteAsync(_user, note.NoteId);
+        var deleted = await _materials.GetDeletedAsync(_user, note.NoteId);
+        var intent = await _notes.ClaimIntentAsync(
+            _user, note.NoteId, deleted!.DeletedAt, deleted.Title, default);
+
+        intent.LeaseExpiresAt = null;
+        await _db.SaveChangesAsync();
+
+        var stolen = await Assert.ThrowsAsync<DomainException>(() =>
+            _notes.ClaimIntentAsync(
+                _user, note.NoteId, deleted.DeletedAt, deleted.Title, default));
+        Assert.Equal(40901, stolen.ErrorCode);
+        var after = await _db.RecycleBinPurgeIntents.AsNoTracking()
+            .SingleAsync(row => row.Id == intent.Id);
+        Assert.Equal(intent.LeaseToken, after.LeaseToken);
+        Assert.Null(after.LeaseExpiresAt);
+    }
+
+    [Fact]
+    public async Task NoteRestore_ActivePurgeLeaseFailsClosed()
+    {
+        var note = await SeedNoteAsync(_user, "永久清理进行中不能恢复");
+        await _notes.SoftDeleteAsync(_user, note.NoteId);
+        var deleted = await _materials.GetDeletedAsync(_user, note.NoteId);
+        var intent = await _notes.ClaimIntentAsync(
+            _user, note.NoteId, deleted!.DeletedAt, deleted.Title, default);
+        Assert.NotNull(intent.LeaseToken);
+
+        var blocked = await _service.RestoreAsync(new RecycleBinBatchRequest(
+        [
+            new RecycleBinItemRef(RecycleBinDomains.Note, note.NoteId, deleted.DeletedAt)
+        ]));
+        var blockedResult = Assert.Single(blocked.Items);
+        Assert.Equal(RecycleBinItemStatuses.Failed, blockedResult.Status);
+        Assert.Equal(40901, blockedResult.ErrorCode);
+        Assert.NotNull(await _materials.GetDeletedAsync(_user, note.NoteId));
+        Assert.NotNull(await _materials.GetAsync(_user, note.VersionId));
+
+        await _notes.ReleaseIntentAsync(
+            intent.Id, intent.LeaseToken!.Value, "synthetic failed purge", default);
+        var restored = await _service.RestoreAsync(new RecycleBinBatchRequest(
+        [
+            new RecycleBinItemRef(RecycleBinDomains.Note, note.NoteId, deleted.DeletedAt)
+        ]));
+        Assert.Equal(RecycleBinItemStatuses.Success, Assert.Single(restored.Items).Status);
+        Assert.Equal(note.VersionId,
+            (await _materials.GetCurrentAsync(_user, note.NoteId)).Upload.VersionId);
+    }
+
+    [Fact]
+    public async Task NoteRestore_ExpiredPurgeLeaseFencesOffStaleWorker()
+    {
+        var note = await SeedNoteAsync(_user, "过期清理租约不能阻塞恢复");
+        await _notes.SoftDeleteAsync(_user, note.NoteId);
+        var deleted = await _materials.GetDeletedAsync(_user, note.NoteId);
+        var intent = await _notes.ClaimIntentAsync(
+            _user, note.NoteId, deleted!.DeletedAt, deleted.Title, default);
+        var staleToken = intent.LeaseToken!.Value;
+        intent.LeaseExpiresAt = DateTimeOffset.UtcNow.AddMinutes(-1);
+        await _db.SaveChangesAsync();
+
+        var restored = await _service.RestoreAsync(new RecycleBinBatchRequest(
+        [
+            new RecycleBinItemRef(RecycleBinDomains.Note, note.NoteId, deleted.DeletedAt)
+        ]));
+        Assert.Equal(RecycleBinItemStatuses.Success, Assert.Single(restored.Items).Status);
+        Assert.Equal(note.VersionId,
+            (await _materials.GetCurrentAsync(_user, note.NoteId)).Upload.VersionId);
+
+        var fenced = await _db.RecycleBinPurgeIntents.AsNoTracking()
+            .SingleAsync(row => row.Id == intent.Id);
+        Assert.Equal(RecycleBinPurgePhases.Abandoned, fenced.Phase);
+        Assert.Null(fenced.LeaseToken);
+        await Assert.ThrowsAsync<DomainException>(() =>
+            _notes.RenewIntentLeaseAsync(intent.Id, staleToken, default));
     }
 
     [Fact]
@@ -1097,5 +1331,13 @@ public sealed class UnifiedRecycleBinServiceTests : IDisposable
     private sealed class FixedClock(DateTimeOffset now) : TimeProvider
     {
         public override DateTimeOffset GetUtcNow() => now;
+    }
+
+    private sealed class ThrowingPurgeContributor : INotePurgeContributor
+    {
+        public Task<NotePurgeContribution> StagePurgeAsync(Guid owner, Guid noteId,
+            CancellationToken ct) =>
+            throw new InvalidOperationException(
+                "Synthetic preflight failure before purge inventory is persisted.");
     }
 }

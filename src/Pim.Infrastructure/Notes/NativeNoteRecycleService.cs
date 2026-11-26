@@ -101,6 +101,10 @@ public sealed class NativeNoteRecycleService(
             return new NativeNoteRecycleResult(noteId, "笔记", false, "笔记已在笔记库中，无需重复恢复");
         }
 
+        // A purge worker may have claimed the intent but not yet marked the ledger. Refuse
+        // to restore while its lease is live; an expired lease is reclaimed conditionally
+        // so that worker cannot renew or complete after the restore wins.
+        await FenceRestoreAgainstActivePurgeAsync(owner, noteId, deleted.DeletedAt, ct);
         var restored = await materials.RestoreSoftDeletedAsync(owner, noteId, expectedDeletedAt, ct);
         if (!restored)
         {
@@ -207,6 +211,7 @@ public sealed class NativeNoteRecycleService(
             var effectiveExpected = deleted.DeletedAt;
             if (intent.Phase == RecycleBinPurgePhases.DbCommitted)
             {
+                await RenewIntentLeaseAsync(intent.Id, leaseToken, ct);
                 await materials.CompletePurgeAsync(owner, noteId, effectiveExpected, ct);
                 await MarkCompletedAsync(intent.Id, leaseToken, ct);
                 return Result(intent);
@@ -289,6 +294,8 @@ public sealed class NativeNoteRecycleService(
                 logIds.UnionWith(sourceLogIds);
             }
 
+            // Refresh the lease before the potentially slow inventory/contributor work.
+            await RenewIntentLeaseAsync(intent.Id, leaseToken, ct);
             if (purgeContributors is not null)
             {
                 foreach (var contributor in purgeContributors)
@@ -309,10 +316,18 @@ public sealed class NativeNoteRecycleService(
             intent.DerivedTasks = Math.Max(intent.DerivedTasks, derivedTaskIds.Count);
             intent.AiCalls = Math.Max(intent.AiCalls, logIds.Count);
             intent.UpdatedAt = now;
-            await db.SaveChangesAsync(ct);
 
+            // Mark the ledger before committing staged deletions. If a restore won the race,
+            // this mark fails and SaveChanges never commits partial contributor deletes.
+            await AssertIntentLeaseAsync(intent.Id, leaseToken, ct);
             if (deleted is not null)
                 await materials.MarkPurgeStartedAsync(owner, noteId, effectiveExpected, ct);
+            await db.SaveChangesAsync(ct);
+
+            // Destructive filesystem work can take longer than one lease window. Renew after
+            // the inventory commit and re-check the token again before the final PostgreSQL
+            // commit, whose intent update is itself fenced by the LeaseToken concurrency token.
+            await RenewIntentLeaseAsync(intent.Id, leaseToken, ct);
             var logIdSet = logIds.ToArray();
             var logs = logIdSet.Length == 0
                 ? new List<AiRequestLogEntity>()
@@ -424,6 +439,7 @@ public sealed class NativeNoteRecycleService(
             intent.AiAudio = finalCounts.AiAudio;
             intent.LastError = null;
             intent.UpdatedAt = DateTimeOffset.UtcNow;
+            await AssertIntentLeaseAsync(intent.Id, leaseToken, ct);
             // One SaveChanges is the PostgreSQL commit: deleted rows, audit row and the
             // durable "database committed" phase either all land or all roll back.
             await db.SaveChangesAsync(ct);
@@ -480,7 +496,7 @@ public sealed class NativeNoteRecycleService(
             .OrderByDescending(row => row.CreatedAt)
             .FirstOrDefaultAsync(ct);
 
-    private Task<RecycleBinPurgeIntentEntity> ClaimIntentAsync(
+    internal Task<RecycleBinPurgeIntentEntity> ClaimIntentAsync(
         Guid owner, Guid noteId, DateTimeOffset deletionAt, string title,
         CancellationToken ct)
     {
@@ -531,7 +547,7 @@ public sealed class NativeNoteRecycleService(
                 // the lease immediately instead of waiting for a crashed attempt to expire.
                 if (intent.Phase != RecycleBinPurgePhases.DbCommitted
                     && intent.LeaseToken.HasValue
-                    && intent.LeaseExpiresAt > now)
+                    && (intent.LeaseExpiresAt is null || intent.LeaseExpiresAt > now))
                     throw new DomainException(40901, "该笔记的永久清理正在进行，请稍后重试");
 
                 if (intent.Phase != RecycleBinPurgePhases.DbCommitted)
@@ -578,6 +594,51 @@ public sealed class NativeNoteRecycleService(
             ids.Distinct().OrderBy(id => id).Select(id => id.ToString("D")).ToArray(),
             Json);
 
+    internal async Task RenewIntentLeaseAsync(
+        Guid intentId, Guid leaseToken, CancellationToken ct)
+    {
+        var now = DateTimeOffset.UtcNow;
+        if (db.Database.IsRelational())
+        {
+            var updated = await db.RecycleBinPurgeIntents
+                .Where(row => row.Id == intentId
+                    && row.LeaseToken == leaseToken
+                    && row.Phase != RecycleBinPurgePhases.Completed
+                    && row.Phase != RecycleBinPurgePhases.Abandoned)
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(row => row.LeaseExpiresAt, now.Add(PurgeLease))
+                    .SetProperty(row => row.UpdatedAt, now), ct);
+            if (updated == 0)
+                throw new DomainException(40901, "笔记永久清理租约已变化，请刷新后重试");
+            return;
+        }
+
+        var intent = await db.RecycleBinPurgeIntents
+            .SingleOrDefaultAsync(row => row.Id == intentId, ct)
+            ?? throw new DomainException(40901, "笔记永久清理意图不存在，请刷新后重试");
+        if (intent.LeaseToken != leaseToken
+            || intent.Phase is RecycleBinPurgePhases.Completed
+                or RecycleBinPurgePhases.Abandoned)
+            throw new DomainException(40901, "笔记永久清理租约已变化，请刷新后重试");
+        intent.LeaseExpiresAt = now.Add(PurgeLease);
+        intent.UpdatedAt = now;
+        await db.SaveChangesAsync(ct);
+    }
+
+    internal async Task AssertIntentLeaseAsync(
+        Guid intentId, Guid leaseToken, CancellationToken ct)
+    {
+        var intent = await db.RecycleBinPurgeIntents.AsNoTracking()
+            .SingleOrDefaultAsync(row => row.Id == intentId, ct)
+            ?? throw new DomainException(40901, "笔记永久清理意图不存在，请刷新后重试");
+        if (intent.LeaseToken != leaseToken
+            || intent.Phase is RecycleBinPurgePhases.Completed
+                or RecycleBinPurgePhases.Abandoned
+            || intent.LeaseExpiresAt is null
+            || intent.LeaseExpiresAt <= DateTimeOffset.UtcNow)
+            throw new DomainException(40901, "笔记永久清理租约已变化或已过期，请刷新后重试");
+    }
+
     internal async Task MarkCompletedAsync(
         Guid intentId, Guid leaseToken, CancellationToken ct)
     {
@@ -587,7 +648,8 @@ public sealed class NativeNoteRecycleService(
             var updated = await db.RecycleBinPurgeIntents
                 .Where(row => row.Id == intentId
                     && row.LeaseToken == leaseToken
-                    && row.Phase != RecycleBinPurgePhases.Completed)
+                    && row.Phase != RecycleBinPurgePhases.Completed
+                    && row.Phase != RecycleBinPurgePhases.Abandoned)
                 .ExecuteUpdateAsync(setters => setters
                     .SetProperty(row => row.Phase, RecycleBinPurgePhases.Completed)
                     .SetProperty(row => row.LeaseToken, (Guid?)null)
@@ -612,7 +674,8 @@ public sealed class NativeNoteRecycleService(
             ?? throw new DomainException(40901, "笔记永久清理意图不存在，请刷新后重试");
         if (intent.Phase == RecycleBinPurgePhases.Completed)
             return;
-        if (intent.LeaseToken != leaseToken)
+        if (intent.Phase == RecycleBinPurgePhases.Abandoned
+            || intent.LeaseToken != leaseToken)
             throw new DomainException(40901, "笔记永久清理租约已变化，未覆盖新的处理回执");
         intent.Phase = RecycleBinPurgePhases.Completed;
         intent.LeaseToken = null;
@@ -634,7 +697,8 @@ public sealed class NativeNoteRecycleService(
                 await db.RecycleBinPurgeIntents
                     .Where(row => row.Id == intentId
                         && row.LeaseToken == leaseToken
-                        && row.Phase != RecycleBinPurgePhases.Completed)
+                        && row.Phase != RecycleBinPurgePhases.Completed
+                        && row.Phase != RecycleBinPurgePhases.Abandoned)
                     .ExecuteUpdateAsync(setters => setters
                         .SetProperty(row => row.LeaseToken, (Guid?)null)
                         .SetProperty(row => row.LeaseExpiresAt, (DateTimeOffset?)null)
@@ -647,6 +711,7 @@ public sealed class NativeNoteRecycleService(
                 .SingleOrDefaultAsync(row => row.Id == intentId, ct);
             if (intent is null
                 || intent.Phase == RecycleBinPurgePhases.Completed
+                || intent.Phase == RecycleBinPurgePhases.Abandoned
                 || intent.LeaseToken != leaseToken)
                 return;
             intent.LeaseToken = null;
@@ -676,6 +741,66 @@ public sealed class NativeNoteRecycleService(
         {
             return false;
         }
+    }
+
+    private async Task FenceRestoreAgainstActivePurgeAsync(
+        Guid owner, Guid noteId, DateTimeOffset deletionAt, CancellationToken ct)
+    {
+        var intent = await FindIntentAsync(owner, noteId, deletionAt, ct);
+        if (intent is null || intent.Phase == RecycleBinPurgePhases.Abandoned)
+            return;
+        if (intent.Phase is RecycleBinPurgePhases.Completed
+            or RecycleBinPurgePhases.DbCommitted)
+            throw new DomainException(40901, "笔记的永久删除已提交，不能恢复");
+        if (!intent.LeaseToken.HasValue)
+            return;
+
+        var now = DateTimeOffset.UtcNow;
+        if (intent.LeaseExpiresAt is null || intent.LeaseExpiresAt > now)
+            throw new DomainException(40901, "笔记的永久清理正在进行，请稍后重试恢复");
+
+        // Reclaim only the exact expired lease we observed. A concurrent renewal or a new
+        // claim must make this conditional update fail instead of clearing a live token.
+        if (db.Database.IsRelational())
+        {
+            var cleared = await db.RecycleBinPurgeIntents
+                .Where(row => row.Id == intent.Id
+                    && row.Phase == RecycleBinPurgePhases.Pending
+                    && row.LeaseToken == intent.LeaseToken
+                    && row.LeaseExpiresAt != null
+                    && row.LeaseExpiresAt <= now)
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(row => row.LeaseToken, (Guid?)null)
+                    .SetProperty(row => row.LeaseExpiresAt, (DateTimeOffset?)null)
+                    .SetProperty(row => row.LastError, "恢复已回收过期清理租约")
+                    .SetProperty(row => row.UpdatedAt, now), ct);
+            if (cleared > 0)
+                return;
+
+            var current = await FindIntentAsync(owner, noteId, deletionAt, ct);
+            if (current is null
+                or { Phase: RecycleBinPurgePhases.Abandoned }
+                or { Phase: RecycleBinPurgePhases.Pending, LeaseToken: null })
+                return;
+            throw new DomainException(40901, "笔记永久清理状态已变化，请刷新后重试恢复");
+        }
+
+        var tracked = await db.RecycleBinPurgeIntents
+            .SingleOrDefaultAsync(row => row.Id == intent.Id, ct);
+        if (tracked is null || tracked.Phase == RecycleBinPurgePhases.Abandoned)
+            return;
+        if (tracked.Phase is RecycleBinPurgePhases.Completed
+            or RecycleBinPurgePhases.DbCommitted)
+            throw new DomainException(40901, "笔记的永久删除已提交，不能恢复");
+        if (tracked.LeaseToken != intent.LeaseToken
+            || tracked.LeaseExpiresAt is null
+            || tracked.LeaseExpiresAt > now)
+            throw new DomainException(40901, "笔记永久清理状态已变化，请刷新后重试恢复");
+        tracked.LeaseToken = null;
+        tracked.LeaseExpiresAt = null;
+        tracked.LastError = "恢复已回收过期清理租约";
+        tracked.UpdatedAt = now;
+        await db.SaveChangesAsync(ct);
     }
 
     private async Task AbandonPendingIntentsAsync(

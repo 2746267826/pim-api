@@ -349,6 +349,9 @@ public sealed class NativeNotePurgeRecoveryRealDbTests : IAsyncLifetime
         var stale = await Assert.ThrowsAsync<DomainException>(() =>
             notes.MarkCompletedAsync(intent.Id, staleToken, default));
         Assert.Equal(40901, stale.ErrorCode);
+        var staleRenew = await Assert.ThrowsAsync<DomainException>(() =>
+            notes.RenewIntentLeaseAsync(intent.Id, staleToken, default));
+        Assert.Equal(40901, staleRenew.ErrorCode);
         await notes.ReleaseIntentAsync(intent.Id, staleToken, "stale release", default);
 
         var afterStale = await _temp.Db.RecycleBinPurgeIntents.AsNoTracking()
@@ -358,6 +361,7 @@ public sealed class NativeNotePurgeRecoveryRealDbTests : IAsyncLifetime
         Assert.True(afterStale.LeaseExpiresAt > DateTimeOffset.UtcNow);
         Assert.Null(afterStale.LastError);
 
+        await notes.RenewIntentLeaseAsync(intent.Id, newToken, default);
         await notes.MarkCompletedAsync(intent.Id, newToken, default);
         var completed = await _temp.Db.RecycleBinPurgeIntents.AsNoTracking()
             .SingleAsync(row => row.Id == intent.Id);

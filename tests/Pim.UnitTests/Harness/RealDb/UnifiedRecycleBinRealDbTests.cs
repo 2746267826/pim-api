@@ -249,6 +249,9 @@ public sealed class UnifiedRecycleBinRealDbTests : IAsyncLifetime
         var stale = await Assert.ThrowsAsync<DomainException>(() =>
             service.CompleteOperationAsync(operation.Id, staleToken, receipt, default));
         Assert.Equal(40904, stale.ErrorCode);
+        var staleRenew = await Assert.ThrowsAsync<DomainException>(() =>
+            service.RenewOperationLeaseAsync(operation.Id, staleToken, default));
+        Assert.Equal(40904, staleRenew.ErrorCode);
         await service.ReleaseOperationAsync(operation.Id, staleToken, default);
 
         var afterStale = await db.RecycleBinOperations.AsNoTracking()
@@ -258,6 +261,7 @@ public sealed class UnifiedRecycleBinRealDbTests : IAsyncLifetime
         Assert.True(afterStale.LeaseExpiresAt > DateTimeOffset.UtcNow);
         Assert.Null(afterStale.ReceiptJson);
 
+        await service.RenewOperationLeaseAsync(operation.Id, newToken, default);
         var completed = await service.CompleteOperationAsync(
             operation.Id, newToken, receipt, default);
         Assert.Equal(receipt.ReceiptId, completed.ReceiptId);

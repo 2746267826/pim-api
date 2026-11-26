@@ -152,7 +152,7 @@ public sealed class UnifiedRecycleBinService(
         if (request.OperationId is not { } operationId || operationId == Guid.Empty)
         {
             return await RunBatchAsync(
-                action, request, restore, unique, Guid.NewGuid(), null, ct);
+                action, request, restore, unique, Guid.NewGuid(), null, null, null, ct);
         }
 
         var payloadHash = PayloadHash(action, request.RestoreAsCopy, unique);
@@ -170,6 +170,8 @@ public sealed class UnifiedRecycleBinService(
                 unique,
                 claim.Operation.Id,
                 operationId,
+                claim.Operation.Id,
+                processingToken,
                 ct);
             return await CompleteOperationAsync(
                 claim.Operation.Id, processingToken, receipt, ct);
@@ -191,12 +193,27 @@ public sealed class UnifiedRecycleBinService(
         IReadOnlyList<RecycleBinItemRef> unique,
         Guid receiptId,
         Guid? operationId,
+        Guid? operationEntityId,
+        Guid? operationProcessingToken,
         CancellationToken ct)
     {
         var results = new List<RecycleBinItemResultDto>(unique.Count);
         for (var index = 0; index < unique.Count; index++)
         {
             var item = unique[index];
+            // A successful item committed its own rows; drop anything a failed item left
+            // tracked before the next item can save it. The operation lease is renewed
+            // per item so a long batch does not lose its idempotency key mid-flight.
+            db.ChangeTracker.Clear();
+            if (operationEntityId is { } leaseOperationId)
+            {
+                await RenewOperationLeaseAsync(
+                    leaseOperationId,
+                    operationProcessingToken
+                        ?? throw new InvalidOperationException(
+                            "Recycle-bin operation lease token is missing."),
+                    ct);
+            }
             try
             {
                 results.Add(await ExecuteItemAsync(
@@ -242,7 +259,7 @@ public sealed class UnifiedRecycleBinService(
             results);
     }
 
-    private Task<(RecycleBinOperationEntity Operation, RecycleBinBatchReceiptDto? Replay)>
+    internal Task<(RecycleBinOperationEntity Operation, RecycleBinBatchReceiptDto? Replay)>
         ClaimOperationAsync(Guid operationId, string action, string payloadHash,
             CancellationToken ct) =>
         AdvisoryLock.RunAsync(
@@ -359,6 +376,43 @@ public sealed class UnifiedRecycleBinService(
         operation.LeaseExpiresAt = now;
         await db.SaveChangesAsync(ct);
         return receipt;
+    }
+
+    internal async Task RenewOperationLeaseAsync(
+        Guid operationEntityId, Guid processingToken, CancellationToken ct)
+    {
+        var now = DateTimeOffset.UtcNow;
+        if (db.Database.IsRelational())
+        {
+            var updated = await db.RecycleBinOperations
+                .Where(row => row.Id == operationEntityId
+                    && row.UserId == UserId
+                    && row.Status == RecycleBinOperationStatuses.Running
+                    && row.ProcessingToken == processingToken)
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(row => row.LeaseExpiresAt, now.Add(OperationLease))
+                    .SetProperty(row => row.UpdatedAt, now), ct);
+            if (updated == 0)
+                throw new DomainException(
+                    40904,
+                    "该 operationId 的处理租约已变化，请使用同一 operationId 重试");
+            return;
+        }
+
+        db.ChangeTracker.Clear();
+        var operation = await db.RecycleBinOperations.SingleOrDefaultAsync(
+            row => row.Id == operationEntityId && row.UserId == UserId, ct)
+            ?? throw new DomainException(
+                40904,
+                "该 operationId 的处理记录不存在，请使用同一 operationId 重试");
+        if (operation.Status != RecycleBinOperationStatuses.Running
+            || operation.ProcessingToken != processingToken)
+            throw new DomainException(
+                40904,
+                "该 operationId 的处理租约已变化，请使用同一 operationId 重试");
+        operation.LeaseExpiresAt = now.Add(OperationLease);
+        operation.UpdatedAt = now;
+        await db.SaveChangesAsync(ct);
     }
 
     internal async Task ReleaseOperationAsync(
