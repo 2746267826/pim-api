@@ -112,6 +112,10 @@ builder.Services.AddSwaggerGen(c =>
     c.OperationFilter<Pim.Api.Infrastructure.OpenApi.MobileProcessingResponseOperationFilter>();
     // R04：任务列表的重复 status 查询参数（OR 集合 + 四值 enum）超出 Swashbuckle 推断能力。
     c.OperationFilter<Pim.Api.Infrastructure.OpenApi.TaskStatusQueryOperationFilter>();
+    // Q04：传输门禁由中间件统一执行，这里把手写契约与运行时实际返回对齐：
+    // 非豁免操作显式声明 426/42600，文档级扩展记录全局传输头与豁免路径。
+    c.OperationFilter<Pim.Api.Infrastructure.OpenApi.TransportSecurityOperationFilter>();
+    c.DocumentFilter<Pim.Api.Infrastructure.OpenApi.TransportSecurityDocumentFilter>();
     c.DocumentFilter<Pim.Api.Infrastructure.OpenApi.SecuritySchemesDocumentFilter>();
 });
 

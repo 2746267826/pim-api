@@ -124,10 +124,19 @@ public class TransportSecurityPolicyTests
     public void Cors_AllowsHttpsAndLoopbackHttpButRejectsRemoteHttp()
     {
         var result = CorsOriginPolicy.Filter(
-            "https://notes.example.com,http://127.0.0.1:3000,http://10.0.2.2:5173,http://notes.example.com,https://notes.example.com/path");
+            "https://notes.example.com,http://127.0.0.1:3000,http://localhost:3000,"
+            + "http://[::1]:3000,http://10.0.2.2:5173,http://notes.example.com,"
+            + "https://notes.example.com/path");
 
         Assert.Equal(
-            new[] { "https://notes.example.com", "http://127.0.0.1:3000", "http://10.0.2.2:5173" },
+            new[]
+            {
+                "https://notes.example.com",
+                "http://127.0.0.1:3000",
+                "http://localhost:3000",
+                "http://[::1]:3000",
+                "http://10.0.2.2:5173",
+            },
             result.AllowedOrigins);
         Assert.Equal(
             new[] { "http://notes.example.com", "https://notes.example.com/path" },

@@ -10,7 +10,9 @@ namespace Pim.Api.Infrastructure.Http;
 /// </summary>
 public static class TransportSecurityPolicy
 {
-    private static readonly string[] ExemptPaths =
+    public const string AcmeChallengePathPrefix = "/.well-known/acme-challenge/";
+
+    private static readonly string[] ExemptPathValues =
     [
         "/health",
         "/health/live",
@@ -20,6 +22,9 @@ public static class TransportSecurityPolicy
         // 不承载用户数据。不要在这里加入登录、笔记、文件等数据路径。
         "/metrics",
     ];
+
+    /// <summary>可被 OpenAPI 文档过滤器复用，避免契约元数据与运行时判定漂移。</summary>
+    public static IReadOnlyList<string> ExemptPaths { get; } = Array.AsReadOnly(ExemptPathValues);
 
     public static bool IsExemptPath(PathString path)
     {
@@ -36,12 +41,12 @@ public static class TransportSecurityPolicy
         }
 
         normalized = normalized.ToLowerInvariant();
-        if (normalized.StartsWith("/.well-known/acme-challenge/", StringComparison.Ordinal))
+        if (normalized.StartsWith(AcmeChallengePathPrefix, StringComparison.Ordinal))
         {
             return true;
         }
 
-        return ExemptPaths.Contains(normalized, StringComparer.Ordinal);
+        return ExemptPathValues.Contains(normalized, StringComparer.Ordinal);
     }
 
     public static bool IsLoopback(IPAddress? remoteAddress)
