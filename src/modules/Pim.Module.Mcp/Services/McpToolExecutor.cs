@@ -1114,13 +1114,31 @@ public sealed class McpToolExecutor
         return await CallAsync(icsSpec, queryArgs, accessToken, redact: false, ct);
     }
 
-    private const long MaxInlineNativeNotePackageBytes = 16L * 1024 * 1024;
+    private const long MaxNativeNotePackageBytes = 64L * 1024 * 1024;
+    private const int MaxNativeNotePackageChunkBytes = 16 * 1024 * 1024;
+
+    private static async Task<byte[]?> ReadAtMostAsync(HttpContent content, long limit,
+        CancellationToken ct)
+    {
+        await using var stream = await content.ReadAsStreamAsync(ct);
+        using var buffer = new MemoryStream();
+        var block = new byte[64 * 1024];
+        while (true)
+        {
+            var read = await stream.ReadAsync(block, ct);
+            if (read == 0) break;
+            if (buffer.Length + read > limit) return null;
+            buffer.Write(block, 0, read);
+        }
+        return buffer.ToArray();
+    }
 
     /// <summary>
     /// Native-note packages are ZIP archives. Reading them through the normal text path would
     /// corrupt the binary, so fetch bytes and return a base64 envelope with integrity metadata.
-    /// Very large packages stay on the REST chunked bundle endpoint instead of being inflated
-    /// into an MCP text payload.
+    /// Packages up to the same 64 MB cap as upload are returned in bounded chunks; callers that
+    /// need the whole ZIP request the next offset until <c>hasMore=false</c>. This avoids sending
+    /// a single unbounded text payload while keeping upload and download limits symmetric.
     /// </summary>
     private async Task<JsonNode?> NativeNotePackageAsync(McpToolSpec spec, JsonObject args,
         string accessToken, CancellationToken ct)
@@ -1148,19 +1166,38 @@ public sealed class McpToolExecutor
             };
         }
 
-        var bytes = await response.Content.ReadAsByteArrayAsync(ct);
-        if (bytes.LongLength > MaxInlineNativeNotePackageBytes)
+        if (response.Content.Headers.ContentLength is { } contentLength &&
+            contentLength > MaxNativeNotePackageBytes)
         {
             return Error(
-                $"native-note package is {bytes.LongLength} bytes; MCP inline download is limited to " +
-                $"{MaxInlineNativeNotePackageBytes} bytes. Use GET {spec.Route} via REST for the ZIP stream.",
+                $"native-note package is {contentLength} bytes; MCP download is limited to " +
+                $"{MaxNativeNotePackageBytes} bytes. Use GET {spec.Route} via REST for the ZIP stream.",
                 413);
         }
+        var bytes = await ReadAtMostAsync(response.Content, MaxNativeNotePackageBytes, ct);
+        if (bytes is null)
+        {
+            return Error(
+                $"native-note package exceeds the MCP download limit of " +
+                $"{MaxNativeNotePackageBytes} bytes. Use GET {spec.Route} via REST for the ZIP stream.",
+                413);
+        }
+
+        var offset = GetInt(args, "offset") ?? 0;
+        var maxBytes = GetInt(args, "maxBytes") ?? MaxNativeNotePackageChunkBytes;
+        if (offset < 0 || offset >= bytes.Length)
+            return Error($"offset must be >=0 and < {bytes.Length}", 400);
+        if (maxBytes is < 1 or > MaxNativeNotePackageChunkBytes)
+            return Error($"maxBytes must be between 1 and {MaxNativeNotePackageChunkBytes}", 400);
+        var length = Math.Min(maxBytes, bytes.Length - offset);
+        var chunk = bytes.AsSpan(offset, length).ToArray();
+        var nextOffset = offset + length < bytes.Length ? offset + length : (int?)null;
 
         var fileName = response.Content.Headers.ContentDisposition?.FileNameStar
             ?? response.Content.Headers.ContentDisposition?.FileName?.Trim('"')
             ?? $"{GetString(args, "noteId") ?? "note"}.pimnote.zip";
-        var sha256 = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+        var chunkSha256 = Convert.ToHexString(SHA256.HashData(chunk)).ToLowerInvariant();
+        var packageSha256 = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
         return new JsonObject
         {
             ["code"] = 0,
@@ -1168,9 +1205,18 @@ public sealed class McpToolExecutor
             {
                 ["fileName"] = fileName,
                 ["contentType"] = response.Content.Headers.ContentType?.ToString() ?? "application/zip",
-                ["contentSha256"] = sha256,
+                // Keep the original whole-package fields stable for callers that already verify
+                // contentSha256/byteLength before this tool gained chunking.
+                ["contentSha256"] = packageSha256,
+                ["packageSha256"] = packageSha256,
                 ["byteLength"] = bytes.LongLength,
-                ["contentBase64"] = Convert.ToBase64String(bytes),
+                ["totalByteLength"] = bytes.LongLength,
+                ["chunkSha256"] = chunkSha256,
+                ["chunkByteLength"] = chunk.LongLength,
+                ["offset"] = offset,
+                ["nextOffset"] = nextOffset,
+                ["hasMore"] = nextOffset is not null,
+                ["contentBase64"] = Convert.ToBase64String(chunk),
             },
         };
     }

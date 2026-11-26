@@ -10,6 +10,7 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Pim.Core.Ai;
 using Pim.Core.Common;
 using Pim.Core.Notes;
 using Pim.Infrastructure.Data;
@@ -211,6 +212,52 @@ public sealed class NativeNoteMcpRealDbTests
         Assert.Equal(versionId.ToString("D"), manifest["versionId"]!.GetValue<string>());
         Assert.Equal(Sha256(entries["material-version.json"]),
             manifest["inputSha256"]!.GetValue<string>());
+
+        var reassembled = new List<byte>();
+        var chunkOffset = 0;
+        for (var iteration = 0; iteration < 10_000; iteration++)
+        {
+            var chunkCall = await host.CallAsync(host.McpARead, "get_native_note_package", new
+            {
+                noteId, offset = chunkOffset, maxBytes = 97,
+            });
+            Assert.False(chunkCall.IsError, chunkCall.Payload.GetRawText());
+            var chunkData = chunkCall.Payload.GetProperty("data");
+            var chunk = Convert.FromBase64String(
+                chunkData.GetProperty("contentBase64").GetString()!);
+            Assert.Equal(chunkOffset, chunkData.GetProperty("offset").GetInt32());
+            Assert.Equal(chunk.Length, chunkData.GetProperty("chunkByteLength").GetInt64());
+            Assert.Equal(Sha256(chunk), chunkData.GetProperty("chunkSha256").GetString());
+            Assert.Equal(zipBytes.LongLength, chunkData.GetProperty("byteLength").GetInt64());
+            Assert.Equal(zipBytes.LongLength,
+                chunkData.GetProperty("totalByteLength").GetInt64());
+            Assert.Equal(Sha256(zipBytes), chunkData.GetProperty("contentSha256").GetString());
+            Assert.Equal(Sha256(zipBytes), chunkData.GetProperty("packageSha256").GetString());
+            reassembled.AddRange(chunk);
+            if (!chunkData.GetProperty("hasMore").GetBoolean())
+                break;
+            chunkOffset = chunkData.GetProperty("nextOffset").GetInt32();
+            Assert.Equal(reassembled.Count, chunkOffset);
+        }
+        Assert.Equal(zipBytes, reassembled);
+
+        var negativeOffset = await host.CallAsync(host.McpARead, "get_native_note_package",
+            new { noteId, offset = -1 });
+        Assert.True(negativeOffset.IsError);
+        Assert.Equal(400, negativeOffset.Payload.GetProperty("code").GetInt32());
+        var pastEnd = await host.CallAsync(host.McpARead, "get_native_note_package",
+            new { noteId, offset = zipBytes.Length });
+        Assert.True(pastEnd.IsError);
+        Assert.Equal(400, pastEnd.Payload.GetProperty("code").GetInt32());
+        var emptyChunk = await host.CallAsync(host.McpARead, "get_native_note_package",
+            new { noteId, maxBytes = 0 });
+        Assert.True(emptyChunk.IsError);
+        Assert.Equal(400, emptyChunk.Payload.GetProperty("code").GetInt32());
+        var oversizedChunk = await host.CallAsync(host.McpARead, "get_native_note_package",
+            new { noteId, maxBytes = 16 * 1024 * 1024 + 1 });
+        Assert.True(oversizedChunk.IsError);
+        Assert.Equal(400, oversizedChunk.Payload.GetProperty("code").GetInt32());
+
         using (var originalManifest = JsonDocument.Parse(fixture.Request.ManifestJson))
         {
             var index = 0;
@@ -252,6 +299,25 @@ public sealed class NativeNoteMcpRealDbTests
         });
         Assert.True(missingMetadata.IsError);
         Assert.Equal(400, missingMetadata.Payload.GetProperty("code").GetInt32());
+        var missingManifest = await host.CallAsync(host.McpAWrite,
+            "upload_native_note_package", new
+            {
+                noteId,
+                requestId = Guid.NewGuid().ToString("D"),
+                packageBase64 = Convert.ToBase64String(Package(fixture,
+                    includeMaterialsJson: false)),
+            });
+        Assert.True(missingManifest.IsError);
+        Assert.Equal(400, missingManifest.Payload.GetProperty("code").GetInt32());
+        var duplicateEntry = await host.CallAsync(host.McpAWrite,
+            "upload_native_note_package", new
+            {
+                noteId,
+                requestId = Guid.NewGuid().ToString("D"),
+                packageBase64 = Convert.ToBase64String(Package(fixture, extraEntry: "note.json")),
+            });
+        Assert.True(duplicateEntry.IsError);
+        Assert.Equal(400, duplicateEntry.Payload.GetProperty("code").GetInt32());
         var wrongNote = await host.CallAsync(host.McpAWrite, "upload_native_note_package", new
         {
             noteId,
@@ -670,6 +736,170 @@ public sealed class NativeNoteMcpRealDbTests
             .GetProperty("total").GetInt32());
     }
 
+    [SkippableFact]
+    public async Task HeadOnlyPromotionInvalidatesRevisionAndRejectsStaleLifecycleCas()
+    {
+        await using var host = await McpHost.CreateAsync();
+        var noteId = Guid.NewGuid();
+        var first = await host.SeedNoteAsync(host.UserA,
+            NoteMaterialUploadStoreTests.Fixture.Create(noteId: noteId));
+        var second = NoteMaterialUploadStoreTests.Fixture.Create(noteId: noteId,
+            baseId: first.Request.VersionId);
+        await host.SeedNoteAsync(host.UserA, second, makeCurrent: false);
+
+        var before = await host.CallAsync(host.McpARead, "get_native_note_versions", new { noteId });
+        Assert.False(before.IsError, before.Payload.GetRawText());
+        var beforeData = before.Payload.GetProperty("data");
+        Assert.Equal(first.Request.VersionId, beforeData.GetProperty("currentVersionId").GetGuid());
+        Assert.Equal(2, beforeData.GetProperty("total").GetInt32());
+        Assert.False(beforeData.GetProperty("hasConflict").GetBoolean());
+        var staleRevision = beforeData.GetProperty("revision").GetGuid();
+        var secondState = beforeData.GetProperty("versions").EnumerateArray()
+            .Single(item => item.GetProperty("versionId").GetGuid() == second.Request.VersionId);
+        Assert.Equal("Uploaded", secondState.GetProperty("phase").GetString());
+        Assert.False(secondState.GetProperty("hasConflict").GetBoolean());
+
+        var promoted = await host.CallAsync(host.McpAWrite, "promote_native_note_version", new
+        {
+            noteId,
+            requestId = Guid.NewGuid().ToString("D"),
+            versionId = second.Request.VersionId,
+            expectedCurrentVersionId = first.Request.VersionId,
+            expectedRevision = staleRevision.ToString("D"),
+        });
+        Assert.False(promoted.IsError, promoted.Payload.GetRawText());
+        var promotedRevision = promoted.Payload.GetProperty("data").GetProperty("result")
+            .GetProperty("revision").GetGuid();
+
+        var after = await host.CallAsync(host.McpARead, "get_native_note_versions", new { noteId });
+        Assert.False(after.IsError, after.Payload.GetRawText());
+        var afterData = after.Payload.GetProperty("data");
+        Assert.Equal(second.Request.VersionId, afterData.GetProperty("currentVersionId").GetGuid());
+        var newRevision = afterData.GetProperty("revision").GetGuid();
+        Assert.NotEqual(staleRevision, newRevision);
+        Assert.Equal(newRevision, promotedRevision);
+        Assert.False(afterData.GetProperty("hasConflict").GetBoolean());
+        Assert.Equal("Uploaded", afterData.GetProperty("versions").EnumerateArray()
+            .Single(item => item.GetProperty("versionId").GetGuid() == second.Request.VersionId)
+            .GetProperty("phase").GetString());
+
+        var staleArchive = await host.CallAsync(host.McpAWrite, "archive_native_note", new
+        {
+            noteId,
+            requestId = Guid.NewGuid().ToString("D"),
+            expectedRevision = staleRevision.ToString("D"),
+        });
+        Assert.True(staleArchive.IsError);
+        Assert.Equal(409, staleArchive.Payload.GetProperty("code").GetInt32());
+
+        var archived = await host.CallAsync(host.McpAWrite, "archive_native_note", new
+        {
+            noteId,
+            requestId = Guid.NewGuid().ToString("D"),
+            expectedRevision = newRevision.ToString("D"),
+        });
+        Assert.False(archived.IsError, archived.Payload.GetRawText());
+        Assert.Equal("Archived", archived.Payload.GetProperty("data").GetProperty("result")
+            .GetProperty("status").GetString());
+        var afterArchive = await host.CallAsync(host.McpARead, "get_native_note_versions",
+            new { noteId });
+        Assert.Equal(second.Request.VersionId,
+            afterArchive.Payload.GetProperty("data").GetProperty("currentVersionId").GetGuid());
+    }
+
+    [SkippableFact]
+    public async Task TextOnlyProcessingStartsAndRetriesFailedStepWithIdempotentReceipt()
+    {
+        await using var host = await McpHost.CreateAsync();
+        await host.ConfigureTextModelAsync();
+        var fixture = await host.SeedNoteAsync(host.UserA, TextOnlyFixture(Guid.NewGuid()));
+        var noteId = fixture.Request.NoteId;
+        var versions = await host.CallAsync(host.McpARead, "get_native_note_versions",
+            new { noteId });
+        var revision = versions.Payload.GetProperty("data").GetProperty("revision").GetGuid();
+
+        var startArgs = new
+        {
+            noteId,
+            requestId = Guid.NewGuid().ToString("D"),
+            versionId = fixture.Request.VersionId.ToString("D"),
+            expectedRevision = revision.ToString("D"),
+        };
+        var started = await host.CallAsync(host.McpAWrite, "start_native_note_processing",
+            startArgs);
+        Assert.False(started.IsError, started.Payload.GetRawText());
+        var startedData = started.Payload.GetProperty("data");
+        Assert.Equal("start_native_note_processing",
+            startedData.GetProperty("receipt").GetProperty("operation").GetString());
+        Assert.False(startedData.GetProperty("receipt").GetProperty("replayed").GetBoolean());
+        var startedStatus = startedData.GetProperty("result").GetProperty("status");
+        Assert.Equal(fixture.Request.VersionId, startedStatus.GetProperty("versionId").GetGuid());
+        Assert.NotEqual("Completed", startedStatus.GetProperty("state").GetString());
+        Assert.True(startedStatus.GetProperty("derived").GetProperty("taskCreated").GetBoolean());
+
+        var startedReplay = await host.CallAsync(host.McpAWrite,
+            "start_native_note_processing", startArgs);
+        Assert.False(startedReplay.IsError, startedReplay.Payload.GetRawText());
+        Assert.True(startedReplay.Payload.GetProperty("data").GetProperty("receipt")
+            .GetProperty("replayed").GetBoolean());
+
+        var tasks = await host.DerivedStore.ListTasksAsync(host.UserA, noteId, default);
+        var task = Assert.Single(tasks);
+        Assert.False(task.Blocked);
+        Assert.NotEmpty(task.Steps);
+        var failedKey = task.Steps[0].Key;
+        var taskId = task.Request.TaskId;
+        var updated = await host.DerivedStore.UpdateTaskAsync(host.UserA, taskId, state =>
+        {
+            var attempt = state.Steps.Single(step => step.Key == failedKey).Attempts[^1];
+            attempt.Status = "Failed";
+            attempt.ErrorCode = "synthetic_failure";
+            attempt.ErrorMessage = "synthetic focused retry input";
+        }, default);
+        Assert.NotEqual(task.Revision, updated.Revision);
+        var consent = updated.Request.Consent;
+        var retryArgs = new
+        {
+            noteId,
+            requestId = Guid.NewGuid().ToString("D"),
+            taskId = taskId.ToString("D"),
+            retryId = Guid.NewGuid().ToString("D"),
+            expectedRevision = updated.Revision.ToString("D"),
+            stepKeys = new[] { failedKey },
+            consent = new
+            {
+                modelId = consent.ModelId.ToString("D"),
+                modelRevision = consent.ModelRevision.ToString("D"),
+                endpoint = consent.Endpoint,
+                confirmed = true,
+            },
+            acknowledgePossibleDuplicateCharge = true,
+        };
+        var retried = await host.CallAsync(host.McpAWrite, "retry_native_note_processing",
+            retryArgs);
+        Assert.False(retried.IsError, retried.Payload.GetRawText());
+        var retriedData = retried.Payload.GetProperty("data");
+        Assert.Equal("retry_native_note_processing",
+            retriedData.GetProperty("receipt").GetProperty("operation").GetString());
+        Assert.False(retriedData.GetProperty("receipt").GetProperty("replayed").GetBoolean());
+        var retriedTask = retriedData.GetProperty("result").GetProperty("task");
+        Assert.Equal(taskId, retriedTask.GetProperty("taskId").GetGuid());
+        var retriedStep = retriedTask.GetProperty("steps").EnumerateArray()
+            .Single(step => step.GetProperty("key").GetString() == failedKey);
+        Assert.Equal(2, retriedStep.GetProperty("attempts").GetArrayLength());
+        var retriedRevision = retriedTask.GetProperty("revision").GetGuid();
+
+        var replay = await host.CallAsync(host.McpAWrite, "retry_native_note_processing",
+            retryArgs);
+        Assert.False(replay.IsError, replay.Payload.GetRawText());
+        Assert.True(replay.Payload.GetProperty("data").GetProperty("receipt")
+            .GetProperty("replayed").GetBoolean());
+        Assert.Equal(retriedRevision, replay.Payload.GetProperty("data").GetProperty("result")
+            .GetProperty("task").GetProperty("revision").GetGuid());
+        var afterReplay = await host.DerivedStore.ReadTaskAsync(host.UserA, taskId, default);
+        Assert.Equal(2, afterReplay.Steps.Single(step => step.Key == failedKey).Attempts.Count);
+    }
+
     private static object Consent() => new
     {
         modelId = Guid.NewGuid().ToString("D"),
@@ -679,7 +909,8 @@ public sealed class NativeNoteMcpRealDbTests
     };
 
     private static byte[] Package(NoteMaterialUploadStoreTests.Fixture fixture,
-        string? extraEntry = null, bool includeMaterialVersionJson = true)
+        string? extraEntry = null, bool includeMaterialVersionJson = true,
+        bool includeMaterialsJson = true)
     {
         using var output = new MemoryStream();
         using (var archive = new ZipArchive(output, ZipArchiveMode.Create, leaveOpen: true))
@@ -687,7 +918,9 @@ public sealed class NativeNoteMcpRealDbTests
             if (includeMaterialVersionJson)
                 AddEntry(archive, "material-version.json",
                     Encoding.UTF8.GetBytes(fixture.Request.InputJson));
-            AddEntry(archive, "materials.json", Encoding.UTF8.GetBytes(fixture.Request.ManifestJson));
+            if (includeMaterialsJson)
+                AddEntry(archive, "materials.json",
+                    Encoding.UTF8.GetBytes(fixture.Request.ManifestJson));
             using var manifest = JsonDocument.Parse(fixture.Request.ManifestJson);
             var index = 0;
             foreach (var file in manifest.RootElement.GetProperty("files").EnumerateArray())
@@ -696,6 +929,62 @@ public sealed class NativeNoteMcpRealDbTests
                 AddEntry(archive, extraEntry, Encoding.UTF8.GetBytes("escape"));
         }
         return output.ToArray();
+    }
+
+    private static NoteMaterialUploadStoreTests.Fixture TextOnlyFixture(Guid noteId,
+        Guid? baseVersionId = null)
+    {
+        var versionId = Guid.NewGuid();
+        var blockId = Guid.NewGuid();
+        const string text = "## 处理测试\n\n这是仅文本的固定材料，不依赖任何外部 AI 调用。";
+        var noteJson = JsonSerializer.Serialize(new
+        {
+            schemaVersion = 1,
+            id = noteId.ToString("D"),
+            title = "处理测试笔记",
+            revision = 1,
+            createdAtMillis = 1,
+            blocks = new[]
+            {
+                new { id = blockId.ToString("D"), kind = "markdown", text },
+            },
+        });
+        // Keep the note JSON byte-for-byte identical to the embedded note object so the
+        // manifest inputSha256 matches what NoteMaterialManifestValidator reads back.
+        var inputJson =
+            $"{{\"schemaVersion\":1,\"id\":\"{versionId:D}\",\"createdAtMillis\":1," +
+            $"\"note\":{noteJson},\"recordings\":[]}}";
+        var noteBytes = Encoding.UTF8.GetBytes(noteJson);
+        var markdownBytes = Encoding.UTF8.GetBytes(text);
+        var manifestJson = JsonSerializer.Serialize(new
+        {
+            schemaVersion = 1,
+            versionId = versionId.ToString("D"),
+            noteId = noteId.ToString("D"),
+            revision = 1,
+            inputSha256 = Sha256(Encoding.UTF8.GetBytes(inputJson)),
+            files = new[]
+            {
+                new
+                {
+                    path = "note.json",
+                    kind = "Document",
+                    sha256 = Sha256(noteBytes),
+                    sizeBytes = noteBytes.Length,
+                },
+                new
+                {
+                    path = "document.md",
+                    kind = "Markdown",
+                    sha256 = Sha256(markdownBytes),
+                    sizeBytes = markdownBytes.Length,
+                },
+            },
+        });
+        return new(
+            new BeginNoteMaterialUploadRequest(versionId, noteId, baseVersionId, inputJson,
+                manifestJson, true),
+            [noteBytes, markdownBytes]);
     }
 
     private static void AddEntry(ZipArchive archive, string path, byte[] content)
@@ -824,8 +1113,23 @@ public sealed class NativeNoteMcpRealDbTests
                 sessionA.UserId, sessionB.UserId);
         }
 
+        public async Task<Guid> ConfigureTextModelAsync()
+        {
+            var model = await SuccessAsync(await RestA.PostAsJsonAsync("/api/v1/ai/models",
+                new SaveAiModelRequest(
+                    "native-note-mcp-text-" + Guid.NewGuid().ToString("N"),
+                    "https://synthetic.invalid/v1", "native-note-test", true,
+                    [AiModelCapability.Text], 30, 1024, "synthetic-native-note-text-key")));
+            var modelId = model.GetProperty("id").GetGuid();
+            var settings = await SuccessAsync(await RestA.GetAsync("/api/v1/ai/model-settings"));
+            await SuccessAsync(await RestA.PutAsJsonAsync("/api/v1/ai/model-settings",
+                new SaveAiModelSettingsRequest(settings.GetProperty("revision").GetGuid(), true,
+                    modelId, modelId, null)));
+            return modelId;
+        }
+
         public async Task<NoteMaterialUploadStoreTests.Fixture> SeedNoteAsync(Guid owner,
-            NoteMaterialUploadStoreTests.Fixture? fixture = null)
+            NoteMaterialUploadStoreTests.Fixture? fixture = null, bool makeCurrent = true)
         {
             fixture ??= NoteMaterialUploadStoreTests.Fixture.Create();
             await Store.BeginAsync(owner, fixture.Request);
@@ -843,7 +1147,7 @@ public sealed class NativeNoteMcpRealDbTests
                         new MemoryStream(chunk, writable: false));
                 }
             }
-            await Store.CompleteAsync(owner, fixture.Request.VersionId);
+            await Store.CompleteAsync(owner, fixture.Request.VersionId, makeCurrent);
             return fixture;
         }
 
@@ -914,7 +1218,7 @@ public sealed class NativeNoteMcpRealDbTests
                 name,
                 arguments = args,
             }));
-            var wire = ReadRpc(await response);
+            var wire = ReadRpc(response);
             Assert.False(wire.TryGetProperty("error", out _), wire.GetRawText());
             var result = wire.GetProperty("result");
             var isError = result.TryGetProperty("isError", out var flag) && flag.GetBoolean();

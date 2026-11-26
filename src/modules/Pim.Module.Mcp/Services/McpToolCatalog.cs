@@ -143,7 +143,7 @@ public static class McpToolCatalog
         Add(tools, "native-notes", "get_native_note_processing",
             "Get the high-level processing status for one native note version (or the current version when omitted).");
         Add(tools, "native-notes", "get_native_note_package",
-            "Download a native-note material package as base64 ZIP with fileName, SHA-256 and byte length; 16 MB inline limit, use REST bundle for larger packages.");
+            "Download a native-note material package as bounded base64 ZIP chunks (offset/maxBytes, at most 16 MB per call) up to the 64 MB upload limit. contentSha256/byteLength describe the whole package; chunkSha256/chunkByteLength describe the returned contentBase64 chunk. Follow nextOffset until hasMore=false.");
         Add(tools, "native-notes", "get_native_note_suggestions",
             "List task/calendar suggestions extracted from one native note with their status and revision.");
 

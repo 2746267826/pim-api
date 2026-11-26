@@ -2389,7 +2389,7 @@
   },
   {
     "name": "get_native_note_package",
-    "description": "Download a native-note material package as base64 ZIP with fileName, SHA-256 and byte length; 16 MB inline limit, use REST bundle for larger packages.",
+    "description": "Download a native-note material package as bounded base64 ZIP chunks (offset/maxBytes, at most 16 MB per call) up to the 64 MB upload limit. contentSha256/byteLength describe the whole package; chunkSha256/chunkByteLength describe the returned contentBase64 chunk. Follow nextOffset until hasMore=false.",
     "inputSchema": {
       "properties": {
         "noteId": {
@@ -2407,6 +2407,21 @@
           ],
           "default": null,
           "title": "Version Id"
+        },
+        "offset": {
+          "title": "Offset",
+          "type": "integer",
+          "default": 0,
+          "minimum": 0,
+          "description": "Zero-based byte offset into the ZIP package."
+        },
+        "maxBytes": {
+          "title": "Max Bytes",
+          "type": "integer",
+          "default": 16777216,
+          "minimum": 1,
+          "maximum": 16777216,
+          "description": "Maximum chunk size in bytes; the server caps it at 16 MB."
         }
       },
       "title": "get_native_note_packageArguments",

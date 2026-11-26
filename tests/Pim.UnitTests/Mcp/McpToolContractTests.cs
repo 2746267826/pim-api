@@ -178,4 +178,21 @@ public sealed class McpToolContractTests
             spec.QueryParams.Where(p => p != "redactUrls").OrderBy(p => p, StringComparer.Ordinal),
             properties.EnumerateObject().Select(p => p.Name).Where(n => n != "redactUrls").OrderBy(n => n, StringComparer.Ordinal));
     }
+
+    [Fact]
+    public void Contract_NativeNotePackageExposesBoundedChunkDownload()
+    {
+        // 上传上限是 64 MB，下载不能仍停在 16 MB 整包；offset/maxBytes 让调用方按
+        // 16 MB 上限分块拉取，整包摘要与当前块摘要在字段上分开。
+        var package = McpToolExecutor.ToolContract.Single(t => t.Name == "get_native_note_package");
+        var properties = package.InputSchema.GetProperty("properties");
+        Assert.Equal(0, properties.GetProperty("offset").GetProperty("default").GetInt32());
+        Assert.Equal(16 * 1024 * 1024,
+            properties.GetProperty("maxBytes").GetProperty("default").GetInt32());
+        Assert.Equal(0, properties.GetProperty("offset").GetProperty("minimum").GetInt32());
+        Assert.Equal(16 * 1024 * 1024,
+            properties.GetProperty("maxBytes").GetProperty("maximum").GetInt32());
+        Assert.Contains("chunkSha256", package.Description, StringComparison.Ordinal);
+        Assert.Contains("contentSha256", package.Description, StringComparison.Ordinal);
+    }
 }

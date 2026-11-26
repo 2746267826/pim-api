@@ -824,7 +824,8 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
     private static Guid RevisionOf(Ledger ledger, Guid noteId)
     {
         var builder = new StringBuilder(256);
-        builder.Append(Key(noteId)).Append('|').Append(NoteStatus(ledger, noteId));
+        builder.Append(Key(noteId)).Append('|').Append(NoteStatus(ledger, noteId))
+            .Append("|head:").Append(Current(ledger, noteId)?.ToString("D") ?? "-");
         foreach (var (key, entry) in ledger.Versions
                      .Where(item => item.Value.NoteId == noteId)
                      .OrderBy(item => item.Key, StringComparer.Ordinal))
