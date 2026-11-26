@@ -46,7 +46,7 @@ afterEach(() => {
 
 describe('calendar detail query identity', () => {
   it('does not reuse a detail response after the server address changes', async () => {
-    setApiBase('http://192.0.2.10:5858')
+    setApiBase('https://192.0.2.10:5858')
     const client = new QueryClient({
       defaultOptions: { queries: { retry: false, gcTime: 60_000 } },
     })
@@ -60,7 +60,7 @@ describe('calendar detail query identity', () => {
     await waitFor(() => expect(api.getEvent).toHaveBeenCalledTimes(1))
     await waitFor(() => expect(api.getTask).toHaveBeenCalledTimes(1))
 
-    setApiBase('http://198.51.100.20:5858')
+    setApiBase('https://198.51.100.20:5858')
 
     await waitFor(() => expect(api.getEvent).toHaveBeenCalledTimes(2))
     await waitFor(() => expect(api.getTask).toHaveBeenCalledTimes(2))
