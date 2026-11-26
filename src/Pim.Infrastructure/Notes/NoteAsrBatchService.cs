@@ -764,16 +764,12 @@ public sealed class NoteAsrBatchService(PimDbContext db, ICurrentUserService use
     private async Task SyncAuditFromJobAsync(NoteAsrBatchJobEntity job, CancellationToken ct)
     {
         if (job.Status == "Deleted") return;
-        using var budget = new CancellationTokenSource(PersistenceBudget);
+        // Keep the persistence budget, but observe the caller's cancellation as well: background
+        // repair relies on its per-job timeout to stop a stuck audit write.
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        budget.CancelAfter(PersistenceBudget);
         var now = DateTimeOffset.UtcNow;
-        var status = job.Status switch
-        {
-            "Completed" => "succeeded",
-            "Failed" => "failed",
-            "Cancelled" => "cancelled",
-            "Expired" or "Unknown" => "incomplete",
-            _ => "running"
-        };
+        var status = AuditStatusForJob(job.Status);
         var terminal = status != "running";
         var usage = SumBatchUsage(job.ResultJson);
         var audit = await db.AiRequestLogs.FirstOrDefaultAsync(x =>
@@ -880,6 +876,15 @@ public sealed class NoteAsrBatchService(PimDbContext db, ICurrentUserService use
 
     private static bool IsTerminalAuditStatus(string status) =>
         status is "succeeded" or "failed" or "incomplete" or "timed_out" or "cancelled" or "blocked";
+
+    private static string AuditStatusForJob(string status) => status switch
+    {
+        "Completed" => "succeeded",
+        "Failed" => "failed",
+        "Cancelled" => "cancelled",
+        "Expired" or "Unknown" => "incomplete",
+        _ => "running"
+    };
 
     /// <summary>
     /// Sums usage across every reconciled Batch item. If any item lacks a usable usage object the
@@ -991,7 +996,18 @@ public sealed class NoteAsrBatchService(PimDbContext db, ICurrentUserService use
             return false;
         var audit = await db.AiRequestLogs.AsNoTracking().FirstOrDefaultAsync(x =>
             x.UserId == job.OwnerId && x.ClientRequestId == job.Id && x.Purpose == AuditPurpose, ct);
-        if (audit is not null && IsTerminalAuditStatus(audit.Status)) return false;
+        if (audit is not null && IsTerminalAuditStatus(audit.Status))
+        {
+            if (audit.Status == "blocked") return false;
+            // A generic recovery path may have closed the audit row before the Batch poller
+            // projected the final import. Only a completed, imported job has the durable usage
+            // evidence needed to replace a terminal audit row, and only when that evidence can
+            // actually produce tokens.
+            if (job.Status != "Completed" || job.OutputImportedAt is null) return false;
+            if (audit.Status is not ("succeeded" or "incomplete")) return false;
+            if (audit.Status == "succeeded" && audit.TotalTokens is not null) return false;
+            if (SumBatchUsage(job.ResultJson) is null) return false;
+        }
         await SyncAuditFromJobAsync(job, ct);
         return true;
     }

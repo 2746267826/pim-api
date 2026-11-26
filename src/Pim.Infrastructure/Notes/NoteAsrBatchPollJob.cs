@@ -12,6 +12,7 @@ public sealed class NoteAsrBatchPollOptions
     public int MaxPagesPerRun { get; set; } = 4;
     public TimeSpan PerJobTimeout { get; set; } = TimeSpan.FromSeconds(20);
     public TimeSpan PollBackoff { get; set; } = TimeSpan.FromSeconds(30);
+    public TimeSpan AuditRepairBackoff { get; set; } = TimeSpan.FromMinutes(5);
     public TimeSpan UnknownCreateGrace { get; set; } = TimeSpan.FromMinutes(5);
 
     internal NoteAsrBatchPollOptions Normalized() => new()
@@ -20,6 +21,7 @@ public sealed class NoteAsrBatchPollOptions
         MaxPagesPerRun = Math.Clamp(MaxPagesPerRun, 1, 20),
         PerJobTimeout = Clamp(PerJobTimeout, TimeSpan.FromSeconds(1), TimeSpan.FromMinutes(2)),
         PollBackoff = Clamp(PollBackoff, TimeSpan.FromSeconds(1), TimeSpan.FromHours(1)),
+        AuditRepairBackoff = Clamp(AuditRepairBackoff, TimeSpan.Zero, TimeSpan.FromDays(1)),
         UnknownCreateGrace = Clamp(UnknownCreateGrace, TimeSpan.FromMinutes(1), TimeSpan.FromDays(7))
     };
 
@@ -76,19 +78,36 @@ public sealed class NoteAsrBatchPollJob(
         CancellationToken ct)
     {
         settings = settings.Normalized();
+        var repairDue = DateTimeOffset.UtcNow - settings.AuditRepairBackoff;
         var candidates = await db.NoteAsrBatchJobs.AsNoTracking()
             .Where(job => job.Status != "Deleted" &&
                           (job.OutputImportedAt != null ||
                            job.Status == "Completed" || job.Status == "Failed" ||
                            job.Status == "Expired" || job.Status == "Cancelled" ||
                            job.Status == "Unknown") &&
+                          // The same row-level timestamp doubles as a durable repair lease for
+                          // terminal jobs. It keeps one permanently failing row from occupying
+                          // every scan page while still allowing the provider poller to retry
+                          // after its shorter PollBackoff.
+                          (job.LastPolledAt == null || job.LastPolledAt < repairDue) &&
                           !db.AiRequestLogs.Any(a =>
                               a.UserId == job.OwnerId && a.ClientRequestId == job.Id &&
                               a.Purpose == NoteAsrBatchService.AuditPurpose &&
-                              (a.Status == "succeeded" || a.Status == "failed" ||
-                               a.Status == "incomplete" || a.Status == "timed_out" ||
-                               a.Status == "cancelled" || a.Status == "blocked")))
-            .OrderBy(job => job.OutputImportedAt ?? job.UpdatedAt)
+                              a.Status == "blocked") &&
+                          (!db.AiRequestLogs.Any(a =>
+                               a.UserId == job.OwnerId && a.ClientRequestId == job.Id &&
+                               a.Purpose == NoteAsrBatchService.AuditPurpose) ||
+                           db.AiRequestLogs.Any(a =>
+                               a.UserId == job.OwnerId && a.ClientRequestId == job.Id &&
+                               a.Purpose == NoteAsrBatchService.AuditPurpose &&
+                               (a.Status != "succeeded" && a.Status != "failed" &&
+                                a.Status != "incomplete" && a.Status != "timed_out" &&
+                                a.Status != "cancelled" ||
+                                job.OutputImportedAt != null && job.Status == "Completed" &&
+                                (a.Status == "incomplete" ||
+                                 a.Status == "succeeded" && a.TotalTokens == null)))))
+            .OrderBy(job => job.LastPolledAt ?? DateTimeOffset.MinValue)
+            .ThenBy(job => job.OutputImportedAt ?? job.UpdatedAt)
             .ThenBy(job => job.Id)
             .Take(settings.PageSize)
             .Select(job => new { job.OwnerId, job.Id })
@@ -96,10 +115,18 @@ public sealed class NoteAsrBatchPollJob(
         var repaired = 0;
         foreach (var candidate in candidates)
         {
-            using var budget = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            budget.CancelAfter(settings.PerJobTimeout);
             try
             {
+                var claimedAt = DateTimeOffset.UtcNow;
+                var claimed = await db.NoteAsrBatchJobs
+                    .Where(job => job.Id == candidate.Id && job.OwnerId == candidate.OwnerId &&
+                                  (job.LastPolledAt == null || job.LastPolledAt < repairDue))
+                    .ExecuteUpdateAsync(update => update
+                        .SetProperty(job => job.LastPolledAt, claimedAt), ct);
+                if (claimed == 0)
+                    continue;
+                using var budget = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                budget.CancelAfter(settings.PerJobTimeout);
                 if (await service.ReconcileTerminalAuditAsync(candidate.OwnerId, candidate.Id, budget.Token))
                     repaired++;
             }
@@ -110,6 +137,12 @@ public sealed class NoteAsrBatchPollJob(
             catch (Exception error) when (error is not OperationCanceledException)
             {
                 logger.LogWarning(error, "Batch audit repair failed for job {BatchJobId}", candidate.Id);
+            }
+            finally
+            {
+                // Reconcile shares this scoped context. A failed SaveChanges must not leave the
+                // rejected audit row tracked for the next candidate's save.
+                db.ChangeTracker.Clear();
             }
         }
         if (repaired > 0)
