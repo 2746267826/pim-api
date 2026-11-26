@@ -27,6 +27,14 @@ public sealed class NoteMaterialUploadStoreTests : IDisposable
     };
 
     [Fact]
+    public async Task NoteWithoutLifecycleLedgerEntry_RemainsActiveForLegacyProcessing()
+    {
+        var status = await Store().GetMcpNoteStatusAsync(_user, Guid.NewGuid());
+
+        Assert.Equal("Active", status);
+    }
+
+    [Fact]
     public async Task Batch_jsonl_uses_and_validates_the_profile_output_token_limit()
     {
         var fixture = Fixture.Create();

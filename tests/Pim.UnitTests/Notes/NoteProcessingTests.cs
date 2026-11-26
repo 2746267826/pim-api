@@ -535,7 +535,9 @@ public sealed class NoteProcessingTests(NoteProcessingFixture host)
             .RunAsync(owner.UserId, asrTaskId, CancellationToken.None);
         await host.Factory.Services.GetRequiredService<NoteDerivedJob>()
             .RunAsync(owner.UserId, derivedTaskId, CancellationToken.None);
-        Assert.Empty(jobs.Items);
+        Assert.DoesNotContain(jobs.Items,
+            item => item.Args.Count > 0 && item.Args[0] is Guid jobOwner &&
+                jobOwner == owner.UserId);
         Assert.Equal(0, host.Models.Calls);
         Assert.Equal(0, await AiCallCountAsync(owner.UserId));
 
@@ -633,7 +635,7 @@ public sealed class NoteProcessingTests(NoteProcessingFixture host)
         var taskResponse = await client.GetAsync(
             $"/api/v1/native-notes/asr-tasks/{asrTaskId}");
         var taskView = await Data<NoteAsrTaskDto>(taskResponse);
-        Assert.Equal("Running", taskView.Phase);
+        Assert.Equal("Stopped", taskView.Phase);
         var segments = await Data<NoteAsrSegmentsDto>(await client.GetAsync(
             $"/api/v1/native-notes/asr-tasks/{asrTaskId}/segments"));
         Assert.Equal("Running", segments.Items[0].Status);

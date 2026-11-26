@@ -130,7 +130,10 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
     public async Task<NoteAsrTaskDto> GetAsync(Guid id, CancellationToken ct)
     {
         var owner = await RequireActiveOwnerAsync(ct);
-        return Describe(await ReconcileAsync(owner, id, ct));
+        var state = await tasks.ReadAsync(owner, id, ct);
+        if (await IsActiveNoteAsync(owner, state.NoteId, ct))
+            state = await ReconcileAsync(owner, id, ct);
+        return Describe(state);
     }
 
     /// <summary>
@@ -147,7 +150,9 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
     {
         var owner = await RequireActiveOwnerAsync(ct);
         if (offset < 0 || limit is < 1 or > 20) throw new DomainException(40001, "分片分页范围无效，单页最多20片");
-        var state = await ReconcileAsync(owner, id, ct);
+        var state = await tasks.ReadAsync(owner, id, ct);
+        if (await IsActiveNoteAsync(owner, state.NoteId, ct))
+            state = await ReconcileAsync(owner, id, ct);
         var page = state.Steps.Skip(offset).Take(limit).ToArray();
         var logIds = page.Select(x => x.Current.LogId).Where(x => x.HasValue).Select(x => x!.Value).ToArray();
         var logs = await db.AiRequestLogs.AsNoTracking().Where(x => x.UserId == owner && logIds.Contains(x.Id))

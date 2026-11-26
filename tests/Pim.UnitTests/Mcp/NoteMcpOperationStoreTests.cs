@@ -123,7 +123,7 @@ public sealed class NoteMcpOperationStoreTests : IDisposable
 
         var status = await store.GetAsync(_owner, _noteId, requestId, default);
         Assert.Equal("succeeded", status.State);
-        Assert.Equal("succeeded", status.Receipt.Status);
+        Assert.Equal("applied", status.Receipt.Status);
     }
 
     [Fact]

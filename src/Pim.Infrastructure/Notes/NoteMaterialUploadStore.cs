@@ -756,13 +756,16 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
             conflicts);
     }
 
-    /// <summary>Current recycle-bin status with an existence check (404 when the note is unknown).</summary>
+    /// <summary>
+    /// Current recycle-bin status. Notes created before the lifecycle ledger existed have no
+    /// ledger entry; they remain usable and are reported as Active so an upgrade cannot make
+    /// existing processing or material reads disappear.
+    /// </summary>
     public async Task<string> GetMcpNoteStatusAsync(Guid userId, Guid noteId, CancellationToken ct = default)
     {
         await using var lease = await LockAsync(userId, ct);
         var ledger = await LoadLedgerAsync(userId, ct);
         await PruneAsync(userId, ledger, ct);
-        RequireNote(ledger, noteId);
         return NoteStatus(ledger, noteId);
     }
 
