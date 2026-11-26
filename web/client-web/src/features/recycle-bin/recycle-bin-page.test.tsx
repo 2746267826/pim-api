@@ -4,6 +4,8 @@ import { cleanup, render, screen, waitFor, within } from '@testing-library/react
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
+import type { RecycleBinItem } from './api'
+
 const api = vi.hoisted(() => ({
   list: vi.fn(),
   restore: vi.fn(),
@@ -15,7 +17,7 @@ vi.mock('@/lib/notify', () => ({ notifySuccess: vi.fn(), notifyError: vi.fn() })
 
 import { RecycleBinPage } from './recycle-bin-page'
 
-const note = {
+const note: RecycleBinItem = {
   id: '11111111-1111-4111-8111-111111111111',
   domain: 'note',
   kind: 'note',
@@ -28,7 +30,7 @@ const note = {
   sourcePending: false,
   sourceMessage: null,
 }
-const localFile = {
+const localFile: RecycleBinItem = {
   id: '22222222-2222-4222-8222-222222222222',
   domain: 'file',
   kind: 'file',
@@ -41,7 +43,7 @@ const localFile = {
   sourcePending: false,
   sourceMessage: null,
 }
-const cloudFile = {
+const cloudFile: RecycleBinItem = {
   id: '33333333-3333-4333-8333-333333333333',
   domain: 'file',
   kind: 'file',
@@ -54,7 +56,7 @@ const cloudFile = {
   sourcePending: true,
   sourceMessage: 'OneDrive 的恢复与永久清理需由外部来源确认',
 }
-const task = {
+const task: RecycleBinItem = {
   id: '44444444-4444-4444-8444-444444444444',
   domain: 'task',
   kind: 'task',
@@ -67,7 +69,7 @@ const task = {
   sourcePending: false,
   sourceMessage: null,
 }
-const calendar = {
+const calendar: RecycleBinItem = {
   id: '55555555-5555-4555-8555-555555555555',
   domain: 'calendar',
   kind: 'event',
@@ -81,14 +83,14 @@ const calendar = {
   sourceMessage: null,
 }
 
-function page(items: unknown[]) {
+function page(items: RecycleBinItem[]) {
   return {
     items,
     groups: [
-      { domain: 'note', totalCount: items.filter((item) => (item as { domain: string }).domain === 'note').length },
-      { domain: 'file', totalCount: items.filter((item) => (item as { domain: string }).domain === 'file').length },
-      { domain: 'task', totalCount: items.filter((item) => (item as { domain: string }).domain === 'task').length },
-      { domain: 'calendar', totalCount: items.filter((item) => (item as { domain: string }).domain === 'calendar').length },
+      { domain: 'note', totalCount: items.filter((item) => item.domain === 'note').length },
+      { domain: 'file', totalCount: items.filter((item) => item.domain === 'file').length },
+      { domain: 'task', totalCount: items.filter((item) => item.domain === 'task').length },
+      { domain: 'calendar', totalCount: items.filter((item) => item.domain === 'calendar').length },
     ],
     totalCount: items.length,
     page: 1,
@@ -99,7 +101,7 @@ function page(items: unknown[]) {
 
 function receipt(
   action: string,
-  entries: { item: (typeof note); status: string; message?: string; index: number }[],
+  entries: { item: RecycleBinItem; status: string; message?: string; index: number }[],
 ) {
   return {
     receiptId: '99999999-9999-4999-8999-999999999999',
