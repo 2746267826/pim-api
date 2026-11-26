@@ -167,9 +167,12 @@ public sealed class NoteDerivedRecoveryTests : IAsyncLifetime
         Assert.Null(_lastRecordPrompt);
         Assert.Null(_lastAnalysisPrompt);
         await AssertNoVersionsAsync(stopped);
+        Assert.False(stopped.Coverage.Complete, JsonSerializer.Serialize(stopped.Coverage));
+        Assert.Contains(stopped.Issues, issue => issue.Code == "step_cancelled");
 
         var replay = await GetDerivedAsync(task.TaskId);
         Assert.Equal(stopped.Revision, replay.Revision);
+        Assert.False(replay.Coverage.Complete);
         Assert.Equal(1, _visionCalls);
 
         var visionRetry = new RetryNoteDerivedTaskRequest(Guid.NewGuid(), _owner,
@@ -404,7 +407,6 @@ public sealed class NoteDerivedRecoveryTests : IAsyncLifetime
         await RunDerivedAsync(task.TaskId);
         _ = await GetDerivedAsync(task.TaskId);
 
-        Guid revision;
         Guid requestId;
         using (var scope = _factory.Services.CreateScope())
         {
@@ -417,7 +419,6 @@ public sealed class NoteDerivedRecoveryTests : IAsyncLifetime
                 record.Current.ErrorCode = "checkpoint_unknown";
                 record.Current.ErrorMessage = "Synthetic lost checkpoint";
             }, default);
-            revision = damaged.Revision;
             requestId = damaged.Steps.Single(x => x.Key == "record-synthesis").Current.RequestId;
         }
 
@@ -442,7 +443,9 @@ public sealed class NoteDerivedRecoveryTests : IAsyncLifetime
 
         var current = await GetDerivedAsync(task.TaskId);
         Assert.Equal("Unknown", current.Steps.Single(x => x.Key == "record-synthesis").Status);
-        Assert.Equal(revision, current.Revision);
+        Assert.False(current.Coverage.Complete);
+        var repeated = await GetDerivedAsync(task.TaskId);
+        Assert.Equal(current.Revision, repeated.Revision);
         Assert.Equal(calls, (_visionCalls, _recordCalls, _analysisCalls));
     }
 

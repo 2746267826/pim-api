@@ -21,6 +21,7 @@ public enum NoteDerivedVersionAuthor
 public enum NoteDerivedStepKind
 {
     ImageEvidence,
+    AudioBatchEvidence,
     RecordSynthesis,
     AnalysisSynthesis
 }
@@ -83,7 +84,8 @@ public enum NoteDerivedSourceKind
     TextBlock,
     TranscriptSegment,
     Photo,
-    InkPreview
+    InkPreview,
+    AudioSegment
 }
 
 public sealed record NoteDerivedReceiptBindingDto(
@@ -167,6 +169,7 @@ public sealed record NoteDerivedStepDto(
     string Key,
     NoteDerivedStepKind Kind,
     string Status,
+    IReadOnlyList<string> DependsOn,
     IReadOnlyList<NoteDerivedAttemptDto> Attempts);
 
 public sealed record NoteDerivedStepsDto(

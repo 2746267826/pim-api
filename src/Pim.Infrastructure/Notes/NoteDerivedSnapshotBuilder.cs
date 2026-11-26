@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using Pim.Core.Exceptions;
 using Pim.Core.Notes;
 using Pim.Infrastructure.Data;
@@ -20,7 +21,8 @@ internal sealed record NoteDerivedSnapshotBuild(
 public sealed class NoteDerivedSnapshotBuilder(
     PimDbContext db,
     NoteMaterialUploadStore materials,
-    NoteAsrTaskStore asrTasks)
+    NoteAsrTaskStore asrTasks,
+    IOptions<NoteDerivedAudioContextOptions> audioOptions)
 {
     internal async Task<NoteDerivedSnapshotBuild> BuildAsync(Guid owner,
         NoteMaterialVersionDto version, string inputSha, string manifestSha,
@@ -325,6 +327,11 @@ public sealed class NoteDerivedSnapshotBuilder(
         var items = new List<NoteDerivedAudioInput>();
         var files = version.Upload.Files.ToDictionary(x => x.Path, StringComparer.Ordinal);
         var identities = new HashSet<(Guid RecordingId, int Segment, int Chunk, long Offset)>();
+        var configured = audioOptions.Value;
+        var maxBytes = Math.Clamp(configured.MaxTotalBytes, NoteDerivedAudioContext.MaxBytes,
+            NoteDerivedAudioContextOptions.HardMaxTotalBytes);
+        var maxSlices = NoteDerivedAudioContext.MaxSlices *
+            Math.Clamp(configured.MaxBatches, 1, NoteDerivedAudioContextOptions.HardMaxBatches);
         long totalBytes = 0;
         var ordinal = 0;
         var sliceLimitReached = false;
@@ -356,7 +363,7 @@ public sealed class NoteDerivedSnapshotBuilder(
 
                 for (long offset = 0; offset < samples; offset += NoteAsrPlan.SamplesPerCall)
                 {
-                    if (items.Count >= NoteDerivedAudioContext.MaxSlices)
+                    if (items.Count >= maxSlices)
                     {
                         sliceLimitReached = true;
                         break;
@@ -373,7 +380,7 @@ public sealed class NoteDerivedSnapshotBuilder(
                         file.Sha256, offset, count, size,
                         NoteDerivedAudioContext.Name(recordingId, segment, chunkIndex, offset, count)));
                     totalBytes = checked(totalBytes + size);
-                    if (totalBytes > NoteDerivedAudioContext.MaxBytes)
+                    if (totalBytes > maxBytes)
                     {
                         overBudget = true;
                         break;
@@ -385,11 +392,11 @@ public sealed class NoteDerivedSnapshotBuilder(
         }
 
         if (sliceLimitReached)
-            issues.Add(new("audio_context_slice_limit",
-                $"原始录音需要超过 {NoteDerivedAudioContext.MaxSlices} 个上下文片段；未截断、未发送"));
+            issues.Add(new("audio_slice_limit",
+                $"原始录音需要超过 {maxSlices} 个上下文片段；未截断、未发送"));
         if (overBudget)
-            issues.Add(new("audio_context_too_large",
-                $"原始录音上下文合计超过单次 {NoteDerivedAudioContext.MaxBytes} 字节上限；未截断、未发送"));
+            issues.Add(new("audio_total_budget_exceeded",
+                $"原始录音上下文合计超过任务总预算 {maxBytes} 字节；未截断、未发送"));
         if (items.Count == 0 && issues.Count == 0)
             issues.Add(new("audio_context_unavailable",
                 "固定材料包含录音，但没有可读取的原始音频上下文；未发送音频"));

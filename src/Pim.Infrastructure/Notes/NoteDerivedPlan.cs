@@ -3,8 +3,11 @@ using Pim.Core.Notes;
 
 namespace Pim.Infrastructure.Notes;
 
-internal sealed class NoteDerivedPlanner : INoteDerivedPlanner
+internal sealed class NoteDerivedPlanner(NoteDerivedAudioContextOptions? audioContext = null)
+    : INoteDerivedPlanner
 {
+    private readonly NoteDerivedAudioContextOptions _audio = audioContext ?? new();
+
     public NoteDerivedPlan Build(NoteDerivedInputSnapshot input)
     {
         ArgumentNullException.ThrowIfNull(input);
@@ -22,21 +25,48 @@ internal sealed class NoteDerivedPlanner : INoteDerivedPlanner
         ValidateAudio(input.Audio, issues);
         var imageKeys = steps.Where(x => x.Kind == NoteDerivedStepKind.ImageEvidence)
             .Select(x => x.Key).ToArray();
-        var recordPrompt = NoteDerivedPrompts.Record(input, []);
+        var audioBatchMode = input.Audio.Count > 0 && !FitsSingleAudioCall(input.Audio);
+        var audioKeys = new List<string>();
+        if (audioBatchMode)
+        {
+            var audioBatches = BuildAudioBatches(input, issues, batches.Count);
+            var coveredTranscripts = audioBatches
+                .SelectMany(x => x.TranscriptOrdinals ?? [])
+                .ToHashSet();
+            var unassigned = input.Transcripts
+                .Where(x => !coveredTranscripts.Contains(x.Ordinal))
+                .OrderBy(x => x.Ordinal)
+                .ToArray();
+            if (audioBatches.Count > 0 && unassigned.Length > 0)
+            {
+                issues.Add(new("audio_transcript_unassigned",
+                    $"有 {unassigned.Length} 段成功 ASR 转写无法按录音与时间范围归入任何录音批次；未截断、未发送",
+                    unassigned[0].SourcePath));
+                audioBatches = [];
+            }
+            foreach (var batch in audioBatches)
+            {
+                audioKeys.Add(batch.Key);
+                steps.Add(batch);
+            }
+        }
+        var recordPrompt = NoteDerivedPrompts.Record(input, [], audioBatchMode);
         if (recordPrompt.Length > NoteDerivedLimits.MaxSynthesisInputChars)
             issues.Add(new("record_input_too_large",
                 $"完整记录基础输入为 {recordPrompt.Length} 字符，超过 SDK 实际输入上限 {NoteDerivedLimits.MaxSynthesisInputChars}；未截断且不会发送",
                 StepKey: NoteDerivedPrompts.RecordKey));
         steps.Add(new(NoteDerivedPrompts.RecordKey, NoteDerivedStepKind.RecordSynthesis,
-            imageKeys, [], recordPrompt.Length));
+            imageKeys.Concat(audioKeys).ToArray(), [], recordPrompt.Length,
+            audioBatchMode ? [] : input.Audio));
 
-        var analysisPrompt = NoteDerivedPrompts.Analysis(input, Guid.Empty, "", []);
+        var analysisPrompt = NoteDerivedPrompts.Analysis(input, Guid.Empty, "", [], audioBatchMode);
         if (analysisPrompt.Length > NoteDerivedLimits.MaxSynthesisInputChars)
             issues.Add(new("analysis_input_too_large",
                 $"独立分析基础输入为 {analysisPrompt.Length} 字符，超过 SDK 实际输入上限 {NoteDerivedLimits.MaxSynthesisInputChars}；未截断且不会发送",
                 StepKey: NoteDerivedPrompts.AnalysisKey));
         steps.Add(new(NoteDerivedPrompts.AnalysisKey, NoteDerivedStepKind.AnalysisSynthesis,
-            [NoteDerivedPrompts.RecordKey], [], analysisPrompt.Length));
+            [NoteDerivedPrompts.RecordKey], [], analysisPrompt.Length,
+            audioBatchMode ? [] : input.Audio));
 
         if (steps.Count > NoteDerivedLimits.MaxEvidenceSteps)
             issues.Add(new("evidence_step_limit",
@@ -58,6 +88,132 @@ internal sealed class NoteDerivedPlanner : INoteDerivedPlanner
 
         return new(NoteDerivedLimits.PlanVersion, input, steps, coverage);
     }
+
+    private bool FitsSingleAudioCall(IReadOnlyList<NoteDerivedAudioInput> audio)
+    {
+        if (audio.Count == 0 || audio.Count > NoteDerivedAudioContext.MaxSlices) return false;
+        long total = 0;
+        foreach (var item in audio)
+        {
+            if (item.SizeBytes > NoteDerivedAudioContext.MaxBytes) return false;
+            if (total > long.MaxValue - item.SizeBytes) return false;
+            total += item.SizeBytes;
+            if (total > Math.Min(NoteDerivedAudioContext.MaxBytes, MaxBatchBytes)) return false;
+        }
+        return true;
+    }
+
+    private int MaxBatchBytes => Math.Clamp(_audio.MaxBatchBytes, 1024,
+        NoteDerivedAudioContext.MaxBytes);
+    private int MaxBatches => Math.Clamp(_audio.MaxBatches, 1,
+        NoteDerivedAudioContextOptions.HardMaxBatches);
+    private long MaxTotalBytes => Math.Clamp(_audio.MaxTotalBytes,
+        NoteDerivedAudioContext.MaxBytes, NoteDerivedAudioContextOptions.HardMaxTotalBytes);
+
+    private List<NoteDerivedPlanStep> BuildAudioBatches(NoteDerivedInputSnapshot input,
+        List<NoteDerivedIssueDto> issues, int imageBatchCount)
+    {
+        var ordered = input.Audio.OrderBy(x => x.Ordinal).ToArray();
+        var batches = new List<List<NoteDerivedAudioInput>>();
+        var current = new List<NoteDerivedAudioInput>();
+        long currentBytes = 0;
+        foreach (var slice in ordered)
+        {
+            if (slice.SizeBytes is < 1 or > NoteDerivedAudioContext.MaxBytes) continue;
+            if (slice.SizeBytes > MaxBatchBytes)
+            {
+                issues.Add(new("audio_batch_slice_too_large",
+                    $"单个原始录音片段为 {slice.SizeBytes} 字节，超过单批 {MaxBatchBytes} 字节预算；未截断、未发送",
+                    slice.Path));
+                return [];
+            }
+            if (current.Count > 0 && (current.Count >= NoteDerivedAudioContext.MaxSlices ||
+                currentBytes + slice.SizeBytes > MaxBatchBytes))
+            {
+                batches.Add(current);
+                current = [];
+                currentBytes = 0;
+            }
+            current.Add(slice);
+            currentBytes = checked(currentBytes + slice.SizeBytes);
+        }
+        if (current.Count > 0) batches.Add(current);
+
+        if (batches.Count == 0)
+        {
+            issues.Add(new("audio_batch_no_valid_slices",
+                $"原始录音上下文没有可分批的有效片段（共 {ordered.Length} 段）；未截断、未发送"));
+            return [];
+        }
+
+        if (batches.Count > MaxBatches)
+        {
+            issues.Add(new("audio_batch_limit",
+                $"原始录音需要 {batches.Count} 个 provider 批次，超过上限 {MaxBatches}；未截断、未发送"));
+            return [];
+        }
+
+        var transcriptBatch = new Dictionary<int, int>();
+        foreach (var transcript in input.Transcripts.OrderBy(x => x.Ordinal))
+        {
+            for (var index = 0; index < batches.Count; index++)
+            {
+                if (!batches[index].Any(slice => Overlaps(transcript, slice))) continue;
+                transcriptBatch[transcript.Ordinal] = index;
+                break;
+            }
+        }
+
+        var skeleton = NoteDerivedPrompts.Record(input, [], audioBatched: true).Length;
+        // Reserve the maximum image evidence the record prompt can accept. Otherwise a plan can
+        // pass here, send every audio batch, and only then fail the record input limit.
+        var imageReserve = imageBatchCount *
+            (long)(NoteDerivedLimits.MaxEvidenceCharsPerStep + 128);
+        var reserve = 512L + batches.Count * 128L;
+        var available = NoteDerivedLimits.MaxSynthesisInputChars - skeleton - reserve - imageReserve;
+        var perBatchLimit = available <= 0 ? 0 :
+            (int)Math.Min(NoteDerivedLimits.MaxEvidenceCharsPerStep, available / batches.Count);
+        if (perBatchLimit < 1000)
+        {
+            issues.Add(new("audio_evidence_budget_insufficient",
+                $"完整记录基础输入已占用 {skeleton} 字符，图片证据预留 {imageReserve} 字符，" +
+                $"无法为 {batches.Count} 个录音批次各保留至少 1000 字符的整理证据；未截断、未发送"));
+            return [];
+        }
+
+        var result = new List<NoteDerivedPlanStep>(batches.Count);
+        for (var index = 0; index < batches.Count; index++)
+        {
+            var key = NoteDerivedPrompts.AudioBatchKey(index);
+            var audio = batches[index].ToArray();
+            var transcriptOrdinals = transcriptBatch
+                .Where(item => item.Value == index)
+                .Select(item => item.Key)
+                .OrderBy(ordinal => ordinal)
+                .ToArray();
+            var prompt = NoteDerivedPrompts.AudioBatch(key, index, batches.Count, audio,
+                input.Transcripts.Where(x => transcriptOrdinals.Contains(x.Ordinal)));
+            if (prompt.Length > NoteDerivedLimits.MaxSynthesisInputChars)
+            {
+                issues.Add(new("audio_batch_prompt_too_large",
+                    $"{key} 的整理提示为 {prompt.Length} 字符，超过 SDK 实际输入上限 {NoteDerivedLimits.MaxSynthesisInputChars}；未截断、未发送",
+                    StepKey: key));
+                continue;
+            }
+            result.Add(new(key, NoteDerivedStepKind.AudioBatchEvidence, [], [], prompt.Length,
+                Audio: audio, TranscriptOrdinals: transcriptOrdinals,
+                MaxOutputCharacters: perBatchLimit));
+        }
+        return result;
+    }
+
+    private static bool Overlaps(NoteDerivedTranscriptInput transcript,
+        NoteDerivedAudioInput slice) =>
+        slice.RecordingId == transcript.RecordingId &&
+        slice.RecordingSegment == transcript.RecordingSegment &&
+        slice.ChunkIndex == transcript.ChunkIndex &&
+        transcript.SourceOffsetSamples < slice.SourceOffsetSamples + slice.Samples &&
+        slice.SourceOffsetSamples < transcript.SourceOffsetSamples + transcript.Samples;
 
     private static List<IReadOnlyList<NoteDerivedImageInput>> BuildImageBatches(
         IReadOnlyList<NoteDerivedImageInput> source, List<NoteDerivedIssueDto> issues)
@@ -151,13 +307,14 @@ internal sealed class NoteDerivedPlanner : INoteDerivedPlanner
         }
     }
 
-    private static void ValidateAudio(IReadOnlyList<NoteDerivedAudioInput> audio,
+    private void ValidateAudio(IReadOnlyList<NoteDerivedAudioInput> audio,
         List<NoteDerivedIssueDto> issues)
     {
         if (audio.Count == 0) return;
-        if (audio.Count > NoteDerivedAudioContext.MaxSlices)
-            issues.Add(new("audio_context_slice_limit",
-                $"原始录音上下文包含 {audio.Count} 个片段，超过上限 {NoteDerivedAudioContext.MaxSlices}；未截断"));
+        var maxSlices = NoteDerivedAudioContext.MaxSlices * MaxBatches;
+        if (audio.Count > maxSlices)
+            issues.Add(new("audio_slice_limit",
+                $"原始录音上下文包含 {audio.Count} 个片段，超过总上限 {maxSlices}；未截断"));
 
         var ordinals = new HashSet<int>();
         var identities = new HashSet<(Guid RecordingId, int Segment, int Chunk, long Offset)>();
@@ -184,11 +341,25 @@ internal sealed class NoteDerivedPlanner : INoteDerivedPlanner
                     item.SourceOffsetSamples)))
                 issues.Add(new("audio_context_duplicate",
                     "原始录音上下文包含重复片段", item.Path));
-            total = checked(total + item.SizeBytes);
+            if (item.SizeBytes > NoteDerivedAudioContext.MaxBytes)
+                issues.Add(new("audio_slice_too_large",
+                    $"单个原始录音片段为 {item.SizeBytes} 字节，超过单次 {NoteDerivedAudioContext.MaxBytes} 字节上限；未截断",
+                    item.Path));
+            if (total > long.MaxValue - item.SizeBytes)
+            {
+                issues.Add(new("audio_context_too_large",
+                    "原始录音上下文合计字节数溢出；未截断、未发送"));
+                total = long.MaxValue;
+            }
+            else
+            {
+                total += item.SizeBytes;
+            }
         }
-        if (total > NoteDerivedAudioContext.MaxBytes)
-            issues.Add(new("audio_context_too_large",
-                $"原始录音上下文合计 {total} 字节，超过单次 {NoteDerivedAudioContext.MaxBytes} 字节上限；未截断"));
+        if (total > Math.Clamp(_audio.MaxTotalBytes, NoteDerivedAudioContext.MaxBytes,
+                NoteDerivedAudioContextOptions.HardMaxTotalBytes))
+            issues.Add(new("audio_total_budget_exceeded",
+                $"原始录音上下文合计 {total} 字节，超过任务总预算；未截断、未发送"));
     }
 
     private static List<NoteDerivedIssueDto> DistinctIssues(IEnumerable<NoteDerivedIssueDto> issues) =>
@@ -207,21 +378,27 @@ internal static class NoteDerivedPrompts
     internal const string AnalysisKey = "analysis-synthesis";
     internal const string SourceObjectType = "native-note-derived-task";
     internal const string VisionPurpose = "note.derived.vision";
+    internal const string AudioBatchPurpose = "note.derived.audio-batch";
     internal const string RecordPurpose = "note.derived.record-synthesis";
     internal const string AnalysisPurpose = "note.derived.analysis-synthesis";
-    internal const string PromptVersion = "note-derived-prompts-v1";
+    internal const string PromptVersion = "note-derived-prompts-v2";
 
     private const string VisionSystem =
         "你是教材笔记材料的视觉证据提取器。逐张查看输入原图，准确记录文字、图表、公式、手写内容和版面关系。" +
         "不得遗漏任何输入图片，不得根据文件名猜测内容，不得输出与图片无关的概括。";
     private const string RecordSystem =
-        "你是教材笔记完整记录整理器。必须覆盖用户提供的全部 Markdown、全部 ASR 成功转写和全部视觉证据。" +
+        "你是教材笔记完整记录整理器。必须覆盖用户提供的全部 Markdown、全部 ASR 成功转写或对应的录音批次证据，以及全部视觉证据。" +
         "不得省略、合并掉或编造来源；空转写必须保留明确占位；输出应为可独立阅读的完整记录 Markdown。";
     private const string AnalysisSystem =
         "你是独立分析器，不是摘要器。基于用户提供的全部固定材料进行批判性分析，指出结构、论点、证据、疑点和可行动结论。" +
         "不得把完整记录原文重新复述成另一份摘要，也不得声称分析了未提供的内容。";
+    private const string AudioBatchSystem =
+        "你是长录音分批整理器。只处理本批 WAV 分片及其与本批时间范围重叠的 ASR 转写；" +
+        "按录音与时间顺序完整整理本批内容，保留说话人/时间线索、事实和不确定点。" +
+        "不得声称读取了其他批次，不得编造未提供的音频或转写，也不得输出完整记录或独立分析。";
 
     internal static string ImageBatchKey(int zeroBasedIndex) => $"image-batch:{zeroBasedIndex + 1:D4}";
+    internal static string AudioBatchKey(int zeroBasedIndex) => $"audio-batch:{zeroBasedIndex + 1:D4}";
 
     internal static string ImageName(NoteDerivedImageInput image)
     {
@@ -248,19 +425,23 @@ internal static class NoteDerivedPrompts
         return text.ToString();
     }
 
-    internal static string Record(NoteDerivedInputSnapshot input, IReadOnlyList<NoteDerivedEvidence> evidence)
+    internal static string Record(NoteDerivedInputSnapshot input, IReadOnlyList<NoteDerivedEvidence> evidence,
+        bool audioBatched = false)
     {
         var text = new StringBuilder();
         text.AppendLine(RecordSystem);
         text.AppendLine();
-        AppendSourceMaterial(text, input, evidence);
+        AppendSourceMaterial(text, input, evidence, !audioBatched, !audioBatched, audioBatched);
         text.AppendLine();
-        text.AppendLine("输出：只输出完整记录 Markdown。必须逐项覆盖上述全部来源；不得截断、省略或虚构。");
+        text.AppendLine(audioBatched
+            ? "输出：只输出完整记录 Markdown。必须按录音时间顺序覆盖全部录音批次证据、全部 Markdown 和全部图片视觉证据；不得截断、省略或虚构。"
+            : "输出：只输出完整记录 Markdown。必须逐项覆盖上述全部来源；不得截断、省略或虚构。");
         return text.ToString();
     }
 
     internal static string Analysis(NoteDerivedInputSnapshot input, Guid completeRecordVersionId,
-        string completeRecordMarkdown, IReadOnlyList<NoteDerivedEvidence> evidence)
+        string completeRecordMarkdown, IReadOnlyList<NoteDerivedEvidence> evidence,
+        bool audioBatched = false)
     {
         ArgumentNullException.ThrowIfNull(completeRecordMarkdown);
         var text = new StringBuilder();
@@ -272,9 +453,63 @@ internal static class NoteDerivedPrompts
         text.AppendLine("## 已校验的完整记录正文");
         text.AppendLine(completeRecordMarkdown);
         text.AppendLine();
-        AppendSourceMaterial(text, input, evidence);
+        if (audioBatched)
+        {
+            text.AppendLine("本任务的长录音已由受控批次按原始顺序整理为上述完整记录；独立分析只引用该已校验版本，不重复拼接各批原始分片。");
+            text.AppendLine();
+        }
+        else
+        {
+            AppendSourceMaterial(text, input, evidence, true, true, false);
+        }
         text.AppendLine();
         text.AppendLine("输出：只输出独立分析 Markdown。按主题分析而非逐段复述；明确证据来源和不确定性。");
+        return text.ToString();
+    }
+
+    internal static string AudioBatch(string stepKey, int zeroBasedIndex, int batchCount,
+        IReadOnlyList<NoteDerivedAudioInput> audio,
+        IEnumerable<NoteDerivedTranscriptInput> transcripts)
+    {
+        var text = new StringBuilder();
+        text.AppendLine(AudioBatchSystem);
+        text.AppendLine();
+        text.AppendLine($"步骤：{stepKey}（第 {zeroBasedIndex + 1} / {batchCount} 批）");
+        text.AppendLine($"本批 WAV 分片：{audio.Count} 个；会按下列清单顺序作为同一请求的音频内容发送。");
+        foreach (var item in audio.OrderBy(x => x.Ordinal))
+        {
+            var start = item.SourceOffsetSamples / 16_000m;
+            var end = (item.SourceOffsetSamples + item.Samples) / 16_000m;
+            text.AppendLine($"- {item.Name} | recording={item.RecordingId:D} | " +
+                $"segment={item.RecordingSegment} | chunk={item.ChunkIndex} | " +
+                $"sourceOffsetSamples={item.SourceOffsetSamples} | samples={item.Samples} | " +
+                $"time={start:0.000}-{end:0.000}s | sourceSha256={item.SourceSha256}");
+        }
+        text.AppendLine();
+        text.AppendLine("## 本批时间范围重叠的成功 ASR 转写");
+        var transcriptList = transcripts.OrderBy(x => x.Ordinal).ToArray();
+        if (transcriptList.Length == 0)
+        {
+            text.AppendLine("（本批没有成功 ASR 转写；仍须依据音频整理，并明确标注无法确认的内容。）");
+        }
+        else
+        {
+            foreach (var transcript in transcriptList)
+            {
+                text.AppendLine($"### ASR {transcript.Ordinal + 1:D5} | " +
+                    $"log={transcript.LogId?.ToString("D") ?? "-"} | " +
+                    $"asrSegment={transcript.AsrSegmentIndex} | recording={transcript.RecordingId:D} | " +
+                    $"segment={transcript.RecordingSegment} | chunk={transcript.ChunkIndex} | " +
+                    $"sourceOffset={transcript.SourceOffsetSamples} | samples={transcript.Samples} | " +
+                    $"sha256={transcript.SourceSha256}");
+                text.AppendLine(string.IsNullOrWhiteSpace(transcript.Text)
+                    ? "（空转写：ASR 成功但未识别出文字，请复核本批原始录音。）"
+                    : transcript.Text);
+            }
+        }
+        text.AppendLine();
+        text.AppendLine("输出要求：按时间顺序输出本批整理证据；明确区分音频中直接可确认的内容与仅由 ASR 转写支持的内容；" +
+            "不得遗漏本批任何分片或转写，不得输出跨批次的完整记录。");
         return text.ToString();
     }
 
@@ -283,7 +518,8 @@ internal static class NoteDerivedPrompts
             Encoding.UTF8.GetBytes(value))).ToLowerInvariant();
 
     private static void AppendSourceMaterial(StringBuilder text, NoteDerivedInputSnapshot input,
-        IReadOnlyList<NoteDerivedEvidence> evidence)
+        IReadOnlyList<NoteDerivedEvidence> evidence, bool includeTranscripts,
+        bool includeAudioContext, bool audioBatched)
     {
         text.AppendLine($"# 固定材料：{input.NoteTitle}");
         text.AppendLine($"笔记：{input.NoteId:D}");
@@ -300,7 +536,12 @@ internal static class NoteDerivedPrompts
 
         text.AppendLine();
         text.AppendLine("## 全部成功 ASR 转写");
-        if (input.Transcripts.Count == 0)
+        if (!includeTranscripts)
+        {
+            text.AppendLine($"（共 {input.Transcripts.Count} 段成功转写，已按时间范围并入录音批次证据；" +
+                "此处不重复拼接，完整记录必须覆盖全部批次。）");
+        }
+        else if (input.Transcripts.Count == 0)
         {
             text.AppendLine("（本固定材料没有成功 ASR 转写片段。）");
         }
@@ -308,7 +549,8 @@ internal static class NoteDerivedPrompts
         {
             foreach (var transcript in input.Transcripts.OrderBy(x => x.Ordinal))
             {
-                text.AppendLine($"### ASR {transcript.Ordinal + 1:D5} | log={transcript.LogId:D} | " +
+                text.AppendLine($"### ASR {transcript.Ordinal + 1:D5} | " +
+                    $"log={transcript.LogId?.ToString("D") ?? "-"} | " +
                     $"asrSegment={transcript.AsrSegmentIndex} | recording={transcript.RecordingId:D} | " +
                     $"segment={transcript.RecordingSegment} | sourceOffset={transcript.SourceOffsetSamples} | " +
                     $"samples={transcript.Samples} | " +
@@ -319,24 +561,44 @@ internal static class NoteDerivedPrompts
                     : transcript.Text);
             }
         }
-        NoteDerivedAudioContext.AppendPrompt(text, input.Audio);
+        if (includeAudioContext)
+            NoteDerivedAudioContext.AppendPrompt(text, input.Audio);
 
         text.AppendLine();
         text.AppendLine("## 全部图片视觉证据");
         if (input.Images.Count == 0)
         {
             text.AppendLine("（本固定材料没有照片或手写预览图。）");
-            return;
         }
-        foreach (var image in input.Images.OrderBy(x => x.Ordinal))
-            text.AppendLine($"- {ImageName(image)} | source={image.Path} | kind={image.Kind} | sha256={image.Sha256}");
+        else
+        {
+            foreach (var image in input.Images.OrderBy(x => x.Ordinal))
+                text.AppendLine($"- {ImageName(image)} | source={image.Path} | kind={image.Kind} | sha256={image.Sha256}");
+        }
         text.AppendLine();
-        if (evidence.Count == 0)
+        var imageEvidence = evidence.Where(x => x.Images.Count > 0)
+            .OrderBy(x => x.StepKey, StringComparer.Ordinal).ToArray();
+        var audioEvidence = evidence.Where(x => x.Images.Count == 0)
+            .OrderBy(x => x.StepKey, StringComparer.Ordinal).ToArray();
+        if (imageEvidence.Length == 0)
         {
             text.AppendLine("（视觉证据尚未生成。）");
+        }
+        foreach (var item in imageEvidence)
+        {
+            text.AppendLine($"### {item.StepKey} | aiLog={item.LogId:D}");
+            text.AppendLine(item.Text);
+        }
+        text.AppendLine();
+        text.AppendLine("## 全部录音批次证据");
+        if (audioEvidence.Length == 0)
+        {
+            text.AppendLine(audioBatched
+                ? "（录音批次证据尚未生成。）"
+                : "（本固定材料未按批次发送原始录音。）");
             return;
         }
-        foreach (var item in evidence.OrderBy(x => x.StepKey, StringComparer.Ordinal))
+        foreach (var item in audioEvidence)
         {
             text.AppendLine($"### {item.StepKey} | aiLog={item.LogId:D}");
             text.AppendLine(item.Text);

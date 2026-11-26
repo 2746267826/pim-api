@@ -88,9 +88,22 @@ canonical contract 现为 `e38d1991b372174a3a4bac10df0a35eee90de92d268a5f1d35762
 
 - 只有 `NativeNotes:AudioContext:ModelIds` 或 `ModelNames` 命中的模型配置才允许接收原始录音；两个列表默认均为空，未配置时继续要求同版本 ASR，现有纯文本、无录音和 ASR 转写路径不变。
 - 音频只从固定材料版本中已提交的 `AudioChunk` 读取，按 owner、note、version、file index、录音/分片身份、偏移、样本数和文件 SHA-256 绑定；提示词只列录音身份和摘要，不下发任意路径或令牌。
-- 每次 provider 调用最多 8 MiB、5,000 个上下文片段，并按现有 60 秒 `SamplesPerCall` 切片。超限明确阻断为 `audio_context_too_large` 或 `audio_context_slice_limit`，不截断、不转码、不发送部分音频。
+- 每次 provider 调用仍严格最多 8 MiB、5,000 个上下文片段，并按现有 60 秒 `SamplesPerCall` 切片。超限时由下方长音频分批链路处理；单个片段自身超过 8 MiB 时阻断为 `audio_slice_too_large`，不截断、不转码、不发送部分音频。
 - 音频字节不写入任务 JSON、请求快照或日志；审计只保存 `pim-ai-audio:{index}` 引用、源摘要、数量及 owner/note/version 身份。任务执行前会重新校验模型仍在该白名单，失败时保留阻断状态。
-- 该切片未实现 H03 已确认的长音频自动分批、批次汇总、总结/概览/标题/标签产物，也未接入或验证真实第三方多模态 provider、真实 Hangfire 多进程、Web/Android/Windows 设备流程。上述能力仍为 `NOT-VERIFIED` / `BLOCKED`，不能据此宣称完整 H03。
+
+### 3.2.2 长音频自动分批与汇总
+
+长音频不再因超过单次 8 MiB 直接阻断，而是在固定材料快照和模型白名单校验之后自动规划受控批次：
+
+- **预算**：任务级默认总预算 256 MiB、32 批；硬上限 1 GiB、64 批。每批仍受单次 8 MiB/5,000 片限制（`MaxBatchBytes` 只允许调低，不允许超过 8 MiB）。总预算、批数、单片段或证据字符预算不足均产生输入级阻断，不截断、不静默丢弃。音频批次规划还先为全部图片批次预留单步证据上限（`MaxEvidenceCharsPerStep + 128` 每批），避免音频 provider 调用完成后才发现汇总输入放不下图片证据。
+- **确定性批次**：按固定片段 `Ordinal` 顺序切批，每批写入 `audio-batch:{NNNN}` 步骤；批次、依赖和本批转写序号持久化在任务 JSON 中。能一次容纳时仍保留原有单次原始音频路径，不额外产生批次步骤。无任何有效片段（例如唯一片段自身超过单次上限）时返回明确的 `audio_batch_no_valid_slices` 输入级阻断和空批次，不进入除法或除零路径。
+- **时间顺序上下文**：每批只附带与本批片段 `(recording, segment, chunk, sourceOffset, samples)` 时间范围重叠的成功 ASR 转写；跨批边界的转写只归属于第一个重叠批次，不能重复进入多个批次。完整记录的提示词只拼接按步骤键排序的批次证据，不再重复发送原始音频。
+- **汇总门禁**：`record-synthesis` 依赖全部图片批次和全部录音批次成功后才可发送；`analysis-synthesis` 依赖已校验的完整记录具体版本。最终汇总和独立分析都不再携带 `input_audio`，避免二次 provider 调用重复计费。
+- **输出预算**：规划器按 200,000 字符总输入上限为每批分配证据字符预算（最低 1,000 字符）；批次输出超过本批预算时标记 `Failed` 且不截断，可由用户显式重试。
+- **并发与恢复**：单个任务内最多 `MaxParallelCalls`（默认 2，硬上限 4）个 provider 调用；每步使用独立 DI scope/DbContext。部分批次失败只取消其下游依赖，其他批次继续。停止或恢复对账后，即使没有待核对的运行中回执，也会重新计算 coverage 和 Revision（按字段和 issue 集合做语义比较，重复 GET 不刷新 Revision），使任务不会停留在旧的“完成”状态。服务端恢复接口只接受请求中显式列出的 `stepKeys`，不会隐式追加下游；若所选步骤的前序仍未成功且未同时选中，接口返回 409，避免留下无法 ready 的 Queued 步骤。Web 在提交前按 `dependsOn` 展开已取消/失败的下游缺口并列出本次将重发的全部步骤，明确提示每个步骤都可能产生服务商调用与费用，确认标识绑定当前 Revision 与完整步骤集合，选择变化后必须重新确认。成功批次永不重发；恢复标识、尝试次数和请求 ID 均持久化。
+- **回执**：录音批次在标记成功前必须核对用途、来源对象、模型目标、片段数量、源 SHA、owner/note/version、`providerAttempted`、`requestBodyCaptured`、`responseBodyComplete`、`audioEncoding=sha256-reference`、显式 `audioInputsReferenced`、与固定片段顺序完全一致且每项都是 string 的 `audioInputsSha256`（拒绝额外元素和非 string 元素），以及回执正文/输出摘要与本次结果一致；任一缺失或冲突都不标记 Succeeded。请求快照按 JSON 结构逐 message/content 枚举真实 `input_audio` part，要求数量、顺序和 `data=pim-ai-audio:{NNNNN}` 完全匹配；提示文本中出现类似引用只作为文本，不计为音频 part，也不再用全局字符串计数判定。旧单次音频路径使用同一套结构化请求快照校验。完整记录和独立分析在发送前会重新执行批次回执/请求快照核对；此外，直接发送、恢复回执、Running/Unknown reconcile 或 provider 返回后，在 `ApplyResult`/`AppendVersion` 发布候选版本前会按 owner 和 LogId 重新读取当前批次与合成回执，并核对合成回执的 owner、ClientRequestId、用途、来源对象、模型目标、状态、正文与 `OutputHash`；provider 结果摘要会在发布前写入步骤检查点，恢复路径以该检查点识别正文与摘要同时被改写。任一批次或合成回执损坏、缺失、身份不匹配、正文或摘要不一致时 fail-closed，任务 Blocked，不生成候选版本。无音频的汇总/分析还必须显式满足 `audioInputsReferenced=0`、`audioInputsSha256` 缺失或空数组、无 `audioEncoding`，且结构化请求快照不存在真实 `input_audio` part。
+
+验证边界：自动化测试覆盖 fake provider 的字节顺序、并发上限、部分失败恢复、真实 PostgreSQL 的请求 ID 幂等与冲突，以及真实迁移库上的审计元数据。真实第三方多模态 provider、真实 Hangfire 多进程/多实例竞争、Web/Android/Windows 真机流程仍未验证，不能据此宣称完整 H03 生产验收通过。
 
 ### 3.3 成功、部分与未知
 
@@ -206,10 +219,10 @@ CAS 冲突候选的版本 ID 表达和 `hasConflict`/`isHead` 已进入 canonica
 | 调用仍执行中 | 保留进行中状态，等待原期限或继续核对 | 并行分配新调用 |
 | 结果未知/超时 | 保留未知状态和旧回执，不自动重试或声称失败 | 用“没有响应”推断未执行 |
 | 明确失败/缺口 | 保留成功来源，只允许恢复明确缺口范围 | 全量重跑成功 ASR 或覆盖人工稿 |
-| 恢复 | 绑定原 owner、来源快照、产物父版本、目标/同意；同一恢复身份不同输入冲突 | 换材料/目标后复用旧恢复身份 |
+| 恢复 | 绑定原 owner、来源快照、产物父版本、目标/同意；只执行客户端显式列出的步骤；同一恢复身份不同输入冲突 | 服务端隐式追加未展示的下游调用；换材料/目标后复用旧恢复身份 |
 | 来源变化 | 新建来源快照和运行；旧产物保留 | 续写旧运行后声称仍基于原版本 |
 
-恢复完成后仍须重新计算完整覆盖。恢复成功不自动使所有产物完成，也不自动改变人工版本的选择指针。
+停止和恢复完成后都须重新计算完整覆盖与 Revision。恢复成功不自动使所有产物完成，也不自动改变人工版本的选择指针。
 
 ## 8. 验收矩阵
 

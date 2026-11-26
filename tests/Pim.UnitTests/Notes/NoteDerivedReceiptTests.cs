@@ -362,6 +362,172 @@ public sealed class NoteDerivedReceiptTests
         Assert.Contains(tamperedSource.Bindings, x => x.Stage == "AsrReceipt" && !x.Verified);
     }
 
+    [Fact]
+    public void SynthesisReceiptValidationRejectsTamperedIdentityContentAndHashes()
+    {
+        var fixture = CreateCompleteFixture();
+        var step = fixture.State.Steps.Single(x => x.Key == NoteDerivedPrompts.RecordKey);
+        var log = fixture.Context.LogsById.Values.Single(x =>
+            x.Purpose == NoteDerivedPrompts.RecordPurpose);
+        var text = log.ResponseText!;
+
+        Assert.Empty(NoteDerivedReceipts.ValidateSynthesisReceipt(
+            fixture.State, step, log, text, log.InputHash));
+
+        var originalUser = log.UserId;
+        log.UserId = Guid.NewGuid();
+        Assert.Contains(NoteDerivedReceipts.ValidateSynthesisReceipt(
+                fixture.State, step, log, text, log.InputHash),
+            issue => issue.Code == "synthesis_owner_mismatch");
+        log.UserId = originalUser;
+
+        var originalRequest = log.ClientRequestId;
+        log.ClientRequestId = Guid.NewGuid();
+        Assert.Contains(NoteDerivedReceipts.ValidateSynthesisReceipt(
+                fixture.State, step, log, text, log.InputHash),
+            issue => issue.Code == "synthesis_request_mismatch");
+        log.ClientRequestId = originalRequest;
+
+        var originalPurpose = log.Purpose;
+        log.Purpose = "note.derived.tampered";
+        Assert.Contains(NoteDerivedReceipts.ValidateSynthesisReceipt(
+                fixture.State, step, log, text, log.InputHash),
+            issue => issue.Code == "synthesis_purpose_mismatch");
+        log.Purpose = originalPurpose;
+
+        var originalSource = log.SourceObjectId;
+        log.SourceObjectId = Guid.NewGuid().ToString("D");
+        Assert.Contains(NoteDerivedReceipts.ValidateSynthesisReceipt(
+                fixture.State, step, log, text, log.InputHash),
+            issue => issue.Code == "synthesis_source_mismatch");
+        log.SourceObjectId = originalSource;
+
+        var originalModel = log.ModelProfileId;
+        log.ModelProfileId = Guid.NewGuid();
+        Assert.Contains(NoteDerivedReceipts.ValidateSynthesisReceipt(
+                fixture.State, step, log, text, log.InputHash),
+            issue => issue.Code == "synthesis_model_mismatch");
+        log.ModelProfileId = originalModel;
+
+        var originalInput = log.InputHash;
+        log.InputHash = Hash("tampered input");
+        Assert.Contains(NoteDerivedReceipts.ValidateSynthesisReceipt(
+                fixture.State, step, log, text, originalInput),
+            issue => issue.Code == "synthesis_input_mismatch");
+        log.InputHash = originalInput;
+
+        var originalOutput = log.OutputHash;
+        log.OutputHash = Hash("tampered output");
+        Assert.Contains(NoteDerivedReceipts.ValidateSynthesisReceipt(
+                fixture.State, step, log, text, log.InputHash),
+            issue => issue.Code == "synthesis_output_mismatch");
+        log.OutputHash = originalOutput;
+
+        log.ResponseText = "tampered synthesis text";
+        log.OutputHash = Hash(log.ResponseText);
+        Assert.Contains(NoteDerivedReceipts.ValidateSynthesisReceipt(
+                fixture.State, step, log, text, log.InputHash),
+            issue => issue.Code == "synthesis_result_mismatch");
+        log.ResponseText = text;
+        log.OutputHash = originalOutput;
+
+        var originalLogId = step.Current.LogId;
+        step.Current.LogId = Guid.NewGuid();
+        Assert.Contains(NoteDerivedReceipts.ValidateSynthesisReceipt(
+                fixture.State, step, log, text, log.InputHash),
+            issue => issue.Code == "synthesis_log_id_mismatch");
+        step.Current.LogId = originalLogId;
+
+        Assert.Contains(NoteDerivedReceipts.ValidateSynthesisReceipt(
+                fixture.State, step, log, text, null),
+            issue => issue.Code == "synthesis_input_missing");
+    }
+
+    [Fact]
+    public void LegacySynthesisAudioWireFailsClosedOnInvalidRootFlagsAndSnapshot()
+    {
+        var (state, step) = CreateLegacyAudioState();
+        var audio = Assert.Single(state.Plan.Input.Audio);
+        const string messages = """
+            [{"role":"user","content":[
+              {"type":"input_audio","input_audio":{"data":"pim-ai-audio:00001","format":"wav"}}]}]
+            """;
+        var validMetadata = $$"""
+            {"providerAttempted":true,"requestBodyCaptured":true,"responseBodyComplete":true,
+             "audioEncoding":"sha256-reference","audioInputsReferenced":1,
+             "audioInputsSha256":["{{audio.SourceSha256}}"],
+             "audioContextOwnerId":"{{state.Owner:D}}",
+             "audioContextNoteId":"{{state.NoteId:D}}",
+             "audioContextSourceVersionId":"{{state.Request.VersionId:D}}"}
+            """;
+        var log = new AiRequestLogEntity
+        {
+            MetadataJson = validMetadata,
+            RequestMessagesJson = messages
+        };
+        Assert.Empty(NoteDerivedReceipts.ValidateSynthesisAudioWire(state, step, log));
+
+        log.MetadataJson = "[]";
+        Assert.Contains(NoteDerivedReceipts.ValidateSynthesisAudioWire(state, step, log),
+            issue => issue.Code == "audio_wire_incomplete");
+
+        log.MetadataJson = """
+            {"providerAttempted":true,"requestBodyCaptured":true,"responseBodyComplete":false,
+             "audioEncoding":"sha256-reference","audioInputsReferenced":0}
+            """;
+        Assert.Contains(NoteDerivedReceipts.ValidateSynthesisAudioWire(state, step, log),
+            issue => issue.Code == "audio_wire_incomplete");
+
+        log.MetadataJson = validMetadata.Replace(audio.SourceSha256, "not-a-digest");
+        Assert.Contains(NoteDerivedReceipts.ValidateSynthesisAudioWire(state, step, log),
+            issue => issue.Code == "audio_wire_incomplete");
+
+        log.MetadataJson = validMetadata;
+        log.RequestMessagesJson = "[]";
+        Assert.Contains(NoteDerivedReceipts.ValidateSynthesisAudioWire(state, step, log),
+            issue => issue.Code == "audio_wire_mismatch");
+    }
+
+    private static (NoteDerivedTaskState State, NoteDerivedStepState Step) CreateLegacyAudioState()
+    {
+        const int samples = 160;
+        var material = NoteDerivedFixture.CreateMaterial(withAudio: true, audioSamples: samples);
+        var audio = new NoteDerivedAudioInput(0, material.RecordingId, 1, 1, 5,
+            $"recordings/{material.RecordingId:D}/s0001-c000001.wav", Hash("synthetic audio bytes"),
+            0, samples, 44 + samples * 2, "segment-00001.wav");
+        var snapshot = NoteDerivedFixture.Snapshot(material) with { Audio = [audio] };
+        var plan = new NoteDerivedPlanner().Build(snapshot);
+        var owner = Guid.NewGuid();
+        var state = new NoteDerivedTaskState
+        {
+            Owner = owner,
+            Request = new(Guid.NewGuid(), owner, material.VersionId, null,
+                new(Guid.NewGuid(), Guid.NewGuid(), "https://synthetic.invalid/v1/", true)),
+            Fingerprint = "legacy-audio-wire-test",
+            NoteId = material.NoteId,
+            InputSha256 = snapshot.InputSha256,
+            ManifestSha256 = snapshot.ManifestSha256,
+            Plan = plan,
+            Coverage = plan.InitialCoverage,
+            Issues = [],
+            CompleteRecordArtifactId = Guid.NewGuid(),
+            IndependentAnalysisArtifactId = Guid.NewGuid()
+        };
+        state.Steps = plan.Steps.Select(step => new NoteDerivedStepState
+        {
+            Key = step.Key,
+            Kind = step.Kind,
+            DependsOn = step.DependsOn,
+            Images = step.Images,
+            InputCharacters = step.InputCharacters,
+            Audio = step.Audio ?? [],
+            TranscriptOrdinals = step.TranscriptOrdinals ?? [],
+            MaxOutputCharacters = step.MaxOutputCharacters,
+            Attempts = [new NoteDerivedAttemptState { Status = "Queued" }]
+        }).ToList();
+        return (state, state.Steps.Single(x => x.Key == NoteDerivedPrompts.RecordKey));
+    }
+
     private static Fixture CreateCompleteFixture()
     {
         var material = NoteDerivedFixture.CreateMaterial(withAudio: false);
@@ -583,4 +749,133 @@ public sealed class NoteDerivedReceiptTests
         NoteDerivedReceiptContext Context,
         string Markdown,
         string VisionResponse);
+}
+
+public sealed class NoteDerivedNoAudioWireTests
+{
+    [Fact]
+    public void NoAudioWireAcceptsExplicitZeroWithNoEncoding()
+    {
+        var issues = Check("""
+            {"providerAttempted":true,"requestBodyCaptured":true,"responseBodyComplete":true,
+             "audioInputsReferenced":0,"audioInputsSha256":[],"audioEncoding":null}
+            """);
+
+        Assert.Empty(issues);
+    }
+
+    [Fact]
+    public void NoAudioWireAcceptsMissingHashesAndEncodingButRequiresExplicitZero()
+    {
+        var issues = Check("""
+            {"providerAttempted":true,"requestBodyCaptured":true,"responseBodyComplete":true,
+             "audioInputsReferenced":0}
+            """);
+
+        Assert.Empty(issues);
+    }
+
+    [Theory]
+    [InlineData("{}")]
+    [InlineData("[]")]
+    [InlineData("not-json")]
+    [InlineData("""{"providerAttempted":false,"requestBodyCaptured":true,"responseBodyComplete":true,"audioInputsReferenced":0}""")]
+    [InlineData("""{"providerAttempted":true,"requestBodyCaptured":false,"responseBodyComplete":true,"audioInputsReferenced":0}""")]
+    [InlineData("""{"providerAttempted":true,"requestBodyCaptured":true,"responseBodyComplete":false,"audioInputsReferenced":0}""")]
+    [InlineData("""{"providerAttempted":true,"requestBodyCaptured":true,"responseBodyComplete":true}""")]
+    [InlineData("""{"providerAttempted":true,"requestBodyCaptured":true,"responseBodyComplete":true,"audioInputsReferenced":null}""")]
+    [InlineData("""{"providerAttempted":true,"requestBodyCaptured":true,"responseBodyComplete":true,"audioInputsReferenced":"0"}""")]
+    [InlineData("""{"providerAttempted":true,"requestBodyCaptured":true,"responseBodyComplete":true,"audioInputsReferenced":1}""")]
+    [InlineData("""{"providerAttempted":true,"requestBodyCaptured":true,"responseBodyComplete":true,"audioInputsReferenced":0,"audioEncoding":"sha256-reference"}""")]
+    [InlineData("""{"providerAttempted":true,"requestBodyCaptured":true,"responseBodyComplete":true,"audioInputsReferenced":0,"audioEncoding":""}""")]
+    [InlineData("""{"providerAttempted":true,"requestBodyCaptured":true,"responseBodyComplete":true,"audioInputsReferenced":0,"audioInputsSha256":["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]}""")]
+    [InlineData("""{"providerAttempted":true,"requestBodyCaptured":true,"responseBodyComplete":true,"audioInputsReferenced":0,"audioInputsSha256":[123]}""")]
+    [InlineData("""{"providerAttempted":true,"requestBodyCaptured":true,"responseBodyComplete":true,"audioInputsReferenced":0,"audioInputsSha256":null}""")]
+    [InlineData("""{"providerAttempted":true,"requestBodyCaptured":true,"responseBodyComplete":true,"audioInputsReferenced":0,"audioInputsSha256":"aa"}""")]
+    public void NoAudioWireFailsClosedOnIncompleteOrAmbiguousMetadata(string metadata)
+    {
+        var issues = Check(metadata);
+
+        Assert.NotEmpty(issues);
+        Assert.Contains(issues, issue => issue.Code is
+            "audio_replayed_in_synthesis" or "audio_replay_unverifiable");
+    }
+
+    [Fact]
+    public void NoAudioWireRejectsRealAudioPartsButNotReferenceTextInThePrompt()
+    {
+        var promptOnly = NoteDerivedReceipts.ValidateNoAudioWire(Log("""
+            {"providerAttempted":true,"requestBodyCaptured":true,"responseBodyComplete":true,
+             "audioInputsReferenced":0,"audioInputsSha256":[],"audioEncoding":null}
+            """, """
+            [{"role":"user","content":"prompt text may mention pim-ai-audio:00001, input_audio or data:audio/wav;base64,AAAA without an audio part"}]
+            """), "record-synthesis");
+        Assert.Empty(promptOnly);
+
+        var issues = NoteDerivedReceipts.ValidateNoAudioWire(Log("""
+            {"providerAttempted":true,"requestBodyCaptured":true,"responseBodyComplete":true,
+             "audioInputsReferenced":0,"audioInputsSha256":[],"audioEncoding":null}
+            """, """[{"role":"user","content":[{"type":"input_audio"}]}]"""),
+            "record-synthesis");
+        Assert.Contains(issues, issue => issue.Code == "audio_replayed_in_synthesis");
+    }
+
+    [Theory]
+    [InlineData("not-json")]
+    [InlineData("{}")]
+    [InlineData("""[{"role":"user","content":[42]}]""")]
+    [InlineData("""[{"role":"user","content":[{"input_audio":{"data":"x"}}]}]""")]
+    [InlineData("""[{"role":"user","content":[{"type":"input_audio","input_audio":{}}]}]""")]
+    public void NoAudioWireFailsClosedOnUnparseableOrAudioBearingSnapshots(string messages)
+    {
+        var issues = NoteDerivedReceipts.ValidateNoAudioWire(Log("""
+            {"providerAttempted":true,"requestBodyCaptured":true,"responseBodyComplete":true,
+             "audioInputsReferenced":0,"audioInputsSha256":[],"audioEncoding":null}
+            """, messages), "record-synthesis");
+
+        Assert.Contains(issues, issue => issue.Code == "audio_replayed_in_synthesis");
+    }
+
+    private static IReadOnlyList<NoteDerivedIssueDto> Check(string metadata) =>
+        NoteDerivedReceipts.ValidateNoAudioWire(Log(metadata), "record-synthesis");
+
+    private static AiRequestLogEntity Log(string metadata, string messages = "[]") => new()
+    {
+        MetadataJson = metadata,
+        RequestMessagesJson = messages
+    };
+}
+
+public sealed class NoteDerivedAudioRequestSnapshotTests
+{
+    [Fact]
+    public void ExactAudioPartsAreAcceptedEvenWhenThePromptTextContainsAudioLikeStrings()
+    {
+        const string messages = """
+            [{"role":"user","content":[
+              {"type":"text","text":"The prompt may mention pim-ai-audio:99999 or input_audio without sending audio."},
+              {"type":"input_audio","input_audio":{"data":"pim-ai-audio:00001","format":"wav"}},
+              {"type":"input_audio","input_audio":{"data":"pim-ai-audio:00002","format":"wav"}}]}]
+            """;
+
+        Assert.True(NoteDerivedReceipts.AudioRequestSnapshotMatchesExactly(messages, 2));
+    }
+
+    [Theory]
+    [InlineData("""[{"role":"user","content":[{"type":"input_audio","input_audio":{"data":"pim-ai-audio:00001","format":"wav"}}]}]""", 2)]
+    [InlineData("""[{"role":"user","content":[{"type":"input_audio","input_audio":{"data":"pim-ai-audio:00001","format":"wav"}},{"type":"input_audio","input_audio":{"data":"pim-ai-audio:00002","format":"wav"}},{"type":"input_audio","input_audio":{"data":"pim-ai-audio:00003","format":"wav"}}]}]""", 2)]
+    [InlineData("""[{"role":"user","content":[{"type":"input_audio","input_audio":{"data":"pim-ai-audio:00002","format":"wav"}}]}]""", 1)]
+    [InlineData("""[{"role":"user","content":[{"type":"input_audio","input_audio":{"data":"pim-ai-audio:00001","format":"wav"}},{"type":"input_audio","input_audio":{"data":"pim-ai-audio:00001","format":"wav"}}]}]""", 2)]
+    [InlineData("""[{"role":"user","content":[{"type":"input_audio","input_audio":{"data":123,"format":"wav"}}]}]""", 1)]
+    [InlineData("""[{"role":"user","content":[{"type":"input_audio","input_audio":{"data":"pim-ai-audio:00001","format":"mp3"}}]}]""", 1)]
+    [InlineData("""[{"role":"user","content":[{"input_audio":{"data":"pim-ai-audio:00001","format":"wav"}}]}]""", 1)]
+    [InlineData("""[{"role":"user","content":[{"type":"input_audio","input_audio":{}}]}]""", 1)]
+    [InlineData("""[{"role":"user","content":"pim-ai-audio:00001"}]""", 1)]
+    [InlineData("""[{"role":"user","content":[42]}]""", 1)]
+    [InlineData("not-json", 1)]
+    public void NonExactAudioPartsAreRejected(string messages, int expectedCount)
+    {
+        Assert.False(NoteDerivedReceipts.AudioRequestSnapshotMatchesExactly(
+            messages, expectedCount));
+    }
 }

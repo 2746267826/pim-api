@@ -32,6 +32,8 @@ internal static class NoteDerivedReceipts
         var allIssues = NoteDerivedCoverage.DistinctIssues(issues);
         var verifications = new Dictionary<string, StepVerification>(StringComparer.Ordinal);
         var evidence = new List<NoteDerivedEvidence>();
+        var audioBatched = state.Steps.Any(x =>
+            x.Kind == NoteDerivedStepKind.AudioBatchEvidence);
 
         foreach (var step in state.Steps.Where(x => x.Kind == NoteDerivedStepKind.ImageEvidence)
                      .OrderBy(x => x.Key, StringComparer.Ordinal))
@@ -44,6 +46,18 @@ internal static class NoteDerivedReceipts
                 evidence.Add(new(step.Key, logId, log.ResponseText, step.Images));
         }
 
+        foreach (var step in state.Steps.Where(x =>
+                     x.Kind == NoteDerivedStepKind.AudioBatchEvidence)
+                     .OrderBy(x => x.Key, StringComparer.Ordinal))
+        {
+            var verification = VerifyAudioBatchStep(state, step, context, allIssues);
+            verifications[step.Key] = verification;
+            if (verification.Binding is { Verified: true, AiCallLogId: { } logId } &&
+                context.LogsById.TryGetValue(logId, out var log) &&
+                !string.IsNullOrWhiteSpace(log.ResponseText))
+                evidence.Add(new(step.Key, logId, log.ResponseText, []));
+        }
+
         var visionComplete = state.Steps
             .Where(x => x.Kind == NoteDerivedStepKind.ImageEvidence)
             .All(x => verifications.TryGetValue(x.Key, out var verified) &&
@@ -51,11 +65,18 @@ internal static class NoteDerivedReceipts
         if (!visionComplete)
             AddIssue(allIssues, "vision_evidence_incomplete",
                 "视觉来源没有全部形成可核验的实际输入、输出与图片绑定；完整记录不得标记完成");
+        var audioComplete = state.Steps
+            .Where(x => x.Kind == NoteDerivedStepKind.AudioBatchEvidence)
+            .All(x => verifications.TryGetValue(x.Key, out var verified) &&
+                verified.Binding is { Verified: true });
+        if (!audioComplete)
+            AddIssue(allIssues, "audio_batch_evidence_incomplete",
+                "录音批次没有全部形成可核验的实际输入、输出与审计绑定；完整记录不得标记完成");
 
         var record = state.Steps.SingleOrDefault(x => x.Kind == NoteDerivedStepKind.RecordSynthesis);
         if (record is not null)
         {
-            var prompt = NoteDerivedPrompts.Record(state.Plan.Input, evidence);
+            var prompt = NoteDerivedPrompts.Record(state.Plan.Input, evidence, audioBatched);
             verifications[record.Key] = VerifyTextStep(state, record, context, allIssues, prompt, null);
         }
 
@@ -70,7 +91,7 @@ internal static class NoteDerivedReceipts
                     stepKey: analysis.Key);
             else
                 prompt = NoteDerivedPrompts.Analysis(state.Plan.Input, recordVersion.VersionId,
-                    recordVersion.ContentMarkdown, evidence);
+                    recordVersion.ContentMarkdown, evidence, audioBatched);
             verifications[analysis.Key] = VerifyTextStep(state, analysis, context, allIssues, prompt,
                 recordVersion?.VersionId);
         }
@@ -179,6 +200,44 @@ internal static class NoteDerivedReceipts
                     SourceStatus(imageIssues, imageBindings),
                     imageBindings,
                     Distinct(imageIssues)));
+            }
+        }
+
+        foreach (var step in state.Steps.Where(x =>
+                     x.Kind == NoteDerivedStepKind.AudioBatchEvidence)
+                     .OrderBy(x => x.Key, StringComparer.Ordinal))
+        {
+            var verification = verifications[step.Key];
+            var binding = verification.Binding;
+            batches.Add(new(
+                step.Key,
+                StepStatus(step, verification),
+                step.Audio.OrderBy(x => x.Ordinal).Select(AudioSourceId).ToArray(),
+                0,
+                0,
+                binding,
+                Distinct(verification.Issues)));
+
+            foreach (var audio in step.Audio.OrderBy(x => x.Ordinal))
+            {
+                var audioIssues = IssuesForSource(allIssues, null, audio.Path, "audio_")
+                    .Concat(verification.Issues)
+                    .ToList();
+                var audioBindings = Bindings(binding);
+                sources.Add(new(
+                    AudioSourceId(audio),
+                    NoteDerivedSourceKind.AudioSegment,
+                    audio.Ordinal,
+                    null,
+                    audio.Path,
+                    audio.SourceSha256,
+                    null,
+                    audio.SizeBytes,
+                    null,
+                    null,
+                    SourceStatus(audioIssues, audioBindings),
+                    audioBindings,
+                    Distinct(audioIssues)));
             }
         }
 
@@ -293,6 +352,428 @@ internal static class NoteDerivedReceipts
         return new(step, binding, local, verified);
     }
 
+    private static StepVerification VerifyAudioBatchStep(NoteDerivedTaskState state,
+        NoteDerivedStepState step,
+        NoteDerivedReceiptContext context,
+        ICollection<NoteDerivedIssueDto> allIssues)
+    {
+        var local = new List<NoteDerivedIssueDto>();
+        if (step.Current.Status != "Succeeded")
+            return NotSucceeded(step, "audio_batch");
+
+        var batchIndex = AudioBatchIndex(step.Key);
+        var batchCount = state.Steps.Count(x =>
+            x.Kind == NoteDerivedStepKind.AudioBatchEvidence);
+        var transcripts = state.Plan.Input.Transcripts
+            .Where(x => step.TranscriptOrdinals.Contains(x.Ordinal));
+        var expectedPrompt = NoteDerivedPrompts.AudioBatch(step.Key, batchIndex, batchCount,
+            step.Audio, transcripts);
+        var expectedInput = TextFingerprint(state, NoteDerivedPrompts.AudioBatchPurpose,
+            expectedPrompt, step.Audio);
+        var expectedOutput = step.Current.ResultSha256;
+        var log = FindLog(step.Current.LogId, step.Current.RequestId, context);
+        if (log is null)
+        {
+            AddIssue(local, "audio_batch_receipt_missing",
+                "录音批次标记成功，但找不到与当前尝试对应的实际调用回执", stepKey: step.Key);
+            var missing = EmptyBinding("AudioBatchEvidence", step, expectedInput, expectedOutput);
+            AddIssues(allIssues, local);
+            return new(step, missing, local, false);
+        }
+
+        AddIssues(local, ValidateAudioBatchReceipt(state, step, log));
+        if (string.IsNullOrWhiteSpace(log.ResponseText))
+            AddIssue(local, "audio_batch_output_missing",
+                "录音批次成功回执没有可核验正文", stepKey: step.Key);
+        else
+        {
+            var responseHash = Digest(log.ResponseText);
+            if (log.OutputHash != responseHash)
+                AddIssue(local, "audio_batch_output_mismatch",
+                    "录音批次回执的输出摘要与保存正文不一致", stepKey: step.Key);
+            if (expectedOutput != responseHash)
+                AddIssue(local, "audio_batch_result_mismatch",
+                    "录音批次步骤保存的结果摘要与实际回执正文不一致", stepKey: step.Key);
+            var limit = step.MaxOutputCharacters > 0
+                ? step.MaxOutputCharacters : NoteDerivedLimits.MaxEvidenceCharsPerStep;
+            if (log.ResponseText.Length > limit)
+                AddIssue(local, "audio_batch_output_too_large",
+                    "录音批次输出超过本批字符预算；未截断", stepKey: step.Key);
+        }
+
+        var verified = local.Count == 0;
+        var binding = new NoteDerivedReceiptBindingDto(
+            "AudioBatchEvidence",
+            step.Key,
+            step.Current.RequestId,
+            log.Id,
+            null,
+            verified ? "Consumed" : "Gap",
+            NoteDerivedPrompts.SourceObjectType,
+            state.Request.TaskId.ToString("D"),
+            log.SourceObjectType,
+            log.SourceObjectId,
+            expectedInput,
+            log.InputHash,
+            expectedOutput,
+            log.OutputHash,
+            verified);
+        AddIssues(allIssues, local);
+        return new(step, binding, local, verified);
+    }
+
+    /// <summary>
+    /// Validates everything about a supposedly successful audio-batch receipt that must hold
+    /// before any downstream synthesis call is allowed to consume it. The same checks power
+    /// the public receipt verification, so a failure cannot be bypassed by retrying record.
+    /// </summary>
+    internal static IReadOnlyList<NoteDerivedIssueDto> ValidateAudioBatchReceipt(
+        NoteDerivedTaskState state, NoteDerivedStepState step, AiRequestLogEntity log,
+        Guid? pendingLogId = null)
+    {
+        var issues = new List<NoteDerivedIssueDto>();
+        var batchIndex = AudioBatchIndex(step.Key);
+        var batchCount = state.Steps.Count(x =>
+            x.Kind == NoteDerivedStepKind.AudioBatchEvidence);
+        var transcripts = state.Plan.Input.Transcripts
+            .Where(x => step.TranscriptOrdinals.Contains(x.Ordinal));
+        var expectedPrompt = NoteDerivedPrompts.AudioBatch(step.Key, batchIndex, batchCount,
+            step.Audio, transcripts);
+        var expectedInput = TextFingerprint(state, NoteDerivedPrompts.AudioBatchPurpose,
+            expectedPrompt, step.Audio);
+        CheckCommonLog(issues, log, state, step.Current.RequestId,
+            NoteDerivedPrompts.AudioBatchPurpose, "audio_batch", step.Key);
+        if ((step.Current.LogId ?? pendingLogId) != log.Id)
+            AddIssue(issues, "audio_batch_log_id_mismatch",
+                "录音批次保存的调用记录标识与实际回执不一致", stepKey: step.Key);
+        if (log.InputHash != expectedInput)
+            AddIssue(issues, "audio_batch_input_mismatch",
+                "录音批次调用的实际输入指纹与固定提示、模型目标或音频清单不一致",
+                step.Key);
+        CheckAudioBatchWire(issues, log, state, step, step.Key);
+        return issues;
+    }
+
+    /// <summary>
+    /// Validates a successful synthesis receipt before it may become a candidate version.
+    /// Direct-send and recovery paths both call this so a receipt that was tampered with
+    /// after the provider call cannot reach AppendGeneratedAsync.
+    /// </summary>
+    internal static IReadOnlyList<NoteDerivedIssueDto> ValidateSynthesisReceipt(
+        NoteDerivedTaskState state, NoteDerivedStepState step, AiRequestLogEntity log,
+        string resultText, string? expectedInputHash, Guid? pendingLogId = null)
+    {
+        var issues = new List<NoteDerivedIssueDto>();
+        AddIssues(issues, ValidateSynthesisReceiptIdentity(state, step, log, pendingLogId));
+        if (expectedInputHash is null)
+            AddIssue(issues, "synthesis_input_missing",
+                "无法重建合成步骤的固定输入，不能证明实际发送内容", stepKey: step.Key);
+        else if (log.InputHash != expectedInputHash)
+            AddIssue(issues, "synthesis_input_mismatch",
+                "合成调用的实际输入指纹与固定来源、固定记录版本或模型目标不一致",
+                step.Key);
+        if (string.IsNullOrWhiteSpace(log.ResponseText))
+        {
+            AddIssue(issues, "synthesis_output_missing",
+                "合成成功回执没有可核验正文", stepKey: step.Key);
+            return issues;
+        }
+
+        var responseHash = Digest(log.ResponseText);
+        if (log.OutputHash != responseHash)
+            AddIssue(issues, "synthesis_output_mismatch",
+                "合成回执的输出摘要与保存正文不一致", stepKey: step.Key);
+        if (!string.Equals(log.ResponseText, resultText, StringComparison.Ordinal))
+            AddIssue(issues, "synthesis_result_mismatch",
+                "合成成功回执正文与本次结果不一致；不生成候选版本", stepKey: step.Key);
+        if (step.Current.ResultSha256 is { } checkpoint && checkpoint != Digest(resultText))
+            AddIssue(issues, "synthesis_step_result_mismatch",
+                "步骤检查点保存的结果摘要与实际成功回执正文不一致", stepKey: step.Key);
+        return issues;
+    }
+
+    /// <summary>
+    /// Reuses the canonical receipt identity checks for synthesis receipts. Recovery may
+    /// inspect a bound receipt before deciding whether its non-success status is replayable,
+    /// so status verification is optional there; publish always requires success.
+    /// </summary>
+    internal static IReadOnlyList<NoteDerivedIssueDto> ValidateSynthesisReceiptIdentity(
+        NoteDerivedTaskState state, NoteDerivedStepState step, AiRequestLogEntity log,
+        Guid? pendingLogId = null, bool requireSucceeded = true)
+    {
+        var issues = new List<NoteDerivedIssueDto>();
+        var purpose = step.Kind == NoteDerivedStepKind.RecordSynthesis
+            ? NoteDerivedPrompts.RecordPurpose
+            : NoteDerivedPrompts.AnalysisPurpose;
+        CheckCommonLog(issues, log, state, step.Current.RequestId, purpose, "synthesis", step.Key,
+            requireSucceeded);
+        if ((step.Current.LogId ?? pendingLogId) != log.Id)
+            AddIssue(issues, "synthesis_log_id_mismatch",
+                "合成步骤保存的调用记录标识与实际回执不一致", stepKey: step.Key);
+        return issues;
+    }
+
+    internal static string SynthesisInputFingerprint(NoteDerivedTaskState state,
+        NoteDerivedStepState step, string prompt)
+    {
+        var purpose = step.Kind == NoteDerivedStepKind.RecordSynthesis
+            ? NoteDerivedPrompts.RecordPurpose
+            : NoteDerivedPrompts.AnalysisPurpose;
+        var audioBatched = state.Steps.Any(x =>
+            x.Kind == NoteDerivedStepKind.AudioBatchEvidence);
+        IReadOnlyList<NoteDerivedAudioInput> audio = step.Audio.Count > 0
+            ? step.Audio
+            : audioBatched ? Array.Empty<NoteDerivedAudioInput>() : state.Plan.Input.Audio;
+        return TextFingerprint(state, purpose, prompt, audio);
+    }
+
+    private static void CheckAudioBatchWire(ICollection<NoteDerivedIssueDto> issues,
+        AiRequestLogEntity log, NoteDerivedTaskState state, NoteDerivedStepState step,
+        string stepKey)
+    {
+        if (step.Audio.Count is < 1 or > NoteDerivedAudioContext.MaxSlices)
+        {
+            AddIssue(issues, "audio_batch_wire_incomplete",
+                "录音批次计划数量无效，不能证明实际发送内容", stepKey);
+            return;
+        }
+        if (step.Audio.Sum(x => x.SizeBytes) > NoteDerivedAudioContext.MaxBytes)
+        {
+            AddIssue(issues, "audio_batch_wire_too_large",
+                "录音批次计划超过单次 8MiB 上限，不能证明未超限发送", stepKey);
+            return;
+        }
+        try
+        {
+            using var document = JsonDocument.Parse(log.MetadataJson);
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object)
+            {
+                AddIssue(issues, "audio_batch_wire_incomplete",
+                    "录音批次回执的审计元数据不是对象，不能证明实际发送内容", stepKey);
+                return;
+            }
+            if (!Flag(root, "providerAttempted") || !Flag(root, "requestBodyCaptured") ||
+                !Flag(root, "responseBodyComplete"))
+                AddIssue(issues, "audio_batch_wire_incomplete",
+                    "录音批次回执缺少 providerAttempted、requestBodyCaptured 或 responseBodyComplete 证据",
+                    stepKey);
+            var encoding = root.TryGetProperty("audioEncoding", out var value) &&
+                value.ValueKind == JsonValueKind.String ? value.GetString() : null;
+            var referenced = root.TryGetProperty("audioInputsReferenced", out var count) &&
+                count.ValueKind == JsonValueKind.Number && count.TryGetInt32(out var parsedCount)
+                ? parsedCount : -1;
+            var hashes = ReadAudioHashes(root);
+            var expected = step.Audio.OrderBy(x => x.Ordinal)
+                .Select(x => x.SourceSha256).ToArray();
+            if (encoding != "sha256-reference" || referenced != expected.Length ||
+                hashes is null || hashes.Length != expected.Length ||
+                !hashes.SequenceEqual(expected))
+                AddIssue(issues, "audio_batch_wire_mismatch",
+                    "录音批次回执缺少与固定分片一致的数量、来源摘要或审计编码", stepKey);
+            var owner = ParseGuid(root, "audioContextOwnerId");
+            var note = ParseGuid(root, "audioContextNoteId");
+            var version = ParseGuid(root, "audioContextSourceVersionId");
+            if (owner != state.Owner || note != state.NoteId ||
+                version != state.Request.VersionId)
+                AddIssue(issues, "audio_batch_wire_identity_mismatch",
+                    "录音批次的音频上下文没有绑定当前账号、笔记和固定材料版本", stepKey);
+            if (!AudioRequestSnapshotMatchesExactly(log.RequestMessagesJson, expected.Length))
+                AddIssue(issues, "audio_batch_wire_snapshot_mismatch",
+                    "录音批次请求快照的 input_audio 数量、顺序或 data 引用与固定分片不一致", stepKey);
+        }
+        catch (Exception error) when (error is JsonException or InvalidOperationException)
+        {
+            AddIssue(issues, "audio_batch_wire_incomplete",
+                "录音批次回执没有可核对的音频审计元数据", stepKey);
+        }
+    }
+
+    /// <summary>
+    /// Fail-closed check for synthesis calls that must not replay raw audio. Missing or
+    /// mistyped audit fields are treated as unverifiable, never as zero audio.
+    /// </summary>
+    internal static IReadOnlyList<NoteDerivedIssueDto> ValidateNoAudioWire(
+        AiRequestLogEntity log, string stepKey)
+    {
+        var issues = new List<NoteDerivedIssueDto>();
+        CheckNoAudioWire(issues, log, stepKey);
+        return issues;
+    }
+
+    internal static IReadOnlyList<NoteDerivedIssueDto> ValidateSynthesisAudioWire(
+        NoteDerivedTaskState state, NoteDerivedStepState step, AiRequestLogEntity log)
+    {
+        var issues = new List<NoteDerivedIssueDto>();
+        var audioBatched = state.Steps.Any(x =>
+            x.Kind == NoteDerivedStepKind.AudioBatchEvidence);
+        if (audioBatched)
+        {
+            // Once long audio is represented by batch evidence, every synthesis call must
+            // prove it did not replay raw audio, regardless of any audio copied into the step.
+            AddIssues(issues, ValidateNoAudioWire(log, step.Key));
+            return issues;
+        }
+        var audio = step.Audio.Count > 0 ? step.Audio : state.Plan.Input.Audio;
+        if (audio.Count > 0)
+            CheckAudioWire(issues, log, state, audio, step.Key);
+        return issues;
+    }
+
+    private static void CheckNoAudioWire(ICollection<NoteDerivedIssueDto> issues,
+        AiRequestLogEntity log, string stepKey)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(log.MetadataJson);
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object)
+            {
+                AddIssue(issues, "audio_replayed_in_synthesis",
+                    "汇总或分析步骤的审计元数据不是对象，无法证明未重复携带原始音频", stepKey);
+                return;
+            }
+            if (!Flag(root, "providerAttempted") || !Flag(root, "requestBodyCaptured") ||
+                !Flag(root, "responseBodyComplete"))
+            {
+                AddIssue(issues, "audio_replay_unverifiable",
+                    "汇总或分析回执缺少 providerAttempted、requestBodyCaptured 或 responseBodyComplete 证据，不能证明未重复携带原始音频",
+                    stepKey);
+                return;
+            }
+            if (!root.TryGetProperty("audioInputsReferenced", out var count) ||
+                count.ValueKind != JsonValueKind.Number || !count.TryGetInt32(out var referenced) ||
+                referenced != 0)
+            {
+                AddIssue(issues, "audio_replayed_in_synthesis",
+                    "汇总或分析回执没有显式记录 audioInputsReferenced=0，不能证明未重复携带原始音频",
+                    stepKey);
+                return;
+            }
+            if (root.TryGetProperty("audioInputsSha256", out var hashValues) &&
+                (hashValues.ValueKind != JsonValueKind.Array ||
+                 hashValues.GetArrayLength() != 0))
+            {
+                AddIssue(issues, "audio_replayed_in_synthesis",
+                    "汇总或分析回执声明了音频来源摘要，与 audioInputsReferenced=0 矛盾",
+                    stepKey);
+                return;
+            }
+            var hasEncoding = root.TryGetProperty("audioEncoding", out var encoding);
+            if (hasEncoding && encoding.ValueKind != JsonValueKind.Null)
+            {
+                AddIssue(issues, "audio_replayed_in_synthesis",
+                    "汇总或分析回执仍声明音频编码，不能证明未重复携带原始音频", stepKey);
+                return;
+            }
+            if (!RequestSnapshotHasNoAudioParts(log.RequestMessagesJson))
+            {
+                AddIssue(issues, "audio_replayed_in_synthesis",
+                    "汇总或分析步骤重复携带了原始音频；长录音必须只引用批次证据", stepKey);
+            }
+        }
+        catch (Exception error) when (error is JsonException or InvalidOperationException)
+        {
+            AddIssue(issues, "audio_replay_unverifiable",
+                "无法核对汇总步骤是否重复携带原始音频", stepKey);
+        }
+    }
+
+    private static bool Flag(JsonElement root, string name) =>
+        root.TryGetProperty(name, out var item) && item.ValueKind == JsonValueKind.True;
+
+    private static Guid ParseGuid(JsonElement root, string name) =>
+        root.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String &&
+        Guid.TryParse(value.GetString(), out var parsed) ? parsed : Guid.Empty;
+
+    private static int AudioBatchIndex(string key)
+    {
+        var separator = key.LastIndexOf(':');
+        return separator >= 0 && int.TryParse(key[(separator + 1)..], out var number)
+            ? Math.Max(0, number - 1) : 0;
+    }
+
+    /// <summary>
+    /// Exact structural check for an audio request snapshot. Text content may mention
+    /// reference-like strings; only real input_audio parts count. The part count, order,
+    /// and data references must all match what the server intended to send.
+    /// </summary>
+    internal static bool AudioRequestSnapshotMatchesExactly(string requestMessagesJson,
+        int expectedCount)
+    {
+        if (expectedCount < 0) return false;
+        try
+        {
+            using var document = JsonDocument.Parse(requestMessagesJson);
+            if (document.RootElement.ValueKind != JsonValueKind.Array) return false;
+            var index = 0;
+            foreach (var message in document.RootElement.EnumerateArray())
+            {
+                if (message.ValueKind != JsonValueKind.Object) return false;
+                if (!message.TryGetProperty("content", out var content)) continue;
+                if (content.ValueKind == JsonValueKind.String) continue;
+                if (content.ValueKind != JsonValueKind.Array) return false;
+                foreach (var part in content.EnumerateArray())
+                {
+                    if (part.ValueKind != JsonValueKind.Object) return false;
+                    var isAudioPart = part.TryGetProperty("type", out var type) &&
+                        type.ValueKind == JsonValueKind.String &&
+                        string.Equals(type.GetString(), "input_audio", StringComparison.Ordinal);
+                    var hasAudio = part.TryGetProperty("input_audio", out var audio);
+                    if (!isAudioPart && !hasAudio) continue;
+                    if (!isAudioPart || !hasAudio || index >= expectedCount ||
+                        audio.ValueKind != JsonValueKind.Object)
+                        return false;
+                    if (!audio.TryGetProperty("data", out var data) ||
+                        data.ValueKind != JsonValueKind.String ||
+                        !string.Equals(data.GetString(),
+                            $"pim-ai-audio:{index + 1:D5}", StringComparison.Ordinal))
+                        return false;
+                    if (!audio.TryGetProperty("format", out var format) ||
+                        format.ValueKind != JsonValueKind.String ||
+                        !string.Equals(format.GetString(), "wav", StringComparison.Ordinal))
+                        return false;
+                    index++;
+                }
+            }
+            return index == expectedCount;
+        }
+        catch (Exception error) when (error is JsonException or InvalidOperationException)
+        {
+            return false;
+        }
+    }
+
+    internal static bool RequestSnapshotHasNoAudioParts(string requestMessagesJson)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(requestMessagesJson);
+            if (document.RootElement.ValueKind != JsonValueKind.Array) return false;
+            foreach (var message in document.RootElement.EnumerateArray())
+            {
+                if (message.ValueKind != JsonValueKind.Object) return false;
+                if (!message.TryGetProperty("content", out var content)) continue;
+                if (content.ValueKind == JsonValueKind.String) continue;
+                if (content.ValueKind != JsonValueKind.Array) return false;
+                foreach (var part in content.EnumerateArray())
+                {
+                    if (part.ValueKind != JsonValueKind.Object) return false;
+                    if (part.TryGetProperty("input_audio", out _)) return false;
+                    if (part.TryGetProperty("type", out var type) &&
+                        type.ValueKind == JsonValueKind.String &&
+                        string.Equals(type.GetString(), "input_audio", StringComparison.Ordinal))
+                        return false;
+                }
+            }
+            return true;
+        }
+        catch (Exception error) when (error is JsonException or InvalidOperationException)
+        {
+            return false;
+        }
+    }
+
     private static StepVerification VerifyTextStep(NoteDerivedTaskState state,
         NoteDerivedStepState step,
         NoteDerivedReceiptContext context,
@@ -310,8 +791,8 @@ internal static class NoteDerivedReceipts
         var stage = step.Kind == NoteDerivedStepKind.RecordSynthesis
             ? "RecordSynthesis"
             : "AnalysisSynthesis";
-        var expectedInput = expectedPrompt is null ? null : TextFingerprint(state, purpose,
-            expectedPrompt, state.Plan.Input.Audio);
+        var expectedInput = expectedPrompt is null ? null :
+            SynthesisInputFingerprint(state, step, expectedPrompt);
         var log = FindLog(step.Current.LogId, step.Current.RequestId, context);
         context.VersionsByStep.TryGetValue(step.Key, out var version);
         var expectedOutput = version?.ContentSha256 ?? step.Current.ResultSha256;
@@ -325,7 +806,7 @@ internal static class NoteDerivedReceipts
         }
 
         CheckCommonLog(local, log, state, step.Current.RequestId, purpose, "synthesis", step.Key);
-        CheckAudioWire(local, log, state, step.Key);
+        AddIssues(local, ValidateSynthesisAudioWire(state, step, log));
         if (step.Current.LogId != log.Id)
             AddIssue(local, "synthesis_log_id_mismatch",
                 "合成步骤保存的调用记录标识与实际回执不一致", stepKey: step.Key);
@@ -511,7 +992,8 @@ internal static class NoteDerivedReceipts
         Guid requestId,
         string purpose,
         string prefix,
-        string stepKey)
+        string stepKey,
+        bool checkStatus = true)
     {
         if (log.UserId != state.Owner)
             AddIssue(issues, $"{prefix}_owner_mismatch",
@@ -519,7 +1001,7 @@ internal static class NoteDerivedReceipts
         if (log.ClientRequestId != requestId)
             AddIssue(issues, $"{prefix}_request_mismatch",
                 "实际调用回执的 ClientRequestId 与当前步骤尝试不一致", stepKey);
-        if (log.Status != "succeeded")
+        if (checkStatus && log.Status != "succeeded")
             AddIssue(issues, $"{prefix}_status_mismatch",
                 "步骤标记成功，但实际调用回执不是成功状态", stepKey);
         if (log.Purpose != purpose)
@@ -688,28 +1170,38 @@ internal static class NoteDerivedReceipts
     }
 
     private static void CheckAudioWire(ICollection<NoteDerivedIssueDto> issues,
-        AiRequestLogEntity log, NoteDerivedTaskState state, string stepKey)
+        AiRequestLogEntity log, NoteDerivedTaskState state,
+        IReadOnlyList<NoteDerivedAudioInput> planned, string stepKey)
     {
-        var planned = state.Plan.Input.Audio;
         if (planned.Count == 0) return;
         try
         {
             using var document = JsonDocument.Parse(log.MetadataJson);
             var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object)
+            {
+                AddIssue(issues, "audio_wire_incomplete",
+                    "合成回执的审计元数据不是对象，不能证明实际发送内容", stepKey);
+                return;
+            }
+            if (!Flag(root, "providerAttempted") || !Flag(root, "requestBodyCaptured") ||
+                !Flag(root, "responseBodyComplete"))
+            {
+                AddIssue(issues, "audio_wire_incomplete",
+                    "合成回执缺少 providerAttempted、requestBodyCaptured 或 responseBodyComplete 证据",
+                    stepKey);
+                return;
+            }
             var encoding = root.TryGetProperty("audioEncoding", out var value) &&
                 value.ValueKind == JsonValueKind.String ? value.GetString() : null;
             var referenced = root.TryGetProperty("audioInputsReferenced", out var count) &&
-                count.ValueKind == JsonValueKind.Number ? count.GetInt32() : -1;
-            var hashes = root.TryGetProperty("audioInputsSha256", out var hashValues) &&
-                hashValues.ValueKind == JsonValueKind.Array
-                ? hashValues.EnumerateArray()
-                    .Where(x => x.ValueKind == JsonValueKind.String)
-                    .Select(x => x.GetString())
-                    .ToArray()
-                : [];
+                count.ValueKind == JsonValueKind.Number && count.TryGetInt32(out var parsedCount)
+                ? parsedCount : -1;
+            var hashes = ReadAudioHashes(root);
             var expected = planned.OrderBy(x => x.Ordinal).Select(x => x.SourceSha256).ToArray();
             if (encoding != "sha256-reference" || referenced != planned.Count ||
-                hashes.Length != expected.Length || !hashes.SequenceEqual(expected))
+                hashes is null || hashes.Length != expected.Length ||
+                !hashes.SequenceEqual(expected))
                 AddIssue(issues, "audio_wire_incomplete",
                     "合成回执缺少与固定录音清单一致的数量、来源摘要或审计编码证据", stepKey);
             var owner = root.TryGetProperty("audioContextOwnerId", out var ownerValue) &&
@@ -725,28 +1217,33 @@ internal static class NoteDerivedReceipts
                 version != state.Request.VersionId)
                 AddIssue(issues, "audio_wire_identity_mismatch",
                     "合成回执的音频上下文没有绑定当前账号、笔记和固定材料版本", stepKey);
-            if (Occurrences(log.RequestMessagesJson, "pim-ai-audio:") < planned.Count ||
-                log.RequestMessagesJson.Contains("data:audio/wav;base64,", StringComparison.Ordinal))
+            if (!AudioRequestSnapshotMatchesExactly(log.RequestMessagesJson, planned.Count))
                 AddIssue(issues, "audio_wire_mismatch",
-                    "合成回执的请求快照没有使用服务端音频引用或包含原始音频数据", stepKey);
+                    "合成回执请求快照的 input_audio 数量、顺序或 data 引用与固定录音清单不一致",
+                    stepKey);
         }
-        catch (JsonException)
+        catch (Exception error) when (error is JsonException or InvalidOperationException)
         {
             AddIssue(issues, "audio_wire_incomplete",
                 "合成回执没有可核对的音频审计元数据", stepKey);
         }
     }
 
-    private static int Occurrences(string text, string value)
+    private static string[]? ReadAudioHashes(JsonElement root)
     {
-        var count = 0;
-        var offset = 0;
-        while ((offset = text.IndexOf(value, offset, StringComparison.Ordinal)) >= 0)
+        if (!root.TryGetProperty("audioInputsSha256", out var values) ||
+            values.ValueKind != JsonValueKind.Array)
+            return null;
+        var hashes = new string[values.GetArrayLength()];
+        var index = 0;
+        foreach (var value in values.EnumerateArray())
         {
-            count++;
-            offset += value.Length;
+            if (value.ValueKind != JsonValueKind.String) return null;
+            var hash = value.GetString();
+            if (hash is null) return null;
+            hashes[index++] = hash;
         }
-        return count;
+        return hashes;
     }
 
     private static string EvidenceInputFingerprint(NoteDerivedTaskState state,
@@ -926,6 +1423,9 @@ internal static class NoteDerivedReceipts
         NoteDerivedCoverage.DistinctIssues(issues);
 
     private static string ImageSourceId(NoteDerivedImageInput image) => $"image:{image.Ordinal:D4}";
+    private static string AudioSourceId(NoteDerivedAudioInput audio) =>
+        $"audio:{audio.RecordingId:D}:s{audio.RecordingSegment:D4}:c{audio.ChunkIndex:D6}:" +
+        $"o{audio.SourceOffsetSamples:D012}:n{audio.Samples}";
     private static string Digest(string value) => Hash(value);
     private static string Hash(string value) =>
         Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value))).ToLowerInvariant();

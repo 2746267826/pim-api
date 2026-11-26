@@ -78,6 +78,9 @@ public sealed class NoteDerivedStore(IOptions<NoteMaterialUploadOptions> options
                 DependsOn = step.DependsOn,
                 Images = step.Images,
                 InputCharacters = step.InputCharacters,
+                Audio = step.Audio ?? [],
+                TranscriptOrdinals = step.TranscriptOrdinals ?? [],
+                MaxOutputCharacters = step.MaxOutputCharacters,
                 Attempts = [new()]
             }).ToList(),
             CompleteRecordArtifactId = record.ArtifactId,
@@ -491,6 +494,7 @@ public sealed class NoteDerivedStore(IOptions<NoteMaterialUploadOptions> options
         step.Key,
         step.Kind,
         step.Current.Status,
+        step.DependsOn,
         step.Attempts.Select(x => new NoteDerivedAttemptDto(
             x.RequestId, x.LogId, x.Status, x.ErrorCode, x.ErrorMessage)).ToArray());
 

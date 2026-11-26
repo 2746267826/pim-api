@@ -148,8 +148,255 @@ public sealed class NoteDerivedPlanTests
 
         var plan = new NoteDerivedPlanner().Build(snapshot);
 
-        Assert.Contains(plan.InitialCoverage.Issues, issue => issue.Code == "audio_context_too_large");
+        Assert.Contains(plan.InitialCoverage.Issues, issue => issue.Code == "audio_slice_too_large");
         Assert.Contains("未截断", plan.InitialCoverage.Issues
-            .Single(issue => issue.Code == "audio_context_too_large").Message, StringComparison.Ordinal);
+            .Single(issue => issue.Code == "audio_slice_too_large").Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void LongAudioSplitsIntoOrderedBatchesAndKeepsOnlyOverlappingTranscripts()
+    {
+        var material = NoteDerivedFixture.CreateMaterial();
+        const long samples = (1024 * 1024 - 44) / 2;
+        var audio = Enumerable.Range(0, 9).Select(index => new NoteDerivedAudioInput(
+            index, Guid.NewGuid(), 1, 1, index,
+            $"recordings/recording-{index:D}.wav",
+            NoteDerivedFixture.Digest([(byte)index]), 0, samples,
+            NoteDerivedAudioContext.ByteSize(samples),
+            $"recording-{index:D}-s0001-c000001-o000000000000-n{samples}.wav")).ToArray();
+        var transcripts = audio.Select((slice, index) => new NoteDerivedTranscriptInput(
+            index, index, slice.RecordingId, 1, 1, index, slice.Path, slice.SourceSha256,
+            0, slice.Samples, $"Transcript only for batch slice {index}", Guid.NewGuid())).ToArray();
+        var snapshot = NoteDerivedFixture.Snapshot(material, [], transcripts) with
+        {
+            Audio = audio
+        };
+
+        var plan = new NoteDerivedPlanner().Build(snapshot);
+
+        Assert.Empty(plan.InitialCoverage.Issues);
+        var batches = plan.Steps.Where(x => x.Kind == NoteDerivedStepKind.AudioBatchEvidence)
+            .ToArray();
+        Assert.Equal(new[] { "audio-batch:0001", "audio-batch:0002" },
+            batches.Select(x => x.Key));
+        Assert.Equal(new[] { 8, 1 }, batches.Select(x => x.Audio!.Count));
+        Assert.Equal(audio.Select(x => x.Ordinal),
+            batches.SelectMany(x => x.Audio!).Select(x => x.Ordinal));
+        Assert.All(batches, batch =>
+            Assert.True(batch.Audio!.Sum(x => x.SizeBytes) <= NoteDerivedAudioContext.MaxBytes));
+        Assert.All(batches, batch => Assert.True(batch.MaxOutputCharacters >= 1000));
+        var firstPrompt = NoteDerivedPrompts.AudioBatch(batches[0].Key, 0, 2,
+            batches[0].Audio!, transcripts.Where(x => batches[0].TranscriptOrdinals!.Contains(x.Ordinal)));
+        var secondPrompt = NoteDerivedPrompts.AudioBatch(batches[1].Key, 1, 2,
+            batches[1].Audio!, transcripts.Where(x => batches[1].TranscriptOrdinals!.Contains(x.Ordinal)));
+        Assert.Contains("Transcript only for batch slice 0", firstPrompt, StringComparison.Ordinal);
+        Assert.DoesNotContain("Transcript only for batch slice 8", firstPrompt,
+            StringComparison.Ordinal);
+        Assert.Contains("Transcript only for batch slice 8", secondPrompt, StringComparison.Ordinal);
+
+        var record = plan.Steps.Single(x => x.Key == NoteDerivedPrompts.RecordKey);
+        Assert.Equal(batches.Select(x => x.Key), record.DependsOn);
+        Assert.Empty(record.Audio!);
+        Assert.Equal(["audio-batch:0001", "audio-batch:0002"], record.DependsOn);
+        Assert.Equal(["record-synthesis"],
+            plan.Steps.Single(x => x.Key == NoteDerivedPrompts.AnalysisKey).DependsOn);
+    }
+
+    [Fact]
+    public void TotalBudgetAndBatchLimitBlockBeforeAnyProviderCall()
+    {
+        var material = NoteDerivedFixture.CreateMaterial();
+        const long samples = (1024 * 1024 - 44) / 2;
+        var audio = Enumerable.Range(0, 9).Select(index => new NoteDerivedAudioInput(
+            index, Guid.NewGuid(), 1, 1, index,
+            $"recordings/recording-{index:D}.wav",
+            NoteDerivedFixture.Digest([(byte)index]), 0, samples,
+            NoteDerivedAudioContext.ByteSize(samples),
+            $"recording-{index:D}.wav")).ToArray();
+        var options = new NoteDerivedAudioContextOptions
+        {
+            MaxTotalBytes = 8 * 1024 * 1024,
+            MaxBatches = 1
+        };
+
+        var plan = new NoteDerivedPlanner(options).Build(
+            NoteDerivedFixture.Snapshot(material) with { Audio = audio });
+
+        Assert.Contains(plan.InitialCoverage.Issues,
+            issue => issue.Code == "audio_total_budget_exceeded");
+        Assert.Contains(plan.InitialCoverage.Issues, issue => issue.Code == "audio_batch_limit");
+        Assert.DoesNotContain(plan.Steps, step =>
+            step.Kind == NoteDerivedStepKind.AudioBatchEvidence);
+        Assert.False(plan.InitialCoverage.Complete);
+    }
+
+    [Fact]
+    public void AudioEvidenceBudgetBelowThePerBatchFloorBlocksWithoutTruncation()
+    {
+        var material = NoteDerivedFixture.CreateMaterial();
+        var audio = Enumerable.Range(0, 2).Select(index => new NoteDerivedAudioInput(
+            index, Guid.NewGuid(), 1, 1, index, $"recordings/recording-{index:D}.wav",
+            NoteDerivedFixture.Digest([(byte)index]), 0, 200_000,
+            NoteDerivedAudioContext.ByteSize(200_000), $"recording-{index:D}.wav")).ToArray();
+        var oversized = new string('a', NoteDerivedLimits.MaxSynthesisInputChars - 2_000);
+        var snapshot = NoteDerivedFixture.Snapshot(material) with
+        {
+            NoteMarkdown = oversized,
+            TextBlocks = [new(0, Guid.NewGuid(), oversized)],
+            Audio = audio
+        };
+
+        var plan = new NoteDerivedPlanner(new NoteDerivedAudioContextOptions
+        {
+            MaxBatchBytes = 500_000
+        }).Build(snapshot);
+
+        Assert.Contains(plan.InitialCoverage.Issues,
+            issue => issue.Code == "audio_evidence_budget_insufficient");
+        Assert.False(plan.InitialCoverage.Complete);
+    }
+
+    [Fact]
+    public void SliceAboveTheConfiguredBatchBudgetBlocksInsteadOfGrowingTheBatch()
+    {
+        var material = NoteDerivedFixture.CreateMaterial();
+        var audio = new NoteDerivedAudioInput(0, Guid.NewGuid(), 1, 1, 0,
+            "recordings/recording-0.wav", NoteDerivedFixture.Digest([7]), 0, 200_000,
+            NoteDerivedAudioContext.ByteSize(200_000), "recording-0.wav");
+        var plan = new NoteDerivedPlanner(new NoteDerivedAudioContextOptions
+        {
+            MaxBatchBytes = 200_000
+        }).Build(NoteDerivedFixture.Snapshot(material) with { Audio = [audio] });
+
+        Assert.Contains(plan.InitialCoverage.Issues,
+            issue => issue.Code == "audio_batch_slice_too_large");
+        Assert.DoesNotContain(plan.Steps, step =>
+            step.Kind == NoteDerivedStepKind.AudioBatchEvidence);
+        Assert.False(plan.InitialCoverage.Complete);
+    }
+
+    [Fact]
+    public void SingleSliceAboveTheSingleCallLimitBlocksWithoutDividingByZero()
+    {
+        var material = NoteDerivedFixture.CreateMaterial();
+        const long samples = (NoteDerivedAudioContext.MaxBytes - 44) / 2 + 1;
+        var audio = new NoteDerivedAudioInput(0, Guid.NewGuid(), 1, 1, 0,
+            "recordings/recording-0.wav", NoteDerivedFixture.Digest([7]), 0,
+            samples, NoteDerivedAudioContext.ByteSize(samples),
+            "recording-0.wav");
+
+        var plan = new NoteDerivedPlanner().Build(
+            NoteDerivedFixture.Snapshot(material) with { Audio = [audio] });
+
+        Assert.Contains(plan.InitialCoverage.Issues,
+            issue => issue.Code == "audio_slice_too_large");
+        Assert.Contains(plan.InitialCoverage.Issues,
+            issue => issue.Code == "audio_batch_no_valid_slices");
+        Assert.DoesNotContain(plan.Steps,
+            step => step.Kind == NoteDerivedStepKind.AudioBatchEvidence);
+        Assert.False(plan.InitialCoverage.Complete);
+    }
+
+    [Fact]
+    public void TranscriptSpanningTwoBatchesIsAttachedToExactlyOneBatch()
+    {
+        var material = NoteDerivedFixture.CreateMaterial();
+        const long samples = (1024 * 1024 - 44) / 2;
+        var recordingId = Guid.NewGuid();
+        var sha = NoteDerivedFixture.Digest([3, 1, 4]);
+        var path = $"recordings/{recordingId:D}/s0001-c000001.wav";
+        var audio = Enumerable.Range(0, 9).Select(index => new NoteDerivedAudioInput(
+            index, recordingId, 1, 1, 5, path, sha, index * samples, samples,
+            NoteDerivedAudioContext.ByteSize(samples),
+            $"recording-{index:D}-s0001-c000001-o{index * samples:D012}-n{samples}.wav")).ToArray();
+        var spanning = new NoteDerivedTranscriptInput(0, 0, recordingId, 1, 1, 5, path, sha,
+            7 * samples + samples / 2, samples * 2, "Transcript spanning the batch boundary",
+            Guid.NewGuid());
+
+        var plan = new NoteDerivedPlanner().Build(
+            NoteDerivedFixture.Snapshot(material, [], [spanning]) with { Audio = audio });
+
+        Assert.Empty(plan.InitialCoverage.Issues);
+        var batches = plan.Steps.Where(step =>
+            step.Kind == NoteDerivedStepKind.AudioBatchEvidence).ToArray();
+        Assert.Equal(2, batches.Length);
+        Assert.Equal(1, batches.Sum(batch =>
+            batch.TranscriptOrdinals!.Count(ordinal => ordinal == spanning.Ordinal)));
+        Assert.Contains(0, batches[0].TranscriptOrdinals!);
+        Assert.DoesNotContain(0, batches[1].TranscriptOrdinals!);
+        var prompts = batches.Select((batch, index) => NoteDerivedPrompts.AudioBatch(
+            batch.Key, index, batches.Length, batch.Audio!,
+            batch.TranscriptOrdinals!.Contains(0) ? [spanning] : [])).ToArray();
+        Assert.Single(prompts, prompt =>
+            prompt.Contains("Transcript spanning the batch boundary", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ImageEvidenceIsReservedBeforeAudioBatchProviderCalls()
+    {
+        var material = NoteDerivedFixture.CreateMaterial();
+        var images = Enumerable.Range(0, NoteDerivedLimits.MaxImages)
+            .Select(index => NoteDerivedFixture.Image(index, index + 2,
+                index % 2 == 0 ? "Photo" : "InkPreview",
+                NoteDerivedFixture.Digest([(byte)index]), 2)).ToArray();
+        var audio = Enumerable.Range(0, 2).Select(index => new NoteDerivedAudioInput(
+            index, Guid.NewGuid(), 1, 1, index, $"recordings/recording-{index:D}.wav",
+            NoteDerivedFixture.Digest([(byte)(index + 10)]), 0, 200_000,
+            NoteDerivedAudioContext.ByteSize(200_000), $"recording-{index:D}.wav")).ToArray();
+
+        var plan = new NoteDerivedPlanner(new NoteDerivedAudioContextOptions
+        {
+            MaxBatchBytes = 500_000
+        }).Build(NoteDerivedFixture.Snapshot(material, images) with { Audio = audio });
+
+        Assert.Contains(plan.InitialCoverage.Issues,
+            issue => issue.Code == "audio_evidence_budget_insufficient");
+        Assert.DoesNotContain(plan.Steps,
+            step => step.Kind == NoteDerivedStepKind.AudioBatchEvidence);
+        Assert.False(plan.InitialCoverage.Complete);
+    }
+
+    [Fact]
+    public void TranscriptOutsideEveryAudioBatchBlocksInsteadOfBeingSilentlyOmitted()
+    {
+        var material = NoteDerivedFixture.CreateMaterial();
+        var audio = Enumerable.Range(0, 2).Select(index => new NoteDerivedAudioInput(
+            index, Guid.NewGuid(), 1, 1, index, $"recordings/recording-{index:D}.wav",
+            NoteDerivedFixture.Digest([(byte)(index + 1)]), 0, 200_000,
+            NoteDerivedAudioContext.ByteSize(200_000), $"recording-{index:D}.wav")).ToArray();
+        var orphan = new NoteDerivedTranscriptInput(0, 0, Guid.NewGuid(), 1, 1, 0,
+            "recordings/orphan.wav", NoteDerivedFixture.Digest([9]), 0, 200_000,
+            "orphan transcript", Guid.NewGuid());
+        var plan = new NoteDerivedPlanner(new NoteDerivedAudioContextOptions
+        {
+            MaxBatchBytes = 500_000
+        }).Build(NoteDerivedFixture.Snapshot(material, [], [orphan]) with { Audio = audio });
+
+        Assert.Contains(plan.InitialCoverage.Issues,
+            issue => issue.Code == "audio_transcript_unassigned");
+        Assert.DoesNotContain(plan.Steps, step =>
+            step.Kind == NoteDerivedStepKind.AudioBatchEvidence);
+        Assert.False(plan.InitialCoverage.Complete);
+    }
+
+    [Theory]
+    [InlineData(0, 1, 1, 8 * 1024 * 1024)]
+    [InlineData(1, 0, 1, 8 * 1024 * 1024)]
+    [InlineData(1, 1, 0, 8 * 1024 * 1024)]
+    [InlineData(1, 65, 1, 8 * 1024 * 1024)]
+    [InlineData(1, 1, 5, 8 * 1024 * 1024)]
+    [InlineData(1, 1, 1, 9 * 1024 * 1024)]
+    public void AudioBatchOptionsRejectValuesOutsideHardCaps(
+        long totalBytes, int batches, int parallel, int batchBytes)
+    {
+        var options = new NoteDerivedAudioContextOptions
+        {
+            MaxTotalBytes = totalBytes,
+            MaxBatches = batches,
+            MaxParallelCalls = parallel,
+            MaxBatchBytes = batchBytes
+        };
+
+        Assert.False(options.IsValid());
     }
 }
