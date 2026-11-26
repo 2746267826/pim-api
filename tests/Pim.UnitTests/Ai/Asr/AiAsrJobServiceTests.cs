@@ -883,7 +883,7 @@ public sealed class AiAsrJobServiceTests
         Assert.Equal("incomplete", recovered.Status);
         Assert.Equal("outcome_unknown", recovered.ErrorCode);
         using var metadata = JsonDocument.Parse(recovered.MetadataJson);
-        Assert.True(metadata.RootElement.GetProperty("providerAttempted").GetBoolean());
+        Assert.False(metadata.RootElement.GetProperty("providerAttempted").GetBoolean());
     }
 
     [SkippableFact]

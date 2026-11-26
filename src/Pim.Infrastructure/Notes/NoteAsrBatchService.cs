@@ -897,7 +897,7 @@ public sealed class NoteAsrBatchService(PimDbContext db, ICurrentUserService use
         {
             return null;
         }
-        if (reconciliation is null || reconciliation.Items.Count == 0) return null;
+        if (reconciliation?.Items is not { Count: > 0 }) return null;
         long prompt = 0;
         long completion = 0;
         long total = 0;

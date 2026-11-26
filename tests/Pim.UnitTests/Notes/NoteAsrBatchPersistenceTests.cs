@@ -1497,13 +1497,15 @@ public sealed class NoteAsrBatchPersistenceTests
             Id = owner, Username = "real-" + suffix, Email = suffix + "@example.invalid",
             PasswordHash = "synthetic", IsActive = true
         });
+        var connectionId = await AddBatchProviderConnectionAsync(db, suffix);
         var profile = new AiModelProfileEntity
         {
             Id = Guid.NewGuid(), Revision = Guid.NewGuid(), Name = "Batch Real " + suffix,
             NormalizedName = "batch-real-" + suffix, BaseUrl = "https://api.example.invalid/v1/",
             Model = "mimo-v2.6-pro", Enabled = true, Capabilities = AiModelCapabilityFlags.Transcription,
             AsrPresetId = MimoMultimodalPreset.PresetId, AsrBatchBaseUrl = Origin.AbsoluteUri,
-            ApiKeySecret = "synthetic-key", CreatedAt = now, UpdatedAt = now
+            ApiKeySecret = "synthetic-key", CreatedAt = now, UpdatedAt = now,
+            ProviderConnectionId = connectionId
         };
         await db.AiModelProfiles.AddAsync(profile);
         var runtime = await db.AiModelRuntime.SingleOrDefaultAsync(x => x.Id == AiModelRuntimeEntity.SingletonId);
@@ -1709,6 +1711,7 @@ public sealed class NoteAsrBatchPersistenceTests
         await seedDb.NoteAsrAttempts.Where(x => x.OwnerId != owner).ExecuteDeleteAsync();
         var suffix = owner.ToString("N")[..8];
         var now = DateTimeOffset.UtcNow;
+        var connectionId = await AddBatchProviderConnectionAsync(seedDb, suffix);
         await seedDb.Users.AddAsync(new UserEntity
         {
             Id = owner, Username = "initial-" + suffix, Email = suffix + "@example.invalid",
@@ -1720,7 +1723,8 @@ public sealed class NoteAsrBatchPersistenceTests
             NormalizedName = "batch-initial-" + suffix, BaseUrl = "https://api.example.invalid/v1/",
             Model = "mimo-v2.6-pro", Enabled = true, Capabilities = AiModelCapabilityFlags.Transcription,
             AsrPresetId = MimoMultimodalPreset.PresetId, AsrBatchBaseUrl = Origin.AbsoluteUri,
-            ApiKeySecret = "synthetic-key", CreatedAt = now, UpdatedAt = now
+            ApiKeySecret = "synthetic-key", CreatedAt = now, UpdatedAt = now,
+            ProviderConnectionId = connectionId
         };
         await seedDb.AiModelProfiles.AddAsync(profile);
         var runtime = await seedDb.AiModelRuntime.SingleOrDefaultAsync(x => x.Id == AiModelRuntimeEntity.SingletonId);
@@ -2101,13 +2105,15 @@ public sealed class NoteAsrBatchPersistenceTests
             Id = owner, Username = tag + "-" + suffix, Email = suffix + "@example.invalid",
             PasswordHash = "synthetic", IsActive = true
         });
+        var connectionId = await AddBatchProviderConnectionAsync(db, suffix);
         var profile = new AiModelProfileEntity
         {
             Id = Guid.NewGuid(), Revision = Guid.NewGuid(), Name = "Batch " + tag + " " + suffix,
             NormalizedName = "batch-" + tag + "-" + suffix, BaseUrl = "https://api.example.invalid/v1/",
             Model = "mimo-v2.6-pro", Enabled = true, Capabilities = AiModelCapabilityFlags.Transcription,
             AsrPresetId = MimoMultimodalPreset.PresetId, AsrBatchBaseUrl = Origin.AbsoluteUri,
-            ApiKeySecret = "synthetic-key", CreatedAt = now, UpdatedAt = now
+            ApiKeySecret = "synthetic-key", CreatedAt = now, UpdatedAt = now,
+            ProviderConnectionId = connectionId
         };
         await db.AiModelProfiles.AddAsync(profile);
         var runtime = await db.AiModelRuntime.SingleOrDefaultAsync(x => x.Id == AiModelRuntimeEntity.SingletonId);
@@ -2186,6 +2192,22 @@ public sealed class NoteAsrBatchPersistenceTests
         }
     }
 
+    private static async Task<Guid> AddBatchProviderConnectionAsync(PimDbContext db, string suffix)
+    {
+        var connectionId = Guid.NewGuid();
+        await db.AiProviderConnections.AddAsync(new AiProviderConnectionEntity
+        {
+            Id = connectionId, Name = "Batch connection " + suffix,
+            NormalizedName = "BATCH-CONNECTION-" + suffix
+        });
+        await db.AiUsageLimitRules.AddAsync(new AiUsageLimitRuleEntity
+        {
+            ConnectionId = connectionId, Enabled = false, Period = AiUsageLimitPeriods.Month,
+            WarningPercent = 80, TimeZoneId = "Asia/Shanghai"
+        });
+        return connectionId;
+    }
+
     private static async Task<(NoteAsrTaskDto Task, NoteAsrRouteConfigDto Route)> StartViaRealServiceAsync(Guid owner,
         NoteMaterialVersionDto version, Guid taskId,
         AiModelProfileEntity profile)
@@ -2261,17 +2283,7 @@ public sealed class NoteAsrBatchPersistenceTests
         await db.NoteAsrAttempts.Where(x => x.OwnerId != owner).ExecuteDeleteAsync();
         var now = DateTimeOffset.UtcNow;
         var suffix = owner.ToString("N")[..8];
-        var connectionId = Guid.NewGuid();
-        await db.AiProviderConnections.AddAsync(new AiProviderConnectionEntity
-        {
-            Id = connectionId, Name = "Batch connection " + suffix,
-            NormalizedName = "BATCH-CONNECTION-" + suffix
-        });
-        await db.AiUsageLimitRules.AddAsync(new AiUsageLimitRuleEntity
-        {
-            ConnectionId = connectionId, Enabled = false, Period = AiUsageLimitPeriods.Month,
-            WarningPercent = 80, TimeZoneId = "Asia/Shanghai"
-        });
+        var connectionId = await AddBatchProviderConnectionAsync(db, suffix);
         await db.Users.AddAsync(new UserEntity
         {
             Id = owner, Username = "synthetic-" + suffix, Email = suffix + "@example.invalid",
@@ -2560,7 +2572,13 @@ public sealed class NoteAsrBatchPersistenceTests
         await using var db = NewDb(owner);
         try
         {
-            var profileIds = await db.AiModelProfiles.Where(x => x.Name.StartsWith(prefix))
+            var suffix = owner.ToString("N")[..8];
+            var connectionName = "BATCH-CONNECTION-" + suffix;
+            var connectionIds = await db.AiProviderConnections
+                .Where(x => x.NormalizedName == connectionName)
+                .Select(x => x.Id).ToListAsync();
+            var profileIds = await db.AiModelProfiles.Where(x => x.Name.StartsWith(prefix) ||
+                    x.ProviderConnectionId != null && connectionIds.Contains(x.ProviderConnectionId.Value))
                 .Select(x => x.Id).ToListAsync();
             var runtime = await db.AiModelRuntime.SingleOrDefaultAsync(x => x.Id == AiModelRuntimeEntity.SingletonId);
             if (runtime is not null && (runtime.TextModelId is { } text && profileIds.Contains(text) ||
@@ -2577,7 +2595,8 @@ public sealed class NoteAsrBatchPersistenceTests
             }
             await db.NoteAsrBatchJobs.Where(x => x.OwnerId == owner).ExecuteDeleteAsync();
             await db.NoteAsrAttempts.Where(x => x.OwnerId == owner).ExecuteDeleteAsync();
-            await db.AiModelProfiles.Where(x => x.Name.StartsWith(prefix)).ExecuteDeleteAsync();
+            await db.AiModelProfiles.Where(x => profileIds.Contains(x.Id)).ExecuteDeleteAsync();
+            await db.AiProviderConnections.Where(x => connectionIds.Contains(x.Id)).ExecuteDeleteAsync();
             await db.Users.Where(x => x.Id == owner).ExecuteDeleteAsync();
         }
         catch (Exception error) when (error is Npgsql.PostgresException { SqlState: "42P01" }) { }
