@@ -277,9 +277,15 @@ public sealed class AiConnectionTestService(
             }
             catch (ClientResultException error)
             {
+                PersistRawResponse(row, wire, key);
+                var invalidProtocol = error.Status is >= 200 and <= 299;
                 return await FinishAsync(row, profile, probe, request.Capability,
-                    AiConnectionTestStatus.Failed, null, HttpErrorCode(error.Status),
-                    HttpErrorMessage(error.Status), providerAttempted: true);
+                    AiConnectionTestStatus.Failed, null,
+                    invalidProtocol ? "invalid_response" : HttpErrorCode(error.Status),
+                    invalidProtocol
+                        ? "服务商返回了无法解析的协议响应；本次不计为通过，请核对模型标识、API根地址与协议。"
+                        : HttpErrorMessage(error.Status),
+                    providerAttempted: true);
             }
             catch (AiAsrProviderHttpException error)
             {
@@ -314,6 +320,7 @@ public sealed class AiConnectionTestService(
             }
             catch (Exception)
             {
+                PersistRawResponse(row, wire, key);
                 return await FinishAsync(row, profile, probe, request.Capability,
                     AiConnectionTestStatus.Failed, null, "invalid_response",
                     "服务商响应无法解析或测试请求未被接受；请核对协议、模型能力和API根地址。",
@@ -593,6 +600,13 @@ public sealed class AiConnectionTestService(
         if (string.IsNullOrEmpty(value)) return null;
         var trimmed = value.Trim();
         return trimmed.Length <= PreviewChars ? trimmed : trimmed[..PreviewChars];
+    }
+
+    private static void PersistRawResponse(AiRequestLogEntity row, AiTextWireCapture wire, string? key)
+    {
+        if (string.IsNullOrEmpty(wire.ResponseBody)) return;
+        row.ResponseRawJson = SafeJson(ValidJson(wire.ResponseBody), key, out var redacted);
+        row.ContentRedacted = row.ContentRedacted == true || redacted;
     }
 
     private static string HttpErrorCode(int status) => status switch

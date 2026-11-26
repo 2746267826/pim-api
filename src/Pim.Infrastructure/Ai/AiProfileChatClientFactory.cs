@@ -3,6 +3,7 @@ using OpenAI;
 using OpenAI.Chat;
 using System.ClientModel;
 using System.ClientModel.Primitives;
+using System.Runtime.ExceptionServices;
 using System.Runtime.CompilerServices;
 using System.Text.Json.Nodes;
 using Pim.Core.Ai;
@@ -145,7 +146,15 @@ public sealed class AiProfileChatClientFactory(IHttpClientFactory http) : IAiPro
             CancellationToken cancellationToken = default)
         {
             using var callerScope = AiProviderCircuitBreaker.EnterCallerScopeIfUnscoped(cancellationToken);
-            return await base.GetResponseAsync(messages, options, cancellationToken);
+            try
+            {
+                return await base.GetResponseAsync(messages, options, cancellationToken);
+            }
+            catch (Exception error) when (UnwrapTransport(error) is { } transport)
+            {
+                ExceptionDispatchInfo.Capture(transport).Throw();
+                throw;
+            }
         }
 
         public override async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
@@ -153,8 +162,44 @@ public sealed class AiProfileChatClientFactory(IHttpClientFactory http) : IAiPro
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
             using var callerScope = AiProviderCircuitBreaker.EnterCallerScopeIfUnscoped(cancellationToken);
-            await foreach (var update in base.GetStreamingResponseAsync(messages, options, cancellationToken))
-                yield return update;
+            var stream = base.GetStreamingResponseAsync(messages, options, cancellationToken)
+                .GetAsyncEnumerator(cancellationToken);
+            try
+            {
+                while (true)
+                {
+                    ChatResponseUpdate update;
+                    try
+                    {
+                        if (!await stream.MoveNextAsync()) yield break;
+                        update = stream.Current;
+                    }
+                    catch (Exception error) when (UnwrapTransport(error) is { } transport)
+                    {
+                        ExceptionDispatchInfo.Capture(transport).Throw();
+                        throw;
+                    }
+                    yield return update;
+                }
+            }
+            finally
+            {
+                await stream.DisposeAsync();
+            }
+        }
+
+        /// <summary>
+        /// The OpenAI SDK wraps transport-level failures in <see cref="ClientResultException"/>.
+        /// Callers classify the circuit-open and connection failures themselves, so restore the
+        /// original exception instead of losing it inside a status-0 wrapper.
+        /// </summary>
+        private static Exception? UnwrapTransport(Exception error)
+        {
+            if (error is not ClientResultException { InnerException: { } inner }) return null;
+            if (inner is AiProviderCircuitOpenException) return inner;
+            return inner is HttpRequestException && error is ClientResultException { Status: <= 0 }
+                ? inner
+                : null;
         }
     }
 }

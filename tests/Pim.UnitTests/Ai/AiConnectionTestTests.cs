@@ -490,7 +490,15 @@ public sealed class AiConnectionTestTests : IDisposable
         _db.AiUsageLimitRules.Add(new AiUsageLimitRuleEntity
         {
             ConnectionId = connection.Id, Enabled = true, Period = AiUsageLimitPeriods.Month,
-            WarningPercent = 80, TokenLimit = 0, TimeZoneId = "Asia/Shanghai"
+            WarningPercent = 80, TokenLimit = 100, TimeZoneId = "Asia/Shanghai"
+        });
+        _db.AiRequestLogs.Add(new AiRequestLogEntity
+        {
+            Module = "system", Purpose = "ai.text-call", SourceObjectType = "ai-model",
+            SourceObjectId = "usage-limit-fixture", Model = "fixture-model",
+            CorrelationId = Guid.NewGuid().ToString("N"), Status = "succeeded",
+            StartedAt = DateTimeOffset.UtcNow, TotalTokens = 100,
+            ProviderConnectionId = connection.Id
         });
         await _db.SaveChangesAsync();
         var model = await _settings.SaveAsync(null, new("限额模型", "https://fixture.invalid/v1",
@@ -505,7 +513,8 @@ public sealed class AiConnectionTestTests : IDisposable
         Assert.Equal("usage_limit_reached", result.ErrorCode);
         Assert.False(result.ProviderAttempted);
         Assert.Equal(0, _wire.Calls);
-        Assert.Equal("blocked", (await _db.AiRequestLogs.AsNoTracking().SingleAsync()).Status);
+        Assert.Equal("blocked", (await _db.AiRequestLogs.AsNoTracking()
+            .SingleAsync(x => x.Purpose == "ai.connection-test")).Status);
     }
 
     [Fact]

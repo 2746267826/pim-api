@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
 using Pim.Core.Ai;
 using Pim.Core.Common;
 using Pim.Infrastructure.Ai;
@@ -27,7 +28,7 @@ public static class AiEndpoints
             Guid? userId,
             int? page,
             int? pageSize,
-            IAiUsageService usage,
+            [FromServices] IAiUsageService usage,
             CancellationToken ct) =>
         {
             if (!TryParseStatus(status, out var parsedStatus))
@@ -44,7 +45,7 @@ public static class AiEndpoints
         .Produces<ApiResponse<string>>(400)
         .Produces<ApiResponse<string>>(500);
 
-        group.MapGet("/requests/{id:guid}", async (Guid id, IAiUsageService usage, CancellationToken ct) =>
+        group.MapGet("/requests/{id:guid}", async (Guid id, [FromServices] IAiUsageService usage, CancellationToken ct) =>
         {
             var detail = await usage.GetRequestDetailAsync(id, ct);
             return detail is null
@@ -57,7 +58,7 @@ public static class AiEndpoints
         .Produces<ApiResponse<string>>(404)
         .Produces<ApiResponse<string>>(500);
 
-        group.MapGet("/usage/summary", async (DateTimeOffset? from, DateTimeOffset? to, IAiUsageService usage, CancellationToken ct) =>
+        group.MapGet("/usage/summary", async (DateTimeOffset? from, DateTimeOffset? to, [FromServices] IAiUsageService usage, CancellationToken ct) =>
             Results.Ok(ApiResponse<AiUsageSummaryDto>.Ok(await usage.GetUsageSummaryAsync(from, to, ct))))
         .Produces<ApiResponse<AiUsageSummaryDto>>(200)
         .Produces(401)
