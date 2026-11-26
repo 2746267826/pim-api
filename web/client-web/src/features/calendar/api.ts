@@ -84,7 +84,9 @@ export const eventsApi = {
     if (scope?.recurrenceId) q.set('recurrenceId', scope.recurrenceId)
     if (scope?.originalEventId) q.set('originalEventId', scope.originalEventId)
     const suffix = q.toString() ? `?${q}` : ''
-    return apiDelete<string>(`/api/v1/calendar/events/${id}${suffix}`)
+    return apiDelete<components['schemas']['OutlookWriteResult']>(
+      `/api/v1/calendar/events/${id}${suffix}`,
+    )
   },
   batchDelete: (ids: string[]) =>
     apiPost<CalendarOperationResult>('/api/v1/calendar/events/batch-delete', { ids }),
