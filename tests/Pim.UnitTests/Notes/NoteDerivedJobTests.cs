@@ -715,6 +715,7 @@ public sealed class NoteDerivedJobTests : IAsyncLifetime
     }
 
     [Theory]
+    [InlineData("owner", "synthesis_receipt_missing")]
     [InlineData("delete", "synthesis_receipt_missing")]
     [InlineData("request", "synthesis_request_mismatch")]
     [InlineData("purpose", "synthesis_purpose_mismatch")]
@@ -754,6 +755,7 @@ public sealed class NoteDerivedJobTests : IAsyncLifetime
     }
 
     [Theory]
+    [InlineData("owner", "synthesis_receipt_missing")]
     [InlineData("delete", "synthesis_receipt_missing")]
     [InlineData("request", "synthesis_request_mismatch")]
     [InlineData("purpose", "synthesis_purpose_mismatch")]
@@ -1078,10 +1080,25 @@ public sealed class NoteDerivedJobTests : IAsyncLifetime
         {
             case null:
                 break;
+            case "owner":
+                receipt.UserId = Guid.NewGuid();
+                break;
             case "delete":
                 break;
             case "body":
                 receipt.ResponseText = "## synthetic tampered recovered record body";
+                break;
+            case "request":
+                receipt.ClientRequestId = Guid.NewGuid();
+                break;
+            case "purpose":
+                receipt.Purpose = "note.derived.tampered";
+                break;
+            case "source":
+                receipt.SourceObjectId = Guid.NewGuid().ToString("D");
+                break;
+            case "model":
+                receipt.ModelProfileId = Guid.NewGuid();
                 break;
             case "input":
                 receipt.InputHash = Hash("tampered input");
@@ -1146,6 +1163,9 @@ public sealed class NoteDerivedJobTests : IAsyncLifetime
                 x.Purpose == NoteDerivedPrompts.RecordPurpose);
         switch (corruption)
         {
+            case "owner":
+                log.UserId = Guid.NewGuid();
+                break;
             case "delete":
                 db.AiRequestLogs.Remove(log);
                 break;
