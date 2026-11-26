@@ -55,6 +55,7 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
         await using var lease = await LockAsync(userId, ct);
         var ledger = await LoadLedgerAsync(userId, ct);
         await PruneAsync(userId, ledger, ct);
+        RequireActive(ledger, request.NoteId, "创建材料版本");
         var key = Key(request.VersionId);
         if (ledger.Versions.TryGetValue(key, out var existing))
         {
@@ -88,12 +89,23 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
         return await DescribeAsync(userId, request.VersionId, entry, ledger, files, ct);
     }
 
-    public async Task<NoteMaterialVersionDto> GetAsync(Guid userId, Guid versionId, CancellationToken ct = default)
+    public Task<NoteMaterialVersionDto> GetAsync(Guid userId, Guid versionId,
+        CancellationToken ct = default) =>
+        GetCoreAsync(userId, versionId, allowRecycled: false, ct);
+
+    /// <summary>MCP reads may inspect a recycled note; REST material reads must not.</summary>
+    public Task<NoteMaterialVersionDto> GetForMcpAsync(Guid userId, Guid versionId,
+        CancellationToken ct = default) =>
+        GetCoreAsync(userId, versionId, allowRecycled: true, ct);
+
+    private async Task<NoteMaterialVersionDto> GetCoreAsync(Guid userId, Guid versionId,
+        bool allowRecycled, CancellationToken ct)
     {
         await using var lease = await LockAsync(userId, ct);
         var ledger = await LoadLedgerAsync(userId, ct);
         await PruneAsync(userId, ledger, ct);
         var entry = Find(ledger, versionId);
+        if (!allowRecycled) RequireActive(ledger, entry.NoteId, "读取材料版本");
         var request = await RequestAsync(userId, versionId, ct);
         var files = NoteMaterialManifestValidator.Validate(request, ReadLimits);
         return new(await DescribeAsync(userId, versionId, entry, ledger, files, ct), request.InputJson, request.ManifestJson);
@@ -112,7 +124,8 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
             (Head: head, Parsed: Guid.TryParseExact(head.Key, "D", out var noteId) ? noteId : Guid.Empty))
             .Where(item => item.Parsed != Guid.Empty &&
                 ledger.Versions.TryGetValue(Key(item.Head.Value), out var version) &&
-                version.NoteId == item.Parsed && version.Phase == "Uploaded")
+                version.NoteId == item.Parsed && version.Phase == "Uploaded" &&
+                !IsRecycled(ledger, item.Parsed))
             .Select(item => (NoteId: item.Parsed, VersionId: item.Head.Value, Entry: ledger.Versions[Key(item.Head.Value)],
                 HasConflict: conflicts.Contains(item.Parsed)))
             .OrderByDescending(item => item.Entry.CreatedAt).ThenBy(item => item.NoteId).ToArray();
@@ -136,6 +149,7 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
         foreach (var head in ledger.Heads)
         {
             if (!Guid.TryParseExact(head.Key, "D", out var noteId)) continue;
+            if (IsRecycled(ledger, noteId)) continue;
             if (!ledger.Versions.TryGetValue(Key(head.Value), out var version) ||
                 version.NoteId != noteId || version.Phase != "Uploaded")
                 continue;
@@ -151,6 +165,7 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
         await using var lease = await LockAsync(userId, ct);
         var ledger = await LoadLedgerAsync(userId, ct);
         await PruneAsync(userId, ledger, ct);
+        RequireActive(ledger, noteId, "读取当前材料版本");
         var versionId = Current(ledger, noteId) ?? throw new DomainException(40401, "当前完整笔记不存在");
         var entry = Find(ledger, versionId);
         if (entry.NoteId != noteId || entry.Phase != "Uploaded")
@@ -168,6 +183,7 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
         await using var lease = await LockAsync(userId, ct);
         var ledger = await LoadLedgerAsync(userId, ct);
         await PruneAsync(userId, ledger, ct);
+        RequireActive(ledger, request.NoteId, "复制材料版本");
         var sourceEntry = Find(ledger, sourceVersionId);
         if (sourceEntry.NoteId != request.NoteId) throw new DomainException(40401, "材料版本不存在或已过期");
         var files = NoteMaterialManifestValidator.Validate(request, ReadLimits);
@@ -277,6 +293,7 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
         await using var lease = await LockAsync(userId, ct);
         var ledger = await LoadLedgerAsync(userId, ct);
         await PruneAsync(userId, ledger, ct);
+        RequireActive(ledger, noteId, "列出材料版本");
         var result = new List<NoteMaterialUploadDto>();
         foreach (var (key, entry) in ledger.Versions.Where(item => item.Value.NoteId == noteId).OrderByDescending(item => item.Value.CreatedAt))
         {
@@ -296,7 +313,10 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
         if (offset < 0 || limit is < 1 or > 50) throw Invalid("材料分页范围无效");
         await using var lease = await LockAsync(owner, ct);
         var ledger = await LoadLedgerAsync(owner, ct);
-        var versions = ledger.Versions.Where(x => x.Value.Phase != "Uploading").OrderByDescending(x => x.Value.CreatedAt).ToArray();
+        var versions = ledger.Versions
+            .Where(x => x.Value.Phase != "Uploading" && !IsRecycled(ledger, x.Value.NoteId))
+            .OrderByDescending(x => x.Value.CreatedAt)
+            .ToArray();
         var sources = new List<(Guid VersionId, StoredVersion Entry, string Title, int Recordings, long Samples)>();
         foreach (var (key, entry) in versions)
         {
@@ -334,6 +354,7 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
         var ledger = await LoadLedgerAsync(userId, ct);
         await PruneAsync(userId, ledger, ct);
         var entry = Find(ledger, versionId);
+        RequireActive(ledger, entry.NoteId, "上传材料分块");
         var files = NoteMaterialManifestValidator.Validate(await RequestAsync(userId, versionId, ct), ReadLimits);
         var file = FileAt(files, fileIndex);
         if (partIndex < 0 || partIndex >= PartCount(file) || content.Length != PartLength(file, partIndex))
@@ -368,6 +389,7 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
         var ledger = await LoadLedgerAsync(userId, ct);
         await PruneAsync(userId, ledger, ct);
         var entry = Find(ledger, versionId);
+        RequireActive(ledger, entry.NoteId, "完成材料上传");
         var files = NoteMaterialManifestValidator.Validate(await RequestAsync(userId, versionId, ct), ReadLimits);
         for (var fileIndex = 0; fileIndex < files.Count; fileIndex++)
             await VerifyFileAsync(userId, versionId, fileIndex, files[fileIndex], ct);
@@ -390,6 +412,7 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
         await using var lease = await LockAsync(userId, ct);
         var ledger = await LoadLedgerAsync(userId, ct);
         var entry = Find(ledger, versionId);
+        RequireActive(ledger, entry.NoteId, "选择当前材料版本");
         if (entry.Phase == "Uploading") throw Conflict("材料尚未齐备，不能选为当前版本");
         var current = Current(ledger, entry.NoteId);
         if (current != versionId && current != expectedCurrentVersionId)
@@ -407,7 +430,9 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
     {
         await using var lease = await LockAsync(userId, ct);
         var ledger = await LoadLedgerAsync(userId, ct);
-        if (Find(ledger, versionId).Phase == "Uploading") throw Conflict("材料尚未提交完整");
+        var entry = Find(ledger, versionId);
+        RequireActive(ledger, entry.NoteId, "读取材料文件");
+        if (entry.Phase == "Uploading") throw Conflict("材料尚未提交完整");
         var files = NoteMaterialManifestValidator.Validate(await RequestAsync(userId, versionId, ct), ReadLimits);
         var file = FileAt(files, fileIndex);
         await VerifyFileAsync(userId, versionId, fileIndex, file, ct);
@@ -432,7 +457,9 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
         await using (var lease = await LockAsync(owner, ct))
         {
             var ledger = await LoadLedgerAsync(owner, ct);
-            if (Find(ledger, versionId).Phase == "Uploading") throw Conflict("材料尚未提交完整");
+            var entry = Find(ledger, versionId);
+            RequireActive(ledger, entry.NoteId, "读取录音分片");
+            if (entry.Phase == "Uploading") throw Conflict("材料尚未提交完整");
             var file = FileAt(NoteMaterialManifestValidator.Validate(
                 await RequestAsync(owner, versionId, ct), ReadLimits), fileIndex);
             if (file.Kind != "AudioChunk" || offsetSamples < 0 ||
@@ -473,7 +500,9 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
     {
         await using var lease = await LockAsync(owner, ct);
         var ledger = await LoadLedgerAsync(owner, ct);
-        if (Find(ledger, versionId).Phase == "Uploading") throw Conflict("材料尚未提交完整");
+        var entry = Find(ledger, versionId);
+        RequireActive(ledger, entry.NoteId, "读取录音分片");
+        if (entry.Phase == "Uploading") throw Conflict("材料尚未提交完整");
         var file = FileAt(NoteMaterialManifestValidator.Validate(
             await RequestAsync(owner, versionId, ct), ReadLimits), fileIndex);
         if (file.Kind != "AudioChunk") throw Invalid("录音材料索引无效");
@@ -485,6 +514,7 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
         await using var lease = await LockAsync(owner, ct);
         var ledger = await LoadLedgerAsync(owner, ct);
         var entry = Find(ledger, versionId);
+        RequireActive(ledger, entry.NoteId, "读取图片材料");
         if (entry.Phase is not ("Uploaded" or "Conflict")) throw Conflict("材料尚未提交完整");
         var files = NoteMaterialManifestValidator.Validate(await RequestAsync(owner, versionId, ct), ReadLimits);
         var file = FileAt(files, fileIndex);
@@ -515,6 +545,7 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
         var ledger = await LoadLedgerAsync(userId, ct);
         var key = Key(versionId);
         if (!ledger.Versions.TryGetValue(key, out var entry)) return;
+        RequireActive(ledger, entry.NoteId, "取消未完成上传");
         if (entry.Phase != "Uploading") throw Conflict("已提交的材料不能作为未完成上传取消，请使用删除笔记");
         ledger.Versions.Remove(key);
         ledger.Deletions.Add(key);
@@ -527,7 +558,9 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
         await using var lease = await LockAsync(userId, ct);
         var ledger = await LoadLedgerAsync(userId, ct);
         await PruneAsync(userId, ledger, ct);
-        if (Find(ledger, versionId).Phase != "Uploading") throw Conflict("完整材料版本已经固定，不能删除分块");
+        var entry = Find(ledger, versionId);
+        RequireActive(ledger, entry.NoteId, "清除材料分块");
+        if (entry.Phase != "Uploading") throw Conflict("完整材料版本已经固定，不能删除分块");
         var files = NoteMaterialManifestValidator.Validate(await RequestAsync(userId, versionId, ct), ReadLimits);
         var file = FileAt(files, fileIndex);
         if (partIndex < 0 || partIndex >= PartCount(file)) throw Invalid("分块位置无效");
@@ -583,7 +616,7 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
 
     /// <summary>
     /// Owner-scoped note list for the MCP aggregate read. Existing REST callers keep using
-    /// <see cref="ListNativeNotesAsync"/>; this overload adds lifecycle status filtering and a
+    /// <see cref="ListNativeNotesAsync"/>; this overload adds recycle-bin status filtering and a
     /// deterministic per-note revision used for optimistic concurrency checks.
     /// </summary>
     public async Task<NativeNoteMcpPageDto> ListMcpNotesAsync(Guid userId, string? status, int offset,
@@ -723,7 +756,7 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
             conflicts);
     }
 
-    /// <summary>Current lifecycle status with an existence check (404 when the note is unknown).</summary>
+    /// <summary>Current recycle-bin status with an existence check (404 when the note is unknown).</summary>
     public async Task<string> GetMcpNoteStatusAsync(Guid userId, Guid noteId, CancellationToken ct = default)
     {
         await using var lease = await LockAsync(userId, ct);
@@ -734,21 +767,36 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
     }
 
     /// <summary>
-    /// Archive / restore / soft-delete a note. Versions and files stay on disk so a restore is
-    /// lossless; only the note status changes. The optional expected revision is a strict CAS:
-    /// a stale value is rejected and the caller must re-read before retrying.
+    /// Moves a note to the recycle bin. Versions and files stay on disk so a restore is lossless;
+    /// only the note status changes. Native notes have no separate archive state: folders are the
+    /// normal archive location and the recycle bin is the deleted state (R05 A05/A07 rules).
+    /// The optional expected revision is a strict CAS.
     /// </summary>
-    public async Task<NativeNoteMcpLifecycleDto> UpdateLifecycleAsync(Guid userId, Guid noteId,
-        string action, Guid? expectedRevision, CancellationToken ct = default)
+    public async Task<NativeNoteMcpRecycleDto> RecycleAsync(Guid userId, Guid noteId,
+        Guid? expectedRevision, CancellationToken ct = default)
+        => await SetRecycledAsync(userId, noteId, recycled: true, expectedRevision, ct);
+
+    /// <summary>Restores a recycled note without resuming any processing task.</summary>
+    public async Task<NativeNoteMcpRecycleDto> RestoreAsync(Guid userId, Guid noteId,
+        Guid? expectedRevision, CancellationToken ct = default)
+        => await SetRecycledAsync(userId, noteId, recycled: false, expectedRevision, ct);
+
+    public async Task<IReadOnlyList<Guid>> ListNoteVersionIdsAsync(Guid userId, Guid noteId,
+        CancellationToken ct = default)
     {
-        var normalizedAction = (action ?? string.Empty).Trim().ToLowerInvariant();
-        var targetStatus = normalizedAction switch
-        {
-            "archive" => "Archived",
-            "restore" => "Active",
-            "delete" => "Deleted",
-            _ => throw Invalid("action 必须是 archive、restore 或 delete"),
-        };
+        await using var lease = await LockAsync(userId, ct);
+        var ledger = await LoadLedgerAsync(userId, ct);
+        await PruneAsync(userId, ledger, ct);
+        RequireNote(ledger, noteId);
+        return ledger.Versions
+            .Where(item => item.Value.NoteId == noteId)
+            .Select(item => Guid.ParseExact(item.Key, "D"))
+            .ToArray();
+    }
+
+    private async Task<NativeNoteMcpRecycleDto> SetRecycledAsync(Guid userId, Guid noteId,
+        bool recycled, Guid? expectedRevision, CancellationToken ct)
+    {
         await using var lease = await LockAsync(userId, ct);
         var ledger = await LoadLedgerAsync(userId, ct);
         await PruneAsync(userId, ledger, ct);
@@ -757,10 +805,9 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
         var revision = RevisionOf(ledger, noteId);
         if (expectedRevision is { } expected && expected != revision)
             throw Conflict("笔记版本已变化，请先重新读取 get_native_note_versions 后再试");
+        var targetStatus = recycled ? "Recycled" : "Active";
         if (currentStatus == targetStatus)
-            return new NativeNoteMcpLifecycleDto(currentStatus, revision, UpdatedAtOf(ledger, noteId));
-        if (normalizedAction == "archive" && currentStatus == "Deleted")
-            throw Conflict("笔记已删除，请先恢复后再归档");
+            return new NativeNoteMcpRecycleDto(currentStatus, revision, UpdatedAtOf(ledger, noteId));
 
         var now = _clock.GetUtcNow();
         var state = ledger.Notes.TryGetValue(Key(noteId), out var existing)
@@ -770,12 +817,11 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
         {
             Status = targetStatus,
             UpdatedAt = now,
-            ArchivedAt = targetStatus == "Archived" ? now : null,
-            DeletedAt = targetStatus == "Deleted" ? now : null,
+            RecycledAt = recycled ? now : null,
         };
         ledger.Notes[Key(noteId)] = updated;
         await SaveLedgerAsync(userId, ledger, ct);
-        return new NativeNoteMcpLifecycleDto(targetStatus, RevisionOf(ledger, noteId), now);
+        return new NativeNoteMcpRecycleDto(targetStatus, RevisionOf(ledger, noteId), now);
     }
 
     private async Task<IReadOnlyList<NoteMaterialUploadDto>> DescribeMcpVersionsAsync(Guid userId,
@@ -797,10 +843,9 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
     {
         var value = string.IsNullOrWhiteSpace(status) ? "Active" : status.Trim();
         if (value.Equals("Active", StringComparison.OrdinalIgnoreCase)) return "Active";
-        if (value.Equals("Archived", StringComparison.OrdinalIgnoreCase)) return "Archived";
-        if (value.Equals("Deleted", StringComparison.OrdinalIgnoreCase)) return "Deleted";
+        if (value.Equals("Recycled", StringComparison.OrdinalIgnoreCase)) return "Recycled";
         if (value.Equals("All", StringComparison.OrdinalIgnoreCase)) return "All";
-        throw Invalid("status 必须是 Active、Archived、Deleted 或 All");
+        throw Invalid("status 必须是 Active、Recycled 或 All");
     }
 
     private static bool StatusMatches(string status, string filter)
@@ -846,6 +891,16 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
         if (!ledger.Versions.Values.Any(item => item.NoteId == noteId) &&
             !ledger.Notes.ContainsKey(Key(noteId)))
             throw new DomainException(40401, "笔记不存在");
+    }
+
+    private static bool IsRecycled(Ledger ledger, Guid noteId)
+        => ledger.Notes.TryGetValue(Key(noteId), out var state) &&
+           string.Equals(state.Status, "Recycled", StringComparison.Ordinal);
+
+    private static void RequireActive(Ledger ledger, Guid noteId, string action)
+    {
+        if (IsRecycled(ledger, noteId))
+            throw new DomainException(40901, $"笔记在回收站，请先恢复后再{action}");
     }
 
     private async Task VerifyFileAsync(Guid userId, Guid versionId, int index, NoteUploadedMaterial file, CancellationToken ct)
@@ -1314,7 +1369,7 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
         DateTimeOffset CreatedAt, DateTimeOffset ExpiresAt, string Phase, bool HasConflict = false);
 
     private sealed record StoredNoteState(string Status, DateTimeOffset UpdatedAt,
-        DateTimeOffset? ArchivedAt = null, DateTimeOffset? DeletedAt = null);
+        DateTimeOffset? RecycledAt = null);
 }
 
 internal sealed record NativeNoteSearchSource(

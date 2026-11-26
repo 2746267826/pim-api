@@ -43,10 +43,14 @@ public sealed class McpLivenessToolTests
         // AC-11.3：只读策略下该路径可用；写入类方法一律被拒。
         var spec = McpToolTable.TryGet(ToolName)!;
 
-        Assert.True(McpReadEndpointPolicy.IsReadAllowed(spec.Method, "/api/v1/mobile/devices/android-phone/liveness"));
-        Assert.False(McpReadEndpointPolicy.IsReadAllowed("POST", "/api/v1/mobile/devices/android-phone/liveness"));
-        Assert.False(McpReadEndpointPolicy.IsReadAllowed("DELETE", "/api/v1/mobile/devices/android-phone/liveness"));
-        Assert.False(McpReadEndpointPolicy.IsReadAllowed("POST", "/api/v1/mobile/forensics/events"));
+        Assert.True(McpReadEndpointPolicy.IsReadAllowed("get_mobile_liveness_summary",
+            spec.Method, "/api/v1/mobile/devices/android-phone/liveness"));
+        Assert.False(McpReadEndpointPolicy.IsReadAllowed("get_mobile_liveness_summary",
+            "POST", "/api/v1/mobile/devices/android-phone/liveness"));
+        Assert.False(McpReadEndpointPolicy.IsReadAllowed("get_mobile_liveness_summary",
+            "DELETE", "/api/v1/mobile/devices/android-phone/liveness"));
+        Assert.False(McpReadEndpointPolicy.IsReadAllowed("get_mobile_liveness_summary",
+            "POST", "/api/v1/mobile/forensics/events"));
     }
 
     [Fact]

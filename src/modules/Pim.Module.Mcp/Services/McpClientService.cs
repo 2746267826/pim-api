@@ -179,7 +179,12 @@ public sealed class McpClientService
         var isWrite = McpToolCatalog.IsWrite(tool!);
         var section = isWrite ? "write" : "read";
         var map = client.Permissions.TryGetValue(section, out var m) ? m : new Dictionary<string, bool>();
-        var allowed = map.TryGetValue(tool!, out var v) ? v : !isWrite;
+        // Older clients may have a read map created before the native-note tools existed.
+        // A missing key must use the tool's own default, never "all reads are on"; otherwise
+        // upgrading the server silently grants notes.read to an existing client.
+        var allowed = map.TryGetValue(tool!, out var v)
+            ? v
+            : McpToolCatalog.IsEnabledByDefault(tool!);
         if (!allowed)
             return McpVerifyOutcome.Forbidden(tool!);
 

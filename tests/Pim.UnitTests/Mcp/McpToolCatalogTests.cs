@@ -8,14 +8,14 @@ namespace Pim.UnitTests.Mcp;
 public sealed class McpToolCatalogTests
 {
     [Fact]
-    public void Catalog_Has106ReadAnd61Write()
+    public void Catalog_Has107ReadAnd60Write()
     {
         // P4：read_file_text 加入读工具（OneDrive 文件模块 v2，设计 §12）
         // WO-ANDROID-KEEPALIVE-20260923 阶段一：get_mobile_liveness_summary 加入读工具（REQ-11）
         // WO-PC-BACKEND-20261001 REQ-6（#379）：get_pc_aw_heatmap 随遗留端点 pc/aw/heatmap 下线，
-        // 读工具 101 → 100（AC-6.3：工具表必须与最终行为一致）；R05 增加 7 读 + 12 写。
-        Assert.Equal(106, McpToolCatalog.ReadTools.Count);
-        Assert.Equal(61, McpToolCatalog.WriteTools.Count);
+        // 读工具 101 → 100（AC-6.3：工具表必须与最终行为一致）；R05 增加 8 读 + 11 写。
+        Assert.Equal(107, McpToolCatalog.ReadTools.Count);
+        Assert.Equal(60, McpToolCatalog.WriteTools.Count);
     }
 
     /// <summary>
@@ -66,15 +66,22 @@ public sealed class McpToolCatalogTests
     }
 
     [Fact]
-    public void DefaultPermissions_ReadAllOn_WriteAllOff()
+    public void DefaultPermissions_OrdinaryReadsOn_NativeNoteReadsAndWritesOff()
     {
         var permissions = McpToolCatalog.DefaultPermissions();
-        Assert.True(permissions["read"].All(kv => kv.Value));
+        Assert.True(permissions["read"]["get_tasks"]);
+        Assert.True(permissions["read"]["get_events"]);
+        Assert.True(permissions["read"]["get_quick_notes"]);
+        Assert.All(McpToolCatalog.ReadTools.Where(tool => tool.Group == "native-notes"),
+            tool => Assert.False(permissions["read"][tool.Name], tool.Name));
         Assert.True(permissions["write"].All(kv => !kv.Value));
         // WO-PC-BACKEND-20261001 REQ-6：读工具随 get_pc_aw_heatmap 下线变为 100；
-        // R05 增加 7 读 + 12 写。
-        Assert.Equal(106, permissions["read"].Count);
-        Assert.Equal(61, permissions["write"].Count);
+        // J05 移除状态工具后为 99；R05 增加 8 读 + 11 写。
+        Assert.Equal(107, permissions["read"].Count);
+        Assert.Equal(60, permissions["write"].Count);
+        Assert.False(McpToolCatalog.IsEnabledByDefault("get_native_note"));
+        Assert.False(McpToolCatalog.IsEnabledByDefault("get_native_notes"));
+        Assert.True(McpToolCatalog.IsEnabledByDefault("get_tasks"));
     }
 
     [Fact]
@@ -93,12 +100,13 @@ public sealed class McpToolCatalogTests
         {
             "get_native_notes", "get_native_note", "get_native_note_versions",
             "get_native_note_results", "get_native_note_processing",
+            "get_native_note_operation",
             "get_native_note_package", "get_native_note_suggestions",
         };
         var writes = new[]
         {
             "upload_native_note_package", "promote_native_note_version",
-            "cancel_native_note_upload", "archive_native_note", "restore_native_note",
+            "cancel_native_note_upload", "restore_native_note",
             "delete_native_note", "start_native_note_processing",
             "retry_native_note_processing", "adopt_native_note_result",
             "extract_native_note_suggestions", "confirm_native_note_suggestion",
@@ -136,11 +144,44 @@ public sealed class McpToolCatalogTests
                 McpToolCatalog.WriteTools.Single(tool => tool.Name == name).Group);
         }
 
-        // Lifecycle actions are distinct endpoints so one tool-scoped JWT cannot reuse
-        // archive permission to delete a note.
-        Assert.True(McpWriteEndpointMap.IsAllowedForTool("archive_native_note", "POST",
-            "/api/v1/native-notes/mcp/notes/x/lifecycle/archive"));
-        Assert.False(McpWriteEndpointMap.IsAllowedForTool("archive_native_note", "POST",
-            "/api/v1/native-notes/mcp/notes/x/lifecycle/delete"));
+        // Recycle and restore remain distinct endpoints, so their token scopes cannot overlap.
+        Assert.True(McpWriteEndpointMap.IsAllowedForTool("delete_native_note", "POST",
+            "/api/v1/native-notes/mcp/notes/x/recycle"));
+        Assert.False(McpWriteEndpointMap.IsAllowedForTool("delete_native_note", "POST",
+            "/api/v1/native-notes/mcp/notes/x/restore"));
+        Assert.True(McpWriteEndpointMap.IsAllowedForTool("restore_native_note", "POST",
+            "/api/v1/native-notes/mcp/notes/x/restore"));
+        Assert.False(McpToolTable.All.ContainsKey("archive_native_note"));
+    }
+
+    [Fact]
+    public void NativeNoteReadRoutes_AreBoundToExactlyOneTool()
+    {
+        var expected = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["get_native_notes"] = "/api/v1/native-notes/mcp/notes",
+            ["get_native_note"] = "/api/v1/native-notes/mcp/notes/note-1",
+            ["get_native_note_versions"] = "/api/v1/native-notes/mcp/notes/note-1/versions",
+            ["get_native_note_results"] = "/api/v1/native-notes/mcp/notes/note-1/results",
+            ["get_native_note_processing"] = "/api/v1/native-notes/mcp/notes/note-1/processing",
+            ["get_native_note_operation"] = "/api/v1/native-notes/mcp/notes/note-1/operations/request-1",
+            ["get_native_note_package"] = "/api/v1/native-notes/mcp/notes/note-1/package",
+            ["get_native_note_suggestions"] = "/api/v1/native-notes/mcp/notes/note-1/suggestions",
+        };
+
+        foreach (var (tool, path) in expected)
+        {
+            Assert.True(McpReadEndpointMap.IsAllowedForTool(tool, "GET", path), $"{tool} -> {path}");
+            foreach (var other in expected.Keys.Where(other => other != tool))
+                Assert.False(McpReadEndpointMap.IsAllowedForTool(other, "GET", path),
+                    $"{other} must not read {path}");
+        }
+
+        Assert.False(McpReadEndpointMap.IsAllowedForTool("get_tasks", "GET",
+            "/api/v1/native-notes/mcp/notes"));
+        Assert.False(McpReadEndpointMap.IsAllowedForTool("get_native_note", "GET",
+            "/api/v1/native-notes/versions/version-1"));
+        Assert.False(McpReadEndpointMap.IsAllowedForTool("get_native_note", "POST",
+            "/api/v1/native-notes/mcp/notes/note-1"));
     }
 }

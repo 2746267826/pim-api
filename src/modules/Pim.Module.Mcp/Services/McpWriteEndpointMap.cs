@@ -71,9 +71,8 @@ public static class McpWriteEndpointMap
         Add(map, "upload_native_note_package", "POST", "/api/v1/native-notes/mcp/notes/{id}/package");
         Add(map, "promote_native_note_version", "POST", "/api/v1/native-notes/mcp/notes/{id}/promote");
         Add(map, "cancel_native_note_upload", "POST", "/api/v1/native-notes/mcp/notes/{id}/cancel-upload");
-        Add(map, "archive_native_note", "POST", "/api/v1/native-notes/mcp/notes/{id}/lifecycle/archive");
-        Add(map, "restore_native_note", "POST", "/api/v1/native-notes/mcp/notes/{id}/lifecycle/restore");
-        Add(map, "delete_native_note", "POST", "/api/v1/native-notes/mcp/notes/{id}/lifecycle/delete");
+        Add(map, "restore_native_note", "POST", "/api/v1/native-notes/mcp/notes/{id}/restore");
+        Add(map, "delete_native_note", "POST", "/api/v1/native-notes/mcp/notes/{id}/recycle");
         Add(map, "start_native_note_processing", "POST", "/api/v1/native-notes/mcp/notes/{id}/processing/start");
         Add(map, "retry_native_note_processing", "POST", "/api/v1/native-notes/mcp/notes/{id}/processing/retry");
         Add(map, "adopt_native_note_result", "POST", "/api/v1/native-notes/mcp/notes/{id}/results/{artifactId}/adopt");

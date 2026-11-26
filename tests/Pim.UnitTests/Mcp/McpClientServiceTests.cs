@@ -61,8 +61,14 @@ public sealed class McpClientServiceTests : IDisposable
         Assert.Equal(McpTokenService.HashToken(result.Token), stored.TokenHash);
         Assert.Equal(McpTokenService.TokenPrefix(result.Token), stored.TokenPrefix);
         Assert.NotEqual(result.Token, stored.TokenHash);
-        Assert.True(stored.Permissions["read"].Values.All(v => v));
+        Assert.True(stored.Permissions["read"]["get_tasks"]);
+        Assert.True(stored.Permissions["read"]["get_events"]);
+        Assert.True(stored.Permissions["read"]["get_quick_notes"]);
+        Assert.All(McpToolCatalog.ReadTools.Where(tool => tool.Group == "native-notes"),
+            tool => Assert.False(stored.Permissions["read"][tool.Name], tool.Name));
         Assert.True(stored.Permissions["write"].Values.All(v => !v));
+        Assert.Equal(108, stored.Permissions["read"].Count);
+        Assert.Equal(60, stored.Permissions["write"].Count);
     }
 
     [Fact]
@@ -104,6 +110,29 @@ public sealed class McpClientServiceTests : IDisposable
         var outcome = await _service.VerifyAsync(created.Token, "create_task", "{}");
         Assert.Equal(403, outcome.HttpStatus);
         Assert.Equal("permission denied: create_task", outcome.Error);
+    }
+
+    [Fact]
+    public async Task VerifyAsync_LegacyReadMapWithoutNativeNoteKeys_DoesNotGainNotesRead()
+    {
+        var created = await _service.CreateAsync("LegacyReader", _owner);
+        var stored = _db.Set<Pim.Module.Mcp.Entities.McpClientEntity>()
+            .Single(e => e.Id == created.Client.Id);
+        foreach (var nativeTool in McpToolCatalog.ReadTools.Where(tool =>
+                     tool.Group == "native-notes"))
+            stored.Permissions["read"].Remove(nativeTool.Name);
+        await _db.SaveChangesAsync();
+
+        foreach (var tool in new[] { "get_native_notes", "get_native_note",
+                     "get_native_note_versions", "get_native_note_package" })
+        {
+            var denied = await _service.VerifyAsync(created.Token, tool, null);
+            Assert.Equal(403, denied.HttpStatus);
+            Assert.Equal($"permission denied: {tool}", denied.Error);
+        }
+
+        var ordinary = await _service.VerifyAsync(created.Token, "get_tasks", null);
+        Assert.Equal(0, ordinary.HttpStatus);
     }
 
     [Fact]
@@ -215,13 +244,13 @@ public sealed class McpClientServiceTests : IDisposable
             ["write"] = new() { ["create_task"] = true },
         };
         var dto = await _service.UpdateAsync(created.Client.Id, null, writeOnly, _owner);
-        // WO-PC-BACKEND-20261001 REQ-6 后为 100；J05 移除状态工具后为 99；
-        // R05 追加 7 个 native-note 读工具后为 106。
-        Assert.Equal(106, dto.Permissions["read"].Count);
+        // R05：读工具在 AW 下线后的 100 个基础上新增 8 个 native-note 读取工具。
+        Assert.Equal(107, dto.Permissions["read"].Count);
+        Assert.False(dto.Permissions["read"]["get_native_note"]);
         Assert.True(dto.Permissions["read"]["get_tasks"]);
         Assert.True(dto.Permissions["write"]["create_task"]);
         // Unlisted write tools keep their previous value (not wiped).
-        Assert.Equal(61, dto.Permissions["write"].Count);
+        Assert.Equal(60, dto.Permissions["write"].Count);
     }
 
     [Fact]
@@ -235,9 +264,9 @@ public sealed class McpClientServiceTests : IDisposable
         var dto = await _service.UpdateAsync(created.Client.Id, null, singleKey, _owner);
         Assert.False(dto.Permissions["read"]["get_events"]);
         Assert.True(dto.Permissions["read"]["get_tasks"]);
-        // WO-PC-BACKEND-20261001 REQ-6 后为 100；J05 移除状态工具后为 99；
-        // R05 追加 7 个 native-note 读工具后为 106。
-        Assert.Equal(106, dto.Permissions["read"].Count);
+        // R05：读工具在 AW 下线后的 100 个基础上新增 8 个 native-note 读取工具。
+        Assert.Equal(107, dto.Permissions["read"].Count);
+        Assert.False(dto.Permissions["read"]["get_native_note"]);
     }
 
     private sealed class StubHostEnvironment : IHostEnvironment

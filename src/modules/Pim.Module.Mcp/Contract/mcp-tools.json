@@ -2256,7 +2256,7 @@
   },
   {
     "name": "get_native_notes",
-    "description": "List the current user's native notes with lifecycle status, revision and conflict counts. Never returns another account's notes.",
+    "description": "List the current user's native notes with recycle-bin status, revision and conflict counts. Never returns another account's notes.",
     "inputSchema": {
       "properties": {
         "status": {
@@ -2265,8 +2265,7 @@
               "type": "string",
               "enum": [
                 "Active",
-                "Archived",
-                "Deleted",
+                "Recycled",
                 "All"
               ]
             },
@@ -2294,7 +2293,7 @@
   },
   {
     "name": "get_native_note",
-    "description": "Get one native note aggregate (current version, conflict candidates, processing, derived tasks/results) with a user-visible receipt.",
+    "description": "Get one native note aggregate (current version, conflict candidates, processing and derived results) with a user-visible receipt.",
     "inputSchema": {
       "properties": {
         "noteId": {
@@ -2343,7 +2342,7 @@
   },
   {
     "name": "get_native_note_results",
-    "description": "Get derived processing tasks and result artifacts for one native note, including failure/retry visibility.",
+    "description": "Get the logical processing state and result artifacts for one native note, including failure/retry visibility without internal task identifiers.",
     "inputSchema": {
       "properties": {
         "noteId": {
@@ -2384,6 +2383,28 @@
       "type": "object",
       "required": [
         "noteId"
+      ]
+    }
+  },
+  {
+    "name": "get_native_note_operation",
+    "description": "Look up the receipt and logical state of a failed, unknown or succeeded native-note operation by its caller-supplied requestId.",
+    "inputSchema": {
+      "properties": {
+        "noteId": {
+          "title": "Note Id",
+          "type": "string"
+        },
+        "requestId": {
+          "title": "Request Id",
+          "type": "string"
+        }
+      },
+      "title": "get_native_note_operationArguments",
+      "type": "object",
+      "required": [
+        "noteId",
+        "requestId"
       ]
     }
   },
@@ -5134,42 +5155,8 @@
     }
   },
   {
-    "name": "archive_native_note",
-    "description": "Requires write permission archive_native_note. Archive a native note; materials and derived results remain recoverable.",
-    "inputSchema": {
-      "properties": {
-        "noteId": {
-          "title": "Note Id",
-          "type": "string"
-        },
-        "requestId": {
-          "title": "Request Id",
-          "type": "string"
-        },
-        "expectedRevision": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Expected Revision"
-        }
-      },
-      "title": "archive_native_noteArguments",
-      "type": "object",
-      "required": [
-        "noteId",
-        "requestId"
-      ]
-    }
-  },
-  {
     "name": "restore_native_note",
-    "description": "Requires write permission restore_native_note. Restore an archived or deleted native note to Active.",
+    "description": "Requires write permission restore_native_note. Restore a recycled native note to Active; processing stays stopped until the user explicitly continues.",
     "inputSchema": {
       "properties": {
         "noteId": {
@@ -5203,7 +5190,7 @@
   },
   {
     "name": "delete_native_note",
-    "description": "Requires write permission delete_native_note. Soft-delete a native note; the note becomes read-only for mutations until restored.",
+    "description": "Requires write permission delete_native_note. Move a native note to the recycle bin; queued and in-flight processing is stopped and materials stay recoverable until restored.",
     "inputSchema": {
       "properties": {
         "noteId": {
@@ -5287,17 +5274,17 @@
           "title": "Request Id",
           "type": "string"
         },
-        "taskId": {
-          "title": "Task Id",
-          "type": "string"
-        },
-        "retryId": {
-          "title": "Retry Id",
-          "type": "string"
-        },
-        "expectedRevision": {
-          "title": "Expected Revision",
-          "type": "string"
+        "versionId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Version Id"
         },
         "stepKeys": {
           "items": {
@@ -5345,9 +5332,6 @@
       "required": [
         "noteId",
         "requestId",
-        "taskId",
-        "retryId",
-        "expectedRevision",
         "stepKeys",
         "consent"
       ]

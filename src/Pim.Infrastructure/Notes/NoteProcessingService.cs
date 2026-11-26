@@ -40,7 +40,18 @@ public sealed class NoteProcessingService(
         CancellationToken ct)
     {
         var owner = await RequireActiveOwnerAsync(ct);
-        return await GetForOwnerAsync(owner, noteId, versionId, ct);
+        return await GetForOwnerAsync(owner, noteId, versionId, allowRecycled: false, ct);
+    }
+
+    /// <summary>
+    /// MCP read tools may inspect the processing state of a recycled note. This path is read-only
+    /// and never starts, resumes or clears any stop marker.
+    /// </summary>
+    public async Task<NoteProcessingStatusDto> GetForMcpAsync(Guid noteId, Guid versionId,
+        CancellationToken ct)
+    {
+        var owner = await RequireActiveOwnerAsync(ct);
+        return await GetForOwnerAsync(owner, noteId, versionId, allowRecycled: true, ct);
     }
 
     public async Task<NoteProcessingStatusDto> GetByProcessingIdAsync(Guid processingId,
@@ -48,7 +59,8 @@ public sealed class NoteProcessingService(
     {
         var owner = await RequireActiveOwnerAsync(ct);
         var state = await processing.ReadAsync(owner, processingId, ct);
-        return await GetForOwnerAsync(owner, state.NoteId, state.VersionId, ct);
+        return await GetForOwnerAsync(owner, state.NoteId, state.VersionId,
+            allowRecycled: false, ct);
     }
 
     public async Task<NoteProcessingStatusDto?> TryAutoStartAfterCompletionAsync(
@@ -58,6 +70,14 @@ public sealed class NoteProcessingService(
         {
             var version = await materials.GetAsync(owner, versionId, ct);
             if (version.Upload.Phase != "Uploaded" || !version.Upload.IsCurrent) return null;
+            if (await materials.GetMcpNoteStatusAsync(owner, version.Upload.NoteId, ct) != "Active")
+                return null;
+            var existing = await processing.TryReadAsync(owner,
+                NoteProcessingIdentity.Processing(owner, versionId), ct);
+            // A recycle stop is sticky until the user explicitly starts processing after a
+            // restore. Automatic reconciliation must never clear it or resume by itself.
+            if (existing is { RecycleStopped: true } or { ResumePending: true })
+                return null;
             var request = new StartNoteProcessingRequest(version.Upload.NoteId, versionId);
             return await StartForOwnerAsync(owner, request, automatic: true, ct);
         }
@@ -70,11 +90,107 @@ public sealed class NoteProcessingService(
         }
     }
 
+    /// <summary>
+    /// Stops every known processing record and child task for a note before it enters the
+    /// recycle bin. The marker is persisted first so a concurrent automatic start cannot pass
+    /// between the stop and the lifecycle status write.
+    /// </summary>
+    public async Task StopForRecycleAsync(Guid owner, Guid noteId,
+        IReadOnlyList<Guid> versionIds, CancellationToken ct)
+    {
+        foreach (var versionId in versionIds.Distinct())
+        {
+            ct.ThrowIfCancellationRequested();
+            await processing.WithLockAsync(owner, async lockedCt =>
+            {
+                var state = await processing.TryReadAsync(owner,
+                    NoteProcessingIdentity.Processing(owner, versionId), lockedCt);
+                if (state is null) return true;
+                state.RecycleStopped = true;
+                state.ResumePending = false;
+                state.PendingReason = "笔记在回收站，处理已停止；恢复后需由用户手动继续";
+                state.Issues =
+                [
+                    new("processing_recycle_stopped", state.PendingReason, null)
+                ];
+                _ = await processing.SaveLockedAsync(state, lockedCt);
+                return true;
+            }, ct);
+
+            try
+            {
+                _ = await asr.StopForOwnerAsync(owner,
+                    NoteProcessingIdentity.Task(owner, versionId, NoteProcessingTaskKind.Asr), ct);
+            }
+            catch (DomainException error) when (error.ErrorCode == 40401)
+            {
+            }
+            try
+            {
+                _ = await derived.StopForOwnerAsync(owner,
+                    NoteProcessingIdentity.Task(owner, versionId,
+                        NoteProcessingTaskKind.Derived), ct);
+            }
+            catch (DomainException error) when (error.ErrorCode == 40401)
+            {
+            }
+        }
+    }
+
+    /// <summary>
+    /// Marks restored processing records as waiting for an explicit user resume. This never
+    /// clears StopRequested on child tasks and never enqueues work.
+    /// </summary>
+    public async Task MarkRestoredAsync(Guid owner, Guid noteId, CancellationToken ct)
+    {
+        var records = await processing.ListForNoteAsync(owner, noteId, ct);
+        foreach (var state in records.Where(state => state.RecycleStopped))
+        {
+            ct.ThrowIfCancellationRequested();
+            state.RecycleStopped = false;
+            state.ResumePending = true;
+            state.PendingReason = "笔记已恢复；此前停止的处理不会自动继续，请手动确认后继续";
+            state.Issues =
+            [
+                new("processing_resume_pending", state.PendingReason, null)
+            ];
+            _ = await processing.SaveAsync(state, ct);
+        }
+    }
+
+    private async Task ResumeChildTasksAsync(Guid owner, Guid versionId, CancellationToken ct)
+    {
+        try
+        {
+            _ = await derived.ResumeForOwnerAsync(owner,
+                NoteProcessingIdentity.Task(owner, versionId, NoteProcessingTaskKind.Derived), ct);
+        }
+        catch (DomainException error) when (error.ErrorCode == 40401)
+        {
+        }
+        try
+        {
+            await asrTasks.WithLockAsync(owner, async lockedCt =>
+            {
+                _ = await asrTasks.UpdateLockedAsync(owner,
+                    NoteProcessingIdentity.Task(owner, versionId, NoteProcessingTaskKind.Asr),
+                    state => state.StopRequested = false, lockedCt);
+                return true;
+            }, ct);
+        }
+        catch (DomainException error) when (error.ErrorCode == 40401)
+        {
+        }
+    }
+
     private async Task<NoteProcessingStatusDto?> StartForOwnerAsync(Guid owner,
         StartNoteProcessingRequest request, bool automatic, CancellationToken ct)
     {
         if (request.NoteId == Guid.Empty || request.VersionId == Guid.Empty)
             throw new DomainException(40001, "笔记或材料版本标识无效");
+        var noteStatus = await materials.GetMcpNoteStatusAsync(owner, request.NoteId, ct);
+        if (noteStatus == "Recycled" && !automatic)
+            throw new DomainException(40901, "笔记在回收站，请先恢复后再发起处理");
         var autoEnabled = await AutoEnabledAsync(owner, ct);
         var supplied = await materials.GetAsync(owner, request.VersionId, ct);
         if (supplied.Upload.NoteId != request.NoteId)
@@ -95,9 +211,41 @@ public sealed class NoteProcessingService(
                 };
             if (state.NoteId != request.NoteId || state.VersionId != request.VersionId)
                 throw new DomainException(40901, "处理编排身份与材料版本不一致");
+            noteStatus = await materials.GetMcpNoteStatusAsync(owner, request.NoteId, lockedCt);
+            if (state.RecycleStopped && automatic)
+                return await SavePendingAsync(state, "recycle_stopped",
+                    "笔记在回收站或处理已被回收操作停止；恢复后需手动继续", lockedCt);
+            if (noteStatus == "Recycled" && automatic)
+                return await SavePendingAsync(state, "recycle_stopped",
+                    "笔记在回收站，处理不会自动继续；恢复后需手动确认", lockedCt);
             state.AutoProcessingEnabled = autoEnabled;
-            if (automatic) state.AutoRequested = true;
-            else state.ManualStarted = true;
+            if (automatic)
+            {
+                // A restore leaves the record in ResumePending until the user explicitly starts
+                // processing. Automatic reconciliation must never clear that marker or enqueue
+                // work by itself.
+                if (state.RecycleStopped || state.ResumePending)
+                    return await SavePendingAsync(state, "recycle_stopped",
+                        "笔记已恢复或仍在回收站；处理保持停止，请由用户手动继续", lockedCt);
+                state.AutoRequested = true;
+            }
+            else
+            {
+                state.ManualStarted = true;
+            }
+
+            if (!automatic && state.RecycleStopped)
+                throw new DomainException(40901, "笔记在回收站，请先恢复后再发起处理");
+            if (!automatic && state.ResumePending)
+            {
+                await ResumeChildTasksAsync(owner, request.VersionId, lockedCt);
+                state.ResumePending = false;
+                state.PendingReason = null;
+                state.Issues = state.Issues
+                    .Where(issue => issue.Code is not ("processing_resume_pending" or
+                        "processing_recycle_stopped"))
+                    .ToList();
+            }
 
             if (version.Upload.Phase == "Uploading")
             {
@@ -226,10 +374,12 @@ public sealed class NoteProcessingService(
     }
 
     private async Task<NoteProcessingStatusDto> GetForOwnerAsync(Guid owner, Guid noteId,
-        Guid versionId, CancellationToken ct)
+        Guid versionId, bool allowRecycled, CancellationToken ct)
     {
         await RequireActiveOwnerAsync(owner, ct);
-        var version = await materials.GetAsync(owner, versionId, ct);
+        var version = allowRecycled
+            ? await materials.GetForMcpAsync(owner, versionId, ct)
+            : await materials.GetAsync(owner, versionId, ct);
         if (version.Upload.NoteId != noteId)
             throw new DomainException(40401, "材料版本不存在或不属于当前笔记");
         var autoEnabled = await AutoEnabledAsync(owner, ct);
@@ -244,7 +394,9 @@ public sealed class NoteProcessingService(
         state.PendingReason = message;
         state.Issues = [new(code, message)];
         _ = await processing.SaveLockedAsync(state, ct);
-        var version = await materials.GetAsync(state.Owner, state.VersionId, ct);
+        // This path can describe a recycled note after an automatic-start race. Use the MCP
+        // read view so persisting the stop/pending checkpoint never requires Active status.
+        var version = await materials.GetForMcpAsync(state.Owner, state.VersionId, ct);
         return await BuildStatusAsync(state.Owner, version, state,
             state.AutoProcessingEnabled, ct);
     }
@@ -278,9 +430,12 @@ public sealed class NoteProcessingService(
         return new(NoteProcessingIdentity.Processing(owner, version.Upload.VersionId),
             version.Upload.NoteId, version.Upload.VersionId, overall, autoEnabled,
             state?.AutoStarted == true,
-            version.Upload.Phase != "Uploading" && !allRequiredCreated, FullVersionScope,
+            version.Upload.Phase != "Uploading" &&
+                (!allRequiredCreated || state?.ResumePending == true), FullVersionScope,
             IncrementalScopeSupported: false, pendingReason, asrChain, derivedChain,
-            artifacts, issues, created, updated);
+            artifacts, issues, created, updated,
+            RecycleStopped: state?.RecycleStopped == true,
+            ResumePending: state?.ResumePending == true);
     }
 
     private async Task<NoteProcessingChainDto> DescribeAsrAsync(Guid owner, NoteAsrState? task,
@@ -292,14 +447,14 @@ public sealed class NoteProcessingService(
             NoteProcessingTaskKind.Asr);
         if (!required)
             return new(NoteProcessingTaskKind.Asr, NoteProcessingChainState.NotApplicable,
-                null, false, null, null, 0, 0, 0, false, [], null);
+                null, false, null, null, 0, 0, 0, false, [], null, []);
         if (task is null)
         {
             var state = version.Upload.Phase == "Uploading"
                 ? NoteProcessingChainState.WaitingForMaterial
                 : NoteProcessingChainState.PendingStart;
             return new(NoteProcessingTaskKind.Asr, state, taskId, false, null, null,
-                0, 0, 0, false, [], processing?.PendingReason ?? "ASR 任务尚未创建");
+                0, 0, 0, false, [], processing?.PendingReason ?? "ASR 任务尚未创建", []);
         }
 
         var phase = NoteAsrTaskStore.Describe(task).Phase;
@@ -317,7 +472,7 @@ public sealed class NoteProcessingService(
             ("Queued" or "Running" or "Succeeded"));
         return new(NoteProcessingTaskKind.Asr, MapAsrPhase(phase), taskId, true,
             task.Revision, phase, task.Steps.Count, completed, failed, completed > 0,
-            errors, null);
+            errors, null, []);
     }
 
     private async Task<NoteProcessingChainDto> DescribeDerivedAsync(Guid owner,
@@ -332,7 +487,7 @@ public sealed class NoteProcessingService(
         {
             var state = NoteProcessingChainState.PendingStart;
             return new(NoteProcessingTaskKind.Derived, state, taskId, false, null, null,
-                0, 0, 0, false, [], processing?.PendingReason ?? "整理任务尚未创建");
+                0, 0, 0, false, [], processing?.PendingReason ?? "整理任务尚未创建", []);
         }
 
         var phase = NoteDerivedStore.DescribePhase(task);
@@ -348,9 +503,15 @@ public sealed class NoteProcessingService(
         var completed = task.Steps.Count(step => step.Current.Status == "Succeeded");
         var failed = task.Steps.Count(step => step.Current.Status is not
             ("Queued" or "Running" or "Succeeded"));
+        var items = task.Steps
+            .Select(step => new NoteProcessingItemDto(step.Key, step.Current.Status,
+                string.IsNullOrWhiteSpace(step.Current.ErrorMessage)
+                    ? null
+                    : SafeError(step.Current.ErrorMessage!)))
+            .ToArray();
         return new(NoteProcessingTaskKind.Derived, MapDerivedPhase(phase), taskId, true,
             task.Revision, phase, task.Steps.Count, completed, failed,
-            completed > 0 || phase == "Succeeded", errors, null);
+            completed > 0 || phase == "Succeeded", errors, null, items);
     }
 
     private async Task<IReadOnlyList<NoteProcessingArtifactDto>> ArtifactsAsync(Guid owner,

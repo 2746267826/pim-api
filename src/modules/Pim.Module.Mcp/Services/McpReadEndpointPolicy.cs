@@ -25,10 +25,14 @@ public static class McpReadEndpointPolicy
         .Select(p => new Regex(p, RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
         .ToArray();
 
-    public static bool IsReadAllowed(string method, string path)
+    public static bool IsReadAllowed(string tool, string method, string path)
     {
         var normalizedMethod = method.ToUpperInvariant();
         var normalizedPath = path.TrimEnd('/');
+        // Native-note GET routes are individually tool-scoped. A generic read token must not
+        // inherit access just because the target uses GET; an unmapped route is denied.
+        if (McpReadEndpointMap.IsNativeNotePath(normalizedPath))
+            return McpReadEndpointMap.IsAllowedForTool(tool, normalizedMethod, normalizedPath);
         if (normalizedMethod == "GET")
         {
             // All GETs under the API plus the root health probe.

@@ -17,6 +17,9 @@ using Pim.Infrastructure.Data;
 using Pim.Infrastructure.Notes;
 using Pim.Module.Mcp.Services;
 using Pim.Module.NoteTaskSuggestions.Entities;
+using Pim.Module.NoteTaskSuggestions.DTOs;
+using Pim.Module.NoteTaskSuggestions.Jobs;
+using Pim.Module.NoteTaskSuggestions.Services;
 using Pim.UnitTests.Api;
 using Pim.UnitTests.Harness.RealDb;
 using Pim.UnitTests.Notes;
@@ -27,7 +30,7 @@ namespace Pim.UnitTests.Mcp;
 /// <summary>
 /// R05 acceptance over a real PostgreSQL database and the real HTTP pipeline:
 /// owner isolation, read-token write denial, package upload/download round-trip,
-/// requestId replay, CAS rejection, conflict candidates, lifecycle recovery,
+/// requestId replay, CAS rejection, conflict candidates, recycle-bin recovery,
 /// processing/result receipts and suggestion error visibility.
 /// </summary>
 [Trait("DataSource", "RealDb")]
@@ -46,7 +49,7 @@ public sealed class NativeNoteMcpRealDbTests
             (await host.ReadNoteAsync(host.McpARead, fixture.Request.NoteId))
                 .GetProperty("data").GetProperty("noteId").GetString());
 
-        var bList = await host.CallAsync(host.McpBWrite, "get_native_notes", new { });
+        var bList = await host.CallAsync(host.McpBRead, "get_native_notes", new { });
         Assert.Equal(0, bList.Payload.GetProperty("data").GetProperty("total").GetInt32());
 
         foreach (var tool in new[]
@@ -56,7 +59,7 @@ public sealed class NativeNoteMcpRealDbTests
                      "get_native_note_suggestions",
                  })
         {
-            var denied = await host.CallAsync(host.McpBWrite, tool,
+            var denied = await host.CallAsync(host.McpBRead, tool,
                 new { noteId = fixture.Request.NoteId });
             Assert.True(denied.IsError, $"{tool} must not expose another owner's note");
             Assert.Equal(404, denied.Payload.GetProperty("code").GetInt32());
@@ -74,7 +77,7 @@ public sealed class NativeNoteMcpRealDbTests
         Assert.False(crossOwnerUpload.IsError, crossOwnerUpload.Payload.GetRawText());
         var ownerAVersions = (await host.CallAsync(host.McpARead, "get_native_note_versions",
                 new { noteId = fixture.Request.NoteId })).Payload.GetProperty("data");
-        var ownerBVersions = (await host.CallAsync(host.McpBWrite, "get_native_note_versions",
+        var ownerBVersions = (await host.CallAsync(host.McpBRead, "get_native_note_versions",
                 new { noteId = fixture.Request.NoteId })).Payload.GetProperty("data");
         Assert.Equal(1, ownerAVersions.GetProperty("total").GetInt32());
         Assert.Equal(1, ownerBVersions.GetProperty("total").GetInt32());
@@ -102,7 +105,7 @@ public sealed class NativeNoteMcpRealDbTests
             }
         }
 
-        var writeWithReadToken = await host.CallAsync(host.McpARead, "archive_native_note", new
+        var writeWithReadToken = await host.CallAsync(host.McpARead, "delete_native_note", new
         {
             noteId = fixture.Request.NoteId,
             requestId = Guid.NewGuid().ToString("D"),
@@ -132,6 +135,65 @@ public sealed class NativeNoteMcpRealDbTests
             (await host.CallAsync(host.McpARead, "get_native_note_versions",
                     new { noteId = fixture.Request.NoteId })).Payload.GetProperty("data")
                 .GetProperty("currentVersionId").GetGuid());
+    }
+
+    [SkippableFact]
+    public async Task VerifiedReadTokens_AreBoundToExactNativeNoteGetRoutes()
+    {
+        await using var host = await McpHost.CreateAsync();
+        var fixture = await host.SeedNoteAsync(host.UserA);
+        var noteId = fixture.Request.NoteId;
+        const string listPath = "/api/v1/native-notes/mcp/notes";
+        var detailPath = $"{listPath}/{noteId:D}";
+
+        // A real /mcp/verify JWT for an ordinary read tool must not inherit any native-note
+        // route merely because the method is GET.
+        foreach (var tool in new[] { "get_tasks", "get_events", "get_quick_notes" })
+        {
+            using var client = await host.VerifyReadTokenAsync(tool);
+            foreach (var path in new[]
+                     {
+                         listPath,
+                         detailPath,
+                         detailPath + "/versions",
+                         detailPath + "/package",
+                         "/api/v1/native-notes/upload-limits",
+                     })
+            {
+                using var response = await client.GetAsync(path);
+                Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+                var body = await response.Content.ReadFromJsonAsync<ApiResponse<string>>();
+                Assert.Equal(40302, body!.Code);
+            }
+        }
+
+        using var listClient = await host.VerifyReadTokenAsync("get_native_notes");
+        Assert.Equal(HttpStatusCode.OK, (await listClient.GetAsync(listPath)).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden,
+            (await listClient.GetAsync(detailPath)).StatusCode);
+
+        using var detailClient = await host.VerifyReadTokenAsync("get_native_note");
+        Assert.Equal(HttpStatusCode.OK, (await detailClient.GetAsync(detailPath)).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden,
+            (await detailClient.GetAsync(listPath)).StatusCode);
+
+        using var versionsClient = await host.VerifyReadTokenAsync("get_native_note_versions");
+        Assert.Equal(HttpStatusCode.OK,
+            (await versionsClient.GetAsync(detailPath + "/versions")).StatusCode);
+        // Unmapped native-note GETs stay denied even for a native-note read tool.
+        using var unmapped = await versionsClient.GetAsync("/api/v1/native-notes/upload-limits");
+        Assert.Equal(HttpStatusCode.Forbidden, unmapped.StatusCode);
+        Assert.Equal(40302,
+            (await unmapped.Content.ReadFromJsonAsync<ApiResponse<string>>())!.Code);
+
+        using var operationClient = await host.VerifyReadTokenAsync("get_native_note_operation");
+        using var missingOperation = await operationClient.GetAsync(
+            $"{detailPath}/operations/{Guid.NewGuid():D}");
+        Assert.Equal(HttpStatusCode.NotFound, missingOperation.StatusCode);
+        Assert.Equal(40401,
+            (await missingOperation.Content.ReadFromJsonAsync<ApiResponse<string>>())!.Code);
+        Assert.Equal(HttpStatusCode.Forbidden,
+            (await operationClient.GetAsync(detailPath + "/versions")).StatusCode);
     }
 
     [SkippableFact]
@@ -379,6 +441,50 @@ public sealed class NativeNoteMcpRealDbTests
     }
 
     [SkippableFact]
+    public async Task FailedOperationIsRecordedAndQueryableByRequestId()
+    {
+        await using var host = await McpHost.CreateAsync();
+        var noteId = Guid.NewGuid();
+        var requestId = Guid.NewGuid().ToString("D");
+        var uploadArgs = new
+        {
+            noteId,
+            requestId,
+            packageBase64 = "not-base64",
+        };
+
+        var failed = await host.CallAsync(host.McpAWrite, "upload_native_note_package",
+            uploadArgs);
+        Assert.True(failed.IsError);
+        var failureDetails = failed.Payload.GetProperty("details");
+        Assert.Equal(40001, failureDetails.GetProperty("code").GetInt32());
+        var receipt = failureDetails.GetProperty("data").GetProperty("receipt");
+        var operationId = receipt.GetProperty("operationId").GetString();
+        Assert.StartsWith("nop_", operationId, StringComparison.Ordinal);
+        Assert.Equal("failed", receipt.GetProperty("status").GetString());
+        Assert.False(receipt.TryGetProperty("requestId", out _));
+        Assert.DoesNotContain("\"requestId\"", failed.Payload.GetRawText(),
+            StringComparison.OrdinalIgnoreCase);
+
+        var lookup = await host.CallAsync(host.McpARead, "get_native_note_operation",
+            new { noteId, requestId });
+        Assert.False(lookup.IsError, lookup.Payload.GetRawText());
+        var status = lookup.Payload.GetProperty("data");
+        Assert.Equal("failed", status.GetProperty("state").GetString());
+        Assert.Equal(operationId, status.GetProperty("operationId").GetString());
+        Assert.Equal("failed", status.GetProperty("receipt").GetProperty("status").GetString());
+        Assert.Equal(operationId, status.GetProperty("receipt").GetProperty("operationId").GetString());
+
+        var replay = await host.CallAsync(host.McpAWrite, "upload_native_note_package",
+            uploadArgs);
+        Assert.True(replay.IsError);
+        var replayReceipt = replay.Payload.GetProperty("details").GetProperty("data")
+            .GetProperty("receipt");
+        Assert.Equal(operationId, replayReceipt.GetProperty("operationId").GetString());
+        Assert.Equal("failed", replayReceipt.GetProperty("status").GetString());
+    }
+
+    [SkippableFact]
     public async Task ConflictCandidatesCanBePromoted_AndLifecycleBlocksThenRestoresMutations()
     {
         await using var host = await McpHost.CreateAsync();
@@ -446,36 +552,36 @@ public sealed class NativeNoteMcpRealDbTests
 
         var active = await host.ReadNoteAsync(host.McpARead, noteId);
         var activeRevision = active.GetProperty("data").GetProperty("revision").GetGuid();
-        var archiveRequestId = Guid.NewGuid().ToString("D");
-        var archived = await host.CallAsync(host.McpAWrite, "archive_native_note", new
+        var deleteRequestId = Guid.NewGuid().ToString("D");
+        var recycled = await host.CallAsync(host.McpAWrite, "delete_native_note", new
         {
-            noteId, requestId = archiveRequestId, expectedRevision = activeRevision.ToString("D"),
+            noteId, requestId = deleteRequestId, expectedRevision = activeRevision.ToString("D"),
         });
-        Assert.False(archived.IsError);
-        Assert.Equal("Archived", archived.Payload.GetProperty("data").GetProperty("result")
+        Assert.False(recycled.IsError, recycled.Payload.GetRawText());
+        Assert.Equal("Recycled", recycled.Payload.GetProperty("data").GetProperty("result")
             .GetProperty("status").GetString());
-        var archiveReplay = await host.CallAsync(host.McpAWrite, "archive_native_note", new
+        var recycleReplay = await host.CallAsync(host.McpAWrite, "delete_native_note", new
         {
-            noteId, requestId = archiveRequestId, expectedRevision = activeRevision.ToString("D"),
+            noteId, requestId = deleteRequestId, expectedRevision = activeRevision.ToString("D"),
         });
-        Assert.True(archiveReplay.Payload.GetProperty("data").GetProperty("receipt")
+        Assert.True(recycleReplay.Payload.GetProperty("data").GetProperty("receipt")
             .GetProperty("replayed").GetBoolean());
-        var blockedArchiveUpload = await host.CallAsync(host.McpAWrite,
+        var blockedRecycleUpload = await host.CallAsync(host.McpAWrite,
             "upload_native_note_package", new
             {
                 noteId,
                 requestId = Guid.NewGuid().ToString("D"),
                 packageBase64 = Convert.ToBase64String(Package(first)),
             });
-        Assert.True(blockedArchiveUpload.IsError);
-        Assert.Equal(409, blockedArchiveUpload.Payload.GetProperty("code").GetInt32());
+        Assert.True(blockedRecycleUpload.IsError);
+        Assert.Equal(409, blockedRecycleUpload.Payload.GetProperty("code").GetInt32());
 
-        var archivedRevision = archived.Payload.GetProperty("data").GetProperty("result")
+        var recycledRevision = recycled.Payload.GetProperty("data").GetProperty("result")
             .GetProperty("revision").GetGuid();
         var restored = await host.CallAsync(host.McpAWrite, "restore_native_note", new
         {
             noteId, requestId = Guid.NewGuid().ToString("D"),
-            expectedRevision = archivedRevision.ToString("D"),
+            expectedRevision = recycledRevision.ToString("D"),
         });
         Assert.False(restored.IsError);
         Assert.Equal("Active", restored.Payload.GetProperty("data").GetProperty("result")
@@ -489,13 +595,13 @@ public sealed class NativeNoteMcpRealDbTests
             expectedRevision = restoredRevision.ToString("D"),
         });
         Assert.False(deleted.IsError);
-        Assert.Equal("Deleted", deleted.Payload.GetProperty("data").GetProperty("result")
+        Assert.Equal("Recycled", deleted.Payload.GetProperty("data").GetProperty("result")
             .GetProperty("status").GetString());
         Assert.Equal(0, (await host.CallAsync(host.McpARead, "get_native_notes", new { }))
             .Payload.GetProperty("data").GetProperty("total").GetInt32());
         Assert.Equal(1, (await host.CallAsync(host.McpARead, "get_native_notes",
-                new { status = "Deleted" })).Payload.GetProperty("data").GetProperty("total").GetInt32());
-        Assert.Equal("Deleted", (await host.ReadNoteAsync(host.McpARead, noteId))
+                new { status = "Recycled" })).Payload.GetProperty("data").GetProperty("total").GetInt32());
+        Assert.Equal("Recycled", (await host.ReadNoteAsync(host.McpARead, noteId))
             .GetProperty("data").GetProperty("status").GetString());
 
         var deletedRevision = deleted.Payload.GetProperty("data").GetProperty("result")
@@ -534,8 +640,10 @@ public sealed class NativeNoteMcpRealDbTests
         Assert.Equal("get_native_note_results",
             results.Payload.GetProperty("data").GetProperty("receipt")
                 .GetProperty("operation").GetString());
-        Assert.Empty(results.Payload.GetProperty("data").GetProperty("tasks").EnumerateArray());
         Assert.Empty(results.Payload.GetProperty("data").GetProperty("artifacts").EnumerateArray());
+        Assert.NotEqual("Completed",
+            results.Payload.GetProperty("data").GetProperty("processing")
+                .GetProperty("state").GetString());
 
         var start = await host.CallAsync(host.McpAWrite, "start_native_note_processing", new
         {
@@ -551,7 +659,7 @@ public sealed class NativeNoteMcpRealDbTests
         else
         {
             var state = start.Payload.GetProperty("data").GetProperty("result")
-                .GetProperty("status").GetProperty("state").GetString();
+                .GetProperty("state").GetString();
             Assert.NotEqual("Completed", state);
         }
 
@@ -561,7 +669,7 @@ public sealed class NativeNoteMcpRealDbTests
         var afterStartData = afterStart.Payload.GetProperty("data");
         Assert.Equal("get_native_note_processing",
             afterStartData.GetProperty("receipt").GetProperty("operation").GetString());
-        var afterStartStatus = afterStartData.GetProperty("result").GetProperty("status");
+        var afterStartStatus = afterStartData.GetProperty("result");
         if (start.IsError)
         {
             Assert.True(
@@ -574,9 +682,7 @@ public sealed class NativeNoteMcpRealDbTests
         {
             noteId,
             requestId = Guid.NewGuid().ToString("D"),
-            taskId = Guid.NewGuid().ToString("D"),
-            retryId = Guid.NewGuid().ToString("D"),
-            expectedRevision = Guid.NewGuid().ToString("D"),
+            versionId = versionId.ToString("D"),
             stepKeys = new[] { "record" },
             consent = Consent(),
             acknowledgePossibleDuplicateCharge = true,
@@ -588,9 +694,7 @@ public sealed class NativeNoteMcpRealDbTests
             {
                 noteId,
                 requestId = Guid.NewGuid().ToString("D"),
-                taskId = Guid.NewGuid().ToString("D"),
-                retryId = Guid.NewGuid().ToString("D"),
-                expectedRevision = Guid.NewGuid().ToString("D"),
+                versionId = versionId.ToString("D"),
                 stepKeys = Array.Empty<string>(),
                 consent = Consent(),
                 acknowledgePossibleDuplicateCharge = false,
@@ -784,6 +888,119 @@ public sealed class NativeNoteMcpRealDbTests
     }
 
     [SkippableFact]
+    public async Task RecycledNoteBlocksRestSuggestionMutationsAndStopsQueuedExtraction()
+    {
+        await using var host = await McpHost.CreateAsync();
+        var fixture = await host.SeedNoteAsync(host.UserA);
+        var noteId = fixture.Request.NoteId;
+        var snapshot = await host.Store.GetMcpSnapshotAsync(host.UserA, noteId, 1);
+        await host.Store.RecycleAsync(host.UserA, noteId, snapshot.Revision);
+
+        var extraction = new NoteTaskSuggestionExtractionEntity
+        {
+            UserId = host.UserA,
+            RequestId = Guid.NewGuid(),
+            RequestFingerprint = NoteTaskSuggestionService.Hash("recycled-rest"),
+            NoteId = noteId,
+            ArtifactId = Guid.NewGuid(),
+            ArtifactVersionId = fixture.Request.VersionId,
+            SourceContentSha256 = new string('a', 64),
+            SourceInputSha256 = new string('b', 64),
+            SourceManifestSha256 = new string('c', 64),
+            SourceContentMarkdown = "recycled note content",
+            ModelProfileId = Guid.NewGuid(),
+            ModelRevision = Guid.NewGuid(),
+            ModelEndpoint = "https://synthetic.invalid/v1",
+            PromptVersion = NoteTaskSuggestionPrompt.Version,
+            Status = NoteTaskSuggestionExtractionStatuses.Queued,
+        };
+        var suggestion = new NoteTaskSuggestionEntity
+        {
+            UserId = host.UserA,
+            ExtractionId = extraction.Id,
+            NoteId = noteId,
+            ArtifactId = extraction.ArtifactId,
+            ArtifactVersionId = extraction.ArtifactVersionId,
+            SourceContentSha256 = extraction.SourceContentSha256,
+            SourceInputSha256 = extraction.SourceInputSha256,
+            SourceManifestSha256 = extraction.SourceManifestSha256,
+            Title = "回收站建议",
+            Kind = NoteTaskSuggestionKinds.Task,
+            Priority = 5,
+            Status = NoteTaskSuggestionStatuses.Draft,
+        };
+        using (var scope = host.Factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
+            db.AddRange(extraction, suggestion);
+            await db.SaveChangesAsync();
+        }
+
+        var start = new StartNoteTaskSuggestionExtractionRequest(
+            Guid.NewGuid(), host.UserA, noteId, extraction.ArtifactId,
+            fixture.Request.VersionId, extraction.SourceContentSha256,
+            new NoteDerivedGenerationConsent(
+                Guid.NewGuid(), Guid.NewGuid(), "https://text.invalid/v1", true),
+            AcknowledgePossibleCharge: true);
+        var extractionResponse = await host.RestA.PostAsJsonAsync(
+            "/api/v1/native-notes/task-suggestions/extractions", start);
+        Assert.Equal(HttpStatusCode.Conflict, extractionResponse.StatusCode);
+        Assert.Equal(40901,
+            (await extractionResponse.Content.ReadFromJsonAsync<ApiResponse<string>>())!.Code);
+
+        var update = new StringContent(JsonSerializer.Serialize(new
+        {
+            expectedRevision = suggestion.Revision,
+            title = "不应写入",
+            priority = 9,
+        }), Encoding.UTF8, "application/json");
+        var updateResponse = await host.RestA.PutAsync(
+            $"/api/v1/native-notes/task-suggestions/{suggestion.Id}", update);
+        Assert.Equal(HttpStatusCode.Conflict, updateResponse.StatusCode);
+
+        var confirmResponse = await host.RestA.PostAsJsonAsync(
+            $"/api/v1/native-notes/task-suggestions/{suggestion.Id}/confirm",
+            new ConfirmNoteTaskSuggestionRequest(Guid.NewGuid(), suggestion.Revision));
+        Assert.Equal(HttpStatusCode.Conflict, confirmResponse.StatusCode);
+
+        var dismissResponse = await host.RestA.PostAsJsonAsync(
+            $"/api/v1/native-notes/task-suggestions/{suggestion.Id}/dismiss",
+            new DismissNoteTaskSuggestionRequest(suggestion.Revision));
+        Assert.Equal(HttpStatusCode.Conflict, dismissResponse.StatusCode);
+
+        using (var scope = host.Factory.Services.CreateScope())
+        {
+            var job = scope.ServiceProvider
+                .GetRequiredService<NoteTaskSuggestionExtractionJob>();
+            await job.RunAsync(host.UserA, extraction.Id, default);
+        }
+
+        using (var scope = host.Factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
+            var stopped = await db.Set<NoteTaskSuggestionExtractionEntity>()
+                .AsNoTracking().SingleAsync(x => x.Id == extraction.Id);
+            Assert.Equal(NoteTaskSuggestionExtractionStatuses.Failed, stopped.Status);
+            Assert.Equal("note_recycled", stopped.ErrorCode);
+            var unchanged = await db.Set<NoteTaskSuggestionEntity>()
+                .AsNoTracking().SingleAsync(x => x.Id == suggestion.Id);
+            Assert.Equal(NoteTaskSuggestionStatuses.Draft, unchanged.Status);
+            Assert.Equal("回收站建议", unchanged.Title);
+            Assert.Equal(1, await db.Set<NoteTaskSuggestionExtractionEntity>()
+                .CountAsync(x => x.UserId == host.UserA && x.NoteId == noteId));
+        }
+
+        await host.Store.RestoreAsync(host.UserA, noteId, null);
+        using (var scope = host.Factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
+            var afterRestore = await db.Set<NoteTaskSuggestionExtractionEntity>()
+                .AsNoTracking().SingleAsync(x => x.Id == extraction.Id);
+            Assert.Equal(NoteTaskSuggestionExtractionStatuses.Failed, afterRestore.Status);
+        }
+    }
+
+    [SkippableFact]
     public async Task HeadOnlyPromotionInvalidatesRevisionAndRejectsStaleLifecycleCas()
     {
         await using var host = await McpHost.CreateAsync();
@@ -830,28 +1047,28 @@ public sealed class NativeNoteMcpRealDbTests
             .Single(item => item.GetProperty("versionId").GetGuid() == second.Request.VersionId)
             .GetProperty("phase").GetString());
 
-        var staleArchive = await host.CallAsync(host.McpAWrite, "archive_native_note", new
+        var staleRecycle = await host.CallAsync(host.McpAWrite, "delete_native_note", new
         {
             noteId,
             requestId = Guid.NewGuid().ToString("D"),
             expectedRevision = staleRevision.ToString("D"),
         });
-        Assert.True(staleArchive.IsError);
-        Assert.Equal(409, staleArchive.Payload.GetProperty("code").GetInt32());
+        Assert.True(staleRecycle.IsError);
+        Assert.Equal(409, staleRecycle.Payload.GetProperty("code").GetInt32());
 
-        var archived = await host.CallAsync(host.McpAWrite, "archive_native_note", new
+        var recycled = await host.CallAsync(host.McpAWrite, "delete_native_note", new
         {
             noteId,
             requestId = Guid.NewGuid().ToString("D"),
             expectedRevision = newRevision.ToString("D"),
         });
-        Assert.False(archived.IsError, archived.Payload.GetRawText());
-        Assert.Equal("Archived", archived.Payload.GetProperty("data").GetProperty("result")
+        Assert.False(recycled.IsError, recycled.Payload.GetRawText());
+        Assert.Equal("Recycled", recycled.Payload.GetProperty("data").GetProperty("result")
             .GetProperty("status").GetString());
-        var afterArchive = await host.CallAsync(host.McpARead, "get_native_note_versions",
+        var afterRecycle = await host.CallAsync(host.McpARead, "get_native_note_versions",
             new { noteId });
         Assert.Equal(second.Request.VersionId,
-            afterArchive.Payload.GetProperty("data").GetProperty("currentVersionId").GetGuid());
+            afterRecycle.Payload.GetProperty("data").GetProperty("currentVersionId").GetGuid());
     }
 
     [SkippableFact]
@@ -879,10 +1096,11 @@ public sealed class NativeNoteMcpRealDbTests
         Assert.Equal("start_native_note_processing",
             startedData.GetProperty("receipt").GetProperty("operation").GetString());
         Assert.False(startedData.GetProperty("receipt").GetProperty("replayed").GetBoolean());
-        var startedStatus = startedData.GetProperty("result").GetProperty("status");
+        var startedStatus = startedData.GetProperty("result");
         Assert.Equal(fixture.Request.VersionId, startedStatus.GetProperty("versionId").GetGuid());
         Assert.NotEqual("Completed", startedStatus.GetProperty("state").GetString());
-        Assert.True(startedStatus.GetProperty("derived").GetProperty("taskCreated").GetBoolean());
+        Assert.NotEqual("NotApplicable",
+            startedStatus.GetProperty("organization").GetProperty("state").GetString());
 
         var startedReplay = await host.CallAsync(host.McpAWrite,
             "start_native_note_processing", startArgs);
@@ -909,9 +1127,7 @@ public sealed class NativeNoteMcpRealDbTests
         {
             noteId,
             requestId = Guid.NewGuid().ToString("D"),
-            taskId = taskId.ToString("D"),
-            retryId = Guid.NewGuid().ToString("D"),
-            expectedRevision = updated.Revision.ToString("D"),
+            versionId = fixture.Request.VersionId.ToString("D"),
             stepKeys = new[] { failedKey },
             consent = new
             {
@@ -929,20 +1145,21 @@ public sealed class NativeNoteMcpRealDbTests
         Assert.Equal("retry_native_note_processing",
             retriedData.GetProperty("receipt").GetProperty("operation").GetString());
         Assert.False(retriedData.GetProperty("receipt").GetProperty("replayed").GetBoolean());
-        var retriedTask = retriedData.GetProperty("result").GetProperty("task");
-        Assert.Equal(taskId, retriedTask.GetProperty("taskId").GetGuid());
-        var retriedStep = retriedTask.GetProperty("steps").EnumerateArray()
-            .Single(step => step.GetProperty("key").GetString() == failedKey);
-        Assert.Equal(2, retriedStep.GetProperty("attempts").GetArrayLength());
-        var retriedRevision = retriedTask.GetProperty("revision").GetGuid();
+        var retriedProcessing = retriedData.GetProperty("result").GetProperty("processing");
+        Assert.Equal(fixture.Request.VersionId,
+            retriedProcessing.GetProperty("versionId").GetGuid());
+        Assert.NotEqual("Completed", retriedProcessing.GetProperty("state").GetString());
+        var organization = retriedProcessing.GetProperty("organization");
+        Assert.True(organization.GetProperty("failedItems").GetInt32() >= 0);
+        Assert.DoesNotContain("taskId", retriedData.GetRawText(), StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("attemptId", retriedData.GetRawText(), StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("stepId", retriedData.GetRawText(), StringComparison.OrdinalIgnoreCase);
 
         var replay = await host.CallAsync(host.McpAWrite, "retry_native_note_processing",
             retryArgs);
         Assert.False(replay.IsError, replay.Payload.GetRawText());
         Assert.True(replay.Payload.GetProperty("data").GetProperty("receipt")
             .GetProperty("replayed").GetBoolean());
-        Assert.Equal(retriedRevision, replay.Payload.GetProperty("data").GetProperty("result")
-            .GetProperty("task").GetProperty("revision").GetGuid());
         var afterReplay = await host.DerivedStore.ReadTaskAsync(host.UserA, taskId, default);
         Assert.Equal(2, afterReplay.Steps.Single(step => step.Key == failedKey).Attempts.Count);
     }
@@ -1095,7 +1312,7 @@ public sealed class NativeNoteMcpRealDbTests
 
         private McpHost(WebApplicationFactory<Program> factory, TempMigrationDatabase database,
             string root, HttpClient restA, HttpClient restB, McpHandle aRead, McpHandle aWrite,
-            McpHandle bWrite, Guid userA, Guid userB)
+            McpHandle bRead, McpHandle bWrite, Guid userA, Guid userB)
         {
             Factory = factory;
             _database = database;
@@ -1104,6 +1321,7 @@ public sealed class NativeNoteMcpRealDbTests
             RestB = restB;
             McpARead = aRead.Client;
             McpAWrite = aWrite.Client;
+            McpBRead = bRead.Client;
             McpBWrite = bWrite.Client;
             UserA = userA;
             UserB = userB;
@@ -1114,6 +1332,7 @@ public sealed class NativeNoteMcpRealDbTests
         public HttpClient RestB { get; }
         public HttpClient McpARead { get; }
         public HttpClient McpAWrite { get; }
+        public HttpClient McpBRead { get; }
         public HttpClient McpBWrite { get; }
         public Guid UserA { get; }
         public Guid UserB { get; }
@@ -1153,10 +1372,11 @@ public sealed class NativeNoteMcpRealDbTests
             var sessionB = await AuthRegistrationTestHost.LoginOkAsync(factory, userBName);
             var restA = AuthRegistrationTestHost.Authed(factory, sessionA.AccessToken);
             var restB = AuthRegistrationTestHost.Authed(factory, sessionB.AccessToken);
-            var aRead = await CreateMcpAsync(restA, factory, "a-read", writes: false);
+            var aRead = await CreateMcpAsync(restA, factory, "a-read", writes: false, reads: true);
             var aWrite = await CreateMcpAsync(restA, factory, "a-write", writes: true);
+            var bRead = await CreateMcpAsync(restB, factory, "b-read", writes: false, reads: true);
             var bWrite = await CreateMcpAsync(restB, factory, "b-write", writes: true);
-            return new McpHost(factory, database, root, restA, restB, aRead, aWrite, bWrite,
+            return new McpHost(factory, database, root, restA, restB, aRead, aWrite, bRead, bWrite,
                 sessionA.UserId, sessionB.UserId);
         }
 
@@ -1203,6 +1423,36 @@ public sealed class NativeNoteMcpRealDbTests
             var call = await CallAsync(mcp, "get_native_note", new { noteId });
             Assert.False(call.IsError, call.Payload.GetRawText());
             return call.Payload;
+        }
+
+        /// <summary>
+        /// Creates a real client token, optionally enables one native-note read tool, exchanges it
+        /// through POST /api/v1/mcp/verify, and returns an HttpClient carrying the mcp_tool JWT.
+        /// </summary>
+        public async Task<HttpClient> VerifyReadTokenAsync(string tool)
+        {
+            var created = await SuccessAsync(await RestA.PostAsJsonAsync("/api/v1/mcp/clients",
+                new { name = "verified-read-" + Guid.NewGuid().ToString("N") }));
+            var clientId = created.GetProperty("client").GetProperty("id").GetGuid();
+            var rawToken = created.GetProperty("token").GetString()!;
+            if (McpToolCatalog.ReadTools.Any(item => item.Name == tool &&
+                    item.Group == "native-notes"))
+            {
+                var permissions = McpToolCatalog.DefaultPermissions();
+                permissions["read"][tool] = true;
+                await SuccessAsync(await RestA.PutAsJsonAsync(
+                    $"/api/v1/mcp/clients/{clientId}", new { permissions }));
+            }
+
+            using var verifier = Factory.CreateClient();
+            verifier.DefaultRequestHeaders.Authorization =
+                new AuthenticationHeaderValue("Bearer", rawToken);
+            var verified = await SuccessAsync(await verifier.PostAsJsonAsync(
+                "/api/v1/mcp/verify", new { tool }));
+            var client = Factory.CreateClient();
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
+                "Bearer", verified.GetProperty("accessToken").GetString());
+            return client;
         }
 
         public async Task<(Guid SuggestionId, Guid Revision)> SeedSuggestionAsync(Guid owner,
@@ -1280,6 +1530,7 @@ public sealed class NativeNoteMcpRealDbTests
         {
             McpARead.Dispose();
             McpAWrite.Dispose();
+            McpBRead.Dispose();
             McpBWrite.Dispose();
             RestA.Dispose();
             RestB.Dispose();
@@ -1289,16 +1540,17 @@ public sealed class NativeNoteMcpRealDbTests
         }
 
         private static async Task<McpHandle> CreateMcpAsync(HttpClient rest,
-            WebApplicationFactory<Program> factory, string name, bool writes)
+            WebApplicationFactory<Program> factory, string name, bool writes, bool reads = false)
         {
             var created = await SuccessAsync(await rest.PostAsJsonAsync("/api/v1/mcp/clients",
                 new { name }));
             var id = created.GetProperty("client").GetProperty("id").GetGuid();
             var token = created.GetProperty("token").GetString()!;
-            if (writes)
+            if (writes || reads)
             {
                 var permissions = McpToolCatalog.DefaultPermissions();
-                permissions["write"] = permissions["write"]
+                var section = writes ? "write" : "read";
+                permissions[section] = permissions[section]
                     .ToDictionary(item => item.Key, _ => true, StringComparer.Ordinal);
                 await SuccessAsync(await rest.PutAsJsonAsync($"/api/v1/mcp/clients/{id}",
                     new { permissions }));

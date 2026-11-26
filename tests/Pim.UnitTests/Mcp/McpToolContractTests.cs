@@ -18,7 +18,7 @@ public sealed class McpToolContractTests
     public void Contract_ContainsExactly167Tools()
     {
         // WO-PC-BACKEND-20261001 REQ-6（#379）：150 → 149；J05 移除状态工具后为 148；
-        // R05：新增 7 个 native-note 读工具 + 12 个写工具，148 → 167。
+        // R05：新增 8 个 native-note 读工具 + 11 个写工具，148 → 167。
         Assert.Equal(167, McpToolExecutor.ToolContract.Count);
     }
 
@@ -31,9 +31,9 @@ public sealed class McpToolContractTests
         var writeNames = McpToolCatalog.WriteTools.Select(t => t.Name).ToHashSet(StringComparer.Ordinal);
 
         // WO-PC-BACKEND-20261001 REQ-6：读工具 101 → 100；J05 移除 AI 网关状态工具后为 99；
-        // R05：99 + 7 = 106。
-        Assert.Equal(106, readNames.Count);
-        Assert.Equal(61, writeNames.Count);
+        // R05：99 + 8 = 107。
+        Assert.Equal(107, readNames.Count);
+        Assert.Equal(60, writeNames.Count);
         Assert.Equal(contractNames, readNames.Union(writeNames).ToHashSet(StringComparer.Ordinal));
         Assert.Empty(contractNames.Intersect(writeNames).Intersect(readNames));
     }
