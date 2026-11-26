@@ -26,6 +26,7 @@ import {
   PageHeader,
   StatusBadge,
 } from '@/components/ui'
+import { useAuth } from '@/features/auth/auth-context'
 import { formatTime } from '@/lib/datetime'
 import { notifyError, notifySuccess } from '@/lib/notify'
 import { useObjectUrlCacheEpoch } from '@/lib/object-url-cache'
@@ -35,6 +36,7 @@ import {
   snapshotTemporaryCache,
   type TemporaryCacheClearResult,
 } from '../storage-cache/cache-cleanup'
+import { belongsToOtherServer, serverLabel } from '../storage-cache/display'
 
 function CountCard({
   icon: Icon,
@@ -65,15 +67,9 @@ function CountCard({
   )
 }
 
-function serverLabel(binding: string): string {
-  return binding || '当前部署源'
-}
-
-function belongsToOtherServer(draftBinding: string, currentBinding: string): boolean {
-  return Boolean(currentBinding && draftBinding && draftBinding !== currentBinding)
-}
-
 export function StorageCachePage() {
+  const { user } = useAuth()
+  const ownerId = user?.id ?? ''
   const queryClient = useQueryClient()
   useUnsavedDrafts()
   useObjectUrlCacheEpoch()
@@ -84,7 +80,7 @@ export function StorageCachePage() {
   const [result, setResult] = useState<TemporaryCacheClearResult | null>(null)
   const [error, setError] = useState('')
 
-  const snapshot = snapshotTemporaryCache(queryClient)
+  const snapshot = snapshotTemporaryCache(queryClient, ownerId)
   const protectedCount = snapshot.unsavedDrafts.length + snapshot.aiDrafts.length
   const clearableCount = snapshot.queryEntries + snapshot.thumbnailEntries + snapshot.playerEntries + snapshot.transferHistoryEntries
 
@@ -103,7 +99,7 @@ export function StorageCachePage() {
     setBusy(true)
     setError('')
     try {
-      const cleared = await clearTemporaryWebCache(queryClient)
+      const cleared = await clearTemporaryWebCache(queryClient, ownerId)
       setResult(cleared)
       setDialogOpen(false)
       setRefreshToken((value) => value + 1)
@@ -190,7 +186,7 @@ export function StorageCachePage() {
           </div>
           <Card className="space-y-3 p-4">
             <p className="text-xs leading-5 text-text-3">
-              临时缓存清理不会删除以下内容。若检测到未保存编辑或本机 AI 草稿，清理前会列出对象和保存入口，并要求明确确认保留。
+              临时缓存清理不会删除以下内容。这里只列出当前账号、当前仍挂载页面中的未保存编辑与本机 AI 草稿；清理前会列出对象和保存入口，并要求明确确认保留。
             </p>
             {snapshot.unsavedDrafts.length === 0 && snapshot.aiDrafts.length === 0 ? (
               <p className="rounded-ctl bg-surface px-3 py-2 text-[13px] text-text-2">没有检测到页面内未保存编辑或本机 AI 草稿。</p>

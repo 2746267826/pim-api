@@ -17,6 +17,11 @@ import { StorageCachePage } from './storage-cache-page'
 
 vi.mock('@/lib/notify', () => ({ notifySuccess: vi.fn(), notifyError: vi.fn() }))
 
+const authState = vi.hoisted(() => ({
+  user: { id: '11111111-1111-4111-8111-111111111111' } as { id: string } | null,
+}))
+vi.mock('@/features/auth/auth-context', () => ({ useAuth: () => authState }))
+
 const scope: NoteDerivedDraftScope = {
   ownerId: '11111111-1111-4111-8111-111111111111',
   serverBinding: 'https://pim-a.example',
@@ -54,6 +59,7 @@ function renderPage() {
 }
 
 beforeEach(() => {
+  authState.user = { id: scope.ownerId }
   localStorage.clear()
   resetUnsavedDraftsForTests()
   nextUrl = 0
@@ -101,6 +107,7 @@ describe('存储与缓存页面', () => {
     expect(screen.getByText(/当前服务器：/)).toBeTruthy()
     expect(screen.getByText('未保存编辑')).toBeTruthy()
     expect(screen.getByText('AI 草稿')).toBeTruthy()
+    expect(screen.getAllByText('去保存').length).toBeGreaterThan(0)
 
     await user.click(screen.getByRole('button', { name: '清理本机缓存' }))
     const confirm = await screen.findByRole('button', { name: '只清理临时缓存' })
@@ -131,5 +138,18 @@ describe('存储与缓存页面', () => {
     expect(screen.getByText('其他服务器')).toBeTruthy()
     expect(screen.getByText(/草稿服务器：https:\/\/pim-b\.example/)).toBeTruthy()
     expect(screen.queryByText('去保存')).toBeNull()
+  })
+
+  it('同一服务器切换账号后不显示其他 owner 的 AI 草稿和保存入口', () => {
+    localStorage.setItem('pim.apiBase', 'https://pim-a.example')
+    const otherOwnerDraftKey = seedDirtyAiDraft()
+    authState.user = { id: '99999999-9999-4999-8999-999999999999' }
+
+    renderPage()
+
+    expect(screen.queryByText('AI 草稿')).toBeNull()
+    expect(screen.queryByText('去保存')).toBeNull()
+    expect(screen.getByText('没有检测到页面内未保存编辑或本机 AI 草稿。')).toBeTruthy()
+    expect(localStorage.getItem(otherOwnerDraftKey)).not.toBeNull()
   })
 })

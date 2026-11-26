@@ -214,11 +214,13 @@ function loadLegacyDraftForResultVersion(
 }
 
 /**
- * 只枚举本机 AI 草稿的元数据，供缓存清理页展示“需要先保存或明确处理”的对象。
+ * 只枚举指定 owner 的本机 AI 草稿元数据，供缓存清理页展示“需要先保存或明确处理”的对象。
  * 不读取正文，也不暴露凭据；正文仍由 NoteDerivedPage 按作用域读取。
- * 无法解析的记录也会以占位作用域列出，避免把“记录损坏”误当成“没有草稿”。
+ * ownerId 为空或记录无法解析时失败闭合：无法确认归属的草稿不进入当前账号的列表。
  */
-export function listStoredAiDrafts(): StoredAiDraftSummary[] {
+export function listStoredAiDrafts(ownerId: string): StoredAiDraftSummary[] {
+  const normalizedOwnerId = ownerId.trim()
+  if (!normalizedOwnerId) return []
   const summaries: StoredAiDraftSummary[] = []
   for (const key of storageKeys(`${STORAGE_PREFIX}/`)) {
     const raw = getString(key)
@@ -226,6 +228,7 @@ export function listStoredAiDrafts(): StoredAiDraftSummary[] {
     try {
       const parsed: unknown = JSON.parse(raw)
       if (!isStoredDraft(parsed)) continue
+      if (parsed.binding.ownerId !== normalizedOwnerId) continue
       if (!parsed.dirty && !parsed.pending) continue
       summaries.push({
         key,
@@ -235,13 +238,7 @@ export function listStoredAiDrafts(): StoredAiDraftSummary[] {
         updatedAt: parsed.updatedAt,
       })
     } catch {
-      summaries.push({
-        key,
-        binding: { ownerId: '', serverBinding: '', artifactId: '', sourceVersionId: '', kind: 'CompleteRecord' },
-        dirty: true,
-        pending: false,
-        updatedAt: '',
-      })
+      // Ownership cannot be proven for a corrupted record; fail closed.
     }
   }
   return summaries.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))

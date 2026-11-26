@@ -203,7 +203,7 @@ describe('note-derived local draft storage', () => {
     expect(raw).not.toContain('refreshToken')
   })
 
-  it('lists dirty, pending and corrupted local AI drafts without exposing their bodies', () => {
+  it('lists dirty and pending local AI drafts for the requested owner without exposing their bodies', () => {
     const cleanScope = { ...scope, artifactId: 'clean-artifact', sourceVersionId: 'head-clean' }
     const dirtyScope = { ...scope, artifactId: 'dirty-artifact', sourceVersionId: 'head-dirty' }
     const pendingScope = { ...scope, artifactId: 'pending-artifact', sourceVersionId: 'head-pending' }
@@ -224,23 +224,38 @@ describe('note-derived local draft storage', () => {
     localStorage.setItem('pim.noteDerivedDraft.v1/corrupt-record', '{"schemaVersion":1')
     localStorage.setItem('pim.unrelated', 'not-a-draft')
 
-    const summaries = listStoredAiDrafts()
-    expect(summaries).toHaveLength(3)
+    const summaries = listStoredAiDrafts(scope.ownerId)
+    expect(summaries).toHaveLength(2)
     expect(summaries.map((summary) => summary.binding.sourceVersionId)).toEqual(
-      expect.arrayContaining(['head-dirty', 'head-pending', '']),
+      expect.arrayContaining(['head-dirty', 'head-pending']),
     )
     expect(summaries.map((summary) => summary.binding.sourceVersionId)).not.toContain('head-clean')
-    expect(summaries.find((summary) => summary.binding.sourceVersionId === '')).toMatchObject({
-      dirty: true,
-      pending: false,
-      updatedAt: '',
-    })
 
     const serialized = JSON.stringify(summaries)
     expect(serialized).not.toContain('未保存修改')
     expect(serialized).not.toContain('待核对正文')
     expect(serialized).not.toContain('secret-token')
     expect(localStorage.getItem(noteDerivedDraftStorageKey(cleanScope)!)).not.toBeNull()
+  })
+
+  it('isolates enumerated drafts by owner and fails closed for unowned corrupted records', () => {
+    const otherScope = { ...scope, ownerId: 'another-owner', artifactId: 'other-artifact' }
+    const own = editStoredDraft(createStoredDraft(scope, 'A 的已保存正文', 'head-a'), 'A 的未保存修改')
+    const other = editStoredDraft(createStoredDraft(otherScope, 'B 的已保存正文', 'head-b'), 'B 的未保存修改')
+    expect(own.ok && other.ok).toBe(true)
+    if (!own.ok || !other.ok) return
+    expect(persistStoredDraft(own.value).ok).toBe(true)
+    expect(persistStoredDraft(other.value).ok).toBe(true)
+    localStorage.setItem('pim.noteDerivedDraft.v1/corrupt-record', '{"schemaVersion":1')
+
+    const ownerA = listStoredAiDrafts(scope.ownerId)
+    const ownerB = listStoredAiDrafts(otherScope.ownerId)
+    expect(ownerA).toHaveLength(1)
+    expect(ownerA[0]?.binding.ownerId).toBe(scope.ownerId)
+    expect(ownerB).toHaveLength(1)
+    expect(ownerB[0]?.binding.ownerId).toBe(otherScope.ownerId)
+    expect(listStoredAiDrafts('')).toEqual([])
+    expect(JSON.stringify(ownerA)).not.toContain('B 的未保存修改')
   })
 
   it('reports corrupted storage instead of silently starting empty', () => {

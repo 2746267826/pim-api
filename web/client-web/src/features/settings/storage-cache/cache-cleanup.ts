@@ -35,7 +35,7 @@ export interface TemporaryCacheClearResult {
   readonly clearedAt: string
 }
 
-export function snapshotTemporaryCache(queryClient: QueryClient): TemporaryCacheSnapshot {
+export function snapshotTemporaryCache(queryClient: QueryClient, ownerId = ''): TemporaryCacheSnapshot {
   const media = objectUrlCacheCounts()
   return {
     serverBinding: canonicalServerBinding(),
@@ -44,7 +44,7 @@ export function snapshotTemporaryCache(queryClient: QueryClient): TemporaryCache
     playerEntries: media.player,
     transferHistoryEntries: uploadEngine.historyCount(),
     unsavedDrafts: listUnsavedDrafts(),
-    aiDrafts: listStoredAiDrafts(),
+    aiDrafts: listStoredAiDrafts(ownerId),
   }
 }
 
@@ -57,14 +57,14 @@ export function snapshotTemporaryCache(queryClient: QueryClient): TemporaryCache
  * 不触碰：未保存编辑器状态、手写/图片草稿、AI 草稿、笔记索引/材料、令牌、服务器配置。
  * 清理是幂等的；第二次调用不会重复撤销 URL 或删除传输历史。
  */
-export async function clearTemporaryWebCache(queryClient: QueryClient): Promise<TemporaryCacheClearResult> {
-  const before = snapshotTemporaryCache(queryClient)
+export async function clearTemporaryWebCache(queryClient: QueryClient, ownerId = ''): Promise<TemporaryCacheClearResult> {
+  const before = snapshotTemporaryCache(queryClient, ownerId)
   await queryClient.cancelQueries()
   queryClient.removeQueries()
   const thumbnailEntries = clearObjectUrlCache('thumbnail')
   const playerEntries = clearObjectUrlCache('player')
   const transferHistoryEntries = uploadEngine.clearHistory()
-  const preserved = snapshotTemporaryCache(queryClient)
+  const preserved = snapshotTemporaryCache(queryClient, ownerId)
   return {
     serverBinding: before.serverBinding,
     queryEntries: before.queryEntries,

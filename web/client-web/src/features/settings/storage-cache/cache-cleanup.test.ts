@@ -66,6 +66,13 @@ describe('Web 临时缓存清理', () => {
     expect(edited.ok).toBe(true)
     if (!edited.ok) return
     expect(modules.drafts.persistStoredDraft(edited.value).ok).toBe(true)
+    const otherOwnerScope = { ...scope, ownerId: '99999999-9999-4999-8999-999999999999' }
+    const otherOwnerDraft = modules.drafts.editStoredDraft(
+      modules.drafts.createStoredDraft(otherOwnerScope, '其他账号已保存正文', 'head-other'),
+      '其他账号未保存正文',
+    )
+    expect(otherOwnerDraft.ok).toBe(true)
+    if (otherOwnerDraft.ok) expect(modules.drafts.persistStoredDraft(otherOwnerDraft.value).ok).toBe(true)
     const draftKey = modules.drafts.noteDerivedDraftStorageKey(scope)
     expect(draftKey).not.toBeNull()
 
@@ -84,7 +91,7 @@ describe('Web 临时缓存清理', () => {
     queryClient.setQueryData(['q2'], { value: 2 })
     queryClient.getMutationCache().build(queryClient, { mutationKey: ['save'], mutationFn: async () => 'ok' })
 
-    const before = modules.snapshotTemporaryCache(queryClient)
+    const before = modules.snapshotTemporaryCache(queryClient, scope.ownerId)
     expect(before).toMatchObject({
       serverBinding: 'https://pim-a.example',
       queryEntries: 2,
@@ -95,7 +102,7 @@ describe('Web 临时缓存清理', () => {
     expect(before.unsavedDrafts).toHaveLength(1)
     expect(before.aiDrafts).toHaveLength(1)
 
-    const result = await modules.clearTemporaryWebCache(queryClient)
+    const result = await modules.clearTemporaryWebCache(queryClient, scope.ownerId)
     expect(result).toMatchObject({
       serverBinding: 'https://pim-a.example',
       queryEntries: 2,
@@ -115,12 +122,12 @@ describe('Web 临时缓存清理', () => {
     expect(localStorage.getItem('pim.apiBase')).toBe('https://pim-a.example')
     expect(draftKey ? localStorage.getItem(draftKey) : null).not.toBeNull()
 
-    const after = modules.snapshotTemporaryCache(queryClient)
+    const after = modules.snapshotTemporaryCache(queryClient, scope.ownerId)
     expect(after.unsavedDrafts).toHaveLength(1)
     expect(after.aiDrafts).toHaveLength(1)
     expect(after.aiDrafts[0]?.binding.sourceVersionId).toBe(scope.sourceVersionId)
 
-    const second = await modules.clearTemporaryWebCache(queryClient)
+    const second = await modules.clearTemporaryWebCache(queryClient, scope.ownerId)
     expect(second).toMatchObject({
       queryEntries: 0,
       thumbnailEntries: 0,
