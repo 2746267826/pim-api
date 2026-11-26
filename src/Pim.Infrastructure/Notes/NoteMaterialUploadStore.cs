@@ -246,21 +246,28 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
             throw Conflict("未完成的材料版本不能导出");
 
         using var archive = new ZipArchive(output, ZipArchiveMode.Create, leaveOpen: true, Encoding.UTF8);
-        await WriteMetadataAsync(archive, "material-version.json", version.InputJson, ct);
-        await WriteMetadataAsync(archive, "materials.json", version.ManifestJson, ct);
+        // The package digest is part of the MCP chunking contract. Derive every entry timestamp
+        // from the immutable version instead of ZipArchive's current-time default, so exporting
+        // the same version twice produces byte-identical archives.
+        var timestamp = version.Upload.CreatedAt;
+        await WriteMetadataAsync(archive, "material-version.json", version.InputJson,
+            timestamp, ct);
+        await WriteMetadataAsync(archive, "materials.json", version.ManifestJson, timestamp, ct);
         foreach (var file in version.Upload.Files)
         {
             ct.ThrowIfCancellationRequested();
             var entry = archive.CreateEntry(file.Path, CompressionLevel.Optimal);
+            entry.LastWriteTime = timestamp;
             await using var entryStream = entry.Open();
             await ReadFileAsync(userId, versionId, file.Index, entryStream, ct);
         }
     }
 
     private static async Task WriteMetadataAsync(ZipArchive archive, string path, string value,
-        CancellationToken ct)
+        DateTimeOffset timestamp, CancellationToken ct)
     {
         var entry = archive.CreateEntry(path, CompressionLevel.Optimal);
+        entry.LastWriteTime = timestamp;
         await using var stream = entry.Open();
         var bytes = Encoding.UTF8.GetBytes(value);
         await stream.WriteAsync(bytes, ct);
