@@ -77,7 +77,7 @@ public sealed class NativeNoteMcpRealDbTests
 
         var download = await host.CallAsync(host.McpARead, "get_native_note_package",
             new { noteId = fixture.Request.NoteId });
-        Assert.False(download.IsError);
+        Assert.False(download.IsError, download.Payload.GetRawText());
         var downloaded = download.Payload.GetProperty("data");
         var downloadedBytes = Convert.FromBase64String(
             downloaded.GetProperty("contentBase64").GetString()!);
@@ -142,8 +142,31 @@ public sealed class NativeNoteMcpRealDbTests
             promote = true,
         };
 
+        var emptyHeadCas = await host.CallAsync(host.McpAWrite, "upload_native_note_package",
+            new
+            {
+                noteId,
+                requestId = Guid.NewGuid().ToString("D"),
+                packageBase64 = Convert.ToBase64String(package),
+                expectedCurrentVersionId = Guid.NewGuid().ToString("D"),
+            });
+        Assert.True(emptyHeadCas.IsError, emptyHeadCas.Payload.GetRawText());
+        Assert.Equal(409, emptyHeadCas.Payload.GetProperty("code").GetInt32());
+        var emptyRevisionCas = await host.CallAsync(host.McpAWrite,
+            "upload_native_note_package", new
+            {
+                noteId,
+                requestId = Guid.NewGuid().ToString("D"),
+                packageBase64 = Convert.ToBase64String(package),
+                expectedRevision = Guid.NewGuid().ToString("D"),
+            });
+        Assert.True(emptyRevisionCas.IsError, emptyRevisionCas.Payload.GetRawText());
+        Assert.Equal(409, emptyRevisionCas.Payload.GetProperty("code").GetInt32());
+        Assert.Equal(0, (await host.CallAsync(host.McpARead, "get_native_notes", new { }))
+            .Payload.GetProperty("data").GetProperty("total").GetInt32());
+
         var uploaded = await host.CallAsync(host.McpAWrite, "upload_native_note_package", uploadArgs);
-        Assert.False(uploaded.IsError);
+        Assert.False(uploaded.IsError, uploaded.Payload.GetRawText());
         Assert.Equal(0, uploaded.Payload.GetProperty("code").GetInt32());
         var uploadReceipt = uploaded.Payload.GetProperty("data").GetProperty("receipt");
         Assert.Equal("applied", uploadReceipt.GetProperty("status").GetString());
@@ -202,7 +225,7 @@ public sealed class NativeNoteMcpRealDbTests
                 new { noteId })).Payload.GetProperty("data").GetProperty("total").GetInt32());
 
         var download = await host.CallAsync(host.McpARead, "get_native_note_package", new { noteId });
-        Assert.False(download.IsError);
+        Assert.False(download.IsError, download.Payload.GetRawText());
         var zipBytes = Convert.FromBase64String(
             download.Payload.GetProperty("data").GetProperty("contentBase64").GetString()!);
         var entries = ReadZip(zipBytes);
@@ -577,7 +600,7 @@ public sealed class NativeNoteMcpRealDbTests
                 versionId = Guid.NewGuid().ToString("D"),
                 expectedContentSha256 = new string('0', 64),
                 consent = Consent(),
-                acknowledgePossibleCharge = false,
+                acknowledgePossibleCharge = true,
             });
         Assert.True(extraction.IsError);
         Assert.Contains(extraction.Payload.GetProperty("code").GetInt32(), new[] { 404, 409, 503 });
@@ -1124,7 +1147,7 @@ public sealed class NativeNoteMcpRealDbTests
             var settings = await SuccessAsync(await RestA.GetAsync("/api/v1/ai/model-settings"));
             await SuccessAsync(await RestA.PutAsJsonAsync("/api/v1/ai/model-settings",
                 new SaveAiModelSettingsRequest(settings.GetProperty("revision").GetGuid(), true,
-                    modelId, modelId, null)));
+                    modelId, null, null)));
             return modelId;
         }
 

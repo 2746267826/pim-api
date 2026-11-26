@@ -155,14 +155,33 @@ public sealed class NativeNoteMcpService(
             },
             async lockedCt =>
             {
-                var snapshot = await materials.GetMcpSnapshotAsync(owner, noteId, 1, lockedCt);
-                EnsureActive(snapshot, "上传整包材料");
-                CheckRevision(snapshot, request.ExpectedRevision);
-                if (request.ExpectedCurrentVersionId is { } expectedCurrent &&
-                    snapshot.CurrentVersionId != expectedCurrent)
-                    throw new DomainException(40901,
-                        "当前材料版本已变化，请先重新读取 get_native_note_versions 后再上传");
-                var baseVersionId = request.ExpectedCurrentVersionId ?? snapshot.CurrentVersionId;
+                NativeNoteMcpSnapshotDto? snapshot = null;
+                try
+                {
+                    snapshot = await materials.GetMcpSnapshotAsync(owner, noteId, 1, lockedCt);
+                }
+                catch (DomainException error) when (error.ErrorCode == 40401)
+                {
+                    // A note does not exist until its first material package is committed. Allow
+                    // that first upload, but never let explicit CAS inputs silently pass when there
+                    // is no server-side head to compare against.
+                }
+                if (snapshot is null)
+                {
+                    if (request.ExpectedCurrentVersionId is not null || request.ExpectedRevision is not null)
+                        throw new DomainException(40901,
+                            "笔记尚不存在当前版本，不能校验 expectedCurrentVersionId 或 expectedRevision；请重新读取后使用新的 requestId 创建首版本");
+                }
+                else
+                {
+                    EnsureActive(snapshot, "上传整包材料");
+                    CheckRevision(snapshot, request.ExpectedRevision);
+                    if (request.ExpectedCurrentVersionId is { } expectedCurrent &&
+                        snapshot.CurrentVersionId != expectedCurrent)
+                        throw new DomainException(40901,
+                            "当前材料版本已变化，请先重新读取 get_native_note_versions 后再上传");
+                }
+                var baseVersionId = request.ExpectedCurrentVersionId ?? snapshot?.CurrentVersionId;
                 var beginRequest = new BeginNoteMaterialUploadRequest(
                     package.VersionId,
                     noteId,

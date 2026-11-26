@@ -215,12 +215,12 @@ public sealed class McpClientServiceTests : IDisposable
             ["write"] = new() { ["create_task"] = true },
         };
         var dto = await _service.UpdateAsync(created.Client.Id, null, writeOnly, _owner);
-        // WO-PC-BACKEND-20261001 REQ-6：读工具映射随 get_pc_aw_heatmap 下线变为 100。
-        Assert.Equal(100, dto.Permissions["read"].Count);
+        // R05：读工具在 AW 下线后的 100 个基础上新增 7 个 native-note 读取工具。
+        Assert.Equal(107, dto.Permissions["read"].Count);
         Assert.True(dto.Permissions["read"]["get_tasks"]);
         Assert.True(dto.Permissions["write"]["create_task"]);
         // Unlisted write tools keep their previous value (not wiped).
-        Assert.Equal(49, dto.Permissions["write"].Count);
+        Assert.Equal(61, dto.Permissions["write"].Count);
     }
 
     [Fact]
@@ -234,8 +234,8 @@ public sealed class McpClientServiceTests : IDisposable
         var dto = await _service.UpdateAsync(created.Client.Id, null, singleKey, _owner);
         Assert.False(dto.Permissions["read"]["get_events"]);
         Assert.True(dto.Permissions["read"]["get_tasks"]);
-        // WO-PC-BACKEND-20261001 REQ-6：读工具映射随 get_pc_aw_heatmap 下线变为 100。
-        Assert.Equal(100, dto.Permissions["read"].Count);
+        // R05：读工具在 AW 下线后的 100 个基础上新增 7 个 native-note 读取工具。
+        Assert.Equal(107, dto.Permissions["read"].Count);
     }
 
     private sealed class StubHostEnvironment : IHostEnvironment
