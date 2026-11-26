@@ -4,6 +4,31 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import type { CalendarBook, EventResponse } from '../types'
 import { EventEditorDialog } from './event-editor-dialog'
 
+// Radix Select 在 jsdom 里不会响应 fireEvent.change；这里只替换 Select 的呈现层，
+// 让测试仍走组件真实的 fold 状态与提交逻辑。
+vi.mock('@/components/ui/select', () => ({
+  Select: ({
+    id,
+    value,
+    onValueChange,
+    options,
+    placeholder,
+  }: {
+    id?: string
+    value?: string
+    onValueChange: (value: string) => void
+    options: Array<{ value: string; label: string }>
+    placeholder?: string
+  }) => (
+    <select id={id} value={value ?? ''} onChange={(event) => onValueChange(event.target.value)}>
+      {value === '' && placeholder ? <option value="">{placeholder}</option> : null}
+      {options.map((option) => (
+        <option key={option.value} value={option.value}>{option.label}</option>
+      ))}
+    </select>
+  ),
+}))
+
 type SaveEventInput = {
   id?: string
   body: Record<string, unknown>

@@ -191,6 +191,9 @@ public static class McpToolInputPolicy
 
         if (args["timeZoneId"] is { } zoneNode)
         {
+            if (zoneNode.GetValueKind() == JsonValueKind.Null)
+                return null;
+
             if (zoneNode.GetValueKind() != JsonValueKind.String)
                 return Error("timeZoneId must be a valid IANA time zone string");
 

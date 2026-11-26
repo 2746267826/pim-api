@@ -34,13 +34,14 @@ public sealed class R02ExplicitOffsetContractTests
     [InlineData(typeof(CreateEventRequest))]
     [InlineData(typeof(UpdateEventRequest))]
     [InlineData(typeof(OutlookEventDraft))]
-    public void AllEventWriteContracts_RejectDateOnlyAndOffsetlessTimes(Type contractType)
+    public void AllEventWriteContracts_RejectNonIsoOrOffsetlessTimes(Type contractType)
     {
         foreach (var start in new[]
                  {
                      "2026-09-01",
                      "2026-09-01T09:00:00",
                      "2026-09-01 09:00:00",
+                     "09/01/2026 09:00:00 +08:00",
                  })
         {
             var json = $$"""

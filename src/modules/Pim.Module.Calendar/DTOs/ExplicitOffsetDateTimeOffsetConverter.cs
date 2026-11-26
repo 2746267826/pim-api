@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.RegularExpressions;
 
 namespace Pim.Module.Calendar.DTOs;
 
@@ -10,6 +11,10 @@ namespace Pim.Module.Calendar.DTOs;
 /// </summary>
 public sealed class ExplicitOffsetDateTimeOffsetConverter : JsonConverter<DateTimeOffset>
 {
+    private static readonly Regex IsoInstantPattern = new(
+        @"^\d{4}-\d{2}-\d{2}[Tt ]\d{2}:\d{2}(?::\d{2}(?:\.\d{1,7})?)?(?:[Zz]|[+-]\d{2}:?\d{2})$",
+        RegexOptions.CultureInvariant | RegexOptions.Compiled);
+
     public override DateTimeOffset Read(
         ref Utf8JsonReader reader,
         Type typeToConvert,
@@ -19,10 +24,10 @@ public sealed class ExplicitOffsetDateTimeOffsetConverter : JsonConverter<DateTi
             throw new JsonException("事件时间必须是带显式 UTC 偏移的 ISO-8601 字符串。");
 
         var raw = reader.GetString();
-        if (string.IsNullOrWhiteSpace(raw) || !HasExplicitOffset(raw))
+        if (string.IsNullOrWhiteSpace(raw) || !IsoInstantPattern.IsMatch(raw.Trim()))
         {
             throw new JsonException(
-                "事件时间必须包含显式 UTC 偏移，例如 2026-09-01T09:00:00Z 或 2026-09-01T17:00:00+08:00；服务端不会按机器时区猜测。");
+                "事件时间必须是带显式 UTC 偏移的 ISO-8601 字符串，例如 2026-09-01T09:00:00Z 或 2026-09-01T17:00:00+08:00；服务端不会按机器时区猜测。");
         }
 
         if (!DateTimeOffset.TryParse(
@@ -42,18 +47,4 @@ public sealed class ExplicitOffsetDateTimeOffsetConverter : JsonConverter<DateTi
         DateTimeOffset value,
         JsonSerializerOptions options)
         => writer.WriteStringValue(value);
-
-    internal static bool HasExplicitOffset(string value)
-    {
-        var trimmed = value.Trim();
-        if (trimmed.EndsWith('Z') || trimmed.EndsWith('z'))
-            return true;
-
-        var timeStart = trimmed.IndexOfAny(['T', 't', ' ']);
-        if (timeStart < 0)
-            return false;
-
-        var timePart = trimmed[(timeStart + 1)..];
-        return timePart.Contains('+') || timePart.Contains('-');
-    }
 }
