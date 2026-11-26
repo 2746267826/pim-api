@@ -105,9 +105,10 @@ public sealed class McpToolExecutor
 
     private void RecordActivity(long startedAt, string toolName, int statusCode, JsonObject? args)
     {
-        var summary = args is null || args.Count == 0
+        var auditableArgs = args is null ? null : SanitizeForAudit(args);
+        var summary = auditableArgs is null || auditableArgs.Count == 0
             ? string.Empty
-            : JsonSerializer.Serialize(args, SerializerOptions);
+            : JsonSerializer.Serialize(auditableArgs, SerializerOptions);
         if (summary.Length > ActivityParamsSummaryMaxChars)
             summary = summary[..ActivityParamsSummaryMaxChars];
 
@@ -324,8 +325,31 @@ public sealed class McpToolExecutor
     {
         if (args is null || args.Count == 0)
             return null;
-        var text = JsonSerializer.Serialize(args, SerializerOptions);
+        var text = JsonSerializer.Serialize(SanitizeForAudit(args), SerializerOptions);
         return text.Length <= ParamsSummaryMaxChars ? text : text[..ParamsSummaryMaxChars];
+    }
+
+    /// <summary>
+    /// Keeps large inline payloads out of MCP activity history and verification records.
+    /// The native-note/quick-note write tools accept base64 ZIPs and attachments; only a
+    /// length marker is needed for support, the content itself must never be audited.
+    /// </summary>
+    private static JsonObject SanitizeForAudit(JsonObject args)
+    {
+        var result = new JsonObject();
+        foreach (var (key, value) in args)
+        {
+            if (key.EndsWith("Base64", StringComparison.OrdinalIgnoreCase))
+            {
+                var length = value is JsonValue jsonValue && jsonValue.TryGetValue<string>(out var text)
+                    ? text.Length
+                    : 0;
+                result[key] = $"[redacted base64, {length} chars]";
+                continue;
+            }
+            result[key] = value?.DeepClone();
+        }
+        return result;
     }
 
     // ===================== dispatch =====================
@@ -1103,9 +1127,9 @@ public sealed class McpToolExecutor
     {
         var (query, _) = BuildQueryAndBody(spec, args);
         var path = BuildPath(spec.Route, args) + (query.Length > 0 ? "?" + query : string.Empty);
-        var request = new HttpRequestMessage(HttpMethod.Get, path);
+        using var request = new HttpRequestMessage(HttpMethod.Get, path);
         request.Headers.TryAddWithoutValidation("Authorization", $"Bearer {accessToken}");
-        var response = await _client.SendAsync(request, ct);
+        using var response = await _client.SendAsync(request, ct);
         var status = (int)response.StatusCode;
         if (status >= 400)
         {
