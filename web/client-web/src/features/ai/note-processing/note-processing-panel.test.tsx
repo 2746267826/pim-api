@@ -38,6 +38,7 @@ const processing: NoteProcessingStatus = {
     hasResult: false,
     errors: ['MiMo raw ASR error'],
     waitingReason: 'provider waiting diagnostic',
+    items: [],
   },
   derived: {
     kind: 'Derived',
@@ -52,6 +53,7 @@ const processing: NoteProcessingStatus = {
     hasResult: false,
     errors: [],
     waitingReason: 'MiMo provider derived wait',
+    items: [],
   },
   artifacts: [],
   issues: [{ code: 'internal_code', message: 'backend issue diagnostic', task: 'Asr' }],
