@@ -399,7 +399,7 @@ public sealed class UnifiedRecycleBinServiceTests : IDisposable
         Assert.Null(await _db.Set<FileItemEntity>().SingleOrDefaultAsync(f => f.Id == local.Id));
         Assert.NotNull(await _db.Set<FileItemEntity>().SingleOrDefaultAsync(f => f.Id == external.Id));
         Assert.False(File.Exists(blobPath));
-        await Assert.ThrowsAsync<DomainException>(() =>
+        await Assert.ThrowsAsync<ProviderItemNotFoundException>(() =>
             _localStore.GetAsync(_user, providerId, externalId));
     }
 
@@ -426,7 +426,13 @@ public sealed class UnifiedRecycleBinServiceTests : IDisposable
         Assert.Equal("failed", Assert.Single(receipt.Items).Status);
         Assert.NotNull(await _db.Set<FileItemEntity>().SingleOrDefaultAsync(candidate => candidate.Id == local.Id));
         Assert.True(File.Exists(blobPath));
-        Assert.NotNull(await _localStore.GetAsync(_user, providerId, externalId));
+        var catalogEntry = await _localStore.TransactionAsync(
+            _user,
+            providerId,
+            entries => Task.FromResult(entries[externalId]),
+            write: false,
+            CancellationToken.None);
+        Assert.True(catalogEntry.Trashed);
     }
 
     [Fact]
@@ -577,7 +583,7 @@ public sealed class UnifiedRecycleBinServiceTests : IDisposable
             }
         }, Json);
         var request = new BeginNoteMaterialUploadRequest(
-            versionId, noteId, Guid.NewGuid(), inputJson, manifestJson, true);
+            versionId, noteId, null, inputJson, manifestJson, true);
         await _materials.BeginAsync(owner, request);
         await _materials.UploadPartAsync(owner, versionId, 0, 0, Hash(noteJson), new MemoryStream(noteBytes));
         await _materials.UploadPartAsync(owner, versionId, 1, 0, Hash(document), new MemoryStream(document));
