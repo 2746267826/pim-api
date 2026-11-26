@@ -47,7 +47,9 @@ public class TransportSecurityPolicyTests
         var options = ForwardedHeadersConfigurator.Create("10.0.0.5/32", "172.31.240.0/24");
 
         Assert.DoesNotContain(IPAddress.Parse("172.31.240.1"), options.KnownProxies);
-        Assert.Contains(IPAddress.Parse("10.0.0.5"), options.KnownProxies);
+        Assert.Contains(
+            options.KnownNetworks,
+            network => network.Prefix.Equals(IPAddress.Parse("10.0.0.5")) && network.PrefixLength == 32);
     }
 
     [Theory]
