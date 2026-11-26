@@ -139,7 +139,7 @@ builder.Services.AddHttpClient("web-push", client =>
     // 推送端点和 VAPID 授权头不能进入 HttpClient 默认诊断日志。
     .RemoveAllLoggers()
     .ConfigurePrimaryHttpMessageHandler(() => WebPushNotificationProvider.CreateHttpHandler());
-builder.Services.AddScoped<IWebPushTransport>(sp => new WebPushNotificationProvider(
+builder.Services.AddSingleton<IWebPushTransport>(sp => new WebPushNotificationProvider(
     sp.GetRequiredService<IHttpClientFactory>().CreateClient("web-push"),
     sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<WebPushOptions>>(),
     sp.GetRequiredService<ILogger<WebPushNotificationProvider>>()));
