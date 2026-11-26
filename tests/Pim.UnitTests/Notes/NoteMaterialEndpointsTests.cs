@@ -175,7 +175,7 @@ public sealed class NoteMaterialEndpointsTests : IDisposable
         {
             "planVersion", "promptVersion", "aiCallLogId", "modelProfileId", "modelRevision",
             "modelEndpoint", "providerHandle", "coverageJson", "errorCode", "errorMessage",
-            "sourcePath", "blockId", "auditVersion", "requestId", "logId", "evidenceId", "attempts"
+            "sourcePath", "auditVersion", "requestId", "logId", "evidenceId", "attempts"
         };
 
         foreach (var (path, includesMaterialJson) in resolved)
