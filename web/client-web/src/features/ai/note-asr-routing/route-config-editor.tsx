@@ -145,7 +145,7 @@ export function RouteConfigEditor({
         request.localModelId = selectedLocal
         request.localModelRevision = localProfile?.revision ?? null
       } else {
-        request.cloudModelId = selectedCloud
+        request.cloudModelId = selectedCloud || null
       }
       await onSave(request)
       setNotice('路由设置已保存；新任务按新设置创建，已存在的任务保持原目标。')
