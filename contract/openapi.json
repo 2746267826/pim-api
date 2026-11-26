@@ -14726,6 +14726,11 @@
       "MobileManagedLocationPointDto": {
         "additionalProperties": false,
         "properties": {
+          "deletedAtUtc": {
+            "format": "date-time",
+            "nullable": true,
+            "type": "string"
+          },
           "deviceId": {
             "type": "string"
           },
@@ -44653,6 +44658,16 @@
               }
             },
             "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "Conflict"
           },
           "500": {
             "content": {

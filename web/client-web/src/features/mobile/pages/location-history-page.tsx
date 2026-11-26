@@ -177,8 +177,9 @@ export function LocationHistoryPage() {
 
     if (activePoint) {
       const latest = items.find((point) => point.id === activePoint.id)
-      if (latest) {
+      if (latest && latest.deletedAtUtc == null) {
         // 冲突后必须把服务端最新 revision 带回编辑态；否则下一次保存仍然携带旧 revision。
+        // 排除态、更新时间与删除态也必须以服务端为准；坐标保留用户正在编辑的输入。
         setActivePoint((previous) => previous && previous.id === latest.id
           ? {
               ...previous,
@@ -186,19 +187,32 @@ export function LocationHistoryPage() {
               originalLatitude: latest.originalLatitude,
               originalLongitude: latest.originalLongitude,
               isExcluded: latest.isExcluded,
+              isCorrected: latest.isCorrected,
+              excludedAtUtc: latest.excludedAtUtc,
               updatedAtUtc: latest.updatedAtUtc,
+              deletedAtUtc: latest.deletedAtUtc,
             }
           : previous)
+        setPointExcluded(latest.isExcluded)
       } else {
         setActivePoint(null)
-        setPointError('这个定位点已被永久删除，无法继续保存。')
+        setPointError(latest
+          ? '这个定位点已被永久删除，无法继续保存。'
+          : '这个定位点已不存在或已不在当前筛选结果中，无法继续保存。')
       }
     }
 
     if (deleteTarget) {
       const latest = items.find((point) => point.id === deleteTarget.id)
-      setDeleteTarget((previous) => previous && latest
-        ? { ...previous, revision: latest.revision }
+      setDeleteTarget((previous) => previous && latest && latest.deletedAtUtc == null
+        ? {
+            ...previous,
+            revision: latest.revision,
+            isExcluded: latest.isExcluded,
+            excludedAtUtc: latest.excludedAtUtc,
+            updatedAtUtc: latest.updatedAtUtc,
+            deletedAtUtc: latest.deletedAtUtc,
+          }
         : null)
     }
   }

@@ -511,19 +511,175 @@ public sealed class MobileLocationCorrectionService
         return new MobileLocationPointMutationResult(MapPoint(point), recomputedAtUtc);
     }
 
-    public Task<MobileLocationSegmentMergeResult> MergeAdjacentSegmentsAsync(
+    public async Task<MobileLocationSegmentMergeResult> MergeAdjacentSegmentsAsync(
         MobileLocationSegmentMergeRequest request,
         CancellationToken ct = default)
-        => ExecuteMutationAsync(
-            token => MergeAdjacentSegmentsAttemptAsync(request, token),
-            ct);
+    {
+        var normalized = NormalizeSegmentMergeRequest(request);
+        try
+        {
+            return await ExecuteMutationAsync(
+                token => MergeAdjacentSegmentsAttemptAsync(normalized, token),
+                ct);
+        }
+        catch (DbUpdateException ex) when (!ct.IsCancellationRequested
+            && MobileDbErrors.IsUniqueConstraintViolation(ex))
+        {
+            // 并发相同请求可能同时通过预检查，唯一索引只允许一个插入。回滚后读回赢家：
+            // 相同目标状态按幂等成功返回，不同 Kind 则是明确冲突。
+            _db.ChangeTracker.Clear();
+            var userId = MobileUserContext.RequireUserId(_currentUser);
+            var boundaryDeviceId = await _db.Set<MobileLocationPointEntity>()
+                .AsNoTracking()
+                .Where(point => point.UserId == userId && point.Id == normalized.BoundaryPointId)
+                .Select(point => point.DeviceId)
+                .SingleOrDefaultAsync(ct);
+            var winner = await FindSegmentMergeAsync(
+                userId,
+                normalized.BoundaryPointId,
+                boundaryDeviceId,
+                ct);
+            if (winner is not null
+                && string.Equals(winner.Kind, normalized.Kind, StringComparison.Ordinal))
+            {
+                return new MobileLocationSegmentMergeResult(
+                    winner.Kind,
+                    normalized.BoundaryPointId,
+                    request.RangeStartUtc,
+                    request.RangeEndUtc,
+                    winner.CreatedAt);
+            }
+
+            throw new DomainException(6205, "这个分段边界已被其他修改更新，请刷新后重试。");
+        }
+    }
 
     private async Task<MobileLocationSegmentMergeResult> MergeAdjacentSegmentsAttemptAsync(
-        MobileLocationSegmentMergeRequest request,
+        NormalizedSegmentMerge normalized,
         CancellationToken ct)
     {
         var userId = MobileUserContext.RequireUserId(_currentUser);
-        var segmentIds = (request.SegmentIds ?? []).Where(id => !string.IsNullOrWhiteSpace(id)).Distinct().ToList();
+        var tracks = await _aggregationService.GetTracksAsync(new MobileLocationQueryRequest(
+            normalized.RangeStartUtc,
+            normalized.RangeEndUtc,
+            normalized.Timezone,
+            normalized.DeviceId,
+            IncludeRejected: false), ct);
+
+        var boundaryPoint = await _db.Set<MobileLocationPointEntity>()
+            .AsNoTracking()
+            .SingleOrDefaultAsync(point => point.UserId == userId
+                && point.Id == normalized.BoundaryPointId, ct)
+            ?? throw new DomainException(40401, "轨迹分段不存在或不在同一时间范围内。");
+        if (!string.IsNullOrWhiteSpace(normalized.DeviceId)
+            && !string.Equals(boundaryPoint.DeviceId, normalized.DeviceId, StringComparison.Ordinal))
+        {
+            throw new DomainException(40401, "轨迹分段不存在或不在同一时间范围内。");
+        }
+
+        var endpointIds = new[] { normalized.FirstPointId, normalized.LastPointId };
+        var endpoints = await _db.Set<MobileLocationPointEntity>()
+            .AsNoTracking()
+            .Where(point => point.UserId == userId && endpointIds.Contains(point.Id))
+            .Select(point => new { point.Id, point.DeviceId })
+            .ToListAsync(ct);
+        if (endpoints.Count != 2
+            || endpoints.Any(endpoint =>
+                !string.Equals(endpoint.DeviceId, boundaryPoint.DeviceId, StringComparison.Ordinal)))
+        {
+            throw new DomainException(40401, "轨迹分段不存在或不在同一时间范围内。");
+        }
+
+        var existing = await FindSegmentMergeAsync(
+            userId,
+            normalized.BoundaryPointId,
+            boundaryPoint.DeviceId,
+            ct);
+        if (existing is not null)
+        {
+            if (!string.Equals(existing.Kind, normalized.Kind, StringComparison.Ordinal))
+            {
+                throw new DomainException(
+                    6205,
+                    "这个分段边界已经按其他分段类型合并，请刷新后重试。");
+            }
+
+            // 同一目标状态重试：首次合并已生效，分段 ID 已经变化，但边界覆盖仍是同一份。
+            return new MobileLocationSegmentMergeResult(
+                existing.Kind,
+                normalized.BoundaryPointId,
+                normalized.RangeStartUtc,
+                normalized.RangeEndUtc,
+                existing.CreatedAt);
+        }
+
+        var segments = tracks.SelectMany(track => track.Segments)
+            .Where(segment => normalized.SegmentIds.Contains(segment.Id, StringComparer.Ordinal))
+            .OrderBy(segment => segment.StartUtc)
+            .ToList();
+        if (segments.Count != 2)
+        {
+            throw new DomainException(6205, "分段已因其他修改发生变化，请刷新后重试。");
+        }
+
+        var first = segments[0];
+        var second = segments[1];
+        if (!string.Equals(first.DeviceId, second.DeviceId, StringComparison.Ordinal)
+            || !string.Equals(first.Path[^1].Id, second.Path[0].Id, StringComparison.Ordinal)
+            || !Guid.TryParse(first.Path[^1].Id, out var boundaryPointId)
+            || boundaryPointId != normalized.BoundaryPointId)
+        {
+            throw new DomainException(6205, "分段已因其他修改发生变化，请刷新后重试。");
+        }
+        if (!string.Equals(first.DeviceId, boundaryPoint.DeviceId, StringComparison.Ordinal))
+            throw new DomainException(40401, "轨迹分段不存在或不在同一时间范围内。");
+
+        var now = _timeProvider.GetUtcNow();
+        _db.Set<MobileLocationSegmentMergeEntity>().Add(new MobileLocationSegmentMergeEntity
+        {
+            UserId = userId,
+            DeviceId = first.DeviceId,
+            BeforePointId = boundaryPointId,
+            AfterPointId = boundaryPointId,
+            Kind = normalized.Kind,
+            ActorUserId = userId,
+            CreatedAt = now
+        });
+
+        EnqueueAudit(userId, "mobile.location.segment.merge", null, new Dictionary<string, string>
+        {
+            ["deviceId"] = first.DeviceId,
+            ["boundaryPointId"] = boundaryPointId.ToString(),
+            ["kind"] = normalized.Kind,
+            ["segmentIds"] = string.Join(',', normalized.SegmentIds)
+        });
+        await _db.SaveChangesAsync(ct);
+
+        var recomputedAtUtc = await RecalculateAsync(
+            [new MobileLocationRecalculationScope(
+                first.DeviceId,
+                normalized.RangeStartUtc,
+                normalized.RangeEndUtc)],
+            ct);
+        return new MobileLocationSegmentMergeResult(
+            normalized.Kind,
+            boundaryPointId,
+            first.StartUtc,
+            second.EndUtc,
+            recomputedAtUtc);
+    }
+
+    /// <summary>
+    /// 分段 ID 自带首尾点（<c>segment_{first:N}_{last:N}</c>）。先解析出共享边界，
+    /// 才能在“首次合并已完成、分段 ID 已变化”的重试请求上识别目标状态，而不是重算后判 404。
+    /// </summary>
+    private static NormalizedSegmentMerge NormalizeSegmentMergeRequest(MobileLocationSegmentMergeRequest request)
+    {
+        var segmentIds = (request.SegmentIds ?? [])
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .Select(id => id.Trim())
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
         if (segmentIds.Count != 2)
             throw new DomainException(6210, "一次只能合并两个相邻分段。");
         var kind = request.Kind?.Trim().ToLowerInvariant();
@@ -532,84 +688,86 @@ public sealed class MobileLocationCorrectionService
         if (request.RangeEndUtc <= request.RangeStartUtc)
             throw new DomainException(6210, "时间范围无效。");
 
-        var tracks = await _aggregationService.GetTracksAsync(new MobileLocationQueryRequest(
-            request.RangeStartUtc,
-            request.RangeEndUtc,
-            request.Timezone,
-            request.DeviceId,
-            IncludeRejected: false), ct);
-        var segments = tracks.SelectMany(track => track.Segments)
-            .Where(segment => segmentIds.Contains(segment.Id, StringComparer.Ordinal))
-            .OrderBy(segment => segment.StartUtc)
-            .ToList();
-        if (segments.Count != 2)
-            throw new DomainException(40401, "轨迹分段不存在或不在同一时间范围内。");
-        var first = segments[0];
-        var second = segments[1];
-        if (!string.Equals(first.DeviceId, second.DeviceId, StringComparison.Ordinal)
-            || !string.Equals(first.Path[^1].Id, second.Path[0].Id, StringComparison.Ordinal))
+        if (!MobileLocationSegmentBoundaries.TryParseSegmentId(
+                segmentIds[0], out var firstStart, out var firstEnd)
+            || !MobileLocationSegmentBoundaries.TryParseSegmentId(
+                segmentIds[1], out var secondStart, out var secondEnd))
         {
-            throw new DomainException(6210, "只能合并共享边界点的相邻分段。");
-        }
-        if (!Guid.TryParse(first.Path[^1].Id, out var boundaryPointId))
             throw new DomainException(6210, "分段边界无效。");
+        }
 
-        var now = _timeProvider.GetUtcNow();
-        var existing = await _db.Set<MobileLocationSegmentMergeEntity>()
-            .SingleOrDefaultAsync(merge => merge.UserId == userId
-                && merge.DeviceId == first.DeviceId
-                && merge.BeforePointId == boundaryPointId
-                && merge.AfterPointId == boundaryPointId, ct);
-        if (existing is null)
+        string orderFirst;
+        string orderSecond;
+        Guid segmentFirstPointId;
+        Guid boundaryPointId;
+        Guid segmentLastPointId;
+        if (firstEnd == secondStart)
         {
-            _db.Set<MobileLocationSegmentMergeEntity>().Add(new MobileLocationSegmentMergeEntity
-            {
-                UserId = userId,
-                DeviceId = first.DeviceId,
-                BeforePointId = boundaryPointId,
-                AfterPointId = boundaryPointId,
-                Kind = kind,
-                ActorUserId = userId,
-                CreatedAt = now
-            });
+            (orderFirst, orderSecond) = (segmentIds[0], segmentIds[1]);
+            (segmentFirstPointId, boundaryPointId, segmentLastPointId) = (firstStart, firstEnd, secondEnd);
+        }
+        else if (secondEnd == firstStart)
+        {
+            (orderFirst, orderSecond) = (segmentIds[1], segmentIds[0]);
+            (segmentFirstPointId, boundaryPointId, segmentLastPointId) = (secondStart, secondEnd, firstEnd);
         }
         else
         {
-            existing.Kind = kind;
-            existing.CreatedAt = now;
-            existing.ActorUserId = userId;
+            throw new DomainException(6210, "只能合并共享边界点的相邻分段。");
         }
 
-        EnqueueAudit(userId, "mobile.location.segment.merge", null, new Dictionary<string, string>
+        if (boundaryPointId == Guid.Empty
+            || segmentFirstPointId == Guid.Empty
+            || segmentLastPointId == Guid.Empty
+            || boundaryPointId == segmentFirstPointId
+            || boundaryPointId == segmentLastPointId
+            || segmentFirstPointId == segmentLastPointId)
         {
-            ["deviceId"] = first.DeviceId,
-            ["boundaryPointId"] = boundaryPointId.ToString(),
-            ["kind"] = kind,
-            ["segmentIds"] = string.Join(',', segmentIds)
-        });
-        try
-        {
-            await _db.SaveChangesAsync(ct);
-        }
-        catch (DbUpdateException ex) when (!ct.IsCancellationRequested
-            && MobileDbErrors.IsUniqueConstraintViolation(ex))
-        {
-            throw new DomainException(6205, "这个分段边界已被其他修改更新，请刷新后重试。");
+            throw new DomainException(6210, "分段边界无效。");
         }
 
-        var recomputedAtUtc = await RecalculateAsync(
-            [new MobileLocationRecalculationScope(
-                first.DeviceId,
-                request.RangeStartUtc,
-                request.RangeEndUtc)],
-            ct);
-        return new MobileLocationSegmentMergeResult(
+        return new NormalizedSegmentMerge(
+            [orderFirst, orderSecond],
             kind,
+            request.RangeStartUtc,
+            request.RangeEndUtc,
+            request.Timezone,
+            request.DeviceId?.Trim(),
+            segmentFirstPointId,
             boundaryPointId,
-            first.StartUtc,
-            second.EndUtc,
-            recomputedAtUtc);
+            segmentLastPointId);
     }
+
+    private async Task<MobileLocationSegmentMergeEntity?> FindSegmentMergeAsync(
+        Guid userId,
+        Guid boundaryPointId,
+        string? deviceId,
+        CancellationToken ct)
+    {
+        // 边界点 ID 已唯一归属一台设备。请求未带 deviceId 时也必须按边界点设备查询，
+        // 否则历史脏数据里同一边界存在多设备行时 SingleOrDefault 会抛异常而不是给出 409。
+        if (string.IsNullOrWhiteSpace(deviceId))
+            return null;
+
+        var device = deviceId.Trim();
+        return await _db.Set<MobileLocationSegmentMergeEntity>()
+            .AsNoTracking()
+            .SingleOrDefaultAsync(merge => merge.UserId == userId
+                && merge.DeviceId == device
+                && merge.BeforePointId == boundaryPointId
+                && merge.AfterPointId == boundaryPointId, ct);
+    }
+
+    private sealed record NormalizedSegmentMerge(
+        IReadOnlyList<string> SegmentIds,
+        string Kind,
+        DateTimeOffset RangeStartUtc,
+        DateTimeOffset RangeEndUtc,
+        string? Timezone,
+        string? DeviceId,
+        Guid FirstPointId,
+        Guid BoundaryPointId,
+        Guid LastPointId);
 
     public async Task<IReadOnlyList<MobileLocationPointRevisionDto>> GetRevisionsAsync(
         Guid pointId,
@@ -817,7 +975,8 @@ public sealed class MobileLocationCorrectionService
                 && (point.Latitude != point.OriginalLatitude || point.Longitude != point.OriginalLongitude),
             point.Revision,
             point.ExcludedAtUtc,
-            point.UpdatedAt);
+            point.UpdatedAt,
+            point.DeletedAtUtc);
 
     private static void ValidateCoordinates(double latitude, double longitude)
     {

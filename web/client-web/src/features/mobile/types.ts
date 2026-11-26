@@ -199,6 +199,7 @@ export interface ManagedLocationPoint {
   revision: number
   excludedAtUtc: string | null
   updatedAtUtc: string | null
+  deletedAtUtc: string | null
 }
 
 export interface ManagedLocationPointPage {

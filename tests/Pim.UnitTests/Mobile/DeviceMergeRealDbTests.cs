@@ -124,6 +124,130 @@ public sealed class DeviceMergeRealDbTests
         }
     }
 
+    [SkippableFact]
+    public async Task MergeAsync_OnPostgres_RemapsDuplicateNaturalKeyHistoryWithoutDanglingReferences()
+    {
+        var connStr = RealDbTestConnection.Require();
+        MobileTestHelpers.RegisterMobileModule();
+
+        await using var admin = new NpgsqlConnection(connStr);
+        await admin.OpenAsync();
+
+        var schema = $"test_device_merge_history_{Guid.NewGuid():N}";
+        try
+        {
+            await CreateSchemaAsync(admin, schema);
+
+            var searchPathConn = new NpgsqlConnectionStringBuilder(connStr) { SearchPath = schema }.ConnectionString;
+            var options = new DbContextOptionsBuilder<PimDbContext>()
+                .UseNpgsql(searchPathConn, npgsql => npgsql.EnableRetryOnFailure(3))
+                .Options;
+
+            await using var db = new PimDbContext(options);
+            var recordedAt = Now.AddDays(-45);
+            var targetPoint = new MobileLocationPointEntity
+            {
+                UserId = UserId,
+                DeviceId = TargetDeviceId,
+                RecordedAtUtc = recordedAt,
+                Latitude = 31.2304m,
+                Longitude = 121.4737m,
+                HorizontalAccuracyMeters = 12.5m,
+                Provider = "fused",
+                Source = "android",
+            };
+            var sourcePoint = new MobileLocationPointEntity
+            {
+                UserId = UserId,
+                DeviceId = SourceDeviceA,
+                RecordedAtUtc = recordedAt,
+                Latitude = 31.2304m,
+                Longitude = 121.4737m,
+                HorizontalAccuracyMeters = 12.5m,
+                Provider = "fused",
+                Source = "android",
+            };
+            var targetMerge = new MobileLocationSegmentMergeEntity
+            {
+                UserId = UserId,
+                DeviceId = TargetDeviceId,
+                BeforePointId = targetPoint.Id,
+                AfterPointId = targetPoint.Id,
+                Kind = "stay",
+                ActorUserId = UserId,
+                CreatedAt = Now.AddDays(-3),
+            };
+            db.Set<MobileDeviceEntity>().AddRange(
+                Device(TargetDeviceId, Now),
+                Device(SourceDeviceA, Now.AddDays(-60)));
+            db.Set<MobileLocationPointEntity>().AddRange(targetPoint, sourcePoint);
+            db.Set<MobileLocationPointRevisionEntity>().Add(new MobileLocationPointRevisionEntity
+            {
+                UserId = UserId,
+                PointId = sourcePoint.Id,
+                DeviceId = SourceDeviceA,
+                Operation = "correct",
+                RevisionBefore = 0,
+                RevisionAfter = 1,
+                OriginalLatitude = sourcePoint.Latitude,
+                OriginalLongitude = sourcePoint.Longitude,
+                NewLatitude = 31.24m,
+                NewLongitude = 121.48m,
+                ActorUserId = UserId,
+                CreatedAt = Now.AddDays(-2),
+            });
+            db.Set<MobileLocationSegmentMergeEntity>().AddRange(
+                targetMerge,
+                new MobileLocationSegmentMergeEntity
+                {
+                    UserId = UserId,
+                    DeviceId = SourceDeviceA,
+                    BeforePointId = sourcePoint.Id,
+                    AfterPointId = sourcePoint.Id,
+                    Kind = "move",
+                    ActorUserId = UserId,
+                    CreatedAt = Now.AddDays(-1),
+                });
+            await db.SaveChangesAsync();
+
+            var service = new DeviceManagementService(
+                db, MobileTestHelpers.CurrentUser(UserId), MobileTestHelpers.Time(Now));
+
+            await service.MergeAsync([SourceDeviceA], TargetDeviceId, CancellationToken.None);
+
+            db.ChangeTracker.Clear();
+            var retainedPoint = Assert.Single(await db.Set<MobileLocationPointEntity>()
+                .IgnoreQueryFilters()
+                .ToListAsync());
+            Assert.Equal(targetPoint.Id, retainedPoint.Id);
+            Assert.Equal(TargetDeviceId, retainedPoint.DeviceId);
+
+            var revision = Assert.Single(await db.Set<MobileLocationPointRevisionEntity>().ToListAsync());
+            Assert.Equal(targetPoint.Id, revision.PointId);
+            Assert.Equal(TargetDeviceId, revision.DeviceId);
+
+            var merge = Assert.Single(await db.Set<MobileLocationSegmentMergeEntity>().ToListAsync());
+            Assert.Equal(targetMerge.Id, merge.Id);
+            Assert.Equal(TargetDeviceId, merge.DeviceId);
+            Assert.Equal(targetPoint.Id, merge.BeforePointId);
+            Assert.Equal(targetPoint.Id, merge.AfterPointId);
+            Assert.Equal("stay", merge.Kind);
+
+            // 直接按已删除源点 ID 做反查，确认两张历史表都没有可指向已不存在点的悬空引用。
+            Assert.False(await db.Set<MobileLocationPointRevisionEntity>()
+                .AnyAsync(row => row.PointId == sourcePoint.Id));
+            Assert.False(await db.Set<MobileLocationSegmentMergeEntity>()
+                .AnyAsync(row => row.BeforePointId == sourcePoint.Id || row.AfterPointId == sourcePoint.Id));
+        }
+        finally
+        {
+            await using var cleanup = new NpgsqlConnection(connStr);
+            await cleanup.OpenAsync();
+            await using var drop = new NpgsqlCommand($"DROP SCHEMA IF EXISTS \"{schema}\" CASCADE", cleanup);
+            await drop.ExecuteNonQueryAsync();
+        }
+    }
+
     private static async Task CreateSchemaAsync(NpgsqlConnection conn, string schema)
     {
         // 先显式确认目标库里有可借用的表结构；「缺表」说明这台机器没有可用的真库数据

@@ -38,6 +38,7 @@ const state = vi.hoisted(() => ({
           revision: 4,
           excludedAtUtc: null,
           updatedAtUtc: null,
+          deletedAtUtc: null,
         },
       ],
       nextCursor: null,
@@ -251,7 +252,12 @@ describe('历史位置手动纠正（真实页面，API 边界为隔离 fixture�
     state.points.refetch.mockResolvedValue({
       data: {
         ...state.points.data,
-        items: [{ ...state.points.data.items[0], revision: 5 }],
+        items: [{
+          ...state.points.data.items[0],
+          revision: 5,
+          isExcluded: true,
+          excludedAtUtc: '2026-11-25T10:30:00Z',
+        }],
       },
     })
     const user = userEvent.setup()
@@ -267,6 +273,9 @@ describe('历史位置手动纠正（真实页面，API 边界为隔离 fixture�
       '这个定位点已被其他修改更新。已刷新到最新修订，可直接重试。',
     )).toBeTruthy()
     await waitFor(() => expect(state.points.refetch).toHaveBeenCalled())
+    await waitFor(() => expect((screen.getByRole('checkbox', {
+      name: '标记为误报，从轨迹和统计中排除',
+    }) as HTMLInputElement).checked).toBe(true))
 
     await user.click(screen.getByRole('button', { name: '保存修改' }))
     await waitFor(() => expect(actions.correct.mutateAsync).toHaveBeenLastCalledWith({
@@ -275,10 +284,38 @@ describe('历史位置手动纠正（真实页面，API 边界为隔离 fixture�
         latitude: 31.25,
         longitude: 121.473701,
         revision: 5,
-        excluded: false,
+        excluded: true,
         reason: null,
       },
     }))
+  })
+
+  it('409 后服务端已永久删除该点时关闭编辑，不允许用旧状态再次提交', async () => {
+    actions.correct.mutateAsync.mockRejectedValueOnce(
+      new ApiError('这个定位点已被其他修改更新，请刷新后重新选择。', 6204, 409),
+    )
+    state.points.refetch.mockResolvedValue({
+      data: {
+        ...state.points.data,
+        items: [{
+          ...state.points.data.items[0],
+          revision: 5,
+          deletedAtUtc: '2026-11-25T11:00:00Z',
+        }],
+      },
+    })
+    const user = userEvent.setup()
+    renderPage()
+    await openPoint()
+
+    const latitude = screen.getByLabelText('纬度')
+    await user.clear(latitude)
+    await user.type(latitude, '31.25')
+    await user.click(screen.getByRole('button', { name: '保存修改' }))
+
+    await waitFor(() => expect(state.points.refetch).toHaveBeenCalled())
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(actions.correct.mutateAsync).toHaveBeenCalledTimes(1)
   })
 
   it('409 坐标重复冲突显示服务器原因，不误报 revision 冲突', async () => {

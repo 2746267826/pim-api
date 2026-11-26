@@ -86,7 +86,7 @@ internal static class MobileLocationSegmentBoundaries
         return query;
     }
 
-    private static bool TryParseSegmentId(string segmentId, out Guid firstPointId, out Guid lastPointId)
+    public static bool TryParseSegmentId(string segmentId, out Guid firstPointId, out Guid lastPointId)
     {
         firstPointId = Guid.Empty;
         lastPointId = Guid.Empty;

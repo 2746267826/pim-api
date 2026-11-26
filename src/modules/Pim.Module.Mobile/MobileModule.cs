@@ -393,6 +393,7 @@ public sealed class MobileModule : IModule
         .Produces(401)
         .Produces<ApiResponse<string>>(400)
         .Produces<ApiResponse<string>>(404)
+        .Produces<ApiResponse<string>>(409)
         .Produces<ApiResponse<string>>(500);
 
         group.MapGet("/location/places", async (

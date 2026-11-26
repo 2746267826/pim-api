@@ -553,6 +553,99 @@ public sealed class MobileLocationCorrectionServiceTests
     }
 
     [Fact]
+    public async Task MergeAdjacentSegmentsAsync_SameTargetRetrySucceedsButDifferentKindConflicts()
+    {
+        await using var db = MobileTestHelpers.CreateDb();
+        SeedPoint(db, Id(17), Now, 31.230416, 121.473701);
+        SeedPoint(db, Id(18), Now.AddMinutes(12), 31.230800, 121.473701);
+        SeedPoint(db, Id(19), Now.AddMinutes(25), 31.260000, 121.510000);
+        SeedPoint(db, Id(20), Now.AddMinutes(40), 31.260500, 121.510500);
+        await db.SaveChangesAsync();
+        var services = CreateServices(db);
+        var query = new MobileLocationQueryRequest(
+            RangeStartUtc: Now.AddHours(-1),
+            RangeEndUtc: Now.AddHours(1),
+            Timezone: "Asia/Shanghai");
+        var before = Assert.Single(await services.Aggregation.GetTracksAsync(query, CancellationToken.None));
+        var request = new MobileLocationSegmentMergeRequest(
+            [before.Segments[0].Id, before.Segments[1].Id],
+            "move",
+            query.RangeStartUtc!.Value,
+            query.RangeEndUtc!.Value,
+            Timezone: query.Timezone,
+            DeviceId: DeviceId);
+
+        var first = await services.Correction.MergeAdjacentSegmentsAsync(request, CancellationToken.None);
+        var retried = await services.Correction.MergeAdjacentSegmentsAsync(request, CancellationToken.None);
+
+        Assert.Equal(first.BoundaryPointId, retried.BoundaryPointId);
+        Assert.Single(await db.Set<MobileLocationSegmentMergeEntity>().ToListAsync());
+        var afterRetry = Assert.Single(await services.Aggregation.GetTracksAsync(query, CancellationToken.None));
+        Assert.Equal(2, afterRetry.SegmentCount);
+        Assert.Equal(3, afterRetry.Segments[0].PointCount);
+
+        var conflict = await Assert.ThrowsAsync<DomainException>(
+            () => services.Correction.MergeAdjacentSegmentsAsync(
+                request with { Kind = "stay" },
+                CancellationToken.None));
+
+        Assert.Equal(6205, conflict.ErrorCode);
+        db.ChangeTracker.Clear();
+        var retained = Assert.Single(await db.Set<MobileLocationSegmentMergeEntity>().ToListAsync());
+        Assert.Equal("move", retained.Kind);
+    }
+
+    [Fact]
+    public async Task MergeAdjacentSegmentsAsync_StaleSegmentIdsConflictWithoutWritingOverride()
+    {
+        await using var db = MobileTestHelpers.CreateDb();
+        SeedPoint(db, Id(21), Now, 31.230416, 121.473701);
+        SeedPoint(db, Id(22), Now.AddMinutes(12), 31.230800, 121.473701);
+        SeedPoint(db, Id(23), Now.AddMinutes(25), 31.260000, 121.510000);
+        SeedPoint(db, Id(24), Now.AddMinutes(40), 31.260500, 121.510500);
+        await db.SaveChangesAsync();
+        var services = CreateServices(db);
+        var query = new MobileLocationQueryRequest(
+            RangeStartUtc: Now.AddHours(-1),
+            RangeEndUtc: Now.AddHours(1),
+            Timezone: "Asia/Shanghai");
+        var before = Assert.Single(await services.Aggregation.GetTracksAsync(query, CancellationToken.None));
+        Assert.Equal(3, before.SegmentCount);
+
+        // 模拟另一处修改先合并了第二个/第三个分段的边界：旧请求里的第二个 segment ID 已消失，
+        // 但首尾点都还在，因此这是并发修改冲突而不是“分段不存在”。
+        var adjacentBoundary = Guid.Parse(before.Segments[1].Path[^1].Id);
+        db.Set<MobileLocationSegmentMergeEntity>().Add(new MobileLocationSegmentMergeEntity
+        {
+            UserId = MobileTestHelpers.UserId,
+            DeviceId = DeviceId,
+            BeforePointId = adjacentBoundary,
+            AfterPointId = adjacentBoundary,
+            Kind = "move",
+            ActorUserId = MobileTestHelpers.UserId,
+            CreatedAt = Now,
+        });
+        await db.SaveChangesAsync();
+
+        var stale = await Assert.ThrowsAsync<DomainException>(
+            () => services.Correction.MergeAdjacentSegmentsAsync(
+                new MobileLocationSegmentMergeRequest(
+                    [before.Segments[0].Id, before.Segments[1].Id],
+                    "move",
+                    query.RangeStartUtc!.Value,
+                    query.RangeEndUtc!.Value,
+                    Timezone: query.Timezone,
+                    DeviceId: DeviceId),
+                CancellationToken.None));
+
+        Assert.Equal(6205, stale.ErrorCode);
+        db.ChangeTracker.Clear();
+        var merge = Assert.Single(await db.Set<MobileLocationSegmentMergeEntity>().ToListAsync());
+        Assert.Equal(adjacentBoundary, merge.BeforePointId);
+        Assert.Equal(adjacentBoundary, merge.AfterPointId);
+    }
+
+    [Fact]
     public async Task SavedPlaceName_ReusesAcrossDateAndDeviceFilters()
     {
         await using var db = MobileTestHelpers.CreateDb();

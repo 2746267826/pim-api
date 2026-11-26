@@ -30,7 +30,8 @@ public sealed record MobileManagedLocationPointDto(
     bool IsCorrected,
     int Revision,
     DateTimeOffset? ExcludedAtUtc,
-    DateTimeOffset? UpdatedAtUtc);
+    DateTimeOffset? UpdatedAtUtc,
+    DateTimeOffset? DeletedAtUtc);
 
 public sealed record MobileManagedLocationPointPageDto(
     IReadOnlyList<MobileManagedLocationPointDto> Items,
