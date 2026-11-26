@@ -6214,10 +6214,12 @@
             "type": "string"
           },
           "dtEnd": {
+            "description": "ISO-8601 绝对结束时刻，必须携带显式 UTC 偏移；无偏移值会被 400 拒绝。 / ISO-8601 end with explicit UTC offset; offset-less values are rejected.",
             "format": "date-time",
             "type": "string"
           },
           "dtStart": {
+            "description": "ISO-8601 绝对开始时刻，必须携带显式 UTC 偏移；无偏移值会被 400 拒绝。 / ISO-8601 start with explicit UTC offset; offset-less values are rejected.",
             "format": "date-time",
             "type": "string"
           },
@@ -6295,6 +6297,7 @@
             "type": "string"
           },
           "timeZoneId": {
+            "description": "可解析的 IANA/Windows 时区 ID；响应会规范化为 IANA。未知来源请省略。 / Resolvable IANA/Windows id, normalized to IANA in responses; omit when unknown.",
             "nullable": true,
             "type": "string"
           },
@@ -8769,11 +8772,13 @@
         "additionalProperties": false,
         "properties": {
           "allDayEndDateExclusive": {
+            "description": "全天事件的独立排他结束日期；历史全天事件可能为 null（不从 dtEnd 推断）。 / Independent all-day end date (exclusive); legacy rows may be null.",
             "format": "date",
             "nullable": true,
             "type": "string"
           },
           "allDayStartDate": {
+            "description": "全天事件的独立开始日期；历史全天事件可能为 null（不从 dtStart 推断）。 / Independent all-day start date; legacy rows may be null.",
             "format": "date",
             "nullable": true,
             "type": "string"
@@ -8812,22 +8817,27 @@
             "type": "string"
           },
           "displayLocalEnd": {
+            "description": "按 displayTimeZoneId 展示的结束墙钟；全天事件为 null。 / End wall clock in displayTimeZoneId; null for all-day events.",
             "nullable": true,
             "type": "string"
           },
           "displayLocalStart": {
+            "description": "按 displayTimeZoneId 展示的开始墙钟；全天事件为 null。 / Start wall clock in displayTimeZoneId; null for all-day events.",
             "nullable": true,
             "type": "string"
           },
           "displayTimeZoneId": {
+            "description": "展示时区（当前为 Asia/Shanghai）。 / Display zone (currently Asia/Shanghai).",
             "nullable": true,
             "type": "string"
           },
           "dtEnd": {
+            "description": "绝对结束时刻（ISO-8601，含显式偏移）。 / Absolute end instant with explicit offset.",
             "format": "date-time",
             "type": "string"
           },
           "dtStart": {
+            "description": "绝对开始时刻（ISO-8601，含显式偏移）。 / Absolute start instant with explicit offset.",
             "format": "date-time",
             "type": "string"
           },
@@ -8871,10 +8881,12 @@
             "type": "boolean"
           },
           "localEnd": {
+            "description": "事件当地时间墙钟，格式 yyyy-MM-ddTHH:mm:ss；仅 resolved 且非全天时返回，需与 timeZoneId 一起解释。 / Event-local wall clock; only when resolved and timed.",
             "nullable": true,
             "type": "string"
           },
           "localStart": {
+            "description": "事件当地时间墙钟，格式 yyyy-MM-ddTHH:mm:ss；仅 resolved 且非全天时返回，需与 timeZoneId 一起解释。 / Event-local wall clock; only when resolved and timed.",
             "nullable": true,
             "type": "string"
           },
@@ -8951,6 +8963,7 @@
             "type": "string"
           },
           "sourceTimeZoneId": {
+            "description": "来源时区原值（可能是 Windows ID）；null 表示来源未提供。 / Original source zone id (may be Windows); null when unavailable.",
             "nullable": true,
             "type": "string"
           },
@@ -8962,18 +8975,22 @@
             "type": "string"
           },
           "timeZoneId": {
+            "description": "规范化后的 IANA 时区；null 表示未知，不代表 UTC。 / Normalized IANA zone; null means unknown, not UTC.",
             "nullable": true,
             "type": "string"
           },
           "timeZoneIdType": {
+            "description": "timeZoneId 的类型；当前为 iana。 / Type of timeZoneId; currently iana.",
             "nullable": true,
             "type": "string"
           },
           "timeZoneResolution": {
+            "description": "resolved=已解析为 IANA；sourceOnly=仅保留来源值；unknown=无来源信息。 / resolved, sourceOnly, or unknown.",
             "nullable": true,
             "type": "string"
           },
           "timeZoneSourceType": {
+            "description": "来源类型：windows / iana / unknown。 / Source type: windows, iana, or unknown.",
             "nullable": true,
             "type": "string"
           },
@@ -26266,10 +26283,12 @@
             "type": "string"
           },
           "dtEnd": {
+            "description": "ISO-8601 绝对结束时刻，必须携带显式 UTC 偏移；无偏移值会被 400 拒绝。 / ISO-8601 end with explicit UTC offset; offset-less values are rejected.",
             "format": "date-time",
             "type": "string"
           },
           "dtStart": {
+            "description": "ISO-8601 绝对开始时刻，必须携带显式 UTC 偏移；无偏移值会被 400 拒绝。 / ISO-8601 start with explicit UTC offset; offset-less values are rejected.",
             "format": "date-time",
             "type": "string"
           },
@@ -26348,6 +26367,7 @@
             "type": "string"
           },
           "timeZoneId": {
+            "description": "可解析的 IANA/Windows 时区 ID；响应会规范化为 IANA。未知来源请省略。 / Resolvable IANA/Windows id, normalized to IANA in responses; omit when unknown.",
             "nullable": true,
             "type": "string"
           },
@@ -30574,6 +30594,7 @@
       "get": {
         "parameters": [
           {
+            "description": "查询窗口起点（含）。ISO-8601；日期或省略偏移的时间按 UTC 解释，显式偏移（Z/±HH:MM）标识绝对时刻，最长 366 天。 Window start (inclusive). ISO 8601; dates and offset-less values are UTC, explicit offsets are absolute instants; max 366 days.",
             "in": "query",
             "name": "start",
             "required": true,
@@ -30583,6 +30604,7 @@
             }
           },
           {
+            "description": "查询窗口终点（不含）。与 start 使用同一 UTC/显式偏移规则；start/end 必填且跨度不超过 366 天。 Window end (exclusive). Same UTC/explicit-offset rule as start; both are required and the span must not exceed 366 days.",
             "in": "query",
             "name": "end",
             "required": true,
@@ -30592,6 +30614,7 @@
             }
           },
           {
+            "description": "按标题包含匹配。 / Case-sensitive title contains match.",
             "in": "query",
             "name": "search",
             "schema": {
@@ -30599,6 +30622,7 @@
             }
           },
           {
+            "description": "仅返回该日历本下的事件；结果始终限定为当前账号。 / Restrict to one calendar owned by the current account.",
             "in": "query",
             "name": "calendarId",
             "schema": {
@@ -30607,6 +30631,7 @@
             }
           },
           {
+            "description": "页码，从 1 开始；默认 1。 / Page number starting at 1; defaults to 1.",
             "in": "query",
             "name": "page",
             "schema": {
@@ -30615,6 +30640,7 @@
             }
           },
           {
+            "description": "每页条数，1-100；默认 20。 / Page size 1-100; defaults to 20.",
             "in": "query",
             "name": "pageSize",
             "schema": {
