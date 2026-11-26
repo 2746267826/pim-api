@@ -47,13 +47,15 @@ export function NativeNotesPage() {
     return () => window.removeEventListener('pim:api-base-changed', update)
   }, [])
   return <Workspace
-    key={`${user?.id ?? ''}/${serverBinding}`}
+    key={`${user?.id ?? ''}/${user?.role ?? ''}/${serverBinding}`}
     ownerId={user?.id ?? ''}
+    role={user?.role}
     serverBinding={serverBinding}
   />
 }
 
-function Workspace({ ownerId, serverBinding }: { ownerId: string; serverBinding: string }) {
+function Workspace({ ownerId, role, serverBinding }: { ownerId: string; role?: string; serverBinding: string }) {
+  const canViewVersions = role === 'admin'
   const navigate = useNavigate()
   const qc = useQueryClient()
   const [params, setParams] = useSearchParams()
@@ -84,7 +86,7 @@ function Workspace({ ownerId, serverBinding }: { ownerId: string; serverBinding:
   const [promotingVersionId, setPromotingVersionId] = useState('')
   const allowInternalNavigationRef = useRef(false)
   const selectedNoteId = params.get('note') ?? ''
-  const selectedVersionId = params.get('version') ?? ''
+  const selectedVersionId = canViewVersions ? params.get('version') ?? '' : ''
   const changeInternalNavigation = useCallback((change: () => void) => {
     allowInternalNavigationRef.current = true
     change()
@@ -92,6 +94,16 @@ function Workspace({ ownerId, serverBinding }: { ownerId: string; serverBinding:
       allowInternalNavigationRef.current = false
     })
   }, [])
+
+  useEffect(() => {
+    if (canViewVersions || (!params.has('version') && !params.has('versionId'))) return
+    changeInternalNavigation(() => {
+      const next = new URLSearchParams(params)
+      next.delete('version')
+      next.delete('versionId')
+      setParams(next, { replace: true })
+    })
+  }, [canViewVersions, changeInternalNavigation, params, setParams])
 
   useEffect(() => {
     if (!returnNoteId || params.has('note')) return
@@ -215,7 +227,9 @@ function Workspace({ ownerId, serverBinding }: { ownerId: string; serverBinding:
 
   function blockNavigationWhilePromoting() {
     if (!promoteInFlightRef.current) return false
-    setMessage('正在提交版本选择，请等待服务器确认；完成前不能切换笔记。')
+    setMessage(canViewVersions
+      ? '正在提交版本选择，请等待服务器确认；完成前不能切换笔记。'
+      : '正在提交内容选择，请等待服务器确认；完成前不能切换笔记。')
     return true
   }
 
@@ -296,11 +310,9 @@ function Workspace({ ownerId, serverBinding }: { ownerId: string; serverBinding:
     } catch {
       setMessage('无法在本机暂存返回位置；处理完成后可从笔记列表重新打开该笔记。')
     }
-    const query = new URLSearchParams({
-      noteId: selectedSource.noteId,
-      versionId: selectedSource.versionId,
-      action,
-    })
+    const query = new URLSearchParams({ noteId: selectedSource.noteId })
+    if (canViewVersions) query.set('versionId', selectedSource.versionId)
+    query.set('action', action)
     navigate(`/native-notes/processing?${query.toString()}`)
   }
 
@@ -350,7 +362,9 @@ function Workspace({ ownerId, serverBinding }: { ownerId: string; serverBinding:
     if (!sessionIsActive()) return
     setEditorDirty(false)
     setSeed(null)
-    setMessage('固定材料版本已保存。页面正在回读实际服务端版本与当前选用状态。')
+    setMessage(canViewVersions
+      ? '固定材料版本已保存。页面正在回读实际服务端版本与当前选用状态。'
+      : '笔记已保存到服务器，正在回读最新内容。')
     try {
       await Promise.all([
         qc.invalidateQueries({ queryKey: ['native-notes', ownerId, serverBinding] }),
@@ -359,7 +373,11 @@ function Workspace({ ownerId, serverBinding }: { ownerId: string; serverBinding:
       assertSessionActive()
       changeInternalNavigation(() => setParams({ note: upload.noteId }))
     } catch (failure) {
-      if (!isAbortError(failure) && sessionIsActive()) setError(`版本已保存，但页面未能回到该笔记：${errorText(failure)}`)
+      if (!isAbortError(failure) && sessionIsActive()) {
+        setError(canViewVersions
+          ? `版本已保存，但页面未能回到该笔记：${errorText(failure)}`
+          : `笔记已保存，但页面未能回到这篇笔记：${errorText(failure)}`)
+      }
     }
   }
 
@@ -371,9 +389,11 @@ function Workspace({ ownerId, serverBinding }: { ownerId: string; serverBinding:
       ...materialQueries.map((query) => query.refetch()),
     ])
     const failed: string[] = []
-    if (refreshFailed(results[0])) failed.push('当前版本')
-    if (refreshFailed(results[1])) failed.push('版本历史')
-    if (results.slice(2).some((result) => refreshFailed(result))) failed.push('冲突候选材料')
+    if (refreshFailed(results[0])) failed.push(canViewVersions ? '当前版本' : '当前内容')
+    if (refreshFailed(results[1])) failed.push(canViewVersions ? '版本历史' : '冲突状态')
+    if (results.slice(2).some((result) => refreshFailed(result))) {
+      failed.push(canViewVersions ? '冲突候选材料' : '另一份内容')
+    }
     setRefreshIssueState({ noteId: selectedNoteId, failed })
     void sources.refetch().catch(() => undefined)
     void qc.invalidateQueries({ queryKey: ['native-note-material', ownerId, serverBinding] })
@@ -382,13 +402,14 @@ function Workspace({ ownerId, serverBinding }: { ownerId: string; serverBinding:
   }
 
   async function promoteVersion(versionId: string): Promise<PromoteVersionOutcome> {
+    const selectionNoun = canViewVersions ? '版本选择' : '内容选择'
     if (!sessionIsActive()) {
-      return { status: 'failed', message: '账号或服务器已切换，本次版本选择未提交；请在新会话中重新读取。' }
+      return { status: 'failed', message: `账号或服务器已切换，本次${selectionNoun}未提交；请在新会话中重新读取。` }
     }
     const expectedCurrentVersionId =
       selectedCurrent.data?.upload.currentVersionId ?? selectedCurrent.data?.upload.versionId ?? null
     if (promoteInFlightRef.current) {
-      return { status: 'failed', message: '上一次版本选择仍在等待服务器确认，请勿重复提交。' }
+      return { status: 'failed', message: `上一次${selectionNoun}仍在等待服务器确认，请勿重复提交。` }
     }
     promoteInFlightRef.current = true
     setPromoteInFlight(true)
@@ -402,19 +423,25 @@ function Workspace({ ownerId, serverBinding }: { ownerId: string; serverBinding:
       const failed = await refreshVersionState()
       assertSessionActive()
       setError('')
-      setMessage('已采用所选内容，服务器已将它设为当前版本；另一份内容仍保留在版本历史中。')
+      setMessage(canViewVersions
+        ? '已采用所选内容，服务器已将它设为当前版本；另一份内容仍保留在版本历史中。'
+        : '已采用这份内容；另一份内容已保留在服务器。')
       changeInternalNavigation(() => setParams({ note: upload.noteId }))
       return {
         status: 'adopted',
         message: failed.length > 0
-          ? `已采用所选内容；未能重新读取${failed.join('、')}。另一份版本仍保留在版本历史中，请刷新核对当前状态。`
-          : '已采用所选内容。另一份版本仍保留在版本历史中，可随时回看。',
+          ? canViewVersions
+            ? `已采用所选内容；未能重新读取${failed.join('、')}。另一份版本仍保留在版本历史中，请刷新核对当前状态。`
+            : `已采用这份内容；暂时无法刷新${failed.join('、')}，请重新打开这篇笔记核对。`
+          : canViewVersions
+            ? '已采用所选内容。另一份版本仍保留在版本历史中，可随时回看。'
+            : '已采用这份内容，另一份内容仍保留在服务器。',
       }
     } catch (failure) {
       if (isAbortError(failure) || !sessionIsActive()) {
         return {
           status: 'failed',
-          message: '账号或服务器已切换，本次版本选择已停止；未确认是否生效，请在新会话中重新读取。',
+          message: `账号或服务器已切换，本次${selectionNoun}已停止；未确认是否生效，请在新会话中重新读取。`,
         }
       }
       if (failure instanceof ApiError && failure.status === 409) {
@@ -423,12 +450,16 @@ function Workspace({ ownerId, serverBinding }: { ownerId: string; serverBinding:
         if (failed.length > 0) {
           return {
             status: 'stale',
-            message: `服务器拒绝了本次版本选择；未能重新读取${failed.join('、')}。为避免在旧数据上继续选择，已隐藏冲突候选，请刷新核对后重试。`,
+            message: canViewVersions
+              ? `服务器拒绝了本次版本选择；未能重新读取${failed.join('、')}。为避免在旧数据上继续选择，已隐藏冲突候选，请刷新核对后重试。`
+              : `服务器拒绝了本次选择；暂时无法刷新${failed.join('、')}。为避免在旧内容上继续选择，已隐藏冲突选择，请重新读取并核对。`,
           }
         }
         return {
           status: 'stale',
-          message: '服务器拒绝了本次版本选择；已重新读取当前内容和冲突候选，请按最新状态重新选择。',
+          message: canViewVersions
+            ? '服务器拒绝了本次版本选择；已重新读取当前内容和冲突候选，请按最新状态重新选择。'
+            : '服务器拒绝了本次选择；已重新读取当前内容和另一份内容，请核对后重新选择。',
         }
       }
       const failed = await refreshVersionState()
@@ -436,8 +467,12 @@ function Workspace({ ownerId, serverBinding }: { ownerId: string; serverBinding:
       return {
         status: 'failed',
         message: failed.length > 0
-          ? `${errorText(failure)}。未确认本次选择是否成功，请刷新核对后再选择；未能重新读取${failed.join('、')}，已隐藏冲突候选。`
-          : `${errorText(failure)}。未确认本次选择是否成功，请刷新核对后再选择；已重新读取当前版本和冲突候选。`,
+          ? canViewVersions
+            ? `${errorText(failure)}。未确认本次选择是否成功，请刷新核对后再选择；未能重新读取${failed.join('、')}，已隐藏冲突候选。`
+            : `${errorText(failure)}。未确认本次选择是否成功，请刷新核对后再选择；暂时无法刷新${failed.join('、')}，已隐藏冲突选择。`
+          : canViewVersions
+            ? `${errorText(failure)}。未确认本次选择是否成功，请刷新核对后再选择；已重新读取当前版本和冲突候选。`
+            : `${errorText(failure)}。未确认本次选择是否成功，请刷新核对后再选择；已重新读取当前内容和另一份内容。`,
       }
     } finally {
       promoteInFlightRef.current = false
@@ -461,8 +496,10 @@ function Workspace({ ownerId, serverBinding }: { ownerId: string; serverBinding:
       return
     }
     setError('')
-    setMessage('已收起冲突选择，未提交版本变更；冲突候选仍保留在版本历史中，可稍后处理。')
-    if (selectedVersionId) {
+    setMessage(canViewVersions
+      ? '已收起冲突选择，未提交版本变更；冲突候选仍保留在版本历史中，可稍后处理。'
+      : '已收起冲突选择，未提交任何更改；另一份内容仍保留在服务器。')
+    if (canViewVersions && selectedVersionId) {
       changeInternalNavigation(() => setParams({ note: selectedNoteId }))
     }
   }
@@ -480,7 +517,11 @@ function Workspace({ ownerId, serverBinding }: { ownerId: string; serverBinding:
 
     {message && <InlineAlert tone="ok">{message}</InlineAlert>}
     {error && <InlineAlert tone="crit" title="操作未完成">{error}</InlineAlert>}
-    <p className="text-xs leading-5 text-text-3">已保存版本与冲突候选都会保留。含录音的当前版本可在保留原件的前提下续写；历史版本仅供阅读。</p>
+    <p className="text-xs leading-5 text-text-3">
+      {canViewVersions
+        ? '已保存版本与冲突候选都会保留。含录音的当前版本可在保留原件的前提下续写；历史版本仅供阅读。'
+        : '笔记会保存到服务器。发生真实冲突时，可先比较服务器当前内容与另一份已保存内容，再决定采用哪一份。'}
+    </p>
 
     <div className="grid gap-4 xl:grid-cols-[minmax(260px,.72fr)_minmax(0,1.6fr)]">
       <div className="min-w-0">
@@ -489,7 +530,7 @@ function Workspace({ ownerId, serverBinding }: { ownerId: string; serverBinding:
             <div className="flex items-center justify-between gap-2">
               <div>
                 <h2 className="text-sm font-semibold text-text-1">最近笔记</h2>
-                <p className="mt-1 text-xs text-text-3">按当前材料更新排列</p>
+                <p className="mt-1 text-xs text-text-3">{canViewVersions ? '按当前材料更新排列' : '按最近更新排列'}</p>
               </div>
               <Button size="sm" variant="ghost" aria-label="刷新笔记库" onClick={() => void sources.refetch()}><RefreshCw className="size-4" aria-hidden /></Button>
             </div>
@@ -506,14 +547,16 @@ function Workspace({ ownerId, serverBinding }: { ownerId: string; serverBinding:
                       <span className="min-w-0 flex-1">
                         <span className="block truncate text-sm font-medium text-text-1">{item.title}</span>
                         <span className="mt-1 block text-[11px] text-text-4">
-                          当前版本 <span className="mono">{versionShortId(item.currentVersionId)}</span> · 点击打开
+                          {canViewVersions
+                            ? <>当前版本 <span className="mono">{versionShortId(item.currentVersionId)}</span> · 点击打开</>
+                            : '点击打开'}
                         </span>
                       </span>
                       <ArrowRight className="mt-1 size-4 shrink-0 text-text-4" aria-hidden />
                     </div>
                     <div className="mt-3 flex flex-wrap gap-1.5">
                       {item.hasConflict && <StatusBadge tone="warn" dot={false}>有待处理冲突</StatusBadge>}
-                      {!item.hasConflict && <StatusBadge tone="ok" dot={false}>当前版</StatusBadge>}
+                      {!item.hasConflict && <StatusBadge tone="ok" dot={false}>{canViewVersions ? '当前版' : '已同步'}</StatusBadge>}
                     </div>
                   </button>)}</div>}
           </div>
@@ -574,9 +617,10 @@ function Workspace({ ownerId, serverBinding }: { ownerId: string; serverBinding:
           </Button>
           {editorDirty && <p className="w-full text-xs text-text-3">请先保存当前编辑，再开始处理；未保存内容不会发送。</p>}
         </section>}
-        {selectedNoteId && <div className="mb-4 min-w-0">
+        {selectedNoteId && <div className="min-w-0">
           <NoteVersionPanel
             key={selectedNoteId}
+            mode={canViewVersions ? 'admin' : 'conflict'}
             noteId={selectedNoteId}
             versions={selectedNoteVersions}
             versionsLoading={selectedVersions.isPending}
@@ -600,13 +644,14 @@ function Workspace({ ownerId, serverBinding }: { ownerId: string; serverBinding:
           />
         </div>}
         {selectedNoteId && !selectedVersionId && selectedCurrent.isPending
-          ? <Card className="p-6"><Skeleton className="h-8 w-2/3" /><Skeleton className="mt-4 h-56" /><p className="mt-3 text-xs text-text-3">正在读取当前版本…</p></Card>
+          ? <Card className="p-6"><Skeleton className="h-8 w-2/3" /><Skeleton className="mt-4 h-56" /><p className="mt-3 text-xs text-text-3">{canViewVersions ? '正在读取当前版本…' : '正在读取笔记…'}</p></Card>
           : selectedNoteId && !selectedVersionId && selectedCurrent.isError
-            ? <Card className="p-5"><InlineAlert tone="crit" title="当前版本读取失败">{errorText(selectedCurrent.error)}</InlineAlert></Card>
+            ? <Card className="p-5"><InlineAlert tone="crit" title={canViewVersions ? '当前版本读取失败' : '笔记读取失败'}>{errorText(selectedCurrent.error)}</InlineAlert></Card>
             : <NoteEditorPane
               ownerId={ownerId}
               serverBinding={serverBinding}
               api={requestApi}
+              showVersionDetails={canViewVersions}
               versionId={selectedVersionId || selectedSource?.versionId || selectedCurrent.data?.upload.versionId}
               seed={seed ?? undefined}
               onDirtyChange={setEditorDirty}

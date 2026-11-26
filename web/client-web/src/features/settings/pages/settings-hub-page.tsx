@@ -6,7 +6,6 @@ import {
   CalendarCog,
   Cloud,
   Copy,
-  Database,
   HardDrive,
   Images,
   KeyRound,
@@ -208,10 +207,6 @@ export function SettingsHubPage() {
             )}
           </Card>
         </section>
-
-        <p className="text-xs text-text-4">
-          数据中心（<Database className="mb-0.5 inline size-3" />）与提醒等治理页面见一级导航对应分组。
-        </p>
       </div>
     </div>
   )

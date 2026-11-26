@@ -4,6 +4,7 @@ using Pim.Core.Ai;
 using Pim.Core.Common;
 using Pim.Infrastructure.Ai;
 using Pim.Infrastructure.Ai.Asr;
+using Pim.Infrastructure.Auth;
 
 namespace Pim.Api.Endpoints;
 

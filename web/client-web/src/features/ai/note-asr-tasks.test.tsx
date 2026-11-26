@@ -3,10 +3,14 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { NoteAsrTasks } from './note-asr-tasks'
+import { NoteAsrTasks, TaskDetail } from './note-asr-tasks'
 import type { AsrPreset, Model, ModelSettings, NoteAsrTask } from './api'
 
-const api = vi.hoisted(() => ({ noteAsrSources: vi.fn(), noteAsrTasks: vi.fn(), asrPresets: vi.fn(), noteAsrStart: vi.fn(), noteAsrTask: vi.fn(), noteAsrSegments: vi.fn(), noteAsrRetry: vi.fn(), noteAsrStop: vi.fn() }))
+const api = vi.hoisted(() => ({
+  noteAsrSources: vi.fn(), noteAsrTasks: vi.fn(), asrPresets: vi.fn(), noteAsrStart: vi.fn(),
+  noteAsrTask: vi.fn(), noteAsrSegments: vi.fn(), noteAsrRetry: vi.fn(), noteAsrStop: vi.fn(),
+  asrRouteConfig: vi.fn(), noteAsrDestinations: vi.fn(), asrReprocessHistory: vi.fn(), asrRoutingAttempts: vi.fn(),
+}))
 vi.mock('./api', () => ({ aiApi: api }))
 const owner = '11111111-1111-4111-8111-111111111111', version = '22222222-2222-4222-8222-222222222222', id = '33333333-3333-4333-8333-333333333333'
 let qc: QueryClient, model: Model, settings: ModelSettings, task: NoteAsrTask
@@ -28,6 +32,13 @@ beforeEach(() => {
   api.asrPresets.mockResolvedValue([preset]); api.noteAsrTasks.mockResolvedValue([])
   api.noteAsrSources.mockResolvedValue({ total: 1, offset: 0, items: [{ noteId: id, versionId: version, title: '课堂材料', createdAt: task.createdAt, isCurrent: true, hasConflict: false, recordings: 1, totalSamples: 1920000, sampleRate: 16000 }] })
   api.noteAsrTask.mockResolvedValue(task); api.noteAsrStart.mockResolvedValue(task); api.noteAsrRetry.mockResolvedValue(task)
+  api.asrRouteConfig.mockResolvedValue({
+    revision: version, defaultRoute: 'cloud-asr', localModelId: null, localModelRevision: null,
+    cloudConfigured: true, cloudModelId: id, consentVersion: 'consent-1', updatedAt: task.createdAt,
+  })
+  api.noteAsrDestinations.mockResolvedValue({ total: 0, items: [] })
+  api.asrReprocessHistory.mockResolvedValue({ parentTaskId: id, total: 0, offset: 0, limit: 10, items: [] })
+  api.asrRoutingAttempts.mockResolvedValue([])
   api.noteAsrSegments.mockResolvedValue({ total: 2, offset: 0, items: [0, 1].map((index) => ({ index, recordingId: id, recordingSegment: 1, chunkIndex: index + 1, sourceFileIndex: index,
     sourcePath: `recordings/source-${index}.wav`, sourceSha256: 'a'.repeat(64), sourceOffsetSamples: 0, recordingOffsetSamples: index * 960000, timelineOffsetSamples: index * 960000,
     samples: 960000, status: index === 0 ? 'Succeeded' : 'Incomplete', transcript: index === 0 ? '保留成功分片原文' : null,
@@ -113,4 +124,66 @@ it('rerun for a version with history needs explicit consent and creates a new ta
   expect(api.noteAsrStart.mock.calls[0]?.[0].versionId).toBe(version)
   expect(api.noteAsrStart.mock.calls[0]?.[0].consent).toEqual(task.destination)
   await screen.findByText(/该版本已有 1 个转写任务/)
+})
+
+it('hides the service endpoint and internal execution identity from ordinary task detail', async () => {
+  api.noteAsrTask.mockResolvedValue({ ...task, phase: 'VendorTaskState' })
+  api.noteAsrSegments.mockResolvedValue({
+    total: 1,
+    offset: 0,
+    items: [{
+      index: 0, recordingId: id, recordingSegment: 1, chunkIndex: 1, sourceFileIndex: 0,
+      sourcePath: 'recordings/source-0.wav', sourceSha256: 'a'.repeat(64), sourceOffsetSamples: 0,
+      recordingOffsetSamples: 0, timelineOffsetSamples: 0, samples: 960000,
+      status: 'VendorSegmentState', transcript: '保留成功分片原文',
+      attempts: [{
+        requestId: version, logId: id, status: 'VendorAttemptState',
+        errorMessage: 'MiMo raw attempt failure',
+      }],
+    }],
+  })
+  render(<QueryClientProvider client={qc}>
+    <TaskDetail id={task.taskId} userId={owner} serverBinding="https://synthetic.invalid" prefix={['ai', owner, 'note-asr-owner']}
+      showVersionDetails={false} />
+  </QueryClientProvider>)
+  expect(await screen.findByText('逐片进度与恢复')).toBeTruthy()
+  expect(await screen.findByText('本任务使用已确认的云端目标')).toBeTruthy()
+  expect((await screen.findAllByText('处理状态待核对')).length).toBeGreaterThan(0)
+  expect(screen.getByText(/处理记录需核对/)).toBeTruthy()
+  expect(screen.queryByText(/处理详情：服务地址/)).toBeNull()
+  expect(screen.queryByText(task.destination!.endpoint)).toBeNull()
+  expect(screen.queryByText(task.taskId)).toBeNull()
+  expect(screen.queryByText(task.destination!.presetId)).toBeNull()
+  expect(screen.queryByText(/第 1 段/)).toBeNull()
+  expect(screen.queryByText(/原始分块/)).toBeNull()
+  expect(screen.queryByText(/VendorTaskState/)).toBeNull()
+  expect(screen.queryByText(/VendorSegmentState/)).toBeNull()
+  expect(screen.queryByText(/VendorAttemptState/)).toBeNull()
+  expect(screen.queryByText(/MiMo raw attempt failure/)).toBeNull()
+})
+
+it('keeps raw execution states and attempt errors for admins', async () => {
+  api.noteAsrTask.mockResolvedValue({ ...task, phase: 'VendorTaskState' })
+  api.noteAsrSegments.mockResolvedValue({
+    total: 1,
+    offset: 0,
+    items: [{
+      index: 0, recordingId: id, recordingSegment: 1, chunkIndex: 1, sourceFileIndex: 0,
+      sourcePath: 'recordings/source-0.wav', sourceSha256: 'a'.repeat(64), sourceOffsetSamples: 0,
+      recordingOffsetSamples: 0, timelineOffsetSamples: 0, samples: 960000,
+      status: 'VendorSegmentState', transcript: '保留成功分片原文',
+      attempts: [{
+        requestId: version, logId: id, status: 'VendorAttemptState',
+        errorMessage: 'provider attempt diagnostic',
+      }],
+    }],
+  })
+  render(<QueryClientProvider client={qc}>
+    <TaskDetail id={task.taskId} userId={owner} serverBinding="https://synthetic.invalid" prefix={['ai', owner, 'note-asr-owner']} />
+  </QueryClientProvider>)
+
+  expect(await screen.findByText('VendorTaskState')).toBeTruthy()
+  expect(await screen.findByText('VendorSegmentState')).toBeTruthy()
+  expect(await screen.findByText(/VendorAttemptState/)).toBeTruthy()
+  expect(await screen.findByText(/provider attempt diagnostic/)).toBeTruthy()
 })

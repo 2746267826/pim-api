@@ -11,8 +11,11 @@ const errorText = (error: unknown) => error instanceof Error ? error.message : '
 const names: Record<string, string> = { Queued: '等待处理', Running: '转写中', Succeeded: '转写完成', NeedsAttention: '有分片需处理', Stopped: '已停止',
   Failed: '失败', Blocked: '未发送', Cancelled: '已取消', Incomplete: '结果未完整确认', TimedOut: '超时', Unknown: '结果待核对' }
 const time = (samples: number, rate = 16000) => `${Math.floor(samples / rate / 60)}:${String(Math.floor(samples / rate) % 60).padStart(2, '0')}`
-function State({ value }: { value: string }) {
-  return <StatusBadge dot={false} tone={value === 'Succeeded' ? 'ok' : ['Queued', 'Running'].includes(value) ? 'info' : 'warn'}>{names[value] ?? value}</StatusBadge>
+function stateLabel(value: string, showVersionDetails: boolean) {
+  return names[value] ?? (showVersionDetails ? value : '处理状态待核对')
+}
+function State({ value, showVersionDetails = true }: { value: string; showVersionDetails?: boolean }) {
+  return <StatusBadge dot={false} tone={value === 'Succeeded' ? 'ok' : ['Queued', 'Running'].includes(value) ? 'info' : 'warn'}>{stateLabel(value, showVersionDetails)}</StatusBadge>
 }
 
 export function NoteAsrTasks({ userId, models, settings, showDetail }: { userId: string; models: Model[]; settings: ModelSettings; showDetail: (id: string) => void }) {
@@ -91,12 +94,13 @@ export function NoteAsrTasks({ userId, models, settings, showDetail }: { userId:
   </div>
 }
 
-export function TaskDetail({ id, userId, serverBinding, prefix, showDetail }: {
+export function TaskDetail({ id, userId, serverBinding, prefix, showDetail, showVersionDetails = true }: {
   id: string
   userId: string
   serverBinding: string
   prefix: string[]
   showDetail?: (id: string) => void
+  showVersionDetails?: boolean
 }) {
   const qc = useQueryClient(), [offset, setOffset] = useState(0), [selected, setSelected] = useState<number[]>([]), [approved, setApproved] = useState(''), [busy, setBusy] = useState(false), [message, setMessage] = useState('')
   const task = useQuery({ queryKey: [...prefix, id], queryFn: ({ signal }) => aiApi.noteAsrTask(id, signal), refetchInterval: 5000 })
@@ -106,25 +110,25 @@ export function TaskDetail({ id, userId, serverBinding, prefix, showDetail }: {
     if (!task.data || busy) return
     setBusy(true); setMessage('')
     try { await action(task.data); setSelected([]); setApproved(''); await qc.invalidateQueries({ queryKey: prefix }) }
-    catch (error) { setMessage(errorText(error) + '。请先刷新核对，恢复操作不会自动重发。') }
+    catch (error) { setMessage((showVersionDetails ? errorText(error) : '操作状态未确认，请刷新核对') + '。请先刷新核对，恢复操作不会自动重发。') }
     finally { setBusy(false) }
   }
   return <Card className="space-y-4 p-5"><h2 className="text-sm font-semibold text-text-1">逐片进度与恢复</h2>
     {!task.data ? task.isError ? <p role="alert">任务读取失败，请刷新核对。</p> : <Skeleton className="h-20" /> : <>
-      <div className="flex flex-wrap items-center justify-between gap-2"><State value={task.data.phase} /><span className="text-xs text-text-3">{task.data.completedSegments}/{task.data.totalSegments} 片 · 已覆盖 {time(task.data.completedSamples, task.data.sampleRate)} / {time(task.data.totalSamples, task.data.sampleRate)}</span></div>
+      <div className="flex flex-wrap items-center justify-between gap-2"><State value={task.data.phase} showVersionDetails={showVersionDetails} /><span className="text-xs text-text-3">{task.data.completedSegments}/{task.data.totalSegments} 片 · 已覆盖 {time(task.data.completedSamples, task.data.sampleRate)} / {time(task.data.totalSamples, task.data.sampleRate)}</span></div>
       <progress aria-label="成功转写覆盖进度" className="h-2 w-full accent-primary" max={task.data.totalSamples} value={task.data.completedSamples} />
       {!task.data.backgroundProcessingAvailable && <p role="status" className="text-sm text-text-2">服务器未启用后台调度，任务已保存；启用后才会继续处理。</p>}
       <p className="text-xs text-text-3">{task.data.destination ? '本任务使用已确认的云端目标' : '本机排队转写 · 未发送云端'}</p>
-      {task.data.destination && <details className="text-xs text-text-3"><summary className="cursor-pointer">处理详情：服务地址</summary><p className="mt-1 break-all font-mono">{task.data.destination.endpoint}</p></details>}
+      {task.data.destination && showVersionDetails && <details className="text-xs text-text-3"><summary className="cursor-pointer">处理详情：服务地址</summary><p className="mt-1 break-all font-mono">{task.data.destination.endpoint}</p></details>}
       <p className="text-xs text-text-3">停止后不再发送下一片，当前已发送分片会先核对结果。未知结果不会自动重试；成功分片不会重跑。</p>
       {!task.data.stopRequested && task.data.phase !== 'Succeeded' && <Button size="sm" variant="secondary" disabled={busy} onClick={() => void change(() => aiApi.noteAsrStop(id))}>停止后续转写</Button>}
       {segments.isError && <p role="alert">分片结果加载失败，请刷新核对。</p>}
       <div className="space-y-3">{segments.data?.items.map((part) => {
         const retryable = !['Succeeded', 'Running'].includes(part.status)
-        return <div key={part.index} className="space-y-2 rounded-ctl border border-border p-3"><div className="flex flex-wrap items-center justify-between gap-2"><span className="text-sm">第 {part.index + 1} 片 · {time(part.timelineOffsetSamples)}–{time(part.timelineOffsetSamples + part.samples)}</span><State value={part.status} /></div>
+        return <div key={part.index} className="space-y-2 rounded-ctl border border-border p-3"><div className="flex flex-wrap items-center justify-between gap-2"><span className="text-sm">第 {part.index + 1} 片 · {time(part.timelineOffsetSamples)}–{time(part.timelineOffsetSamples + part.samples)}</span><State value={part.status} showVersionDetails={showVersionDetails} /></div>
           {part.transcript != null && <pre aria-label={`第${part.index + 1}片转写`} className="max-h-64 overflow-auto whitespace-pre-wrap break-words text-sm text-text-1">{part.transcript || '空转写，请试听原音频核对。'}</pre>}
-          <details className="text-xs text-text-3"><summary className="cursor-pointer">分片核对与恢复</summary><div className="mt-2 space-y-2"><p>第 {part.recordingSegment} 段 · 原始分块 {part.chunkIndex} · {part.attempts.length} 次记录</p>
-          {part.attempts.map((attempt, index) => <div key={attempt.requestId} className="flex flex-wrap items-center gap-2 text-xs text-text-3"><span>第 {index + 1} 次 · {names[attempt.status] ?? attempt.status}{attempt.errorMessage ? ` · ${attempt.errorMessage}` : ''}</span>
+          <details className="text-xs text-text-3"><summary className="cursor-pointer">分片核对与恢复</summary><div className="mt-2 space-y-2"><p>{showVersionDetails ? `第 ${part.recordingSegment} 段 · 原始分块 ${part.chunkIndex}` : '本段录音'} · {part.attempts.length} 次记录</p>
+          {part.attempts.map((attempt, index) => <div key={attempt.requestId} className="flex flex-wrap items-center gap-2 text-xs text-text-3"><span>第 {index + 1} 次 · {stateLabel(attempt.status, showVersionDetails)}{attempt.errorMessage ? ` · ${showVersionDetails ? attempt.errorMessage : '处理记录需核对'}` : ''}</span>
             {attempt.logId && showDetail && <Button size="sm" variant="ghost" onClick={() => showDetail(attempt.logId!)}>查看分片调用记录</Button>}</div>)}
           {retryable && <label className="flex items-center gap-2 text-xs text-text-2"><input type="checkbox" aria-label={`恢复第${part.index + 1}片`} checked={selected.includes(part.index)} disabled={busy}
             onChange={(event) => { setSelected((s) => event.target.checked ? [...s, part.index] : s.filter((i) => i !== part.index)); setApproved('') }} />选择恢复该片</label>}</div></details>
@@ -133,13 +137,15 @@ export function TaskDetail({ id, userId, serverBinding, prefix, showDetail }: {
       {segments.data && segments.data.total > 10 && <div className="flex gap-2"><Button size="sm" disabled={offset === 0} onClick={() => setOffset((p) => p - 10)}>上一页分片</Button><Button size="sm" disabled={offset + 10 >= segments.data.total} onClick={() => setOffset((p) => p + 10)}>下一页分片</Button></div>}
       {selected.length > 0 && <div className="space-y-3 rounded-ctl border border-border p-3"><p className="break-all text-xs text-text-2">
         {task.data.destination
-          ? `恢复 ${selected.length} 片，仍发送至：${task.data.destination.endpoint} · ${task.data.destination.presetId} v${task.data.destination.presetVersion}。原调用记录和成功转写保留。`
+          ? showVersionDetails
+            ? `恢复 ${selected.length} 片，仍发送至：${task.data.destination.endpoint} · ${task.data.destination.presetId} v${task.data.destination.presetVersion}。原调用记录和成功转写保留。`
+            : `恢复 ${selected.length} 片，仍发送至已确认的云端目标。原调用记录和成功转写保留。`
           : `恢复 ${selected.length} 片，仍在本机执行；不需要云端凭据，本机不可用时只排队。原调用记录和成功转写保留。`}
       </p>
         <label className="flex items-start gap-2 text-xs text-text-2"><input type="checkbox" aria-label="确认分片恢复和可能重复计费" checked={approved === approvalKey} onChange={(event) => setApproved(event.target.checked ? approvalKey : '')} /><span>已核对原目标和记录，确认恢复，理解未知结果的重试可能重复计费</span></label>
         <Button disabled={busy || approved !== approvalKey} onClick={() => void change((value) => aiApi.noteAsrRetry(id, { retryId: createAiRequestId(), expectedUserId: userId, expectedRevision: value.revision,
           segmentIndexes: selected, consent: value.destination ?? null, acknowledgePossibleDuplicateCharge: true }))}>恢复所选分片</Button></div>}
-      <details className="text-xs text-text-3"><summary className="cursor-pointer">高级选项：重处理与历史</summary><div className="mt-3"><NoteAsrReprocessPanel task={task.data} userId={userId} serverBinding={serverBinding} /></div></details>
+      <details className="text-xs text-text-3"><summary className="cursor-pointer">高级选项：重处理与历史</summary><div className="mt-3"><NoteAsrReprocessPanel task={task.data} userId={userId} serverBinding={serverBinding} showVersionDetails={showVersionDetails} /></div></details>
       {message && <p role="alert" className="text-sm text-text-2">{message}</p>}
     </>}
   </Card>

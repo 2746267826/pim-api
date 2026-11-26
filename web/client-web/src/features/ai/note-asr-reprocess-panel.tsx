@@ -12,17 +12,21 @@ import {
 } from './note-asr-reprocess-intent'
 
 const dateTime = (value: string) => new Date(value).toLocaleString()
-const phaseLabel: Record<string, string> = {
+const phaseLabels: Record<string, string> = {
   queued: '等待处理', running: '转写中', succeeded: '转写完成', needsattention: '有分片需处理',
   failed: '失败', stopped: '已停止', unknown: '结果待核对', cancelled: '已取消',
 }
-const label = (value: string) => phaseLabel[value.toLowerCase()] ?? value
+const statusLabel = (value: string, showVersionDetails: boolean) =>
+  phaseLabels[value.toLowerCase()] ?? (showVersionDetails ? value : '处理状态待核对')
+const failureText = (error: unknown, showVersionDetails: boolean, fallback: string) =>
+  showVersionDetails && error instanceof Error && error.message.trim() ? error.message : fallback
 
-export function NoteAsrReprocessPanel({ task, userId, serverBinding, onCreated }: {
+export function NoteAsrReprocessPanel({ task, userId, serverBinding, onCreated, showVersionDetails = true }: {
   task: NoteAsrTask
   userId: string
   serverBinding: string
   onCreated?: (taskId: string) => void
+  showVersionDetails?: boolean
 }) {
   const qc = useQueryClient()
   const [offset, setOffset] = useState(0)
@@ -114,14 +118,16 @@ export function NoteAsrReprocessPanel({ task, userId, serverBinding, onCreated }
       const result = await aiApi.asrReprocess(task.taskId, body)
       clearNoteAsrReprocessIntent(userId, serverBinding, task.taskId, body.clientTaskId)
       setIntentState({ kind: 'none' })
-      setNotice(`已按原标识提交重处理；原任务与历史结果保持不变。新任务：${result.task.taskId}`)
+      setNotice(showVersionDetails
+        ? `已按原标识提交重处理；原任务与历史结果保持不变。新任务：${result.task.taskId}`
+        : '已按原提交提交重处理；原任务与历史结果保持不变。')
       setConfirmed(false)
       setReason('')
       onCreated?.(result.task.taskId)
       await qc.invalidateQueries({ queryKey: ['ai', userId, serverBinding, 'reprocess-history', task.taskId] })
       await qc.invalidateQueries({ queryKey: ['ai', userId, serverBinding, 'note-asr'] })
     } catch (error) {
-      setActionError(`${error instanceof Error ? error.message : '重处理未确认'}。已冻结原提交标识，不会分配新任务、自动重试或重复计费。`)
+      setActionError(`${failureText(error, showVersionDetails, '重处理未确认，请刷新核对')}。已冻结原提交标识，不会分配新任务、自动重试或重复计费。`)
     } finally {
       setBusy(false)
     }
@@ -168,7 +174,8 @@ export function NoteAsrReprocessPanel({ task, userId, serverBinding, onCreated }
         <h3 className="text-sm font-semibold text-text-1">执行尝试与停止</h3>
         <p className="mt-1 break-words text-xs text-text-3">停止只阻止后续分片继续发送；已发送或结果未知的分片不会自动重发或假定成功。</p>
       </div>
-      <Attempts taskId={task.taskId} userId={userId} serverBinding={serverBinding} attempts={attempts} />
+      <Attempts taskId={task.taskId} userId={userId} serverBinding={serverBinding} attempts={attempts}
+        showVersionDetails={showVersionDetails} />
     </Card>
 
     <Card className="min-w-0 space-y-3 p-4 sm:p-5">
@@ -194,9 +201,13 @@ export function NoteAsrReprocessPanel({ task, userId, serverBinding, onCreated }
               任务在本机队列执行，不发送云端、不需要云端凭据；本机离线时保持排队。
             </InlineAlert>}
             {selectedRoute !== 'local' && selectedDestination && <div className="space-y-2 rounded-ctl border border-border p-3 text-xs text-text-2">
-              <p className="break-words">目标：{selectedDestination.displayName} · {selectedDestination.model}</p>
-              <p className="break-all font-mono text-text-3">{selectedDestination.endpoint}</p>
-              <p>路由 {selectedRoute} · 预设 {selectedDestination.presetId} v{selectedDestination.presetVersion}。当前配置版本：{config.data.consentVersion}。</p>
+              <p className="break-words">目标：{selectedDestination.displayName}{showVersionDetails ? ` · ${selectedDestination.model}` : ''}</p>
+              {showVersionDetails
+                ? <>
+                  <p className="break-all font-mono text-text-3">{selectedDestination.endpoint}</p>
+                  <p>路由 {selectedRoute} · 预设 {selectedDestination.presetId} v{selectedDestination.presetVersion}。当前配置版本：{config.data.consentVersion}。</p>
+                </>
+                : <p>本次重处理只使用上方已确认的云端目标；旧任务与历史结果继续保留。</p>}
             </div>}
           </>}
       <div className="max-w-sm"><Label htmlFor="note-asr-reprocess-kind">重处理原因</Label>
@@ -209,8 +220,12 @@ export function NoteAsrReprocessPanel({ task, userId, serverBinding, onCreated }
           onChange={(event) => { setReason(event.target.value); setConfirmed(false) }} /></div>
       {blockedIntent && <InlineAlert tone="crit" title="原重处理状态无法确认">{blockedIntent}</InlineAlert>}
       {intent ? <div className="space-y-2 rounded-ctl border border-warn-border bg-warn-soft p-3 text-xs text-text-2">
-        <p className="break-all">已冻结原提交标识：<span className="font-mono">{intent.clientTaskId}</span>。目标、原因与路由不可在核对前更改。</p>
-        <p>原提交：{intent.route.route} · {intent.reason.kind} · {intent.reason.text}</p>
+        <p className="break-all">{showVersionDetails
+          ? <>已冻结原提交标识：<span className="font-mono">{intent.clientTaskId}</span>。目标、原因与路由不可在核对前更改。</>
+          : '已有一次重处理提交尚未确认；目标、原因与执行位置不可在核对前更改。'}</p>
+        <p>{showVersionDetails
+          ? `原提交：${intent.route.route} · ${intent.reason.kind} · ${intent.reason.text}`
+          : `原因说明：${intent.reason.text}`}</p>
         <div className="flex flex-wrap gap-2">
           <Button size="sm" loading={busy} onClick={() => void reconcileHistory()}>核对重处理历史</Button>
           <Button size="sm" variant="secondary" disabled={busy} onClick={() => void submit(intent)}>按原标识保存</Button>
@@ -242,10 +257,14 @@ export function NoteAsrReprocessPanel({ task, userId, serverBinding, onCreated }
             : <div className="space-y-2">{history.data.items.map((item) => <div key={item.taskId}
               className="min-w-0 rounded-ctl border border-border p-3 text-xs text-text-2">
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <span className="break-all font-mono">{item.taskId}</span>
-                <StatusBadge size="xs" dot={false} tone={item.phase.toLowerCase() === 'succeeded' ? 'ok' : 'warn'}>{label(item.phase)}</StatusBadge>
+                <span className="break-all font-mono">{showVersionDetails ? item.taskId : dateTime(item.createdAt)}</span>
+                <StatusBadge size="xs" dot={false} tone={item.phase.toLowerCase() === 'succeeded' ? 'ok' : 'warn'}>
+                  {statusLabel(item.phase, showVersionDetails)}
+                </StatusBadge>
               </div>
-              <p className="mt-1 break-words">{dateTime(item.createdAt)} · 路由 {item.route} · {item.executionMode}</p>
+              {showVersionDetails
+                ? <p className="mt-1 break-words">{dateTime(item.createdAt)} · 路由 {item.route} · {item.executionMode}</p>
+                : <p className="mt-1 break-words">{item.route === 'local' ? '本机转写' : '云端转写'}</p>}
               <p className="mt-1 break-words">原因：{item.reason || '未提供'}</p>
             </div>)}</div>}
       {history.data && history.data.total > history.data.limit && <div className="flex flex-wrap justify-end gap-2">
@@ -256,11 +275,12 @@ export function NoteAsrReprocessPanel({ task, userId, serverBinding, onCreated }
   </div>
 }
 
-function Attempts({ taskId, userId, serverBinding, attempts }: {
+function Attempts({ taskId, userId, serverBinding, attempts, showVersionDetails }: {
   taskId: string
   userId: string
   serverBinding: string
   attempts: UseQueryResult<NoteAsrAttemptDetail[]>
+  showVersionDetails: boolean
 }) {
   const qc = useQueryClient()
   const [stopId, setStopId] = useState<string | null>(null)
@@ -274,14 +294,18 @@ function Attempts({ taskId, userId, serverBinding, attempts }: {
     const terminal = ['succeeded', 'failed', 'stopped', 'cancelled'].includes(attempt.state.toLowerCase())
     return <div key={attempt.attemptId} className="min-w-0 rounded-ctl border border-border p-3 text-xs text-text-2">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <span className="break-all font-mono">{attempt.attemptId}</span>
+        <span className="break-all font-mono">{showVersionDetails
+          ? attempt.attemptId
+          : attempt.route === 'local' ? '本机转写执行' : '云端转写执行'}</span>
         <StatusBadge size="xs" dot={false} tone={attempt.state.toLowerCase() === 'succeeded' ? 'ok' : terminal ? 'warn' : 'info'}>
-          {label(attempt.state)}{attempt.stopRequested ? ' · 已请求停止' : ''}
+          {statusLabel(attempt.state, showVersionDetails)}{attempt.stopRequested ? ' · 已请求停止' : ''}
         </StatusBadge>
       </div>
-      <p className="mt-1 break-words">{attempt.route} · {attempt.completedSegments}/{attempt.expectedSegments} 片 · 失败 {attempt.failedSegments}</p>
-      <p className="mt-1 break-all font-mono text-text-3">{attempt.endpoint ?? attempt.model ?? '目标未记录'}</p>
-      {attempt.lastErrorMessage && <p className="mt-1 break-words text-warn">{attempt.lastErrorMessage}</p>}
+      <p className="mt-1 break-words">{showVersionDetails ? `${attempt.route} · ` : ''}{attempt.completedSegments}/{attempt.expectedSegments} 片 · 失败 {attempt.failedSegments}</p>
+      {showVersionDetails && <p className="mt-1 break-all font-mono text-text-3">{attempt.endpoint ?? attempt.model ?? '目标未记录'}</p>}
+      {attempt.lastErrorMessage && <p className="mt-1 break-words text-warn">
+        {showVersionDetails ? attempt.lastErrorMessage : '执行未完整成功，请刷新核对；页面不会自动重试。'}
+      </p>}
       {!terminal && !attempt.stopRequested && <div className="mt-2">
         {stopId !== attempt.attemptId
           ? <Button size="sm" variant="secondary" onClick={() => { setStopId(attempt.attemptId); setConfirmed(false); setError('') }}>停止该执行</Button>
@@ -299,7 +323,7 @@ function Attempts({ taskId, userId, serverBinding, attempts }: {
                       await qc.invalidateQueries({ queryKey: ['ai', userId, serverBinding, 'asr-attempts', taskId] })
                       setStopId(null); setConfirmed(false)
                     })
-                    .catch((failure: unknown) => setError(failure instanceof Error ? failure.message : '停止失败'))
+                    .catch((failure: unknown) => setError(failureText(failure, showVersionDetails, '停止状态未确认，请刷新核对')))
                     .finally(() => setBusy(false))
                 }}>确认停止</Button>
               <Button size="sm" variant="ghost" disabled={busy} onClick={() => { setStopId(null); setConfirmed(false) }}>返回</Button>

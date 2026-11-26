@@ -49,9 +49,11 @@ const task = {
   phase: 'Queued',
 }
 
-function renderPanel() {
+function renderPanel(showVersionDetails = true) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } })
-  render(<QueryClientProvider client={client}><NoteAsrStartPanel userId={owner} serverBinding={serverBinding} versionId={versionId} /></QueryClientProvider>)
+  render(<QueryClientProvider client={client}>
+    <NoteAsrStartPanel userId={owner} serverBinding={serverBinding} versionId={versionId} showVersionDetails={showVersionDetails} />
+  </QueryClientProvider>)
   return client
 }
 async function confirmCloud() {
@@ -172,6 +174,21 @@ describe('NoteAsrStartPanel', () => {
     expect(ai.noteAsrStart.mock.calls[1]?.[0]).toEqual(ai.noteAsrStart.mock.calls[0]?.[0])
     expect(ai.noteAsrStart.mock.calls[1]?.[0].taskId).toBe(originalId)
     second.clear()
+  })
+
+  it('hides the service address and frozen task identity from ordinary owners', async () => {
+    ai.noteAsrStart.mockRejectedValueOnce(new Error('network response lost'))
+    renderPanel(false)
+    await screen.findByText(/合成云端ASR/)
+    await confirmCloud()
+
+    const taskId = ai.noteAsrStart.mock.calls[0]?.[0].taskId as string
+    expect(await screen.findByText(/已有一次转写提交尚未确认/)).toBeTruthy()
+    expect(screen.queryByText(destination.endpoint)).toBeNull()
+    expect(screen.queryByText(taskId)).toBeNull()
+    expect(screen.queryByText(destination.presetId)).toBeNull()
+    expect(screen.queryByText(new RegExp(destination.model))).toBeNull()
+    expect(screen.queryByText(/consent-1/)).toBeNull()
   })
 
   it('reconciles the existing task by id without resending', async () => {
@@ -298,10 +315,44 @@ describe('NoteAsrStartPanel', () => {
     await userEvent.click(screen.getByRole('checkbox', { name: '确认Batch整批范围与现金计费' }))
     await userEvent.click(screen.getByRole('button', { name: '准备并提交 MiMo Batch' }))
     expect(await screen.findByText('Batch 能力未开放或状态冲突')).toBeTruthy()
+    expect(await screen.findByText(/MiMo Batch 音频能力尚未验证/)).toBeTruthy()
     expect(await screen.findByText(/不会自动改用实时执行/)).toBeTruthy()
     expect(ai.noteAsrStart).toHaveBeenCalledOnce()
     expect(ai.asrBatchFromTask).toHaveBeenCalledOnce()
     expect(localStorage.getItem(noteAsrBatchInitialIntentScope(owner, serverBinding, versionId))).toContain('"phase":"submit"')
+  })
+
+  it('hides provider labels, raw states and backend errors from ordinary batch views', async () => {
+    const ordinaryBatchDestination = { ...batchDestination, displayName: '合成批量目标' }
+    ai.noteAsrDestinations.mockResolvedValue({ total: 1, items: [ordinaryBatchDestination] })
+    ai.asrRouteConfig.mockResolvedValue({ ...config, defaultRoute: 'cloud-multimodal' })
+    ai.noteAsrStart.mockImplementationOnce((body: { taskId: string }) => Promise.resolve({
+      ...task, taskId: body.taskId, revision: '77777777-7777-4777-8777-777777777777',
+    }))
+    ai.asrBatchFromTask.mockRejectedValueOnce(Object.assign(
+      new Error('MiMo provider UNKNOWN raw failure'),
+      { code: 40901 },
+    ))
+
+    renderPanel(false)
+    expect(await screen.findByText(/合成批量目标/)).toBeTruthy()
+    expect(screen.queryByText(/MiMo/)).toBeNull()
+    expect(screen.queryByText(/供应商/)).toBeNull()
+    expect(screen.queryByText(/UNKNOWN/)).toBeNull()
+
+    await userEvent.click(screen.getByRole('combobox', { name: '执行方式' }))
+    await userEvent.click(await screen.findByRole('option', { name: '云端批量转写（闲时预览）' }))
+    await userEvent.click(screen.getByRole('checkbox', { name: '确认创建录音转写任务' }))
+    await userEvent.click(screen.getByRole('checkbox', { name: '确认Batch整批范围与现金计费' }))
+    await userEvent.click(screen.getByRole('button', { name: '准备并提交云端批量任务' }))
+
+    await waitFor(() => expect(ai.asrBatchFromTask).toHaveBeenCalledOnce())
+    expect(await screen.findByText('批量转写暂不可用或状态冲突')).toBeTruthy()
+    expect(await screen.findByText(/批量转写提交状态未确认/)).toBeTruthy()
+    expect(screen.queryByText(/MiMo provider UNKNOWN raw failure/)).toBeNull()
+    expect(screen.queryByText(/MiMo/)).toBeNull()
+    expect(screen.queryByText(/供应商/)).toBeNull()
+    expect(screen.queryByText(/UNKNOWN/)).toBeNull()
   })
 
   it('reconciles a lost Batch response by task and attempt instead of replaying a stale revision', async () => {
