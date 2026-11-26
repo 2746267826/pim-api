@@ -244,6 +244,70 @@ public sealed class UnifiedRecycleBinServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task BatchRestore_SameOperationIdReplaysTheStoredReceipt()
+    {
+        var note = await SeedNoteAsync(_user, "持久幂等回执笔记");
+        await _notes.SoftDeleteAsync(_user, note.NoteId);
+        var operationId = Guid.NewGuid();
+        var request = new RecycleBinBatchRequest(
+            [new RecycleBinItemRef(RecycleBinDomains.Note, note.NoteId)],
+            operationId);
+
+        var first = await _service.RestoreAsync(request);
+        var second = await _service.RestoreAsync(request);
+
+        Assert.Equal(first.ReceiptId, second.ReceiptId);
+        Assert.Equal(operationId, first.OperationId);
+        Assert.Equal(operationId, second.OperationId);
+        Assert.Equal(first.Items, second.Items);
+        Assert.Single(await _db.RecycleBinOperations.ToListAsync());
+        Assert.Equal(1, await _db.AuditLogs.CountAsync(row =>
+            row.Action == "recycle_bin.note.restore"
+            && row.ResourceId == note.NoteId.ToString("D")));
+    }
+
+    [Fact]
+    public async Task BatchRestore_SameOperationIdWithDifferentPayloadIsAConflict()
+    {
+        var note = await SeedNoteAsync(_user, "冲突载荷笔记");
+        await _notes.SoftDeleteAsync(_user, note.NoteId);
+        var operationId = Guid.NewGuid();
+
+        var first = await _service.RestoreAsync(new RecycleBinBatchRequest(
+        [
+            new RecycleBinItemRef(RecycleBinDomains.Note, note.NoteId)
+        ], operationId));
+        Assert.Equal(RecycleBinItemStatuses.Success, Assert.Single(first.Items).Status);
+
+        var conflict = await Assert.ThrowsAsync<DomainException>(() =>
+            _service.RestoreAsync(new RecycleBinBatchRequest(
+            [
+                new RecycleBinItemRef(
+                    RecycleBinDomains.Note,
+                    note.NoteId,
+                    DateTimeOffset.UtcNow.AddMinutes(-1))
+            ], operationId)));
+
+        Assert.Equal(40902, conflict.ErrorCode);
+        Assert.Single(await _db.RecycleBinOperations.ToListAsync());
+    }
+
+    [Fact]
+    public async Task BatchRestore_WithoutOperationIdStillMintsANewReceiptPerRequest()
+    {
+        var note = await SeedNoteAsync(_user, "无幂等键笔记");
+        await _notes.SoftDeleteAsync(_user, note.NoteId);
+
+        var first = await _service.RestoreAsync(Batch((RecycleBinDomains.Note, note.NoteId)));
+        var second = await _service.RestoreAsync(Batch((RecycleBinDomains.Note, note.NoteId)));
+
+        Assert.NotEqual(first.ReceiptId, second.ReceiptId);
+        Assert.Null(first.OperationId);
+        Assert.Null(second.OperationId);
+        Assert.Empty(await _db.RecycleBinOperations.ToListAsync());
+    }
+
+    [Fact]
     public async Task BatchRestore_StaleExpectedDeletedAtFailsClosed()
     {
         var note = await SeedNoteAsync(_user, "需要刷新的笔记");

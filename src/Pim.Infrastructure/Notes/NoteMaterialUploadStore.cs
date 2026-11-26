@@ -558,6 +558,24 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
             : null;
     }
 
+    internal async Task<bool> IsPurgeStartedAsync(
+        Guid userId, Guid noteId, CancellationToken ct = default)
+    {
+        await using var lease = await LockAsync(userId, ct);
+        var ledger = await LoadLedgerAsync(userId, ct);
+        return ledger.DeletedNotes is { } deleted
+            && deleted.TryGetValue(Key(noteId), out var item)
+            && item.PurgeStartedAt.HasValue;
+    }
+
+    internal async Task<int> CountVersionsForNoteAsync(
+        Guid userId, Guid noteId, CancellationToken ct = default)
+    {
+        await using var lease = await LockAsync(userId, ct);
+        var ledger = await LoadLedgerAsync(userId, ct);
+        return ledger.Versions.Count(item => item.Value.NoteId == noteId);
+    }
+
     public async Task<NativeNoteDeletedItem> SoftDeleteAsync(
         Guid userId, Guid noteId, CancellationToken ct = default)
     {
@@ -606,35 +624,90 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
         if (expectedDeletedAt.HasValue && expectedDeletedAt.Value != deleted.DeletedAt)
             throw new DomainException(40901, "笔记状态已变化，请刷新回收站后重试");
         if (deleted.PurgeStartedAt.HasValue) return;
-        ledger.DeletedNotes[Key(noteId)] = deleted with { PurgeStartedAt = _clock.GetUtcNow() };
+        var versionCount = ledger.Versions.Count(item => item.Value.NoteId == noteId);
+        ledger.DeletedNotes[Key(noteId)] = deleted with
+        {
+            PurgeStartedAt = _clock.GetUtcNow(),
+            MaterialVersionCount = Math.Max(deleted.MaterialVersionCount, versionCount)
+        };
         await SaveLedgerAsync(userId, ledger, ct);
     }
 
+    /// <summary>
+    /// Removes every material version of a soft-deleted note and flushes its durable
+    /// deletion handles. The recycle-bin tombstone deliberately remains until the caller
+    /// has committed PostgreSQL and explicitly calls <see cref="CompletePurgeAsync"/>.
+    /// That keeps a retry anchor even when the database commit fails afterwards.
+    /// </summary>
     public async Task<NativeNotePurgeResult> PurgeDeletedAsync(
         Guid userId, Guid noteId, DateTimeOffset? expectedDeletedAt = null,
-        CancellationToken ct = default)
+        bool allowMissingTombstone = false, CancellationToken ct = default)
     {
         await using var lease = await LockAsync(userId, ct);
         var ledger = await LoadLedgerAsync(userId, ct);
-        if (ledger.DeletedNotes is null || !ledger.DeletedNotes.TryGetValue(Key(noteId), out var deleted))
+        StoredNoteDeletion? deleted = null;
+        if (ledger.DeletedNotes is not null)
+            ledger.DeletedNotes.TryGetValue(Key(noteId), out deleted);
+        if (deleted is null && !allowMissingTombstone)
             throw new DomainException(40901, "笔记不在回收站，不能永久删除");
-        if (expectedDeletedAt.HasValue && expectedDeletedAt.Value != deleted.DeletedAt)
+        if (deleted is not null && expectedDeletedAt.HasValue &&
+            expectedDeletedAt.Value != deleted.DeletedAt)
             throw new DomainException(40901, "笔记状态已变化，请刷新回收站后重试");
-        var versions = ledger.Versions.Where(item => item.Value.NoteId == noteId).Select(item => item.Key).ToArray();
+
+        var versions = ledger.Versions
+            .Where(item => item.Value.NoteId == noteId)
+            .Select(item => item.Key)
+            .ToArray();
+        var recordChanged = false;
+        if (deleted is not null)
+        {
+            var updated = deleted with
+            {
+                PurgeStartedAt = deleted.PurgeStartedAt ?? _clock.GetUtcNow(),
+                MaterialVersionCount = Math.Max(deleted.MaterialVersionCount, versions.Length)
+            };
+            if (updated != deleted)
+            {
+                deleted = updated;
+                ledger.DeletedNotes![Key(noteId)] = updated;
+                recordChanged = true;
+            }
+        }
         foreach (var key in versions)
         {
             ledger.Versions.Remove(key);
             ledger.Deletions.Add(key);
         }
-        ledger.Heads.Remove(Key(noteId));
-        // Keep the recycle-bin entry until the immutable material tree is actually gone.
-        // If deleting the volume fails, the same item stays retryable instead of leaving
-        // bytes that no longer have any ledger or recycle-bin reference.
-        await SaveLedgerAsync(userId, ledger, ct);
+        var headChanged = ledger.Heads.Remove(Key(noteId));
+        if (versions.Length > 0 || headChanged || recordChanged)
+            await SaveLedgerAsync(userId, ledger, ct);
+
+        // A prior attempt may already have emptied Versions but left Deletions behind.
+        // PurgeAsync is idempotent, so retrying the same handle is safe.
         await PurgeAsync(userId, ledger, ct);
+        return new NativeNotePurgeResult(
+            Math.Max(deleted?.MaterialVersionCount ?? 0, versions.Length), 0, 0, 0, 0, 0);
+    }
+
+    /// <summary>
+    /// Final ledger step after the PostgreSQL rows are committed. Removing the tombstone
+    /// is idempotent: a retry after a crash between the database commit and this write
+    /// still converges, while the purge intent remains the durable cleanup record.
+    /// </summary>
+    public async Task<bool> CompletePurgeAsync(
+        Guid userId, Guid noteId, DateTimeOffset? expectedDeletedAt = null,
+        CancellationToken ct = default)
+    {
+        await using var lease = await LockAsync(userId, ct);
+        var ledger = await LoadLedgerAsync(userId, ct);
+        if (ledger.DeletedNotes is null ||
+            !ledger.DeletedNotes.TryGetValue(Key(noteId), out var deleted))
+            return false;
+        if (expectedDeletedAt.HasValue && expectedDeletedAt.Value != deleted.DeletedAt)
+            throw new DomainException(40901, "笔记状态已变化，请刷新回收站后重试");
         ledger.DeletedNotes.Remove(Key(noteId));
         await SaveLedgerAsync(userId, ledger, ct);
-        return new NativeNotePurgeResult(versions.Length, 0, 0, 0, 0, 0);
+        return true;
     }
 
     private async Task VerifyFileAsync(Guid userId, Guid versionId, int index, NoteUploadedMaterial file, CancellationToken ct)
@@ -823,7 +896,8 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
         string Title,
         DateTimeOffset DeletedAt,
         Guid CurrentVersionId,
-        DateTimeOffset? PurgeStartedAt = null);
+        DateTimeOffset? PurgeStartedAt = null,
+        int MaterialVersionCount = 0);
 }
 
 internal sealed record NativeNoteSearchSource(

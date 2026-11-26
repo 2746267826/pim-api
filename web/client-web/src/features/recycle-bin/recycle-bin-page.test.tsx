@@ -239,4 +239,63 @@ describe('统一回收站页面', () => {
     expect(screen.queryByLabelText('服务器批次回执')).toBeNull()
     expect(screen.getByText('已选 1 项')).toBeTruthy()
   })
+
+  it('单项重试在 409/CAS 冲突后重新读取最新 deletedAt', async () => {
+    const latest = { ...note, deletedAt: '2026-11-25T03:00:00Z' }
+    let current = [note]
+    api.list.mockImplementation(async () => page(current))
+    api.restore
+      .mockImplementationOnce(async () => {
+        current = [latest]
+        return receipt('restore', [
+          { item: note, status: 'failed', message: '笔记状态已变化，请刷新回收站后重试', index: 0 },
+        ])
+      })
+      .mockImplementationOnce(async () => receipt('restore', [
+        { item: latest, status: 'success', message: '笔记已恢复', index: 0 },
+      ]))
+    renderPage()
+
+    await userEvent.click(await screen.findByLabelText('选择 课堂笔记'))
+    await userEvent.click(screen.getByRole('button', { name: '恢复选中' }))
+    await screen.findByLabelText('服务器批次回执')
+    await userEvent.click(screen.getByRole('button', { name: '单项重试' }))
+
+    await waitFor(() => expect(api.restore).toHaveBeenCalledTimes(2))
+    expect(api.restore.mock.calls[1][0]).toEqual([
+      { domain: 'note', id: note.id, expectedDeletedAt: latest.deletedAt },
+    ])
+  })
+
+  it('批量重试在 409/CAS 冲突后为每一项读取最新 deletedAt', async () => {
+    const latestNote = { ...note, deletedAt: '2026-11-25T03:00:00Z' }
+    const latestTask = { ...task, deletedAt: '2026-11-25T03:01:00Z' }
+    let current = [note, task]
+    api.list.mockImplementation(async () => page(current))
+    api.restore
+      .mockImplementationOnce(async () => {
+        current = [latestNote, latestTask]
+        return receipt('restore', [
+          { item: note, status: 'failed', message: '笔记状态已变化，请刷新回收站后重试', index: 0 },
+          { item: task, status: 'failed', message: '日历项状态已变化，请刷新回收站后重试', index: 1 },
+        ])
+      })
+      .mockImplementationOnce(async () => receipt('restore', [
+        { item: latestNote, status: 'success', message: '笔记已恢复', index: 0 },
+        { item: latestTask, status: 'success', message: '任务已恢复', index: 1 },
+      ]))
+    renderPage()
+
+    await userEvent.click(await screen.findByLabelText('选择 课堂笔记'))
+    await userEvent.click(screen.getByLabelText('选择 已删任务'))
+    await userEvent.click(screen.getByRole('button', { name: '恢复选中' }))
+    await screen.findByLabelText('服务器批次回执')
+    await userEvent.click(screen.getByRole('button', { name: '重试未成功项（2）' }))
+
+    await waitFor(() => expect(api.restore).toHaveBeenCalledTimes(2))
+    expect(api.restore.mock.calls[1][0]).toEqual([
+      { domain: 'note', id: note.id, expectedDeletedAt: latestNote.deletedAt },
+      { domain: 'task', id: task.id, expectedDeletedAt: latestTask.deletedAt },
+    ])
+  })
 })

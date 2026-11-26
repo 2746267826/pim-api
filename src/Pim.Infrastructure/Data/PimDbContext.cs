@@ -87,6 +87,9 @@ public class PimDbContext : DbContext
     public DbSet<NoteAsrAckReceiptEntity> NoteAsrAckReceipts => Set<NoteAsrAckReceiptEntity>();
     public DbSet<NoteAsrSegmentEvidenceEntity> NoteAsrSegmentEvidence => Set<NoteAsrSegmentEvidenceEntity>();
     public DbSet<NoteAsrBatchJobEntity> NoteAsrBatchJobs => Set<NoteAsrBatchJobEntity>();
+    public DbSet<RecycleBinOperationEntity> RecycleBinOperations => Set<RecycleBinOperationEntity>();
+    public DbSet<RecycleBinPurgeIntentEntity> RecycleBinPurgeIntents =>
+        Set<RecycleBinPurgeIntentEntity>();
 
     public override int SaveChanges()
     {
@@ -361,6 +364,20 @@ public class PimDbContext : DbContext
             e.HasIndex(x => new { x.OwnerId, x.TaskId }).IsUnique();
             e.HasIndex(x => new { x.OwnerId, x.Status, x.UpdatedAt });
             e.HasIndex(x => x.BatchId).IsUnique().HasFilter("\"batch_id\" IS NOT NULL");
+        });
+        modelBuilder.Entity<RecycleBinOperationEntity>(e =>
+        {
+            e.HasIndex(x => new { x.UserId, x.OperationId }).IsUnique();
+            e.HasIndex(x => new { x.UserId, x.Status, x.LeaseExpiresAt });
+            e.Property(x => x.CreatedAt).HasDefaultValueSql("now()");
+            e.Property(x => x.UpdatedAt).HasDefaultValueSql("now()");
+        });
+        modelBuilder.Entity<RecycleBinPurgeIntentEntity>(e =>
+        {
+            e.HasIndex(x => new { x.UserId, x.Domain, x.ItemId, x.Generation }).IsUnique();
+            e.HasIndex(x => new { x.UserId, x.Phase, x.LeaseExpiresAt });
+            e.Property(x => x.CreatedAt).HasDefaultValueSql("now()");
+            e.Property(x => x.UpdatedAt).HasDefaultValueSql("now()");
         });
 
         Assembly[] moduleAssemblies;

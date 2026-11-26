@@ -1,9 +1,14 @@
+using System.Globalization;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Pim.Api.DTOs;
 using Pim.Core.Exceptions;
 using Pim.Core.Operations;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
+using Pim.Infrastructure.Data.Entities;
 using Pim.Infrastructure.Notes;
 using Pim.Infrastructure.Storage;
 using Pim.Module.Calendar.DTOs;
@@ -31,6 +36,8 @@ public sealed class UnifiedRecycleBinService(
     IAuditLogService audit,
     ILogger<UnifiedRecycleBinService>? logger = null)
 {
+    private static readonly TimeSpan OperationLease = TimeSpan.FromMinutes(5);
+    private static readonly JsonSerializerOptions ReceiptJson = new(JsonSerializerDefaults.Web);
     private static readonly string[] Domains =
     [
         RecycleBinDomains.Note,
@@ -134,7 +141,7 @@ public sealed class UnifiedRecycleBinService(
             .Select(item => new RecycleBinItemRef(
                 item.Domain?.Trim().ToLowerInvariant() ?? string.Empty,
                 item.Id,
-                item.ExpectedDeletedAt))
+                item.ExpectedDeletedAt?.ToUniversalTime()))
             .DistinctBy(item => (item.Domain, item.Id))
             .ToArray();
         if (unique.Length == 0)
@@ -142,8 +149,47 @@ public sealed class UnifiedRecycleBinService(
         if (unique.Length > 200)
             throw new DomainException(40001, "单次最多处理 200 个回收站项目，请分批提交");
 
-        var results = new List<RecycleBinItemResultDto>(unique.Length);
-        for (var index = 0; index < unique.Length; index++)
+        if (request.OperationId is not { } operationId || operationId == Guid.Empty)
+        {
+            return await RunBatchAsync(
+                action, request, restore, unique, Guid.NewGuid(), null, ct);
+        }
+
+        var payloadHash = PayloadHash(action, request.RestoreAsCopy, unique);
+        var claim = await ClaimOperationAsync(operationId, action, payloadHash, ct);
+        if (claim.Replay is not null)
+            return claim.Replay;
+
+        try
+        {
+            var receipt = await RunBatchAsync(
+                action,
+                request,
+                restore,
+                unique,
+                claim.Operation.Id,
+                operationId,
+                ct);
+            return await CompleteOperationAsync(claim.Operation.Id, receipt, ct);
+        }
+        catch
+        {
+            await ReleaseOperationAsync(claim.Operation.Id, CancellationToken.None);
+            throw;
+        }
+    }
+
+    private async Task<RecycleBinBatchReceiptDto> RunBatchAsync(
+        string action,
+        RecycleBinBatchRequest request,
+        bool restore,
+        IReadOnlyList<RecycleBinItemRef> unique,
+        Guid receiptId,
+        Guid? operationId,
+        CancellationToken ct)
+    {
+        var results = new List<RecycleBinItemResultDto>(unique.Count);
+        for (var index = 0; index < unique.Count; index++)
         {
             var item = unique[index];
             try
@@ -182,13 +228,161 @@ public sealed class UnifiedRecycleBinService(
         }
 
         return new RecycleBinBatchReceiptDto(
-            Guid.NewGuid(),
-            request.OperationId,
+            receiptId,
+            operationId,
             action,
             results.Count(result => result.Status == RecycleBinItemStatuses.Success),
             results.Count(result => result.Status == RecycleBinItemStatuses.Failed),
             results.Count(result => result.Status == RecycleBinItemStatuses.SourcePending),
             results);
+    }
+
+    private Task<(RecycleBinOperationEntity Operation, RecycleBinBatchReceiptDto? Replay)>
+        ClaimOperationAsync(Guid operationId, string action, string payloadHash,
+            CancellationToken ct) =>
+        AdvisoryLock.RunAsync(
+            db,
+            OperationLockKey(UserId, operationId),
+            async () =>
+            {
+                var now = DateTimeOffset.UtcNow;
+                var operation = await db.RecycleBinOperations.SingleOrDefaultAsync(row =>
+                    row.UserId == UserId && row.OperationId == operationId, ct);
+                if (operation is null)
+                {
+                    operation = new RecycleBinOperationEntity
+                    {
+                        Id = Guid.NewGuid(),
+                        UserId = UserId,
+                        OperationId = operationId,
+                        Action = action,
+                        PayloadHash = payloadHash,
+                        Status = RecycleBinOperationStatuses.Running,
+                        ProcessingToken = Guid.NewGuid(),
+                        LeaseExpiresAt = now.Add(OperationLease),
+                        AttemptCount = 1,
+                        CreatedAt = now,
+                        UpdatedAt = now
+                    };
+                    db.RecycleBinOperations.Add(operation);
+                    await db.SaveChangesAsync(ct);
+                    return (operation, (RecycleBinBatchReceiptDto?)null);
+                }
+
+                if (operation.Action != action || operation.PayloadHash != payloadHash)
+                    throw new DomainException(
+                        40902,
+                        "operationId 已用于另一批不同的回收站请求，请使用新的 operationId");
+
+                if (operation.Status == RecycleBinOperationStatuses.Completed)
+                {
+                    RecycleBinBatchReceiptDto? replay = null;
+                    if (!string.IsNullOrWhiteSpace(operation.ReceiptJson))
+                    {
+                        replay = JsonSerializer.Deserialize<RecycleBinBatchReceiptDto>(
+                            operation.ReceiptJson, ReceiptJson);
+                    }
+                    return (operation, replay ?? throw new DomainException(
+                        40903,
+                        "该 operationId 的回执不可用，请使用新的 operationId 重试"));
+                }
+
+                if (operation.LeaseExpiresAt > now)
+                    throw new DomainException(
+                        40904,
+                        "该 operationId 的批次仍在处理中，请稍后使用同一 operationId 重试");
+
+                operation.ProcessingToken = Guid.NewGuid();
+                operation.LeaseExpiresAt = now.Add(OperationLease);
+                operation.AttemptCount++;
+                operation.UpdatedAt = now;
+                await db.SaveChangesAsync(ct);
+                return (operation, (RecycleBinBatchReceiptDto?)null);
+            },
+            ct);
+
+    private async Task<RecycleBinBatchReceiptDto> CompleteOperationAsync(
+        Guid operationEntityId,
+        RecycleBinBatchReceiptDto receipt,
+        CancellationToken ct)
+    {
+        // Every item that succeeded has already committed its own business rows and
+        // audit. Anything still tracked here belongs to an item that failed before its
+        // save, so dropping it prevents receipt persistence from silently committing a
+        // partial mutation that the receipt reports as failed.
+        db.ChangeTracker.Clear();
+        // A failing item may have cleared the change tracker (note purge does this so a
+        // partial purge can never be committed), which detaches the operation entity.
+        // Re-read it by id so completion is still persisted.
+        var operation = await db.RecycleBinOperations.SingleOrDefaultAsync(
+            row => row.Id == operationEntityId, ct)
+            ?? throw new InvalidOperationException(
+                $"Recycle-bin operation {operationEntityId} disappeared before completion.");
+        var now = DateTimeOffset.UtcNow;
+        operation.Status = RecycleBinOperationStatuses.Completed;
+        operation.ReceiptJson = JsonSerializer.Serialize(receipt, ReceiptJson);
+        operation.CompletedAt = now;
+        operation.UpdatedAt = now;
+        operation.LeaseExpiresAt = now;
+        await db.SaveChangesAsync(ct);
+        return receipt;
+    }
+
+    private async Task ReleaseOperationAsync(Guid operationId, CancellationToken ct)
+    {
+        try
+        {
+            db.ChangeTracker.Clear();
+            var operation = await db.RecycleBinOperations
+                .SingleOrDefaultAsync(row => row.Id == operationId, ct);
+            if (operation is null || operation.Status == RecycleBinOperationStatuses.Completed)
+                return;
+            var now = DateTimeOffset.UtcNow;
+            operation.LeaseExpiresAt = now;
+            operation.UpdatedAt = now;
+            await db.SaveChangesAsync(ct);
+        }
+        catch (Exception error)
+        {
+            logger?.LogWarning(
+                error,
+                "Unable to release recycle-bin operation lease {OperationId}",
+                operationId);
+        }
+    }
+
+    private static string PayloadHash(
+        string action, bool restoreAsCopy, IReadOnlyList<RecycleBinItemRef> items)
+    {
+        var canonical = new StringBuilder()
+            .Append(action).Append('\n')
+            .Append(restoreAsCopy ? '1' : '0').Append('\n');
+        foreach (var item in items
+                     .OrderBy(value => value.Domain, StringComparer.Ordinal)
+                     .ThenBy(value => value.Id)
+                     .ThenBy(value => value.ExpectedDeletedAt?.UtcTicks ?? 0))
+        {
+            canonical
+                .Append(item.Domain).Append('|')
+                .Append(item.Id.ToString("D")).Append('|')
+                .Append(item.ExpectedDeletedAt is { } expected
+                    ? expected.UtcTicks.ToString(CultureInfo.InvariantCulture)
+                    : string.Empty)
+                .Append('\n');
+        }
+
+        return Convert.ToHexString(SHA256.HashData(
+            Encoding.UTF8.GetBytes(canonical.ToString()))).ToLowerInvariant();
+    }
+
+    private static long OperationLockKey(Guid owner, Guid operationId)
+    {
+        var ownerBytes = owner.ToByteArray();
+        var operationBytes = operationId.ToByteArray();
+        return BitConverter.ToInt64(ownerBytes, 0)
+            ^ BitConverter.ToInt64(ownerBytes, 8)
+            ^ BitConverter.ToInt64(operationBytes, 0)
+            ^ BitConverter.ToInt64(operationBytes, 8);
     }
 
     private async Task<RecycleBinItemResultDto> ExecuteItemAsync(

@@ -2381,6 +2381,206 @@ namespace Pim.Infrastructure.Data.Migrations
                     b.ToTable("operation_confirmations");
                 });
 
+            modelBuilder.Entity("Pim.Infrastructure.Data.Entities.RecycleBinOperationEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("Action")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("action");
+
+                    b.Property<int>("AttemptCount")
+                        .HasColumnType("integer")
+                        .HasColumnName("attempt_count");
+
+                    b.Property<DateTimeOffset?>("CompletedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("completed_at");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<DateTimeOffset>("LeaseExpiresAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("lease_expires_at");
+
+                    b.Property<Guid>("OperationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("operation_id");
+
+                    b.Property<string>("PayloadHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("payload_hash");
+
+                    b.Property<Guid>("ProcessingToken")
+                        .HasColumnType("uuid")
+                        .HasColumnName("processing_token");
+
+                    b.Property<string>("ReceiptJson")
+                        .HasColumnType("text")
+                        .HasColumnName("receipt_json");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("status");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("owner_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("UserId", "OperationId")
+                        .IsUnique();
+
+                    b.HasIndex("UserId", "Status", "LeaseExpiresAt");
+
+                    b.ToTable("recycle_bin_operations");
+                });
+
+            modelBuilder.Entity("Pim.Infrastructure.Data.Entities.RecycleBinPurgeIntentEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<int>("AiAudio")
+                        .HasColumnType("integer")
+                        .HasColumnName("ai_audio");
+
+                    b.Property<int>("AiCalls")
+                        .HasColumnType("integer")
+                        .HasColumnName("ai_calls");
+
+                    b.Property<int>("AiImages")
+                        .HasColumnType("integer")
+                        .HasColumnName("ai_images");
+
+                    b.Property<string>("AiLogIdsJson")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("ai_log_ids");
+
+                    b.Property<string>("AsrTaskIdsJson")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("asr_task_ids");
+
+                    b.Property<int>("AsrTasks")
+                        .HasColumnType("integer")
+                        .HasColumnName("asr_tasks");
+
+                    b.Property<int>("AttemptCount")
+                        .HasColumnType("integer")
+                        .HasColumnName("attempt_count");
+
+                    b.Property<DateTimeOffset?>("CompletedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("completed_at");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<string>("DerivedTaskIdsJson")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("derived_task_ids");
+
+                    b.Property<int>("DerivedTasks")
+                        .HasColumnType("integer")
+                        .HasColumnName("derived_tasks");
+
+                    b.Property<string>("Domain")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("domain");
+
+                    b.Property<DateTimeOffset?>("ExpectedDeletedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("expected_deleted_at");
+
+                    b.Property<string>("Generation")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("generation");
+
+                    b.Property<Guid>("ItemId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("item_id");
+
+                    b.Property<string>("LastError")
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)")
+                        .HasColumnName("last_error");
+
+                    b.Property<DateTimeOffset?>("LeaseExpiresAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("lease_expires_at");
+
+                    b.Property<Guid?>("LeaseToken")
+                        .HasColumnType("uuid")
+                        .HasColumnName("lease_token");
+
+                    b.Property<int>("MaterialVersions")
+                        .HasColumnType("integer")
+                        .HasColumnName("material_versions");
+
+                    b.Property<string>("Phase")
+                        .IsRequired()
+                        .HasMaxLength(24)
+                        .HasColumnType("character varying(24)")
+                        .HasColumnName("phase");
+
+                    b.Property<string>("Title")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("title");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("owner_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("UserId", "Phase", "LeaseExpiresAt");
+
+                    b.HasIndex("UserId", "Domain", "ItemId", "Generation")
+                        .IsUnique();
+
+                    b.ToTable("recycle_bin_purge_intents");
+                });
+
             modelBuilder.Entity("Pim.Infrastructure.Data.Entities.RefreshTokenEntity", b =>
                 {
                     b.Property<Guid>("Id")

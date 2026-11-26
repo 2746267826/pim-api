@@ -125,11 +125,38 @@ export function RecycleBinPage() {
     })
   }
 
-  async function execute(action: Action, items: RecycleBinItemRef[]) {
-    if (!items.length || pendingAction) return
+  async function loadLatestItems(): Promise<Map<string, RecycleBinItem>> {
+    const latest = new Map<string, RecycleBinItem>()
+    for (let pageNumber = 1; pageNumber <= 50; pageNumber++) {
+      const batch = await recycleBinApi.list({ page: pageNumber, pageSize: 100 })
+      for (const item of batch.items) latest.set(itemKey(item), item)
+      if (pageNumber >= batch.totalPages || batch.items.length === 0) break
+    }
+    for (const [key, item] of latest) knownItems.current.set(key, item)
+    return latest
+  }
+
+  function retry(action: Action, keys: string[]) {
+    void resolveAndExecute(action, async () => {
+      const latest = await loadLatestItems()
+      return keys.map((key) => refOf(key, latest.get(key) ?? knownItems.current.get(key)))
+    })
+  }
+
+  function execute(action: Action, items: RecycleBinItemRef[]) {
+    void resolveAndExecute(action, () => Promise.resolve(items))
+  }
+
+  async function resolveAndExecute(
+    action: Action,
+    resolveItems: () => Promise<RecycleBinItemRef[]>,
+  ) {
+    if (pendingAction) return
     setPendingAction(action)
     setUnconfirmed('')
     try {
+      const items = await resolveItems()
+      if (!items.length) return
       const next = action === 'restore'
         ? await recycleBinApi.restore(items, restoreAsCopy)
         : await recycleBinApi.purge(items)
@@ -141,6 +168,12 @@ export function RecycleBinPage() {
       )
       setSelected((previous) => new Set([...previous].filter((key) => retryable.has(key))))
       await qc.invalidateQueries({ queryKey: ['recycle-bin'] })
+      if (next.items.some((item) => item.errorCode === 40901)) {
+        // A CAS conflict means the item was restored or deleted again after this page
+        // was read. Refresh the known handles so retry never resubmits the stale token.
+        await loadLatestItems().catch(() => undefined)
+        await qc.invalidateQueries({ queryKey: ['recycle-bin'] })
+      }
       if (next.succeeded > 0) {
         notifySuccess(action === 'restore'
           ? `已恢复 ${next.succeeded} 项`
@@ -158,9 +191,9 @@ export function RecycleBinPage() {
 
   function retryOne(domainValue: string, id: string) {
     const key = `${domainValue}:${id}`
-    void execute(
+    retry(
       receipt?.action === 'purge' ? 'purge' : 'restore',
-      [refOf(key, itemsByKey.get(key) ?? knownItems.current.get(key))],
+      [key],
     )
   }
 
@@ -214,7 +247,7 @@ export function RecycleBinPage() {
           size="sm"
           disabled={!selectedRefs.length || pendingAction != null}
           loading={pendingAction === 'restore'}
-          onClick={() => void execute('restore', selectedRefs)}
+          onClick={() => execute('restore', selectedRefs)}
         >
           <RotateCcw className="size-3.5" aria-hidden /> 恢复选中
         </Button>
@@ -265,12 +298,9 @@ export function RecycleBinPage() {
               <Button
                 variant="secondary"
                 size="sm"
-                onClick={() => void execute(
+                onClick={() => retry(
                   receipt.action === 'purge' ? 'purge' : 'restore',
-                  retryItems.map((item) => {
-                    const key = `${item.domain}:${item.id}`
-                    return refOf(key, itemsByKey.get(key) ?? knownItems.current.get(key))
-                  }),
+                  retryItems.map((item) => `${item.domain}:${item.id}`),
                 )}
               >
                 重试未成功项（{retryItems.length}）

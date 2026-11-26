@@ -54,7 +54,8 @@ public static class RecycleBinEndpoints
         })
         .Produces<ApiResponse<RecycleBinBatchReceiptDto>>(200)
         .Produces(401)
-        .Produces<ApiResponse<string>>(400);
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(409);
 
         group.MapPost("/purge", async (
             RecycleBinBatchRequest request,
@@ -68,7 +69,8 @@ public static class RecycleBinEndpoints
         })
         .Produces<ApiResponse<RecycleBinBatchReceiptDto>>(200)
         .Produces(401)
-        .Produces<ApiResponse<string>>(400);
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(409);
 
         return endpoints;
     }
