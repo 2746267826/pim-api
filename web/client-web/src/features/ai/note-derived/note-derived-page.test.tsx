@@ -444,6 +444,57 @@ it('presents transcription before generation and keeps nonessential controls col
     expect(await screen.findByRole('button', { name: /停止后续步骤/ })).toBeTruthy()
   })
 
+it('shows and submits the explicit retry scope including cancelled downstream steps', async () => {
+  const attentionTask: NoteDerivedTask = {
+    ...task,
+    phase: 'NeedsAttention',
+    coverage: { ...coverage, complete: false },
+  }
+  const items = [
+    {
+      key: 'image-batch:0001', kind: 'ImageEvidence', status: 'Succeeded',
+      dependsOn: [], attempts: [],
+    },
+    {
+      key: 'audio-batch:0001', kind: 'AudioBatchEvidence', status: 'Failed',
+      dependsOn: [], attempts: [{
+        requestId: 'abababab-abab-4bab-8bab-abababababab',
+        status: 'Failed',
+      }],
+    },
+    {
+      key: 'record-synthesis', kind: 'RecordSynthesis', status: 'Cancelled',
+      dependsOn: ['audio-batch:0001'], attempts: [],
+    },
+    {
+      key: 'analysis-synthesis', kind: 'AnalysisSynthesis', status: 'Cancelled',
+      dependsOn: ['record-synthesis'], attempts: [],
+    },
+  ]
+  derived.tasks.mockResolvedValue([attentionTask])
+  derived.task.mockResolvedValue(attentionTask)
+  derived.steps.mockResolvedValue({ total: items.length, offset: 0, items })
+
+  page(); await chooseSource()
+  await userEvent.click(await screen.findByText(/更多：历史任务与处理进度/))
+  await userEvent.click(await screen.findByRole('button', { name: /有材料缺口/ }))
+  await userEvent.click(await screen.findByText(/更多：任务详情、停止与恢复/))
+  await userEvent.click(await screen.findByRole('checkbox', { name: /录音批次整理/ }))
+
+  expect(await screen.findByText(/本次将重发 3 个步骤/)).toBeTruthy()
+  expect(screen.getByText(/其中 2 个下游缺口会一并恢复/)).toBeTruthy()
+  expect(screen.getByText(/可能产生服务商调用与费用/)).toBeTruthy()
+  await userEvent.click(screen.getByRole('checkbox', { name: /确认恢复以上 3 个步骤/ }))
+  await userEvent.click(screen.getByRole('button', { name: '恢复已确认步骤' }))
+
+  await waitFor(() => expect(derived.retry).toHaveBeenCalledOnce())
+  expect(derived.retry.mock.calls[0]?.[1]).toEqual(expect.objectContaining({
+    expectedRevision: attentionTask.revision,
+    stepKeys: ['audio-batch:0001', 'record-synthesis', 'analysis-synthesis'],
+    acknowledgePossibleDuplicateCharge: true,
+  }))
+})
+
 it('preselects the linked material version and preserves it in the return-to-note link', async () => {
   window.history.replaceState({}, '', `/native-notes/processing?version=${sourceVersionId}&from=processing`)
   page()
@@ -616,6 +667,7 @@ it('hides raw derived phases, attempt diagnostics and issue messages from ordina
     key: 'internal-step-key',
     kind: 'VendorStepKind' as never,
     status: 'VendorStepStatus',
+    dependsOn: [] as string[],
     attempts: [{
       requestId: 'abababab-abab-4bab-8bab-abababababab',
       status: 'VendorAttemptStatus',
@@ -667,6 +719,7 @@ it('keeps raw derived phases and attempt diagnostics for admins', async () => {
     key: 'internal-step-key',
     kind: 'VendorStepKind' as never,
     status: 'VendorStepStatus',
+    dependsOn: [] as string[],
     attempts: [{
       requestId: 'abababab-abab-4bab-8bab-abababababab',
       status: 'VendorAttemptStatus',

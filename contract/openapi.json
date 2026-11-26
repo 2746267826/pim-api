@@ -18227,6 +18227,12 @@
             },
             "type": "array"
           },
+          "dependsOn": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "key": {
             "type": "string"
           },
@@ -18239,6 +18245,7 @@
         },
         "required": [
           "attempts",
+          "dependsOn",
           "key",
           "kind",
           "status"

@@ -563,12 +563,20 @@ function RetryControls({ task, steps, ownerId, serverBinding, showVersionDetails
   const initial = loadLocalRecord(scope)
   const [stored, setStored] = useState(initial.record)
   const [selected, setSelected] = useState<string[]>([])
-  const [ack, setAck] = useState(false)
+  const [approved, setApproved] = useState('')
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState(initial.error ?? '')
   const pending = stored.pending
   const candidates = steps?.items.filter((step) => step.status !== 'Succeeded' && step.status !== 'Running') ?? []
-  const approval = `${task.revision}/${selected.join(',')}/${ack}`
+  const restorable = new Set(candidates.map((step) => step.key))
+  const effective = retryScope(selected, steps?.items ?? [], restorable)
+  const downstream = effective.filter((key) => !selected.includes(key))
+  const approval = `${task.revision}/${effective.join(',')}`
+  const acknowledged = approved === approval
+  const stepName = (key: string) => {
+    const step = steps?.items.find((item) => item.key === key)
+    return step ? `${stepLabel(step.kind, showVersionDetails)}${showVersionDetails ? ` · ${step.key}` : ''}` : key
+  }
 
   async function submit(body: RetryNoteDerived) {
     const reserved = reserveAndPersistIntent(stored, 'retry', body.retryId, {}, JSON.stringify(body))
@@ -578,8 +586,8 @@ function RetryControls({ task, steps, ownerId, serverBinding, showVersionDetails
     return reserved.value
   }
   async function retry() {
-    if (busy || !selected.length || !ack || pending) return
-    const body: RetryNoteDerived = { retryId: createAiRequestId(), expectedUserId: ownerId, expectedRevision: task.revision, stepKeys: selected, consent: task.destination, acknowledgePossibleDuplicateCharge: true }
+    if (busy || !effective.length || !acknowledged || pending) return
+    const body: RetryNoteDerived = { retryId: createAiRequestId(), expectedUserId: ownerId, expectedRevision: task.revision, stepKeys: effective, consent: task.destination, acknowledgePossibleDuplicateCharge: true }
     const reserved = await submit(body)
     if (!reserved) return
     setBusy(true)
@@ -587,7 +595,7 @@ function RetryControls({ task, steps, ownerId, serverBinding, showVersionDetails
       await noteDerivedApi.retry(task.taskId, body)
       const cleared = clearStoredIntent(reserved.record, body.retryId)
       if (cleared.ok) setStored(cleared.value)
-      setSelected([]); setAck(false); onChanged()
+      setSelected([]); setApproved(''); onChanged()
     } catch (error) {
       setMessage(failureText(error, showVersionDetails, '恢复状态未确认，请刷新核对') + '。恢复意图已保存，必须用同一标识核对。')
     }
@@ -614,10 +622,28 @@ function RetryControls({ task, steps, ownerId, serverBinding, showVersionDetails
     {!pending && candidates.map((step) => <label key={step.key} className="flex items-center gap-2 text-xs text-text-2"><input type="checkbox" checked={selected.includes(step.key)}
       onChange={(event) => setSelected((current) => event.target.checked ? [...current, step.key] : current.filter((key) => key !== step.key))} disabled={busy} />{stepLabel(step.kind, showVersionDetails)}{showVersionDetails ? ` · ${step.key}` : ''}</label>)}
     {pending && <div className="space-y-2 text-xs leading-5 text-text-2"><p>已有恢复意图{showVersionDetails ? ` ${pending.intentId}` : ''}，不会分配新标识。</p><Button size="sm" disabled={busy || !pending.requestJson} onClick={() => void replay()}>核对原恢复提交</Button></div>}
-    {!pending && selected.length > 0 && <><label className="flex items-start gap-2 text-xs leading-5 text-text-2"><input type="checkbox" checked={ack} onChange={(event) => setAck(event.target.checked)} /><span>确认恢复 {selected.length} 个步骤，理解未知结果可能重复计费；成功步骤不重跑。</span></label>
-      <Button size="sm" disabled={busy || !ack || approval === ''} onClick={() => void retry()}>恢复所选步骤</Button></>}
+    {!pending && selected.length > 0 && <>
+      <p className="text-xs leading-5 text-text-2">本次将重发 {effective.length} 个步骤：{effective.map(stepName).join('、')}。{downstream.length > 0 ? `其中 ${downstream.length} 个下游缺口会一并恢复；` : ''}服务端不会隐式追加未列出的步骤。</p>
+      <label className="flex items-start gap-2 text-xs leading-5 text-text-2"><input type="checkbox" checked={acknowledged} onChange={(event) => setApproved(event.target.checked ? approval : '')} /><span>确认恢复以上 {effective.length} 个步骤，理解它们都可能产生服务商调用与费用；成功或执行中步骤不重跑。</span></label>
+      <Button size="sm" disabled={busy || !acknowledged} onClick={() => void retry()}>恢复已确认步骤</Button></>}
     {message && <p role="alert" className="text-xs leading-5 text-text-2">{message}</p>}
   </div>
+}
+
+function retryScope(selected: string[], items: NoteDerivedSteps['items'],
+  restorable: ReadonlySet<string>): string[] {
+  const included = new Set(selected.filter((key) => restorable.has(key)))
+  let changed = true
+  while (changed) {
+    changed = false
+    for (const step of items) {
+      if (included.has(step.key) || !restorable.has(step.key)) continue
+      if (!step.dependsOn.some((key) => included.has(key))) continue
+      included.add(step.key)
+      changed = true
+    }
+  }
+  return items.filter((step) => included.has(step.key)).map((step) => step.key)
 }
 
 function ArtifactCard({ artifact, ownerId, serverBinding, showVersionDetails, onChanged }: {

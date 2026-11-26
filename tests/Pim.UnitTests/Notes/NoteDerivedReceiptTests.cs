@@ -584,3 +584,73 @@ public sealed class NoteDerivedReceiptTests
         string Markdown,
         string VisionResponse);
 }
+
+public sealed class NoteDerivedNoAudioWireTests
+{
+    [Fact]
+    public void NoAudioWireAcceptsExplicitZeroWithNoEncoding()
+    {
+        var issues = Check("""
+            {"providerAttempted":true,"requestBodyCaptured":true,"responseBodyComplete":true,
+             "audioInputsReferenced":0,"audioEncoding":null}
+            """);
+
+        Assert.Empty(issues);
+    }
+
+    [Fact]
+    public void NoAudioWireAcceptsMissingEncodingButRequiresExplicitZero()
+    {
+        var issues = Check("""
+            {"providerAttempted":true,"requestBodyCaptured":true,"responseBodyComplete":true,
+             "audioInputsReferenced":0}
+            """);
+
+        Assert.Empty(issues);
+    }
+
+    [Theory]
+    [InlineData("{}")]
+    [InlineData("[]")]
+    [InlineData("not-json")]
+    [InlineData("""{"providerAttempted":false,"requestBodyCaptured":true,"responseBodyComplete":true,"audioInputsReferenced":0}""")]
+    [InlineData("""{"providerAttempted":true,"requestBodyCaptured":false,"responseBodyComplete":true,"audioInputsReferenced":0}""")]
+    [InlineData("""{"providerAttempted":true,"requestBodyCaptured":true,"responseBodyComplete":false,"audioInputsReferenced":0}""")]
+    [InlineData("""{"providerAttempted":true,"requestBodyCaptured":true,"responseBodyComplete":true}""")]
+    [InlineData("""{"providerAttempted":true,"requestBodyCaptured":true,"responseBodyComplete":true,"audioInputsReferenced":null}""")]
+    [InlineData("""{"providerAttempted":true,"requestBodyCaptured":true,"responseBodyComplete":true,"audioInputsReferenced":"0"}""")]
+    [InlineData("""{"providerAttempted":true,"requestBodyCaptured":true,"responseBodyComplete":true,"audioInputsReferenced":1}""")]
+    [InlineData("""{"providerAttempted":true,"requestBodyCaptured":true,"responseBodyComplete":true,"audioInputsReferenced":0,"audioEncoding":"sha256-reference"}""")]
+    [InlineData("""{"providerAttempted":true,"requestBodyCaptured":true,"responseBodyComplete":true,"audioInputsReferenced":0,"audioEncoding":""}""")]
+    public void NoAudioWireFailsClosedOnIncompleteOrAmbiguousMetadata(string metadata)
+    {
+        var issues = Check(metadata);
+
+        Assert.NotEmpty(issues);
+        Assert.Contains(issues, issue => issue.Code is
+            "audio_replayed_in_synthesis" or "audio_replay_unverifiable");
+    }
+
+    [Theory]
+    [InlineData("""[{"role":"user","content":[{"type":"input_audio"}]}]""")]
+    [InlineData("""[{"role":"user","content":"pim-ai-audio:00001"}]""")]
+    [InlineData("""[{"role":"user","content":"data:audio/wav;base64,AAAA"}]""")]
+    public void NoAudioWireRejectsAudioReferencesInTheRequestSnapshot(string messages)
+    {
+        var issues = NoteDerivedReceipts.ValidateNoAudioWire(Log("""
+            {"providerAttempted":true,"requestBodyCaptured":true,"responseBodyComplete":true,
+             "audioInputsReferenced":0,"audioEncoding":null}
+            """, messages), "record-synthesis");
+
+        Assert.Contains(issues, issue => issue.Code == "audio_replayed_in_synthesis");
+    }
+
+    private static IReadOnlyList<NoteDerivedIssueDto> Check(string metadata) =>
+        NoteDerivedReceipts.ValidateNoAudioWire(Log(metadata), "record-synthesis");
+
+    private static AiRequestLogEntity Log(string metadata, string messages = "[]") => new()
+    {
+        MetadataJson = metadata,
+        RequestMessagesJson = messages
+    };
+}

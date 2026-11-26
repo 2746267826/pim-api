@@ -494,6 +494,7 @@ public sealed class NoteDerivedStore(IOptions<NoteMaterialUploadOptions> options
         step.Key,
         step.Kind,
         step.Current.Status,
+        step.DependsOn,
         step.Attempts.Select(x => new NoteDerivedAttemptDto(
             x.RequestId, x.LogId, x.Status, x.ErrorCode, x.ErrorMessage)).ToArray());
 

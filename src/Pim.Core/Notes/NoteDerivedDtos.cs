@@ -169,6 +169,7 @@ public sealed record NoteDerivedStepDto(
     string Key,
     NoteDerivedStepKind Kind,
     string Status,
+    IReadOnlyList<string> DependsOn,
     IReadOnlyList<NoteDerivedAttemptDto> Attempts);
 
 public sealed record NoteDerivedStepsDto(

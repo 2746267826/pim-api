@@ -79,7 +79,10 @@ public sealed class NoteDerivedJob(
             if (state.StopRequested && state.Steps.All(x => x.Current.Status != "Running"))
             {
                 if (state.Steps.Any(x => x.Current.Status == "Queued"))
+                {
                     await CancelQueuedAfterStopAsync(owner, taskId, ct);
+                    await ReconcileCoverageAsync(owner, taskId, ct);
+                }
                 return;
             }
 
@@ -408,6 +411,10 @@ public sealed class NoteDerivedJob(
             var result = AiCallAudit.Result(receipt, true);
             _ = await ApplyResultAsync(owner, taskId, step.Key, candidate.RequestId, result, receipt, ct);
         }
+        // Coverage and revision must converge even when the stop/recovery path has no more
+        // running receipt candidates; otherwise a stopped task can remain "complete" or keep
+        // returning a revision that no longer matches cancelled steps.
+        await ReconcileCoverageAsync(owner, taskId, ct);
     }
 
     internal async Task<NoteDerivedTaskReceiptDto> ReceiptAsync(Guid owner, Guid taskId,
@@ -1203,6 +1210,15 @@ public sealed class NoteDerivedJob(
             {
                 issues.Add(Issue("audio_batch_evidence_too_large",
                     "录音批次证据超过本批字符预算；未截断", stepKey: step.Key));
+                continue;
+            }
+            var wireIssues = NoteDerivedReceipts.ValidateAudioBatchReceipt(state, step, receipt);
+            if (wireIssues.Count > 0)
+            {
+                // A batch marked succeeded without a verifiable provider wire snapshot must
+                // never feed record/analysis. Otherwise a tampered or incomplete receipt
+                // could still trigger a paid synthesis call.
+                issues.AddRange(wireIssues);
                 continue;
             }
             items.Add(new(step.Key, receipt.Id, receipt.ResponseText, []));

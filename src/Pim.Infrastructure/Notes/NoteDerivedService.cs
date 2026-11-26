@@ -186,25 +186,10 @@ public sealed class NoteDerivedService(
                 if (step.Attempts.Count >= 10)
                     throw new DomainException(41301, "单步尝试次数已达10次，原结果保留");
             }
-            // A selected batch must also restore its cancelled downstream steps; successful
-            // steps are never replayed so the provider call identity stays one-shot.
-            var effective = new HashSet<string>(request.StepKeys, StringComparer.Ordinal);
-            var changed = true;
-            while (changed)
-            {
-                changed = false;
-                foreach (var step in state.Steps.Where(step =>
-                             !effective.Contains(step.Key) &&
-                             (step.Current.Status is "Cancelled" or "Failed" or "Unknown" or "Blocked") &&
-                             step.DependsOn.Any(effective.Contains)))
-                {
-                    if (step.Attempts.Count >= 10)
-                        throw new DomainException(41301, "单步尝试次数已达10次，原结果保留");
-                    effective.Add(step.Key);
-                    changed = true;
-                }
-            }
-            foreach (var key in effective)
+            // Retry only replays the steps explicitly listed by the client. The Web client
+            // expands cancelled downstream steps into the same request and shows them before
+            // confirmation; the server never adds provider calls behind the user's back.
+            foreach (var key in request.StepKeys)
             {
                 var step = state.Steps.Single(x => x.Key == key);
                 if (step.Current.Status != "Queued")

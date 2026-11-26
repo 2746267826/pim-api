@@ -29,7 +29,7 @@ internal sealed class NoteDerivedPlanner(NoteDerivedAudioContextOptions? audioCo
         var audioKeys = new List<string>();
         if (audioBatchMode)
         {
-            var audioBatches = BuildAudioBatches(input, issues);
+            var audioBatches = BuildAudioBatches(input, issues, batches.Count);
             var coveredTranscripts = audioBatches
                 .SelectMany(x => x.TranscriptOrdinals ?? [])
                 .ToHashSet();
@@ -111,7 +111,7 @@ internal sealed class NoteDerivedPlanner(NoteDerivedAudioContextOptions? audioCo
         NoteDerivedAudioContext.MaxBytes, NoteDerivedAudioContextOptions.HardMaxTotalBytes);
 
     private List<NoteDerivedPlanStep> BuildAudioBatches(NoteDerivedInputSnapshot input,
-        List<NoteDerivedIssueDto> issues)
+        List<NoteDerivedIssueDto> issues, int imageBatchCount)
     {
         var ordered = input.Audio.OrderBy(x => x.Ordinal).ToArray();
         var batches = new List<List<NoteDerivedAudioInput>>();
@@ -139,6 +139,13 @@ internal sealed class NoteDerivedPlanner(NoteDerivedAudioContextOptions? audioCo
         }
         if (current.Count > 0) batches.Add(current);
 
+        if (batches.Count == 0)
+        {
+            issues.Add(new("audio_batch_no_valid_slices",
+                $"原始录音上下文没有可分批的有效片段（共 {ordered.Length} 段）；未截断、未发送"));
+            return [];
+        }
+
         if (batches.Count > MaxBatches)
         {
             issues.Add(new("audio_batch_limit",
@@ -146,15 +153,31 @@ internal sealed class NoteDerivedPlanner(NoteDerivedAudioContextOptions? audioCo
             return [];
         }
 
+        var transcriptBatch = new Dictionary<int, int>();
+        foreach (var transcript in input.Transcripts.OrderBy(x => x.Ordinal))
+        {
+            for (var index = 0; index < batches.Count; index++)
+            {
+                if (!batches[index].Any(slice => Overlaps(transcript, slice))) continue;
+                transcriptBatch[transcript.Ordinal] = index;
+                break;
+            }
+        }
+
         var skeleton = NoteDerivedPrompts.Record(input, [], audioBatched: true).Length;
-        var reserve = 512 + batches.Count * 128;
-        var available = NoteDerivedLimits.MaxSynthesisInputChars - skeleton - reserve;
+        // Reserve the maximum image evidence the record prompt can accept. Otherwise a plan can
+        // pass here, send every audio batch, and only then fail the record input limit.
+        var imageReserve = imageBatchCount *
+            (long)(NoteDerivedLimits.MaxEvidenceCharsPerStep + 128);
+        var reserve = 512L + batches.Count * 128L;
+        var available = NoteDerivedLimits.MaxSynthesisInputChars - skeleton - reserve - imageReserve;
         var perBatchLimit = available <= 0 ? 0 :
-            Math.Min(NoteDerivedLimits.MaxEvidenceCharsPerStep, available / batches.Count);
-        if (batches.Count > 0 && perBatchLimit < 1000)
+            (int)Math.Min(NoteDerivedLimits.MaxEvidenceCharsPerStep, available / batches.Count);
+        if (perBatchLimit < 1000)
         {
             issues.Add(new("audio_evidence_budget_insufficient",
-                $"完整记录基础输入已占用 {skeleton} 字符，无法为 {batches.Count} 个录音批次各保留至少 1000 字符的整理证据；未截断、未发送"));
+                $"完整记录基础输入已占用 {skeleton} 字符，图片证据预留 {imageReserve} 字符，" +
+                $"无法为 {batches.Count} 个录音批次各保留至少 1000 字符的整理证据；未截断、未发送"));
             return [];
         }
 
@@ -163,7 +186,11 @@ internal sealed class NoteDerivedPlanner(NoteDerivedAudioContextOptions? audioCo
         {
             var key = NoteDerivedPrompts.AudioBatchKey(index);
             var audio = batches[index].ToArray();
-            var transcriptOrdinals = OverlappingTranscriptOrdinals(input.Transcripts, audio);
+            var transcriptOrdinals = transcriptBatch
+                .Where(item => item.Value == index)
+                .Select(item => item.Key)
+                .OrderBy(ordinal => ordinal)
+                .ToArray();
             var prompt = NoteDerivedPrompts.AudioBatch(key, index, batches.Count, audio,
                 input.Transcripts.Where(x => transcriptOrdinals.Contains(x.Ordinal)));
             if (prompt.Length > NoteDerivedLimits.MaxSynthesisInputChars)
@@ -180,19 +207,13 @@ internal sealed class NoteDerivedPlanner(NoteDerivedAudioContextOptions? audioCo
         return result;
     }
 
-    private static int[] OverlappingTranscriptOrdinals(
-        IReadOnlyList<NoteDerivedTranscriptInput> transcripts,
-        IReadOnlyList<NoteDerivedAudioInput> audio) =>
-        transcripts.Where(transcript => audio.Any(slice =>
-                slice.RecordingId == transcript.RecordingId &&
-                slice.RecordingSegment == transcript.RecordingSegment &&
-                slice.ChunkIndex == transcript.ChunkIndex &&
-                transcript.SourceOffsetSamples < slice.SourceOffsetSamples + slice.Samples &&
-                slice.SourceOffsetSamples < transcript.SourceOffsetSamples + transcript.Samples))
-            .Select(x => x.Ordinal)
-            .Distinct()
-            .OrderBy(x => x)
-            .ToArray();
+    private static bool Overlaps(NoteDerivedTranscriptInput transcript,
+        NoteDerivedAudioInput slice) =>
+        slice.RecordingId == transcript.RecordingId &&
+        slice.RecordingSegment == transcript.RecordingSegment &&
+        slice.ChunkIndex == transcript.ChunkIndex &&
+        transcript.SourceOffsetSamples < slice.SourceOffsetSamples + slice.Samples &&
+        slice.SourceOffsetSamples < transcript.SourceOffsetSamples + transcript.Samples;
 
     private static List<IReadOnlyList<NoteDerivedImageInput>> BuildImageBatches(
         IReadOnlyList<NoteDerivedImageInput> source, List<NoteDerivedIssueDto> issues)

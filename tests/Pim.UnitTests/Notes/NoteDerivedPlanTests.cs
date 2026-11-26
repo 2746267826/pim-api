@@ -276,6 +276,86 @@ public sealed class NoteDerivedPlanTests
     }
 
     [Fact]
+    public void SingleSliceAboveTheSingleCallLimitBlocksWithoutDividingByZero()
+    {
+        var material = NoteDerivedFixture.CreateMaterial();
+        var audio = new NoteDerivedAudioInput(0, Guid.NewGuid(), 1, 1, 0,
+            "recordings/recording-0.wav", NoteDerivedFixture.Digest([7]), 0,
+            NoteDerivedAudioContext.MaxBytes, NoteDerivedAudioContext.MaxBytes + 1,
+            "recording-0.wav");
+
+        var plan = new NoteDerivedPlanner().Build(
+            NoteDerivedFixture.Snapshot(material) with { Audio = [audio] });
+
+        Assert.Contains(plan.InitialCoverage.Issues,
+            issue => issue.Code == "audio_slice_too_large");
+        Assert.Contains(plan.InitialCoverage.Issues,
+            issue => issue.Code == "audio_batch_no_valid_slices");
+        Assert.DoesNotContain(plan.Steps,
+            step => step.Kind == NoteDerivedStepKind.AudioBatchEvidence);
+        Assert.False(plan.InitialCoverage.Complete);
+    }
+
+    [Fact]
+    public void TranscriptSpanningTwoBatchesIsAttachedToExactlyOneBatch()
+    {
+        var material = NoteDerivedFixture.CreateMaterial();
+        const long samples = (1024 * 1024 - 44) / 2;
+        var recordingId = Guid.NewGuid();
+        var sha = NoteDerivedFixture.Digest([3, 1, 4]);
+        var path = $"recordings/{recordingId:D}/s0001-c000001.wav";
+        var audio = Enumerable.Range(0, 9).Select(index => new NoteDerivedAudioInput(
+            index, recordingId, 1, 1, 5, path, sha, index * samples, samples,
+            NoteDerivedAudioContext.ByteSize(samples),
+            $"recording-{index:D}-s0001-c000001-o{index * samples:D012}-n{samples}.wav")).ToArray();
+        var spanning = new NoteDerivedTranscriptInput(0, 0, recordingId, 1, 1, 5, path, sha,
+            7 * samples + samples / 2, samples * 2, "Transcript spanning the batch boundary",
+            Guid.NewGuid());
+
+        var plan = new NoteDerivedPlanner().Build(
+            NoteDerivedFixture.Snapshot(material, [], [spanning]) with { Audio = audio });
+
+        Assert.Empty(plan.InitialCoverage.Issues);
+        var batches = plan.Steps.Where(step =>
+            step.Kind == NoteDerivedStepKind.AudioBatchEvidence).ToArray();
+        Assert.Equal(2, batches.Length);
+        Assert.Equal(1, batches.Sum(batch =>
+            batch.TranscriptOrdinals!.Count(ordinal => ordinal == spanning.Ordinal)));
+        Assert.Contains(0, batches[0].TranscriptOrdinals!);
+        Assert.DoesNotContain(0, batches[1].TranscriptOrdinals!);
+        var prompts = batches.Select((batch, index) => NoteDerivedPrompts.AudioBatch(
+            batch.Key, index, batches.Length, batch.Audio!,
+            batch.TranscriptOrdinals!.Contains(0) ? [spanning] : [])).ToArray();
+        Assert.Single(prompts, prompt =>
+            prompt.Contains("Transcript spanning the batch boundary", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ImageEvidenceIsReservedBeforeAudioBatchProviderCalls()
+    {
+        var material = NoteDerivedFixture.CreateMaterial();
+        var images = Enumerable.Range(0, NoteDerivedLimits.MaxImages)
+            .Select(index => NoteDerivedFixture.Image(index, index + 2,
+                index % 2 == 0 ? "Photo" : "InkPreview",
+                NoteDerivedFixture.Digest([(byte)index]), 2)).ToArray();
+        var audio = Enumerable.Range(0, 2).Select(index => new NoteDerivedAudioInput(
+            index, Guid.NewGuid(), 1, 1, index, $"recordings/recording-{index:D}.wav",
+            NoteDerivedFixture.Digest([(byte)(index + 10)]), 0, 200_000,
+            NoteDerivedAudioContext.ByteSize(200_000), $"recording-{index:D}.wav")).ToArray();
+
+        var plan = new NoteDerivedPlanner(new NoteDerivedAudioContextOptions
+        {
+            MaxBatchBytes = 500_000
+        }).Build(NoteDerivedFixture.Snapshot(material, images) with { Audio = audio });
+
+        Assert.Contains(plan.InitialCoverage.Issues,
+            issue => issue.Code == "audio_evidence_budget_insufficient");
+        Assert.DoesNotContain(plan.Steps,
+            step => step.Kind == NoteDerivedStepKind.AudioBatchEvidence);
+        Assert.False(plan.InitialCoverage.Complete);
+    }
+
+    [Fact]
     public void TranscriptOutsideEveryAudioBatchBlocksInsteadOfBeingSilentlyOmitted()
     {
         var material = NoteDerivedFixture.CreateMaterial();

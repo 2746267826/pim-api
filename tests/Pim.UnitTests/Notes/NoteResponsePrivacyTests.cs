@@ -67,6 +67,7 @@ public class NoteResponsePrivacyTests
             [issue],
             [
                 new NoteDerivedStepDto("image-batch:0001", NoteDerivedStepKind.ImageEvidence, "Failed",
+                    [],
                     [new NoteDerivedAttemptDto(Guid.NewGuid(), Guid.NewGuid(), "Failed",
                         "provider_error", "https://internal.example/v1 返回 500")])
             ],
