@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useSearchParams } from 'react-router'
 import { Play, RefreshCw, ShieldCheck, Square } from 'lucide-react'
@@ -36,6 +36,7 @@ import {
   type NoteDerivedDraftScope,
   type StoredNoteDerivedDraft,
 } from './draft-storage'
+import { pendingArtifactVersion } from './pending-artifact-version'
 import {
   beginManualSave,
   isVersionHead,
@@ -63,7 +64,12 @@ const kindNames: Record<NoteDerivedArtifactKind, string> = {
   IndependentAnalysis: '独立分析',
 }
 const authorNames = { Model: '模型生成', User: '人工修订' } as const
-const errorText = (error: unknown) => error instanceof Error ? error.message : '请求失败，请刷新核对'
+const failureText = (error: unknown, showVersionDetails: boolean, fallback: string) =>
+  showVersionDetails && error instanceof Error && error.message.trim() ? error.message : fallback
+const phaseLabel = (value: string, showVersionDetails: boolean) =>
+  phaseNames[value] ?? (showVersionDetails ? value : '处理状态待核对')
+const stepLabel = (value: string, showVersionDetails: boolean) =>
+  stepNames[value] ?? (showVersionDetails ? value : '处理步骤')
 const time = (value: string) => formatTime(value)
 
 function tone(value: string) {
@@ -73,8 +79,8 @@ function tone(value: string) {
   return 'warn' as const
 }
 
-function State({ value }: { value: string }) {
-  return <StatusBadge dot={false} tone={tone(value)}>{phaseNames[value] ?? value}</StatusBadge>
+function State({ value, showVersionDetails }: { value: string; showVersionDetails: boolean }) {
+  return <StatusBadge dot={false} tone={tone(value)}>{phaseLabel(value, showVersionDetails)}</StatusBadge>
 }
 
 function SectionTitle({ number, title, description }: { number?: string; title: string; description: string }) {
@@ -84,8 +90,8 @@ function SectionTitle({ number, title, description }: { number?: string; title: 
   </div>
 }
 
-function bindingScope(ownerId: string, serverBinding: string, artifactId: string, sourceVersionId: string, kind: NoteDerivedArtifactKind): NoteDerivedDraftScope {
-  return { ownerId, serverBinding, artifactId, sourceVersionId, kind }
+function bindingScope(ownerId: string, serverBinding: string, artifactId: string, sourceVersionId: string, kind: NoteDerivedArtifactKind, artifactVersionId?: string): NoteDerivedDraftScope {
+  return { ownerId, serverBinding, artifactId, sourceVersionId, kind, ...(artifactVersionId ? { artifactVersionId } : {}) }
 }
 
 function loadLocalRecord(scope: NoteDerivedDraftScope): { record: StoredNoteDerivedDraft; error: string | null } {
@@ -103,16 +109,18 @@ export function NoteDerivedPage() {
     return () => window.removeEventListener('pim:api-base-changed', update)
   }, [])
   const ownerId = user?.id ?? ''
-  return <Workspace key={`${ownerId}/${serverBinding}`} ownerId={ownerId} serverBinding={serverBinding} role={user?.role} />
+  return <Workspace key={`${ownerId}/${user?.role ?? ''}/${serverBinding}`} ownerId={ownerId} serverBinding={serverBinding} role={user?.role} />
 }
 
 function Workspace({ ownerId, serverBinding, role }: { ownerId: string; serverBinding: string; role?: string }) {
+  const canViewVersions = role === 'admin'
   const qc = useQueryClient()
   const [searchParams, setSearchParams] = useSearchParams()
   const asrSection = useRef<HTMLElement>(null)
   const organizeSection = useRef<HTMLElement>(null)
   const [sourcePage, setSourcePage] = useState(0)
-  const [sourceVersionId, setSourceVersionId] = useState(() => searchParams.get('version') ?? searchParams.get('versionId') ?? '')
+  const [sourceVersionId, setSourceVersionId] = useState(() =>
+    canViewVersions ? searchParams.get('version') ?? searchParams.get('versionId') ?? '' : '')
   const [asrTaskId, setAsrTaskId] = useState('')
   const [asrSelectionRevision, setAsrSelectionRevision] = useState(0)
   const [taskId, setTaskId] = useState('')
@@ -120,29 +128,48 @@ function Workspace({ ownerId, serverBinding, role }: { ownerId: string; serverBi
   const sources = useQuery({ queryKey: ['note-derived', ownerId, serverBinding, 'sources', sourcePage], queryFn: ({ signal }) => noteDerivedApi.sources(sourcePage, signal) })
   const destinations = useQuery({ queryKey: ['note-derived', ownerId, serverBinding, 'destinations'], queryFn: ({ signal }) => noteDerivedApi.destinations(signal) })
   const limits = useQuery({ queryKey: ['note-derived', ownerId, serverBinding, 'limits'], queryFn: ({ signal }) => noteDerivedApi.limits(signal) })
-  const source = sources.data?.items.find((item) => item.versionId === sourceVersionId)
   const requestedNoteId = searchParams.get('noteId') ?? ''
   const requestedAction = searchParams.get('action')
+  const visibleSources = useMemo(() => {
+    const items = sources.data?.items ?? []
+    return canViewVersions ? items : items.filter((item) => item.isCurrent)
+  }, [canViewVersions, sources.data])
+  const source = visibleSources.find((item) => item.versionId === sourceVersionId)
+  useEffect(() => {
+    if (canViewVersions || (!searchParams.has('version') && !searchParams.has('versionId'))) return
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current)
+      next.delete('version')
+      next.delete('versionId')
+      return next
+    }, { replace: true })
+  }, [canViewVersions, searchParams, setSearchParams])
   useEffect(() => {
     if (!sourceVersionId && requestedNoteId && sources.data) {
-      const matchingNoteVersions = sources.data.items.filter((item) => item.noteId === requestedNoteId)
-      const preferredVersion = matchingNoteVersions.find((item) => item.isCurrent) ?? matchingNoteVersions[0]
+      const matchingNoteVersions = visibleSources.filter((item) => item.noteId === requestedNoteId)
+      const preferredVersion = canViewVersions
+        ? matchingNoteVersions.find((item) => item.isCurrent) ?? matchingNoteVersions[0]
+        : matchingNoteVersions.find((item) => item.isCurrent)
       if (preferredVersion) {
         setSourceVersionId(preferredVersion.versionId)
         setSearchParams((current) => {
           const next = new URLSearchParams(current)
-          next.set('version', preferredVersion.versionId)
+          if (canViewVersions) next.set('version', preferredVersion.versionId)
+          else {
+            next.delete('version')
+            next.delete('versionId')
+          }
           return next
         }, { replace: true })
         return
       }
     }
     const searchingForLinkedSource = Boolean(sourceVersionId || requestedNoteId)
-    const sourceFound = source || (requestedNoteId && sources.data?.items.some((item) => item.noteId === requestedNoteId))
+    const sourceFound = source || (requestedNoteId && visibleSources.some((item) => item.noteId === requestedNoteId))
     if (searchingForLinkedSource && sources.data && !sourceFound && sourcePage + sources.data.items.length < sources.data.total) {
       setSourcePage((page) => page + 20)
     }
-  }, [requestedNoteId, source, sourcePage, sourceVersionId, sources.data, setSearchParams])
+  }, [canViewVersions, requestedNoteId, source, sourcePage, sourceVersionId, sources.data, setSearchParams, visibleSources])
   useEffect(() => {
     if (!source || (requestedAction !== 'transcribe' && requestedAction !== 'organize')) return
     const target = requestedAction === 'transcribe' && source.recordings > 0 ? asrSection.current : organizeSection.current
@@ -184,10 +211,14 @@ function Workspace({ ownerId, serverBinding, role }: { ownerId: string; serverBi
   const refreshArtifacts = () => {
     void qc.invalidateQueries({ queryKey: ['note-derived', ownerId, serverBinding, 'artifacts'] })
   }
-  const returnParams = new URLSearchParams(searchParams)
-  if (sourceVersionId) returnParams.set('version', sourceVersionId)
+  const returnParams = canViewVersions ? new URLSearchParams(searchParams) : new URLSearchParams()
+  if (canViewVersions && sourceVersionId) returnParams.set('version', sourceVersionId)
   returnParams.delete('versionId')
   returnParams.delete('action')
+  if (!canViewVersions) {
+    const returnNoteId = source?.noteId ?? requestedNoteId
+    if (returnNoteId) returnParams.set('note', returnNoteId)
+  }
   const returnQuery = returnParams.toString()
   const reusableAsr = reusableAsrTasks.length > 0
   const activeAsr = (asrTasks.data ?? []).some((item) => item.versionId === source?.versionId && (item.phase === 'Queued' || item.phase === 'Running'))
@@ -198,8 +229,8 @@ function Workspace({ ownerId, serverBinding, role }: { ownerId: string; serverBi
         : activeAsr ? '录音正在转写中；完成后可复用结果，也可以先查看任务进度。'
           : failedAsr ? '已有转写未完整成功；可查看原因并重试，或重新转写后再整理。'
             : '先完成录音转写，再整理成完整记录和分析。'
-      : '该版本没有录音，可直接整理成完整记录和分析。'
-    : '选择固定版本后，按需转写录音或直接整理。'
+      : canViewVersions ? '该版本没有录音，可直接整理成完整记录和分析。' : '这份内容没有录音，可直接整理成完整记录和分析。'
+    : canViewVersions ? '选择固定版本后，按需转写录音或直接整理。' : '选择笔记内容后，按需转写录音或直接整理。'
 
   return <div className="space-y-5">
       <PageHeader title="继续处理这篇笔记" subtitle={processingSubtitle} actions={<>
@@ -216,39 +247,50 @@ function Workspace({ ownerId, serverBinding, role }: { ownerId: string; serverBi
 
     <div className="space-y-5">
         <Card className="space-y-4 p-5">
-          <SectionTitle title="选择笔记材料" description="从所选笔记的固定版本继续；零录音版本可直接整理，录音版本先完成转写。" />
-          {sources.isPending ? <Skeleton className="h-16" /> : sources.isError ? <EmptyState title="材料版本加载失败" action={<Button onClick={() => void sources.refetch()}>重试</Button>} />
-            : !sources.data?.items.length ? <EmptyState title="没有已上传材料" description="请先在客户端提交完整笔记材料版本。" />
+          <SectionTitle title={canViewVersions ? '选择笔记材料' : '选择笔记内容'} description={canViewVersions ? '从所选笔记的固定版本继续；零录音版本可直接整理，录音版本先完成转写。' : '选择一篇笔记继续；没有录音的内容可直接整理，有录音的内容先完成转写。'} />
+          {sources.isPending ? <Skeleton className="h-16" /> : sources.isError ? <EmptyState title={canViewVersions ? '材料版本加载失败' : '笔记内容加载失败'} action={<Button onClick={() => void sources.refetch()}>重试</Button>} />
+            : !visibleSources.length ? <EmptyState title={canViewVersions ? '没有已上传材料' : '没有可处理的当前内容'} description={canViewVersions ? '请先在客户端提交完整笔记材料版本。' : '请先保存或打开一篇笔记，再继续处理。'} />
               : <>
-                <div><Label htmlFor="note-derived-source">材料版本</Label>
-                  <Select id="note-derived-source" ariaLabel="材料版本" value={sourceVersionId} className="mt-1 w-full"
-                    options={sources.data.items.map((item) => ({
+                <div><Label htmlFor="note-derived-source">{canViewVersions ? '材料版本' : '选择笔记内容'}</Label>
+                  <Select id="note-derived-source" ariaLabel={canViewVersions ? '材料版本' : '选择笔记内容'} value={sourceVersionId} className="mt-1 w-full"
+                    options={visibleSources.map((item) => ({
                       value: item.versionId,
-                      label: `${item.title || '未命名笔记'} · ${time(item.createdAt)}${item.isCurrent ? ' · 当前版' : ' · 历史版'}${item.hasConflict ? ' · 冲突保全' : ''}`,
+                      label: canViewVersions
+                        ? `${item.title || '未命名笔记'} · ${time(item.createdAt)}${item.isCurrent ? ' · 当前版' : ' · 历史版'}${item.hasConflict ? ' · 冲突保全' : ''}`
+                        : `${item.title || '未命名笔记'} · ${time(item.createdAt)}`,
                     }))}
                     onValueChange={(value) => {
                       setSourceVersionId(value)
                       setSearchParams((current) => {
                         const next = new URLSearchParams(current)
-                        next.set('version', value)
+                        if (canViewVersions) {
+                          next.set('version', value)
+                        } else {
+                          const selected = sources.data?.items.find((item) => item.versionId === value)
+                          if (selected) next.set('noteId', selected.noteId)
+                          next.delete('version')
+                          next.delete('versionId')
+                        }
                         return next
                       }, { replace: true })
                       setAsrTaskId('')
                       setTaskId('')
                       setMessage('')
                     }} /></div>
-                {source && <p className="text-xs leading-5 text-text-3">{source.recordings === 0 ? '零录音版本' : `${source.recordings} 次录音`} · 有效录音 {Math.floor(source.totalSamples / source.sampleRate / 60)}:{String(Math.floor(source.totalSamples / source.sampleRate) % 60).padStart(2, '0')} · 全部原录音保留</p>}
+                {source && <p className="text-xs leading-5 text-text-3">{source.recordings === 0 ? (canViewVersions ? '零录音版本' : '没有录音') : `${source.recordings} 次录音`} · 有效录音 {Math.floor(source.totalSamples / source.sampleRate / 60)}:{String(Math.floor(source.totalSamples / source.sampleRate) % 60).padStart(2, '0')} · 全部原录音保留</p>}
                 {sources.data.total > 20 && <div className="flex gap-2"><Button size="sm" disabled={sourcePage === 0} onClick={() => setSourcePage((page) => page - 20)}>上一页材料</Button><Button size="sm" disabled={sourcePage + 20 >= sources.data.total} onClick={() => setSourcePage((page) => page + 20)}>下一页材料</Button></div>}
               </>}
         </Card>
 
         {source && <NoteProcessingPanel key={`processing-${source.versionId}`} ownerId={ownerId}
           serverBinding={serverBinding} noteId={source.noteId} versionId={source.versionId}
+          showVersionDetails={canViewVersions}
           onChanged={() => refresh()} />}
 
         {source && source.recordings > 0 && <section ref={asrSection} tabIndex={-1} aria-label="录音转写" className="space-y-3 rounded-ctl border border-primary/20 bg-primary/5 p-4 outline-none sm:p-5">
           <div><h2 className="text-base font-semibold text-text-1">{reusableAsr ? '已有成功转写' : '1 · 先完成录音转写'}</h2><p className="mt-1 text-sm text-text-3">{reusableAsr ? '已选用完整成功结果，可直接继续整理；如需其他结果可在任务列表中切换。' : activeAsr ? '当前转写完成后即可复用；暂不需要重复启动。' : failedAsr ? '查看失败任务，重试或重新转写；只有完整成功的结果可用于整理。' : '完成转写后，可选择成功结果用于笔记整理。'}</p></div>
           <NoteAsrOwnerTasks userId={ownerId} serverBinding={serverBinding} versionId={source.versionId}
+            showVersionDetails={canViewVersions}
             selectedTaskId={selectedAsrTaskId} onSelect={(taskId) => {
               setAsrTaskId(taskId)
               setAsrSelectionRevision((revision) => revision + 1)
@@ -256,12 +298,14 @@ function Workspace({ ownerId, serverBinding, role }: { ownerId: string; serverBi
           {asrTasks.isSuccess && !activeAsr && (reusableAsr ? <details className="rounded-card border border-border bg-bg px-4 py-3 shadow-card">
             <summary className="cursor-pointer text-sm font-medium text-text-2">重新转写（可选）</summary>
             <div className="mt-3"><NoteAsrStartPanel key={`asr-${source.versionId}`} userId={ownerId} serverBinding={serverBinding} versionId={source.versionId}
+              showVersionDetails={canViewVersions}
               onCreated={(task) => {
                 setAsrTaskId(task.taskId)
                 setMessage('转写任务已保存；可离开此页，稍后从所选笔记继续。')
                 void qc.invalidateQueries({ queryKey: ['ai', ownerId, serverBinding, 'note-asr-owner', 'tasks'] })
               }} /></div>
           </details> : <NoteAsrStartPanel key={`asr-${source.versionId}`} userId={ownerId} serverBinding={serverBinding} versionId={source.versionId}
+            showVersionDetails={canViewVersions}
             onCreated={(task) => {
               setAsrTaskId(task.taskId)
               setMessage('转写任务已保存；可离开此页，稍后从所选笔记继续。')
@@ -269,20 +313,28 @@ function Workspace({ ownerId, serverBinding, role }: { ownerId: string; serverBi
             }} />)}
         </section>}
         {source && <section ref={organizeSection} tabIndex={-1} aria-label="整理生成" className="space-y-3 rounded-ctl border border-border p-4 outline-none sm:p-5">
-          <div><h2 className="text-base font-semibold text-text-1">{source.recordings > 0 ? '2 · 整理并生成' : '1 · 整理并生成'}</h2><p className="mt-1 text-sm text-text-3">生成完整记录与独立分析；原笔记和已选版本保持不变。</p></div>
-          {source.recordings > 0 && <p className="rounded-ctl bg-surface p-3 text-sm text-text-2">仅使用当前固定版本已成功的转写。若转写仍在处理中，可稍后返回；不会自动启动生成。</p>}
+          <div><h2 className="text-base font-semibold text-text-1">{source.recordings > 0 ? '2 · 整理并生成' : '1 · 整理并生成'}</h2><p className="mt-1 text-sm text-text-3">{canViewVersions ? '生成完整记录与独立分析；原笔记和已选版本保持不变。' : '生成完整记录与独立分析；原笔记和当前内容保持不变。'}</p></div>
+          {source.recordings > 0 && <p className="rounded-ctl bg-surface p-3 text-sm text-text-2">
+            {canViewVersions
+              ? '仅使用当前固定版本已成功的转写。若转写仍在处理中，可稍后返回；不会自动启动生成。'
+              : '仅使用当前内容已成功的转写。若转写仍在处理中，可稍后返回；不会自动启动生成。'}
+          </p>}
           <StartTaskCard key={source.versionId} ownerId={ownerId} serverBinding={serverBinding} role={role} source={source}
-          destinations={destinations.data?.items ?? []} destinationsError={destinations.isError ? errorText(destinations.error) : ''}
+          destinations={destinations.data?.items ?? []} destinationsError={destinations.isError
+            ? failureText(destinations.error, canViewVersions, '暂时无法读取安全目标，请刷新核对。')
+            : ''}
           asrTasks={asrTasks.data ?? []} selectedAsrTaskId={selectedAsrTaskId} asrSelectionRevision={asrSelectionRevision} asrLoading={asrTasks.isPending} limits={limits.data}
           onCreated={(task) => {
             setTaskId(task.taskId)
-            setMessage('派生任务已创建，后续生成不会自动覆盖当前选用版本。')
+            setMessage(canViewVersions
+              ? '派生任务已创建，后续生成不会自动覆盖当前选用版本。'
+              : '生成任务已创建，后续结果不会自动覆盖当前内容。')
             refresh()
           }} />
         </section>}
 
         {selectedTask && <div role="status" aria-label="当前整理任务摘要" className="rounded-ctl border border-border bg-bg p-3 text-xs text-text-2">
-          <span className="font-medium">整理进度：{phaseNames[selectedTask.phase] ?? selectedTask.phase}</span>
+          <span className="font-medium">整理进度：{phaseLabel(selectedTask.phase, canViewVersions)}</span>
           <span className="ml-2 text-text-3">ASR {selectedTask.coverage.completedTranscriptSegments}/{selectedTask.coverage.transcriptSegments} 片 · 图片 {selectedTask.coverage.completedPhotos + selectedTask.coverage.completedInkPreviews}/{selectedTask.coverage.photos + selectedTask.coverage.inkPreviews}</span>
         </div>}
 
@@ -290,18 +342,19 @@ function Workspace({ ownerId, serverBinding, role }: { ownerId: string; serverBi
           <summary className="cursor-pointer text-sm font-medium text-text-2">更多：历史任务与处理进度{tasks.data?.length ? ` · ${tasks.data.length} 项` : ''}</summary>
           <div className="mt-3 space-y-3 p-1">
           <div className="flex flex-wrap items-center justify-between gap-2"><div><h2 className="text-sm font-semibold text-text-1">处理进度</h2><p className="mt-1 text-xs text-text-3">任务保存在服务器，可离开后返回；旧任务与结果不会被新稿自动替换。</p></div><Button size="sm" variant="ghost" onClick={() => void tasks.refetch()}>刷新任务</Button></div>
-          {tasks.isPending ? <Skeleton className="h-16" /> : tasks.isError ? <p role="alert" className="text-sm text-text-2">任务加载失败：{errorText(tasks.error)}</p>
+          {tasks.isPending ? <Skeleton className="h-16" /> : tasks.isError ? <p role="alert" className="text-sm text-text-2">任务加载失败：{failureText(tasks.error, canViewVersions, '请刷新核对。')}</p>
             : !tasks.data?.length ? <p className="text-sm text-text-3">还没有派生任务。</p>
               : <div className="space-y-2">{tasks.data.map((item) => <button key={item.taskId} type="button" onClick={() => setTaskId(item.taskId)}
                 className="flex w-full flex-wrap items-center justify-between gap-2 rounded-ctl border border-border p-3 text-left text-sm hover:bg-surface">
                 <span className="min-w-0"><span className="block truncate">{time(item.createdAt)} · {item.coverage.complete ? '材料覆盖完整' : '有材料缺口'}</span><span className="mt-1 block text-xs text-text-3">ASR {item.coverage.completedTranscriptSegments}/{item.coverage.transcriptSegments} 片 · 图片 {item.coverage.completedPhotos + item.coverage.completedInkPreviews}/{item.coverage.photos + item.coverage.inkPreviews}</span></span>
-                <State value={item.phase} /></button>)}</div>}
+                <State value={item.phase} showVersionDetails={canViewVersions} /></button>)}</div>}
           </div>
         </details>
 
         {taskId && <details className="min-w-0">
-          <summary className="cursor-pointer rounded-card border border-border bg-bg px-4 py-3 text-sm font-medium text-text-2 shadow-card">更多：任务详情、停止与恢复 · {phaseNames[selectedTask?.phase ?? ''] ?? '查看任务'}</summary>
-          <div className="mt-3"><TaskDetailCard key={taskId} taskId={taskId} ownerId={ownerId} serverBinding={serverBinding} onChanged={refresh} /></div>
+          <summary className="cursor-pointer rounded-card border border-border bg-bg px-4 py-3 text-sm font-medium text-text-2 shadow-card">更多：任务详情、停止与恢复 · {selectedTask ? phaseLabel(selectedTask.phase, canViewVersions) : '查看任务'}</summary>
+          <div className="mt-3"><TaskDetailCard key={taskId} taskId={taskId} ownerId={ownerId} serverBinding={serverBinding}
+            showVersionDetails={canViewVersions} onChanged={refresh} /></div>
         </details>}
     </div>
 
@@ -309,8 +362,11 @@ function Workspace({ ownerId, serverBinding, role }: { ownerId: string; serverBi
     {noteId && <div className="grid gap-5 lg:grid-cols-2">
       {(['CompleteRecord', 'IndependentAnalysis'] as const).map((kind) => {
         const artifact = artifacts.data?.find((item) => item.kind === kind)
-        if (!artifact) return <Card key={kind} className="p-5"><EmptyState title={kindNames[kind]} description="任务生成完成后，候选版本会出现在这里；需要明确选择后才成为当前选用版本。" /></Card>
-        return <ArtifactCard key={`${artifact.artifactId}/${artifact.revision}`} artifact={artifact} ownerId={ownerId} serverBinding={serverBinding} onChanged={refreshArtifacts} />
+        if (!artifact) return <Card key={kind} className="p-5"><EmptyState title={kindNames[kind]} description={canViewVersions
+          ? '任务生成完成后，候选版本会出现在这里；需要明确选择后才成为当前选用版本。'
+          : '任务生成完成后，新结果会出现在这里；采用后才成为当前内容。'} /></Card>
+        return <ArtifactCard key={`${artifact.artifactId}/${artifact.revision}`} artifact={artifact} ownerId={ownerId}
+          serverBinding={serverBinding} showVersionDetails={canViewVersions} onChanged={refreshArtifacts} />
       })}
     </div>}
   </div>
@@ -330,6 +386,7 @@ function StartTaskCard({ ownerId, serverBinding, role, source, destinations, des
   limits: NoteDerivedLimits | undefined
   onCreated: (task: NoteDerivedTask) => void
 }) {
+  const canViewVersions = role === 'admin'
   const scope = bindingScope(ownerId, serverBinding, 'task-create', source.versionId, 'CompleteRecord')
   const initial = loadLocalRecord(scope)
   const [stored, setStored] = useState(initial.record)
@@ -375,7 +432,9 @@ function StartTaskCard({ ownerId, serverBinding, role, source, destinations, des
       if (cleared.ok) setStored(cleared.value)
       onCreated(task)
     } catch (error) {
-      setMessage(errorText(error) + '。提交意图已保存，请用同一标识核对或重新提交，不要新建另一个任务。')
+      setMessage(failureText(error, canViewVersions, '提交状态未确认，请刷新核对') + (canViewVersions
+        ? '。提交意图已保存，请用同一标识核对或重新提交，不要新建另一个任务。'
+        : '。提交状态已保存，可核对原提交或重试，不要新建另一个任务。'))
     } finally {
       setBusy(false)
     }
@@ -392,7 +451,7 @@ function StartTaskCard({ ownerId, serverBinding, role, source, destinations, des
       if (cleared.ok) setStored(cleared.value)
       onCreated(task)
     } catch (error) {
-      setMessage(errorText(error) + '。仍保留原任务标识，没有重新分配。')
+      setMessage(failureText(error, canViewVersions, '核对未确认，请刷新核对') + '。仍保留原任务标识，没有重新分配。')
     } finally {
       setBusy(false)
     }
@@ -407,48 +466,65 @@ function StartTaskCard({ ownerId, serverBinding, role, source, destinations, des
         onValueChange={(value) => { setDestinationId(value); setConsentedTo('') }} disabled={busy || Boolean(stored.pending)} /></div>
     </div>
     {!destinations.length && <p role="status" className="rounded-ctl bg-surface p-3 text-xs leading-5 text-text-3">暂无可用的共享生成目标。{role === 'admin' ? '请先在“设置 → AI 与 ASR”启用安全目标。' : '普通账号不能查看或配置模型凭据，请联系管理员启用共享目标。'}</p>}
-    {needsAsr && !asrLoading && !completedAsr && <p role="status" className="rounded-ctl bg-surface p-3 text-xs leading-5 text-text-3">请在转写任务列表中选择本版本完整成功的结果；处理中或部分失败的结果不能用于整理。</p>}
-    {!needsAsr && <p className="rounded-ctl bg-surface p-3 text-xs leading-5 text-text-3">该版本为零录音材料，不需要绑定 ASR 任务；正文、照片和手写图仍会由服务端完整核对。</p>}
+    {needsAsr && !asrLoading && !completedAsr && <p role="status" className="rounded-ctl bg-surface p-3 text-xs leading-5 text-text-3">
+      请在转写任务列表中选择{canViewVersions ? '本版本' : '当前内容'}完整成功的结果；处理中或部分失败的结果不能用于整理。
+    </p>}
+    {!needsAsr && <p className="rounded-ctl bg-surface p-3 text-xs leading-5 text-text-3">
+      {canViewVersions
+        ? '该版本为零录音材料，不需要绑定 ASR 任务；正文、照片和手写图仍会由服务端完整核对。'
+        : '这份内容没有录音，不需要创建转写任务；正文、照片和手写图仍会由服务端完整核对。'}
+    </p>}
     <div role="group" aria-label="本次生成目标、材料范围与费用" className="space-y-1 rounded-ctl border border-border p-3 text-xs leading-5 text-text-2">
-      <p>{destination ? `本次目标：${destination.displayName} · ${destination.model}` : '本次目标：尚未选择可用的共享生成目标'}</p>
-      <p>发送材料：固定版本的完整正文、照片和手写渲染图{needsAsr ? '，以及已核对成功的 ASR 转写' : ''}。</p>
+      <p>{destination
+        ? `本次目标：${destination.displayName}${canViewVersions ? ` · ${destination.model}` : ''}`
+        : '本次目标：尚未选择可用的共享生成目标'}</p>
+      <p>发送材料：{canViewVersions ? '固定版本的' : '这份内容的'}完整正文、照片和手写渲染图{needsAsr ? '，以及已核对成功的 ASR 转写' : ''}。</p>
       <p className="font-medium text-warn">创建后可能产生服务商费用；页面不会自动创建或自动付费。</p>
     </div>
     {destination && <details className="text-xs text-text-3"><summary className="cursor-pointer">诊断与高级限制</summary><div className="mt-2 space-y-2 rounded-ctl bg-surface p-3">
       <p>目标能力：{destination.capabilities.join(' / ') || '由服务端判定'}</p>
-      <p className="break-all font-mono">服务地址：{destination.endpoint}</p>
+      {canViewVersions && <p className="break-all font-mono">服务地址：{destination.endpoint}</p>}
       {limits && <p>单步证据最多 {limits.maxEvidenceCharsPerStep.toLocaleString()} 字符 · 最多 {limits.maxVisionCalls} 次图片调用</p>}
     </div></details>}
     <label className="flex items-start gap-2 rounded-ctl border border-border p-3 text-xs leading-5 text-text-2">
       <input type="checkbox" className="mt-0.5 size-4 shrink-0 accent-primary" checked={consentedTo === approvalWithSelection && approvedKey(source.versionId, destinationId, completedAsr?.taskId ?? '', needsAsr) === approval} disabled={!ready || busy}
         onChange={(event) => setConsentedTo(event.target.checked ? approvalWithSelection : '')} />
-      <span>确认将上述材料发送至上方所选生成目标，并理解可能产生服务商费用。目标或材料版本变化后需要重新确认。</span>
+      <span>确认将上述材料发送至上方所选生成目标，并理解可能产生服务商费用。{canViewVersions ? '目标或材料版本' : '目标或处理内容'}变化后需要重新确认。</span>
     </label>
     {storageError && <p role="alert" className="rounded-ctl bg-warn-soft p-3 text-xs leading-5 text-warn">{storageError}</p>}
-    {pending && <div className="space-y-2 rounded-ctl border border-warn-border bg-warn-soft p-3 text-xs leading-5 text-text-2"><p>已有创建意图 {pending.intentId}，还没有确认服务端结果。刷新或丢响应时必须用同一标识核对。</p><Button size="sm" onClick={() => void reconcile()} disabled={busy || !pending.requestJson}>核对原提交</Button></div>}
+    {pending && <div className="space-y-2 rounded-ctl border border-warn-border bg-warn-soft p-3 text-xs leading-5 text-text-2"><p>{canViewVersions ? `已有创建意图 ${pending.intentId}，还没有确认服务端结果。刷新或丢响应时必须用同一标识核对。` : '已有一次创建请求尚未确认。刷新或丢失响应后，请先核对原提交。'}</p><Button size="sm" onClick={() => void reconcile()} disabled={busy || !pending.requestJson}>核对原提交</Button></div>}
     {message && <p role="alert" className="rounded-ctl bg-surface p-3 text-sm text-text-2">{message}</p>}
     <div className="flex flex-wrap gap-2"><Button variant="primary" loading={busy} disabled={!ready || consentedTo !== approvalWithSelection} onClick={() => void start()}><Play className="size-4" aria-hidden />生成完整记录与分析</Button></div>
   </Card>
 }
 
-function TaskDetailCard({ taskId, ownerId, serverBinding, onChanged }: { taskId: string; ownerId: string; serverBinding: string; onChanged: () => void }) {
+function TaskDetailCard({ taskId, ownerId, serverBinding, showVersionDetails, onChanged }: {
+  taskId: string
+  ownerId: string
+  serverBinding: string
+  showVersionDetails: boolean
+  onChanged: () => void
+}) {
   const qc = useQueryClient()
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState('')
   const task = useQuery({ queryKey: ['note-derived', ownerId, serverBinding, 'task', taskId], queryFn: ({ signal }) => noteDerivedApi.task(taskId, signal), refetchInterval: 5000 })
   const steps = useQuery({ queryKey: ['note-derived', ownerId, serverBinding, 'steps', taskId], queryFn: ({ signal }) => noteDerivedApi.steps(taskId, 0, signal), refetchInterval: 5000 })
   if (task.isPending) return <Card className="p-5"><Skeleton className="h-28" /></Card>
-  if (task.isError || !task.data) return <Card className="p-5"><EmptyState title="任务读取失败" description={errorText(task.error)} action={<Button onClick={() => void task.refetch()}>重试</Button>} /></Card>
+  if (task.isError || !task.data) return <Card className="p-5"><EmptyState title="任务读取失败" description={failureText(task.error, showVersionDetails, '请刷新核对。')} action={<Button onClick={() => void task.refetch()}>重试</Button>} /></Card>
   const value = task.data
   async function stop() {
     setBusy(true); setMessage('')
     try { await noteDerivedApi.stop(taskId); await qc.invalidateQueries({ queryKey: ['note-derived', ownerId, serverBinding] }); onChanged() }
-    catch (error) { setMessage(errorText(error)) }
+    catch (error) {
+      setMessage(failureText(error, showVersionDetails, '停止状态未确认，请刷新核对。'))
+    }
     finally { setBusy(false) }
   }
   return <Card className="space-y-4 p-5">
-    <div className="flex flex-wrap items-start justify-between gap-2"><div><h2 className="text-sm font-semibold text-text-1">当前任务进度</h2><p className="mt-1 text-xs text-text-3">{time(value.createdAt)} · 任务已保存，可离开后返回</p></div><State value={value.phase} /></div>
-    <details className="text-xs leading-5 text-text-3"><summary className="cursor-pointer">处理详情</summary><div className="mt-2 space-y-3 rounded-ctl bg-surface p-3"><div className="space-y-1 font-mono"><p className="break-all">任务 ID：{value.taskId}</p><p className="break-all">材料来源版本：{value.sourceVersionId}</p><p className="break-all">输入摘要：{value.inputSha256}</p></div>
+    <div className="flex flex-wrap items-start justify-between gap-2"><div><h2 className="text-sm font-semibold text-text-1">当前任务进度</h2><p className="mt-1 text-xs text-text-3">{time(value.createdAt)} · 任务已保存，可离开后返回</p></div><State value={value.phase} showVersionDetails={showVersionDetails} /></div>
+    <details className="text-xs leading-5 text-text-3"><summary className="cursor-pointer">处理详情</summary><div className="mt-2 space-y-3 rounded-ctl bg-surface p-3">
+    {showVersionDetails && <div className="space-y-1 font-mono"><p className="break-all">任务 ID：{value.taskId}</p><p className="break-all">材料来源版本：{value.sourceVersionId}</p><p className="break-all">输入摘要：{value.inputSha256}</p></div>}
     <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
       <Metric label="正文块" value={String(value.coverage.textBlocks)} />
       <Metric label="ASR 片段" value={`${value.coverage.completedTranscriptSegments}/${value.coverage.transcriptSegments}`} />
@@ -457,23 +533,31 @@ function TaskDetailCard({ taskId, ownerId, serverBinding, onChanged }: { taskId:
     </div>
     </div></details>
     {!value.coverage.complete && <div className="rounded-ctl border border-warn-border bg-warn-soft p-3 text-xs leading-5 text-text-2"><p className="font-medium">当前不能发布“完整”结果</p><p>材料覆盖仍有缺口；生成任务可以继续保持失败状态，不能被页面改写成完整。</p></div>}
-    {value.issues.length > 0 && <div className="space-y-2"><h3 className="text-xs font-medium text-text-2">覆盖缺口</h3>{value.issues.map((issue, index) => <div key={`${issue.code}/${issue.stepKey}/${index}`} className="rounded-ctl border border-border p-3 text-xs leading-5 text-text-2"><p className="font-medium">{issue.message}</p><p className="mt-1 break-all text-text-3">{issue.code}{issue.sourcePath ? ` · ${issue.sourcePath}` : ''}{issue.stepKey ? ` · ${issue.stepKey}` : ''}</p></div>)}</div>}
+    {value.issues.length > 0 && <div className="space-y-2"><h3 className="text-xs font-medium text-text-2">覆盖缺口</h3>{value.issues.map((issue, index) => <div key={`${issue.code}/${issue.stepKey}/${index}`} className="rounded-ctl border border-border p-3 text-xs leading-5 text-text-2"><p className="font-medium">{showVersionDetails ? issue.message : '这项材料或步骤尚未完整处理，请刷新核对。'}</p>{showVersionDetails && <p className="mt-1 break-all text-text-3">{issue.code}{issue.sourcePath ? ` · ${issue.sourcePath}` : ''}{issue.stepKey ? ` · ${issue.stepKey}` : ''}</p>}</div>)}</div>}
     {!value.backgroundProcessingAvailable && <p className="text-xs text-text-3">服务器后台处理当前不可用；任务已保存，不会伪造完成状态。</p>}
     <div className="flex flex-wrap gap-2"><Button size="sm" variant="secondary" disabled={busy || value.stopRequested || value.phase === 'Succeeded'} onClick={() => void stop()}><Square className="size-3.5" aria-hidden />停止后续步骤</Button><Button size="sm" variant="ghost" onClick={() => { void task.refetch(); void steps.refetch() }}><RefreshCw className="size-3.5" aria-hidden />刷新步骤</Button></div>
-    <details className="text-xs text-text-3"><summary className="cursor-pointer">步骤、尝试与 endpoint 详情</summary>
-    {steps.isPending ? <Skeleton className="h-28" /> : steps.isError ? <p role="alert" className="text-sm text-text-2">步骤读取失败：{errorText(steps.error)}</p>
+    <details className="text-xs text-text-3"><summary className="cursor-pointer">{showVersionDetails ? '步骤、尝试与 endpoint 详情' : '步骤与尝试详情'}</summary>
+    {steps.isPending ? <Skeleton className="h-28" /> : steps.isError ? <p role="alert" className="text-sm text-text-2">步骤读取失败：{failureText(steps.error, showVersionDetails, '请刷新核对。')}</p>
       : !steps.data?.items.length ? <p className="text-sm text-text-3">当前没有可显示的步骤。</p>
         : <div className="space-y-2">{steps.data.items.map((step) => <div key={step.key} className="space-y-2 rounded-ctl border border-border p-3">
-          <div className="flex flex-wrap items-center justify-between gap-2"><div><p className="text-sm text-text-1">{stepNames[step.kind] ?? step.kind}</p><p className="mt-1 break-all text-xs text-text-3">{step.key}</p></div><State value={step.status} /></div>
-          {step.attempts.length > 0 && <div className="space-y-1">{step.attempts.map((attempt, index) => <p key={attempt.requestId} className="break-all text-xs text-text-3">第 {index + 1} 次 · {attempt.status}{attempt.errorCode ? ` · ${attempt.errorCode}` : ''}{attempt.errorMessage ? ` · ${attempt.errorMessage}` : ''}{attempt.logId ? ` · 调用 ${attempt.logId}` : ''}</p>)}</div>}
+          <div className="flex flex-wrap items-center justify-between gap-2"><div><p className="text-sm text-text-1">{stepLabel(step.kind, showVersionDetails)}</p>{showVersionDetails && <p className="mt-1 break-all text-xs text-text-3">{step.key}</p>}</div><State value={step.status} showVersionDetails={showVersionDetails} /></div>
+          {step.attempts.length > 0 && <div className="space-y-1">{step.attempts.map((attempt, index) => <p key={attempt.requestId} className="break-all text-xs text-text-3">第 {index + 1} 次 · {phaseLabel(attempt.status, showVersionDetails)}{showVersionDetails && attempt.errorCode ? ` · ${attempt.errorCode}` : ''}{attempt.errorMessage ? ` · ${showVersionDetails ? attempt.errorMessage : '处理记录需核对'}` : ''}{showVersionDetails && attempt.logId ? ` · 调用 ${attempt.logId}` : ''}</p>)}</div>}
         </div>)}</div>}
     </details>
-    <RetryControls key={`${value.taskId}/${value.sourceVersionId}`} task={value} steps={steps.data} ownerId={ownerId} serverBinding={serverBinding} onChanged={onChanged} />
+    <RetryControls key={`${value.taskId}/${value.sourceVersionId}`} task={value} steps={steps.data} ownerId={ownerId}
+      serverBinding={serverBinding} showVersionDetails={showVersionDetails} onChanged={onChanged} />
     {message && <p role="alert" className="rounded-ctl bg-surface p-3 text-sm text-text-2">{message}</p>}
   </Card>
 }
 
-function RetryControls({ task, steps, ownerId, serverBinding, onChanged }: { task: NoteDerivedTask; steps: NoteDerivedSteps | undefined; ownerId: string; serverBinding: string; onChanged: () => void }) {
+function RetryControls({ task, steps, ownerId, serverBinding, showVersionDetails, onChanged }: {
+  task: NoteDerivedTask
+  steps: NoteDerivedSteps | undefined
+  ownerId: string
+  serverBinding: string
+  showVersionDetails: boolean
+  onChanged: () => void
+}) {
   const scope = bindingScope(ownerId, serverBinding, `task-retry:${task.taskId}`, task.sourceVersionId, 'CompleteRecord')
   const initial = loadLocalRecord(scope)
   const [stored, setStored] = useState(initial.record)
@@ -503,7 +587,9 @@ function RetryControls({ task, steps, ownerId, serverBinding, onChanged }: { tas
       const cleared = clearStoredIntent(reserved.record, body.retryId)
       if (cleared.ok) setStored(cleared.value)
       setSelected([]); setAck(false); onChanged()
-    } catch (error) { setMessage(errorText(error) + '。恢复意图已保存，必须用同一标识核对。') }
+    } catch (error) {
+      setMessage(failureText(error, showVersionDetails, '恢复状态未确认，请刷新核对') + '。恢复意图已保存，必须用同一标识核对。')
+    }
     finally { setBusy(false) }
   }
   async function replay() {
@@ -516,22 +602,30 @@ function RetryControls({ task, steps, ownerId, serverBinding, onChanged }: { tas
       const cleared = clearStoredIntent(stored, pending.intentId)
       if (cleared.ok) setStored(cleared.value)
       onChanged()
-    } catch (error) { setMessage(errorText(error) + '。仍保留原恢复标识。') }
+    } catch (error) {
+      setMessage(failureText(error, showVersionDetails, '核对未确认，请刷新核对') + '。仍保留原恢复标识。')
+    }
     finally { setBusy(false) }
   }
   if (!candidates.length && !pending) return null
   return <div className="space-y-3 rounded-ctl border border-warn-border p-3">
     <h3 className="text-xs font-medium text-text-2">显式恢复</h3>
     {!pending && candidates.map((step) => <label key={step.key} className="flex items-center gap-2 text-xs text-text-2"><input type="checkbox" checked={selected.includes(step.key)}
-      onChange={(event) => setSelected((current) => event.target.checked ? [...current, step.key] : current.filter((key) => key !== step.key))} disabled={busy} />{stepNames[step.kind] ?? step.kind} · {step.key}</label>)}
-    {pending && <div className="space-y-2 text-xs leading-5 text-text-2"><p>已有恢复意图 {pending.intentId}，不会分配新标识。</p><Button size="sm" disabled={busy || !pending.requestJson} onClick={() => void replay()}>核对原恢复提交</Button></div>}
+      onChange={(event) => setSelected((current) => event.target.checked ? [...current, step.key] : current.filter((key) => key !== step.key))} disabled={busy} />{stepLabel(step.kind, showVersionDetails)}{showVersionDetails ? ` · ${step.key}` : ''}</label>)}
+    {pending && <div className="space-y-2 text-xs leading-5 text-text-2"><p>已有恢复意图{showVersionDetails ? ` ${pending.intentId}` : ''}，不会分配新标识。</p><Button size="sm" disabled={busy || !pending.requestJson} onClick={() => void replay()}>核对原恢复提交</Button></div>}
     {!pending && selected.length > 0 && <><label className="flex items-start gap-2 text-xs leading-5 text-text-2"><input type="checkbox" checked={ack} onChange={(event) => setAck(event.target.checked)} /><span>确认恢复 {selected.length} 个步骤，理解未知结果可能重复计费；成功步骤不重跑。</span></label>
       <Button size="sm" disabled={busy || !ack || approval === ''} onClick={() => void retry()}>恢复所选步骤</Button></>}
     {message && <p role="alert" className="text-xs leading-5 text-text-2">{message}</p>}
   </div>
 }
 
-function ArtifactCard({ artifact, ownerId, serverBinding, onChanged }: { artifact: NoteDerivedArtifact; ownerId: string; serverBinding: string; onChanged: () => void }) {
+function ArtifactCard({ artifact, ownerId, serverBinding, showVersionDetails, onChanged }: {
+  artifact: NoteDerivedArtifact
+  ownerId: string
+  serverBinding: string
+  showVersionDetails: boolean
+  onChanged: () => void
+}) {
   const [selectedVersionId, setSelectedVersionId] = useState(artifact.headVersionId ?? artifact.versions[0]?.versionId ?? '')
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState('')
@@ -541,6 +635,9 @@ function ArtifactCard({ artifact, ownerId, serverBinding, onChanged }: { artifac
     enabled: Boolean(selectedVersionId),
   })
   const selectedSummary = artifact.versions.find((item) => item.versionId === selectedVersionId)
+  const pendingSummary = showVersionDetails ? undefined : pendingArtifactVersion(artifact)
+  const showingPending = Boolean(selectedSummary && !selectedSummary.isHead)
+  const headVersionId = artifact.headVersionId
 
   async function selectVersion() {
     if (!selectedVersionId || busy) return
@@ -548,7 +645,8 @@ function ArtifactCard({ artifact, ownerId, serverBinding, onChanged }: { artifac
     try {
       await noteDerivedApi.select(artifact.artifactId, { expectedHeadRevision: artifact.revision, versionId: selectedVersionId })
       if (version.data) {
-        const scope = bindingScope(ownerId, serverBinding, artifact.artifactId, version.data.sourceVersionId, artifact.kind)
+        const scope = bindingScope(ownerId, serverBinding, artifact.artifactId, version.data.sourceVersionId, artifact.kind,
+          showVersionDetails ? undefined : version.data.versionId)
         const loaded = loadStoredDraft(scope)
         if (!loaded.ok) setMessage(loaded.error.message)
         else if (!loaded.value) {
@@ -556,7 +654,9 @@ function ArtifactCard({ artifact, ownerId, serverBinding, onChanged }: { artifac
           const persisted = persistStoredDraft(reset, { allowBaseChange: true })
           if (!persisted.ok) setMessage(persisted.error.message)
         } else if (canAdoptSelectedVersion(loaded.value, version.data.versionId)) {
-          setMessage('服务端版本已设为当前；本机草稿已基于该版本，未改写本机内容。')
+          setMessage(showVersionDetails
+            ? '服务端版本已设为当前；本机草稿已基于该版本，未改写本机内容。'
+            : '已采用这份整理结果；本机草稿已是该内容，未改写。')
         } else if (!loaded.value.dirty && !loaded.value.pending) {
           const reset: StoredNoteDerivedDraft = {
             ...loaded.value,
@@ -572,34 +672,69 @@ function ArtifactCard({ artifact, ownerId, serverBinding, onChanged }: { artifac
           const persisted = persistStoredDraft(reset, { allowBaseChange: true })
           if (!persisted.ok) setMessage(persisted.error.message)
         } else {
-          setMessage(`服务端版本已设为当前；本机草稿基于 ${loaded.value.draft.baseToken || '未记录版本'}，已保留，未被选择操作覆盖。`)
+          setMessage(showVersionDetails
+            ? `服务端版本已设为当前；本机草稿基于 ${loaded.value.draft.baseToken || '未记录版本'}，已保留，未被选择操作覆盖。`
+            : '已采用这份整理结果；本机尚未保存的草稿已保留，没有被覆盖。')
         }
       }
       onChanged()
-    } catch (error) { setMessage(errorText(error)) }
+    } catch (error) {
+      setMessage(failureText(error, showVersionDetails, '采用状态未确认，请刷新核对。'))
+    }
     finally { setBusy(false) }
   }
 
   return <Card className="space-y-4 p-5">
-    <div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="text-base font-semibold text-text-1">{kindNames[artifact.kind]}</h2><p className="mt-1 text-xs leading-5 text-text-3">正文优先显示；选择新版本或人工修订都不会覆盖旧正文。</p></div><StatusBadge tone={artifact.headVersionId ? 'ok' : 'warn'} dot={false}>{artifact.headVersionId ? '已选用版本' : '等待明确选择'}</StatusBadge></div>
-    <div className="text-xs text-text-3">当前查看：{selectedSummary ? `${authorNames[selectedSummary.author]} · ${time(selectedSummary.createdAt)}` : '尚无版本'}</div>
-    {selectedSummary && <details className="text-xs leading-5 text-text-3"><summary className="cursor-pointer">高级选项：版本历史与处理详情</summary><div className="mt-2 space-y-3 rounded-ctl bg-surface p-3"><p>模型生成版本先作为候选；需要时可明确切换选用版本，保留人工稿和历史记录。</p><div className="space-y-2"><Label htmlFor={`artifact-version-${artifact.artifactId}`}>版本历史</Label><Select id={`artifact-version-${artifact.artifactId}`} ariaLabel={`${kindNames[artifact.kind]}版本历史`} value={selectedVersionId} className="w-full"
+    <div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="text-base font-semibold text-text-1">{kindNames[artifact.kind]}</h2><p className="mt-1 text-xs leading-5 text-text-3">{showVersionDetails ? '正文优先显示；选择新版本或人工修订都不会覆盖旧正文。' : '正文优先显示；采用新整理结果或人工修订都不会覆盖原正文。'}</p></div><StatusBadge tone={artifact.headVersionId ? 'ok' : 'warn'} dot={false}>{artifact.headVersionId ? (showVersionDetails ? '已选用版本' : '已采用') : (showVersionDetails ? '等待明确选择' : '有新结果待采用')}</StatusBadge></div>
+    <div className="text-xs text-text-3">当前查看：{selectedSummary ? `${authorNames[selectedSummary.author]} · ${time(selectedSummary.createdAt)}` : '尚无内容'}</div>
+    {selectedSummary && showVersionDetails && <details className="text-xs leading-5 text-text-3"><summary className="cursor-pointer">高级选项：版本历史与处理详情</summary><div className="mt-2 space-y-3 rounded-ctl bg-surface p-3"><p>模型生成版本先作为候选；需要时可明确切换选用版本，保留人工稿和历史记录。</p><div className="space-y-2"><Label htmlFor={`artifact-version-${artifact.artifactId}`}>版本历史</Label><Select id={`artifact-version-${artifact.artifactId}`} ariaLabel={`${kindNames[artifact.kind]}版本历史`} value={selectedVersionId} className="w-full"
       options={artifact.versions.length ? artifact.versions.map((item) => ({ value: item.versionId, label: `${authorNames[item.author]} · ${time(item.createdAt)}${item.isHead ? ' · 已选用' : ''}${item.hasConflict ? ' · 冲突候选' : ''}` })) : [{ value: '', label: '还没有可读取版本' }]}
       onValueChange={setSelectedVersionId} disabled={busy || !artifact.versions.length} /></div>
     <div className="flex flex-wrap items-center gap-2"><Button size="sm" variant="secondary" disabled={busy || !selectedVersionId || selectedSummary.isHead} onClick={() => void selectVersion()}>明确设为当前版本</Button><Button size="sm" variant="ghost" disabled={!selectedVersionId} onClick={() => void version.refetch()}><RefreshCw className="size-3.5" aria-hidden />刷新正文</Button></div>
     <div className="space-y-1 font-mono"><p className="break-all">结果 ID：{artifact.artifactId}</p><p className="break-all">版本 ID：{selectedSummary.versionId}</p><p className="break-all">材料来源版本：{selectedSummary.sourceVersionId}</p>{selectedSummary.generationTaskId && <p className="break-all">生成任务：{selectedSummary.generationTaskId}</p>}</div></div></details>}
-    {version.isPending ? <Skeleton className="h-40" /> : version.isError ? <p role="alert" className="text-sm text-text-2">版本读取失败：{errorText(version.error)}</p>
-      : version.data ? <ArtifactEditor key={`${artifact.revision}/${version.data.versionId}`} artifact={artifact} version={version.data} ownerId={ownerId} serverBinding={serverBinding} onChanged={onChanged} /> : null}
+    {!showVersionDetails && pendingSummary && !showingPending && (
+      <div className="rounded-ctl border border-info-border bg-info-soft p-3">
+        <p className="text-xs leading-5 text-text-2">有新的整理结果尚未采用；当前内容保持不变。</p>
+        <Button className="mt-2" size="sm" variant="secondary" onClick={() => setSelectedVersionId(pendingSummary.versionId)}>
+          查看新结果
+        </Button>
+      </div>
+    )}
+    {selectedSummary && !showVersionDetails && !selectedSummary.isHead && (
+      <div className="rounded-ctl border border-border bg-surface p-3">
+        <p className="text-xs leading-5 text-text-3">这是一份新的整理结果。采用后会成为当前内容，原内容仍保留在服务器。</p>
+        <div className="mt-2 flex flex-wrap gap-2">
+          <Button size="sm" variant="secondary" loading={busy} disabled={busy} onClick={() => void selectVersion()}>
+            采用这份整理结果
+          </Button>
+          {headVersionId && (
+            <Button size="sm" variant="ghost" disabled={busy} onClick={() => setSelectedVersionId(headVersionId)}>
+              返回当前内容
+            </Button>
+          )}
+        </div>
+      </div>
+    )}
+    {version.isPending ? <Skeleton className="h-40" /> : version.isError ? <p role="alert" className="text-sm text-text-2">{showVersionDetails ? '版本读取失败' : '内容读取失败'}：{failureText(version.error, showVersionDetails, '请刷新核对。')}</p>
+      : version.data ? <ArtifactEditor key={`${artifact.revision}/${version.data.versionId}`} artifact={artifact} version={version.data} ownerId={ownerId} serverBinding={serverBinding} showVersionDetails={showVersionDetails} onChanged={onChanged} /> : null}
     {version.data && <NoteTaskSuggestionsPanel
       key={`task-suggestions-${artifact.artifactId}/${version.data.versionId}`}
       userId={ownerId} serverBinding={serverBinding} noteId={artifact.noteId}
-      artifactId={artifact.artifactId} versionId={version.data.versionId} />}
+      artifactId={artifact.artifactId} versionId={version.data.versionId} showTechnicalDetails={showVersionDetails} />}
     {message && <p role="alert" className="rounded-ctl bg-surface p-3 text-sm text-text-2">{message}</p>}
   </Card>
 }
 
-function ArtifactEditor({ artifact, version, ownerId, serverBinding, onChanged }: { artifact: NoteDerivedArtifact; version: NoteDerivedVersion; ownerId: string; serverBinding: string; onChanged: () => void }) {
-  const scope = bindingScope(ownerId, serverBinding, artifact.artifactId, version.sourceVersionId, artifact.kind)
+function ArtifactEditor({ artifact, version, ownerId, serverBinding, showVersionDetails, onChanged }: {
+  artifact: NoteDerivedArtifact
+  version: NoteDerivedVersion
+  ownerId: string
+  serverBinding: string
+  showVersionDetails: boolean
+  onChanged: () => void
+}) {
+  const scope = bindingScope(ownerId, serverBinding, artifact.artifactId, version.sourceVersionId, artifact.kind,
+    showVersionDetails ? undefined : version.versionId)
   const initial = loadLocalRecord(scope)
   const [stored, setStored] = useState(() => initial.record.draft.text || initial.record.pending ? initial.record : { ...initial.record, draft: createStoredDraft(scope, version.contentMarkdown, version.versionId).draft, dirty: false })
   const [error, setError] = useState(initial.error ?? '')
@@ -639,7 +774,9 @@ function ArtifactEditor({ artifact, version, ownerId, serverBinding, onChanged }
       const receipt = reconcileReceipt(latest.current, started.snapshot, mutation, body, body.revisionId)
       commit(receipt.record); setError(receipt.error); setMessage(receipt.message)
       onChanged()
-    } catch (failure) { setMessage(errorText(failure) + '。人工保存意图已保存，刷新后必须用同一标识重新提交核对。') }
+    } catch (failure) { setMessage(failureText(failure, showVersionDetails, '保存状态未确认，请刷新核对') + (showVersionDetails
+      ? '。人工保存意图已保存，刷新后必须用同一标识重新提交核对。'
+      : '。保存状态已记录，刷新后可重新提交核对。')) }
     finally { setBusy(false) }
   }
 
@@ -659,7 +796,7 @@ function ArtifactEditor({ artifact, version, ownerId, serverBinding, onChanged }
       const receipt = reconcileReceipt(latest.current, snapshot, mutation, body, pending.intentId)
       commit(receipt.record); setError(receipt.error); setMessage(receipt.message)
       onChanged()
-    } catch (failure) { setMessage(errorText(failure) + '。仍保留原人工保存标识。') }
+    } catch (failure) { setMessage(failureText(failure, showVersionDetails, '核对未确认，请刷新核对') + (showVersionDetails ? '。仍保留原人工保存标识。' : '。保存状态仍保留，可再次核对。')) }
     finally { setBusy(false) }
   }
 
@@ -687,8 +824,8 @@ function ArtifactEditor({ artifact, version, ownerId, serverBinding, onChanged }
         dirty: false,
       }
       nextMessage = headApplied
-        ? '人工修订已保存并成为当前版本。'
-        : '候选已保存，当前选用未改变；请比较后明确选择。'
+        ? showVersionDetails ? '人工修订已保存并成为当前版本。' : '修改已保存并成为当前内容。'
+        : showVersionDetails ? '候选已保存，当前选用未改变；请比较后明确选择。' : '新内容已保存，当前内容未改变；请比较后选择采用哪一份。'
     }
     const persisted = persistStoredDraft(next, { allowBaseChange: true, allowPendingChange: true })
     return {
@@ -699,14 +836,14 @@ function ArtifactEditor({ artifact, version, ownerId, serverBinding, onChanged }
   }
 
   return <div className="space-y-3 rounded-ctl border border-border p-3">
-    <div className="flex flex-wrap items-center justify-between gap-2"><div><h3 className="text-sm font-medium text-text-1">完整文本编辑</h3><p className="mt-1 text-xs text-text-3">当前查看：{authorNames[version.author]} · {time(version.createdAt)} · {version.isHead ? '当前选用版本' : '候选版本'}</p></div><StatusBadge tone={stored.dirty ? 'warn' : 'neutral'} dot={false}>{stored.dirty ? '有未保存修改' : '已保存到本机'}</StatusBadge></div>
-    <details className="text-xs leading-5 text-text-3"><summary className="cursor-pointer">本机草稿核对信息</summary><div className="mt-2 space-y-1 rounded-ctl bg-surface p-3 font-mono"><p className="break-all">本机草稿基于：{stored.draft.baseToken || '未绑定版本'}</p><p className="break-all">结果 ID：{artifact.artifactId}</p><p className="break-all">材料来源版本：{version.sourceVersionId}</p></div></details>
-    <details className="text-xs text-text-3"><summary className="cursor-pointer">查看所选版本服务端原文</summary><pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-ctl bg-surface p-3 text-text-2">{version.contentMarkdown}</pre></details>
+    <div className="flex flex-wrap items-center justify-between gap-2"><div><h3 className="text-sm font-medium text-text-1">完整文本编辑</h3><p className="mt-1 text-xs text-text-3">当前查看：{authorNames[version.author]} · {time(version.createdAt)} · {version.isHead ? (showVersionDetails ? '当前选用版本' : '当前内容') : (showVersionDetails ? '候选版本' : '新整理结果')}</p></div><StatusBadge tone={stored.dirty ? 'warn' : 'neutral'} dot={false}>{stored.dirty ? '有未保存修改' : '已保存到本机'}</StatusBadge></div>
+    {showVersionDetails && <details className="text-xs leading-5 text-text-3"><summary className="cursor-pointer">本机草稿核对信息</summary><div className="mt-2 space-y-1 rounded-ctl bg-surface p-3 font-mono"><p className="break-all">本机草稿基于：{stored.draft.baseToken || '未绑定版本'}</p><p className="break-all">结果 ID：{artifact.artifactId}</p><p className="break-all">材料来源版本：{version.sourceVersionId}</p></div></details>}
+    <details className="text-xs text-text-3"><summary className="cursor-pointer">{showVersionDetails ? '查看所选版本服务端原文' : '查看服务器原文'}</summary><pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-ctl bg-surface p-3 text-text-2">{version.contentMarkdown}</pre></details>
     <Textarea aria-label={`${kindNames[artifact.kind]}正文`} className="min-h-72 font-mono text-xs" value={stored.draft.text} onChange={(event) => edit(event.target.value)} />
     {error && <p role="alert" className="rounded-ctl bg-warn-soft p-3 text-xs leading-5 text-warn">{error}</p>}
     {message && <p role="status" className="rounded-ctl bg-surface p-3 text-xs leading-5 text-text-2">{message}</p>}
-    {pending && <div className="space-y-2 rounded-ctl border border-warn-border bg-warn-soft p-3 text-xs leading-5 text-text-2"><p>人工保存意图 {pending.intentId} 已保存，但服务端结果未确认。</p><Button size="sm" disabled={busy || !pending.requestJson} onClick={() => void replay()}>用原标识核对</Button></div>}
-    <div className="flex flex-wrap items-center gap-2"><Button size="sm" variant="primary" loading={busy} disabled={!canSave} onClick={() => void saveNew()}>保存为人工修订</Button><span className="text-xs text-text-3">{!artifact.headVersionId ? '请先选择一个版本作为当前选用版本。' : version.versionId !== artifact.headVersionId ? '所选版本不是当前选用版本，请先明确选择。' : '保存冲突会保留候选，不覆盖当前选用版本。'}</span></div>
+    {pending && <div className="space-y-2 rounded-ctl border border-warn-border bg-warn-soft p-3 text-xs leading-5 text-text-2"><p>{showVersionDetails ? `人工保存意图 ${pending.intentId} 已保存，但服务端结果未确认。` : '这次人工保存尚未确认；可先用原提交核对。'}</p><Button size="sm" disabled={busy || !pending.requestJson} onClick={() => void replay()}>{showVersionDetails ? '用原标识核对' : '核对原提交'}</Button></div>}
+    <div className="flex flex-wrap items-center gap-2"><Button size="sm" variant="primary" loading={busy} disabled={!canSave} onClick={() => void saveNew()}>{showVersionDetails ? '保存为人工修订' : '保存修改'}</Button><span className="text-xs text-text-3">{!artifact.headVersionId ? (showVersionDetails ? '请先选择一个版本作为当前选用版本。' : '请先采用一份整理结果。') : version.versionId !== artifact.headVersionId ? (showVersionDetails ? '所选版本不是当前选用版本，请先明确选择。' : '这份整理结果尚未采用，请先采用。') : (showVersionDetails ? '保存冲突会保留候选，不覆盖当前选用版本。' : '保存冲突会保留另一份内容，不覆盖当前内容。')}</span></div>
   </div>
 }
 

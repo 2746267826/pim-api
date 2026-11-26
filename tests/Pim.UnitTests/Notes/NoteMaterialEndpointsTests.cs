@@ -143,6 +143,63 @@ public sealed class NoteMaterialEndpointsTests : IDisposable
     }
 
     [Fact]
+    public async Task OrdinaryOwnerMaterialReadsKeepUploadProtocolAndExposeNoDerivedDiagnostics()
+    {
+        var owner = await AuthRegistrationTestHost.SeedAndLoginAsync(_factory,
+            "notes-material-privacy-" + Guid.NewGuid().ToString("N"));
+        using var client = AuthRegistrationTestHost.Authed(_factory, owner.AccessToken);
+        var fixture = NoteMaterialUploadStoreTests.Fixture.Create();
+        var store = _factory.Services.GetRequiredService<NoteMaterialUploadStore>();
+        await store.BeginAsync(owner.UserId, fixture.Request);
+        for (var file = 0; file < fixture.Content.Count; file++)
+        {
+            var bytes = fixture.Content[file];
+            for (var offset = 0; offset < bytes.Length; offset += NoteMaterialUploadOptions.PartSizeBytes)
+            {
+                var chunk = bytes.AsSpan(offset,
+                    Math.Min(NoteMaterialUploadOptions.PartSizeBytes, bytes.Length - offset)).ToArray();
+                var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(chunk)).ToLowerInvariant();
+                await store.UploadPartAsync(owner.UserId, fixture.Request.VersionId, file,
+                    offset / NoteMaterialUploadOptions.PartSizeBytes, hash, new MemoryStream(chunk));
+            }
+        }
+        await store.CompleteAsync(owner.UserId, fixture.Request.VersionId);
+
+        var resolved = new[]
+        {
+            ($"{Root}/{fixture.Request.NoteId}/current", true),
+            ($"{Root}/versions/{fixture.Request.VersionId}", true),
+            ($"{Root}/{fixture.Request.NoteId}/versions", false)
+        };
+        var derivedDiagnostics = new[]
+        {
+            "planVersion", "promptVersion", "aiCallLogId", "modelProfileId", "modelRevision",
+            "modelEndpoint", "providerHandle", "coverageJson", "errorCode", "errorMessage",
+            "sourcePath", "auditVersion", "requestId", "logId", "evidenceId", "attempts"
+        };
+
+        foreach (var (path, includesMaterialJson) in resolved)
+        {
+            using var response = await client.GetAsync(path);
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            var json = await response.Content.ReadAsStringAsync();
+            Assert.Contains("uploadedParts", json, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("sha256", json, StringComparison.OrdinalIgnoreCase);
+            if (includesMaterialJson)
+            {
+                Assert.Contains("inputJson", json, StringComparison.OrdinalIgnoreCase);
+                Assert.Contains("manifestJson", json, StringComparison.OrdinalIgnoreCase);
+            }
+            foreach (var marker in derivedDiagnostics)
+                Assert.DoesNotContain(marker, json, StringComparison.OrdinalIgnoreCase);
+        }
+
+        using var bundle = await client.GetAsync($"{Root}/versions/{fixture.Request.VersionId}/bundle");
+        Assert.Equal(HttpStatusCode.OK, bundle.StatusCode);
+        Assert.Equal("application/zip", bundle.Content.Headers.ContentType!.MediaType);
+    }
+
+    [Fact]
     public async Task ActualMiddlewareReportsConsentIntegrityAndIncompleteUploadErrors()
     {
         var owner = await AuthRegistrationTestHost.SeedAndLoginAsync(_factory, "notes-errors");

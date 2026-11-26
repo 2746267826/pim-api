@@ -7,7 +7,6 @@ import type { NoteMaterialUpload, NoteMaterialVersion } from './material-model'
 import {
   buildNoteVersionViews,
   safeVersionSummary,
-  versionShortId,
   type NoteVersionView,
   type SafeVersionSummary,
 } from './version-model'
@@ -24,6 +23,7 @@ export interface ConflictMaterialState {
 }
 
 export interface NoteVersionPanelProps {
+  mode?: 'admin' | 'conflict'
   noteId: string
   versions: NoteMaterialUpload[]
   versionsLoading: boolean
@@ -44,6 +44,7 @@ export interface NoteVersionPanelProps {
 }
 
 export function NoteVersionPanel({
+  mode = 'admin',
   noteId,
   versions,
   versionsLoading,
@@ -62,6 +63,7 @@ export function NoteVersionPanel({
   onCancelConflict,
   onPromote,
 }: NoteVersionPanelProps) {
+  const isAdmin = mode === 'admin'
   const views = buildNoteVersionViews(versions)
   const conflictVersions = views.filter((view) => view.kind === 'conflict')
   const currentVersionId = current?.upload.currentVersionId ?? versions.find((version) => version.isCurrent)?.versionId ?? null
@@ -94,6 +96,64 @@ export function NoteVersionPanel({
         text: `${errorText(failure)}。未确认本次操作是否成功，请刷新核对后再选择。`,
       })
     }
+  }
+
+  if (!isAdmin) {
+    if (refreshIssue.length > 0) {
+      return (
+        <Card className="mb-4 space-y-3 p-4">
+          {notice && <InlineAlert tone={notice.tone} title={notice.tone === 'ok' ? '已完成' : '需要核对'}>{notice.text}</InlineAlert>}
+          <InlineAlert tone="warn" title="暂时无法核对另一份内容">
+            {refreshIssue.join('、')}未能重新读取。为避免在旧内容上继续选择，已隐藏冲突选择。
+            <Button className="mt-2" size="sm" variant="secondary" disabled={promoteInFlight} onClick={onRefresh}>
+              重新读取并核对
+            </Button>
+          </InlineAlert>
+        </Card>
+      )
+    }
+    if (versionsLoading || currentLoading) {
+      return <Card className="mb-4 space-y-3 p-4"><Skeleton className="h-16" /><Skeleton className="h-16" /></Card>
+    }
+    if (versionsError || currentError) {
+      return (
+        <Card className="mb-4 space-y-3 p-4">
+          <InlineAlert tone="crit" title="冲突状态读取失败">
+            {errorText(versionsError ?? currentError)}。为避免在旧内容上继续选择，已隐藏冲突选择。
+            <Button className="mt-2" size="sm" variant="secondary" disabled={promoteInFlight} onClick={onRefresh}>
+              重新读取并核对
+            </Button>
+          </InlineAlert>
+        </Card>
+      )
+    }
+    if (!current || conflictVersions.length === 0) return null
+    if (dismissedConflictKey === conflictKey) {
+      return (
+        <Card className="mb-4 flex flex-wrap items-center gap-2 p-3 text-xs text-text-2">
+          <AlertTriangle className="size-4 shrink-0 text-warn" aria-hidden />
+          <span className="mr-auto">还有内容等待确认；另一份内容仍保存在服务器。</span>
+          <Button size="sm" variant="secondary" disabled={promoteInFlight} onClick={() => setDismissedConflictKey('')}>
+            查看并选择
+          </Button>
+        </Card>
+      )
+    }
+    return (
+      <div className="mb-4 space-y-2">
+        {notice && <InlineAlert tone={notice.tone} title={notice.tone === 'ok' ? '已完成' : '需要核对'}>{notice.text}</InlineAlert>}
+        <ConflictComparison
+          current={current}
+          currentSummary={currentSummary}
+          candidates={conflictVersions}
+          materials={conflictMaterials}
+          promoteInFlight={promoteInFlight}
+          promotingVersionId={promotingVersionId}
+          onAdopt={promote}
+          onCancel={cancelConflict}
+        />
+      </div>
+    )
   }
 
   return (
@@ -271,14 +331,13 @@ function ConflictComparison({
         <div>
           <h3 id="note-conflict-heading" className="text-sm font-semibold text-text-1">发现内容冲突</h3>
           <p className="mt-1 text-xs leading-5 text-text-2">
-            服务器已保存另一端的修改。下面两份内容都会保留；只有你明确采用的版本会成为当前版本。
+            服务器已保存另一端的修改。下面两份内容都会保留；只有你明确选择后，才会更新当前内容。
           </p>
         </div>
       </div>
       <div className="mt-3 grid gap-3 lg:grid-cols-2">
         <ConflictSide
           label="服务器当前内容"
-          versionId={current?.upload.versionId ?? null}
           createdAt={current?.upload.createdAt ?? null}
           summary={currentSummary}
           tone="ok"
@@ -291,8 +350,7 @@ function ConflictComparison({
             const materialReady = Boolean(summary) && !state?.loading && !state?.error
             return <ConflictSide
               key={candidate.upload.versionId}
-              label="另一端保存的内容"
-              versionId={candidate.upload.versionId}
+              label="另一份已保存内容"
               createdAt={candidate.upload.createdAt}
               summary={summary}
               loading={state?.loading ?? false}
@@ -311,8 +369,8 @@ function ConflictComparison({
                 {!materialReady && (
                   <p className="mt-1 text-[11px] text-text-3">
                     {state?.loading
-                      ? '候选摘要读取中，暂不能采用。'
-                      : '候选摘要未读取，暂不能采用；请刷新核对或打开版本查看。'}
+                      ? '另一份内容读取中，暂不能采用。'
+                      : '内容暂未读取，暂不能采用；请重新读取后重试。'}
                   </p>
                 )}
               </div>}
@@ -321,7 +379,7 @@ function ConflictComparison({
         </div>
       </div>
       <div className="mt-3 flex flex-wrap items-center justify-end gap-2">
-        <p className="mr-auto text-[11px] text-text-3">取消不会修改任何版本；另一份内容仍保留在服务器。</p>
+        <p className="mr-auto text-[11px] text-text-3">取消不会提交任何更改；另一份内容仍保留在服务器。</p>
         <Button size="sm" variant="ghost" disabled={promoteInFlight} onClick={onCancel}>稍后处理</Button>
       </div>
     </section>
@@ -330,7 +388,6 @@ function ConflictComparison({
 
 function ConflictSide({
   label,
-  versionId,
   createdAt,
   summary,
   loading = false,
@@ -339,7 +396,6 @@ function ConflictSide({
   action,
 }: {
   label: string
-  versionId: string | null
   createdAt: string | null
   summary: SafeVersionSummary | null
   loading?: boolean
@@ -353,15 +409,13 @@ function ConflictSide({
         <StatusBadge tone={tone} dot={false}>{label}</StatusBadge>
         {createdAt && <time className="tnum ml-auto text-[11px] text-text-4" dateTime={createdAt}>{formatTime(createdAt)}</time>}
       </div>
-      <h4 className="mt-2 truncate text-sm font-medium text-text-1">{summary?.title ?? '版本摘要暂不可用'}</h4>
+      <h4 className="mt-2 truncate text-sm font-medium text-text-1">{summary?.title ?? '内容摘要暂不可用'}</h4>
       {loading ? <Skeleton className="mt-1 h-14" />
         : error ? <InlineAlert className="mt-1" tone="crit">{errorText(error)}</InlineAlert>
           : <p className="mt-1 line-clamp-3 min-h-10 whitespace-pre-wrap break-words text-xs leading-5 text-text-2">
-            {summary?.excerpt || '此版本只包含材料或无法读取文字摘要；可先打开版本查看。'}
+            {summary?.excerpt || '此内容只包含材料或暂时无法读取文字摘要。'}
           </p>}
       <dl className="mt-2 grid gap-x-3 gap-y-0.5 text-[11px] leading-5 text-text-3 sm:grid-cols-[4.5rem_minmax(0,1fr)]">
-        <dt>版本 ID</dt>
-        <dd className="mono break-all text-text-2">{versionId ? versionShortId(versionId) : '—'}</dd>
         {summary && <>
           <dt>正文块</dt>
           <dd>{summary.markdownBlocks} 个 · 照片 {summary.photoBlocks} 张 · 手写 {summary.inkBlocks} 张</dd>

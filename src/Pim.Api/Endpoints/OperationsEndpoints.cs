@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Authorization;
 using Pim.Core.Common;
 using Pim.Core.Exceptions;
 using Pim.Core.Operations;
@@ -11,6 +12,9 @@ public static class OperationsEndpoints
     public static void MapOperationsEndpoints(this IEndpointRouteBuilder endpoints)
     {
         var group = endpoints.MapGroup("/api/v1/operations").RequireAuthorization();
+        var auditGroup = group.MapGroup("/audit")
+            .RequireAuthorization(new AuthorizeAttribute { Roles = AdminBootstrap.AdminRole })
+            .RequireCurrentActiveAdmin();
 
         group.MapGet("/confirmations/pending", async (
             IOperationConfirmationService confirmations,
@@ -102,7 +106,7 @@ public static class OperationsEndpoints
         .Produces<ApiResponse<string>>(400)
         .Produces<ApiResponse<string>>(500);
 
-        group.MapGet("/audit/{objectType}/{objectId:guid}", async (
+        auditGroup.MapGet("/{objectType}/{objectId:guid}", async (
             string objectType,
             Guid objectId,
             AuditVersionService audit,
@@ -115,10 +119,11 @@ public static class OperationsEndpoints
         })
         .Produces<ApiResponse<Pim.Core.Audit.AuditTimelineResponse>>(200)
         .Produces(401)
+        .Produces(403)
         .Produces<ApiResponse<string>>(400)
         .Produces<ApiResponse<string>>(500);
 
-        group.MapPost("/audit/{auditVersionId:guid}/restore-preview", async (
+        auditGroup.MapPost("/{auditVersionId:guid}/restore-preview", async (
             Guid auditVersionId,
             AuditVersionService audit,
             ICurrentUserService currentUser,
@@ -130,10 +135,11 @@ public static class OperationsEndpoints
         })
         .Produces<ApiResponse<Pim.Core.Audit.RestorePreviewResponse>>(200)
         .Produces(401)
+        .Produces(403)
         .Produces<ApiResponse<string>>(400)
         .Produces<ApiResponse<string>>(500);
 
-        group.MapGet("/audit/export", async (
+        auditGroup.MapGet("/export", async (
             DateTimeOffset? start,
             DateTimeOffset? end,
             AuditVersionService audit,
@@ -150,6 +156,7 @@ public static class OperationsEndpoints
         })
         .Produces<ApiResponse<Pim.Core.Audit.AuditExportResponse>>(200)
         .Produces(401)
+        .Produces(403)
         .Produces<ApiResponse<string>>(400)
         .Produces<ApiResponse<string>>(500);
     }

@@ -11,6 +11,7 @@ import {
   useToggleTaskComplete,
 } from '@/features/calendar/queries'
 import { usePendingConfirmations } from '@/features/operations/queries'
+import { useAuth } from '@/features/auth/auth-context'
 import { TASK_STATUS } from '@/features/calendar/types'
 import type { AiPlanPlaceholder } from '@/features/calendar/types'
 import { DueText } from '@/features/calendar/components/due-text'
@@ -105,6 +106,7 @@ const HORizons = [
 
 /** 工作台（02 §workbench：运营驾驶舱） */
 export function WorkbenchPage() {
+  const { user } = useAuth()
   const navigate = useNavigate()
   const [horizon, setHorizon] = useState<'3' | '7' | '14'>('7')
 
@@ -302,7 +304,7 @@ export function WorkbenchPage() {
               {[
                 { to: '/status', label: '系统状态' },
                 { to: '/endpoint-shell', label: '端点外壳' },
-                { to: '/data-center', label: '数据中心' },
+                ...(user?.role === 'admin' ? [{ to: '/data-center', label: '数据中心' }] : []),
                 { to: '/reports', label: '报告' },
               ].map((l) => (
                 <Link

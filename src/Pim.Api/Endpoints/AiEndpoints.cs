@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Authorization;
 using Pim.Core.Ai;
 using Pim.Core.Common;
 using Pim.Infrastructure.Ai;
+using Pim.Infrastructure.Auth;
 
 namespace Pim.Api.Endpoints;
 
