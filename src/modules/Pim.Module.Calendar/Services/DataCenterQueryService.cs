@@ -401,7 +401,7 @@ public sealed class DataCenterQueryService
         }
     }
 
-    private static IEnumerable<DataCenterItem> ApplyStructuralFilters(
+    private IEnumerable<DataCenterItem> ApplyStructuralFilters(
         IEnumerable<DataCenterItem> items,
         DataCenterQueryRequest request)
     {
