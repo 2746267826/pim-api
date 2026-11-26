@@ -1786,7 +1786,7 @@ public sealed class OutlookEventWriteService
                 404 => new(
                     "not-found",
                     "GRAPH_EVENT_NOT_FOUND",
-                    "Outlook 中已不存在目标任务，请刷新后重试。",
+                    "Outlook 中已不存在目标任务，请刷新日程列表。",
                     NoChangesApplied: true,
                     State: "failed"),
                 409 or 412 => new(

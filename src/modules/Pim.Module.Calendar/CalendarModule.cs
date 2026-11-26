@@ -775,6 +775,7 @@ public class CalendarModule : IModule
             await svc.DeleteEventAsync(id, scope, recurrenceId, originalEventId, ct);
             return Results.Ok(ApiResponse<OutlookWriteResult>.Ok(new OutlookWriteResult(
                 "deleted",
+                ClientOperationId: operationId,
                 UserMessage: "已删除。",
                 NoChangesApplied: false)));
         })
