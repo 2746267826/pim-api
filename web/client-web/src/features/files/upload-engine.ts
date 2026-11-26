@@ -8,7 +8,7 @@
  *   · 每分片最多重试 2 次
  * - >2GB：直接拒绝
  */
-import { STORAGE_KEYS, getJSON, setJSON } from '@/lib/storage'
+import { STORAGE_KEYS, getJSON, remove, setJSON } from '@/lib/storage'
 import { filesApi } from './api'
 import {
   contentRangeHeader,
@@ -77,6 +77,19 @@ export class UploadEngine {
 
   historyList(): PersistedTransfer[] {
     return this.history
+  }
+
+  historyCount(): number {
+    return this.history.length
+  }
+
+  /** 只清理普通文件传输历史；进行中的上传队列和内存中的 File 继续保留。 */
+  clearHistory(): number {
+    const cleared = this.history.length
+    this.history = []
+    remove(STORAGE_KEYS.transferHistory)
+    if (cleared > 0) this.emit()
+    return cleared
   }
 
   private persist() {

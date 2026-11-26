@@ -96,4 +96,13 @@ describe('REQ-14 设置中心「账号安全」卡', () => {
     render(<SettingsHubPage />)
     expect(screen.queryByText('AI 与 ASR')).toBeNull()
   })
+
+  it('数据分组提供「存储与缓存」入口', () => {
+    authState.user = { role: 'user' }
+    render(<SettingsHubPage />)
+
+    expect(sectionOf('存储与缓存')).toBe('数据')
+    expect(screen.getByText('清理查询、缩略图、播放器与传输历史')).toBeTruthy()
+    expect(screen.getByText('存储与缓存').closest('a')?.getAttribute('href')).toBe('/settings/storage')
+  })
 })

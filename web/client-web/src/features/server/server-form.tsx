@@ -6,6 +6,7 @@ import { Button, Chip, InlineAlert, Input, Label } from '@/components/ui'
 import { detectHostChannel } from '@/lib/host-channel'
 import { candidateUrl, getApiBase, getApiBaseHistory, setApiBase } from '@/lib/apiBase'
 import { notifySuccess } from '@/lib/notify'
+import { clearTemporaryWebCache } from '@/features/settings/storage-cache/cache-cleanup'
 
 type TestResult =
   | { ok: true; version: string; capabilities: string[] }
@@ -103,8 +104,8 @@ export function ServerForm({ mode }: { mode: 'setup' | 'settings' }) {
       setSaving(false)
       return
     }
-    // 令牌按用户+服务器绑定：切换地址后必须重新登录
     clearTokens()
+    await clearTemporaryWebCache(queryClient).catch(() => undefined)
     queryClient.clear()
     notifySuccess('服务器地址已保存')
     if (redirect) navigate(redirect, { replace: true })

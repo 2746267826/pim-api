@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Button, Card, EmptyState, Input, Label, Select, Skeleton } from '@/components/ui'
 import { ApiError } from '@/api/client'
 import { STORAGE_KEYS, getJSON, setJSON } from '@/lib/storage'
+import { useCachedBlobUrl } from '@/lib/object-url-cache'
 import {
   aiApi,
   type AsrJobResult,
@@ -540,23 +541,25 @@ export function AsrCall({ userId, models, settings, changed, showDetail, renderS
 export function CallAudio({ logId, owner, viewer, running = false }: { logId: string; owner: string | null | undefined; viewer: string; running?: boolean }) {
   const allowed = owner === viewer
   const source = useQuery({ queryKey: ['ai', viewer, 'audio', logId, running], queryFn: ({ signal }) => aiApi.audio(logId, signal), enabled: allowed, refetchInterval: running ? 3000 : false })
-  const [url, setUrl] = useState(''); const [error, setError] = useState(''); const [retry, setRetry] = useState(0)
-  useEffect(() => {
-    if (!allowed || !source.data?.stored) return
-    const cancel = new AbortController(); let link = ''
-    void aiApi.audioContent(logId, cancel.signal).then((blob) => { if (!cancel.signal.aborted) { link = URL.createObjectURL(blob); setUrl(link) } })
-      .catch((failure: unknown) => { if (!cancel.signal.aborted) setError(errorText(failure)) })
-    return () => { cancel.abort(); if (link) URL.revokeObjectURL(link) }
-  }, [allowed, logId, source.data?.stored, retry])
+  const cachedAudio = useCachedBlobUrl(
+    'player',
+    `asr-audio:${viewer}:${logId}`,
+    (signal) => aiApi.audioContent(logId, signal),
+    allowed && Boolean(source.data?.stored),
+  )
+  const decodeKey = `${logId}:${cachedAudio.url ?? ''}`
+  const [decodeFailure, setDecodeFailure] = useState<{ key: string; message: string } | null>(null)
+  const audioError = (decodeFailure?.key === decodeKey ? decodeFailure.message : '')
+    || (cachedAudio.error ? errorText(cachedAudio.error) : '')
   if (!allowed) return <p className="text-xs text-text-3">原音频仅调用发起账号可查看。</p>
   if (source.isLoading) return <Skeleton className="h-20" />
   if (source.isError) return <EmptyState title="音频清单读取失败" action={<Button onClick={() => void source.refetch()}>重试</Button>} />
   const audio = source.data
   if (!audio) return <p className="text-xs text-text-3">没有音频材料记录。</p>
   return <div className="space-y-2 rounded-ctl border border-border p-3"><h3 className="text-sm font-medium text-text-1">本次原音频</h3><p className="break-all text-xs text-text-2">{audio.name} · {audio.sizeBytes} bytes</p>
-    {!audio.stored ? <p className="text-xs text-text-3">音频尚未保存，尚无完整输入的发送记录。</p> : error ? <div className="text-xs text-text-3"><p>原音频无法读取或播放，可能已移除、改动或来源不可用。{error}</p>
-      <Button size="sm" variant="ghost" onClick={() => { setUrl(''); setError(''); setRetry((value) => value + 1) }}>重试原音频</Button></div>
-      : url ? <audio src={url} controls preload="metadata" aria-label="本次原音频" className="w-full" onError={() => setError('音频解码失败')} /> : <Skeleton className="h-12" />}
+    {!audio.stored ? <p className="text-xs text-text-3">音频尚未保存，尚无完整输入的发送记录。</p> : audioError ? <div className="text-xs text-text-3"><p>原音频无法读取或播放，可能已移除、改动或来源不可用。{audioError}</p>
+      <Button size="sm" variant="ghost" onClick={cachedAudio.reload}>重试原音频</Button></div>
+      : cachedAudio.url ? <audio src={cachedAudio.url} controls preload="metadata" aria-label="本次原音频" className="w-full" onError={() => setDecodeFailure({ key: decodeKey, message: '音频解码失败' })} /> : <Skeleton className="h-12" />}
     <details className="text-xs text-text-3"><summary className="cursor-pointer">音频指纹</summary><p className="break-all font-mono">SHA256 {audio.sha256}</p></details>
   </div>
 }

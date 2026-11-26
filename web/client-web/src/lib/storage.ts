@@ -7,9 +7,21 @@ interface LsLike {
   getItem(key: string): string | null
   setItem(key: string, value: string): void
   removeItem(key: string): void
+  readonly length?: number
+  key?(index: number): string | null
 }
 
 const memory = new Map<string, string>()
+
+const memoryBackend: LsLike = {
+  getItem: (key) => memory.get(key) ?? null,
+  setItem: (key, value) => void memory.set(key, value),
+  removeItem: (key) => void memory.delete(key),
+  get length() {
+    return memory.size
+  },
+  key: (index) => [...memory.keys()][index] ?? null,
+}
 
 function ls(): LsLike {
   try {
@@ -20,11 +32,7 @@ function ls(): LsLike {
     s.removeItem(probe)
     return s
   } catch {
-    return {
-      getItem: (k) => memory.get(k) ?? null,
-      setItem: (k, v) => void memory.set(k, v),
-      removeItem: (k) => void memory.delete(k),
-    }
+    return memoryBackend
   }
 }
 
@@ -73,4 +81,17 @@ export function getJSON<T>(key: string, fallback: T): T {
 
 export function setJSON(key: string, value: unknown): void {
   ls().setItem(key, JSON.stringify(value))
+}
+
+/** 枚举以指定前缀开头的键；用于发现本机草稿，不读取或修改未列入前缀的数据。 */
+export function storageKeys(prefix = ''): string[] {
+  const backend = ls()
+  const keys: string[] = []
+  const length = backend.length ?? 0
+  if (typeof backend.key !== 'function') return keys
+  for (let index = 0; index < length; index += 1) {
+    const key = backend.key(index)
+    if (key != null && key.startsWith(prefix) && !keys.includes(key)) keys.push(key)
+  }
+  return keys
 }

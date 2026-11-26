@@ -7,6 +7,7 @@ import {
   clearStoredIntent,
   createStoredDraft,
   editStoredDraft,
+  listStoredAiDrafts,
   loadStoredDraft,
   noteDerivedDraftStorageKey,
   persistStoredDraft,
@@ -200,6 +201,46 @@ describe('note-derived local draft storage', () => {
     expect(raw).not.toContain('secret-token-value')
     expect(raw).not.toContain('accessToken')
     expect(raw).not.toContain('refreshToken')
+  })
+
+  it('lists dirty, pending and corrupted local AI drafts without exposing their bodies', () => {
+    const cleanScope = { ...scope, artifactId: 'clean-artifact', sourceVersionId: 'head-clean' }
+    const dirtyScope = { ...scope, artifactId: 'dirty-artifact', sourceVersionId: 'head-dirty' }
+    const pendingScope = { ...scope, artifactId: 'pending-artifact', sourceVersionId: 'head-pending' }
+
+    expect(persistStoredDraft(createStoredDraft(cleanScope, '已保存的干净正文', 'head-clean')).ok).toBe(true)
+
+    const dirty = editStoredDraft(createStoredDraft(dirtyScope, '服务端正文', 'head-dirty'), '未保存修改')
+    expect(dirty.ok).toBe(true)
+    if (dirty.ok) expect(persistStoredDraft(dirty.value).ok).toBe(true)
+
+    const pending = reserveAndPersistIntent(
+      createStoredDraft(pendingScope, '待核对正文', 'head-pending'),
+      'manual-save',
+      '44444444-4444-4444-8444-444444444444',
+    )
+    expect(pending.ok).toBe(true)
+
+    localStorage.setItem('pim.noteDerivedDraft.v1/corrupt-record', '{"schemaVersion":1')
+    localStorage.setItem('pim.unrelated', 'not-a-draft')
+
+    const summaries = listStoredAiDrafts()
+    expect(summaries).toHaveLength(3)
+    expect(summaries.map((summary) => summary.binding.sourceVersionId)).toEqual(
+      expect.arrayContaining(['head-dirty', 'head-pending', '']),
+    )
+    expect(summaries.map((summary) => summary.binding.sourceVersionId)).not.toContain('head-clean')
+    expect(summaries.find((summary) => summary.binding.sourceVersionId === '')).toMatchObject({
+      dirty: true,
+      pending: false,
+      updatedAt: '',
+    })
+
+    const serialized = JSON.stringify(summaries)
+    expect(serialized).not.toContain('未保存修改')
+    expect(serialized).not.toContain('待核对正文')
+    expect(serialized).not.toContain('secret-token')
+    expect(localStorage.getItem(noteDerivedDraftStorageKey(cleanScope)!)).not.toBeNull()
   })
 
   it('reports corrupted storage instead of silently starting empty', () => {

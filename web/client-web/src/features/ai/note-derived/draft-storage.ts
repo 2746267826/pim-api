@@ -1,5 +1,5 @@
 import { apiUrl } from '@/lib/apiBase'
-import { getString, setString } from '@/lib/storage'
+import { getString, setString, storageKeys } from '@/lib/storage'
 import {
   createTextDraft,
   editTextDraft,
@@ -71,6 +71,14 @@ const browserStorage: DraftStoragePort = { get: getString, set: setString }
 
 export const MAX_LOCAL_DRAFT_CHARACTERS = 1_000_000
 const STORAGE_PREFIX = 'pim.noteDerivedDraft.v1'
+
+export interface StoredAiDraftSummary {
+  readonly key: string
+  readonly binding: NoteDerivedDraftScope
+  readonly dirty: boolean
+  readonly pending: boolean
+  readonly updatedAt: string
+}
 
 function localRevisionOf(record: StoredNoteDerivedDraft): number {
   const revision = record.localRevision
@@ -203,6 +211,40 @@ function loadLegacyDraftForResultVersion(
   } catch {
     return { ok: false, error: { code: 'corrupt', message: '本机草稿数据损坏，未载入；现有内容不会被静默替换。' } }
   }
+}
+
+/**
+ * 只枚举本机 AI 草稿的元数据，供缓存清理页展示“需要先保存或明确处理”的对象。
+ * 不读取正文，也不暴露凭据；正文仍由 NoteDerivedPage 按作用域读取。
+ * 无法解析的记录也会以占位作用域列出，避免把“记录损坏”误当成“没有草稿”。
+ */
+export function listStoredAiDrafts(): StoredAiDraftSummary[] {
+  const summaries: StoredAiDraftSummary[] = []
+  for (const key of storageKeys(`${STORAGE_PREFIX}/`)) {
+    const raw = getString(key)
+    if (raw == null) continue
+    try {
+      const parsed: unknown = JSON.parse(raw)
+      if (!isStoredDraft(parsed)) continue
+      if (!parsed.dirty && !parsed.pending) continue
+      summaries.push({
+        key,
+        binding: parsed.binding,
+        dirty: parsed.dirty,
+        pending: Boolean(parsed.pending),
+        updatedAt: parsed.updatedAt,
+      })
+    } catch {
+      summaries.push({
+        key,
+        binding: { ownerId: '', serverBinding: '', artifactId: '', sourceVersionId: '', kind: 'CompleteRecord' },
+        dirty: true,
+        pending: false,
+        updatedAt: '',
+      })
+    }
+  }
+  return summaries.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
 }
 
 export function createStoredDraft(
