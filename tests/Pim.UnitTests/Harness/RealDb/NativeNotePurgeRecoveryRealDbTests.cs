@@ -94,7 +94,7 @@ public sealed class NativeNotePurgeRecoveryRealDbTests : IAsyncLifetime
                 purgeContributors: [new NoteTaskSuggestionPurgeContributor(failingDb)]);
             var failure = await Assert.ThrowsAsync<InvalidOperationException>(() =>
                 notes.PurgeAsync(_user, note.NoteId, deleted!.DeletedAt));
-            Assert.Contains("synthetic purge commit failure", failure.Message);
+            Assert.Contains("Synthetic purge commit failure", failure.Message);
         }
 
         // Destructive work already happened, but PostgreSQL rolled back and the ledger

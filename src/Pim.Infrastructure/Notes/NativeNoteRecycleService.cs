@@ -174,7 +174,7 @@ public sealed class NativeNoteRecycleService(
             if (existing.Phase == RecycleBinPurgePhases.Completed)
             {
                 await materials.CompletePurgeAsync(owner, noteId, ct: ct);
-                return Result(existing);
+                return NoWorkPurgeResult;
             }
         }
         else
@@ -200,7 +200,7 @@ public sealed class NativeNoteRecycleService(
         if (intent.Phase == RecycleBinPurgePhases.Completed)
         {
             await materials.CompletePurgeAsync(owner, noteId, ct: ct);
-            return Result(intent);
+            return NoWorkPurgeResult;
         }
 
         try
@@ -210,7 +210,7 @@ public sealed class NativeNoteRecycleService(
             {
                 await materials.CompletePurgeAsync(owner, noteId, effectiveExpected, ct);
                 await MarkCompletedAsync(intent, ct);
-                return Result(intent);
+                return NoWorkPurgeResult;
             }
 
             var purgeStarted = deleted is not null
@@ -610,6 +610,11 @@ public sealed class NativeNoteRecycleService(
             intent.AiCalls,
             intent.AiImages,
             intent.AiAudio);
+
+    // A completed intent means the destructive work is already done. Reporting zero
+    // work lets the unified service answer "already purged" without pretending this
+    // request deleted anything again.
+    private static readonly NativeNotePurgeResult NoWorkPurgeResult = new(0, 0, 0, 0, 0, 0);
 
     private sealed record NativeNotePurgeCounts(
         int MaterialVersions,
