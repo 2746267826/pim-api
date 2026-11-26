@@ -585,7 +585,6 @@ public sealed class NoteProcessingTests(NoteProcessingFixture host)
         attempt.State = "Failed";
         attempt.StopRequested = false;
         var first = asr.Steps[0].Current;
-        first.Status = "Running";
         db.AiRequestLogs.Add(new AiRequestLogEntity
         {
             ClientRequestId = first.RequestId,
@@ -612,6 +611,8 @@ public sealed class NoteProcessingTests(NoteProcessingFixture host)
             retry, Json));
         await AsrStore().UpdateAsync(owner.UserId, asrTaskId, state =>
         {
+            state.Steps[0].Current.Status = "Running";
+            state.Steps[0].Current.ErrorMessage = null;
             state.Retries[retryId] = fingerprint;
             state.RetryIntents[retryId] = new NoteAsrRetryIntent
             {

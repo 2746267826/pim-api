@@ -245,6 +245,7 @@ public sealed class NoteProcessingService(
                     .Where(issue => issue.Code is not ("processing_resume_pending" or
                         "processing_recycle_stopped"))
                     .ToList();
+                _ = await processing.SaveLockedAsync(state, lockedCt);
             }
 
             if (version.Upload.Phase == "Uploading")
