@@ -454,6 +454,64 @@ internal static class NoteDerivedReceipts
         return issues;
     }
 
+    /// <summary>
+    /// Validates a successful synthesis receipt before it may become a candidate version.
+    /// Direct-send and recovery paths both call this so a receipt that was tampered with
+    /// after the provider call cannot reach AppendGeneratedAsync.
+    /// </summary>
+    internal static IReadOnlyList<NoteDerivedIssueDto> ValidateSynthesisReceipt(
+        NoteDerivedTaskState state, NoteDerivedStepState step, AiRequestLogEntity log,
+        string resultText, string? expectedInputHash, Guid? pendingLogId = null)
+    {
+        var issues = new List<NoteDerivedIssueDto>();
+        var purpose = step.Kind == NoteDerivedStepKind.RecordSynthesis
+            ? NoteDerivedPrompts.RecordPurpose
+            : NoteDerivedPrompts.AnalysisPurpose;
+        CheckCommonLog(issues, log, state, step.Current.RequestId, purpose, "synthesis", step.Key);
+        if ((step.Current.LogId ?? pendingLogId) != log.Id)
+            AddIssue(issues, "synthesis_log_id_mismatch",
+                "合成步骤保存的调用记录标识与实际回执不一致", stepKey: step.Key);
+        if (expectedInputHash is null)
+            AddIssue(issues, "synthesis_input_missing",
+                "无法重建合成步骤的固定输入，不能证明实际发送内容", stepKey: step.Key);
+        else if (log.InputHash != expectedInputHash)
+            AddIssue(issues, "synthesis_input_mismatch",
+                "合成调用的实际输入指纹与固定来源、固定记录版本或模型目标不一致",
+                step.Key);
+        if (string.IsNullOrWhiteSpace(log.ResponseText))
+        {
+            AddIssue(issues, "synthesis_output_missing",
+                "合成成功回执没有可核验正文", stepKey: step.Key);
+            return issues;
+        }
+
+        var responseHash = Digest(log.ResponseText);
+        if (log.OutputHash != responseHash)
+            AddIssue(issues, "synthesis_output_mismatch",
+                "合成回执的输出摘要与保存正文不一致", stepKey: step.Key);
+        if (!string.Equals(log.ResponseText, resultText, StringComparison.Ordinal))
+            AddIssue(issues, "synthesis_result_mismatch",
+                "合成成功回执正文与本次结果不一致；不生成候选版本", stepKey: step.Key);
+        if (step.Current.ResultSha256 is { } checkpoint && checkpoint != Digest(resultText))
+            AddIssue(issues, "synthesis_step_result_mismatch",
+                "步骤检查点保存的结果摘要与实际成功回执正文不一致", stepKey: step.Key);
+        return issues;
+    }
+
+    internal static string SynthesisInputFingerprint(NoteDerivedTaskState state,
+        NoteDerivedStepState step, string prompt)
+    {
+        var purpose = step.Kind == NoteDerivedStepKind.RecordSynthesis
+            ? NoteDerivedPrompts.RecordPurpose
+            : NoteDerivedPrompts.AnalysisPurpose;
+        var audioBatched = state.Steps.Any(x =>
+            x.Kind == NoteDerivedStepKind.AudioBatchEvidence);
+        IReadOnlyList<NoteDerivedAudioInput> audio = step.Audio.Count > 0
+            ? step.Audio
+            : audioBatched ? Array.Empty<NoteDerivedAudioInput>() : state.Plan.Input.Audio;
+        return TextFingerprint(state, purpose, prompt, audio);
+    }
+
     private static void CheckAudioBatchWire(ICollection<NoteDerivedIssueDto> issues,
         AiRequestLogEntity log, NoteDerivedTaskState state, NoteDerivedStepState step,
         string stepKey)
@@ -599,7 +657,7 @@ internal static class NoteDerivedReceipts
                     "汇总或分析步骤重复携带了原始音频；长录音必须只引用批次证据", stepKey);
             }
         }
-        catch (JsonException)
+        catch (Exception error) when (error is JsonException or InvalidOperationException)
         {
             AddIssue(issues, "audio_replay_unverifiable",
                 "无法核对汇总步骤是否重复携带原始音频", stepKey);
@@ -665,7 +723,7 @@ internal static class NoteDerivedReceipts
             }
             return index == expectedCount;
         }
-        catch (JsonException)
+        catch (Exception error) when (error is JsonException or InvalidOperationException)
         {
             return false;
         }
@@ -695,7 +753,7 @@ internal static class NoteDerivedReceipts
             }
             return true;
         }
-        catch (JsonException)
+        catch (Exception error) when (error is JsonException or InvalidOperationException)
         {
             return false;
         }
@@ -718,12 +776,8 @@ internal static class NoteDerivedReceipts
         var stage = step.Kind == NoteDerivedStepKind.RecordSynthesis
             ? "RecordSynthesis"
             : "AnalysisSynthesis";
-        var audioBatched = state.Steps.Any(x => x.Kind == NoteDerivedStepKind.AudioBatchEvidence);
-        var audio = step.Audio.Count > 0
-            ? step.Audio
-            : audioBatched ? [] : state.Plan.Input.Audio;
-        var expectedInput = expectedPrompt is null ? null : TextFingerprint(state, purpose,
-            expectedPrompt, audio);
+        var expectedInput = expectedPrompt is null ? null :
+            SynthesisInputFingerprint(state, step, expectedPrompt);
         var log = FindLog(step.Current.LogId, step.Current.RequestId, context);
         context.VersionsByStep.TryGetValue(step.Key, out var version);
         var expectedOutput = version?.ContentSha256 ?? step.Current.ResultSha256;
@@ -1108,6 +1162,20 @@ internal static class NoteDerivedReceipts
         {
             using var document = JsonDocument.Parse(log.MetadataJson);
             var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object)
+            {
+                AddIssue(issues, "audio_wire_incomplete",
+                    "合成回执的审计元数据不是对象，不能证明实际发送内容", stepKey);
+                return;
+            }
+            if (!Flag(root, "providerAttempted") || !Flag(root, "requestBodyCaptured") ||
+                !Flag(root, "responseBodyComplete"))
+            {
+                AddIssue(issues, "audio_wire_incomplete",
+                    "合成回执缺少 providerAttempted、requestBodyCaptured 或 responseBodyComplete 证据",
+                    stepKey);
+                return;
+            }
             var encoding = root.TryGetProperty("audioEncoding", out var value) &&
                 value.ValueKind == JsonValueKind.String ? value.GetString() : null;
             var referenced = root.TryGetProperty("audioInputsReferenced", out var count) &&
@@ -1138,7 +1206,7 @@ internal static class NoteDerivedReceipts
                     "合成回执请求快照的 input_audio 数量、顺序或 data 引用与固定录音清单不一致",
                     stepKey);
         }
-        catch (JsonException)
+        catch (Exception error) when (error is JsonException or InvalidOperationException)
         {
             AddIssue(issues, "audio_wire_incomplete",
                 "合成回执没有可核对的音频审计元数据", stepKey);

@@ -678,6 +678,130 @@ public sealed class NoteDerivedJobTests : IAsyncLifetime
     }
 
     [Theory]
+    [InlineData("metadata", "audio_batch_wire_incomplete")]
+    [InlineData("delete", "audio_batch_receipt_missing")]
+    [InlineData("fingerprint", "publish_evidence_changed")]
+    public async Task RecordPublishRejectsAudioBatchReceiptChangeInsidePublishBoundary(
+        string corruption, string expectedCode)
+    {
+        var material = NoteDerivedFixture.CreateMaterial(audioSamples: 16_000 * 181);
+        var materials = _factory.Services.GetRequiredService<NoteMaterialUploadStore>();
+        await NoteDerivedFixture.UploadAsync(materials, _owner, material);
+        var allowlist = new NoteDerivedAudioContextOptions
+        {
+            ModelNames = ["derived-model"],
+            MaxBatchBytes = 2 * 1024 * 1024,
+            MaxParallelCalls = 2
+        };
+        var task = await StartWithAudioContextAsync(material, allowlist);
+        var mutated = 0;
+
+        await Run(task.TaskId, allowlist, async _ =>
+        {
+            if (Interlocked.Increment(ref mutated) == 1)
+                await MutateFirstAudioBatchAsync(corruption);
+        });
+
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var state = await scope.ServiceProvider.GetRequiredService<NoteDerivedStore>()
+                .ReadTaskAsync(_owner, task.TaskId, default);
+            var record = state.Steps.Single(x => x.Key == "record-synthesis");
+            Assert.Equal("Blocked", record.Current.Status);
+            Assert.Equal(expectedCode, record.Current.ErrorCode);
+            Assert.Empty(_analysisBodies);
+        }
+        await AssertNoDerivedVersionsAsync(task.TaskId);
+    }
+
+    [Theory]
+    [InlineData("delete", "synthesis_receipt_missing")]
+    [InlineData("request", "synthesis_request_mismatch")]
+    [InlineData("purpose", "synthesis_purpose_mismatch")]
+    [InlineData("source", "synthesis_source_mismatch")]
+    [InlineData("model", "synthesis_model_mismatch")]
+    [InlineData("input", "synthesis_input_mismatch")]
+    [InlineData("output", "synthesis_output_mismatch")]
+    [InlineData("result", "synthesis_result_mismatch")]
+    [InlineData("fingerprint", "publish_evidence_changed")]
+    public async Task RecordPublishRejectsSynthesisReceiptChangeInsidePublishBoundary(
+        string corruption, string expectedCode)
+    {
+        var material = NoteDerivedFixture.CreateMaterial(withAudio: false);
+        var materials = _factory.Services.GetRequiredService<NoteMaterialUploadStore>();
+        await NoteDerivedFixture.UploadAsync(materials, _owner, material);
+        var allowlist = new NoteDerivedAudioContextOptions { ModelNames = ["derived-model"] };
+        var task = await StartWithAudioContextAsync(material, allowlist);
+        var mutated = 0;
+
+        await Run(task.TaskId, allowlist, async _ =>
+        {
+            if (Interlocked.Increment(ref mutated) == 1)
+                await MutateRecordReceiptAsync(corruption);
+        });
+
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var state = await scope.ServiceProvider.GetRequiredService<NoteDerivedStore>()
+                .ReadTaskAsync(_owner, task.TaskId, default);
+            var record = state.Steps.Single(x => x.Key == "record-synthesis");
+            Assert.Equal("Blocked", record.Current.Status);
+            Assert.Equal(expectedCode, record.Current.ErrorCode);
+            Assert.Empty(_analysisBodies);
+        }
+        await AssertNoDerivedVersionsAsync(task.TaskId);
+    }
+
+    [Theory]
+    [InlineData("input", "synthesis_input_mismatch")]
+    [InlineData("output", "synthesis_output_mismatch")]
+    [InlineData("result", "synthesis_result_mismatch")]
+    public async Task RecoveredRecordReceiptUsesTheSameSynthesisReceiptGate(
+        string corruption, string expectedCode)
+    {
+        var (task, allowlist) = await StartRecordRetryAsync();
+        await AddRecoveredRecordReceiptAsync(task.TaskId, "Running", "none", corruption);
+
+        var calls = _recordBodies.Count;
+        await Run(task.TaskId, allowlist);
+
+        using var scope = _factory.Services.CreateScope();
+        var state = await scope.ServiceProvider.GetRequiredService<NoteDerivedStore>()
+            .ReadTaskAsync(_owner, task.TaskId, default);
+        var record = state.Steps.Single(x => x.Key == "record-synthesis");
+        Assert.Equal("Blocked", record.Current.Status);
+        Assert.Equal(expectedCode, record.Current.ErrorCode);
+        Assert.Equal(calls, _recordBodies.Count);
+        Assert.Empty(_analysisBodies);
+        await AssertNoDerivedVersionsAsync(task.TaskId);
+    }
+
+    [Fact]
+    public async Task RecoveredRecordReceiptWithValidEvidencePublishesCandidate()
+    {
+        var (task, allowlist) = await StartRecordRetryAsync();
+        await AddRecoveredRecordReceiptAsync(task.TaskId, "Running", "none");
+
+        var calls = _recordBodies.Count;
+        await Run(task.TaskId, allowlist);
+
+        using var scope = _factory.Services.CreateScope();
+        var store = scope.ServiceProvider.GetRequiredService<NoteDerivedStore>();
+        var state = await store.ReadTaskAsync(_owner, task.TaskId, default);
+        var record = state.Steps.Single(x => x.Key == "record-synthesis");
+        Assert.Equal("Succeeded", record.Current.Status);
+        Assert.Equal(calls, _recordBodies.Count);
+
+        var artifact = await store.DescribeArtifactAsync(_owner,
+            state.CompleteRecordArtifactId, default);
+        var version = Assert.Single(artifact.Versions);
+        var stored = await store.GetVersionAsync(_owner, artifact.ArtifactId,
+            version.VersionId, default);
+        Assert.Equal("## synthetic recovered record\n\nBatch evidence was validated again.",
+            stored.ContentMarkdown);
+    }
+
+    [Theory]
     [InlineData("Running", "metadata")]
     [InlineData("Unknown", "missing")]
     public async Task ReconcilingRecoveredRecordReceiptRevalidatesAudioBatchesBeforePublishing(
@@ -775,7 +899,8 @@ public sealed class NoteDerivedJobTests : IAsyncLifetime
     }
 
     private NoteDerivedJob CreateJob(IServiceProvider services,
-        NoteDerivedAudioContextOptions? audioContext = null) => new(
+        NoteDerivedAudioContextOptions? audioContext = null,
+        Func<CancellationToken, Task>? publishProbe = null) => new(
         services.GetRequiredService<NoteDerivedStore>(),
         services.GetRequiredService<NoteMaterialUploadStore>(),
         services.GetRequiredService<NoteAsrTaskStore>(),
@@ -784,7 +909,8 @@ public sealed class NoteDerivedJobTests : IAsyncLifetime
         services.GetRequiredService<AiTextCallService>(),
         Options.Create(audioContext ?? new NoteDerivedAudioContextOptions()),
         NullLogger<NoteDerivedJob>.Instance,
-        services.GetRequiredService<IServiceScopeFactory>());
+        services.GetRequiredService<IServiceScopeFactory>(),
+        publishProbe);
 
     private async Task<NoteDerivedTaskDto> StartWithAudioContextAsync(
         NoteDerivedFixture.Material material, NoteDerivedAudioContextOptions audioContext)
@@ -806,10 +932,11 @@ public sealed class NoteDerivedJobTests : IAsyncLifetime
             waitForAsr: false, allowIncompleteAsr: false, default);
     }
 
-    private async Task Run(Guid taskId, NoteDerivedAudioContextOptions? audioContext = null)
+    private async Task Run(Guid taskId, NoteDerivedAudioContextOptions? audioContext = null,
+        Func<CancellationToken, Task>? publishProbe = null)
     {
         using var scope = _factory.Services.CreateScope();
-        var job = CreateJob(scope.ServiceProvider, audioContext);
+        var job = CreateJob(scope.ServiceProvider, audioContext, publishProbe);
         await job.RunAsync(_owner, taskId, default);
     }
 
@@ -844,7 +971,7 @@ public sealed class NoteDerivedJobTests : IAsyncLifetime
     }
 
     private async Task AddRecoveredRecordReceiptAsync(Guid taskId, string checkpointStatus,
-        string corruption)
+        string corruption, string? synthesisCorruption = null)
     {
         const string recoveredRecord = "## synthetic recovered record\n\nBatch evidence was validated again.";
         using var scope = _factory.Services.CreateScope();
@@ -852,6 +979,22 @@ public sealed class NoteDerivedJobTests : IAsyncLifetime
         var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
         var state = await store.ReadTaskAsync(_owner, taskId, default);
         var record = state.Steps.Single(x => x.Key == "record-synthesis");
+        var batch = state.Steps.First(x => x.Kind == NoteDerivedStepKind.AudioBatchEvidence);
+        var batches = state.Steps
+            .Where(x => x.Kind == NoteDerivedStepKind.AudioBatchEvidence)
+            .OrderBy(x => x.Key, StringComparer.Ordinal)
+            .ToArray();
+        var batchIds = batches.Select(x => x.Current.LogId!.Value).ToArray();
+        var batchReceipts = await db.AiRequestLogs.AsNoTracking()
+            .Where(x => x.UserId == _owner && batchIds.Contains(x.Id))
+            .ToDictionaryAsync(x => x.Id);
+        var evidence = batches.Select(step =>
+        {
+            var receipt = batchReceipts[step.Current.LogId!.Value];
+            return new NoteDerivedEvidence(step.Key, receipt.Id, receipt.ResponseText!, []);
+        }).ToArray();
+        var prompt = NoteDerivedPrompts.Record(state.Plan.Input, evidence, audioBatched: true);
+        var inputHash = NoteDerivedReceipts.SynthesisInputFingerprint(state, record, prompt);
         var receipt = new AiRequestLogEntity
         {
             Id = Guid.NewGuid(),
@@ -876,14 +1019,32 @@ public sealed class NoteDerivedJobTests : IAsyncLifetime
             ExecutionExpiresAt = DateTimeOffset.UtcNow.AddMinutes(5),
             ResponseText = recoveredRecord,
             OutputHash = Hash(recoveredRecord),
+            InputHash = inputHash,
             MetadataJson = """
                 {"providerAttempted":true,"requestBodyCaptured":true,"responseBodyComplete":true,
                  "audioInputsReferenced":0,"audioInputsSha256":[],"audioEncoding":null}
                 """,
             RequestMessagesJson = "[]"
         };
+        switch (synthesisCorruption)
+        {
+            case null:
+                break;
+            case "input":
+                receipt.InputHash = Hash("tampered input");
+                break;
+            case "output":
+                receipt.OutputHash = Hash("tampered output");
+                break;
+            case "result":
+                receipt.ResponseText = "## synthetic tampered recovered record";
+                receipt.OutputHash = Hash(receipt.ResponseText);
+                break;
+            default:
+                throw new InvalidOperationException("unknown synthesis corruption " +
+                    synthesisCorruption);
+        }
         db.AiRequestLogs.Add(receipt);
-        var batch = state.Steps.First(x => x.Kind == NoteDerivedStepKind.AudioBatchEvidence);
         var batchLog = await db.AiRequestLogs.SingleAsync(x => x.Id == batch.Current.LogId);
         if (corruption == "metadata") batchLog.MetadataJson = "{}";
         await db.SaveChangesAsync();
@@ -899,7 +1060,9 @@ public sealed class NoteDerivedJobTests : IAsyncLifetime
         }, default);
     }
 
-    private async Task CorruptFirstAudioBatchAsync()
+    private Task CorruptFirstAudioBatchAsync() => MutateFirstAudioBatchAsync("metadata");
+
+    private async Task MutateFirstAudioBatchAsync(string corruption)
     {
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
@@ -908,7 +1071,57 @@ public sealed class NoteDerivedJobTests : IAsyncLifetime
                 x.Purpose == NoteDerivedPrompts.AudioBatchPurpose)
             .OrderBy(x => x.Id)
             .FirstAsync();
-        log.MetadataJson = "{}";
+        if (corruption == "delete") db.AiRequestLogs.Remove(log);
+        else if (corruption == "fingerprint")
+        {
+            var metadata = JsonNode.Parse(log.MetadataJson)!.AsObject();
+            metadata["publishProbe"] = "changed";
+            log.MetadataJson = metadata.ToJsonString();
+        }
+        else log.MetadataJson = "{}";
+        await db.SaveChangesAsync();
+    }
+
+    private async Task MutateRecordReceiptAsync(string corruption)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
+        var log = await db.AiRequestLogs
+            .SingleAsync(x => x.UserId == _owner &&
+                x.Purpose == NoteDerivedPrompts.RecordPurpose);
+        switch (corruption)
+        {
+            case "delete":
+                db.AiRequestLogs.Remove(log);
+                break;
+            case "request":
+                log.ClientRequestId = Guid.NewGuid();
+                break;
+            case "purpose":
+                log.Purpose = "note.derived.tampered";
+                break;
+            case "source":
+                log.SourceObjectId = Guid.NewGuid().ToString("D");
+                break;
+            case "model":
+                log.ModelProfileId = Guid.NewGuid();
+                break;
+            case "input":
+                log.InputHash = Hash("tampered input");
+                break;
+            case "output":
+                log.OutputHash = Hash("tampered output");
+                break;
+            case "result":
+                log.ResponseText = "## tampered record\n\nDifferent provider text.";
+                log.OutputHash = Hash(log.ResponseText);
+                break;
+            case "fingerprint":
+                log.RequestMessagesJson = " " + log.RequestMessagesJson + " ";
+                break;
+            default:
+                throw new InvalidOperationException("unknown corruption " + corruption);
+        }
         await db.SaveChangesAsync();
     }
 

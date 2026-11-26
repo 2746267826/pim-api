@@ -1,7 +1,9 @@
+using System.Data.Common;
 using System.Security.Cryptography;
 using System.Text;
 using Hangfire;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -54,7 +56,8 @@ public sealed class NoteDerivedJob(
     AiTextCallService calls,
     IOptions<NoteDerivedAudioContextOptions> audioContext,
     ILogger<NoteDerivedJob> logger,
-    IServiceScopeFactory? scopeFactory = null)
+    IServiceScopeFactory? scopeFactory = null,
+    Func<CancellationToken, Task>? publishBoundaryProbe = null)
 {
     private static readonly TimeSpan UnknownWithoutReceiptAfter = TimeSpan.FromMinutes(15);
 
@@ -154,7 +157,9 @@ public sealed class NoteDerivedJob(
             scope.ServiceProvider.GetRequiredService<PimDbContext>(),
             scope.ServiceProvider.GetRequiredService<AiTextCallService>(),
             audioContext,
-            logger);
+            logger,
+            scopeFactory: null,
+            publishBoundaryProbe: publishBoundaryProbe);
         return await job.RunStepLockedAsync(owner, taskId, stepKey, ct);
     }
 
@@ -241,8 +246,8 @@ public sealed class NoteDerivedJob(
                 unknown ? "Unknown" : "Blocked", ct);
             return StepOutcome.Stop;
         }
-        catch (Exception error) when (error is IOException or DbUpdateException or
-            System.Text.Json.JsonException or InvalidDataException)
+        catch (Exception error) when (error is IOException or DbUpdateException or DbException or
+            TimeoutException or System.Text.Json.JsonException or InvalidDataException)
         {
             logger.LogWarning("Derived task {TaskId} step {StepKey} lost its checkpoint ({ErrorType})",
                 taskId, step.Key, error.GetType().Name);
@@ -616,21 +621,35 @@ public sealed class NoteDerivedJob(
             if (!coverage.Coverage.Complete)
                 return PreparedCall.Failed(Issue("record_coverage_incomplete",
                     "完整记录只能在全部 Markdown、ASR、照片和手写预览覆盖齐备后生成", step.Key));
-            var prompt = NoteDerivedPrompts.Record(state.Plan.Input, evidence.Items, audioBatched);
-            if (prompt.Length > NoteDerivedLimits.MaxSynthesisInputChars)
-                return PreparedCall.Failed(Issue("record_input_too_large",
+        }
+
+        var synthesis = await BuildSynthesisPromptAsync(state, step, evidence.Items, ct);
+        if (synthesis.Issue is not null) return PreparedCall.Failed(synthesis.Issue);
+        var audio = audioBatched
+            ? new AudioCheck([], null)
+            : await LoadAudioContextAsync(state, step.Key, ct);
+        if (audio.Issue is not null) return PreparedCall.Failed(audio.Issue);
+        return PreparedCall.Text(synthesis.Prompt!, synthesis.Prompt!.Length, audio.Items);
+    }
+
+    private async Task<SynthesisPromptCheck> BuildSynthesisPromptAsync(
+        NoteDerivedTaskState state, NoteDerivedStepState step,
+        IReadOnlyList<NoteDerivedEvidence> evidence, CancellationToken ct)
+    {
+        var audioBatched = state.Steps.Any(x => x.Kind == NoteDerivedStepKind.AudioBatchEvidence);
+        if (step.Kind == NoteDerivedStepKind.RecordSynthesis)
+        {
+            var prompt = NoteDerivedPrompts.Record(state.Plan.Input, evidence, audioBatched);
+            return prompt.Length > NoteDerivedLimits.MaxSynthesisInputChars
+                ? new(null, Issue("record_input_too_large",
                     $"完整记录输入 {prompt.Length} 字符，超过 SDK 实际上限 {NoteDerivedLimits.MaxSynthesisInputChars}；未截断且不会发送",
-                    step.Key));
-            var audio = audioBatched
-                ? new AudioCheck([], null)
-                : await LoadAudioContextAsync(state, step.Key, ct);
-            if (audio.Issue is not null) return PreparedCall.Failed(audio.Issue);
-            return PreparedCall.Text(prompt, prompt.Length, audio.Items);
+                    step.Key))
+                : new(prompt, null);
         }
 
         var record = state.Steps.Single(x => x.Kind == NoteDerivedStepKind.RecordSynthesis);
         if (record.Current.Status != "Succeeded" || record.Current.LogId is null)
-            return PreparedCall.Failed(Issue("record_version_missing",
+            return new(null, Issue("record_version_missing",
                 "独立分析必须引用已生成的完整记录版本", step.Key));
         var recordVersionId = VersionId(state.Request.TaskId, record.Current.RequestId,
             NoteDerivedArtifactKind.CompleteRecord);
@@ -642,7 +661,7 @@ public sealed class NoteDerivedJob(
         }
         catch (DomainException)
         {
-            return PreparedCall.Failed(Issue("record_version_missing",
+            return new(null, Issue("record_version_missing",
                 "完整记录的具体版本尚不可读，独立分析未发送", step.Key));
         }
         if (recordVersion.Kind != NoteDerivedArtifactKind.CompleteRecord ||
@@ -652,19 +671,15 @@ public sealed class NoteDerivedJob(
             recordVersion.ManifestSha256 != state.ManifestSha256 ||
             recordVersion.AiCallLogId != record.Current.LogId ||
             string.IsNullOrWhiteSpace(recordVersion.ContentMarkdown))
-            return PreparedCall.Failed(Issue("record_version_invalid",
+            return new(null, Issue("record_version_invalid",
                 "完整记录具体版本的身份、来源或正文校验失败，独立分析未发送", step.Key));
         var analysis = NoteDerivedPrompts.Analysis(state.Plan.Input, recordVersionId,
-            recordVersion.ContentMarkdown, evidence.Items, audioBatched);
-        if (analysis.Length > NoteDerivedLimits.MaxSynthesisInputChars)
-            return PreparedCall.Failed(Issue("analysis_input_too_large",
+            recordVersion.ContentMarkdown, evidence, audioBatched);
+        return analysis.Length > NoteDerivedLimits.MaxSynthesisInputChars
+            ? new(null, Issue("analysis_input_too_large",
                 $"独立分析输入 {analysis.Length} 字符，超过 SDK 实际上限 {NoteDerivedLimits.MaxSynthesisInputChars}；未截断且不会发送",
-                step.Key));
-        var synthesisAudio = audioBatched
-            ? new AudioCheck([], null)
-            : await LoadAudioContextAsync(state, step.Key, ct);
-        if (synthesisAudio.Issue is not null) return PreparedCall.Failed(synthesisAudio.Issue);
-        return PreparedCall.Text(analysis, analysis.Length, synthesisAudio.Items);
+                step.Key))
+            : new(analysis, null);
     }
 
     private static int AudioBatchIndex(string key)
@@ -855,22 +870,14 @@ public sealed class NoteDerivedJob(
             }
             else if (step.Kind != NoteDerivedStepKind.AudioBatchEvidence)
             {
-                var audioIssue = await RevalidateAudioEvidenceForPublishAsync(
-                    state, step, receipt, ct);
-                if (audioIssue is not null)
+                var publishIssue = await PublishSynthesisVersionAsync(owner, taskId, stepKey,
+                    requestId, receipt.Id, result.ResponseText, ct);
+                if (publishIssue is not null)
                 {
-                    await StopWithIssueAsync(owner, taskId, stepKey, audioIssue.Code,
-                        audioIssue.Message, "Blocked", ct);
+                    await StopWithIssueAsync(owner, taskId, stepKey, publishIssue.Code,
+                        publishIssue.Message, "Blocked", ct);
                     return StepOutcome.Stop;
                 }
-                var coverage = await BuildCoverageAsync(state, ct, stepKey, stepKey);
-                if (!coverage.Coverage.Complete)
-                {
-                    await StopWithIssueAsync(owner, taskId, stepKey, "synthesis_coverage_incomplete",
-                        "材料覆盖尚未齐备，模型输出只保留为检查点，不发布为完整版本", "Blocked", ct);
-                    return StepOutcome.Stop;
-                }
-                await AppendVersionAsync(state, step, receipt, result.ResponseText, coverage.Coverage, ct);
             }
 
             await tasks.UpdateTaskAsync(owner, taskId, current =>
@@ -916,58 +923,197 @@ public sealed class NoteDerivedJob(
 
     /// <summary>
     /// A synthesis result can be replayed long after its evidence was prepared. Re-read the
-    /// current batch receipts immediately before publishing so a receipt mutated in the
+    /// current batch and synthesis receipts immediately before publishing, and hold relational
+    /// row locks across the candidate append so a receipt changed or deleted in the
     /// prepare/send/apply window cannot produce a candidate version.
     /// </summary>
-    private async Task<NoteDerivedIssueDto?> RevalidateAudioEvidenceForPublishAsync(
-        NoteDerivedTaskState state, NoteDerivedStepState step,
-        Pim.Infrastructure.Data.Entities.AiRequestLogEntity synthesisReceipt,
-        CancellationToken ct)
+    private async Task<NoteDerivedIssueDto?> PublishSynthesisVersionAsync(Guid owner, Guid taskId,
+        string stepKey, Guid requestId, Guid synthesisLogId, string resultText, CancellationToken ct)
+    {
+        if (!db.Database.IsRelational())
+            return await PublishSynthesisVersionCoreAsync(owner, taskId, stepKey, requestId,
+                synthesisLogId, resultText, null, ct);
+        var strategy = db.Database.CreateExecutionStrategy();
+        return await strategy.ExecuteAsync(async token =>
+        {
+            db.ChangeTracker.Clear();
+            await using var transaction = await db.Database.BeginTransactionAsync(token);
+            var issue = await PublishSynthesisVersionCoreAsync(owner, taskId, stepKey, requestId,
+                synthesisLogId, resultText, transaction, token);
+            if (issue is null) await transaction.CommitAsync(token);
+            return issue;
+        }, ct);
+    }
+
+    private async Task<NoteDerivedIssueDto?> PublishSynthesisVersionCoreAsync(Guid owner, Guid taskId,
+        string stepKey, Guid requestId, Guid synthesisLogId, string resultText,
+        IDbContextTransaction? transaction, CancellationToken ct)
+    {
+        try
+        {
+            var state = await tasks.ReadTaskAsync(owner, taskId, ct);
+            var step = state.Steps.SingleOrDefault(x => x.Key == stepKey);
+            if (step is null || step.Current.RequestId != requestId)
+                return Issue("publish_attempt_changed",
+                    "发布前派生尝试已变化；未生成候选版本", stepKey);
+            var first = await ValidatePublishEvidenceAsync(state, step, synthesisLogId,
+                requestId, resultText, lockRows: transaction is not null, ct);
+            if (first.Issue is not null) return first.Issue;
+
+            if (publishBoundaryProbe is { } probe) await probe(ct);
+
+            var finalState = await tasks.ReadTaskAsync(owner, taskId, ct);
+            var finalStep = finalState.Steps.SingleOrDefault(x => x.Key == stepKey);
+            if (finalStep is null || finalStep.Current.RequestId != requestId)
+                return Issue("publish_attempt_changed",
+                    "发布前派生尝试已变化；未生成候选版本", stepKey);
+            if (finalState.StopRequested)
+                return Issue("publish_stopped", "任务已停止，未生成候选版本", stepKey);
+            var final = await ValidatePublishEvidenceAsync(finalState, finalStep, synthesisLogId,
+                requestId, resultText, lockRows: false, ct);
+            if (final.Issue is not null) return final.Issue;
+            if (final.SynthesisReceipt is null ||
+                !string.Equals(final.Fingerprint, first.Fingerprint, StringComparison.Ordinal))
+                return Issue("publish_evidence_changed",
+                    "发布边界内回执或证据指纹发生变化；未生成候选版本", stepKey);
+            var coverage = await BuildCoverageAsync(finalState, ct, stepKey, stepKey);
+            if (!coverage.Coverage.Complete)
+                return Issue("synthesis_coverage_incomplete",
+                    "材料覆盖尚未齐备，模型输出只保留为检查点，不发布为完整版本", stepKey);
+            await AppendVersionAsync(finalState, finalStep, final.SynthesisReceipt, resultText,
+                coverage.Coverage, ct);
+            return null;
+        }
+        catch (DomainException error)
+        {
+            return Issue("publish_blocked", error.Message, stepKey);
+        }
+        catch (Exception error) when (error is IOException or DbUpdateException or DbException or
+            TimeoutException or System.Text.Json.JsonException or InvalidDataException)
+        {
+            logger.LogWarning("Derived task {TaskId} step {StepKey} could not publish ({ErrorType})",
+                taskId, stepKey, error.GetType().Name);
+            return Issue("publish_checkpoint_unknown",
+                "发布检查点读写中断，未确认候选版本；任务已停止", stepKey);
+        }
+    }
+
+    private async Task<PublishEvidenceCheck> ValidatePublishEvidenceAsync(
+        NoteDerivedTaskState state, NoteDerivedStepState step, Guid synthesisLogId,
+        Guid requestId, string resultText, bool lockRows, CancellationToken ct)
     {
         var batches = state.Steps
             .Where(x => x.Kind == NoteDerivedStepKind.AudioBatchEvidence)
             .OrderBy(x => x.Key, StringComparer.Ordinal)
             .ToArray();
-        if (batches.Length > 0)
+        var receiptIds = batches.Where(x => x.Current.LogId.HasValue)
+            .Select(x => x.Current.LogId!.Value)
+            .Append(synthesisLogId)
+            .Distinct()
+            .ToArray();
+        var receipts = await ReadReceiptsAsync(state.Owner, receiptIds, lockRows, ct);
+        var keyed = new List<(string Key, AiRequestLogEntity Log)>(batches.Length + 1);
+        foreach (var batch in batches)
         {
-            var logIds = batches.Where(x => x.Current.LogId.HasValue)
-                .Select(x => x.Current.LogId!.Value)
-                .Distinct()
-                .ToArray();
-            var logs = logIds.Length == 0
-                ? new Dictionary<Guid, Pim.Infrastructure.Data.Entities.AiRequestLogEntity>()
-                : (await db.AiRequestLogs.AsNoTracking()
-                    .Where(x => x.UserId == state.Owner && logIds.Contains(x.Id))
-                    .ToListAsync(ct))
-                    .ToDictionary(x => x.Id);
-            foreach (var batch in batches)
-            {
-                if (batch.Current.Status != "Succeeded" ||
-                    batch.Current.LogId is not { } logId ||
-                    !logs.TryGetValue(logId, out var batchReceipt) ||
-                    batchReceipt.Status != "succeeded")
-                    return Issue("audio_batch_receipt_missing",
-                        "合成发布前找不到仍成功的录音批次回执；不生成候选版本", step.Key);
-                var issues = NoteDerivedReceipts.ValidateAudioBatchReceipt(
-                    state, batch, batchReceipt);
-                if (issues.Count > 0) return issues[0];
-                if (string.IsNullOrWhiteSpace(batchReceipt.ResponseText) ||
-                    batchReceipt.OutputHash != Digest(batchReceipt.ResponseText) ||
-                    batch.Current.ResultSha256 != Digest(batchReceipt.ResponseText))
-                    return Issue("audio_batch_output_mismatch",
-                        "录音批次回执正文或输出摘要已与成功检查点不一致；不生成候选版本",
-                        step.Key);
-                var limit = batch.MaxOutputCharacters > 0
-                    ? batch.MaxOutputCharacters : NoteDerivedLimits.MaxEvidenceCharsPerStep;
-                if (batchReceipt.ResponseText.Length > limit)
-                    return Issue("audio_batch_output_too_large",
-                        "录音批次证据超过本批字符预算；不生成候选版本", step.Key);
-            }
+            if (batch.Current.Status != "Succeeded" ||
+                batch.Current.LogId is not { } logId ||
+                !receipts.TryGetValue(logId, out var batchReceipt) ||
+                batchReceipt.Status != "succeeded")
+                return PublishEvidenceCheck.Failed(Issue("audio_batch_receipt_missing",
+                    "合成发布前找不到仍成功的录音批次回执；不生成候选版本", step.Key));
+            var issues = NoteDerivedReceipts.ValidateAudioBatchReceipt(
+                state, batch, batchReceipt);
+            if (issues.Count > 0) return PublishEvidenceCheck.Failed(issues[0]);
+            if (string.IsNullOrWhiteSpace(batchReceipt.ResponseText) ||
+                batchReceipt.OutputHash != Digest(batchReceipt.ResponseText) ||
+                batch.Current.ResultSha256 != Digest(batchReceipt.ResponseText))
+                return PublishEvidenceCheck.Failed(Issue("audio_batch_output_mismatch",
+                    "录音批次回执正文或输出摘要已与成功检查点不一致；不生成候选版本",
+                    step.Key));
+            var limit = batch.MaxOutputCharacters > 0
+                ? batch.MaxOutputCharacters : NoteDerivedLimits.MaxEvidenceCharsPerStep;
+            if (batchReceipt.ResponseText.Length > limit)
+                return PublishEvidenceCheck.Failed(Issue("audio_batch_output_too_large",
+                    "录音批次证据超过本批字符预算；不生成候选版本", step.Key));
+            keyed.Add((batch.Key, batchReceipt));
         }
+
+        if (!receipts.TryGetValue(synthesisLogId, out var synthesisReceipt))
+            return PublishEvidenceCheck.Failed(Issue("synthesis_receipt_missing",
+                "合成发布前找不到仍成功的合成回执；不生成候选版本", step.Key));
+        if (synthesisReceipt.ClientRequestId != requestId)
+            return PublishEvidenceCheck.Failed(Issue("synthesis_request_mismatch",
+                "合成回执的 ClientRequestId 与当前步骤尝试不一致；不生成候选版本", step.Key));
+        var expected = await BuildSynthesisInputHashAsync(state, step, ct);
+        if (expected.Issue is not null) return PublishEvidenceCheck.Failed(expected.Issue);
+        var synthesisIssues = NoteDerivedReceipts.ValidateSynthesisReceipt(
+            state, step, synthesisReceipt, resultText, expected.InputSha256, synthesisLogId);
+        if (synthesisIssues.Count > 0)
+            return PublishEvidenceCheck.Failed(synthesisIssues[0]);
         var wireIssues = NoteDerivedReceipts.ValidateSynthesisAudioWire(
             state, step, synthesisReceipt);
-        return wireIssues.Count > 0 ? wireIssues[0] : null;
+        if (wireIssues.Count > 0) return PublishEvidenceCheck.Failed(wireIssues[0]);
+        keyed.Add((step.Key, synthesisReceipt));
+        return new(PublishFingerprint(keyed, resultText, expected.InputSha256!),
+            synthesisReceipt, null);
     }
+
+    private async Task<SynthesisInputCheck> BuildSynthesisInputHashAsync(
+        NoteDerivedTaskState state, NoteDerivedStepState step, CancellationToken ct)
+    {
+        var evidence = await LoadEvidenceAsync(state, ct);
+        if (evidence.Issue is not null) return new(null, evidence.Issue);
+        var prompt = await BuildSynthesisPromptAsync(state, step, evidence.Items, ct);
+        if (prompt.Issue is not null) return new(null, prompt.Issue);
+        return new(NoteDerivedReceipts.SynthesisInputFingerprint(state, step, prompt.Prompt!), null);
+    }
+
+    private async Task<Dictionary<Guid, AiRequestLogEntity>> ReadReceiptsAsync(Guid owner,
+        Guid[] ids, bool lockRows, CancellationToken ct)
+    {
+        if (ids.Length == 0) return new Dictionary<Guid, AiRequestLogEntity>();
+        if (lockRows && db.Database.IsRelational())
+        {
+            var locked = await db.AiRequestLogs
+                .FromSqlInterpolated(
+                    $"SELECT * FROM ai_request_logs WHERE user_id = {owner} AND id = ANY({ids}) FOR SHARE")
+                .AsNoTracking()
+                .ToListAsync(ct);
+            return locked.ToDictionary(x => x.Id);
+        }
+        var rows = await db.AiRequestLogs.AsNoTracking()
+            .Where(x => x.UserId == owner && ids.Contains(x.Id))
+            .ToListAsync(ct);
+        return rows.ToDictionary(x => x.Id);
+    }
+
+    private static string PublishFingerprint(
+        IReadOnlyList<(string Key, AiRequestLogEntity Log)> receipts, string resultText,
+        string expectedInputHash) =>
+        Digest(System.Text.Json.JsonSerializer.Serialize(new
+        {
+            resultSha256 = Digest(resultText),
+            expectedInputHash,
+            receipts = receipts.OrderBy(x => x.Key, StringComparer.Ordinal).Select(x => new
+            {
+                x.Key,
+                x.Log.Id,
+                x.Log.UserId,
+                x.Log.ClientRequestId,
+                x.Log.Status,
+                x.Log.Purpose,
+                x.Log.SourceObjectType,
+                x.Log.SourceObjectId,
+                x.Log.ModelProfileId,
+                x.Log.ModelRevision,
+                x.Log.ModelEndpoint,
+                x.Log.InputHash,
+                x.Log.OutputHash,
+                x.Log.ResponseText,
+                x.Log.MetadataJson,
+                x.Log.RequestMessagesJson
+            })
+        }));
 
     private async Task AppendVersionAsync(NoteDerivedTaskState state, NoteDerivedStepState step,
         Pim.Infrastructure.Data.Entities.AiRequestLogEntity receipt, string content,
@@ -1261,7 +1407,8 @@ public sealed class NoteDerivedJob(
             return Flag(root, "providerAttempted") && Flag(root, "requestBodyCaptured") &&
                 Flag(root, "responseBodyComplete") && Flag(root, "imageInputsStored");
         }
-        catch (System.Text.Json.JsonException) { return false; }
+        catch (Exception error) when (error is System.Text.Json.JsonException or
+            InvalidOperationException) { return false; }
 
         static bool Flag(System.Text.Json.JsonElement root, string name) =>
             root.TryGetProperty(name, out var item) &&
@@ -1482,6 +1629,14 @@ public sealed class NoteDerivedJob(
         NoteDerivedIssueDto? Issue);
     private sealed record AudioCheck(IReadOnlyList<AiAudioContextInput> Items,
         NoteDerivedIssueDto? Issue);
+    private sealed record SynthesisPromptCheck(string? Prompt, NoteDerivedIssueDto? Issue);
+    private sealed record SynthesisInputCheck(string? InputSha256, NoteDerivedIssueDto? Issue);
+    private sealed record PublishEvidenceCheck(string? Fingerprint,
+        AiRequestLogEntity? SynthesisReceipt, NoteDerivedIssueDto? Issue)
+    {
+        internal static PublishEvidenceCheck Failed(NoteDerivedIssueDto issue) =>
+            new(null, null, issue);
+    }
 
     private enum StepOutcome
     {
