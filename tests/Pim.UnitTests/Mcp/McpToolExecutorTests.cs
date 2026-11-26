@@ -845,6 +845,127 @@ public sealed class McpToolExecutorTests : IDisposable
     }
 
     [Fact]
+    public async Task CreateEvent_Success_PreservesWritebackReceipt()
+    {
+        CreateExecutor(withWritePermission: true);
+        _routes["POST /api/v1/calendar/events"] = new(201,
+            """
+            {
+              "code": 0,
+              "data": {
+                "id": "e1",
+                "outlookEtag": "W/\"etag-1\"",
+                "clientOperationId": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+                "requiresConfirmation": false,
+                "undoAvailable": true,
+                "replayed": false,
+                "userMessage": "已在 Outlook 中创建。"
+              }
+            }
+            """);
+
+        var result = await CallTool("create_event", new Dictionary<string, JsonElement>
+        {
+            ["calendarId"] = Json("\"cal-1\""),
+            ["title"] = Json("\"Demo\""),
+            ["dtStart"] = Json("\"2026-09-01T09:00:00Z\""),
+            ["dtEnd"] = Json("\"2026-09-01T10:00:00Z\""),
+        });
+
+        Assert.Equal(0, result!["code"]!.GetValue<int>());
+        Assert.Equal("W/\"etag-1\"", result["data"]!["outlookEtag"]!.GetValue<string>());
+        Assert.True(result["data"]!["undoAvailable"]!.GetValue<bool>());
+        Assert.False(result["data"]!["requiresConfirmation"]!.GetValue<bool>());
+    }
+
+    [Fact]
+    public async Task UpdateEvent_409_ExposesLatestSnapshotDirectly()
+    {
+        CreateExecutor(withWritePermission: true);
+        _routes["PUT /api/v1/calendar/events/e1"] = new(409,
+            """
+            {
+              "code": 0,
+              "message": "success",
+              "data": {
+                "status": "conflict",
+                "latestEvent": {"id": "e1", "title": "Latest Remote Subject"},
+                "latestEtag": "W/\"latest-etag\"",
+                "noChangesApplied": true,
+                "errorCode": "CONFLICT",
+                "errorMessage": "事件在 Outlook 中已被修改。",
+                "clientOperationId": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+                "requiresConfirmation": false,
+                "undoAvailable": false,
+                "userMessage": "请刷新后重新编辑。",
+                "replayed": false
+              }
+            }
+            """);
+
+        var result = await CallTool("update_event", new Dictionary<string, JsonElement>
+        {
+            ["eventId"] = Json("\"e1\""),
+            ["calendarId"] = Json("\"cal-1\""),
+            ["title"] = Json("\"Renamed\""),
+            ["dtStart"] = Json("\"2026-09-01T09:00:00Z\""),
+            ["dtEnd"] = Json("\"2026-09-01T10:00:00Z\""),
+            ["expectedEtag"] = Json("\"W/\\\"stale-etag\\\"\""),
+        });
+
+        Assert.Equal(409, result!["code"]!.GetValue<int>());
+        Assert.Contains("HTTP 409", result["error"]!.GetValue<string>());
+        Assert.Equal("Latest Remote Subject",
+            result["latestEvent"]!["title"]!.GetValue<string>());
+        Assert.Equal("W/\"latest-etag\"", result["latestEtag"]!.GetValue<string>());
+        Assert.True(result["noChangesApplied"]!.GetValue<bool>());
+        Assert.Equal("CONFLICT", result["errorCode"]!.GetValue<string>());
+        Assert.Equal("cccccccc-cccc-cccc-cccc-cccccccccccc",
+            result["clientOperationId"]!.GetValue<string>());
+        Assert.Equal("Latest Remote Subject",
+            result["details"]!["data"]!["latestEvent"]!["title"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public async Task CreateEvent_502_ExposesProviderFailureDirectly()
+    {
+        CreateExecutor(withWritePermission: true);
+        _routes["POST /api/v1/calendar/events"] = new(502,
+            """
+            {
+              "code": 2099,
+              "message": "Outlook 服务暂时不可用，请使用同一 clientOperationId 稍后重试。",
+              "data": {
+                "status": "error",
+                "errorCode": "PROVIDER_UNAVAILABLE",
+                "errorMessage": "Outlook 服务暂时不可用，请使用同一 clientOperationId 稍后重试。",
+                "clientOperationId": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+                "requiresConfirmation": false,
+                "undoAvailable": false,
+                "userMessage": "Outlook 服务暂时不可用，请使用同一 clientOperationId 稍后重试。",
+                "replayed": false,
+                "noChangesApplied": false
+              }
+            }
+            """);
+
+        var result = await CallTool("create_event", new Dictionary<string, JsonElement>
+        {
+            ["calendarId"] = Json("\"cal-1\""),
+            ["title"] = Json("\"Demo\""),
+            ["dtStart"] = Json("\"2026-09-01T09:00:00Z\""),
+            ["dtEnd"] = Json("\"2026-09-01T10:00:00Z\""),
+        });
+
+        Assert.Equal(502, result!["code"]!.GetValue<int>());
+        Assert.Equal("PROVIDER_UNAVAILABLE", result["errorCode"]!.GetValue<string>());
+        Assert.False(result["noChangesApplied"]!.GetValue<bool>());
+        Assert.Equal("cccccccc-cccc-cccc-cccc-cccccccccccc",
+            result["clientOperationId"]!.GetValue<string>());
+        Assert.Contains("clientOperationId", result["userMessage"]!.GetValue<string>());
+    }
+
+    [Fact]
     public async Task GetRecycleBin_MapsStartEndToDeletedRange()
     {
         CreateExecutor();
