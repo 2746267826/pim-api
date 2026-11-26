@@ -214,12 +214,25 @@ public sealed class OutlookEventWriteService
                 {
                     var eventId = original.ResultEventId
                         ?? throw new DomainException(02009, "原创建操作缺少日程 ID，无法撤销。");
+                    var createdEvent = await _db.Set<EventEntity>()
+                        .IgnoreQueryFilters()
+                        .FirstOrDefaultAsync(
+                            e => e.Id == eventId && e.Calendar.UserId == userId,
+                            ct)
+                        ?? throw new DomainException(02009, "原创建操作的日程已不存在，无法撤销。");
+                    // Graph returns type=seriesMaster for a create that carried an
+                    // RRule even though the request scope is instance. Undo must
+                    // delete the actual series instead of claiming an instance
+                    // delete that would fail or write the master by mistake.
+                    var undoScope = OutlookWriteTargetIdentity.IsSeriesMasterLike(createdEvent)
+                        ? "series"
+                        : original.Scope;
                     undoRequest = new OutlookWriteRequest(
                         "delete",
                         original.CalendarBindingId,
                         eventId,
                         null,
-                        original.Scope,
+                        undoScope,
                         undoClientOperationId,
                         ExpectedEtag: null);
                     break;
@@ -390,87 +403,93 @@ public sealed class OutlookEventWriteService
         {
             return await HandleReauthAsync(connection, batch, operation, binding.Name, "create");
         }
+        catch (OperationCanceledException oce) when (ct.IsCancellationRequested)
+        {
+            await FailBatchAsync(
+                batch, operation, oce, binding.Name, "create",
+                callerCancelled: true);
+            throw;
+        }
         catch (Exception ex) when (ex is not OutlookReauthenticationRequiredException)
         {
-            await FailBatchAsync(batch, operation, ex, binding.Name, "create");
-            throw;
+            return await FailBatchAsync(batch, operation, ex, binding.Name, "create");
         }
 
-        var graphId = graphResult.GetProperty("id").GetString()!;
-        var existingEvent = await _db.Set<EventEntity>()
-            .IgnoreQueryFilters()
-            .Where(e => e.OutlookConnectionId == connection.Id && e.OutlookEventId == graphId)
-            .FirstOrDefaultAsync(CancellationToken.None);
-
-        var localEvent = existingEvent ?? new EventEntity();
-        var generation = Guid.NewGuid();
-        try
-        {
-            OutlookEventMapper.ApplyGraphEvent(
-                localEvent, graphResult, binding.Id, binding.PimCalendarId,
-                connection.Id, generation);
-        }
-        catch (Exception ex)
-        {
-            if (existingEvent is not null)
-                _db.Entry(existingEvent).Reload();
-            await MarkOutcomeUnknownAsync(operation, batch, ex, binding.Name, "create");
-            throw;
-        }
-
+        OutlookWriteResult result;
+        EventEntity localEvent;
         var now = _timeProvider.GetUtcNow();
-        if (existingEvent is not null)
-        {
-            existingEvent.DeletedAt = null;
-            existingEvent.DeletedByOperationId = null;
-            existingEvent.DeletedByOperationKind = null;
-            existingEvent.UpdatedAt = now;
-            existingEvent.DtStamp = now;
-        }
-        else
-        {
-            localEvent.CreatedAt = now;
-            localEvent.UpdatedAt = now;
-            localEvent.DtStamp = now;
-            _db.Set<EventEntity>().Add(localEvent);
-        }
-
-        // Outlook/Graph attachments stay provider-read-only: persist the
-        // validated native pimFile references plus the target's existing
-        // outlook references; never store client-supplied outlook refs.
-        localEvent.AttachmentReferencesJson =
-            MergeAttachmentReferences(draftPimFileReferences, localEvent.AttachmentReferencesJson);
-
-        // 工单 04：is_muted 是 PIM 原生字段（Graph 事件没有对应属性，BuildWritePayload 也不会下发），
-        // 因此只能由草稿显式落到本地实体 —— 否则 Outlook 日历下的日程没法设置「期间静音」。
-        localEvent.IsMuted = request.Draft.IsMuted;
-
-        var steps = new List<BatchStepEntry>
-        {
-            new("graph-create", "success", now),
-            new("persist-local", "success", now)
-        };
-        operation.EventId = localEvent.Id;
-        operation.ResultEventId = localEvent.Id;
-        operation.ResultStatus = "created";
-        operation.UndoState = operation.UndoOfOperationId is null ? "available" : "unavailable";
-        var result = BuildSuccessResult(operation, "created", localEvent);
-        operation.ResultJson = SerializeResult(result);
-        operation.State = "completed";
-        operation.ErrorCode = null;
-        operation.ErrorMessage = null;
-        operation.CompletedAt = now;
-        operation.UpdatedAt = now;
-        SetBatchSummary(batch, binding.Name, "create", "completed", localEvent.Id, localEvent.Title,
-            1, 0, 0, 0, binding.Id, steps);
         try
         {
+            var graphId = graphResult.GetProperty("id").GetString()!;
+            var existingEvent = await _db.Set<EventEntity>()
+                .IgnoreQueryFilters()
+                .Where(e => e.OutlookConnectionId == connection.Id && e.OutlookEventId == graphId)
+                .FirstOrDefaultAsync(CancellationToken.None);
+
+            localEvent = existingEvent ?? new EventEntity();
+            var generation = Guid.NewGuid();
+            try
+            {
+                OutlookEventMapper.ApplyGraphEvent(
+                    localEvent, graphResult, binding.Id, binding.PimCalendarId,
+                    connection.Id, generation);
+            }
+            catch
+            {
+                if (existingEvent is not null)
+                    _db.Entry(existingEvent).Reload();
+                throw;
+            }
+
+            if (existingEvent is not null)
+            {
+                existingEvent.DeletedAt = null;
+                existingEvent.DeletedByOperationId = null;
+                existingEvent.DeletedByOperationKind = null;
+                existingEvent.UpdatedAt = now;
+                existingEvent.DtStamp = now;
+            }
+            else
+            {
+                localEvent.CreatedAt = now;
+                localEvent.UpdatedAt = now;
+                localEvent.DtStamp = now;
+                _db.Set<EventEntity>().Add(localEvent);
+            }
+
+            // Outlook/Graph attachments stay provider-read-only: persist the
+            // validated native pimFile references plus the target's existing
+            // outlook references; never store client-supplied outlook refs.
+            localEvent.AttachmentReferencesJson =
+                MergeAttachmentReferences(draftPimFileReferences, localEvent.AttachmentReferencesJson);
+
+            // 工单 04：is_muted 是 PIM 原生字段（Graph 事件没有对应属性，BuildWritePayload 也不会下发），
+            // 因此只能由草稿显式落到本地实体 —— 否则 Outlook 日历下的日程没法设置「期间静音」。
+            localEvent.IsMuted = request.Draft.IsMuted;
+
+            var steps = new List<BatchStepEntry>
+            {
+                new("graph-create", "success", now),
+                new("persist-local", "success", now)
+            };
+            operation.EventId = localEvent.Id;
+            operation.ResultEventId = localEvent.Id;
+            operation.ResultStatus = "created";
+            operation.UndoState = operation.UndoOfOperationId is null ? "available" : "unavailable";
+            result = BuildSuccessResult(operation, "created", localEvent);
+            operation.ResultJson = SerializeResult(result);
+            operation.State = "completed";
+            operation.ErrorCode = null;
+            operation.ErrorMessage = null;
+            operation.CompletedAt = now;
+            operation.UpdatedAt = now;
+            SetBatchSummary(batch, binding.Name, "create", "completed", localEvent.Id, localEvent.Title,
+                1, 0, 0, 0, binding.Id, steps);
             await _db.SaveChangesAsync(CancellationToken.None);
         }
         catch (Exception ex)
         {
-            await MarkOutcomeUnknownAsync(operation, batch, ex, binding.Name, "create");
-            throw;
+            return await MarkOutcomeUnknownAsync(operation, batch, ex, binding.Name, "create");
         }
 
         await AuditSuccessAsync(
@@ -520,19 +539,69 @@ public sealed class OutlookEventWriteService
 
         var graphTargetId = target.GraphTargetId;
         var payload = OutlookEventMapper.BuildWritePayload(request.Draft, null);
-        var outcomeUnknown = false;
         var conflictEvent = target.IsSyntheticOccurrence
             ? new EventEntity { Id = request.EventId ?? localEvent.Id }
             : localEvent;
 
+        JsonElement graphResult;
         try
         {
             var expectedEtag = await ResolveWriteEtagAsync(
                 binding, target.EtagEntity, request.Scope, request.ExpectedEtag, ct);
-            var graphResult = await _graph.UpdateEventAsync(
+            graphResult = await _graph.UpdateEventAsync(
                 connection.Id, binding.GraphCalendarId, graphTargetId,
                 expectedEtag, payload, ct);
+        }
+        catch (OutlookReauthenticationRequiredException)
+        {
+            return await HandleReauthAsync(
+                connection, batch, operation, binding.Name, "update", localEvent.Id, localEvent.Title);
+        }
+        catch (GraphRequestException ex) when (ex.StatusCode is HttpStatusCode.PreconditionFailed or HttpStatusCode.Conflict)
+        {
+            try
+            {
+                return await HandleConflictAsync(
+                    binding, conflictEvent, binding.GraphCalendarId, graphTargetId, batch, operation,
+                    binding.Name, "update", ct);
+            }
+            catch (OutlookReauthenticationRequiredException)
+            {
+                return await HandleReauthAsync(
+                    connection, batch, operation, binding.Name, "update", conflictEvent.Id, conflictEvent.Title);
+            }
+            catch (OperationCanceledException oce) when (ct.IsCancellationRequested)
+            {
+                await FailBatchAsync(
+                    batch, operation, oce, binding.Name, "update",
+                    conflictEvent.Id, conflictEvent.Title,
+                    callerCancelled: true,
+                    noChangesAppliedOverride: true);
+                throw;
+            }
+            catch (Exception conflictEx)
+            {
+                return await FailBatchAsync(
+                    batch, operation, conflictEx, binding.Name, "update",
+                    conflictEvent.Id, conflictEvent.Title,
+                    noChangesAppliedOverride: true);
+            }
+        }
+        catch (OperationCanceledException oce) when (ct.IsCancellationRequested)
+        {
+            await FailBatchAsync(
+                batch, operation, oce, binding.Name, "update",
+                localEvent.Id, localEvent.Title, callerCancelled: true);
+            throw;
+        }
+        catch (Exception ex)
+        {
+            return await FailBatchAsync(
+                batch, operation, ex, binding.Name, "update", localEvent.Id, localEvent.Title);
+        }
 
+        try
+        {
             var resultGraphId = graphResult.GetProperty("id").GetString()!;
             EventEntity targetEntity;
             bool isNewEntity = false;
@@ -665,17 +734,7 @@ public sealed class OutlookEventWriteService
             operation.UpdatedAt = operation.CompletedAt.Value;
             SetBatchSummary(batch, binding.Name, "update", "completed",
                 targetEntity.Id, targetEntity.Title, 0, 1, 0, 0, binding.Id, steps);
-            try
-            {
-                await _db.SaveChangesAsync(CancellationToken.None);
-            }
-            catch (Exception ex)
-            {
-                outcomeUnknown = true;
-                await MarkOutcomeUnknownAsync(
-                    operation, batch, ex, binding.Name, "update", targetEntity.Id, targetEntity.Title);
-                throw;
-            }
+            await _db.SaveChangesAsync(CancellationToken.None);
 
             await AuditSuccessAsync(
                 userId, operation.UndoOfOperationId is null ? "outlook.event.update" : "outlook.event.undo",
@@ -683,36 +742,10 @@ public sealed class OutlookEventWriteService
 
             return result;
         }
-        catch (OutlookReauthenticationRequiredException)
+        catch (Exception ex)
         {
-            return await HandleReauthAsync(
-                connection, batch, operation, binding.Name, "update", localEvent.Id, localEvent.Title);
-        }
-        catch (GraphRequestException ex) when (ex.StatusCode is HttpStatusCode.PreconditionFailed or HttpStatusCode.Conflict)
-        {
-            try
-            {
-                return await HandleConflictAsync(
-                    binding, conflictEvent, binding.GraphCalendarId, graphTargetId, batch, operation,
-                    binding.Name, "update", ct);
-            }
-            catch (OperationCanceledException oce)
-            {
-                await FailBatchAsync(
-                    batch, operation, oce, binding.Name, "update", conflictEvent.Id, conflictEvent.Title);
-                throw;
-            }
-            catch (OutlookReauthenticationRequiredException)
-            {
-                return await HandleReauthAsync(
-                    connection, batch, operation, binding.Name, "update", conflictEvent.Id, conflictEvent.Title);
-            }
-        }
-        catch (Exception ex) when (ex is not OutlookReauthenticationRequiredException && !outcomeUnknown)
-        {
-            await FailBatchAsync(
-                batch, operation, ex, binding.Name, "update", localEvent.Id, localEvent.Title);
-            throw;
+            return await MarkOutcomeUnknownAsync(
+                operation, batch, ex, binding.Name, "update", localEvent.Id, localEvent.Title);
         }
     }
 
@@ -775,23 +808,39 @@ public sealed class OutlookEventWriteService
                     binding, conflictEvent, binding.GraphCalendarId, graphTargetId, batch, operation,
                     binding.Name, "delete", ct);
             }
-            catch (OperationCanceledException oce)
-            {
-                await FailBatchAsync(
-                    batch, operation, oce, binding.Name, "delete", conflictEvent.Id, conflictEvent.Title);
-                throw;
-            }
             catch (OutlookReauthenticationRequiredException)
             {
                 return await HandleReauthAsync(
                     connection, batch, operation, binding.Name, "delete", conflictEvent.Id, conflictEvent.Title);
             }
+            catch (OperationCanceledException oce) when (ct.IsCancellationRequested)
+            {
+                await FailBatchAsync(
+                    batch, operation, oce, binding.Name, "delete",
+                    conflictEvent.Id, conflictEvent.Title,
+                    callerCancelled: true,
+                    noChangesAppliedOverride: true);
+                throw;
+            }
+            catch (Exception conflictEx)
+            {
+                return await FailBatchAsync(
+                    batch, operation, conflictEx, binding.Name, "delete",
+                    conflictEvent.Id, conflictEvent.Title,
+                    noChangesAppliedOverride: true);
+            }
         }
-        catch (Exception ex) when (ex is not OutlookReauthenticationRequiredException)
+        catch (OperationCanceledException oce) when (ct.IsCancellationRequested)
         {
             await FailBatchAsync(
-                batch, operation, ex, binding.Name, "delete", localEvent.Id, localEvent.Title);
+                batch, operation, oce, binding.Name, "delete",
+                localEvent.Id, localEvent.Title, callerCancelled: true);
             throw;
+        }
+        catch (Exception ex)
+        {
+            return await FailBatchAsync(
+                batch, operation, ex, binding.Name, "delete", localEvent.Id, localEvent.Title);
         }
 
         int affectedCount;
@@ -940,16 +989,21 @@ public sealed class OutlookEventWriteService
         return result;
     }
 
-    private async Task<EventEntity> LoadEventAsync(Guid eventId, Guid userId, CancellationToken ct)
+    private async Task<EventEntity?> FindEventAsync(Guid eventId, Guid userId, CancellationToken ct)
     {
         var evt = await _db.Set<EventEntity>()
             .Include(e => e.Calendar)
-            .FirstOrDefaultAsync(e => e.Id == eventId && e.Calendar.UserId == userId, ct)
-            ?? throw new DomainException(02009, "事件不存在。");
+            .FirstOrDefaultAsync(e => e.Id == eventId && e.Calendar.UserId == userId, ct);
+        if (evt is null)
+            return null;
         if (evt.Calendar.DeletedAt is not null)
             throw new DomainException(02009, "事件所属日历已被删除。");
         return evt;
     }
+
+    private async Task<EventEntity> LoadEventAsync(Guid eventId, Guid userId, CancellationToken ct)
+        => await FindEventAsync(eventId, userId, ct)
+            ?? throw new DomainException(02009, "事件不存在。");
 
     private sealed record WriteTarget(
         EventEntity LocalEvent,
@@ -975,16 +1029,30 @@ public sealed class OutlookEventWriteService
         OutlookWriteRequest request,
         CancellationToken ct)
     {
-        EventEntity? localEvent = null;
-        if (request.OriginalEventId is { } original && original != Guid.Empty)
-        {
-            try { localEvent = await LoadEventAsync(original, userId, ct); }
-            catch (DomainException) { localEvent = null; }
-        }
-        if (localEvent is null && request.EventId is { } eventId)
-            localEvent = await LoadEventAsync(eventId, userId, ct);
-        if (localEvent is null)
+        if (request.EventId is not { } requestedEventId)
             throw new DomainException(02009, "事件不存在。");
+
+        // Expanded occurrence ids are derived and intentionally absent from the
+        // events table. A null result is only the not-found case; a deleted
+        // calendar must still fail closed instead of being treated as synthetic.
+        var localEvent = await FindEventAsync(requestedEventId, userId, ct);
+
+        EventEntity? originalEvent = null;
+        if (request.OriginalEventId is { } originalId && originalId != Guid.Empty)
+        {
+            originalEvent = await FindEventAsync(originalId, userId, ct)
+                ?? throw new DomainException(
+                    02009,
+                    "originalEventId 对应的事件不存在或不属于当前用户。");
+        }
+
+        OutlookWriteTargetIdentity.Validate(
+            requestedEventId,
+            localEvent,
+            originalEvent,
+            request.Scope,
+            request.RecurrenceId ?? request.Draft?.RecurrenceId);
+        localEvent ??= originalEvent!;
 
         ValidateEventBinding(localEvent, binding.Id);
 
@@ -1414,7 +1482,7 @@ public sealed class OutlookEventWriteService
     {
         async Task<OutlookWriteResult> FailConflictResolveAsync(
             string errorCode, string errorMessage, string resultCode, string resultMessage,
-            string step, string stepStatus)
+            string step, string stepStatus, string status = "error")
         {
             var now = _timeProvider.GetUtcNow();
             batch.Status = "failed";
@@ -1430,7 +1498,7 @@ public sealed class OutlookEventWriteService
                 new { step, status = stepStatus, timestamp = now }
             });
             var failedResult = new OutlookWriteResult(
-                "error", null, null, null, resultCode, resultMessage,
+                status, null, null, null, resultCode, resultMessage,
                 operationRecord.ClientOperationId, false, false, resultMessage,
                 NoChangesApplied: true);
             operationRecord.State = "failed";
@@ -1460,7 +1528,8 @@ public sealed class OutlookEventWriteService
         {
             return await FailConflictResolveAsync(
                 "conflict-resolve-failed", "Failed to retrieve latest event from Graph.",
-                "CONFLICT_RESOLVE_FAILED", "冲突后获取最新数据失败。",
+                "CONFLICT_RESOLVE_FAILED",
+                "冲突后获取最新数据失败，请使用同一 clientOperationId 稍后重试。",
                 "conflict-fetch", "failed");
         }
 
@@ -1468,8 +1537,8 @@ public sealed class OutlookEventWriteService
         {
             return await FailConflictResolveAsync(
                 "conflict-resolve-not-found", "Latest event not found on Graph.",
-                "CONFLICT_EVENT_MISSING", "冲突后最新事件在远端已不存在。",
-                "conflict-fetch", "not-found");
+                "GRAPH_EVENT_NOT_FOUND", "冲突后最新事件在远端已不存在，请刷新日程列表。",
+                "conflict-fetch", "not-found", status: "not-found");
         }
 
         EventResponse? latestEvent;
@@ -1524,7 +1593,8 @@ public sealed class OutlookEventWriteService
         {
             return await FailConflictResolveAsync(
                 "conflict-resolve-failed", "Failed to resolve latest event from Graph.",
-                "CONFLICT_RESOLVE_FAILED", "冲突后获取最新数据失败。",
+                "CONFLICT_RESOLVE_FAILED",
+                "冲突后获取最新数据失败，请使用同一 clientOperationId 稍后重试。",
                 "conflict-fetch", "failed");
         }
 
@@ -1674,9 +1744,116 @@ public sealed class OutlookEventWriteService
         return batch;
     }
 
-    private async Task FailBatchAsync(
+    private sealed record FailureClassification(
+        string Status, string ErrorCode, string UserMessage,
+        bool NoChangesApplied, string State);
+
+    /// <summary>
+    /// Maps provider/local failures to a sanitized receipt. Deterministic Graph
+    /// rejections are not reported as provider-unavailable 502s, and retry hints
+    /// are only emitted for 429/5xx/network/timeout.
+    /// </summary>
+    private static FailureClassification ClassifyFailure(
+        Exception ex, bool callerCancelled)
+    {
+        if (callerCancelled)
+        {
+            return new(
+                "error",
+                "CANCELLED",
+                "写回请求已被调用方取消；未完成的写入可稍后重试。",
+                NoChangesApplied: false,
+                State: "failed");
+        }
+
+        if (ex is GraphRequestException grex && grex.StatusCode is { } statusCode)
+        {
+            var code = (int)statusCode;
+            return code switch
+            {
+                400 => new(
+                    "invalid-request",
+                    "GRAPH_BAD_REQUEST",
+                    "Outlook 拒绝了该写回请求，请检查日程内容后重新提交。",
+                    NoChangesApplied: true,
+                    State: "failed"),
+                403 => new(
+                    "forbidden",
+                    "GRAPH_FORBIDDEN",
+                    "当前 Microsoft 账户没有修改该日历的权限，请在 Outlook 中检查日历权限。",
+                    NoChangesApplied: true,
+                    State: "failed"),
+                404 => new(
+                    "not-found",
+                    "GRAPH_EVENT_NOT_FOUND",
+                    "Outlook 中已不存在目标任务，请刷新后重试。",
+                    NoChangesApplied: true,
+                    State: "failed"),
+                409 or 412 => new(
+                    "conflict",
+                    "CONFLICT",
+                    "事件在 Outlook 中已被修改，请刷新后重新编辑；系统不会静默覆盖远端改动。",
+                    NoChangesApplied: true,
+                    State: "conflict"),
+                408 => new(
+                    "unknown",
+                    "PROVIDER_TIMEOUT",
+                    "Outlook 请求超时，远端结果未知。请使用同一 clientOperationId 重试，或先在 Outlook 核对。",
+                    NoChangesApplied: false,
+                    State: "failed"),
+                429 => new(
+                    "error",
+                    "PROVIDER_RATE_LIMITED",
+                    "Outlook 请求过于频繁，请使用同一 clientOperationId 稍后重试。",
+                    NoChangesApplied: false,
+                    State: "failed"),
+                >= 500 => new(
+                    "error",
+                    "PROVIDER_UNAVAILABLE",
+                    "Outlook 服务暂时不可用，请使用同一 clientOperationId 稍后重试。",
+                    NoChangesApplied: false,
+                    State: "failed"),
+                _ => new(
+                    "invalid-request",
+                    "GRAPH_REQUEST_REJECTED",
+                    $"Outlook 拒绝了该写回请求（HTTP {code}），请检查日程内容后重新提交。",
+                    NoChangesApplied: true,
+                    State: "failed")
+            };
+        }
+
+        if (ex is OperationCanceledException)
+        {
+            return new(
+                "unknown",
+                "PROVIDER_TIMEOUT",
+                "Outlook 请求超时，远端结果未知。请使用同一 clientOperationId 重试，或先在 Outlook 核对。",
+                NoChangesApplied: false,
+                State: "failed");
+        }
+
+        if (ex is HttpRequestException)
+        {
+            return new(
+                "error",
+                "PROVIDER_UNAVAILABLE",
+                "Outlook 服务暂时不可用，请使用同一 clientOperationId 稍后重试。",
+                NoChangesApplied: false,
+                State: "failed");
+        }
+
+        return new(
+            "unknown",
+            "WRITEBACK_FAILED",
+            "Outlook 写回未完成，远端结果未知。请使用同一 clientOperationId 重试，或先在 Outlook 核对。",
+            NoChangesApplied: false,
+            State: "failed");
+    }
+
+    private async Task<OutlookWriteResult> FailBatchAsync(
         OutlookSyncBatchEntity batch, OutlookWritebackOperationEntity operationRecord, Exception ex,
-        string calendarName, string operation, Guid? eventId = null, string? eventTitle = null)
+        string calendarName, string operation, Guid? eventId = null, string? eventTitle = null,
+        bool callerCancelled = false, bool? noChangesAppliedOverride = null)
     {
         var now = _timeProvider.GetUtcNow();
         batch.Status = "failed";
@@ -1684,26 +1861,10 @@ public sealed class OutlookEventWriteService
         batch.FinishedAt = now;
         batch.UpdatedAt = now;
         batch.ConfirmationCount = 0;
-        string code;
-        string message;
-        if (ex is GraphRequestException grex)
-        {
-            code = $"graph-{(int)grex.StatusCode!.Value}";
-            message = "Outlook 暂时无法完成写回，请使用同一 clientOperationId 稍后重试。";
-            SetBatchError(batch, code, "Graph write request failed.");
-        }
-        else if (ex is OperationCanceledException)
-        {
-            code = "cancelled";
-            message = "写回请求已取消，可安全地使用同一 clientOperationId 重试。";
-            SetBatchError(batch, code, "Writeback request was cancelled.");
-        }
-        else
-        {
-            code = "unknown";
-            message = "Outlook 写回失败，请使用同一 clientOperationId 重试。";
-            SetBatchError(batch, code, "An unexpected error occurred.");
-        }
+        var failure = ClassifyFailure(ex, callerCancelled);
+        if (noChangesAppliedOverride is { } noChangesApplied)
+            failure = failure with { NoChangesApplied = noChangesApplied };
+        SetBatchError(batch, failure.ErrorCode, "Outlook writeback request failed.");
 
         PopulateBatchHistory(batch, calendarName, operation, "failed", eventId, eventTitle,
             0, 0, 0, 0, 1, GetBindingIdFromBatch(batch));
@@ -1712,11 +1873,12 @@ public sealed class OutlookEventWriteService
             new { step = $"graph-{operation}", status = "failed", timestamp = now }
         });
         var result = new OutlookWriteResult(
-            "error", null, null, null, code.ToUpperInvariant(), message,
-            operationRecord.ClientOperationId, false, false, message);
-        operationRecord.State = "failed";
-        operationRecord.ErrorCode = code;
-        operationRecord.ErrorMessage = message;
+            failure.Status, null, null, null, failure.ErrorCode, failure.UserMessage,
+            operationRecord.ClientOperationId, false, false, failure.UserMessage,
+            NoChangesApplied: failure.NoChangesApplied);
+        operationRecord.State = failure.State;
+        operationRecord.ErrorCode = failure.ErrorCode;
+        operationRecord.ErrorMessage = failure.UserMessage;
         operationRecord.ResultJson = SerializeResult(result);
         operationRecord.UpdatedAt = now;
         operationRecord.CompletedAt = null;
@@ -1728,9 +1890,11 @@ public sealed class OutlookEventWriteService
         {
             _logger.LogWarning(saveEx, "Failed to persist failure history for batch {BatchId}", batch.Id);
         }
+
+        return result;
     }
 
-    private async Task MarkOutcomeUnknownAsync(
+    private async Task<OutlookWriteResult> MarkOutcomeUnknownAsync(
         OutlookWritebackOperationEntity operationRecord,
         OutlookSyncBatchEntity batch,
         Exception ex,
@@ -1754,7 +1918,7 @@ public sealed class OutlookEventWriteService
         });
 
         var result = new OutlookWriteResult(
-            "conflict",
+            "unknown",
             null,
             null,
             null,
@@ -1763,7 +1927,8 @@ public sealed class OutlookEventWriteService
             operationRecord.ClientOperationId,
             false,
             false,
-            "Outlook 可能已经写入，但本地保存失败。请先在 Outlook 核对，勿直接重复提交。");
+            "Outlook 可能已经写入，但本地保存失败。请先在 Outlook 核对，勿直接重复提交。",
+            NoChangesApplied: false);
         operationRecord.State = "unknown";
         operationRecord.ErrorCode = "OPERATION_OUTCOME_UNKNOWN";
         operationRecord.ErrorMessage = result.ErrorMessage;
@@ -1811,6 +1976,8 @@ public sealed class OutlookEventWriteService
                 "Failed to persist unknown outcome for writeback operation {OperationRecordId}",
                 operationRecord.Id);
         }
+
+        return result;
     }
 
     /// <summary>
@@ -1997,11 +2164,12 @@ public sealed class OutlookEventWriteService
 
     private static OutlookWriteResult OutcomeUnknown(OutlookWritebackOperationEntity operation)
         => new(
-            "conflict",
+            "unknown",
             ErrorCode: "OPERATION_OUTCOME_UNKNOWN",
             ErrorMessage: "该操作的上一次结果未知。请先在 Outlook 核对，勿直接重复提交。",
             ClientOperationId: operation.ClientOperationId,
-            UserMessage: "该操作的上一次结果未知。请先在 Outlook 核对，勿直接重复提交。");
+            UserMessage: "该操作的上一次结果未知。请先在 Outlook 核对，勿直接重复提交。",
+            NoChangesApplied: false);
 
     private static OutlookWriteResult ReplayCached(OutlookWritebackOperationEntity operation)
     {
@@ -2046,11 +2214,20 @@ public sealed class OutlookEventWriteService
         EventEntity? entity)
     {
         var undoAvailable = operation.UndoState == "available";
+        var isSeries = entity is not null && OutlookWriteTargetIdentity.IsSeriesMasterLike(entity);
         var message = status switch
         {
-            "created" => "已在 Outlook 中创建。",
-            "updated" => "已写回 Outlook。",
-            "deleted" => $"已从 Outlook 删除；clientOperationId={operation.ClientOperationId:D}。",
+            "created" => isSeries
+                ? "已在 Outlook 中创建重复日程系列；如需撤销，将删除整个系列。"
+                : "已在 Outlook 中创建。",
+            "updated" => operation.Scope == "series"
+                ? "已写回 Outlook 整个重复日程系列。"
+                : "已写回 Outlook。",
+            "deleted" => undoAvailable
+                ? "已从 Outlook 删除；可使用 clientOperationId 调用撤销端点恢复。"
+                : operation.Scope == "series"
+                    ? "已删除整个 Outlook 重复日程系列（含后续发生项），不提供自动撤销。"
+                    : "已删除本次 Outlook 重复日程发生项，不提供自动撤销。",
             _ => "Outlook 写回完成。"
         };
         var eventResponse = entity is null

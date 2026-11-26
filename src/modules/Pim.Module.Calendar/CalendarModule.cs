@@ -676,6 +676,8 @@ public class CalendarModule : IModule
         })
         .Produces<ApiResponse<EventResponse>>(201)
         .Produces<ApiResponse<EventResponse>>(200)
+        .Produces<ApiResponse<OutlookWriteResult>>(403)
+        .Produces<ApiResponse<OutlookWriteResult>>(404)
         .Produces<ApiResponse<OutlookWriteResult>>(409)
         .Produces<ApiResponse<OutlookWriteResult>>(502)
         .Produces(401)
@@ -735,6 +737,8 @@ public class CalendarModule : IModule
             return Results.Ok(ApiResponse<EventResponse>.Ok(await svc.UpdateEventAsync(id, req, scope, originalEventId, ct)));
         })
         .Produces<ApiResponse<EventResponse>>(200)
+        .Produces<ApiResponse<OutlookWriteResult>>(403)
+        .Produces<ApiResponse<OutlookWriteResult>>(404)
         .Produces<ApiResponse<OutlookWriteResult>>(409)
         .Produces<ApiResponse<OutlookWriteResult>>(502)
         .Produces(401)
@@ -766,24 +770,21 @@ public class CalendarModule : IModule
                 expectedEtag,
                 ct);
             if (outlookResult is not null)
-            {
-                if (outlookResult.Status is "conflict" or "error" or "reauth-required")
-                    return MapOutlookWriteResult(outlookResult, created: false);
-                var undoHint = outlookResult.UndoAvailable
-                    ? "可在 Outlook 写回撤销端点恢复。"
-                    : "本次为重复日程的单次删除，不提供自动撤销。";
-                return Results.Ok(ApiResponse<string>.Ok(
-                    $"已从 Outlook 删除；clientOperationId={outlookResult.ClientOperationId:D}；{undoHint}"));
-            }
+                return MapOutlookOperationResult(outlookResult);
 
             await svc.DeleteEventAsync(id, scope, recurrenceId, originalEventId, ct);
-            return Results.Ok(ApiResponse<string>.Ok("已删除"));
+            return Results.Ok(ApiResponse<OutlookWriteResult>.Ok(new OutlookWriteResult(
+                "deleted",
+                UserMessage: "已删除。",
+                NoChangesApplied: false)));
         })
-        .Produces<ApiResponse<string>>(200)
+        .Produces<ApiResponse<OutlookWriteResult>>(200)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<OutlookWriteResult>>(403)
+        .Produces<ApiResponse<OutlookWriteResult>>(404)
         .Produces<ApiResponse<OutlookWriteResult>>(409)
         .Produces<ApiResponse<OutlookWriteResult>>(502)
         .Produces(401)
-        .Produces<ApiResponse<string>>(400)
         .Produces<ApiResponse<string>>(500);
 
         group.MapPost("/events/{id:guid}/restore", async (
@@ -1638,10 +1639,8 @@ public class CalendarModule : IModule
 
     private static IResult MapOutlookWriteResult(OutlookWriteResult result, bool created)
     {
-        if (result.Status is "conflict" or "reauth-required")
-            return Results.Conflict(ApiResponse<OutlookWriteResult>.Ok(result));
-        if (result.Status == "error")
-            return MapProviderUnavailable(result);
+        if (result.Status is not ("created" or "updated"))
+            return MapOutlookOperationResult(result);
 
         if (result.Event is null)
             return Results.Json(
@@ -1658,30 +1657,31 @@ public class CalendarModule : IModule
     {
         if (result.Status is "conflict" or "reauth-required")
             return Results.Conflict(ApiResponse<OutlookWriteResult>.Ok(result));
-        if (result.Status == "error")
-            return MapProviderUnavailable(result);
+        if (result.Status == "invalid-request")
+            return MapOutlookError(result, StatusCodes.Status400BadRequest);
+        if (result.Status == "forbidden")
+            return MapOutlookError(result, StatusCodes.Status403Forbidden);
+        if (result.Status == "not-found")
+            return MapOutlookError(result, StatusCodes.Status404NotFound);
+        if (result.Status is "error" or "unknown")
+            return MapOutlookError(result, StatusCodes.Status502BadGateway);
         return Results.Ok(ApiResponse<OutlookWriteResult>.Ok(result));
     }
 
-    /// <summary>
-    /// 兼容端点原有契约：只有冲突返回 409，其余业务结果维持 200；
-    /// provider 异常仍统一映射为脱敏 502，方便客户端使用同一 clientOperationId 重试。
-    /// </summary>
     private static IResult MapLegacyOutlookWriteResult(OutlookWriteResult result)
-    {
-        if (result.Status == "conflict" || result.ErrorCode == "CONFLICT")
-            return Results.Conflict(ApiResponse<OutlookWriteResult>.Ok(result));
-        return Results.Ok(ApiResponse<OutlookWriteResult>.Ok(result));
-    }
+        => MapOutlookOperationResult(result);
 
     private static IResult MapProviderUnavailable(OutlookWriteResult result)
+        => MapOutlookError(result, StatusCodes.Status502BadGateway);
+
+    private static IResult MapOutlookError(OutlookWriteResult result, int statusCode)
         => Results.Json(
             new ApiResponse<OutlookWriteResult>(
                 02099,
-                result.ErrorMessage ?? "Outlook 写回失败。",
+                result.UserMessage ?? result.ErrorMessage ?? "Outlook 写回失败。",
                 result,
                 DateTimeOffset.UtcNow),
-            statusCode: StatusCodes.Status502BadGateway);
+            statusCode: statusCode);
 
     private static OutlookWriteResult ProviderUnavailable(Guid clientOperationId)
         => new(
@@ -1689,7 +1689,8 @@ public class CalendarModule : IModule
             ErrorCode: "PROVIDER_UNAVAILABLE",
             ErrorMessage: "Outlook 服务暂时不可用，请使用同一 clientOperationId 稍后重试。",
             ClientOperationId: clientOperationId == Guid.Empty ? null : clientOperationId,
-            UserMessage: "Outlook 服务暂时不可用，请使用同一 clientOperationId 稍后重试。");
+            UserMessage: "Outlook 服务暂时不可用，请使用同一 clientOperationId 稍后重试。",
+            NoChangesApplied: false);
 
     private static OutlookSettingsResponse MapSettings(OutlookConnectionEntity? connection)
     {

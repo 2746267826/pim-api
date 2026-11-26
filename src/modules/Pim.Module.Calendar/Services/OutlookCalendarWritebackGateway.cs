@@ -69,7 +69,9 @@ public sealed class OutlookCalendarWritebackGateway
         string? expectedEtag,
         CancellationToken ct)
     {
-        var entity = await ResolveEventAsync(userId, eventId, scope, originalEventId, ct);
+        var effectiveRecurrenceId = recurrenceId ?? request.RecurrenceId;
+        var entity = await ResolveEventAsync(
+            userId, eventId, scope, originalEventId, effectiveRecurrenceId, ct);
         if (entity is null)
         {
             return await _writeService.TryReplayWithoutEventAsync(
@@ -103,7 +105,7 @@ public sealed class OutlookCalendarWritebackGateway
                 clientOperationId,
                 ExpectedEtag: expectedEtag,
                 OriginalEventId: originalEventId,
-                RecurrenceId: recurrenceId),
+                RecurrenceId: effectiveRecurrenceId),
             clientOperationId,
             ct);
     }
@@ -118,7 +120,8 @@ public sealed class OutlookCalendarWritebackGateway
         string? expectedEtag,
         CancellationToken ct)
     {
-        var entity = await ResolveEventAsync(userId, eventId, scope, originalEventId, ct);
+        var entity = await ResolveEventAsync(
+            userId, eventId, scope, originalEventId, recurrenceId, ct);
         if (entity is null)
         {
             return await _writeService.TryReplayWithoutEventAsync(
@@ -155,38 +158,37 @@ public sealed class OutlookCalendarWritebackGateway
         Guid eventId,
         string? scope,
         Guid? originalEventId,
+        string? recurrenceId,
         CancellationToken ct)
     {
-        var hasOriginal = originalEventId is { } original && original != Guid.Empty;
-        var isSeriesScope = string.Equals(scope, "series", StringComparison.OrdinalIgnoreCase);
-
-        if (hasOriginal && isSeriesScope)
-        {
-            var series = await _db.Set<EventEntity>()
-                .Include(e => e.Calendar)
-                .FirstOrDefaultAsync(
-                    e => e.Id == originalEventId!.Value && e.Calendar.UserId == userId,
-                    ct);
-            if (series is not null)
-                return series;
-        }
-
-        var entity = await _db.Set<EventEntity>()
+        var urlEntity = await _db.Set<EventEntity>()
             .Include(e => e.Calendar)
             .FirstOrDefaultAsync(e => e.Id == eventId && e.Calendar.UserId == userId, ct);
-        if (entity is not null)
-            return entity;
 
-        if (hasOriginal)
+        EventEntity? originalEvent = null;
+        if (originalEventId is { } original && original != Guid.Empty)
         {
-            return await _db.Set<EventEntity>()
+            originalEvent = await _db.Set<EventEntity>()
                 .Include(e => e.Calendar)
                 .FirstOrDefaultAsync(
-                    e => e.Id == originalEventId!.Value && e.Calendar.UserId == userId,
+                    e => e.Id == original && e.Calendar.UserId == userId,
                     ct);
+            if (originalEvent is null)
+            {
+                throw new DomainException(
+                    02009,
+                    "originalEventId 对应的事件不存在或不属于当前用户。");
+            }
         }
 
-        return entity;
+        // A missing event with no originalEventId stays nullable so the caller can
+        // replay a completed delete receipt for the same clientOperationId.
+        if (originalEvent is null)
+            return urlEntity;
+
+        OutlookWriteTargetIdentity.Validate(
+            eventId, urlEntity, originalEvent, scope, recurrenceId);
+        return urlEntity ?? originalEvent;
     }
 
     private async Task<OutlookCalendarBindingEntity?> FindBindingAsync(
@@ -223,7 +225,8 @@ public sealed class OutlookCalendarWritebackGateway
             ErrorCode: "PROVIDER_UNAVAILABLE",
             ErrorMessage: "Outlook 服务暂时不可用，请使用同一 clientOperationId 稍后重试。",
             ClientOperationId: clientOperationId,
-            UserMessage: "Outlook 服务暂时不可用，请使用同一 clientOperationId 稍后重试。");
+            UserMessage: "Outlook 服务暂时不可用，请使用同一 clientOperationId 稍后重试。",
+            NoChangesApplied: false);
 
     private static string NormalizeScope(string? scope, EventEntity entity)
     {
