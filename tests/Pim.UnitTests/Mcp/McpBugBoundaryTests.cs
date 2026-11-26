@@ -1,4 +1,3 @@
-using System.Text.Json;
 using System.Text.Json.Nodes;
 using Pim.Module.Calendar.Entities;
 using Pim.Module.Mcp.Services;
@@ -188,15 +187,17 @@ public sealed class McpBugBoundaryTests
     [Fact]
     public void EventWrites_TreatExplicitNullTimeZoneAsUnknown()
     {
-        var args = new JsonObject
-        {
-            ["dtStart"] = "2026-09-01T09:00:00Z",
-            ["dtEnd"] = "2026-09-01T10:00:00Z",
-            ["timeZoneId"] = null,
-        };
+        var args = JsonNode.Parse("""
+            {
+              "dtStart": "2026-09-01T09:00:00Z",
+              "dtEnd": "2026-09-01T10:00:00Z",
+              "timeZoneId": null
+            }
+            """)!.AsObject();
 
         Assert.Null(McpToolInputPolicy.Apply("create_event", args));
-        Assert.Equal(JsonValueKind.Null, args["timeZoneId"]!.GetValueKind());
+        Assert.True(args.ContainsKey("timeZoneId"));
+        Assert.Null(args["timeZoneId"]);
     }
 
     [Fact]
