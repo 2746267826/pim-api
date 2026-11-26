@@ -3092,7 +3092,7 @@ async def get_version(-) -> Any: ...
 | `restore_event` | `POST /api/v1/calendar/events/{id}/restore` | restoreAsCopy? |
 | `batch_delete_events` | `POST /api/v1/calendar/events/batch-delete` | ids[] |
 
-写入 `create_event`/`update_event` 时，`dtStart`/`dtEnd` 必须携带显式 UTC 偏移或 `Z`，例如 `2026-09-01T09:00:00Z` 或 `2026-09-01T17:00:00+08:00`。日期形式、无偏移值和机器本地时间都会被拒绝，工具不会替调用方猜测时区。`timeZoneId` 只接受有效 IANA ID（`UTC`、`GMT`、`Etc/UTC` 或带 `/` 的 IANA ID）；Windows ID 会被拒绝，来源未知时省略该字段。全天事件的 `allDayStartDate`/`allDayEndDateExclusive` 是唯一日期来源，定时事件必须省略两者。
+写入 `create_event`/`update_event` 时，`dtStart`/`dtEnd` 必须携带显式 UTC 偏移或 `Z`，例如 `2026-09-01T09:00:00Z` 或 `2026-09-01T17:00:00+08:00`。日期形式、无偏移值和机器本地时间都会被拒绝，工具不会替调用方猜测时区。`timeZoneId` 只接受有效 IANA ID（`UTC`、`GMT`、`Etc/UTC` 或带 `/` 的 IANA ID）；Windows ID 会被拒绝，来源未知时省略该字段或传 `null`（两者都只表示未知，不表示 UTC）。全天事件的 `allDayStartDate`/`allDayEndDateExclusive` 是唯一日期来源，定时事件必须省略两者。
 
 **Calendar 任务 14**
 
