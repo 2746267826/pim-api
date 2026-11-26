@@ -1,6 +1,6 @@
 # PIM 全量交付台账
 
-生成日期：2026-11-23。最近更新：2026-11-26 22:10 CST（#607 head/run 复核）。范围：交付包 A–R、Z，共 160 项。
+生成日期：2026-11-23。最近更新：2026-11-26 22:16 CST（#607 head/run 复核）。范围：交付包 A–R、Z，共 160 项。
 输入包：`PIM功能确认-最终交付-20261122.zip`，SHA-256 `b488a01e6f317a2735f387a918787204791fb32a38ad9ce064a07166f4b8a864`。
 
 > 2026-11-26 的当前状态以本文件“2026-11-26 实时快照”与 [PIM 全量交付逐项状态台账（2026-11-25）](pim-delivery-ledger-20261125.md) 的 2026-11-26 章节为准。2026-11-25 及更早的合并回执、审计回执和“全量清单”仅作历史追溯，不再作为当前 OPEN/head/CI/PASS 依据。
@@ -11,7 +11,7 @@
 
 ## 2026-11-26 实时快照 / Live snapshot
 
-本轮以 GitHub 只读查询、三个仓库 `origin/master` 和 `contract/openapi.json` 为准；不访问 `pim_prod`，不修改 workflow。代码合并、CI、真实设备、真实 provider、真实浏览器、生产/发布证据分栏记录。快照时间：2026-11-26 20:38 CST；#590 于 21:25 CST、#607 head/run 于 22:10 CST 复核（Asia/Shanghai）。
+本轮以 GitHub 只读查询、三个仓库 `origin/master` 和 `contract/openapi.json` 为准；不访问 `pim_prod`，不修改 workflow。代码合并、CI、真实设备、真实 provider、真实浏览器、生产/发布证据分栏记录。快照时间：2026-11-26 20:38 CST；#590 于 21:25 CST、#607 head/run 于 22:16 CST 复核（Asia/Shanghai）。
 
 ### 仓库与契约基线 / Repository and contract baseline
 
@@ -50,7 +50,7 @@
 | pim-api #590 | J09 | `3f498b66456a0ecebf7fbc949f532abd23dbfb8a` | 2026-11-26 21:25 CST 复核：最终 head run `45822090687` success（`CI Gate`、6 个 API shard、`build-api`、`web-build`、`build-docker` success；`build-mcp`/契约通知/`release` skipped）；该 head 仅追加两份台账文档；前一纯代码 head `790a1a7b1dde89c26823be0387f2ef867c5fb00c` run `45819200983` success，6 个 shard 原始日志 `Failed: 0, Passed: 6941, Skipped: 29`，仅作代码 head 历史；更早 head `f669f9bc170b7be7371a122702717df4f421d3ea` run `45816213564` **job 显示 success 但 shard-5 原始日志 `Failed: 1, Passed: 1084, Skipped: 0`（`tee` 掩盖），为无效证据，不得写成 CI success**；`de943dec`/`45803911128` 仅历史 | 实现线索：Batch 旁路、providerAttempted、未绑定模型、恢复、R5/R6 真库回退、终态 audit 写入失败后台收敛 | 未合并；真实第三方 provider Token/费用、管理员浏览器、真实部署、完整崩溃恢复 NOT-VERIFIED |
 | pim-api #596 | C12/C14 服务端材料 | `910baf5ff74a7c0499c8e514473307377bbaba24` | `45658247148` success；shard-5 1004 passed/77 skipped/0 failed | Ogg Opus 上传/下载/续写与 WAV 兜底 | 未合并；runner 无 ffmpeg 导致真实 Opus 解码/恢复用例 skipped，Batch 服务级用例因无 `PIM_ASR516_PG` skipped；Android/Windows 采集 NOT-VERIFIED |
 | pim-api #602 | P05 | `d5aec8959d640a81e869c605e84316f804a08532` | `45678979479` success；shard-6 5461 passed/24 skipped/0 failed | 纠正/排除/补点/合并/修订/CAS/游标；分支与当前 master 冲突（DIRTY），合并前需 rebase | 未合并；真实浏览器 E2E、Android/Windows 只读消费 NOT-VERIFIED |
-| pim-api #607 | Q04 | `e019b39a9fa87c19b2639868e3badd2f090795b2` | 2026-11-26 22:10 CST 复核：当前 head 为合并 master `c47542e1` 后的 `e019b39a`，run `45835250661` 进行中（`changes`/`resolve-version`/`web-build`/`build-api/build`/`build-mcp` 已 success，六个 shard 与 `build-docker` 待完成）；最新已完成成功 run 为前一 head `0c8f7a1a` 的 `45831709378`，六个 shard 原始日志逐片为 `38/46/43/311/1010/5442` passed、`0/0/0/5/74/24` skipped、Failed 均为 0，合计 `Passed: 6890, Skipped: 103, Total: 6993`；旧 `459fdce7`/`45820480051` 及更早 `0c3a1a4c` 取消、`a7c5feab`/`d2109488` failure 仅历史 | 隔离 nginx 80→443/TLS/转发头、MCP 远程 HTTP 拒绝；当前 mergeStateStatus=`BLOCKED`、`reviews=[]`、`reviewDecision` 空，Q04 复审 pending/阻断，不推断可合并 | 未合并；当前 head CI 尚未完成；真实公网 TLS、生产 1Panel/OpenResty/证书链 NOT-VERIFIED |
+| pim-api #607 | Q04 | `e019b39a9fa87c19b2639868e3badd2f090795b2` | 2026-11-26 22:16 CST 复核：当前 head 为合并 master `c47542e1` 后的 `e019b39a`，run `45835250661` completed failure（`CI Gate` failure）；六个 shard artifact 原始日志逐片为 `38/46/43/311/1009/5442` passed、`0/0/0/5/74/24` skipped、Failed `0/0/0/0/1/0`，shard-5 唯一失败为 `LocalFileProviderTests.ProvisioningIsIdempotentAndCannotSaveTheCallersPendingEntities`（`FileProviderEntity` 未加入模型），合计 `Passed: 6889, Failed: 1, Skipped: 103, Total: 6993`；前一 head `0c8f7a1a` 的 run `45831709378` success（六片 Failed 均为 0，合计 Passed 6890、Skipped 103）；旧 `459fdce7`/`45820480051` 及更早 `0c3a1a4c` 取消、`a7c5feab`/`d2109488` failure 仅历史 | 隔离 nginx 80→443/TLS/转发头、MCP 远程 HTTP 拒绝；当前 mergeStateStatus=`BLOCKED`、`reviews=[]`、`reviewDecision` 空，Q04 复审 pending/阻断，不推断可合并 | 未合并；当前 head CI failure；真实公网 TLS、生产 1Panel/OpenResty/证书链 NOT-VERIFIED |
 | pim-api #609 | Q05 | `bee3d45c0eeb4775794fca44bab126067756c39c` | `45747061871` success | 诊断上报/概览/ZIP 导出、脱敏、限额；分支与当前 master 冲突（DIRTY） | 未合并；真实 Android/Windows 客户端、生产部署 NOT-VERIFIED |
 | pim-api #610 | R02 | `fd7b7c7a8ef7efe61f68fd9b886d7804953bf1f8` | `45752009493` success；6 shard 6824 passed/103 skipped/0 failed | REST/MCP 显式偏移、IANA、未知时区、DST fold；分支与当前 master 冲突（DIRTY） | 未合并；真实 Microsoft Graph、真实浏览器→API→PostgreSQL NOT-VERIFIED；R02-AC12 依赖 R03 |
 | pim-api #612 | H03-AC10 | `0f367b497efe4bc067e27361ee60c66b221a6beb` | `45750782446` success | 长音频分批、预算/并发上限、失败批次重试、汇总不重放音频；分支与当前 master 冲突（DIRTY） | 未合并；真实多模态 provider、Hangfire 多进程、Web/Android/Windows 真机 NOT-VERIFIED |
@@ -77,7 +77,7 @@
 | R03 | #615 待合并；依赖真实 Microsoft Graph 与故障注入 | #615 CI 绿、独立复审删除收敛；真实 Graph、撤销/ETag/未知结果恢复未验 | FAIL |
 | R05 | #613 当前 head CI 已绿、待合并；依赖外部独立 MCP 客户端 | #613 当前 head `a2387bba` run `45818069269` success（`CI Gate`、6 shard、`build-docker` 等 success）；前一 head `c52f3225` run `45814550769` success；外部 MCP NOT-VERIFIED | FAIL |
 | Q03 | #614 CI 绿、待合并；Android/Windows 原生回收站未实现 | #614 当前 head `8a8f67ff` CI `45811770777` success；API/Web 四域回收站；真实浏览器、Android/Windows 原生 NOT-VERIFIED | FAIL |
-| Q04 | #607 + Android #101 + Windows #63 三仓同批；真实公网 TLS 最后验 | API #607 当前 head `e019b39a`（合并 master `c47542e1`）run `45835250661` 进行中；最新完成成功 head `0c8f7a1a` run `45831709378`，六个 shard 原始日志 Failed 均为 0、合计 `Passed: 6890, Skipped: 103`；mergeStateStatus=`BLOCKED`、`reviews=[]`，Q04 复审 pending/阻断，不推断可合并；旧 `459fdce7`/`45820480051`/`CLEAN` 仅历史；Android #101/Windows #63 CI 绿；三 PR 均未合并；客户端契约快照陈旧；真实证书/反代/生产入口 NOT-VERIFIED | FAIL |
+| Q04 | #607 + Android #101 + Windows #63 三仓同批；真实公网 TLS 最后验 | API #607 当前 head `e019b39a`（合并 master `c47542e1`）run `45835250661` completed failure（`CI Gate` failure；shard-5 `LocalFileProviderTests.ProvisioningIsIdempotentAndCannotSaveTheCallersPendingEntities` 1 failed，合计 Passed 6889 / Failed 1 / Skipped 103）；前一 head `0c8f7a1a` run `45831709378` success（六个 shard Failed 均为 0、Passed 6890、Skipped 103）；mergeStateStatus=`BLOCKED`、`reviews=[]`，Q04 复审 pending/阻断，不推断可合并；旧 `459fdce7`/`45820480051`/`CLEAN` 仅历史；Android #101/Windows #63 CI 绿；三 PR 均未合并；客户端契约快照陈旧；真实证书/反代/生产入口 NOT-VERIFIED | FAIL |
 | Q05 | #609 待合并；依赖 Android/Windows 诊断上报与生产部署 | API/Web 诊断页/ZIP/脱敏/限额已实现；真实 Android/Windows 客户端与生产 NOT-VERIFIED | FAIL |
 | P05 | #602 待合并；依赖真实浏览器与 Android/Windows 只读消费 | API/Web 纠正/排除/补点/合并/CAS/游标已实现；真实浏览器 E2E、客户端 NOT-VERIFIED | FAIL |
 | H03 | #583 已合并最小切片；#612 待合并；依赖真实多模态 provider/Hangfire 多进程 | #612 长音频分批/预算/并发/汇总已实现且 CI 绿；真实 provider 质量/费用、多进程恢复、三端真机 NOT-VERIFIED | FAIL |
