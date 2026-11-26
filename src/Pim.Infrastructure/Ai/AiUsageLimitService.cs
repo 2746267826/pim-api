@@ -6,6 +6,7 @@ using Npgsql;
 using Pim.Core.Ai;
 using Pim.Core.Exceptions;
 using Pim.Infrastructure.Ai.Asr;
+using Pim.Infrastructure.Ai.Asr.Mimo;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
 using Pim.Infrastructure.Data.Entities;
@@ -395,10 +396,11 @@ public sealed class AiUsageLimitService(
                         (x.InitiatedAt ?? x.StartedAt) >= scope.StartsAt &&
                         (x.InitiatedAt ?? x.StartedAt) < scope.EndsAt)
             .Select(x => new UsageRow(x.Status, x.Purpose, x.TotalTokens, x.EstimatedCost, x.Currency,
-                x.MetadataJson))
+                x.MetadataJson, x.ClientRequestId))
             .ToListAsync(ct);
 
-        var providerRows = rows.Where(WasProviderAttempted).ToList();
+        var batchJobs = await BatchJobUsageStatesAsync(usageDb, rows, ct);
+        var providerRows = rows.Where(x => WasProviderAttempted(x, batchJobs)).ToList();
         var tokenKnown = providerRows.Where(x => x.TotalTokens is not null).ToList();
         var totalTokens = tokenKnown.Count == 0 ? null : (long?)tokenKnown.Sum(x => (long)x.TotalTokens!);
         var costKnown = rule.Currency is null
@@ -409,9 +411,11 @@ public sealed class AiUsageLimitService(
         var running = rows.Count(x => x.Status is "running" or "preparing" or "queued" or "cancelling");
         var incomplete = rows.Count(x => x.Status is "incomplete" or "timed_out" or "cancelled");
         // A running Batch is in-flight, not a terminal unknown. Its token usage is reconciled when
-        // the Batch reaches a terminal state; treating it as unknown here would freeze every other
-        // call on the same connection for up to the provider's 24h completion window.
-        var tokenUnknown = providerRows.Count(x => x.TotalTokens is null && !IsRunningBatch(x));
+        // the Batch reaches a terminal state. The job row must still be open: if the Batch is
+        // already terminal but its audit projection failed, the missing tokens are unknown and
+        // must fail closed until the durable repair scan projects them.
+        var tokenUnknown = providerRows.Count(x =>
+            x.TotalTokens is null && !IsPendingBatch(x, batchJobs));
         var costUnknown = providerRows.Count - costKnown.Count;
         var tokenStatus = rule.TokenLimit is not null && tokenUnknown > 0
             ? AiUsageLimitStatuses.Unknown
@@ -660,8 +664,12 @@ public sealed class AiUsageLimitService(
     private static AiUsageLimitSnapshotDto EmptySnapshot() =>
         new(null, null, null, null, null, 0, 0, 0, default, default);
 
-    private static bool WasProviderAttempted(UsageRow row)
+    private static bool WasProviderAttempted(UsageRow row,
+        IReadOnlyDictionary<Guid, BatchJobUsageState> batchJobs)
     {
+        if (row.Purpose == AiCallPurposes.AsrBatch && row.ClientRequestId is { } jobId &&
+            batchJobs.TryGetValue(jobId, out var job) && job.HasProviderEvidence)
+            return true;
         var marker = AiAsrJobService.ProviderAttemptedMetadata(row.MetadataJson);
         if (marker is { } attempted) return attempted || row.Status == "succeeded";
         // Missing or malformed metadata is unknown usage and must fail closed. Explicit false is
@@ -670,8 +678,39 @@ public sealed class AiUsageLimitService(
         return true;
     }
 
-    private static bool IsRunningBatch(UsageRow row) =>
-        row.Purpose == AiCallPurposes.AsrBatch && row.Status == "running";
+    private static async Task<IReadOnlyDictionary<Guid, BatchJobUsageState>> BatchJobUsageStatesAsync(
+        PimDbContext usageDb,
+        IReadOnlyList<UsageRow> rows, CancellationToken ct)
+    {
+        var ids = rows.Where(x => x.Purpose == AiCallPurposes.AsrBatch && x.ClientRequestId is not null)
+            .Select(x => x.ClientRequestId!.Value).Distinct().ToArray();
+        if (ids.Length == 0) return new Dictionary<Guid, BatchJobUsageState>();
+        var jobs = await usageDb.NoteAsrBatchJobs.AsNoTracking()
+            .Where(x => ids.Contains(x.Id))
+            .Select(x => new { x.Id, x.Status, x.StatusRaw, x.OutputImportedAt, x.BatchId, x.InputFileId })
+            .ToListAsync(ct);
+        return jobs.ToDictionary(x => x.Id,
+            x => new BatchJobUsageState(x.Status, x.StatusRaw, x.OutputImportedAt, x.BatchId, x.InputFileId));
+    }
+
+    private static bool IsPendingBatch(UsageRow row,
+        IReadOnlyDictionary<Guid, BatchJobUsageState> batchJobs) =>
+        row.Purpose == AiCallPurposes.AsrBatch && row.Status == "running" &&
+        row.ClientRequestId is { } jobId && batchJobs.TryGetValue(jobId, out var job) &&
+        IsOpenBatchJob(job.Status, job.StatusRaw, job.OutputImportedAt);
+
+    private static bool IsOpenBatchJob(string status, string? statusRaw,
+        DateTimeOffset? outputImportedAt)
+    {
+        if (outputImportedAt is not null) return false;
+        if (status is "Deleted" or "Completed" or "Failed" or "Expired" or "Cancelled" or "Unknown")
+            return false;
+        var raw = MimoBatchStatus.Normalize(statusRaw);
+        if (MimoBatchStatus.IsTerminal(raw)) return false;
+        return status is "Creating" or "Validating" or "InProgress" or "Cancelling" ||
+               raw is MimoBatchStatusKind.Validating or MimoBatchStatusKind.InProgress
+                   or MimoBatchStatusKind.Cancelling;
+    }
 
     private static AiUsageLimitRuleEntity DefaultRule(Guid connectionId) => new()
     {
@@ -701,5 +740,10 @@ public sealed class AiUsageLimitService(
 
     private sealed record PeriodScope(string Period, string CycleKey, DateTimeOffset StartsAt, DateTimeOffset EndsAt);
     private sealed record UsageRow(string Status, string Purpose, int? TotalTokens, decimal? EstimatedCost,
-        string? Currency, string MetadataJson);
+        string? Currency, string MetadataJson, Guid? ClientRequestId);
+    private sealed record BatchJobUsageState(string Status, string? StatusRaw,
+        DateTimeOffset? OutputImportedAt, string? BatchId, string? InputFileId)
+    {
+        public bool HasProviderEvidence => BatchId is not null || InputFileId is not null;
+    }
 }

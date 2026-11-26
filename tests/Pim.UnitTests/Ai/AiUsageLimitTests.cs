@@ -342,9 +342,12 @@ public sealed class AiUsageLimitTests
         var connection = await service.CreateConnectionAsync("运行中Batch连接", default);
         await service.SaveRuleAsync(connection.Id, new(connection.Limit.Revision, true,
             AiUsageLimitPeriods.Month, 80, 100, null, null, "Asia/Shanghai"), default);
+        var jobId = Guid.NewGuid();
         var batch = Log(connection.Id, Now, null, null, status: "running",
             metadataJson: """{"providerAttempted":true}""", purpose: AiCallPurposes.AsrBatch);
+        batch.ClientRequestId = jobId;
         db.AiRequestLogs.Add(batch);
+        db.NoteAsrBatchJobs.Add(BatchJob(jobId, "InProgress", "in_progress"));
         await db.SaveChangesAsync();
 
         var whileRunning = await service.TryBeginAsync(connection.Id, "while-batch-running",
@@ -365,6 +368,32 @@ public sealed class AiUsageLimitTests
 
         Assert.False(afterTerminal.Allowed);
         Assert.Equal("usage_limit_unknown", afterTerminal.ErrorCode);
+    }
+
+    [Fact]
+    public async Task TryBegin_TerminalBatchJobWithRunningAuditFailsClosed()
+    {
+        await using var db = Db();
+        var service = Service(db, new AdminUser());
+        var connection = await service.CreateConnectionAsync("终态Batch审计未收敛连接", default);
+        await service.SaveRuleAsync(connection.Id, new(connection.Limit.Revision, true,
+            AiUsageLimitPeriods.Month, 80, 100, null, null, "Asia/Shanghai"), default);
+        var jobId = Guid.NewGuid();
+        var audit = Log(connection.Id, Now, null, null, status: "running",
+            metadataJson: """{"providerAttempted":false}""", purpose: AiCallPurposes.AsrBatch);
+        audit.ClientRequestId = jobId;
+        db.AiRequestLogs.Add(audit);
+        var job = BatchJob(jobId, "Completed", "completed");
+        job.BatchId = "batch-provider-evidence";
+        job.OutputImportedAt = Now;
+        db.NoteAsrBatchJobs.Add(job);
+        await db.SaveChangesAsync();
+
+        var decision = await service.TryBeginAsync(connection.Id, "terminal-unsynced-batch",
+            "ai.text-call", TimeSpan.FromMinutes(1), default);
+
+        Assert.False(decision.Allowed);
+        Assert.Equal("usage_limit_unknown", decision.ErrorCode);
     }
 
     [Fact]
@@ -737,6 +766,13 @@ public sealed class AiUsageLimitTests
             ProviderConnectionId = connectionId,
             MetadataJson = metadataJson ?? "{}"
         };
+
+    private static NoteAsrBatchJobEntity BatchJob(Guid id, string status, string? statusRaw) => new()
+    {
+        Id = id, OwnerId = Guid.NewGuid(), TaskId = Guid.NewGuid(), Status = status, StatusRaw = statusRaw,
+        Model = "fixture", BaseUrl = "https://batch-api.example.invalid/v1/",
+        CreatedAt = Now.AddMinutes(-5), UpdatedAt = Now
+    };
 
     private sealed class AdminUser : ICurrentUserService
     {

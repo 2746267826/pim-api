@@ -978,6 +978,24 @@ public sealed class NoteAsrBatchService(PimDbContext db, ICurrentUserService use
         return await PollCoreAsync(owner, id, ct);
     }
 
+    /// <summary>
+    /// Repairs a terminal job whose audit projection was not durably written. Only persisted
+    /// state is read; this path never calls the provider, uploads, creates, or lists batches.
+    /// </summary>
+    internal async Task<bool> ReconcileTerminalAuditAsync(Guid owner, Guid jobId, CancellationToken ct)
+    {
+        var job = await db.NoteAsrBatchJobs.AsNoTracking()
+            .SingleOrDefaultAsync(x => x.Id == jobId && x.OwnerId == owner, ct);
+        if (job is null || job.Status == "Deleted") return false;
+        if (job.OutputImportedAt is null && !TerminalState(job) && job.Status != "Unknown")
+            return false;
+        var audit = await db.AiRequestLogs.AsNoTracking().FirstOrDefaultAsync(x =>
+            x.UserId == job.OwnerId && x.ClientRequestId == job.Id && x.Purpose == AuditPurpose, ct);
+        if (audit is not null && IsTerminalAuditStatus(audit.Status)) return false;
+        await SyncAuditFromJobAsync(job, ct);
+        return true;
+    }
+
     private async Task<NoteAsrBatchJobDto> PollCoreAsync(Guid owner, Guid id, CancellationToken ct)
     {
         var job = await OwnedAsync(owner, id, ct);

@@ -1,10 +1,12 @@
 using System.Buffers.Binary;
 using System.Diagnostics;
+using System.Data.Common;
 using System.Net;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -1142,6 +1144,114 @@ public sealed class NoteAsrBatchPersistenceTests
             Assert.Equal(0, await pollJob.RunPageAsync(DateTimeOffset.UtcNow, settings, CancellationToken.None));
         }
         Assert.Equal(1, polls);
+        await CleanupAsync(seed.Owner);
+    }
+
+    [SkippableFact]
+    public async Task Audit_write_failure_after_terminal_import_is_repaired_and_fails_closed()
+    {
+        Skip.If(string.IsNullOrWhiteSpace(ConnectionString), "PIM_ASR516_PG is not configured");
+        var seed = await SeedAsync();
+        var factory = new SyntheticFactory((request, _) =>
+        {
+            if (request.Method == HttpMethod.Post && request.Path.EndsWith("/v1/files", StringComparison.Ordinal))
+                return Task.FromResult(UploadOk());
+            if (request.Method == HttpMethod.Post && request.Path.EndsWith("/v1/batches", StringComparison.Ordinal))
+                return Task.FromResult(BatchOk("batch-audit-repair"));
+            if (request.Method == HttpMethod.Get && request.Path == "/v1/batches/batch-audit-repair")
+                return Task.FromResult(BatchOk("batch-audit-repair", "completed", "file-out", null, 2, 2));
+            if (request.Method == HttpMethod.Get && request.Path == "/v1/files/file-out/content")
+                return Task.FromResult(FileContent(SuccessJsonl("seg-0", "seg-1")));
+            throw new InvalidOperationException("unexpected synthetic request " + request.Path);
+        });
+        Guid jobId;
+        await using (var db = NewDb(seed.Owner))
+            jobId = (await StartAsync(NewService(db, seed.Owner, factory), seed)).Id;
+        Assert.Equal(1, factory.UploadCalls);
+        Assert.Equal(1, factory.CreateCalls);
+
+        Guid connectionId;
+        await using (var db = NewDb(seed.Owner))
+        {
+            var profile = await db.AiModelProfiles.AsNoTracking()
+                .SingleAsync(x => x.Id == seed.ProfileId);
+            connectionId = profile.ProviderConnectionId
+                ?? throw new InvalidOperationException("synthetic profile has no provider connection");
+            var rule = await db.AiUsageLimitRules.SingleAsync(x => x.ConnectionId == connectionId);
+            rule.Enabled = true;
+            rule.TokenLimit = 1_000;
+            rule.WarningPercent = 80;
+            await db.SaveChangesAsync();
+        }
+
+        var interceptor = new FailNextAuditUpdateInterceptor();
+        await using (var db = NewDb(seed.Owner, interceptor))
+        {
+            var service = NewService(db, seed.Owner, factory);
+            var error = await Assert.ThrowsAnyAsync<Exception>(() =>
+                service.PollAsync(jobId, CancellationToken.None));
+            Assert.Contains("synthetic audit write timeout", error.ToString(), StringComparison.Ordinal);
+        }
+        Assert.Equal(1, interceptor.Failures);
+
+        await using (var db = NewDb(seed.Owner))
+        {
+            var job = await db.NoteAsrBatchJobs.AsNoTracking().SingleAsync(x => x.Id == jobId);
+            Assert.Equal("Completed", job.Status);
+            Assert.NotNull(job.OutputImportedAt);
+            var audit = await db.AiRequestLogs.AsNoTracking().SingleAsync(x =>
+                x.UserId == seed.Owner && x.ClientRequestId == jobId &&
+                x.Purpose == NoteAsrBatchService.AuditPurpose);
+            Assert.Equal("running", audit.Status);
+            await db.AiUsageLimitLeases.ExecuteDeleteAsync();
+            var limits = new AiUsageLimitService(db, new FixedUser(seed.Owner));
+            var blocked = await limits.TryBeginAsync(connectionId, "before-audit-repair", "ai.text-call",
+                TimeSpan.FromMinutes(1), CancellationToken.None);
+            Assert.False(blocked.Allowed);
+            Assert.Equal("usage_limit_unknown", blocked.ErrorCode);
+        }
+
+        var providerCallsBeforeRepair = factory.Requests.Count;
+        var settings = new NoteAsrBatchPollOptions
+        {
+            PageSize = 25, PerJobTimeout = TimeSpan.FromSeconds(10)
+        };
+        await using (var db = NewDb(seed.Owner))
+        {
+            var pollJob = NewPollJob(NewService(db, seed.Owner, factory), db, settings);
+            await pollJob.RunAsync(CancellationToken.None);
+        }
+        Assert.Equal(providerCallsBeforeRepair, factory.Requests.Count);
+
+        await using (var db = NewDb(seed.Owner))
+        {
+            var audit = await db.AiRequestLogs.AsNoTracking().SingleAsync(x =>
+                x.UserId == seed.Owner && x.ClientRequestId == jobId &&
+                x.Purpose == NoteAsrBatchService.AuditPurpose);
+            Assert.Equal("succeeded", audit.Status);
+            Assert.Equal(24, audit.TotalTokens);
+            Assert.Null(audit.ExecutionExpiresAt);
+            var limits = new AiUsageLimitService(db, new FixedUser(seed.Owner));
+            var allowed = await limits.TryBeginAsync(connectionId, "after-audit-repair", "ai.text-call",
+                TimeSpan.FromMinutes(1), CancellationToken.None);
+            Assert.True(allowed.Allowed);
+            await limits.EndAsync(allowed.Lease, CancellationToken.None);
+        }
+
+        await using (var db = NewDb(seed.Owner))
+        {
+            var rule = await db.AiUsageLimitRules.SingleAsync(x => x.ConnectionId == connectionId);
+            rule.TokenLimit = 10;
+            await db.SaveChangesAsync();
+        }
+        await using (var db = NewDb(seed.Owner))
+        {
+            var limits = new AiUsageLimitService(db, new FixedUser(seed.Owner));
+            var reached = await limits.TryBeginAsync(connectionId, "after-audit-repair-limit", "ai.text-call",
+                TimeSpan.FromMinutes(1), CancellationToken.None);
+            Assert.False(reached.Allowed);
+            Assert.Equal("usage_limit_reached", reached.ErrorCode);
+        }
         await CleanupAsync(seed.Owner);
     }
 
@@ -2530,8 +2640,12 @@ public sealed class NoteAsrBatchPersistenceTests
         });
     }
 
-    private static PimDbContext NewDb(Guid owner) => new(
-        new DbContextOptionsBuilder<PimDbContext>().UseNpgsql(ConnectionString!).Options, new FixedUser(owner));
+    private static PimDbContext NewDb(Guid owner, params IInterceptor[] interceptors)
+    {
+        var builder = new DbContextOptionsBuilder<PimDbContext>().UseNpgsql(ConnectionString!);
+        if (interceptors.Length > 0) builder.AddInterceptors(interceptors);
+        return new PimDbContext(builder.Options, new FixedUser(owner));
+    }
 
     private static string StorageRoot(Guid owner) =>
         Path.Combine(Path.GetTempPath(), "pim-asr516-batch-tests", owner.ToString("D"));
@@ -2618,6 +2732,29 @@ public sealed class NoteAsrBatchPersistenceTests
     }
 
     private sealed record SyntheticRequest(HttpMethod Method, string Path, string ApiKey);
+
+    private sealed class FailNextAuditUpdateInterceptor : DbCommandInterceptor
+    {
+        private int _remaining = 1;
+        public int Failures { get; private set; }
+
+        public override ValueTask<InterceptionResult<int>> NonQueryExecutingAsync(DbCommand command,
+            CommandEventData eventData, InterceptionResult<int> result,
+            CancellationToken cancellationToken = default)
+        {
+            if (Volatile.Read(ref _remaining) > 0 &&
+                command.CommandText.TrimStart().StartsWith("UPDATE", StringComparison.OrdinalIgnoreCase) &&
+                command.CommandText.Contains("ai_request_logs", StringComparison.Ordinal))
+            {
+                if (Interlocked.Exchange(ref _remaining, 0) == 1)
+                {
+                    Failures++;
+                    throw new TimeoutException("synthetic audit write timeout");
+                }
+            }
+            return base.NonQueryExecutingAsync(command, eventData, result, cancellationToken);
+        }
+    }
 
     private sealed class SyntheticFactory(
         Func<SyntheticRequest, CancellationToken, Task<HttpResponseMessage>> responder) : IMimoBatchClientFactory

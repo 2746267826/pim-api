@@ -43,6 +43,19 @@ public sealed class NoteAsrBatchPollJob(
         var settings = options.Value.Normalized();
         var now = DateTimeOffset.UtcNow;
         await MarkStaleCreatingUnknownAsync(now, settings, ct);
+        try
+        {
+            await RepairTerminalAuditsAsync(settings, ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception error)
+        {
+            // A repair scan failure must not stop provider polling for this run.
+            logger.LogWarning(error, "Batch terminal audit repair scan failed");
+        }
         var seen = new HashSet<Guid>();
         for (var page = 0; page < settings.MaxPagesPerRun; page++)
         {
@@ -51,6 +64,57 @@ public sealed class NoteAsrBatchPollJob(
                 return;
         }
         logger.LogDebug("Batch poll reached the per-run page cap; remaining jobs wait for the next recurrence");
+    }
+
+    /// <summary>
+    /// Terminal jobs stop being poll candidates once their result is imported. A DB failure while
+    /// projecting that final state into <c>ai_request_logs</c> must still converge, otherwise a
+    /// running audit row could suppress the connection token limit forever. Repair is bounded and
+    /// uses only the persisted job/audit rows; it never touches the provider.
+    /// </summary>
+    internal async Task<int> RepairTerminalAuditsAsync(NoteAsrBatchPollOptions settings,
+        CancellationToken ct)
+    {
+        settings = settings.Normalized();
+        var candidates = await db.NoteAsrBatchJobs.AsNoTracking()
+            .Where(job => job.Status != "Deleted" &&
+                          (job.OutputImportedAt != null ||
+                           job.Status == "Completed" || job.Status == "Failed" ||
+                           job.Status == "Expired" || job.Status == "Cancelled" ||
+                           job.Status == "Unknown") &&
+                          !db.AiRequestLogs.Any(a =>
+                              a.UserId == job.OwnerId && a.ClientRequestId == job.Id &&
+                              a.Purpose == NoteAsrBatchService.AuditPurpose &&
+                              (a.Status == "succeeded" || a.Status == "failed" ||
+                               a.Status == "incomplete" || a.Status == "timed_out" ||
+                               a.Status == "cancelled" || a.Status == "blocked")))
+            .OrderBy(job => job.OutputImportedAt ?? job.UpdatedAt)
+            .ThenBy(job => job.Id)
+            .Take(settings.PageSize)
+            .Select(job => new { job.OwnerId, job.Id })
+            .ToListAsync(ct);
+        var repaired = 0;
+        foreach (var candidate in candidates)
+        {
+            using var budget = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            budget.CancelAfter(settings.PerJobTimeout);
+            try
+            {
+                if (await service.ReconcileTerminalAuditAsync(candidate.OwnerId, candidate.Id, budget.Token))
+                    repaired++;
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                logger.LogWarning("Batch audit repair timed out for job {BatchJobId}", candidate.Id);
+            }
+            catch (Exception error) when (error is not OperationCanceledException)
+            {
+                logger.LogWarning(error, "Batch audit repair failed for job {BatchJobId}", candidate.Id);
+            }
+        }
+        if (repaired > 0)
+            logger.LogInformation("Repaired terminal audit rows for {Count} Batch jobs", repaired);
+        return repaired;
     }
 
     internal async Task<int> RunPageAsync(DateTimeOffset now, NoteAsrBatchPollOptions settings, CancellationToken ct) =>
