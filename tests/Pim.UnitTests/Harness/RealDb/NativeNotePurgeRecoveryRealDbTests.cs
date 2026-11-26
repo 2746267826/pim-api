@@ -10,6 +10,7 @@ using Pim.Infrastructure.Data;
 using Pim.Infrastructure.Data.Entities;
 using Pim.Infrastructure.Notes;
 using Pim.Infrastructure.Operations;
+using Pim.Module.NoteTaskSuggestions.Entities;
 using Pim.Module.NoteTaskSuggestions.Services;
 using Xunit;
 
@@ -351,7 +352,11 @@ public sealed class NativeNotePurgeRecoveryRealDbTests : IAsyncLifetime
     private static string Hash(byte[] bytes) =>
         Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
 
-    public Task InitializeAsync() => Task.CompletedTask;
+    public Task InitializeAsync()
+    {
+        PimDbContext.RegisterModuleAssembly(typeof(NoteTaskSuggestionExtractionEntity).Assembly);
+        return Task.CompletedTask;
+    }
 
     public async Task DisposeAsync()
     {
