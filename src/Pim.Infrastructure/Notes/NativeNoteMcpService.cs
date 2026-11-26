@@ -39,13 +39,11 @@ public sealed class NativeNoteMcpService(
         var snapshot = await materials.GetMcpSnapshotAsync(owner, noteId, versionLimit, ct);
         var current = snapshot.Versions.FirstOrDefault(item => item.VersionId == snapshot.CurrentVersionId);
         NoteProcessingStatusDto? processingStatus = null;
-        IReadOnlyList<NoteDerivedTaskDto> tasks = [];
         IReadOnlyList<NoteDerivedArtifactDto> artifacts = [];
         if (includeResults)
         {
             if (snapshot.CurrentVersionId is { } versionId)
-                processingStatus = await processing.GetAsync(noteId, versionId, ct);
-            tasks = await derived.ListAsync(noteId, ct);
+                processingStatus = await processing.GetForMcpAsync(noteId, versionId, ct);
             artifacts = await derived.ListArtifactsAsync(noteId, ct);
         }
         return new NativeNoteMcpDetailDto(
@@ -60,9 +58,8 @@ public sealed class NativeNoteMcpService(
             current,
             snapshot.Versions,
             snapshot.ConflictCandidates,
-            processingStatus,
-            tasks,
-            artifacts,
+            processingStatus is null ? null : MapProcessing(processingStatus),
+            artifacts.Select(MapArtifact).ToArray(),
             ReadReceipt("get_native_note", noteId, snapshot.Revision, "已读取笔记聚合内容"));
     }
 
@@ -89,10 +86,12 @@ public sealed class NativeNoteMcpService(
         return new NativeNoteMcpResultsDto(
             noteId,
             snapshot.Revision,
-            await derived.ListAsync(noteId, ct),
-            await derived.ListArtifactsAsync(noteId, ct),
+            snapshot.CurrentVersionId is { } currentVersion
+                ? MapProcessing(await processing.GetForMcpAsync(noteId, currentVersion, ct))
+                : null,
+            (await derived.ListArtifactsAsync(noteId, ct)).Select(MapArtifact).ToArray(),
             ReadReceipt("get_native_note_results", noteId, snapshot.Revision,
-                "已读取处理任务、结果与回执"));
+                "已读取处理状态、结果与回执"));
     }
 
     public async Task<NativeNoteMcpOperationResultDto<NativeNoteMcpProcessingDto>>
@@ -102,14 +101,14 @@ public sealed class NativeNoteMcpService(
         var snapshot = await materials.GetMcpSnapshotAsync(owner, noteId, 1, ct);
         var targetVersionId = versionId ?? snapshot.CurrentVersionId
             ?? throw new DomainException(40401, "当前完整笔记不存在，无法读取处理状态");
-        var version = await materials.GetAsync(owner, targetVersionId, ct);
+        var version = await materials.GetForMcpAsync(owner, targetVersionId, ct);
         if (version.Upload.NoteId != noteId)
             throw new DomainException(40401, "材料版本不存在或不属于当前笔记");
-        var status = await processing.GetAsync(noteId, targetVersionId, ct);
+        var status = await processing.GetForMcpAsync(noteId, targetVersionId, ct);
         return new NativeNoteMcpOperationResultDto<NativeNoteMcpProcessingDto>(
             ReadReceipt("get_native_note_processing", noteId, snapshot.Revision,
                 "已读取处理任务、结果链条与回执状态"),
-            new NativeNoteMcpProcessingDto(status));
+            MapProcessing(status));
     }
 
     public async Task<(Guid NoteId, Guid VersionId)> ResolvePackageAsync(Guid noteId,
@@ -117,8 +116,8 @@ public sealed class NativeNoteMcpService(
     {
         var owner = Owner;
         var status = await materials.GetMcpNoteStatusAsync(owner, noteId, ct);
-        if (status == "Deleted")
-            throw new DomainException(40901, "笔记已删除，请先恢复后再下载整包材料");
+        if (status != "Active")
+            throw new DomainException(40901, "笔记在回收站，请先恢复后再下载整包材料");
         if (versionId is { } requested)
         {
             var version = await materials.GetAsync(owner, requested, ct);
@@ -139,11 +138,11 @@ public sealed class NativeNoteMcpService(
         UploadPackageAsync(Guid noteId, NativeNoteMcpPackageRequest request, CancellationToken ct)
     {
         var owner = Owner;
-        var package = ParsePackage(noteId, request.PackageBase64, StableVersionId(owner, noteId, request.RequestId));
-        var packageSha = Hash(package.ZipBytes);
+        var packageSha = Hash(Encoding.UTF8.GetBytes(request.PackageBase64 ?? string.Empty));
         return await operations.RunAsync(
             owner,
             request.RequestId,
+            noteId,
             "upload_native_note_package",
             new
             {
@@ -155,6 +154,8 @@ public sealed class NativeNoteMcpService(
             },
             async lockedCt =>
             {
+                var package = ParsePackage(noteId, request.PackageBase64 ?? string.Empty,
+                    StableVersionId(owner, noteId, request.RequestId));
                 NativeNoteMcpSnapshotDto? snapshot = null;
                 try
                 {
@@ -219,7 +220,8 @@ public sealed class NativeNoteMcpService(
                     after.ConflictCandidates);
                 return new NativeNoteMcpOperationResultDto<NativeNoteMcpPackageUploadDto>(
                     new NativeNoteMcpReceiptDto(
-                        request.RequestId,
+                        NoteMcpOperationStore.BuildOperationId(owner,
+                            "upload_native_note_package", request.RequestId),
                         "upload_native_note_package",
                         noteId,
                         after.Revision,
@@ -243,6 +245,7 @@ public sealed class NativeNoteMcpService(
         return operations.RunAsync(
             owner,
             request.RequestId,
+            noteId,
             "promote_native_note_version",
             new
             {
@@ -269,7 +272,8 @@ public sealed class NativeNoteMcpService(
                     after.ConflictCandidates);
                 return new NativeNoteMcpOperationResultDto<NativeNoteMcpVersionMutationDto>(
                     new NativeNoteMcpReceiptDto(
-                        request.RequestId,
+                        NoteMcpOperationStore.BuildOperationId(owner,
+                            "promote_native_note_version", request.RequestId),
                         "promote_native_note_version",
                         noteId,
                         after.Revision,
@@ -289,6 +293,7 @@ public sealed class NativeNoteMcpService(
         return operations.RunAsync(
             owner,
             request.RequestId,
+            noteId,
             "cancel_native_note_upload",
             new
             {
@@ -299,8 +304,8 @@ public sealed class NativeNoteMcpService(
             async lockedCt =>
             {
                 var snapshot = await materials.GetMcpSnapshotAsync(owner, noteId, 100, lockedCt);
-                if (snapshot.Status == "Deleted")
-                    throw new DomainException(40901, "笔记已删除，请先恢复后再处理未完成上传");
+                if (snapshot.Status == "Recycled")
+                    throw new DomainException(40901, "笔记在回收站，请先恢复后再处理未完成上传");
                 CheckRevision(snapshot, request.ExpectedRevision);
                 var known = snapshot.Versions.FirstOrDefault(item => item.VersionId == request.VersionId);
                 var removed = known is { Phase: "Uploading" };
@@ -321,7 +326,8 @@ public sealed class NativeNoteMcpService(
                     after?.Revision);
                 return new NativeNoteMcpOperationResultDto<NativeNoteMcpCancelUploadDto>(
                     new NativeNoteMcpReceiptDto(
-                        request.RequestId,
+                        NoteMcpOperationStore.BuildOperationId(owner,
+                            "cancel_native_note_upload", request.RequestId),
                         "cancel_native_note_upload",
                         noteId,
                         after?.Revision,
@@ -334,53 +340,84 @@ public sealed class NativeNoteMcpService(
             ct);
     }
 
-    public Task<NativeNoteMcpOperationResultDto<NativeNoteMcpLifecycleDto>>
-        LifecycleAsync(Guid noteId, string action, NativeNoteMcpLifecycleRequest request,
-            CancellationToken ct)
+    public Task<NativeNoteMcpOperationResultDto<NativeNoteMcpRecycleDto>>
+        RecycleAsync(Guid noteId, NativeNoteMcpRecycleRequest request, CancellationToken ct)
     {
+        const string operation = "delete_native_note";
         var owner = Owner;
-        var normalizedAction = (action ?? string.Empty).Trim().ToLowerInvariant();
-        var operation = normalizedAction switch
-        {
-            "archive" => "archive_native_note",
-            "restore" => "restore_native_note",
-            "delete" => "delete_native_note",
-            _ => throw new DomainException(40001, "action 必须是 archive、restore 或 delete"),
-        };
         return operations.RunAsync(
             owner,
             request.RequestId,
+            noteId,
             operation,
-            new
-            {
-                noteId,
-                action = normalizedAction,
-                ExpectedRevision = request.ExpectedRevision,
-            },
+            new { noteId, ExpectedRevision = request.ExpectedRevision },
             async lockedCt =>
             {
-                var result = await materials.UpdateLifecycleAsync(owner, noteId, normalizedAction,
-                    request.ExpectedRevision, lockedCt);
-                var message = normalizedAction switch
+                var before = await materials.GetMcpSnapshotAsync(owner, noteId, 1, lockedCt);
+                CheckRevision(before, request.ExpectedRevision);
+                var status = before.Status;
+                if (status != "Recycled")
                 {
-                    "archive" => "笔记已归档；材料与处理结果仍保留，可随时恢复",
-                    "restore" => "笔记已恢复为可用状态",
-                    "delete" => "笔记已删除；材料仍保留，可恢复后继续使用",
-                    _ => "笔记状态已更新",
-                };
-                return new NativeNoteMcpOperationResultDto<NativeNoteMcpLifecycleDto>(
+                    var versionIds = await materials.ListNoteVersionIdsAsync(owner, noteId, lockedCt);
+                    await processing.StopForRecycleAsync(owner, noteId, versionIds, lockedCt);
+                }
+                var result = await materials.RecycleAsync(owner, noteId,
+                    request.ExpectedRevision, lockedCt);
+                return new NativeNoteMcpOperationResultDto<NativeNoteMcpRecycleDto>(
                     new NativeNoteMcpReceiptDto(
-                        request.RequestId,
+                        NoteMcpOperationStore.BuildOperationId(owner, operation, request.RequestId),
                         operation,
                         noteId,
                         result.Revision,
                         "applied",
                         false,
                         _clock.GetUtcNow(),
-                        message),
+                        status == "Recycled"
+                            ? "笔记已在回收站；材料与处理结果仍保留"
+                            : "笔记已移入回收站；排队的处理已停止，材料与结果仍保留，可恢复后手动继续"),
                     result);
             },
             ct);
+    }
+
+    public Task<NativeNoteMcpOperationResultDto<NativeNoteMcpRecycleDto>>
+        RestoreAsync(Guid noteId, NativeNoteMcpRecycleRequest request, CancellationToken ct)
+    {
+        const string operation = "restore_native_note";
+        var owner = Owner;
+        return operations.RunAsync(
+            owner,
+            request.RequestId,
+            noteId,
+            operation,
+            new { noteId, ExpectedRevision = request.ExpectedRevision },
+            async lockedCt =>
+            {
+                var result = await materials.RestoreAsync(owner, noteId,
+                    request.ExpectedRevision, lockedCt);
+                await processing.MarkRestoredAsync(owner, noteId, lockedCt);
+                return new NativeNoteMcpOperationResultDto<NativeNoteMcpRecycleDto>(
+                    new NativeNoteMcpReceiptDto(
+                        NoteMcpOperationStore.BuildOperationId(owner, operation, request.RequestId),
+                        operation,
+                        noteId,
+                        result.Revision,
+                        "applied",
+                        false,
+                        _clock.GetUtcNow(),
+                        "笔记已恢复为可用状态；此前停止的处理不会自动继续，请手动确认后继续"),
+                    result);
+            },
+            ct);
+    }
+
+    public async Task<NativeNoteMcpOperationStatusDto> GetOperationAsync(Guid noteId,
+        Guid requestId, CancellationToken ct)
+    {
+        var result = await operations.GetAsync(Owner, noteId, requestId, ct);
+        if (result.NoteId != noteId)
+            throw new DomainException(40401, "该 requestId 没有对应当前笔记的操作记录");
+        return result;
     }
 
     public Task<NativeNoteMcpOperationResultDto<NativeNoteMcpProcessingDto>>
@@ -391,6 +428,7 @@ public sealed class NativeNoteMcpService(
         return operations.RunAsync(
             owner,
             request.RequestId,
+            noteId,
             "start_native_note_processing",
             new
             {
@@ -412,7 +450,8 @@ public sealed class NativeNoteMcpService(
                     new StartNoteProcessingRequest(noteId, request.VersionId), lockedCt);
                 return new NativeNoteMcpOperationResultDto<NativeNoteMcpProcessingDto>(
                     new NativeNoteMcpReceiptDto(
-                        request.RequestId,
+                        NoteMcpOperationStore.BuildOperationId(owner,
+                            "start_native_note_processing", request.RequestId),
                         "start_native_note_processing",
                         noteId,
                         snapshot.Revision,
@@ -420,7 +459,7 @@ public sealed class NativeNoteMcpService(
                         false,
                         _clock.GetUtcNow(),
                         "处理任务已按其固定材料版本入队；重复请求会返回同一处理编排"),
-                    new NativeNoteMcpProcessingDto(status));
+                    MapProcessing(status));
             },
             ct);
     }
@@ -429,43 +468,55 @@ public sealed class NativeNoteMcpService(
         RetryProcessingAsync(Guid noteId, NativeNoteMcpProcessingRetryRequest request,
             CancellationToken ct)
     {
-        if (request.StepKeys is not { Count: > 0 } || request.Consent is null)
-            throw new DomainException(40001, "请选择待恢复步骤并核对处理目标");
-        var stepKeys = request.StepKeys;
+        var stepKeys = (request.StepKeys ?? []).OrderBy(key => key, StringComparer.Ordinal).ToArray();
         var owner = Owner;
         return operations.RunAsync(
             owner,
             request.RequestId,
+            noteId,
             "retry_native_note_processing",
             new
             {
                 noteId,
-                request.TaskId,
-                request.RetryId,
-                ExpectedRevision = request.ExpectedRevision,
-                stepKeys = stepKeys.OrderBy(key => key, StringComparer.Ordinal).ToArray(),
+                request.VersionId,
+                stepKeys,
                 Consent = request.Consent,
                 AcknowledgePossibleDuplicateCharge = request.AcknowledgePossibleDuplicateCharge,
             },
             async lockedCt =>
             {
+                if (stepKeys.Length is 0 or > 20 ||
+                    stepKeys.Distinct(StringComparer.Ordinal).Count() != stepKeys.Length ||
+                    stepKeys.Any(string.IsNullOrWhiteSpace) || request.Consent is null)
+                    throw new DomainException(40001, "请选择待恢复步骤并核对处理目标");
                 var snapshot = await materials.GetMcpSnapshotAsync(owner, noteId, 1, lockedCt);
                 EnsureActive(snapshot, "恢复笔记处理步骤");
-                var task = await derived.GetAsync(request.TaskId, lockedCt);
-                if (task.NoteId != noteId)
-                    throw new DomainException(40401, "处理任务不存在或不属于当前笔记");
-                var updated = await derived.RetryAsync(request.TaskId,
+                var versionId = request.VersionId ?? snapshot.CurrentVersionId
+                    ?? throw new DomainException(40401, "当前完整笔记不存在，无法恢复处理步骤");
+                var version = await materials.GetAsync(owner, versionId, lockedCt);
+                if (version.Upload.NoteId != noteId)
+                    throw new DomainException(40401, "材料版本不存在或不属于当前笔记");
+                var tasks = await derived.ListAsync(noteId, lockedCt);
+                var task = tasks
+                    .Where(item => item.SourceVersionId == versionId)
+                    .OrderByDescending(item => item.CreatedAt)
+                    .FirstOrDefault()
+                    ?? throw new DomainException(40401, "该材料版本尚无处理任务可恢复");
+                var retryId = StableRetryId(owner, noteId, versionId, request.RequestId);
+                _ = await derived.RetryAsync(task.TaskId,
                     new RetryNoteDerivedTaskRequest(
-                        request.RetryId,
+                        retryId,
                         owner,
-                        request.ExpectedRevision,
+                        task.Revision,
                         stepKeys,
-                        request.Consent,
+                        request.Consent!,
                         request.AcknowledgePossibleDuplicateCharge),
                     lockedCt);
+                var status = await processing.GetAsync(noteId, versionId, lockedCt);
                 return new NativeNoteMcpOperationResultDto<NativeNoteMcpRetryDto>(
                     new NativeNoteMcpReceiptDto(
-                        request.RequestId,
+                        NoteMcpOperationStore.BuildOperationId(owner,
+                            "retry_native_note_processing", request.RequestId),
                         "retry_native_note_processing",
                         noteId,
                         snapshot.Revision,
@@ -473,7 +524,7 @@ public sealed class NativeNoteMcpService(
                         false,
                         _clock.GetUtcNow(),
                         "已恢复所选处理步骤；请核对可能的重复计费提示与最新回执"),
-                    new NativeNoteMcpRetryDto(updated));
+                    new NativeNoteMcpRetryDto(MapProcessing(status)));
             },
             ct);
     }
@@ -486,6 +537,7 @@ public sealed class NativeNoteMcpService(
         return operations.RunAsync(
             owner,
             request.RequestId,
+            noteId,
             "adopt_native_note_result",
             new
             {
@@ -506,7 +558,8 @@ public sealed class NativeNoteMcpService(
                     lockedCt);
                 return new NativeNoteMcpOperationResultDto<NativeNoteMcpAdoptDto>(
                     new NativeNoteMcpReceiptDto(
-                        request.RequestId,
+                        NoteMcpOperationStore.BuildOperationId(owner,
+                            "adopt_native_note_result", request.RequestId),
                         "adopt_native_note_result",
                         noteId,
                         snapshot.Revision,
@@ -514,22 +567,81 @@ public sealed class NativeNoteMcpService(
                         false,
                         _clock.GetUtcNow(),
                         "已采用所选处理结果版本；其他版本仍保留"),
-                    new NativeNoteMcpAdoptDto(selected, request.VersionId, selected.HeadVersionId != request.VersionId));
+                    new NativeNoteMcpAdoptDto(MapArtifact(selected), request.VersionId,
+                        selected.HeadVersionId != request.VersionId));
             },
             ct);
     }
 
     public NativeNoteMcpReceiptDto ReadReceipt(string operation, Guid noteId, Guid? revision,
         string message) =>
-        new(null, operation, noteId, revision, "ok", false, _clock.GetUtcNow(), message);
+        new(NoteMcpOperationStore.BuildReadOperationId(Owner, operation, noteId, revision),
+            operation, noteId, revision, "ok", false, _clock.GetUtcNow(), message);
 
     private static void EnsureActive(NativeNoteMcpSnapshotDto snapshot, string operation)
     {
         if (snapshot.Status == "Active") return;
-        throw new DomainException(40901, snapshot.Status == "Deleted"
-            ? $"笔记已删除，请先恢复后再{operation}"
-            : $"笔记已归档，请先恢复后再{operation}");
+        throw new DomainException(40901, $"笔记在回收站，请先恢复后再{operation}");
     }
+
+    internal static NativeNoteMcpProcessingDto MapProcessing(NoteProcessingStatusDto status)
+        => new(
+            status.NoteId,
+            status.VersionId,
+            status.State.ToString(),
+            status.AutoProcessingEnabled,
+            status.AutoStarted,
+            status.ManualStartAvailable,
+            status.RecycleStopped,
+            status.ResumePending,
+            status.Scope,
+            status.IncrementalScopeSupported,
+            status.PendingReason,
+            MapChain("asr", status.Asr),
+            MapChain("organization", status.Derived),
+            status.Artifacts
+                .Select(item => new NativeNoteMcpProcessingArtifactDto(item.ArtifactId,
+                    item.Kind.ToString(), item.HeadVersionId))
+                .ToArray(),
+            status.Issues
+                .Select(item => new NativeNoteMcpIssueDto(item.Code, item.Message,
+                    item.Task?.ToString().ToLowerInvariant()))
+                .ToArray(),
+            status.CreatedAt,
+            status.UpdatedAt);
+
+    internal static NativeNoteMcpProcessingChainDto MapChain(string domain,
+        NoteProcessingChainDto chain) => new(
+            domain,
+            chain.State.ToString(),
+            chain.TotalItems,
+            chain.CompletedItems,
+            chain.FailedItems,
+            chain.HasResult,
+            chain.Errors,
+            chain.WaitingReason,
+            (chain.Items ?? [])
+                .Select(item => new NativeNoteMcpProcessingItemDto(item.Key, item.State,
+                    item.Error))
+                .ToArray());
+
+    internal static NativeNoteMcpResultArtifactDto MapArtifact(NoteDerivedArtifactDto artifact)
+        => new(
+            artifact.ArtifactId,
+            artifact.Kind.ToString(),
+            artifact.HeadVersionId,
+            artifact.Versions.Any(version => version.HasConflict),
+            artifact.Versions
+                .Select(version => new NativeNoteMcpResultVersionDto(
+                    version.VersionId,
+                    version.Author.ToString(),
+                    version.ParentVersionId,
+                    version.SourceVersionId,
+                    version.ContentSha256,
+                    version.HasConflict,
+                    version.CreatedAt,
+                    version.IsHead))
+                .ToArray());
 
     private static void CheckRevision(NativeNoteMcpSnapshotDto snapshot, Guid? expected)
     {
@@ -692,6 +804,18 @@ public sealed class NativeNoteMcpService(
             throw new DomainException(40001, "requestId 不能为空");
         var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(
             $"{owner:D}:{noteId:D}:{requestId:D}:native-note-package"));
+        var identity = bytes.AsSpan(0, 16).ToArray();
+        identity[6] = (byte)((identity[6] & 0x0f) | 0x50);
+        identity[8] = (byte)((identity[8] & 0x3f) | 0x80);
+        return new Guid(identity);
+    }
+
+    private static Guid StableRetryId(Guid owner, Guid noteId, Guid versionId, Guid requestId)
+    {
+        if (requestId == Guid.Empty)
+            throw new DomainException(40001, "requestId 不能为空");
+        var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(
+            $"{owner:D}:{noteId:D}:{versionId:D}:{requestId:D}:native-note-retry"));
         var identity = bytes.AsSpan(0, 16).ToArray();
         identity[6] = (byte)((identity[6] & 0x0f) | 0x50);
         identity[8] = (byte)((identity[8] & 0x3f) | 0x80);

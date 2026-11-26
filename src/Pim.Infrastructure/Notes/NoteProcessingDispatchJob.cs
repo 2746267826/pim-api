@@ -38,8 +38,12 @@ public sealed class NoteProcessingDispatchJob(
                 {
                     var page = await materials.ListNativeNotesAsync(owner, offset, PageSize, ct);
                     foreach (var note in page.Items)
+                    {
+                        if (await materials.GetMcpNoteStatusAsync(owner, note.NoteId, ct) != "Active")
+                            continue;
                         _ = await processing.TryAutoStartAfterCompletionAsync(
                             owner, note.CurrentVersionId, ct);
+                    }
                     if (offset + page.Items.Count >= page.Total) break;
                 }
             }

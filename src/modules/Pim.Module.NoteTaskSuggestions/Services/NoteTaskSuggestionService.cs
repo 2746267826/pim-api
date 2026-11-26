@@ -10,6 +10,7 @@ using Pim.Core.Exceptions;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
 using Pim.Infrastructure.Data.Entities;
+using Pim.Infrastructure.Notes;
 using Pim.Module.Calendar.DTOs;
 using Pim.Module.Calendar.Entities;
 using Pim.Module.Calendar.Services;
@@ -26,7 +27,8 @@ internal sealed class NoteTaskSuggestionService(
     CalendarService calendar,
     TimeProvider timeProvider,
     ILogger<NoteTaskSuggestionService> logger,
-    IBackgroundJobClient? jobs = null)
+    IBackgroundJobClient? jobs = null,
+    NoteMaterialUploadStore? materials = null)
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     private Guid Owner => currentUser.UserId ?? throw new DomainException(40101, "请先登录");
@@ -40,6 +42,7 @@ internal sealed class NoteTaskSuggestionService(
         var existing = await FindExtractionByRequestAsync(owner, request.RequestId, ct);
         if (existing is not null)
             return ReplayExtraction(existing, fingerprint);
+        await RequireActiveNoteAsync(owner, request.NoteId, "提取任务建议", ct);
         if (jobs is null)
             throw new DomainException(50301,
                 "任务建议后台处理未配置；本次未创建提取记录，请稍后重试");
@@ -163,6 +166,7 @@ internal sealed class NoteTaskSuggestionService(
     {
         var owner = Owner;
         var noteId = await RequireNoteIdAsync(owner, id, ct);
+        await RequireActiveNoteAsync(owner, noteId, "修改任务建议", ct);
         return await AdvisoryLock.RunAsync(db, NoteKey(noteId), async () =>
         {
             var entity = await RequireSuggestionAsync(owner, id, ct);
@@ -204,6 +208,7 @@ internal sealed class NoteTaskSuggestionService(
     {
         var owner = Owner;
         var noteId = await RequireNoteIdAsync(owner, id, ct);
+        await RequireActiveNoteAsync(owner, noteId, "忽略任务建议", ct);
         return await AdvisoryLock.RunAsync(db, NoteKey(noteId), async () =>
         {
             var entity = await RequireSuggestionAsync(owner, id, ct);
@@ -231,6 +236,7 @@ internal sealed class NoteTaskSuggestionService(
 
         var owner = Owner;
         var noteId = await RequireNoteIdAsync(owner, id, ct);
+        await RequireActiveNoteAsync(owner, noteId, "采用任务建议", ct);
         return await ConfirmCoreAsync(owner, noteId, id, request, ct);
     }
 
@@ -421,6 +427,29 @@ internal sealed class NoteTaskSuggestionService(
             .Select(x => (Guid?)x.NoteId)
             .SingleOrDefaultAsync(ct)
         ?? throw new DomainException(40401, "任务建议不存在");
+
+    /// <summary>
+    /// Suggestion mutations are native-note writes. A recycled note stays readable through the
+    /// MCP read tools, but every REST mutation must stop until the note is restored. A missing
+    /// material-ledger entry predates this module's lifecycle integration and is not treated as
+    /// recycled.
+    /// </summary>
+    private async Task RequireActiveNoteAsync(Guid owner, Guid noteId, string action,
+        CancellationToken ct)
+    {
+        if (materials is null) return;
+        string status;
+        try
+        {
+            status = await materials.GetMcpNoteStatusAsync(owner, noteId, ct);
+        }
+        catch (DomainException error) when (error.ErrorCode == 40401)
+        {
+            return;
+        }
+        if (!string.Equals(status, "Active", StringComparison.Ordinal))
+            throw new DomainException(40901, $"笔记在回收站，请先恢复后再{action}");
+    }
 
     private async Task<NoteTaskSuggestionExtractionEntity?> FindExtractionByRequestAsync(
         Guid owner, Guid requestId, CancellationToken ct) =>

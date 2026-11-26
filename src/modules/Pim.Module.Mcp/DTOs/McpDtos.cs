@@ -8,7 +8,8 @@ public sealed class McpToolContract
     public System.Text.Json.JsonElement InputSchema { get; set; }
 }
 
-public sealed record McpToolInfo(string Name, string Group, string Description, bool IsWrite);
+public sealed record McpToolInfo(string Name, string Group, string Description, bool IsWrite,
+    bool DefaultEnabled);
 
 public sealed record McpCatalogDto(List<McpToolInfo> Read, List<McpToolInfo> Write);
 

@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Http.Features;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -19,6 +20,13 @@ namespace Pim.Module.Mcp.Services;
 public static class McpServerBootstrap
 {
     /// <summary>
+    /// JSON-RPC package uploads carry a 64 MiB ZIP as base64 (about 85.5 MiB plus envelope).
+    /// Kestrel's default request-body ceiling is about 30 MB, so the /mcp transport needs an
+    /// explicit budget above the largest valid JSON-RPC request.
+    /// </summary>
+    public const long MaxMcpRequestBodyBytes = 96L * 1024 * 1024;
+
+    /// <summary>
     /// Maps the /mcp endpoint family when MCP is enabled and captures the in-process pipeline.
     /// Must be called after all endpoints are mapped and before <c>app.Run()</c>.
     /// </summary>
@@ -37,14 +45,16 @@ public static class McpServerBootstrap
             app.Use(async (context, next) =>
             {
                 var path = context.Request.Path.Value ?? string.Empty;
+                var isMcpPath = string.Equals(path, mcpPath, StringComparison.OrdinalIgnoreCase)
+                    || path.StartsWith(mcpPath + "/", StringComparison.OrdinalIgnoreCase);
+                if (isMcpPath)
+                    ApplyRequestBodyLimit(context);
                 if (string.Equals(path, mcpPath + "/", StringComparison.OrdinalIgnoreCase))
                 {
                     context.Response.StatusCode = StatusCodes.Status308PermanentRedirect;
                     context.Response.Headers.Location = mcpPath + context.Request.QueryString.Value;
                     return;
                 }
-                var isMcpPath = string.Equals(path, mcpPath, StringComparison.OrdinalIgnoreCase)
-                    || path.StartsWith(mcpPath + "/", StringComparison.OrdinalIgnoreCase);
                 if (isMcpPath && !HttpMethods.IsOptions(context.Request.Method))
                 {
                     var token = BearerToken(context);
@@ -75,6 +85,17 @@ public static class McpServerBootstrap
         // Capture the final pipeline (includes /mcp endpoints above) for in-process dispatch.
         app.Services.GetRequiredService<McpInProcessDispatcher>()
             .Initialize(McpInProcessPipeline.BuildPipeline(app), app.Services);
+    }
+
+    /// <summary>
+    /// Raises the transport ceiling for /mcp before the SDK reads the request body. Exposed so
+    /// the real-Kestrel boundary test exercises the same helper instead of a duplicate copy.
+    /// </summary>
+    public static void ApplyRequestBodyLimit(HttpContext context)
+    {
+        var feature = context.Features.Get<IHttpMaxRequestBodySizeFeature>();
+        if (feature is { IsReadOnly: false })
+            feature.MaxRequestBodySize = MaxMcpRequestBodyBytes;
     }
 
     /// <summary>

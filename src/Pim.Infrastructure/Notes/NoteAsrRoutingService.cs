@@ -398,6 +398,14 @@ public sealed class NoteAsrRoutingService(PimDbContext db, ICurrentUserService u
                 }
                 if (state.StopRequested)
                     return (null, null, "stopped");
+                if (!await IsActiveNoteAsync(owner, candidate.NoteId, lockedCt))
+                {
+                    await legacyTasks.UpdateLockedAsync(owner, candidate.TaskId,
+                        current => current.StopRequested = true, lockedCt);
+                    await MarkAttemptStopRequestedAsync(owner, candidate.Id,
+                        DateTimeOffset.UtcNow, lockedCt);
+                    return (null, null, "recycled");
+                }
                 if (state.Request.VersionId != candidate.VersionId ||
                     state.InputSha256 != candidate.InputSha256 ||
                     state.Steps.Count != candidate.ExpectedSegments ||
@@ -485,6 +493,14 @@ public sealed class NoteAsrRoutingService(PimDbContext db, ICurrentUserService u
                 NoteAsrState state;
                 try { state = await legacyTasks.ReadAsync(owner, candidate.TaskId, lockedCt); }
                 catch (DomainException error) when (error.ErrorCode == 40401) { return true; }
+                if (!await IsActiveNoteAsync(owner, candidate.NoteId, lockedCt))
+                {
+                    await legacyTasks.UpdateLockedAsync(owner, candidate.TaskId,
+                        current => current.StopRequested = true, lockedCt);
+                    await MarkAttemptStopRequestedAsync(owner, candidate.Id,
+                        DateTimeOffset.UtcNow, lockedCt);
+                    return true;
+                }
                 var intent = state.RetryIntents.Values.Where(x => x.AttemptId == candidate.Id)
                     .OrderByDescending(x => x.CreatedAt).FirstOrDefault();
                 if (state.AttemptId != candidate.Id || state.StopRequested || intent is null ||
@@ -533,6 +549,8 @@ public sealed class NoteAsrRoutingService(PimDbContext db, ICurrentUserService u
     private async Task<NoteAsrClaimDto> ClaimAsync(Guid owner, NoteAsrLeaseEntity lease, CancellationToken ct)
     {
         var attempt = await db.NoteAsrAttempts.AsNoTracking().SingleAsync(x => x.Id == lease.AttemptId && x.OwnerId == owner, ct);
+        if (!await IsActiveNoteAsync(owner, attempt.NoteId, ct))
+            throw new DomainException(40901, "笔记在回收站，不能下发转写执行");
         var state = await legacyTasks.ReadAsync(owner, attempt.TaskId, ct);
         if (state.Request.VersionId != attempt.VersionId ||
             state.InputSha256 != attempt.InputSha256)
@@ -559,6 +577,8 @@ public sealed class NoteAsrRoutingService(PimDbContext db, ICurrentUserService u
         var attempt = await db.NoteAsrAttempts.AsNoTracking().SingleOrDefaultAsync(x => x.Id == lease.AttemptId &&
             x.OwnerId == owner && x.State == "Leased" && x.FencingToken == fencingToken && !x.StopRequested, ct)
             ?? throw new DomainException(40901, "attempt 已不接受固定输入读取");
+        if (!await IsActiveNoteAsync(owner, attempt.NoteId, ct))
+            throw new DomainException(40901, "笔记在回收站，不能继续读取转写材料");
         var state = await legacyTasks.ReadAsync(owner, attempt.TaskId, ct);
         if (state.Request.VersionId != attempt.VersionId ||
             state.InputSha256 != attempt.InputSha256 ||
@@ -644,7 +664,9 @@ public sealed class NoteAsrRoutingService(PimDbContext db, ICurrentUserService u
                 step.ErrorMessage = value.Error;
                 if (value.EvidenceId is { } evidenceId) step.EvidenceId = evidenceId;
             }
-            current.StopRequested = stopped && !complete;
+            // Preserve a recycle stop that raced this projection repair. A retry clears the
+            // stop explicitly before its own repair, so a legitimate manual resume still works.
+            current.StopRequested = current.StopRequested || (stopped && !complete);
             current.CompletionAcknowledged = complete;
         }, ct);
     }
@@ -718,6 +740,28 @@ public sealed class NoteAsrRoutingService(PimDbContext db, ICurrentUserService u
                     "已请求停止；执行端须通过续租读取停止标记并回执，未确认前不视为已停止")
                 .SetProperty(x => x.UpdatedAt, now), ct);
 
+    /// <summary>Stop helper shared by relational and InMemory providers.</summary>
+    private async Task MarkAttemptStopRequestedAsync(Guid owner, Guid attemptId,
+        DateTimeOffset now, CancellationToken ct)
+    {
+        if (db.Database.IsRelational())
+        {
+            await StopAttemptUpdateAsync(owner, attemptId, now, ct);
+            return;
+        }
+        var tracked = await db.NoteAsrAttempts.SingleOrDefaultAsync(x =>
+            x.Id == attemptId && x.OwnerId == owner, ct);
+        if (tracked is null) return;
+        if (tracked.State is "Succeeded" or "Failed" or "Cancelled") return;
+        tracked.StopRequested = true;
+        if (tracked.State != "Leased") tracked.State = "Unknown";
+        tracked.LastErrorCode = "stop_requested";
+        tracked.LastErrorMessage =
+            "已请求停止；执行端须通过续租读取停止标记并回执，未确认前不视为已停止";
+        tracked.UpdatedAt = now;
+        await db.SaveChangesAsync(ct);
+    }
+
     public async Task<NoteAsrLeaseDto> RenewLeaseAsync(Guid leaseId, NoteAsrLeaseHeartbeatRequest request, CancellationToken ct)
     {
         var owner = await RequireActiveOwnerAsync(ct);
@@ -729,6 +773,18 @@ public sealed class NoteAsrRoutingService(PimDbContext db, ICurrentUserService u
             if (lease.LeaseToken != request.LeaseToken || lease.FencingToken != request.FencingToken)
                 throw new DomainException(40901, "租约、attempt 或 fence 不匹配");
             var now = DateTimeOffset.UtcNow;
+            var attempt = await db.NoteAsrAttempts.AsNoTracking()
+                .SingleOrDefaultAsync(x => x.Id == lease.AttemptId && x.OwnerId == owner, token)
+                ?? throw new DomainException(40401, "转写 attempt 不存在");
+            if (!await IsActiveNoteAsync(owner, attempt.NoteId, token))
+            {
+                // Do not extend an in-flight lease. Return the stop marker so the worker can
+                // terminate without treating a transient 409 as an engine failure.
+                await MarkAttemptStopRequestedAsync(owner, attempt.Id, now, token);
+                var stopped = await db.NoteAsrLeases.AsNoTracking()
+                    .SingleAsync(x => x.Id == leaseId && x.OwnerId == owner, token);
+                return await Describe(db, owner, stopped, token);
+            }
             var newExpiry = now.AddSeconds(Options.NodeHeartbeatTimeoutSeconds);
             var renewed = await db.NoteAsrLeases
                 .Where(x => x.Id == leaseId && x.OwnerId == owner && x.LeaseToken == request.LeaseToken &&
@@ -767,6 +823,8 @@ public sealed class NoteAsrRoutingService(PimDbContext db, ICurrentUserService u
                     ?? throw new DomainException(40401, "租约不存在");
                 var attempt = await db.NoteAsrAttempts.AsNoTracking()
                     .SingleAsync(x => x.Id == attemptId && x.OwnerId == owner, token);
+                if (!await IsActiveNoteAsync(owner, attempt.NoteId, token) && request.Kind != "fail")
+                    throw new DomainException(40901, "笔记在回收站，不能继续写入转写结果");
                 // Identity is checked before duplicate handling: another lease/attempt/fence is never a replay.
                 if (lease.LeaseToken != request.LeaseToken || lease.FencingToken != request.FencingToken ||
                     attempt.FencingToken != request.FencingToken)
@@ -1210,6 +1268,10 @@ public sealed class NoteAsrRoutingService(PimDbContext db, ICurrentUserService u
     private async Task<NoteAsrNodeEntity> OwnedNodeAsync(Guid owner, Guid nodeId, CancellationToken ct) =>
         await db.NoteAsrNodes.SingleOrDefaultAsync(x => x.Id == nodeId && x.OwnerId == owner, ct)
         ?? throw new DomainException(40401, "ASR 节点不存在");
+
+    private async Task<bool> IsActiveNoteAsync(Guid owner, Guid noteId, CancellationToken ct)
+        => string.Equals(await materials.GetMcpNoteStatusAsync(owner, noteId, ct), "Active",
+            StringComparison.Ordinal);
 
     private async Task<NoteAsrLeaseEntity> ValidLeaseAsync(Guid owner, Guid leaseId, Guid token, long fencing, CancellationToken ct)
     {

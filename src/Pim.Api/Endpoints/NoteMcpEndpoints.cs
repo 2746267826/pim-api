@@ -60,19 +60,26 @@ public static class NoteMcpEndpoints
             .Produces<ApiResponse<NativeNoteMcpOperationResultDto<NativeNoteMcpProcessingDto>>>()
             .Produces(401).Produces<ApiResponse<string>>(404);
 
+        group.MapGet("/notes/{noteId:guid}/operations/{requestId:guid}", async (Guid noteId,
+            Guid requestId, NativeNoteMcpService service, CancellationToken ct) =>
+            Results.Ok(ApiResponse<NativeNoteMcpOperationStatusDto>.Ok(
+                await service.GetOperationAsync(noteId, requestId, ct))))
+            .Produces<ApiResponse<NativeNoteMcpOperationStatusDto>>()
+            .Produces(400).Produces(401).Produces<ApiResponse<string>>(404);
+
         group.MapGet("/notes/{noteId:guid}/suggestions", async (Guid noteId,
             NoteTaskSuggestionStatusDto? status, NativeNoteMcpService service,
             NoteTaskSuggestionService suggestions, CancellationToken ct) =>
         {
             var snapshot = await service.GetVersionsAsync(noteId, 1, ct);
             var list = await suggestions.ListAsync(noteId, status, ct);
-            return Results.Ok(ApiResponse<NativeNoteMcpOperationResultDto<NoteTaskSuggestionListDto>>.Ok(
-                new NativeNoteMcpOperationResultDto<NoteTaskSuggestionListDto>(
+            return Results.Ok(ApiResponse<NativeNoteMcpOperationResultDto<NativeNoteMcpSuggestionListDto>>.Ok(
+                new NativeNoteMcpOperationResultDto<NativeNoteMcpSuggestionListDto>(
                     service.ReadReceipt("get_native_note_suggestions", noteId, snapshot.Revision,
                         "已读取笔记任务与日程建议"),
-                    list)));
+                    MapSuggestions(list))));
         })
-            .Produces<ApiResponse<NativeNoteMcpOperationResultDto<NoteTaskSuggestionListDto>>>()
+            .Produces<ApiResponse<NativeNoteMcpOperationResultDto<NativeNoteMcpSuggestionListDto>>>()
             .Produces(400).Produces(401).Produces<ApiResponse<string>>(404);
 
         group.MapGet("/notes/{noteId:guid}/package", async (Guid noteId, Guid? versionId,
@@ -148,16 +155,21 @@ public static class NoteMcpEndpoints
             .Produces<ApiResponse<NativeNoteMcpOperationResultDto<NativeNoteMcpCancelUploadDto>>>()
             .Produces(400).Produces(401).Produces(404).Produces(409);
 
-        foreach (var action in new[] { "archive", "restore", "delete" })
-        {
-            group.MapPost($"/notes/{{noteId:guid}}/lifecycle/{action}", async (Guid noteId,
-                NativeNoteMcpLifecycleRequest request, NativeNoteMcpService service,
-                CancellationToken ct) =>
-                Results.Ok(ApiResponse<NativeNoteMcpOperationResultDto<NativeNoteMcpLifecycleDto>>.Ok(
-                    await service.LifecycleAsync(noteId, action, request, ct))))
-                .Produces<ApiResponse<NativeNoteMcpOperationResultDto<NativeNoteMcpLifecycleDto>>>()
-                .Produces(400).Produces(401).Produces(404).Produces(409);
-        }
+        group.MapPost("/notes/{noteId:guid}/recycle", async (Guid noteId,
+            NativeNoteMcpRecycleRequest request, NativeNoteMcpService service,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<NativeNoteMcpOperationResultDto<NativeNoteMcpRecycleDto>>.Ok(
+                await service.RecycleAsync(noteId, request, ct))))
+            .Produces<ApiResponse<NativeNoteMcpOperationResultDto<NativeNoteMcpRecycleDto>>>()
+            .Produces(400).Produces(401).Produces(404).Produces(409);
+
+        group.MapPost("/notes/{noteId:guid}/restore", async (Guid noteId,
+            NativeNoteMcpRecycleRequest request, NativeNoteMcpService service,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<NativeNoteMcpOperationResultDto<NativeNoteMcpRecycleDto>>.Ok(
+                await service.RestoreAsync(noteId, request, ct))))
+            .Produces<ApiResponse<NativeNoteMcpOperationResultDto<NativeNoteMcpRecycleDto>>>()
+            .Produces(400).Produces(401).Produces(404).Produces(409);
 
         group.MapPost("/notes/{noteId:guid}/processing/start", async (Guid noteId,
             NativeNoteMcpProcessingStartRequest request, NativeNoteMcpService service,
@@ -192,6 +204,7 @@ public static class NoteMcpEndpoints
             var result = await operations.RunAsync(
                 owner,
                 request.RequestId,
+                noteId,
                 "extract_native_note_suggestions",
                 new
                 {
@@ -221,9 +234,10 @@ public static class NoteMcpEndpoints
                             request.Consent,
                             request.AcknowledgePossibleCharge),
                         lockedCt);
-                    return new NativeNoteMcpOperationResultDto<NoteTaskSuggestionExtractionDto>(
+                    return new NativeNoteMcpOperationResultDto<NativeNoteMcpSuggestionExtractionDto>(
                         new NativeNoteMcpReceiptDto(
-                            request.RequestId,
+                            NoteMcpOperationStore.BuildOperationId(owner,
+                                "extract_native_note_suggestions", request.RequestId),
                             "extract_native_note_suggestions",
                             noteId,
                             note.Revision,
@@ -231,12 +245,12 @@ public static class NoteMcpEndpoints
                             false,
                             DateTimeOffset.UtcNow,
                             "建议提取已按固定结果版本入队；完成后可读取并采用任务或日程建议"),
-                        extraction);
+                        MapExtraction(extraction));
                 },
                 ct);
-            return Results.Ok(ApiResponse<NativeNoteMcpOperationResultDto<NoteTaskSuggestionExtractionDto>>.Ok(result));
+            return Results.Ok(ApiResponse<NativeNoteMcpOperationResultDto<NativeNoteMcpSuggestionExtractionDto>>.Ok(result));
         })
-            .Produces<ApiResponse<NativeNoteMcpOperationResultDto<NoteTaskSuggestionExtractionDto>>>()
+            .Produces<ApiResponse<NativeNoteMcpOperationResultDto<NativeNoteMcpSuggestionExtractionDto>>>()
             .Produces(400).Produces(401).Produces(404).Produces(409).Produces(503);
 
         group.MapPost("/notes/{noteId:guid}/suggestions/{suggestionId:guid}/confirm", async (
@@ -249,6 +263,7 @@ public static class NoteMcpEndpoints
             var result = await operations.RunAsync(
                 owner,
                 request.RequestId,
+                noteId,
                 "confirm_native_note_suggestion",
                 new { noteId, suggestionId, request.ExpectedRevision },
                 async lockedCt =>
@@ -263,9 +278,10 @@ public static class NoteMcpEndpoints
                     var confirmed = await suggestions.ConfirmAsync(suggestionId,
                         new ConfirmNoteTaskSuggestionRequest(request.RequestId, request.ExpectedRevision),
                         lockedCt);
-                    return new NativeNoteMcpOperationResultDto<NoteTaskSuggestionDto>(
+                    return new NativeNoteMcpOperationResultDto<NativeNoteMcpSuggestionDto>(
                         new NativeNoteMcpReceiptDto(
-                            request.RequestId,
+                            NoteMcpOperationStore.BuildOperationId(owner,
+                                "confirm_native_note_suggestion", request.RequestId),
                             "confirm_native_note_suggestion",
                             noteId,
                             note.Revision,
@@ -273,12 +289,12 @@ public static class NoteMcpEndpoints
                             false,
                             DateTimeOffset.UtcNow,
                             "建议已采用并生成对应的任务或日程；相同 requestId 会返回同一结果"),
-                        confirmed);
+                        MapSuggestion(confirmed));
                 },
                 ct);
-            return Results.Ok(ApiResponse<NativeNoteMcpOperationResultDto<NoteTaskSuggestionDto>>.Ok(result));
+            return Results.Ok(ApiResponse<NativeNoteMcpOperationResultDto<NativeNoteMcpSuggestionDto>>.Ok(result));
         })
-            .Produces<ApiResponse<NativeNoteMcpOperationResultDto<NoteTaskSuggestionDto>>>()
+            .Produces<ApiResponse<NativeNoteMcpOperationResultDto<NativeNoteMcpSuggestionDto>>>()
             .Produces(400).Produces(401).Produces(404).Produces(409);
 
         group.MapPost("/notes/{noteId:guid}/suggestions/{suggestionId:guid}/dismiss", async (
@@ -291,6 +307,7 @@ public static class NoteMcpEndpoints
             var result = await operations.RunAsync(
                 owner,
                 request.RequestId,
+                noteId,
                 "dismiss_native_note_suggestion",
                 new { noteId, suggestionId, request.ExpectedRevision },
                 async lockedCt =>
@@ -304,9 +321,10 @@ public static class NoteMcpEndpoints
                         throw new DomainException(40401, "建议不存在或不属于当前笔记");
                     var dismissed = await suggestions.DismissAsync(suggestionId,
                         new DismissNoteTaskSuggestionRequest(request.ExpectedRevision), lockedCt);
-                    return new NativeNoteMcpOperationResultDto<NoteTaskSuggestionDto>(
+                    return new NativeNoteMcpOperationResultDto<NativeNoteMcpSuggestionDto>(
                         new NativeNoteMcpReceiptDto(
-                            request.RequestId,
+                            NoteMcpOperationStore.BuildOperationId(owner,
+                                "dismiss_native_note_suggestion", request.RequestId),
                             "dismiss_native_note_suggestion",
                             noteId,
                             note.Revision,
@@ -314,12 +332,12 @@ public static class NoteMcpEndpoints
                             false,
                             DateTimeOffset.UtcNow,
                             "建议已忽略；相同 requestId 会返回同一结果"),
-                        dismissed);
+                        MapSuggestion(dismissed));
                 },
                 ct);
-            return Results.Ok(ApiResponse<NativeNoteMcpOperationResultDto<NoteTaskSuggestionDto>>.Ok(result));
+            return Results.Ok(ApiResponse<NativeNoteMcpOperationResultDto<NativeNoteMcpSuggestionDto>>.Ok(result));
         })
-            .Produces<ApiResponse<NativeNoteMcpOperationResultDto<NoteTaskSuggestionDto>>>()
+            .Produces<ApiResponse<NativeNoteMcpOperationResultDto<NativeNoteMcpSuggestionDto>>>()
             .Produces(400).Produces(401).Produces(404).Produces(409);
 
         return endpoints;
@@ -327,6 +345,46 @@ public static class NoteMcpEndpoints
 
     private static Guid UserId(ICurrentUserService user)
         => user.UserId ?? throw new DomainException(40101, "请先登录");
+
+    internal static NativeNoteMcpSuggestionListDto MapSuggestions(
+        NoteTaskSuggestionListDto list)
+        => new(list.Total, list.Items.Select(MapSuggestion).ToArray());
+
+    internal static NativeNoteMcpSuggestionDto MapSuggestion(NoteTaskSuggestionDto suggestion)
+        => new(
+            suggestion.Id,
+            suggestion.Ordinal,
+            suggestion.Title,
+            suggestion.Kind.ToString(),
+            suggestion.Description,
+            suggestion.Priority,
+            suggestion.Due,
+            suggestion.Start,
+            suggestion.End,
+            suggestion.TimeZoneId,
+            suggestion.TaskBookId,
+            suggestion.CalendarId,
+            suggestion.Status.ToString(),
+            suggestion.Revision,
+            suggestion.TaskId,
+            suggestion.EventId,
+            suggestion.CreatedAt,
+            suggestion.UpdatedAt,
+            suggestion.ConfirmedAt,
+            suggestion.DismissedAt);
+
+    internal static NativeNoteMcpSuggestionExtractionDto MapExtraction(
+        NoteTaskSuggestionExtractionDto extraction)
+        => new(
+            extraction.Status.ToString(),
+            extraction.AttemptCount,
+            extraction.SuggestionCount,
+            extraction.ErrorCode,
+            extraction.ErrorMessage,
+            extraction.CreatedAt,
+            extraction.UpdatedAt,
+            extraction.StartedAt,
+            extraction.FinishedAt);
 
     private static async Task<string> HashStreamAsync(FileStream stream, CancellationToken ct)
     {

@@ -7,6 +7,7 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.DependencyInjection;
 using Pim.Core.Common;
+using Pim.Core.Modules;
 using Pim.Core.Notes;
 using Pim.Infrastructure.Notes;
 using Pim.UnitTests.Api;
@@ -323,6 +324,88 @@ public sealed class NoteMaterialEndpointsTests : IDisposable
         _ = _factory.Services.GetRequiredService<ISwaggerProvider>();
     }
 
+    [Fact]
+    public async Task RecycledNoteIsReadOnlyAcrossRestSearchAndProcessingSources()
+    {
+        var owner = await AuthRegistrationTestHost.SeedAndLoginAsync(_factory,
+            "notes-recycle-" + Guid.NewGuid().ToString("N"));
+        using var client = AuthRegistrationTestHost.Authed(_factory, owner.AccessToken);
+        var store = _factory.Services.GetRequiredService<NoteMaterialUploadStore>();
+        var fixture = NoteMaterialUploadStoreTests.Fixture.Create(audioSamples: 16_000);
+        await UploadAllAsync(store, owner.UserId, fixture);
+        var noteId = fixture.Request.NoteId;
+        var versionId = fixture.Request.VersionId;
+
+        var beforeSearch = await SearchNotesAsync(client);
+        Assert.Equal(1, beforeSearch.TotalCount);
+        Assert.Equal(noteId.ToString("D"), Assert.Single(beforeSearch.Items).Id);
+        Assert.Equal(1, await SourceCountAsync(client,
+            "/api/v1/native-notes/asr-tasks/sources"));
+        Assert.Equal(1, await SourceCountAsync(client,
+            "/api/v1/native-notes/derived-tasks/sources"));
+
+        var snapshot = await store.GetMcpSnapshotAsync(owner.UserId, noteId, 1);
+        await store.RecycleAsync(owner.UserId, noteId, snapshot.Revision);
+
+        var page = await client.GetFromJsonAsync<ApiResponse<NativeNotePageDto>>(Root);
+        Assert.Equal(0, page!.Data!.Total);
+        Assert.Equal(HttpStatusCode.Conflict,
+            (await client.GetAsync($"{Root}/{noteId}/current")).StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict,
+            (await client.GetAsync($"{Root}/versions/{versionId}")).StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict,
+            (await client.GetAsync($"{Root}/versions/{versionId}/bundle")).StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict,
+            (await client.GetAsync($"{Root}/{noteId}/versions")).StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict,
+            (await client.GetAsync($"{Root}/versions/{versionId}/files/0")).StatusCode);
+
+        var firstFile = fixture.Content[0];
+        var firstPart = firstFile.AsSpan(0,
+            Math.Min(NoteMaterialUploadOptions.PartSizeBytes, firstFile.Length)).ToArray();
+        using (var body = new ByteArrayContent(firstPart))
+        {
+            body.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
+            var hash = Convert.ToHexString(
+                System.Security.Cryptography.SHA256.HashData(firstPart)).ToLowerInvariant();
+            Assert.Equal(HttpStatusCode.Conflict,
+                (await client.PutAsync(
+                    $"{Root}/versions/{versionId}/files/0/parts/0?sha256={hash}", body)).StatusCode);
+        }
+
+        Assert.Equal(HttpStatusCode.Conflict,
+            (await client.PostAsync($"{Root}/versions/{versionId}/complete", null)).StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict,
+            (await client.PostAsJsonAsync($"{Root}/versions/{versionId}/promote",
+                new PromoteNoteMaterialVersionRequest(null))).StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict,
+            (await client.PostAsJsonAsync($"{Root}/versions",
+                NoteMaterialUploadStoreTests.Fixture.Create(noteId: noteId).Request)).StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict,
+            (await client.PostAsJsonAsync($"{Root}/versions/{versionId}/clone",
+                new CloneNoteMaterialVersionRequest(null,
+                    NoteMaterialUploadStoreTests.Fixture.Create(noteId: noteId).Request))).StatusCode);
+
+        var whileRecycled = await SearchNotesAsync(client);
+        Assert.Equal(0, whileRecycled.TotalCount);
+        Assert.Empty(whileRecycled.Items);
+        Assert.Equal(0, await SourceCountAsync(client,
+            "/api/v1/native-notes/asr-tasks/sources"));
+        Assert.Equal(0, await SourceCountAsync(client,
+            "/api/v1/native-notes/derived-tasks/sources"));
+
+        await store.RestoreAsync(owner.UserId, noteId, null);
+        Assert.Equal(HttpStatusCode.OK,
+            (await client.GetAsync($"{Root}/{noteId}/current")).StatusCode);
+        Assert.Equal(HttpStatusCode.OK,
+            (await client.GetAsync($"{Root}/versions/{versionId}/files/0")).StatusCode);
+        Assert.Equal(1, (await client.GetFromJsonAsync<ApiResponse<NativeNotePageDto>>(Root))!
+            .Data!.Total);
+        Assert.Equal(1, (await SearchNotesAsync(client)).TotalCount);
+        Assert.Equal(1, await SourceCountAsync(client,
+            "/api/v1/native-notes/asr-tasks/sources"));
+    }
+
     public void Dispose()
     {
         _factory.Dispose();
@@ -342,5 +425,43 @@ public sealed class NoteMaterialEndpointsTests : IDisposable
         using var output = new MemoryStream();
         await stream.CopyToAsync(output);
         return output.ToArray();
+    }
+
+    private static async Task UploadAllAsync(NoteMaterialUploadStore store, Guid owner,
+        NoteMaterialUploadStoreTests.Fixture fixture)
+    {
+        await store.BeginAsync(owner, fixture.Request);
+        for (var file = 0; file < fixture.Content.Count; file++)
+        {
+            var bytes = fixture.Content[file];
+            for (var offset = 0; offset < bytes.Length;
+                 offset += NoteMaterialUploadOptions.PartSizeBytes)
+            {
+                var chunk = bytes.AsSpan(offset,
+                    Math.Min(NoteMaterialUploadOptions.PartSizeBytes, bytes.Length - offset))
+                    .ToArray();
+                var hash = Convert.ToHexString(
+                    System.Security.Cryptography.SHA256.HashData(chunk)).ToLowerInvariant();
+                await store.UploadPartAsync(owner, fixture.Request.VersionId, file,
+                    offset / NoteMaterialUploadOptions.PartSizeBytes, hash,
+                    new MemoryStream(chunk, writable: false));
+            }
+        }
+        await store.CompleteAsync(owner, fixture.Request.VersionId);
+    }
+
+    private static async Task<GlobalSearchResult> SearchNotesAsync(HttpClient client)
+    {
+        var response = await client.GetFromJsonAsync<ApiResponse<GlobalSearchResult>>(
+            "/api/v1/search/?q=%E7%A0%94%E7%A9%B6%E6%96%B9%E6%B3%95&scope=note");
+        Assert.Equal(0, response!.Code);
+        return response.Data!;
+    }
+
+    private static async Task<int> SourceCountAsync(HttpClient client, string path)
+    {
+        var response = await client.GetFromJsonAsync<ApiResponse<JsonElement>>(path);
+        Assert.Equal(0, response!.Code);
+        return response.Data.GetProperty("total").GetInt32();
     }
 }

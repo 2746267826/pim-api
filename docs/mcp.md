@@ -1,7 +1,7 @@
 # MCP Server 使用文档 / MCP Server Guide
 
-> PIM MCP v3 — 100 只读 + 49 写入工具（HTTP 多客户端 + 工具级权限），给自家可信 AI Agent 专用。
-> PIM MCP v3 — 100 read-only + 49 write tools (HTTP multi-client + tool-level permissions), for trusted internal AI Agent.
+> PIM MCP v3 — 108 只读 + 60 写入工具（HTTP 多客户端 + 工具级权限），给自家可信 AI Agent 专用。
+> PIM MCP v3 — 108 read-only + 60 write tools (HTTP multi-client + tool-level permissions), for trusted internal AI Agent.
 
 ## 目录 / Table of Contents
 - [1. 概览 / Overview](#1-概览--overview)
@@ -15,7 +15,8 @@
   - [5.4 QuickNotes 3](#54-quicknotes-3)
   - [5.5 Files 7](#55-files-7)
   - [5.6 Core/Infra 14](#56-coreinfra-14)
-  - [5.7 写入工具 49 / Write Tools 49](#57-写入工具-49--write-tools-49)
+  - [5.7 NativeNotes 8](#57-nativenotes-8)
+  - [5.8 写入工具 60 / Write Tools 60](#58-写入工具-60--write-tools-60)
 - [6. HTTP 接入与 Token / HTTP Access & Tokens](#6-http-接入与-token--http-access--tokens)
 - [7. 典型调用流 / Recipes](#7-典型调用流--recipes)
 - [8. 脱敏与隐私 / Redaction](#8-脱敏与隐私--redaction)
@@ -28,7 +29,7 @@
 ### 是什么 / What it is
 - Python `FastMCP` 服务，地址 `scripts/mcp/pim_mcp_server.py`（**已退役**，仅作行为基准；线上 `/mcp` 是 .NET 进程内服务）。
 - 双传输：`stdio`（默认，兼容 v2）+ `Streamable HTTP`（Phase 3，多客户端远程并发）。
-- 线上 `/mcp`（.NET，`McpToolCatalog`）：**149 工具** = 读取 `100`（Calendar 31 + PcTracker 26 + Mobile 19 + QuickNotes 3 + Files 7 + Core/Infra 14）+ 写入 `49`（Calendar 30 + QuickNotes 8 + Files 5 + PcTracker 4 + Mobile 2）。
+- 线上 `/mcp`（.NET，`McpToolCatalog`）：**168 工具** = 读取 `108`（Calendar 31 + PcTracker 26 + Mobile 19 + QuickNotes 3 + Files 7 + NativeNotes 8 + Core/Infra 14）+ 写入 `60`（Calendar 30 + QuickNotes 8 + Files 5 + PcTracker 4 + Mobile 2 + NativeNotes 11）。
 - 退役的 Python 基准脚本：**148 工具** = 读取 `99` + 写入 `49`（比 .NET 少 `get_mobile_liveness_summary`，且 WO-PC-BACKEND-20261001 REQ-6 又下线了 `get_pc_aw_heatmap`）。
   （计数按 `scripts/mcp/pim_mcp_server.py --check` 与 `McpToolCatalog` 实际目录核对。）
 - Python `FastMCP` service at `scripts/mcp/pim_mcp_server.py`. stdio (default) + Streamable HTTP.
@@ -40,7 +41,7 @@
 - 覆盖 AI 常用场景：今天有啥事 / 这周效率 / 人在哪在干啥 / 找文件笔记 / 顺手把日程任务排进去。
 
 ### 不能做什么 / What it cannot do
-- 写入仅限 50 个已开放工具；`batch/execute`、`/ops/*`、Outlook 写回、端侧采集上传、confirmations 等一律不开。
+- 写入仅限 60 个已开放工具；`batch/execute`、`/ops/*`、Outlook 写回、端侧采集上传、confirmations 等一律不开。
 - 文件二进制下载 `items/{id}/download` 等流式下载不开放，只给元数据与搜索。
 - `/ops/*` 运维接口不开放。第三方限流/OAuth 不做（自家可信）。
 
@@ -83,7 +84,7 @@ dotnet src/Pim.Api.dll --urls http://127.0.0.1:5858
 PIM_ACCESS_TOKEN=<jwt> dotnet src/Pim.Api.dll --mcp-stdio
 ```
 - `--mcp-stdio` 模式下 stdout 只承载 MCP 协议，日志走 stderr 与文件。
-- 自检：`dotnet test tests/Pim.UnitTests` 的 `Mcp*` 用例覆盖 149 工具契约等价性。
+- 自检：`dotnet test tests/Pim.UnitTests` 的 `Mcp*` 用例覆盖 168 工具契约等价性。
 - 生产部署（HTTP 模式）：见 §6「生产部署 / Production deployment」——Pim.Api 单容器直接对外。
 
 ### 客户端配置 / Client configs
@@ -116,7 +117,7 @@ PIM_ACCESS_TOKEN=<jwt> dotnet src/Pim.Api.dll --mcp-stdio
   }
 }
 ```
-- Token 获取：WebUI 设置 → **MCP 管理** → 新建客户端 → 生成一次性 Token（`pim_mcp_` 前缀，只显示一次）。默认权限：读取全开、写入全关。
+- Token 获取：WebUI 设置 → **MCP 管理** → 新建客户端 → 生成一次性 Token（`pim_mcp_` 前缀，只显示一次）。默认权限：普通读取开启、**原生笔记读取关闭（需显式勾选）**、写入全关。旧客户端缺少某个工具权限 key 时按该工具自身默认值处理，升级服务端不会自动获得 notes.read。
 
 **`claude_desktop_config.json`**
 ```json
@@ -3100,7 +3101,44 @@ async def get_version(-) -> Any: ...
 }
 ```
 
-## 5.7 写入工具 49 / Write Tools 49
+## 5.7 NativeNotes 8
+
+> 原生笔记是服务器唯一事实源，按 MCP 用户隔离。**8 个读工具默认关闭**；旧客户端缺少对应权限 key 时同样按关闭处理，升级服务端不会自动获得 notes.read。读取 recycled 笔记是允许的，但写入、下载整包与处理都会被拒绝，直到先恢复。
+
+**只读 8**
+
+| 工具 | 方法 + 路径 | 说明 |
+|---|---|---|
+| `get_native_notes` | `GET /api/v1/native-notes/mcp/notes` | 列表；`status` 仅 `Active` / `Recycled` / `All` |
+| `get_native_note` | `GET /api/v1/native-notes/mcp/notes/{noteId}` | 聚合详情（当前版本、冲突候选、处理与回执） |
+| `get_native_note_versions` | `GET /api/v1/native-notes/mcp/notes/{noteId}/versions` | 版本与冲突候选 |
+| `get_native_note_results` | `GET /api/v1/native-notes/mcp/notes/{noteId}/results` | 外部处理状态与结果工件 |
+| `get_native_note_processing` | `GET /api/v1/native-notes/mcp/notes/{noteId}/processing` | 高层处理状态、逻辑步骤 key 与错误 |
+| `get_native_note_operation` | `GET /api/v1/native-notes/mcp/notes/{noteId}/operations/{requestId}` | 按 requestId 查询失败/未知/成功 operation |
+| `get_native_note_package` | `GET /api/v1/native-notes/mcp/notes/{noteId}/package` | 分段下载 ZIP（单次最多 16 MB base64） |
+| `get_native_note_suggestions` | `GET /api/v1/native-notes/mcp/notes/{noteId}/suggestions` | 任务/日程建议 |
+
+**写入 11**
+
+| 工具 | 方法 + 路径 | 说明 |
+|---|---|---|
+| `upload_native_note_package` | `POST /api/v1/native-notes/mcp/notes/{noteId}/package` | 上传 64 MB 以内 ZIP 包（JSON base64） |
+| `promote_native_note_version` | `POST .../{noteId}/promote` | 选择当前材料版本 |
+| `cancel_native_note_upload` | `POST .../{noteId}/cancel-upload` | 取消未完成上传 |
+| `delete_native_note` | `POST .../{noteId}/recycle` | 移入回收站；停止排队/在途处理 |
+| `restore_native_note` | `POST .../{noteId}/restore` | 从回收站恢复；处理保持停止，需手动继续 |
+| `start_native_note_processing` | `POST .../{noteId}/processing/start` | 发起高层处理 |
+| `retry_native_note_processing` | `POST .../{noteId}/processing/retry` | 按逻辑 `stepKeys` 重试整理步骤 |
+| `adopt_native_note_result` | `POST .../{noteId}/results/{artifactId}/adopt` | 采用结果版本 |
+| `extract_native_note_suggestions` | `POST .../{noteId}/suggestions/extractions` | 提取建议 |
+| `confirm_native_note_suggestion` | `POST .../{noteId}/suggestions/{suggestionId}/confirm` | 采用建议 |
+| `dismiss_native_note_suggestion` | `POST .../{noteId}/suggestions/{suggestionId}/dismiss` | 忽略建议 |
+
+> 原生笔记没有 archive/Archived 状态：文件夹用于日常归档，删除只进回收站。请求体上限：`/mcp` 为 96 MiB（覆盖 64 MB ZIP 的 base64 JSON-RPC），反向代理需同步放宽。所有写操作返回 `operationId`（`nop_...`）；失败/未知结果不猜测成功，可用 `get_native_note_operation` 按 requestId 对账。
+>
+> 本切片未包含：笔记正文 create/update、文件夹/标签管理、彻底删除/清空回收站、ASR 片段级重试、按板块采用。
+
+## 5.8 写入工具 60 / Write Tools 60
 
 > 全部写入工具走 HTTP MCP（Phase 3）。每次调用需对应 `write` 权限；关闭时返回 `{"error":"permission denied: <tool>","code":403}`。请求体字段为 JSON；`import_ics`/`upload_*` 为 multipart。
 
@@ -3204,7 +3242,7 @@ async def get_version(-) -> Any: ...
 
 ### 权限模型 / Permissions
 - 按**客户端连接**授权：一个客户端 = 一把 Token = 一套权限。
-- 默认模板：新建客户端「读取全开 / 写入全关」。
+- 默认模板：新建客户端「普通读取开启 / 原生笔记读取关闭 / 写入全关」。缺失的权限 key 按工具自身默认值处理，不会把新工具自动放行给旧客户端。
 - 粒度：读取 100 项 + 写入 49 项均可独立开关（WebUI 设置 → MCP 管理）。
 - 保存即生效（每次调用实时经 `/verify` 校验，无需重启 MCP server）。
 - **写越权防护**：`/verify` 签发的短时 JWT（2 分钟）带 `mcp_tool` 声明，Pim.Api 中间件按工具端点限定用途：
@@ -3250,7 +3288,7 @@ async def get_version(-) -> Any: ...
        proxy_set_header Host $host;
        proxy_read_timeout 300s;
        proxy_send_timeout 300s;
-       client_max_body_size 50m;   # 文件上传（QuickNotes/Files 工具）
+       client_max_body_size 100m;  # /mcp 请求体上限 96 MiB（64 MB ZIP 的 base64 JSON-RPC）
        # allow <可信 AI 客户端 IP 段>;  deny all;   # 建议限制访问来源
    }
    ```
@@ -3272,7 +3310,7 @@ async def get_version(-) -> Any: ...
      -H "Authorization: Bearer pim_mcp_<token>" \
      -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"verify","version":"1.0"}}}'
    ```
-   期望：`jsonrpc/result/serverInfo` 的 JSON-RPC 响应；`tools/list` 返回 149 个工具。
+   期望：`jsonrpc/result/serverInfo` 的 JSON-RPC 响应；`tools/list` 返回 168 个工具。
 
 ### 管理 API / Management API
 | 端点 | 方法 | 说明 |
@@ -3282,7 +3320,7 @@ async def get_version(-) -> Any: ...
 | `/api/v1/mcp/clients/{id}` | PUT | 改名/改权限 |
 | `/api/v1/mcp/clients/{id}/revoke` | POST | 吊销 Token |
 | `/api/v1/mcp/clients/{id}` | DELETE | 删除客户端 |
-| `/api/v1/mcp/catalog` | GET | 工具目录（读 100 + 写 49，供权限页渲染） |
+| `/api/v1/mcp/catalog` | GET | 工具目录（读 108 + 写 60，含各工具 defaultEnabled，供权限页渲染） |
 | `/api/v1/mcp/verify` | POST | 内部：Token 校验 + 权限鉴权 + 发短时 JWT（仅 MCP server 内网调用） |
 
 ## 7. 典型调用流 / Recipes
@@ -3516,7 +3554,7 @@ A: 事件可能被软删除进回收站，用 `get_recycle_bin(type='event')` �
 A: `>50KB` 自动加 `truncated`，用 `nextPage` 分页继续。或缩小时间范围、加 `calendarId` 过滤。
 
 **Q: 需要写入怎么办？ / Need writes?**
-A: 已支持：HTTP 模式（v3）提供 50 个写入工具（`create_*`/`update_*`/`delete_*` 等），需在 WebUI 设置 → MCP 管理 → 客户端权限中开启对应写权限；stdio 模式仍为只读（v2 兼容）。
+A: 已支持：HTTP 模式（v3）提供 60 个写入工具（`create_*`/`update_*`/`delete_*` 等），需在 WebUI 设置 → MCP 管理 → 客户端权限中开启对应写权限；stdio 模式仍为只读（v2 兼容）。
 
 **Q: 时区跨天不准？ / Timezone day cut?**
 A: 所有聚合按 `timezone` 切天，默认为 `Asia/Shanghai`。传入 `timezone=UTC` 可按 UTC 切天。
@@ -3533,6 +3571,7 @@ A: 所有聚合按 `timezone` 切天，默认为 `Asia/Shanghai`。传入 `timez
 | v5.0 | 2026-09-20 | 文件模块 v2（P4）：新增 `read_file_text`（元数据搜索之外的内容级读取，交 Hermes 现取现抽）；退役 `get_file_versions`/`get_file_trash`/`index_file`（WebDAV 与内容索引线随 OneDrive 切换取消）→ 149 工具（读 100 / 写 49）；Python 参考服务同步 |
 | v5.1 | 2026-11-23 | MCP 参数统一为 camelCase；`task_id`/`file_id`/`from_time` 等旧名保留为 `deprecated` 兼容别名，双写法冲突值返回 400；`required` 仅声明 camelCase（WO-R01-CAMEL / #460） |
 | v5.2 | 2026-11-25 | R01 收口：移除 14 个 snake_case 兼容别名（`report_id`、`task_id`、`event_id`、`habit_id`、`calendar_id`、`note_id`、`attachment_id`、`file_id`、`from_time`）；旧名在鉴权与分发前直接返回 400 并给出 camelCase 替代名，契约不再声明旧属性 |
+| v6.0 | 2026-11-27 | R05 原生笔记 MCP 切片：168 工具（读 108 / 写 60）；原生笔记读权限默认关闭且旧客户端缺失 key 不放行；GET 路由按工具逐条绑定；回收站替代 archive；处理停止/恢复后手动继续；失败/未知 operation 可按 requestId 对账；`/mcp` 请求体上限 96 MiB |
 
 ---
 

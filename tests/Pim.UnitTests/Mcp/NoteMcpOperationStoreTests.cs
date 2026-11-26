@@ -10,7 +10,7 @@ namespace Pim.UnitTests.Mcp;
 /// <summary>
 /// Crash and replay semantics for the native-note requestId journal. These tests deliberately
 /// separate "the mutation ran" from "the response was recorded": a pending marker must fail
-/// closed instead of running the same mutation again.
+/// closed instead of running the same mutation again, and failures must remain queryable.
 /// </summary>
 public sealed class NoteMcpOperationStoreTests : IDisposable
 {
@@ -34,6 +34,7 @@ public sealed class NoteMcpOperationStoreTests : IDisposable
         });
         Assert.Equal("first", first.Result);
         Assert.False(first.Receipt.Replayed);
+        Assert.Equal(OperationId(requestId), first.Receipt.OperationId);
 
         var replay = await RunAsync(store, requestId, new { value = 1 }, _ =>
         {
@@ -44,14 +45,18 @@ public sealed class NoteMcpOperationStoreTests : IDisposable
         Assert.True(replay.Receipt.Replayed);
         Assert.Equal(1, calls);
 
-        var changedArgs = await Assert.ThrowsAsync<DomainException>(() =>
+        var changedArgs = await Assert.ThrowsAsync<NativeNoteMcpOperationException>(() =>
             RunAsync(store, requestId, new { value = 2 }, _ =>
                 Task.FromResult(Result(requestId, "wrong"))));
         Assert.Equal(40901, changedArgs.ErrorCode);
-        var changedOperation = await Assert.ThrowsAsync<DomainException>(() =>
-            store.RunAsync(_owner, requestId, "another_operation", new { value = 1 },
+        Assert.Equal(OperationId(requestId), changedArgs.Receipt.OperationId);
+        Assert.Equal("failed", changedArgs.Receipt.Status);
+        var changedOperation = await Assert.ThrowsAsync<NativeNoteMcpOperationException>(() =>
+            store.RunAsync(_owner, requestId, _noteId, "another_operation", new { value = 1 },
                 _ => Task.FromResult(Result(requestId, "wrong")), default));
         Assert.Equal(40901, changedOperation.ErrorCode);
+        Assert.Equal(OperationId(requestId), changedOperation.Receipt.OperationId);
+        Assert.Equal("test_operation", changedOperation.Receipt.Operation);
         Assert.Equal(1, calls);
     }
 
@@ -74,7 +79,7 @@ public sealed class NoteMcpOperationStoreTests : IDisposable
         Assert.False(marker.TryGetProperty("responseJson", out var responseJson) &&
             responseJson.ValueKind != JsonValueKind.Null);
 
-        var retry = await Assert.ThrowsAsync<DomainException>(() =>
+        var retry = await Assert.ThrowsAsync<NativeNoteMcpOperationException>(() =>
             RunAsync(store, requestId, new { value = 1 }, _ =>
             {
                 calls++;
@@ -82,7 +87,14 @@ public sealed class NoteMcpOperationStoreTests : IDisposable
             }));
         Assert.Equal(40901, retry.ErrorCode);
         Assert.Contains("尚未确认", retry.Message);
+        Assert.Equal("unknown", retry.Receipt.Status);
+        Assert.Equal(OperationId(requestId), retry.Receipt.OperationId);
         Assert.Equal(1, calls);
+
+        var status = await store.GetAsync(_owner, _noteId, requestId, default);
+        Assert.Equal("unknown", status.State);
+        Assert.Equal("unknown", status.Receipt.Status);
+        Assert.Equal(OperationId(requestId), status.OperationId);
     }
 
     [Fact]
@@ -108,6 +120,10 @@ public sealed class NoteMcpOperationStoreTests : IDisposable
         Assert.Equal("completed", completed.GetProperty("state").GetString());
         Assert.NotEqual(JsonValueKind.Null,
             completed.GetProperty("responseJson").ValueKind);
+
+        var status = await store.GetAsync(_owner, _noteId, requestId, default);
+        Assert.Equal("succeeded", status.State);
+        Assert.Equal("succeeded", status.Receipt.Status);
     }
 
     [Fact]
@@ -117,7 +133,7 @@ public sealed class NoteMcpOperationStoreTests : IDisposable
         var requestId = Guid.NewGuid();
         var calls = 0;
 
-        var first = await Assert.ThrowsAsync<DomainException>(() =>
+        var first = await Assert.ThrowsAsync<NativeNoteMcpOperationException>(() =>
             RunAsync(store, requestId, new { value = 1 }, _ =>
             {
                 calls++;
@@ -125,11 +141,13 @@ public sealed class NoteMcpOperationStoreTests : IDisposable
             }));
         Assert.Equal(40901, first.ErrorCode);
         Assert.Equal("original domain failure", first.Message);
+        Assert.Equal("failed", first.Receipt.Status);
+        Assert.Equal(OperationId(requestId), first.Receipt.OperationId);
         var marker = await ReadOperationAsync(requestId);
         Assert.Equal("failed", marker.GetProperty("state").GetString());
         Assert.Equal(40901, marker.GetProperty("errorCode").GetInt32());
 
-        var replay = await Assert.ThrowsAsync<DomainException>(() =>
+        var replay = await Assert.ThrowsAsync<NativeNoteMcpOperationException>(() =>
             RunAsync(store, requestId, new { value = 1 }, _ =>
             {
                 calls++;
@@ -138,6 +156,10 @@ public sealed class NoteMcpOperationStoreTests : IDisposable
         Assert.Equal(40901, replay.ErrorCode);
         Assert.Equal("original domain failure", replay.Message);
         Assert.Equal(1, calls);
+
+        var failedStatus = await store.GetAsync(_owner, _noteId, requestId, default);
+        Assert.Equal("failed", failedStatus.State);
+        Assert.Equal("failed", failedStatus.Receipt.Status);
 
         var fresh = await RunAsync(store, Guid.NewGuid(), new { value = 1 }, _ =>
         {
@@ -149,6 +171,85 @@ public sealed class NoteMcpOperationStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task UnexpectedFailureIsRecordedAsUnknownAndQueryable()
+    {
+        var store = Store();
+        var requestId = Guid.NewGuid();
+
+        var first = await Assert.ThrowsAsync<NativeNoteMcpOperationException>(() =>
+            RunAsync(store, requestId, new { value = 1 },
+                _ => throw new InvalidOperationException("synthetic unknown")));
+
+        Assert.Equal(40901, first.ErrorCode);
+        Assert.Equal("unknown", first.Receipt.Status);
+        var marker = await ReadOperationAsync(requestId);
+        Assert.Equal("unknown", marker.GetProperty("state").GetString());
+        var status = await store.GetAsync(_owner, _noteId, requestId, default);
+        Assert.Equal("unknown", status.State);
+        Assert.Equal("unknown", status.Receipt.Status);
+        Assert.Equal(OperationId(requestId), status.Receipt.OperationId);
+    }
+
+    [Fact]
+    public async Task OperationLookup_Returns404ForUnknownOrCrossNoteRequestId()
+    {
+        var store = Store();
+        var requestId = Guid.NewGuid();
+        await RunAsync(store, requestId, new { value = 1 }, _ =>
+            Task.FromResult(Result(requestId, "applied")));
+
+        await Assert.ThrowsAsync<DomainException>(() =>
+            store.GetAsync(_owner, Guid.NewGuid(), requestId, default));
+        await Assert.ThrowsAsync<DomainException>(() =>
+            store.GetAsync(_owner, _noteId, Guid.NewGuid(), default));
+    }
+
+    [Fact]
+    public async Task PreValidationFailureIsRecordedAndRetryReturnsOriginalFailure()
+    {
+        var store = Store();
+        var requestId = Guid.NewGuid();
+        var calls = 0;
+
+        await Assert.ThrowsAsync<NativeNoteMcpOperationException>(() =>
+            RunAsync(store, requestId, new { value = 1 }, _ =>
+            {
+                calls++;
+                throw new DomainException(40001, "pre-validation failed");
+            }));
+        var status = await store.GetAsync(_owner, _noteId, requestId, default);
+        Assert.Equal("failed", status.State);
+        Assert.Equal(40001, status.Receipt.ErrorCode);
+
+        var retry = await Assert.ThrowsAsync<NativeNoteMcpOperationException>(() =>
+            RunAsync(store, requestId, new { value = 1 }, _ =>
+            {
+                calls++;
+                return Task.FromResult(Result(requestId, "must not run"));
+            }));
+        Assert.Equal("pre-validation failed", retry.Message);
+        Assert.Equal(1, calls);
+    }
+
+    [Fact]
+    public async Task FailureReceipts_DoNotExposeInternalIdentifiers()
+    {
+        var store = Store();
+        var requestId = Guid.NewGuid();
+        var failure = await Assert.ThrowsAsync<NativeNoteMcpOperationException>(() =>
+            RunAsync(store, requestId, new { value = 1 }, _ =>
+                throw new DomainException(40901, "safe failure")));
+        var json = JsonSerializer.Serialize(failure.Receipt, Json);
+
+        foreach (var forbidden in new[]
+                 {
+                     "requestId", "taskId", "attemptId", "stepId", "logId", "receiptId"
+                 })
+            Assert.DoesNotContain($"\"{forbidden}\"", json, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("\"operationId\"", json, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task LegacyCompletedEntryWithoutStateStillReplays()
     {
         var requestId = Guid.NewGuid();
@@ -157,8 +258,8 @@ public sealed class NoteMcpOperationStoreTests : IDisposable
         var fingerprint = NoteMcpOperationStore.Fingerprint(operation, fingerprintInput);
         var responseJson = JsonSerializer.Serialize(
             new NativeNoteMcpOperationResultDto<string>(
-                new NativeNoteMcpReceiptDto(requestId, operation, _noteId, null, "applied",
-                    false, DateTimeOffset.UtcNow, "legacy result"),
+                new NativeNoteMcpReceiptDto(OperationId(requestId), operation, _noteId, null,
+                    "applied", false, DateTimeOffset.UtcNow, "legacy result"),
                 "legacy"),
             Json);
         var directory = Path.Combine(_root, "mcp-operations");
@@ -183,14 +284,51 @@ public sealed class NoteMcpOperationStoreTests : IDisposable
 
         var calls = 0;
         var store = Store();
-        var replay = await store.RunAsync(_owner, requestId, operation, fingerprintInput, _ =>
-        {
-            calls++;
-            return Task.FromResult(Result(requestId, "must not run"));
-        }, CancellationToken.None);
+        var replay = await store.RunAsync(_owner, requestId, _noteId, operation,
+            fingerprintInput, _ =>
+            {
+                calls++;
+                return Task.FromResult(Result(requestId, "must not run"));
+            }, CancellationToken.None);
         Assert.Equal("legacy", replay.Result);
         Assert.True(replay.Receipt.Replayed);
         Assert.Equal(0, calls);
+    }
+
+    [Fact]
+    public async Task LegacyFailedEntryWithoutNoteIdIsQueryableForTheRequestedNote()
+    {
+        var requestId = Guid.NewGuid();
+        var operation = "legacy_operation";
+        var directory = Path.Combine(_root, "mcp-operations");
+        Directory.CreateDirectory(directory);
+        var ledger = new
+        {
+            schemaVersion = 1,
+            owner = _owner,
+            operations = new Dictionary<string, object>(StringComparer.Ordinal)
+            {
+                [requestId.ToString("D")] = new
+                {
+                    operation,
+                    fingerprint = "legacy-fingerprint",
+                    state = "failed",
+                    errorCode = 40901,
+                    errorMessage = "legacy failure",
+                    createdAt = DateTimeOffset.UtcNow,
+                },
+            },
+        };
+        await File.WriteAllTextAsync(Path.Combine(directory, _owner.ToString("D") + ".json"),
+            JsonSerializer.Serialize(ledger, Json));
+
+        var store = Store();
+        var status = await store.GetAsync(_owner, _noteId, requestId, default);
+
+        Assert.Equal(_noteId, status.NoteId);
+        Assert.Equal("failed", status.State);
+        Assert.Equal(_noteId, status.Receipt.NoteId);
+        Assert.Equal(OperationId(operation, requestId), status.OperationId);
     }
 
     private NoteMcpOperationStore Store()
@@ -199,13 +337,19 @@ public sealed class NoteMcpOperationStoreTests : IDisposable
     private Task<NativeNoteMcpOperationResultDto<string>> RunAsync(
         NoteMcpOperationStore store, Guid requestId, object fingerprintInput,
         Func<CancellationToken, Task<NativeNoteMcpOperationResultDto<string>>> action)
-        => store.RunAsync(_owner, requestId, "test_operation", fingerprintInput, action,
-            CancellationToken.None);
+        => store.RunAsync(_owner, requestId, _noteId, "test_operation", fingerprintInput,
+            action, CancellationToken.None);
+
+    private string OperationId(Guid requestId)
+        => OperationId("test_operation", requestId);
+
+    private string OperationId(string operation, Guid requestId)
+        => NoteMcpOperationStore.BuildOperationId(_owner, operation, requestId);
 
     private NativeNoteMcpOperationResultDto<string> Result(Guid requestId, string value)
         => new(
-            new NativeNoteMcpReceiptDto(requestId, "test_operation", _noteId, null, "applied",
-                false, DateTimeOffset.UtcNow, "ok"),
+            new NativeNoteMcpReceiptDto(OperationId(requestId), "test_operation", _noteId,
+                null, "applied", false, DateTimeOffset.UtcNow, "ok"),
             value);
 
     private async Task<JsonElement> ReadOperationAsync(Guid requestId)

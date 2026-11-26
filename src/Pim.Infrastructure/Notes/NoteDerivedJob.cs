@@ -15,6 +15,7 @@ namespace Pim.Infrastructure.Notes;
 
 public sealed class NoteDerivedDispatchJob(
     NoteDerivedStore tasks,
+    NoteMaterialUploadStore materials,
     IBackgroundJobClient jobs,
     ILogger<NoteDerivedDispatchJob> logger)
 {
@@ -27,6 +28,8 @@ public sealed class NoteDerivedDispatchJob(
             try
             {
                 var state = await tasks.ReadTaskAsync(owner, taskId, ct);
+                if (await materials.GetMcpNoteStatusAsync(owner, state.NoteId, ct) != "Active")
+                    continue;
                 var needsStopCheckpoint = state.StopRequested &&
                     state.Steps.Any(step => step.Current.Status == "Queued");
                 if (!NoteDerivedStore.IsActive(state) && !needsStopCheckpoint) continue;
@@ -67,6 +70,12 @@ public sealed class NoteDerivedJob(
         {
             ct.ThrowIfCancellationRequested();
             var state = await tasks.ReadTaskAsync(owner, taskId, ct);
+            if (await materials.GetMcpNoteStatusAsync(owner, state.NoteId, ct) == "Recycled")
+            {
+                await tasks.UpdateTaskAsync(owner, taskId,
+                    current => current.StopRequested = true, ct);
+                return;
+            }
             if (state.AwaitingAsr || NoteDerivedStore.NeedsAsrRecovery(state))
             {
                 if (!await MaterializeAsrInputsAsync(owner, taskId, ct)) return;
@@ -314,6 +323,13 @@ public sealed class NoteDerivedJob(
     internal async Task ReconcileLockedAsync(Guid owner, Guid taskId, CancellationToken ct)
     {
         var state = await tasks.ReadTaskAsync(owner, taskId, ct);
+        if (await materials.GetMcpNoteStatusAsync(owner, state.NoteId, ct) != "Active")
+        {
+            if (!state.StopRequested)
+                await tasks.UpdateTaskAsync(owner, taskId,
+                    current => current.StopRequested = true, ct);
+            return;
+        }
         if (NoteDerivedStore.NeedsAsrRecovery(state))
         {
             _ = await MaterializeAsrInputsAsync(owner, taskId, ct);

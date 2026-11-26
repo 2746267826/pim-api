@@ -437,7 +437,8 @@ public sealed class NoteAsrTests : IAsyncLifetime
         using var scope = _factory.Services.CreateScope();
         var dispatch = new NoteAsrDispatchJob(
             scope.ServiceProvider.GetRequiredService<NoteAsrTaskStore>(),
-            scope.ServiceProvider.GetRequiredService<NoteAsrService>(), jobs,
+            scope.ServiceProvider.GetRequiredService<NoteAsrService>(),
+            scope.ServiceProvider.GetRequiredService<NoteMaterialUploadStore>(), jobs,
             Microsoft.Extensions.Logging.Abstractions.NullLogger<NoteAsrDispatchJob>.Instance);
         await dispatch.RunAsync(default);
         var job = Assert.Single(jobs.Items); Assert.Equal(typeof(NoteAsrJob), job.Type);

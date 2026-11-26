@@ -3,23 +3,40 @@ using System.ComponentModel.DataAnnotations;
 namespace Pim.Core.Notes;
 
 /// <summary>
-/// User-visible receipt attached to every native-note MCP mutation. <see cref="RequestId"/>
-/// is the caller-supplied idempotency key; replaying the same request returns the original
-/// receipt with <see cref="Replayed"/> set instead of applying the mutation twice.
+/// User-visible receipt attached to every native-note MCP mutation. The caller-supplied
+/// requestId is never echoed; <see cref="OperationId"/> is the stable external operation
+/// identity. Replaying the same request returns the original receipt with
+/// <see cref="Replayed"/> set instead of applying the mutation twice.
 /// </summary>
 public sealed record NativeNoteMcpReceiptDto(
-    Guid? RequestId,
+    string OperationId,
     string Operation,
     Guid NoteId,
     Guid? Revision,
     string Status,
     bool Replayed,
     DateTimeOffset At,
-    string Message);
+    string Message,
+    int? ErrorCode = null);
 
 public sealed record NativeNoteMcpOperationResultDto<T>(
     NativeNoteMcpReceiptDto Receipt,
     T Result);
+
+/// <summary>Structured failure payload so a caller can reconcile a requestId after an error.</summary>
+public sealed record NativeNoteMcpOperationFailureDto(NativeNoteMcpReceiptDto Receipt);
+
+/// <summary>
+/// Result of looking up a caller-supplied requestId. Internal task, attempt, step, request,
+/// log and receipt identifiers are never returned; <see cref="OperationId"/> is the stable
+/// external operation identity.
+/// </summary>
+public sealed record NativeNoteMcpOperationStatusDto(
+    string OperationId,
+    string Operation,
+    Guid NoteId,
+    string State,
+    NativeNoteMcpReceiptDto Receipt);
 
 public sealed record NativeNoteMcpNoteSummaryDto(
     Guid NoteId,
@@ -64,9 +81,8 @@ public sealed record NativeNoteMcpDetailDto(
     NoteMaterialUploadDto? Current,
     IReadOnlyList<NoteMaterialUploadDto> Versions,
     IReadOnlyList<NoteMaterialUploadDto> ConflictCandidates,
-    NoteProcessingStatusDto? Processing,
-    IReadOnlyList<NoteDerivedTaskDto> DerivedTasks,
-    IReadOnlyList<NoteDerivedArtifactDto> DerivedArtifacts,
+    NativeNoteMcpProcessingDto? Processing,
+    IReadOnlyList<NativeNoteMcpResultArtifactDto> DerivedArtifacts,
     NativeNoteMcpReceiptDto Receipt);
 
 public sealed record NativeNoteMcpVersionsDto(
@@ -82,8 +98,8 @@ public sealed record NativeNoteMcpVersionsDto(
 public sealed record NativeNoteMcpResultsDto(
     Guid NoteId,
     Guid Revision,
-    IReadOnlyList<NoteDerivedTaskDto> Tasks,
-    IReadOnlyList<NoteDerivedArtifactDto> Artifacts,
+    NativeNoteMcpProcessingDto? Processing,
+    IReadOnlyList<NativeNoteMcpResultArtifactDto> Artifacts,
     NativeNoteMcpReceiptDto Receipt);
 
 public sealed record NativeNoteMcpPackageRequest(
@@ -122,11 +138,11 @@ public sealed record NativeNoteMcpCancelUploadDto(
     bool Removed,
     Guid? Revision);
 
-public sealed record NativeNoteMcpLifecycleRequest(
+public sealed record NativeNoteMcpRecycleRequest(
     Guid RequestId,
     Guid? ExpectedRevision);
 
-public sealed record NativeNoteMcpLifecycleDto(
+public sealed record NativeNoteMcpRecycleDto(
     string Status,
     Guid Revision,
     DateTimeOffset UpdatedAt);
@@ -138,16 +154,76 @@ public sealed record NativeNoteMcpProcessingStartRequest(
 
 public sealed record NativeNoteMcpProcessingRetryRequest(
     Guid RequestId,
-    Guid TaskId,
-    Guid RetryId,
-    Guid ExpectedRevision,
+    Guid? VersionId,
     [property: Required] IReadOnlyList<string> StepKeys,
     [property: Required] NoteDerivedGenerationConsent Consent,
     bool AcknowledgePossibleDuplicateCharge);
 
-public sealed record NativeNoteMcpProcessingDto(NoteProcessingStatusDto Status);
+/// <summary>
+/// External, owner-scoped processing view. Internal task/attempt/step/request/log identifiers
+/// stay on the server; callers receive logical domain states and stable external identifiers.
+/// </summary>
+public sealed record NativeNoteMcpProcessingDto(
+    Guid NoteId,
+    Guid VersionId,
+    string State,
+    bool AutoProcessingEnabled,
+    bool AutoStarted,
+    bool ManualStartAvailable,
+    bool RecycleStopped,
+    bool ResumePending,
+    string Scope,
+    bool IncrementalScopeSupported,
+    string? PendingReason,
+    NativeNoteMcpProcessingChainDto Asr,
+    NativeNoteMcpProcessingChainDto Organization,
+    IReadOnlyList<NativeNoteMcpProcessingArtifactDto> Artifacts,
+    IReadOnlyList<NativeNoteMcpIssueDto> Issues,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset UpdatedAt);
 
-public sealed record NativeNoteMcpRetryDto(NoteDerivedTaskDto Task);
+public sealed record NativeNoteMcpProcessingChainDto(
+    string Domain,
+    string State,
+    int TotalItems,
+    int CompletedItems,
+    int FailedItems,
+    bool HasResult,
+    IReadOnlyList<string> Errors,
+    string? WaitingReason,
+    IReadOnlyList<NativeNoteMcpProcessingItemDto> Items);
+
+public sealed record NativeNoteMcpProcessingItemDto(string Key, string State, string? Error);
+
+public sealed record NativeNoteMcpProcessingArtifactDto(
+    Guid ArtifactId,
+    string Kind,
+    Guid? HeadVersionId);
+
+public sealed record NativeNoteMcpIssueDto(
+    string Code,
+    string Message,
+    string? Domain);
+
+/// <summary>Logical derived-result view with no generation task, request or log identifiers.</summary>
+public sealed record NativeNoteMcpResultArtifactDto(
+    Guid ArtifactId,
+    string Kind,
+    Guid? HeadVersionId,
+    bool HasConflict,
+    IReadOnlyList<NativeNoteMcpResultVersionDto> Versions);
+
+public sealed record NativeNoteMcpResultVersionDto(
+    Guid VersionId,
+    string Author,
+    Guid? ParentVersionId,
+    Guid SourceVersionId,
+    string ContentSha256,
+    bool HasConflict,
+    DateTimeOffset CreatedAt,
+    bool IsHead);
+
+public sealed record NativeNoteMcpRetryDto(NativeNoteMcpProcessingDto Processing);
 
 public sealed record NativeNoteMcpAdoptRequest(
     Guid RequestId,
@@ -155,7 +231,7 @@ public sealed record NativeNoteMcpAdoptRequest(
     Guid ExpectedHeadRevision);
 
 public sealed record NativeNoteMcpAdoptDto(
-    NoteDerivedArtifactDto Artifact,
+    NativeNoteMcpResultArtifactDto Artifact,
     Guid VersionId,
     bool HasConflict);
 
@@ -174,3 +250,41 @@ public sealed record NativeNoteMcpSuggestionExtractionRequest(
     [property: Required, MaxLength(64)] string ExpectedContentSha256,
     [property: Required] NoteDerivedGenerationConsent Consent,
     bool AcknowledgePossibleCharge);
+
+/// <summary>External suggestion views. Extraction/request/source-task identifiers stay internal.</summary>
+public sealed record NativeNoteMcpSuggestionDto(
+    Guid Id,
+    int Ordinal,
+    string Title,
+    string Kind,
+    string? Description,
+    int Priority,
+    DateTimeOffset? Due,
+    DateTimeOffset? Start,
+    DateTimeOffset? End,
+    string? TimeZoneId,
+    Guid? TaskBookId,
+    Guid? CalendarId,
+    string Status,
+    Guid Revision,
+    Guid? TaskId,
+    Guid? EventId,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset UpdatedAt,
+    DateTimeOffset? ConfirmedAt,
+    DateTimeOffset? DismissedAt);
+
+public sealed record NativeNoteMcpSuggestionListDto(
+    int Total,
+    IReadOnlyList<NativeNoteMcpSuggestionDto> Items);
+
+public sealed record NativeNoteMcpSuggestionExtractionDto(
+    string Status,
+    int AttemptCount,
+    int SuggestionCount,
+    string? ErrorCode,
+    string? ErrorMessage,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset UpdatedAt,
+    DateTimeOffset? StartedAt,
+    DateTimeOffset? FinishedAt);

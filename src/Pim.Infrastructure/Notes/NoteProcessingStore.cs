@@ -41,6 +41,8 @@ internal sealed class NoteProcessingRecord
     public bool AutoRequested { get; set; }
     public bool AutoStarted { get; set; }
     public bool ManualStarted { get; set; }
+    public bool RecycleStopped { get; set; }
+    public bool ResumePending { get; set; }
     public DateTimeOffset? StartedAt { get; set; }
     public string? PendingReason { get; set; }
     public List<NoteProcessingIssueDto> Issues { get; set; } = [];
@@ -80,6 +82,19 @@ public sealed class NoteProcessingStore(IOptions<NoteMaterialUploadOptions> opti
         CancellationToken ct) =>
         await TryReadAsync(owner, processingId, ct)
         ?? throw new DomainException(40401, "处理编排记录不存在");
+
+    internal async Task<IReadOnlyList<NoteProcessingRecord>> ListForNoteAsync(Guid owner,
+        Guid noteId, CancellationToken ct)
+    {
+        var result = new List<NoteProcessingRecord>();
+        foreach (var (account, id) in Enumerate(owner))
+        {
+            if (account != owner) continue;
+            var state = await TryReadAsync(owner, id, ct);
+            if (state is not null && state.NoteId == noteId) result.Add(state);
+        }
+        return result;
+    }
 
     internal async Task<T> WithLockAsync<T>(Guid owner,
         Func<CancellationToken, Task<T>> action, CancellationToken ct)

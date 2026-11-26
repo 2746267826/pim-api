@@ -5,6 +5,7 @@ using Pim.Core.Ai;
 using Pim.Core.Exceptions;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
+using Pim.Infrastructure.Notes;
 using Pim.Module.Calendar.Entities;
 using Pim.Module.Calendar.Services;
 using Pim.Module.NoteTaskSuggestions.DTOs;
@@ -18,7 +19,8 @@ internal sealed class NoteTaskSuggestionExtractionJob(
     CalendarService calendar,
     INoteTaskSuggestionModelClient model,
     TimeProvider timeProvider,
-    ILogger<NoteTaskSuggestionExtractionJob> logger)
+    ILogger<NoteTaskSuggestionExtractionJob> logger,
+    NoteMaterialUploadStore? materials = null)
 {
     [AutomaticRetry(Attempts = 0)]
     public async Task RunAsync(Guid owner, Guid extractionId, CancellationToken ct)
@@ -29,6 +31,13 @@ internal sealed class NoteTaskSuggestionExtractionJob(
             extraction.Status is NoteTaskSuggestionExtractionStatuses.Succeeded or
                 NoteTaskSuggestionExtractionStatuses.Failed)
             return;
+        if (await IsRecycledAsync(owner, extraction.NoteId, ct))
+        {
+            await FailAsync(owner, extractionId, extraction.NoteId, null, "note_recycled",
+                "笔记在回收站，任务建议提取已停止；恢复后需手动重新发起",
+                extraction.Revision, ct);
+            return;
+        }
 
         var now = timeProvider.GetUtcNow();
         var staleRunningBefore = now.AddMinutes(-5);
@@ -62,6 +71,14 @@ internal sealed class NoteTaskSuggestionExtractionJob(
                 await FailAsync(owner, extractionId, extraction.NoteId, result.LogId,
                     "ai_" + result.Status.ToString().ToLowerInvariant(),
                     result.ErrorMessage ?? "文本模型未返回可用的任务建议；不会自动重发",
+                    extraction.Revision, ct);
+                return;
+            }
+            if (await IsRecycledAsync(owner, extraction.NoteId, ct))
+            {
+                await FailAsync(owner, extractionId, extraction.NoteId, result.LogId,
+                    "note_recycled",
+                    "笔记在回收站，任务建议提取已停止；恢复后需手动重新发起",
                     extraction.Revision, ct);
                 return;
             }
@@ -328,4 +345,18 @@ internal sealed class NoteTaskSuggestionExtractionJob(
 
     private static string Trim(string value, int max) =>
         value.Length <= max ? value : value[..max];
+
+    private async Task<bool> IsRecycledAsync(Guid owner, Guid noteId, CancellationToken ct)
+    {
+        if (materials is null) return false;
+        try
+        {
+            return string.Equals(await materials.GetMcpNoteStatusAsync(owner, noteId, ct),
+                "Recycled", StringComparison.Ordinal);
+        }
+        catch (DomainException error) when (error.ErrorCode == 40401)
+        {
+            return false;
+        }
+    }
 }

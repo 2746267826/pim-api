@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using Pim.Api.Infrastructure;
 using Pim.Core.Common;
 using Pim.Core.Exceptions;
+using Pim.Core.Notes;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
 using Pim.Module.Files.Providers;
@@ -35,6 +36,19 @@ public class ExceptionMiddleware
         try
         {
             await _next(context);
+        }
+        catch (NativeNoteMcpOperationException ex)
+        {
+            var statusCode = ResolveDomainStatusCode(ex.ErrorCode);
+            context.Response.StatusCode = statusCode;
+            context.Response.ContentType = "application/json";
+            var message = await SanitizeDomainMessageAsync(context, ex.Message, statusCode);
+            var response = new ApiResponse<NativeNoteMcpOperationFailureDto>(
+                ex.ErrorCode,
+                message,
+                new NativeNoteMcpOperationFailureDto(ex.Receipt with { Message = message }),
+                DateTimeOffset.UtcNow);
+            await context.Response.WriteAsync(JsonSerializer.Serialize(response, JsonOptions));
         }
         catch (DomainException ex)
         {
