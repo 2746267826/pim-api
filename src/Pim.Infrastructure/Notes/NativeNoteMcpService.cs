@@ -479,6 +479,7 @@ public sealed class NativeNoteMcpService(
             {
                 noteId,
                 request.VersionId,
+                ExpectedRevision = request.ExpectedRevision,
                 stepKeys,
                 Consent = request.Consent,
                 AcknowledgePossibleDuplicateCharge = request.AcknowledgePossibleDuplicateCharge,
@@ -502,12 +503,24 @@ public sealed class NativeNoteMcpService(
                     .OrderByDescending(item => item.CreatedAt)
                     .FirstOrDefault()
                     ?? throw new DomainException(40401, "该材料版本尚无处理任务可恢复");
+                if (request.ExpectedRevision is { } expectedRevision)
+                {
+                    var matchesSnapshot = expectedRevision == snapshot.Revision;
+                    var matchesTask = expectedRevision == task.Revision;
+                    if (!matchesSnapshot && !matchesTask)
+                        throw new DomainException(40901,
+                            "笔记或处理任务版本已变化，请先重新读取 get_native_note_versions 或 get_native_note_processing 后再试");
+                }
+                var expectedTaskRevision = request.ExpectedRevision is { } expected &&
+                                           expected == task.Revision
+                    ? expected
+                    : task.Revision;
                 var retryId = StableRetryId(owner, noteId, versionId, request.RequestId);
                 _ = await derived.RetryAsync(task.TaskId,
                     new RetryNoteDerivedTaskRequest(
                         retryId,
                         owner,
-                        task.Revision,
+                        expectedTaskRevision,
                         stepKeys,
                         request.Consent!,
                         request.AcknowledgePossibleDuplicateCharge),
@@ -614,6 +627,7 @@ public sealed class NativeNoteMcpService(
         NoteProcessingChainDto chain) => new(
             domain,
             chain.State.ToString(),
+            chain.Revision,
             chain.TotalItems,
             chain.CompletedItems,
             chain.FailedItems,

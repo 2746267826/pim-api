@@ -155,6 +155,10 @@ public sealed record NativeNoteMcpProcessingStartRequest(
 public sealed record NativeNoteMcpProcessingRetryRequest(
     Guid RequestId,
     Guid? VersionId,
+    // Optional optimistic-concurrency anchor: accept either the note material snapshot
+    // revision (get_native_note_versions) or the organization task revision
+    // (get_native_note_processing.organization.revision). A stale value must not retry.
+    Guid? ExpectedRevision,
     [property: Required] IReadOnlyList<string> StepKeys,
     [property: Required] NoteDerivedGenerationConsent Consent,
     bool AcknowledgePossibleDuplicateCharge);
@@ -182,9 +186,14 @@ public sealed record NativeNoteMcpProcessingDto(
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt);
 
+/// <summary>
+/// External processing chain view. <see cref="Revision"/> is the opaque task revision used as
+/// the retry CAS anchor; internal task/attempt/step identifiers remain hidden.
+/// </summary>
 public sealed record NativeNoteMcpProcessingChainDto(
     string Domain,
     string State,
+    Guid? Revision,
     int TotalItems,
     int CompletedItems,
     int FailedItems,

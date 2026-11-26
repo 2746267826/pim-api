@@ -297,6 +297,8 @@ public static class McpToolTable
             W("restore_native_note", "POST", "/api/v1/native-notes/mcp/notes/{noteId}/restore", req: R("noteId", "requestId")),
             W("delete_native_note", "POST", "/api/v1/native-notes/mcp/notes/{noteId}/recycle", req: R("noteId", "requestId")),
             W("start_native_note_processing", "POST", "/api/v1/native-notes/mcp/notes/{noteId}/processing/start", req: R("noteId", "requestId", "versionId")),
+            // expectedRevision is optional (note snapshot or organization task revision CAS),
+            // so it stays out of the Required list and is forwarded as a body argument.
             W("retry_native_note_processing", "POST", "/api/v1/native-notes/mcp/notes/{noteId}/processing/retry", req: R("noteId", "requestId", "stepKeys", "consent")),
             W("adopt_native_note_result", "POST", "/api/v1/native-notes/mcp/notes/{noteId}/results/{artifactId}/adopt", req: R("noteId", "artifactId", "requestId", "versionId", "expectedHeadRevision")),
             W("extract_native_note_suggestions", "POST", "/api/v1/native-notes/mcp/notes/{noteId}/suggestions/extractions", req: R("noteId", "requestId", "artifactId", "versionId", "expectedContentSha256", "consent")),

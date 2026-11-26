@@ -5263,7 +5263,7 @@
   },
   {
     "name": "retry_native_note_processing",
-    "description": "Requires write permission retry_native_note_processing. Retry selected failed native-note processing steps with duplicate-charge acknowledgement and revision CAS.",
+    "description": "Requires write permission retry_native_note_processing. Retry selected failed native-note processing steps with duplicate-charge acknowledgement. Optional expectedRevision must match the current note snapshot revision or the organization task revision; a stale value returns 409 without changing the task.",
     "inputSchema": {
       "properties": {
         "noteId": {
@@ -5285,6 +5285,18 @@
           ],
           "default": null,
           "title": "Version Id"
+        },
+        "expectedRevision": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Expected Revision"
         },
         "stepKeys": {
           "items": {

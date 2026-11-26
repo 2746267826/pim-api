@@ -1101,6 +1101,9 @@ public sealed class NativeNoteMcpRealDbTests
         Assert.NotEqual("Completed", startedStatus.GetProperty("state").GetString());
         Assert.NotEqual("NotApplicable",
             startedStatus.GetProperty("organization").GetProperty("state").GetString());
+        var startedOrganizationRevision = startedStatus.GetProperty("organization")
+            .GetProperty("revision").GetGuid();
+        Assert.NotEqual(Guid.Empty, startedOrganizationRevision);
 
         var startedReplay = await host.CallAsync(host.McpAWrite,
             "start_native_note_processing", startArgs);
@@ -1121,21 +1124,51 @@ public sealed class NativeNoteMcpRealDbTests
             attempt.ErrorCode = "synthetic_failure";
             attempt.ErrorMessage = "synthetic focused retry input";
         }, default);
+        Assert.Equal(startedOrganizationRevision, task.Revision);
         Assert.NotEqual(task.Revision, updated.Revision);
         var consent = updated.Request.Consent;
+        var retryConsent = new
+        {
+            modelId = consent.ModelId.ToString("D"),
+            modelRevision = consent.ModelRevision.ToString("D"),
+            endpoint = consent.Endpoint,
+            confirmed = true,
+        };
+        var staleRetry = await host.CallAsync(host.McpAWrite,
+            "retry_native_note_processing", new
+            {
+                noteId,
+                requestId = Guid.NewGuid().ToString("D"),
+                versionId = fixture.Request.VersionId.ToString("D"),
+                expectedRevision = startedOrganizationRevision.ToString("D"),
+                stepKeys = new[] { failedKey },
+                consent = retryConsent,
+                acknowledgePossibleDuplicateCharge = true,
+            });
+        Assert.True(staleRetry.IsError, staleRetry.Payload.GetRawText());
+        Assert.Equal(409, staleRetry.Payload.GetProperty("code").GetInt32());
+        var afterStale = await host.DerivedStore.ReadTaskAsync(host.UserA, taskId, default);
+        Assert.Equal(updated.Revision, afterStale.Revision);
+
+        var currentProcessing = await host.CallAsync(host.McpARead,
+            "get_native_note_processing", new
+            {
+                noteId,
+                versionId = fixture.Request.VersionId.ToString("D"),
+            });
+        Assert.False(currentProcessing.IsError, currentProcessing.Payload.GetRawText());
+        var currentRevision = currentProcessing.Payload.GetProperty("data")
+            .GetProperty("result").GetProperty("organization").GetProperty("revision")
+            .GetGuid();
+        Assert.Equal(updated.Revision, currentRevision);
         var retryArgs = new
         {
             noteId,
             requestId = Guid.NewGuid().ToString("D"),
             versionId = fixture.Request.VersionId.ToString("D"),
+            expectedRevision = currentRevision.ToString("D"),
             stepKeys = new[] { failedKey },
-            consent = new
-            {
-                modelId = consent.ModelId.ToString("D"),
-                modelRevision = consent.ModelRevision.ToString("D"),
-                endpoint = consent.Endpoint,
-                confirmed = true,
-            },
+            consent = retryConsent,
             acknowledgePossibleDuplicateCharge = true,
         };
         var retried = await host.CallAsync(host.McpAWrite, "retry_native_note_processing",
