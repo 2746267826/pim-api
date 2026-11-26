@@ -597,7 +597,7 @@ public sealed class UnifiedRecycleBinServiceTests : IDisposable
         {
             OwnerId = _user,
             LogId = asrLog.Id,
-            ClientRequestId = "deep-purge-asr"
+            ClientRequestId = Guid.NewGuid()
         });
         await _db.SaveChangesAsync();
         await _notes.SoftDeleteAsync(_user, note.NoteId);
