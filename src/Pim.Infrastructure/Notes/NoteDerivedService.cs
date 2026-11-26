@@ -149,7 +149,19 @@ public sealed class NoteDerivedService(
     internal async Task<NoteDerivedTaskDto> StopForOwnerAsync(Guid owner, Guid taskId,
         CancellationToken ct)
     {
-        var state = await store.UpdateTaskAsync(owner, taskId, current => current.StopRequested = true, ct);
+        var state = await store.UpdateTaskAsync(owner, taskId, current =>
+        {
+            current.StopRequested = true;
+            // Stop is a durable checkpoint, not just a queue hint. Cancel work that has not
+            // started so no dispatcher can enqueue it after a restore; an in-flight step is
+            // stopped by the job's post-call checkpoint.
+            foreach (var step in current.Steps.Where(step => step.Current.Status == "Queued"))
+            {
+                step.Current.Status = "Cancelled";
+                step.Current.ErrorCode = "stopped_by_user";
+                step.Current.ErrorMessage = "任务已停止，此步骤尚未发送";
+            }
+        }, ct);
         return await DescribeAsync(state, ct);
     }
 
@@ -164,8 +176,14 @@ public sealed class NoteDerivedService(
         var state = await store.UpdateTaskAsync(owner, taskId, current =>
         {
             current.StopRequested = false;
-            foreach (var step in current.Steps.Where(step => step.Current.Status == "Cancelled"))
+            foreach (var step in current.Steps.Where(step =>
+                         step.Current.Status == "Cancelled" &&
+                         step.Current.ErrorCode == "stopped_by_user"))
+            {
                 step.Current.Status = "Queued";
+                step.Current.ErrorCode = null;
+                step.Current.ErrorMessage = null;
+            }
         }, ct);
         return await DescribeAsync(state, ct);
     }

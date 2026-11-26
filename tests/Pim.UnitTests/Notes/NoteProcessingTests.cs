@@ -492,7 +492,10 @@ public sealed class NoteProcessingTests(NoteProcessingFixture host)
         Assert.True(stoppedRecord.RecycleStopped);
         Assert.False(stoppedRecord.ResumePending);
         Assert.True((await AsrTaskAsync(owner.UserId, asrTaskId)).StopRequested);
-        Assert.True((await DerivedTaskAsync(owner.UserId, derivedTaskId)).StopRequested);
+        var stoppedDerived = await DerivedTaskAsync(owner.UserId, derivedTaskId);
+        Assert.True(stoppedDerived.StopRequested);
+        Assert.DoesNotContain(stoppedDerived.Steps,
+            step => step.Current.Status == "Queued");
 
         await materials.RecycleAsync(owner.UserId, material.NoteId, null);
         var startWhileRecycled = await client.PostAsJsonAsync(Processing + "/start",
@@ -554,13 +557,30 @@ public sealed class NoteProcessingTests(NoteProcessingFixture host)
         Assert.True((await AsrTaskAsync(owner.UserId, asrTaskId)).StopRequested);
         Assert.True((await DerivedTaskAsync(owner.UserId, derivedTaskId)).StopRequested);
 
+        var restoredJobs = new RecordingJobs();
+        var restoredAsrDispatch = new NoteAsrDispatchJob(AsrStore(),
+            scope.ServiceProvider.GetRequiredService<NoteAsrService>(), materials, restoredJobs,
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<NoteAsrDispatchJob>.Instance);
+        var restoredDerivedDispatch = new NoteDerivedDispatchJob(DerivedStore(), materials,
+            restoredJobs,
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<NoteDerivedDispatchJob>.Instance);
+        await restoredAsrDispatch.RunAsync(CancellationToken.None);
+        await restoredDerivedDispatch.RunAsync(CancellationToken.None);
+        Assert.DoesNotContain(restoredJobs.Items,
+            item => item.Args.Count > 0 && item.Args[0] is Guid jobOwner &&
+                jobOwner == owner.UserId);
+
         _ = await Data<NoteProcessingStatusDto>(await client.PostAsJsonAsync(Processing + "/start",
             new StartNoteProcessingRequest(material.NoteId, material.VersionId)));
         var resumed = await StatusAsync(client, material.NoteId, material.VersionId);
         Assert.False(resumed.ResumePending);
         Assert.False(resumed.RecycleStopped);
         Assert.False((await AsrTaskAsync(owner.UserId, asrTaskId)).StopRequested);
-        Assert.False((await DerivedTaskAsync(owner.UserId, derivedTaskId)).StopRequested);
+        var resumedDerived = await DerivedTaskAsync(owner.UserId, derivedTaskId);
+        Assert.False(resumedDerived.StopRequested);
+        Assert.DoesNotContain(resumedDerived.Steps,
+            step => step.Current.Status == "Cancelled" &&
+                step.Current.ErrorCode == "stopped_by_user");
         Assert.Equal(0, host.Models.Calls);
     }
 
