@@ -560,7 +560,7 @@ public sealed class NoteAsrBatchService(PimDbContext db, ICurrentUserService use
             var job = frozen.Job;
             if (!frozen.Created)
             {
-                await SyncAuditFromJobAsync(job, ct);
+                await SyncAuditFromJobAsync(job, CancellationToken.None);
                 return Describe(job);
             }
 
@@ -574,14 +574,14 @@ public sealed class NoteAsrBatchService(PimDbContext db, ICurrentUserService use
             {
                 await PersistUnknownAsync(job, "batch_marker_unknown",
                     "发送前的服务商尝试标记未确认；未发送请求，禁止自动重发");
-                await SyncAuditFromJobAsync(job, ct);
+                await SyncAuditFromJobAsync(job, CancellationToken.None);
                 return Describe(job);
             }
             catch (InvalidOperationException)
             {
                 await PersistFailedAsync(job, "audit_guard_failed",
                     "调用审计记录未处于可发送状态，未调用服务商");
-                await SyncAuditFromJobAsync(job, ct);
+                await SyncAuditFromJobAsync(job, CancellationToken.None);
                 return Describe(job);
             }
 
@@ -593,27 +593,29 @@ public sealed class NoteAsrBatchService(PimDbContext db, ICurrentUserService use
                 job.InputExpireAt = upload.ExpireAt;
                 job.UpdatedAt = DateTimeOffset.UtcNow;
                 await SaveBoundedAsync();
-                await SyncAuditFromJobAsync(job, ct);
+                // The upload already happened; a caller cancellation must not erase the
+                // durable audit projection. The sync keeps its own persistence budget.
+                await SyncAuditFromJobAsync(job, CancellationToken.None);
             }
             catch (OperationCanceledException)
             {
                 await PersistUnknownAsync(job, "batch_upload_unknown",
                     "输入文件上传期间请求取消，结果未确认；不得自动重复提交");
-                await SyncAuditFromJobAsync(job, ct);
+                await SyncAuditFromJobAsync(job, CancellationToken.None);
                 return Describe(job);
             }
             catch (Exception error) when (IsDefiniteRejection(error))
             {
                 await PersistFailedAsync(job, "batch_upload_rejected",
                     "供应商明确拒绝输入文件；本次未创建 Batch，请核对配置或文件后新建 attempt");
-                await SyncAuditFromJobAsync(job, ct);
+                await SyncAuditFromJobAsync(job, CancellationToken.None);
                 return Describe(job);
             }
             catch (Exception error) when (IsUncertainTransport(error))
             {
                 await PersistUnknownAsync(job, "batch_upload_unknown",
                     "输入文件上传结果未确认；不得自动重复提交");
-                await SyncAuditFromJobAsync(job, ct);
+                await SyncAuditFromJobAsync(job, CancellationToken.None);
                 return Describe(job);
             }
 
@@ -636,7 +638,7 @@ public sealed class NoteAsrBatchService(PimDbContext db, ICurrentUserService use
                         await PersistUnknownAsync(job, "batch_create_unknown",
                             "Batch 创建结果未确认；不得自动重发");
                 }
-                await SyncAuditFromJobAsync(job, ct);
+                await SyncAuditFromJobAsync(job, CancellationToken.None);
                 using var readBudget = new CancellationTokenSource(PersistenceBudget);
                 return await GetAsync(job.Id, readBudget.Token);
             }
@@ -644,21 +646,21 @@ public sealed class NoteAsrBatchService(PimDbContext db, ICurrentUserService use
             {
                 await PersistUnknownAsync(job, "batch_create_unknown",
                     "Batch 创建期间请求取消，结果未确认；不得自动重发");
-                await SyncAuditFromJobAsync(job, ct);
+                await SyncAuditFromJobAsync(job, CancellationToken.None);
                 return Describe(job);
             }
             catch (Exception error) when (IsDefiniteRejection(error))
             {
                 await PersistFailedAsync(job, "batch_create_rejected",
                     "供应商明确拒绝创建 Batch；本次未取得 batch id，请核对后新建 attempt");
-                await SyncAuditFromJobAsync(job, ct);
+                await SyncAuditFromJobAsync(job, CancellationToken.None);
                 return Describe(job);
             }
             catch (Exception error) when (IsUncertainTransport(error))
             {
                 await PersistUnknownAsync(job, "batch_create_unknown",
                     "Batch 创建结果未确认；不得自动重发，请平台侧按 attempt 人工核对");
-                await SyncAuditFromJobAsync(job, ct);
+                await SyncAuditFromJobAsync(job, CancellationToken.None);
                 return Describe(job);
             }
         }
