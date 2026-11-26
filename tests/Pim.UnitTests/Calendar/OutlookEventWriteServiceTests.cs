@@ -1551,7 +1551,7 @@ public sealed class OutlookEventWriteServiceTests
     }
 
     [Fact]
-    public async Task Update_SyntheticOccurrence_NotFound_RejectsWithoutPatchingMaster()
+    public async Task Update_SyntheticOccurrence_NotFound_ReturnsStructuredBatchFailureWithoutPatchingMaster()
     {
         await using var db = CreateDb();
         var (connectionId, bindingId, calendarId) = await SetupStandardAsync(db, UserId);
@@ -1571,14 +1571,130 @@ public sealed class OutlookEventWriteServiceTests
             OriginalEventId: masterId,
             RecurrenceId: recurrenceId);
 
-        var ex = await Assert.ThrowsAsync<DomainException>(
-            () => service.ExecuteAsync(UserId, request, default));
+        var result = await service.ExecuteAsync(UserId, request, default);
 
-        Assert.Equal(02009, ex.ErrorCode);
+        Assert.Equal("not-found", result.Status);
+        Assert.Equal("GRAPH_EVENT_NOT_FOUND", result.ErrorCode);
+        Assert.Equal(OpId, result.ClientOperationId);
+        Assert.True(result.NoChangesApplied);
         var get = Assert.Single(handler.Requests);
         Assert.Contains("/graph-series-1/instances", get.RequestUri!.AbsoluteUri);
-        Assert.Empty(await db.Set<OutlookSyncBatchEntity>().ToListAsync());
-        Assert.Empty(await db.Set<OutlookWritebackOperationEntity>().ToListAsync());
+
+        db.ChangeTracker.Clear();
+        var operation = await db.Set<OutlookWritebackOperationEntity>().SingleAsync();
+        Assert.Equal("failed", operation.State);
+        Assert.Equal("GRAPH_EVENT_NOT_FOUND", operation.ErrorCode);
+        var batch = await db.Set<OutlookSyncBatchEntity>().SingleAsync();
+        Assert.Equal("failed", batch.Status);
+        Assert.Contains("GRAPH_EVENT_NOT_FOUND", batch.ErrorsJson);
+
+        var master = await db.Set<EventEntity>().IgnoreQueryFilters()
+            .SingleAsync(e => e.Id == masterId);
+        Assert.Equal("Series Master", master.Title);
+        Assert.Null(master.DeletedAt);
+        Assert.Empty(await db.Set<EventEntity>().IgnoreQueryFilters()
+            .Where(e => e.SeriesMasterId == masterId && e.IsException)
+            .ToListAsync());
+    }
+
+    [Theory]
+    [InlineData("update", 403, "forbidden", "GRAPH_FORBIDDEN", 1)]
+    [InlineData("update", 429, "error", "PROVIDER_RATE_LIMITED", 3)]
+    [InlineData("update", 500, "error", "PROVIDER_UNAVAILABLE", 3)]
+    [InlineData("delete", 403, "forbidden", "GRAPH_FORBIDDEN", 1)]
+    [InlineData("delete", 429, "error", "PROVIDER_RATE_LIMITED", 3)]
+    [InlineData("delete", 503, "error", "PROVIDER_UNAVAILABLE", 3)]
+    public async Task SyntheticOccurrence_TargetResolutionFailure_IsStructuredBatchFailure(
+        string operationName, int statusCode, string expectedStatus,
+        string expectedErrorCode, int expectedGraphAttempts)
+    {
+        await using var db = CreateDb();
+        var (connectionId, bindingId, calendarId) = await SetupStandardAsync(db, UserId);
+        var (masterId, recurrenceId) = await SeedSyntheticOccurrenceSeriesAsync(
+            db, connectionId, bindingId, calendarId);
+        var handler = new ScriptedHttpMessageHandler();
+        for (var attempt = 0; attempt < expectedGraphAttempts; attempt++)
+            handler.Enqueue((HttpStatusCode)statusCode);
+        var service = CreateService(db, handler);
+
+        var request = new OutlookWriteRequest(
+            operationName,
+            bindingId,
+            SyntheticOccurrenceId(masterId, recurrenceId),
+            operationName == "update" ? MakeDraft(calendarId) : null,
+            "instance",
+            OpId,
+            OriginalEventId: masterId,
+            RecurrenceId: recurrenceId);
+
+        var result = await service.ExecuteAsync(UserId, request, default);
+
+        Assert.Equal(expectedStatus, result.Status);
+        Assert.Equal(expectedErrorCode, result.ErrorCode);
+        Assert.Equal(OpId, result.ClientOperationId);
+        Assert.True(result.NoChangesApplied);
+        Assert.Equal(expectedGraphAttempts, handler.Requests.Count);
+        Assert.All(handler.Requests, r => Assert.Equal(HttpMethod.Get, r.Method));
+        Assert.All(handler.Requests, r =>
+            Assert.Contains("/graph-series-1/instances", r.RequestUri!.AbsoluteUri));
+
+        db.ChangeTracker.Clear();
+        var operation = await db.Set<OutlookWritebackOperationEntity>().SingleAsync();
+        Assert.Equal("failed", operation.State);
+        Assert.Equal(expectedErrorCode, operation.ErrorCode);
+        var batch = await db.Set<OutlookSyncBatchEntity>().SingleAsync();
+        Assert.Equal("failed", batch.Status);
+        Assert.Contains(expectedErrorCode, batch.ErrorsJson);
+
+        var master = await db.Set<EventEntity>().IgnoreQueryFilters()
+            .SingleAsync(e => e.Id == masterId);
+        Assert.Equal("Series Master", master.Title);
+        Assert.Null(master.DeletedAt);
+        Assert.Empty(await db.Set<EventEntity>().IgnoreQueryFilters()
+            .Where(e => e.SeriesMasterId == masterId && e.IsException)
+            .ToListAsync());
+    }
+
+    [Fact]
+    public async Task SyntheticOccurrence_TargetResolutionTimeout_IsStructuredPreflightFailure()
+    {
+        await using var db = CreateDb();
+        var (connectionId, bindingId, calendarId) = await SetupStandardAsync(db, UserId);
+        var (masterId, recurrenceId) = await SeedSyntheticOccurrenceSeriesAsync(
+            db, connectionId, bindingId, calendarId);
+        var handler = new ScriptedHttpMessageHandler();
+        handler.EnqueueTimeout();
+        handler.EnqueueTimeout();
+        handler.EnqueueTimeout();
+        var service = CreateService(db, handler);
+
+        var request = new OutlookWriteRequest(
+            "delete",
+            bindingId,
+            SyntheticOccurrenceId(masterId, recurrenceId),
+            null,
+            "instance",
+            OpId,
+            OriginalEventId: masterId,
+            RecurrenceId: recurrenceId);
+
+        var result = await service.ExecuteAsync(UserId, request, default);
+
+        Assert.Equal("error", result.Status);
+        Assert.Equal("PROVIDER_TIMEOUT", result.ErrorCode);
+        Assert.Equal(OpId, result.ClientOperationId);
+        Assert.True(result.NoChangesApplied);
+        Assert.Contains("尚未写入任何内容", result.UserMessage);
+        Assert.Equal(3, handler.Requests.Count);
+        Assert.All(handler.Requests, r => Assert.Equal(HttpMethod.Get, r.Method));
+
+        db.ChangeTracker.Clear();
+        var operation = await db.Set<OutlookWritebackOperationEntity>().SingleAsync();
+        Assert.Equal("failed", operation.State);
+        Assert.Equal("PROVIDER_TIMEOUT", operation.ErrorCode);
+        var batch = await db.Set<OutlookSyncBatchEntity>().SingleAsync();
+        Assert.Equal("failed", batch.Status);
+        Assert.Contains("PROVIDER_TIMEOUT", batch.ErrorsJson);
     }
 
     [Fact]
@@ -3002,6 +3118,87 @@ public sealed class OutlookEventWriteServiceTests
     }
 
     [Fact]
+    public async Task Update_WithoutLocalEtag_PreWriteGet404_ReturnsNotFoundWithoutRemoteWrite()
+    {
+        await using var db = CreateDb();
+        var (_, bindingId, calendarId, eventId) = await SetupUpdateAsync(db, UserId);
+        var evt = await db.Set<EventEntity>().IgnoreQueryFilters()
+            .SingleAsync(e => e.Id == eventId);
+        evt.OutlookEtag = null;
+        await db.SaveChangesAsync();
+        var handler = new ScriptedHttpMessageHandler();
+        handler.Enqueue(HttpStatusCode.NotFound);
+        var service = CreateService(db, handler);
+
+        var snapshot = await SnapshotEventWriteStateAsync(db, eventId);
+        var result = await service.ExecuteAsync(
+            UserId,
+            new OutlookWriteRequest(
+                "update", bindingId, eventId, MakeDraft(calendarId), "instance", OpId),
+            default);
+
+        Assert.Equal("not-found", result.Status);
+        Assert.Equal("GRAPH_EVENT_NOT_FOUND", result.ErrorCode);
+        Assert.Equal(OpId, result.ClientOperationId);
+        Assert.True(result.NoChangesApplied);
+        var get = Assert.Single(handler.Requests);
+        Assert.Equal(HttpMethod.Get, get.Method);
+        Assert.DoesNotContain(
+            handler.Requests, r => r.Method == HttpMethod.Patch);
+
+        db.ChangeTracker.Clear();
+        Assert.Equal(snapshot, await SnapshotEventWriteStateAsync(db, eventId));
+
+        var operation = await db.Set<OutlookWritebackOperationEntity>().SingleAsync();
+        Assert.Equal("failed", operation.State);
+        Assert.Equal("GRAPH_EVENT_NOT_FOUND", operation.ErrorCode);
+        var batch = await db.Set<OutlookSyncBatchEntity>().SingleAsync();
+        Assert.Equal("failed", batch.Status);
+        Assert.Contains("GRAPH_EVENT_NOT_FOUND", batch.ErrorsJson);
+    }
+
+    [Fact]
+    public async Task Update_WithoutLocalEtag_PreReadTimeout_IsPreflightErrorNotUnknown()
+    {
+        await using var db = CreateDb();
+        var (_, bindingId, calendarId, eventId) = await SetupUpdateAsync(db, UserId);
+        var evt = await db.Set<EventEntity>().IgnoreQueryFilters()
+            .SingleAsync(e => e.Id == eventId);
+        evt.OutlookEtag = null;
+        await db.SaveChangesAsync();
+        var handler = new ScriptedHttpMessageHandler();
+        handler.EnqueueTimeout();
+        handler.EnqueueTimeout();
+        handler.EnqueueTimeout();
+        var service = CreateService(db, handler);
+
+        var snapshot = await SnapshotEventWriteStateAsync(db, eventId);
+        var result = await service.ExecuteAsync(
+            UserId,
+            new OutlookWriteRequest(
+                "update", bindingId, eventId, MakeDraft(calendarId), "instance", OpId),
+            default);
+
+        Assert.Equal("error", result.Status);
+        Assert.Equal("PROVIDER_TIMEOUT", result.ErrorCode);
+        Assert.Equal(OpId, result.ClientOperationId);
+        Assert.True(result.NoChangesApplied);
+        Assert.Contains("尚未写入任何内容", result.UserMessage);
+        Assert.Equal(3, handler.Requests.Count);
+        Assert.All(handler.Requests, r => Assert.Equal(HttpMethod.Get, r.Method));
+
+        db.ChangeTracker.Clear();
+        Assert.Equal(snapshot, await SnapshotEventWriteStateAsync(db, eventId));
+
+        var operation = await db.Set<OutlookWritebackOperationEntity>().SingleAsync();
+        Assert.Equal("failed", operation.State);
+        Assert.Equal("PROVIDER_TIMEOUT", operation.ErrorCode);
+        var batch = await db.Set<OutlookSyncBatchEntity>().SingleAsync();
+        Assert.Equal("failed", batch.Status);
+        Assert.Contains("PROVIDER_TIMEOUT", batch.ErrorsJson);
+    }
+
+    [Fact]
     public async Task Undo_Create_DeletesEventAndRejectsSecondUndo()
     {
         await using var db = CreateDb();
@@ -3085,6 +3282,158 @@ public sealed class OutlookEventWriteServiceTests
         var restored = await db.Set<EventEntity>()
             .SingleAsync(e => e.OutlookEventId == "graph-event-restored");
         Assert.Equal("Original Title", restored.Title);
+    }
+
+    [Fact]
+    public async Task Undo_Update_ConflictThenRetryWithSameDeterministicIdSucceeds()
+    {
+        await using var db = CreateDb();
+        var (_, bindingId, calendarId, eventId) = await SetupUpdateAsync(db, UserId);
+        var handler = new ScriptedHttpMessageHandler();
+        handler.Enqueue(HttpStatusCode.OK, UpdatedEventJson());
+        handler.Enqueue(HttpStatusCode.PreconditionFailed);
+        handler.Enqueue(HttpStatusCode.OK, LatestGraphEventJson);
+        handler.Enqueue(HttpStatusCode.OK, """{"value":[]}""");
+        handler.Enqueue(HttpStatusCode.OK, RestoredOriginalEventJson());
+        var service = CreateService(db, handler);
+
+        await service.ExecuteAsync(
+            UserId,
+            new OutlookWriteRequest(
+                "update", bindingId, eventId, MakeDraft(calendarId), "instance", OpId,
+                ExpectedEtag: "W/\"original-etag\""),
+            default);
+
+        var conflict = await service.UndoAsync(UserId, OpId, default);
+
+        Assert.Equal("conflict", conflict.Status);
+        Assert.Equal("CONFLICT", conflict.ErrorCode);
+        Assert.True(conflict.NoChangesApplied);
+
+        db.ChangeTracker.Clear();
+        var original = await db.Set<OutlookWritebackOperationEntity>()
+            .SingleAsync(o => o.ClientOperationId == OpId);
+        var undoOperation = await db.Set<OutlookWritebackOperationEntity>()
+            .SingleAsync(o => o.UndoOfOperationId == original.Id);
+        var deterministicUndoId = undoOperation.ClientOperationId;
+        Assert.Equal("conflict", undoOperation.State);
+
+        var retried = await service.UndoAsync(UserId, OpId, default);
+
+        Assert.Equal("updated", retried.Status);
+        Assert.NotEqual("IDEMPOTENCY_CONFLICT", retried.ErrorCode);
+        Assert.Equal(deterministicUndoId, retried.ClientOperationId);
+        Assert.Equal(5, handler.Requests.Count);
+        Assert.Equal(HttpMethod.Patch, handler.Requests[^1].Method);
+        Assert.Equal("updated-etag", handler.Requests[^1].Headers.IfMatch.ToString());
+
+        db.ChangeTracker.Clear();
+        var stored = await db.Set<EventEntity>().IgnoreQueryFilters()
+            .SingleAsync(e => e.Id == eventId);
+        Assert.Equal("Original Title", stored.Title);
+        var completedUndo = await db.Set<OutlookWritebackOperationEntity>()
+            .SingleAsync(o => o.UndoOfOperationId == original.Id);
+        Assert.Equal(deterministicUndoId, completedUndo.ClientOperationId);
+        Assert.Equal("completed", completedUndo.State);
+        Assert.Equal(2, completedUndo.AttemptCount);
+    }
+
+    [Fact]
+    public async Task Undo_InProgress_ExpiredChildLeaseIsReclaimedAndRetried()
+    {
+        await using var db = CreateDb();
+        var (_, bindingId, calendarId) = await SetupStandardAsync(db, UserId);
+        var clock = new StubTimeProvider
+        {
+            UtcNowValue = new DateTimeOffset(2026, 7, 8, 12, 0, 0, TimeSpan.Zero)
+        };
+        var handler = new ScriptedHttpMessageHandler();
+        handler.Enqueue(HttpStatusCode.Created, GraphEventJson);
+        handler.Enqueue(HttpStatusCode.InternalServerError);
+        handler.Enqueue(HttpStatusCode.NoContent);
+        var service = CreateService(db, handler, timeProvider: clock);
+
+        await service.ExecuteAsync(
+            UserId,
+            new OutlookWriteRequest(
+                "create", bindingId, null, MakeDraft(calendarId), "instance", OpId),
+            default);
+        var failedUndo = await service.UndoAsync(UserId, OpId, default);
+        Assert.Equal("error", failedUndo.Status);
+
+        var original = await db.Set<OutlookWritebackOperationEntity>()
+            .SingleAsync(o => o.ClientOperationId == OpId);
+        var undoOperation = await db.Set<OutlookWritebackOperationEntity>()
+            .SingleAsync(o => o.UndoOfOperationId == original.Id);
+        original.UndoState = "in-progress";
+        original.UpdatedAt = clock.GetUtcNow() - TimeSpan.FromMinutes(5);
+        undoOperation.State = "processing";
+        undoOperation.UpdatedAt = clock.GetUtcNow() - TimeSpan.FromMinutes(3);
+        await db.SaveChangesAsync();
+
+        var recovered = await service.UndoAsync(UserId, OpId, default);
+
+        Assert.Equal("deleted", recovered.Status);
+        Assert.Equal(3, handler.Requests.Count);
+        Assert.Equal(HttpMethod.Delete, handler.Requests[^1].Method);
+
+        db.ChangeTracker.Clear();
+        var storedEvent = await db.Set<EventEntity>().IgnoreQueryFilters()
+            .SingleAsync(e => e.OutlookEventId == "graph-event-1");
+        Assert.NotNull(storedEvent.DeletedAt);
+        var completedOriginal = await db.Set<OutlookWritebackOperationEntity>()
+            .SingleAsync(o => o.ClientOperationId == OpId);
+        Assert.Equal("used", completedOriginal.UndoState);
+        var completedUndo = await db.Set<OutlookWritebackOperationEntity>()
+            .SingleAsync(o => o.UndoOfOperationId == completedOriginal.Id);
+        Assert.Equal("completed", completedUndo.State);
+        Assert.Equal(2, completedUndo.AttemptCount);
+    }
+
+    [Fact]
+    public async Task Undo_InProgress_FreshChildLeaseStillBlocksWithoutGraphCall()
+    {
+        await using var db = CreateDb();
+        var (_, bindingId, calendarId) = await SetupStandardAsync(db, UserId);
+        var clock = new StubTimeProvider
+        {
+            UtcNowValue = new DateTimeOffset(2026, 7, 8, 12, 0, 0, TimeSpan.Zero)
+        };
+        var handler = new ScriptedHttpMessageHandler();
+        handler.Enqueue(HttpStatusCode.Created, GraphEventJson);
+        handler.Enqueue(HttpStatusCode.InternalServerError);
+        var service = CreateService(db, handler, timeProvider: clock);
+
+        await service.ExecuteAsync(
+            UserId,
+            new OutlookWriteRequest(
+                "create", bindingId, null, MakeDraft(calendarId), "instance", OpId),
+            default);
+        await service.UndoAsync(UserId, OpId, default);
+
+        var original = await db.Set<OutlookWritebackOperationEntity>()
+            .SingleAsync(o => o.ClientOperationId == OpId);
+        var undoOperation = await db.Set<OutlookWritebackOperationEntity>()
+            .SingleAsync(o => o.UndoOfOperationId == original.Id);
+        original.UndoState = "in-progress";
+        original.UpdatedAt = clock.GetUtcNow() - TimeSpan.FromMinutes(5);
+        undoOperation.State = "processing";
+        undoOperation.UpdatedAt = clock.GetUtcNow();
+        await db.SaveChangesAsync();
+
+        var blocked = await service.UndoAsync(UserId, OpId, default);
+
+        Assert.Equal("conflict", blocked.Status);
+        Assert.Equal("OPERATION_IN_PROGRESS", blocked.ErrorCode);
+        Assert.Equal(2, handler.Requests.Count);
+
+        db.ChangeTracker.Clear();
+        var stillOriginal = await db.Set<OutlookWritebackOperationEntity>()
+            .SingleAsync(o => o.ClientOperationId == OpId);
+        Assert.Equal("in-progress", stillOriginal.UndoState);
+        var stillUndo = await db.Set<OutlookWritebackOperationEntity>()
+            .SingleAsync(o => o.UndoOfOperationId == stillOriginal.Id);
+        Assert.Equal("processing", stillUndo.State);
     }
 
     [Fact]

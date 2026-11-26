@@ -116,6 +116,26 @@ public sealed class OutlookWritebackEndpointE2ETests
     }
     """;
 
+    private const string UndoRestoredEventJson = """
+    {
+        "@odata.etag": "W/\"undo-etag\"",
+        "id": "graph-event-1",
+        "subject": "Original Title",
+        "body": {"contentType": "text", "content": "Original description"},
+        "start": {"dateTime": "2026-11-30T09:00:00.0000000Z", "timeZone": "UTC"},
+        "end": {"dateTime": "2026-11-30T10:00:00.0000000Z", "timeZone": "UTC"},
+        "location": {"displayName": "Original Room"},
+        "isAllDay": false,
+        "type": "singleInstance",
+        "seriesMasterId": null,
+        "recurrence": null,
+        "iCalUId": "ical-e2e",
+        "changeKey": "change-undo",
+        "originalStartTimeZone": "UTC",
+        "originalEndTimeZone": "UTC"
+    }
+    """;
+
     private const string SeriesOccurrenceListJson = """
     {
         "value": [
@@ -652,6 +672,346 @@ public sealed class OutlookWritebackEndpointE2ETests
             "Graph 400/403/404 mapped to 400/403/404 with noChangesApplied=true and no same-id retry hint; 429/5xx/timeout mapped to structured 502 retry receipts with clientOperationId and noChangesApplied=false.");
     }
 
+    [SkippableFact]
+    public async Task WritebackValidation400_ReturnsOutlookWriteResultEnvelope()
+    {
+        var graph = new GraphQueueHandler();
+        var (temp, factory) = await NewIsolatedHostAsync(graph);
+        await using var _ = temp;
+        using var factoryScope = factory;
+        var seed = await SeedAsync(temp);
+        var eventId = await SeedSimpleEventAsync(
+            temp, seed, "Validation Target", "graph-validation");
+        var client = Authed(factory, seed.UserId);
+        var body = $$"""
+        {
+          "calendarId": "{{seed.CalendarId}}",
+          "title": "Must not be applied",
+          "dtStart": "2026-11-30T09:00:00Z",
+          "dtEnd": "2026-11-30T10:00:00Z"
+        }
+        """;
+
+        var updateOperationId = Guid.NewGuid();
+        var eventValidation = await client.PutAsync(
+            $"/api/v1/calendar/events/{eventId:D}" +
+            $"?recurrenceId=not-a-date&clientOperationId={updateOperationId:D}",
+            Json(body));
+        Assert.Equal(HttpStatusCode.BadRequest, eventValidation.StatusCode);
+        var eventValidationData = await ReadDataAsync(eventValidation);
+        Assert.Equal("INVALID_REQUEST",
+            eventValidationData.GetProperty("errorCode").GetString());
+        Assert.Equal(updateOperationId,
+            eventValidationData.GetProperty("clientOperationId").GetGuid());
+        Assert.True(eventValidationData.GetProperty("noChangesApplied").GetBoolean());
+
+        var legacyOperationId = Guid.NewGuid();
+        var legacyValidation = await client.PostAsync(
+            "/api/v1/calendar/outlook/events/writeback",
+            Json($$"""
+            {
+              "operation": "bogus",
+              "calendarBindingId": "{{seed.BindingId}}",
+              "scope": "instance",
+              "clientOperationId": "{{legacyOperationId:D}}"
+            }
+            """));
+        Assert.Equal(HttpStatusCode.BadRequest, legacyValidation.StatusCode);
+        var legacyValidationData = await ReadDataAsync(legacyValidation);
+        Assert.Equal("INVALID_REQUEST",
+            legacyValidationData.GetProperty("errorCode").GetString());
+        Assert.Equal(legacyOperationId,
+            legacyValidationData.GetProperty("clientOperationId").GetGuid());
+        Assert.True(legacyValidationData.GetProperty("noChangesApplied").GetBoolean());
+
+        var unknownUndoId = Guid.NewGuid();
+        var undoValidation = await client.PostAsync(
+            $"/api/v1/calendar/outlook/events/{unknownUndoId:D}/undo", null);
+        Assert.Equal(HttpStatusCode.BadRequest, undoValidation.StatusCode);
+        var undoValidationData = await ReadDataAsync(undoValidation);
+        Assert.Equal("INVALID_REQUEST",
+            undoValidationData.GetProperty("errorCode").GetString());
+        Assert.Equal(unknownUndoId,
+            undoValidationData.GetProperty("clientOperationId").GetGuid());
+        Assert.True(undoValidationData.GetProperty("noChangesApplied").GetBoolean());
+
+        Assert.Empty(graph.Requests);
+        temp.Db.ChangeTracker.Clear();
+        var stored = await temp.Db.Set<EventEntity>().IgnoreQueryFilters()
+            .SingleAsync(e => e.Id == eventId);
+        Assert.Equal("Validation Target", stored.Title);
+        Assert.Null(stored.DeletedAt);
+
+        _output.WriteLine(
+            "Event PUT, legacy writeback and undo validation all returned 400 with the documented ApiResponse<OutlookWriteResult> envelope and no Graph request.");
+    }
+
+    [SkippableFact]
+    public async Task SyntheticOccurrenceTargetResolutionFailures_ReturnStructuredReceipts()
+    {
+        var graph = new GraphQueueHandler();
+        var (temp, factory) = await NewIsolatedHostAsync(graph);
+        await using var _ = temp;
+        using var factoryScope = factory;
+        var seed = await SeedAsync(temp);
+        var (masterId, recurrenceId) = await SeedSeriesMasterAsync(temp, seed);
+        var client = Authed(factory, seed.UserId);
+        var syntheticOccurrenceId = SyntheticOccurrenceId(masterId, recurrenceId);
+        var operationIds = new List<Guid>();
+
+        var cases = new (string Name, Action Enqueue, HttpStatusCode Expected, string ErrorCode)[]
+        {
+            ("not-found", () => graph.Enqueue(
+                HttpStatusCode.OK, """{"value":[]}"""),
+                HttpStatusCode.NotFound, "GRAPH_EVENT_NOT_FOUND"),
+            ("forbidden", () => graph.Enqueue(HttpStatusCode.Forbidden),
+                HttpStatusCode.Forbidden, "GRAPH_FORBIDDEN"),
+            ("rate-limited", () =>
+            {
+                for (var attempt = 0; attempt < 3; attempt++)
+                    graph.Enqueue(HttpStatusCode.TooManyRequests, retryAfter: "0");
+            }, HttpStatusCode.TooManyRequests, "PROVIDER_RATE_LIMITED"),
+            ("server-error", () =>
+            {
+                for (var attempt = 0; attempt < 3; attempt++)
+                    graph.Enqueue(HttpStatusCode.InternalServerError, retryAfter: "0");
+            }, HttpStatusCode.BadGateway, "PROVIDER_UNAVAILABLE"),
+            ("timeout", () =>
+            {
+                for (var attempt = 0; attempt < 3; attempt++)
+                    graph.EnqueueException(new OperationCanceledException("fake graph timeout"));
+            }, HttpStatusCode.GatewayTimeout, "PROVIDER_TIMEOUT")
+        };
+
+        foreach (var testCase in cases)
+        {
+            var operationId = Guid.NewGuid();
+            operationIds.Add(operationId);
+            testCase.Enqueue();
+            var response = await client.DeleteAsync(
+                $"/api/v1/calendar/events/{syntheticOccurrenceId:D}" +
+                $"?scope=instance&originalEventId={masterId:D}" +
+                $"&recurrenceId={Uri.EscapeDataString(recurrenceId)}" +
+                $"&clientOperationId={operationId:D}");
+
+            Assert.True(testCase.Expected == response.StatusCode,
+                $"{testCase.Name}: expected {(int)testCase.Expected}, got " +
+                $"{(int)response.StatusCode} {await response.Content.ReadAsStringAsync()}");
+            var receipt = await ReadDataAsync(response);
+            Assert.Equal(testCase.ErrorCode,
+                receipt.GetProperty("errorCode").GetString());
+            Assert.Equal(operationId,
+                receipt.GetProperty("clientOperationId").GetGuid());
+            Assert.True(receipt.GetProperty("noChangesApplied").GetBoolean());
+            Assert.All(graph.Requests, request => Assert.Equal("GET", request.Method));
+        }
+
+        Assert.Equal(11, graph.Requests.Count);
+        temp.Db.ChangeTracker.Clear();
+        var operations = await temp.Db.Set<OutlookWritebackOperationEntity>()
+            .Where(o => operationIds.Contains(o.ClientOperationId))
+            .ToListAsync();
+        Assert.Equal(cases.Length, operations.Count);
+        Assert.All(operations, operation => Assert.Equal("failed", operation.State));
+
+        var batches = await temp.Db.Set<OutlookSyncBatchEntity>().ToListAsync();
+        Assert.Equal(cases.Length, batches.Count);
+        Assert.All(batches, batch => Assert.Equal("failed", batch.Status));
+
+        var master = await temp.Db.Set<EventEntity>().IgnoreQueryFilters()
+            .SingleAsync(e => e.Id == masterId);
+        Assert.Equal("Series Master", master.Title);
+        Assert.Null(master.DeletedAt);
+        Assert.Empty(await temp.Db.Set<EventEntity>().IgnoreQueryFilters()
+            .Where(e => e.SeriesMasterId == masterId && e.IsException)
+            .ToListAsync());
+
+        _output.WriteLine(
+            "Synthetic occurrence lookup 404/403/429/5xx/timeout all produced structured receipts and failed ledger rows without touching the series master or escaping as 500.");
+    }
+
+    [SkippableFact]
+    public async Task UndoConflict_RetryWithSameDeterministicOperationIdSucceeds()
+    {
+        var graph = new GraphQueueHandler();
+        var (temp, factory) = await NewIsolatedHostAsync(graph);
+        await using var _ = temp;
+        using var factoryScope = factory;
+        var seed = await SeedAsync(temp);
+        var eventId = await SeedSimpleEventAsync(
+            temp, seed, "Undo Conflict Target", "graph-event-1");
+        var client = Authed(factory, seed.UserId);
+        var operationId = Guid.NewGuid();
+        var updateBody = $$"""
+        {
+          "calendarId": "{{seed.CalendarId}}",
+          "title": "Updated Subject",
+          "dtStart": "2026-11-30T11:00:00Z",
+          "dtEnd": "2026-11-30T12:00:00Z"
+        }
+        """;
+
+        graph.Enqueue(HttpStatusCode.OK, UpdatedEventJson);
+        var updated = await client.PutAsync(
+            $"/api/v1/calendar/events/{eventId:D}" +
+            $"?expectedEtag=W%2F%22etag%22&clientOperationId={operationId:D}",
+            Json(updateBody));
+        Assert.Equal(HttpStatusCode.OK, updated.StatusCode);
+
+        graph.Enqueue(HttpStatusCode.PreconditionFailed);
+        graph.Enqueue(HttpStatusCode.OK, LatestEventJson);
+        var conflict = await client.PostAsync(
+            $"/api/v1/calendar/outlook/events/{operationId:D}/undo", null);
+        Assert.Equal(HttpStatusCode.Conflict, conflict.StatusCode);
+        var conflictData = await ReadDataAsync(conflict);
+        Assert.Equal("CONFLICT", conflictData.GetProperty("errorCode").GetString());
+
+        temp.Db.ChangeTracker.Clear();
+        var original = await temp.Db.Set<OutlookWritebackOperationEntity>()
+            .SingleAsync(o => o.ClientOperationId == operationId);
+        var undoOperation = await temp.Db.Set<OutlookWritebackOperationEntity>()
+            .SingleAsync(o => o.UndoOfOperationId == original.Id);
+        Assert.Equal("conflict", undoOperation.State);
+        var deterministicUndoId = undoOperation.ClientOperationId;
+
+        graph.Enqueue(HttpStatusCode.OK, UndoRestoredEventJson);
+        var retried = await client.PostAsync(
+            $"/api/v1/calendar/outlook/events/{operationId:D}/undo", null);
+        Assert.Equal(HttpStatusCode.OK, retried.StatusCode);
+        var retriedText = await retried.Content.ReadAsStringAsync();
+        Assert.DoesNotContain("IDEMPOTENCY_CONFLICT", retriedText);
+        using (var retriedDoc = JsonDocument.Parse(retriedText))
+        {
+            var data = retriedDoc.RootElement.GetProperty("data");
+            Assert.Equal("updated", data.GetProperty("status").GetString());
+            Assert.Equal(deterministicUndoId,
+                data.GetProperty("clientOperationId").GetGuid());
+        }
+
+        temp.Db.ChangeTracker.Clear();
+        var completedUndo = await temp.Db.Set<OutlookWritebackOperationEntity>()
+            .SingleAsync(o => o.UndoOfOperationId == original.Id);
+        Assert.Equal(deterministicUndoId, completedUndo.ClientOperationId);
+        Assert.Equal("completed", completedUndo.State);
+        Assert.Equal(2, completedUndo.AttemptCount);
+        Assert.Equal(
+            new[] { "PATCH", "PATCH", "GET", "PATCH" },
+            graph.CoreRequests.Select(request => request.Method).ToList());
+
+        var stored = await temp.Db.Set<EventEntity>().IgnoreQueryFilters()
+            .SingleAsync(e => e.Id == eventId);
+        Assert.Equal("Original Title", stored.Title);
+
+        _output.WriteLine(
+            "Undo 412 retried with the same deterministic undo clientOperationId, reached Graph again, completed, and did not return a forged IDEMPOTENCY_CONFLICT.");
+    }
+
+    [SkippableFact]
+    public async Task PreWriteGet404AndReadTimeout_DifferFromPostWriteUnknown()
+    {
+        var graph = new GraphQueueHandler();
+        var (temp, factory) = await NewIsolatedHostAsync(graph);
+        await using var _ = temp;
+        using var factoryScope = factory;
+        var seed = await SeedAsync(temp);
+        var client = Authed(factory, seed.UserId);
+        var body = $$"""
+        {
+          "calendarId": "{{seed.CalendarId}}",
+          "title": "Must not be applied",
+          "dtStart": "2026-11-30T09:00:00Z",
+          "dtEnd": "2026-11-30T10:00:00Z"
+        }
+        """;
+
+        var notFoundEventId = await SeedSimpleEventAsync(
+            temp, seed, "Pre-read 404", "graph-pre-read-404");
+        var notFoundEntity = await temp.Db.Set<EventEntity>()
+            .SingleAsync(e => e.Id == notFoundEventId);
+        notFoundEntity.OutlookEtag = null;
+        await temp.Db.SaveChangesAsync();
+        temp.Db.ChangeTracker.Clear();
+
+        graph.Enqueue(HttpStatusCode.NotFound);
+        var notFoundOperationId = Guid.NewGuid();
+        var notFound = await client.PutAsync(
+            $"/api/v1/calendar/events/{notFoundEventId:D}" +
+            $"?clientOperationId={notFoundOperationId:D}",
+            Json(body));
+        Assert.Equal(HttpStatusCode.NotFound, notFound.StatusCode);
+        var notFoundData = await ReadDataAsync(notFound);
+        Assert.Equal("GRAPH_EVENT_NOT_FOUND",
+            notFoundData.GetProperty("errorCode").GetString());
+        Assert.Equal(notFoundOperationId,
+            notFoundData.GetProperty("clientOperationId").GetGuid());
+        Assert.True(notFoundData.GetProperty("noChangesApplied").GetBoolean());
+        Assert.Equal("GET", graph.CoreRequests[^1].Method);
+
+        temp.Db.ChangeTracker.Clear();
+        var stillNotFound = await temp.Db.Set<EventEntity>().IgnoreQueryFilters()
+            .SingleAsync(e => e.Id == notFoundEventId);
+        Assert.Equal("Pre-read 404", stillNotFound.Title);
+        Assert.DoesNotContain(
+            graph.CoreRequests, request => request.Method == "PATCH");
+
+        var readTimeoutEventId = await SeedSimpleEventAsync(
+            temp, seed, "Pre-read timeout", "graph-pre-read-timeout");
+        var readTimeoutEntity = await temp.Db.Set<EventEntity>()
+            .SingleAsync(e => e.Id == readTimeoutEventId);
+        readTimeoutEntity.OutlookEtag = null;
+        await temp.Db.SaveChangesAsync();
+        temp.Db.ChangeTracker.Clear();
+
+        var coreRequestsBeforeReadTimeout = graph.CoreRequests.Count;
+        for (var attempt = 0; attempt < 3; attempt++)
+            graph.EnqueueException(new OperationCanceledException("fake pre-read timeout"));
+        var readTimeoutOperationId = Guid.NewGuid();
+        var readTimeout = await client.PutAsync(
+            $"/api/v1/calendar/events/{readTimeoutEventId:D}" +
+            $"?clientOperationId={readTimeoutOperationId:D}",
+            Json(body));
+        Assert.Equal(HttpStatusCode.GatewayTimeout, readTimeout.StatusCode);
+        var readTimeoutData = await ReadDataAsync(readTimeout);
+        Assert.Equal("PROVIDER_TIMEOUT",
+            readTimeoutData.GetProperty("errorCode").GetString());
+        Assert.True(readTimeoutData.GetProperty("noChangesApplied").GetBoolean());
+        Assert.Contains("尚未写入任何内容",
+            readTimeoutData.GetProperty("userMessage").GetString());
+        Assert.Equal(
+            coreRequestsBeforeReadTimeout + 3, graph.CoreRequests.Count);
+        Assert.All(
+            graph.CoreRequests.Skip(coreRequestsBeforeReadTimeout),
+            request => Assert.Equal("GET", request.Method));
+
+        temp.Db.ChangeTracker.Clear();
+        var stillReadTimeout = await temp.Db.Set<EventEntity>().IgnoreQueryFilters()
+            .SingleAsync(e => e.Id == readTimeoutEventId);
+        Assert.Equal("Pre-read timeout", stillReadTimeout.Title);
+
+        var writeTimeoutEventId = await SeedSimpleEventAsync(
+            temp, seed, "Write timeout", "graph-write-timeout");
+        graph.EnqueueException(new OperationCanceledException("fake post-write timeout"));
+        var writeTimeoutOperationId = Guid.NewGuid();
+        var writeTimeout = await client.PutAsync(
+            $"/api/v1/calendar/events/{writeTimeoutEventId:D}" +
+            $"?clientOperationId={writeTimeoutOperationId:D}",
+            Json(body));
+        Assert.Equal(HttpStatusCode.BadGateway, writeTimeout.StatusCode);
+        var writeTimeoutData = await ReadDataAsync(writeTimeout);
+        Assert.Equal("PROVIDER_TIMEOUT",
+            writeTimeoutData.GetProperty("errorCode").GetString());
+        Assert.False(writeTimeoutData.GetProperty("noChangesApplied").GetBoolean());
+        Assert.Equal("PATCH", graph.CoreRequests[^1].Method);
+
+        temp.Db.ChangeTracker.Clear();
+        var stillWriteTimeout = await temp.Db.Set<EventEntity>().IgnoreQueryFilters()
+            .SingleAsync(e => e.Id == writeTimeoutEventId);
+        Assert.Equal("Write timeout", stillWriteTimeout.Title);
+
+        _output.WriteLine(
+            "Pre-write GET 404 returned not-found/noChangesApplied=true; pre-read timeout returned error/PROVIDER_TIMEOUT with no remote write; post-write timeout remained unknown with noChangesApplied=false.");
+    }
+
     private static async Task<(TempMigrationDatabase Db, WebApplicationFactory<Program> Factory)>
         NewIsolatedHostAsync(GraphQueueHandler graph)
     {
@@ -945,7 +1305,8 @@ public sealed class OutlookWritebackEndpointE2ETests
         public IReadOnlyList<GraphRequest> CoreRequests =>
             Requests.Where(r => !r.Uri.Contains("/attachments", StringComparison.Ordinal)).ToList();
 
-        public void Enqueue(HttpStatusCode status, string? body = null)
+        public void Enqueue(
+            HttpStatusCode status, string? body = null, string? retryAfter = null)
         {
             lock (_queue)
             {
@@ -954,6 +1315,8 @@ public sealed class OutlookWritebackEndpointE2ETests
                     var response = new HttpResponseMessage(status);
                     if (body is not null)
                         response.Content = new StringContent(body, Encoding.UTF8, "application/json");
+                    if (retryAfter is not null)
+                        response.Headers.TryAddWithoutValidation("Retry-After", retryAfter);
                     return response;
                 });
             }

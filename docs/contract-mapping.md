@@ -178,12 +178,12 @@
 | POST | `/api/v1/calendar/data-center/restore/preview` | 200:`RestorePreviewResponseApiResponse`、400:`StringApiResponse`、401、500:`StringApiResponse` |
 | POST | `/api/v1/calendar/data-center/restore/request-confirmation` | 200:`OperationConfirmationDtoApiResponse`、400:`StringApiResponse`、401、500:`StringApiResponse` |
 | GET | `/api/v1/calendar/events` | 200:`EventResponsePagedResultApiResponse`、400:`StringApiResponse`、401、500:`StringApiResponse` |
-| POST | `/api/v1/calendar/events` | 201:`EventResponseApiResponse`、400:`StringApiResponse`、401、500:`StringApiResponse` |
+| POST | `/api/v1/calendar/events` | 200:`EventResponseApiResponse`、201:`EventResponseApiResponse`、400:`OutlookWriteResultApiResponse`、401、403:`OutlookWriteResultApiResponse`、404:`OutlookWriteResultApiResponse`、409:`OutlookWriteResultApiResponse`、502:`OutlookWriteResultApiResponse`、500:`StringApiResponse` |
 | POST | `/api/v1/calendar/events/batch-delete` | 200:`CalendarOperationResultApiResponse`、400:`StringApiResponse`、401、500:`StringApiResponse` |
 | GET | `/api/v1/calendar/events/{id}` | 200:`EventResponseApiResponse`、401、404:`StringApiResponse`、500:`StringApiResponse` |
 | GET | `/api/v1/calendar/events/{eventId}/attachments/{attachmentId}/download` | 200、400:`StringApiResponse`、401、404、409:`StringApiResponse`、500:`StringApiResponse` |
-| DELETE | `/api/v1/calendar/events/{id}` | 200:`StringApiResponse`、400:`StringApiResponse`、401、500:`StringApiResponse` |
-| PUT | `/api/v1/calendar/events/{id}` | 200:`EventResponseApiResponse`、400:`StringApiResponse`、401、500:`StringApiResponse` |
+| DELETE | `/api/v1/calendar/events/{id}` | 200:`OutlookWriteResultApiResponse`、400:`OutlookWriteResultApiResponse`、401、403:`OutlookWriteResultApiResponse`、404:`OutlookWriteResultApiResponse`、409:`OutlookWriteResultApiResponse`、429:`OutlookWriteResultApiResponse`、502:`OutlookWriteResultApiResponse`、504:`OutlookWriteResultApiResponse`、500:`StringApiResponse` |
+| PUT | `/api/v1/calendar/events/{id}` | 200:`EventResponseApiResponse`、400:`OutlookWriteResultApiResponse`、401、403:`OutlookWriteResultApiResponse`、404:`OutlookWriteResultApiResponse`、409:`OutlookWriteResultApiResponse`、429:`OutlookWriteResultApiResponse`、502:`OutlookWriteResultApiResponse`、504:`OutlookWriteResultApiResponse`、500:`StringApiResponse` |
 | POST | `/api/v1/calendar/events/{id}/restore` | 200:`CalendarOperationResultApiResponse`、400:`StringApiResponse`、401、500:`StringApiResponse` |
 | GET | `/api/v1/calendar/export-ics` | 200、401、500:`StringApiResponse` |
 | GET | `/api/v1/calendar/habits` | 200:`HabitRoutineDtoIReadOnlyListApiResponse`、400:`StringApiResponse`、401、500:`StringApiResponse` |
@@ -203,7 +203,8 @@
 | POST | `/api/v1/calendar/outlook/device-code/poll` | 200:`OutlookAuthorizationSessionResponseApiResponse`、400:`StringApiResponse`、401、404:`StringApiResponse`、500:`StringApiResponse` |
 | POST | `/api/v1/calendar/outlook/device-code/{sessionId}/cancel` | 200:`StringApiResponse`、401、404:`StringApiResponse`、500:`StringApiResponse` |
 | POST | `/api/v1/calendar/outlook/disconnect` | 200:`StringApiResponse`、400:`StringApiResponse`、401、500:`StringApiResponse` |
-| POST | `/api/v1/calendar/outlook/events/writeback` | 200:`OutlookWriteResultApiResponse`、400:`StringApiResponse`、401、409:`OutlookWriteResultApiResponse`、500:`StringApiResponse` |
+| POST | `/api/v1/calendar/outlook/events/writeback` | 200:`OutlookWriteResultApiResponse`、400:`OutlookWriteResultApiResponse`、401、403:`OutlookWriteResultApiResponse`、404:`OutlookWriteResultApiResponse`、409:`OutlookWriteResultApiResponse`、429:`OutlookWriteResultApiResponse`、502:`OutlookWriteResultApiResponse`、504:`OutlookWriteResultApiResponse`、500:`StringApiResponse` |
+| POST | `/api/v1/calendar/outlook/events/{clientOperationId}/undo` | 200:`OutlookWriteResultApiResponse`、400:`OutlookWriteResultApiResponse`、401、403:`OutlookWriteResultApiResponse`、404:`OutlookWriteResultApiResponse`、409:`OutlookWriteResultApiResponse`、429:`OutlookWriteResultApiResponse`、502:`OutlookWriteResultApiResponse`、504:`OutlookWriteResultApiResponse`、500:`StringApiResponse` |
 | DELETE | `/api/v1/calendar/outlook/local-data` | 200:`StringApiResponse`、400:`StringApiResponse`、401、500:`StringApiResponse` |
 | GET | `/api/v1/calendar/outlook/local-data/preview` | 200:`OutlookLocalDataPreviewApiResponse`、400:`StringApiResponse`、401、500:`StringApiResponse` |
 | GET | `/api/v1/calendar/outlook/settings` | 200:`OutlookSettingsResponseApiResponse`、400:`StringApiResponse`、401、500:`StringApiResponse` |

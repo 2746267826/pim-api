@@ -113,7 +113,8 @@ public sealed class OutlookEventWriteService
                 ct);
         if (existing is not null)
         {
-            var replay = await TryReplayOrResumeAsync(existing, payloadHash, ct);
+            var replay = await TryReplayOrResumeAsync(
+                existing, payloadHash, undoOfOperationId, ct);
             if (replay is not null)
                 return replay;
         }
@@ -173,15 +174,49 @@ public sealed class OutlookEventWriteService
             var recovered = await _db.Set<OutlookWritebackOperationEntity>()
                 .FirstOrDefaultAsync(
                     o => o.UserId == userId
-                        && o.ClientOperationId == recoveredId
-                        && o.State == "completed",
+                        && o.ClientOperationId == recoveredId,
                     ct);
-            if (recovered is null)
+            if (recovered is { State: "completed" })
+            {
+                original.UndoState = "used";
+                original.UpdatedAt = _timeProvider.GetUtcNow();
+                await _db.SaveChangesAsync(ct);
+                return ReplayCached(recovered);
+            }
+
+            // The child row is the real lease holder once it exists: its UpdatedAt is
+            // stamped when the undo starts. Only fall back to the parent's timestamp
+            // when the child row was never created.
+            if (recovered is { State: "processing" }
+                && !IsProcessingLeaseExpired(recovered.UpdatedAt))
+            {
                 return OperationInProgress(original);
-            original.UndoState = "used";
+            }
+            if (recovered is null && !IsProcessingLeaseExpired(original.UpdatedAt))
+                return OperationInProgress(original);
+
+            // The process holding "in-progress" died. Reclaim the deterministic undo
+            // operation once its lease expires instead of returning OPERATION_IN_PROGRESS
+            // forever. A stale Graph attempt is retryable with the same operation id:
+            // DELETE is idempotent, PATCH still uses If-Match, and CREATE reuses the
+            // original transaction id.
+            if (recovered is { State: "processing" })
+            {
+                recovered.State = "failed";
+                recovered.ErrorCode = "UNDO_LEASE_EXPIRED";
+                recovered.ErrorMessage =
+                    "上一次撤销进程已中断，正在使用同一撤销 operation id 重新尝试。";
+                recovered.ResultJson = null;
+                recovered.CompletedAt = null;
+                recovered.UpdatedAt = _timeProvider.GetUtcNow();
+            }
+
+            original.UndoState = "available";
             original.UpdatedAt = _timeProvider.GetUtcNow();
             await _db.SaveChangesAsync(ct);
-            return ReplayCached(recovered);
+
+            if (recovered is { State: "unknown" })
+                return OutcomeUnknown(recovered);
         }
         if (original.UndoState == "used")
             throw new DomainException(02009, "该写回操作已经撤销过。");
@@ -352,7 +387,7 @@ public sealed class OutlookEventWriteService
     private async Task<OutlookWriteResult> ReplayProcessingAsync(
         OutlookWritebackOperationEntity operation, CancellationToken ct)
     {
-        if (_timeProvider.GetUtcNow() - operation.UpdatedAt < ProcessingLease)
+        if (!IsProcessingLeaseExpired(operation.UpdatedAt))
             return OperationInProgress(operation);
 
         operation.State = "unknown";
@@ -362,6 +397,9 @@ public sealed class OutlookEventWriteService
         await _db.SaveChangesAsync(ct);
         return OutcomeUnknown(operation);
     }
+
+    private bool IsProcessingLeaseExpired(DateTimeOffset updatedAt)
+        => _timeProvider.GetUtcNow() - updatedAt >= ProcessingLease;
 
     private static Guid DeterministicUndoId(Guid userId, Guid originalClientOperationId)
     {
@@ -516,7 +554,36 @@ public sealed class OutlookEventWriteService
         var draftPimFileReferences = await ValidateDraftPimFileReferencesAsync(
             userId, request.Draft.AttachmentReferences, ct);
 
-        var target = await ResolveWriteTargetAsync(userId, binding, request, ct);
+        WriteTarget target;
+        try
+        {
+            target = await ResolveWriteTargetAsync(userId, binding, request, ct);
+        }
+        catch (OutlookReauthenticationRequiredException)
+        {
+            var preflightBatch = NewBatch(
+                userId, connection.Id, binding.Id, binding.Name,
+                "update", request.EventId);
+            _db.Set<OutlookSyncBatchEntity>().Add(preflightBatch);
+            return await HandleReauthAsync(
+                connection, preflightBatch, operation, binding.Name, "update", request.EventId);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex) when (IsProviderFailure(ex, ct))
+        {
+            var preflightBatch = NewBatch(
+                userId, connection.Id, binding.Id, binding.Name,
+                "update", request.EventId);
+            _db.Set<OutlookSyncBatchEntity>().Add(preflightBatch);
+            return await FailBatchAsync(
+                preflightBatch, operation, ex, binding.Name, "update",
+                request.EventId, null,
+                noChangesAppliedOverride: true,
+                remoteWriteAttempted: false);
+        }
         var localEvent = target.LocalEvent;
         ValidateUpdateAllDayDates(target.ValidationEntity, request.Draft);
 
@@ -544,10 +611,12 @@ public sealed class OutlookEventWriteService
             : localEvent;
 
         JsonElement graphResult;
+        var remoteWriteAttempted = false;
         try
         {
             var expectedEtag = await ResolveWriteEtagAsync(
                 binding, target.EtagEntity, request.Scope, request.ExpectedEtag, ct);
+            remoteWriteAttempted = true;
             graphResult = await _graph.UpdateEventAsync(
                 connection.Id, binding.GraphCalendarId, graphTargetId,
                 expectedEtag, payload, ct);
@@ -576,7 +645,8 @@ public sealed class OutlookEventWriteService
                     batch, operation, oce, binding.Name, "update",
                     conflictEvent.Id, conflictEvent.Title,
                     callerCancelled: true,
-                    noChangesAppliedOverride: true);
+                    noChangesAppliedOverride: true,
+                    remoteWriteAttempted: remoteWriteAttempted);
                 throw;
             }
             catch (Exception conflictEx)
@@ -591,13 +661,17 @@ public sealed class OutlookEventWriteService
         {
             await FailBatchAsync(
                 batch, operation, oce, binding.Name, "update",
-                localEvent.Id, localEvent.Title, callerCancelled: true);
+                localEvent.Id, localEvent.Title,
+                callerCancelled: true,
+                noChangesAppliedOverride: remoteWriteAttempted ? null : true,
+                remoteWriteAttempted: remoteWriteAttempted);
             throw;
         }
         catch (Exception ex)
         {
             return await FailBatchAsync(
-                batch, operation, ex, binding.Name, "update", localEvent.Id, localEvent.Title);
+                batch, operation, ex, binding.Name, "update", localEvent.Id, localEvent.Title,
+                remoteWriteAttempted: remoteWriteAttempted);
         }
 
         try
@@ -759,7 +833,36 @@ public sealed class OutlookEventWriteService
         if (request.Scope is not ("instance" or "series"))
             throw new DomainException(02009, "Scope 必须是 instance 或 series。");
 
-        var target = await ResolveWriteTargetAsync(userId, binding, request, ct);
+        WriteTarget target;
+        try
+        {
+            target = await ResolveWriteTargetAsync(userId, binding, request, ct);
+        }
+        catch (OutlookReauthenticationRequiredException)
+        {
+            var preflightBatch = NewBatch(
+                userId, connection.Id, binding.Id, binding.Name,
+                "delete", request.EventId);
+            _db.Set<OutlookSyncBatchEntity>().Add(preflightBatch);
+            return await HandleReauthAsync(
+                connection, preflightBatch, operation, binding.Name, "delete", request.EventId);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex) when (IsProviderFailure(ex, ct))
+        {
+            var preflightBatch = NewBatch(
+                userId, connection.Id, binding.Id, binding.Name,
+                "delete", request.EventId);
+            _db.Set<OutlookSyncBatchEntity>().Add(preflightBatch);
+            return await FailBatchAsync(
+                preflightBatch, operation, ex, binding.Name, "delete",
+                request.EventId, null,
+                noChangesAppliedOverride: true,
+                remoteWriteAttempted: false);
+        }
         var localEvent = target.LocalEvent;
 
         operation.EventId = localEvent.Id;
@@ -787,10 +890,12 @@ public sealed class OutlookEventWriteService
             ? new EventEntity { Id = request.EventId ?? localEvent.Id }
             : localEvent;
 
+        var remoteWriteAttempted = false;
         try
         {
             var expectedEtag = await ResolveWriteEtagAsync(
                 binding, target.EtagEntity, request.Scope, request.ExpectedEtag, ct);
+            remoteWriteAttempted = true;
             await _graph.DeleteEventAsync(
                 connection.Id, binding.GraphCalendarId, graphTargetId,
                 expectedEtag, ct);
@@ -819,7 +924,8 @@ public sealed class OutlookEventWriteService
                     batch, operation, oce, binding.Name, "delete",
                     conflictEvent.Id, conflictEvent.Title,
                     callerCancelled: true,
-                    noChangesAppliedOverride: true);
+                    noChangesAppliedOverride: true,
+                    remoteWriteAttempted: remoteWriteAttempted);
                 throw;
             }
             catch (Exception conflictEx)
@@ -834,13 +940,17 @@ public sealed class OutlookEventWriteService
         {
             await FailBatchAsync(
                 batch, operation, oce, binding.Name, "delete",
-                localEvent.Id, localEvent.Title, callerCancelled: true);
+                localEvent.Id, localEvent.Title,
+                callerCancelled: true,
+                noChangesAppliedOverride: remoteWriteAttempted ? null : true,
+                remoteWriteAttempted: remoteWriteAttempted);
             throw;
         }
         catch (Exception ex)
         {
             return await FailBatchAsync(
-                batch, operation, ex, binding.Name, "delete", localEvent.Id, localEvent.Title);
+                batch, operation, ex, binding.Name, "delete", localEvent.Id, localEvent.Title,
+                remoteWriteAttempted: remoteWriteAttempted);
         }
 
         int affectedCount;
@@ -1151,10 +1261,13 @@ public sealed class OutlookEventWriteService
                 binding.GraphCalendarId,
                 localEvent.OutlookEventId!,
                 occurrenceStart,
-                ct)
-                ?? throw new DomainException(
-                    02009,
-                    "Outlook 中找不到该重复日程发生项，可能已被移动或删除，请刷新后重试。");
+                ct);
+            if (occurrence is null)
+            {
+                throw new GraphRequestException(
+                    HttpStatusCode.NotFound,
+                    "Occurrence was not found in Outlook.");
+            }
 
             var snapshot = new EventEntity
             {
@@ -1167,7 +1280,7 @@ public sealed class OutlookEventWriteService
             };
             OutlookEventMapper.ApplyGraphEvent(
                 snapshot,
-                occurrence,
+                occurrence.Value,
                 binding.Id,
                 binding.PimCalendarId,
                 binding.ConnectionId,
@@ -1463,9 +1576,14 @@ public sealed class OutlookEventWriteService
 
         var graphTargetId = GetGraphTargetId(evt, scope);
         var latest = await _graph.GetEventAsync(
-            binding.ConnectionId, binding.GraphCalendarId, graphTargetId, ct)
-            ?? throw new DomainException(02009, "Outlook 中已不存在该事件，请刷新后再试。");
-        var latestEtag = latest.TryGetProperty("@odata.etag", out var etag)
+            binding.ConnectionId, binding.GraphCalendarId, graphTargetId, ct);
+        if (latest is null)
+        {
+            throw new GraphRequestException(
+                HttpStatusCode.NotFound,
+                "Event was not found while resolving the write ETag.");
+        }
+        var latestEtag = latest.Value.TryGetProperty("@odata.etag", out var etag)
             && etag.ValueKind == JsonValueKind.String
             ? etag.GetString()
             : null;
@@ -1748,13 +1866,17 @@ public sealed class OutlookEventWriteService
         string Status, string ErrorCode, string UserMessage,
         bool NoChangesApplied, string State);
 
+    private static bool IsProviderFailure(Exception ex, CancellationToken ct)
+        => ex is HttpRequestException
+            || (ex is OperationCanceledException && !ct.IsCancellationRequested);
+
     /// <summary>
     /// Maps provider/local failures to a sanitized receipt. Deterministic Graph
     /// rejections are not reported as provider-unavailable 502s, and retry hints
     /// are only emitted for 429/5xx/network/timeout.
     /// </summary>
     private static FailureClassification ClassifyFailure(
-        Exception ex, bool callerCancelled)
+        Exception ex, bool callerCancelled, bool remoteWriteAttempted = true)
     {
         if (callerCancelled)
         {
@@ -1762,7 +1884,7 @@ public sealed class OutlookEventWriteService
                 "error",
                 "CANCELLED",
                 "写回请求已被调用方取消；未完成的写入可稍后重试。",
-                NoChangesApplied: false,
+                NoChangesApplied: !remoteWriteAttempted,
                 State: "failed");
         }
 
@@ -1795,23 +1917,33 @@ public sealed class OutlookEventWriteService
                     "事件在 Outlook 中已被修改，请刷新后重新编辑；系统不会静默覆盖远端改动。",
                     NoChangesApplied: true,
                     State: "conflict"),
-                408 => new(
+                408 when remoteWriteAttempted => new(
                     "unknown",
                     "PROVIDER_TIMEOUT",
                     "Outlook 请求超时，远端结果未知。请使用同一 clientOperationId 重试，或先在 Outlook 核对。",
                     NoChangesApplied: false,
                     State: "failed"),
+                408 => new(
+                    "error",
+                    "PROVIDER_TIMEOUT",
+                    "读取 Outlook 最新状态超时，尚未写入任何内容；可安全使用同一 clientOperationId 重试。",
+                    NoChangesApplied: true,
+                    State: "failed"),
                 429 => new(
                     "error",
                     "PROVIDER_RATE_LIMITED",
-                    "Outlook 请求过于频繁，请使用同一 clientOperationId 稍后重试。",
-                    NoChangesApplied: false,
+                    remoteWriteAttempted
+                        ? "Outlook 请求过于频繁，请使用同一 clientOperationId 稍后重试。"
+                        : "查询 Outlook 目标时触发限流，尚未写入任何内容；可稍后使用同一 clientOperationId 重试。",
+                    NoChangesApplied: !remoteWriteAttempted,
                     State: "failed"),
                 >= 500 => new(
                     "error",
                     "PROVIDER_UNAVAILABLE",
-                    "Outlook 服务暂时不可用，请使用同一 clientOperationId 稍后重试。",
-                    NoChangesApplied: false,
+                    remoteWriteAttempted
+                        ? "Outlook 服务暂时不可用，请使用同一 clientOperationId 稍后重试。"
+                        : "Outlook 服务暂时不可用，尚未写入任何内容；可稍后使用同一 clientOperationId 重试。",
+                    NoChangesApplied: !remoteWriteAttempted,
                     State: "failed"),
                 _ => new(
                     "invalid-request",
@@ -1824,12 +1956,19 @@ public sealed class OutlookEventWriteService
 
         if (ex is OperationCanceledException)
         {
-            return new(
-                "unknown",
-                "PROVIDER_TIMEOUT",
-                "Outlook 请求超时，远端结果未知。请使用同一 clientOperationId 重试，或先在 Outlook 核对。",
-                NoChangesApplied: false,
-                State: "failed");
+            return remoteWriteAttempted
+                ? new(
+                    "unknown",
+                    "PROVIDER_TIMEOUT",
+                    "Outlook 请求超时，远端结果未知。请使用同一 clientOperationId 重试，或先在 Outlook 核对。",
+                    NoChangesApplied: false,
+                    State: "failed")
+                : new(
+                    "error",
+                    "PROVIDER_TIMEOUT",
+                    "读取 Outlook 最新状态超时，尚未写入任何内容；可安全使用同一 clientOperationId 重试。",
+                    NoChangesApplied: true,
+                    State: "failed");
         }
 
         if (ex is HttpRequestException)
@@ -1837,8 +1976,20 @@ public sealed class OutlookEventWriteService
             return new(
                 "error",
                 "PROVIDER_UNAVAILABLE",
-                "Outlook 服务暂时不可用，请使用同一 clientOperationId 稍后重试。",
-                NoChangesApplied: false,
+                remoteWriteAttempted
+                    ? "Outlook 服务暂时不可用，请使用同一 clientOperationId 稍后重试。"
+                    : "连接 Outlook 失败，尚未写入任何内容；可稍后使用同一 clientOperationId 重试。",
+                NoChangesApplied: !remoteWriteAttempted,
+                State: "failed");
+        }
+
+        if (!remoteWriteAttempted)
+        {
+            return new(
+                "error",
+                "WRITEBACK_PREFLIGHT_FAILED",
+                "写回前的 Outlook 目标解析失败，尚未写入任何内容。",
+                NoChangesApplied: true,
                 State: "failed");
         }
 
@@ -1853,7 +2004,8 @@ public sealed class OutlookEventWriteService
     private async Task<OutlookWriteResult> FailBatchAsync(
         OutlookSyncBatchEntity batch, OutlookWritebackOperationEntity operationRecord, Exception ex,
         string calendarName, string operation, Guid? eventId = null, string? eventTitle = null,
-        bool callerCancelled = false, bool? noChangesAppliedOverride = null)
+        bool callerCancelled = false, bool? noChangesAppliedOverride = null,
+        bool remoteWriteAttempted = true)
     {
         var now = _timeProvider.GetUtcNow();
         batch.Status = "failed";
@@ -1861,7 +2013,7 @@ public sealed class OutlookEventWriteService
         batch.FinishedAt = now;
         batch.UpdatedAt = now;
         batch.ConfirmationCount = 0;
-        var failure = ClassifyFailure(ex, callerCancelled);
+        var failure = ClassifyFailure(ex, callerCancelled, remoteWriteAttempted);
         if (noChangesAppliedOverride is { } noChangesApplied)
             failure = failure with { NoChangesApplied = noChangesApplied };
         SetBatchError(batch, failure.ErrorCode, "Outlook writeback request failed.");
@@ -2100,48 +2252,77 @@ public sealed class OutlookEventWriteService
                     CancellationToken.None);
             if (concurrent is null)
                 throw;
-            return await ReplayOnlyAsync(concurrent, payloadHash, CancellationToken.None);
+            return await ReplayOnlyAsync(
+                concurrent, payloadHash, operation.UndoOfOperationId,
+                CancellationToken.None);
         }
     }
 
     private async Task<OutlookWriteResult?> TryReplayOrResumeAsync(
         OutlookWritebackOperationEntity operation,
         string payloadHash,
+        Guid? undoOfOperationId,
         CancellationToken ct)
     {
+        var isUndoRetry = undoOfOperationId is not null
+            && operation.UndoOfOperationId == undoOfOperationId
+            && operation.State is "conflict" or "failed";
         if (!string.Equals(operation.PayloadHash, payloadHash, StringComparison.Ordinal))
-            return IdempotencyConflict(operation);
+        {
+            // A failed/conflicted undo may legitimately need a refreshed ETag or local
+            // snapshot. The child id is deterministic from the original operation, so
+            // the user cannot choose a new id; reusing it must not be reported as a
+            // forged idempotency conflict.
+            if (!isUndoRetry)
+                return IdempotencyConflict(operation);
+            operation.PayloadHash = payloadHash;
+        }
 
         switch (operation.State)
         {
             case "completed":
-            case "conflict":
                 return ReplayCached(operation);
+            case "conflict":
+                if (!isUndoRetry)
+                    return ReplayCached(operation);
+                await ResetForRetryAsync(operation, payloadHash, ct);
+                return null;
             case "processing":
                 return await ReplayProcessingAsync(operation, ct);
             case "unknown":
                 return OutcomeUnknown(operation);
             case "failed":
-                operation.State = "processing";
-                operation.AttemptCount++;
-                operation.ErrorCode = null;
-                operation.ErrorMessage = null;
-                operation.ResultJson = null;
-                operation.CompletedAt = null;
-                operation.UpdatedAt = _timeProvider.GetUtcNow();
-                await _db.SaveChangesAsync(ct);
+                await ResetForRetryAsync(operation, payloadHash, ct);
                 return null;
             default:
                 return OperationInProgress(operation);
         }
     }
 
-    private async Task<OutlookWriteResult> ReplayOnlyAsync(
+    private async Task ResetForRetryAsync(
         OutlookWritebackOperationEntity operation,
         string payloadHash,
         CancellationToken ct)
     {
-        var replay = await TryReplayOrResumeAsync(operation, payloadHash, ct);
+        operation.State = "processing";
+        operation.PayloadHash = payloadHash;
+        operation.AttemptCount++;
+        operation.ErrorCode = null;
+        operation.ErrorMessage = null;
+        operation.ResultJson = null;
+        operation.CompletedAt = null;
+        operation.UpdatedAt = _timeProvider.GetUtcNow();
+        await _db.SaveChangesAsync(ct);
+    }
+
+    private async Task<OutlookWriteResult> ReplayOnlyAsync(
+        OutlookWritebackOperationEntity operation,
+        string payloadHash,
+        Guid? undoOfOperationId,
+        CancellationToken ct)
+    {
+        var replay = await TryReplayOrResumeAsync(
+            operation, payloadHash, undoOfOperationId, ct);
         return replay ?? OperationInProgress(operation);
     }
 
