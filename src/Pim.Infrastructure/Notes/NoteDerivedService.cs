@@ -46,6 +46,7 @@ public sealed class NoteDerivedService(
             throw Invalid("派生任务或材料版本标识无效");
         if (request.ExpectedUserId != owner)
             throw new DomainException(40301, "账号已改变，请重新核对材料和目标");
+        await materials.EnsureVersionNoteActiveAsync(owner, request.VersionId, ct);
         var version = await materials.GetAsync(owner, request.VersionId, ct);
         if (version.Upload.Phase == "Uploading")
             throw Conflict("请先上传完整固定材料，再生成派生稿");
@@ -153,6 +154,8 @@ public sealed class NoteDerivedService(
         using var lease = store.TryRunLease(owner, taskId);
         if (lease is null)
             throw Conflict("派生任务正在执行，请先核对当前回执状态");
+        var observed = await store.ReadTaskAsync(owner, taskId, ct);
+        await materials.EnsureNoteActiveAsync(owner, observed.NoteId, ct);
         await job.ReconcileLockedAsync(owner, taskId, ct);
 
         var before = await store.ReadTaskAsync(owner, taskId, ct);

@@ -114,10 +114,12 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
         await using var lease = await LockAsync(userId, ct);
         var ledger = await LoadLedgerAsync(userId, ct);
         await PruneAsync(userId, ledger, ct);
+        var deletedNotes = DeletedNoteIds(ledger);
         var result = new List<NativeNoteSearchSource>();
         foreach (var head in ledger.Heads)
         {
             if (!Guid.TryParseExact(head.Key, "D", out var noteId)) continue;
+            if (deletedNotes.Contains(noteId)) continue;
             if (!ledger.Versions.TryGetValue(Key(head.Value), out var version) ||
                 version.NoteId != noteId || version.Phase != "Uploaded")
                 continue;
@@ -126,6 +128,40 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
                 version.CreatedAt, version.HasConflict));
         }
         return result;
+    }
+
+    /// <summary>
+    /// Blocks new work for a note already in the recycle bin. Material and derived results stay
+    /// readable by version/artifact id so restore can preserve the original data.
+    /// </summary>
+    internal async Task EnsureNoteActiveAsync(Guid userId, Guid noteId,
+        CancellationToken ct = default)
+    {
+        await using var lease = await LockAsync(userId, ct);
+        var ledger = await LoadLedgerAsync(userId, ct);
+        EnsureNoteActive(ledger, noteId);
+    }
+
+    /// <summary>
+    /// Read-only activity probe for background work. A note that is no longer in the ledger is
+    /// treated as active so a missing/moved ledger cannot silently cancel existing work.
+    /// </summary>
+    internal async Task<bool> IsNoteActiveAsync(Guid userId, Guid noteId,
+        CancellationToken ct = default)
+    {
+        if (noteId == Guid.Empty) return false;
+        await using var lease = await LockAsync(userId, ct);
+        var ledger = await LoadLedgerAsync(userId, ct);
+        return !DeletedNoteIds(ledger).Contains(noteId);
+    }
+
+    internal async Task EnsureVersionNoteActiveAsync(Guid userId, Guid versionId,
+        CancellationToken ct = default)
+    {
+        await using var lease = await LockAsync(userId, ct);
+        var ledger = await LoadLedgerAsync(userId, ct);
+        var entry = Find(ledger, versionId);
+        EnsureNoteActive(ledger, entry.NoteId);
     }
 
     public async Task<NoteMaterialVersionDto> GetCurrentAsync(Guid userId, Guid noteId, CancellationToken ct = default)

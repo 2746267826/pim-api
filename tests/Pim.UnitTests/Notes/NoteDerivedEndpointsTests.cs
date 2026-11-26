@@ -659,6 +659,42 @@ public sealed class NoteDerivedEndpointsTests : IDisposable
             (await otherClient.GetAsync($"{Tasks}/{taskId}")).StatusCode);
     }
 
+    [Fact]
+    public async Task SoftDeletedNote_KeepsMaterialsReadOnly_AndRejectsNewAsrDerivedAndProcessingStarts()
+    {
+        var owner = await AuthRegistrationTestHost.SeedAndLoginAsync(_factory,
+            "derived-deleted-start-" + Guid.NewGuid().ToString("N"));
+        using var client = AuthRegistrationTestHost.Authed(_factory, owner.AccessToken);
+        var material = NoteDerivedFixture.CreateMaterial(withAudio: false);
+        var materials = _factory.Services.GetRequiredService<NoteMaterialUploadStore>();
+        await NoteDerivedFixture.UploadAsync(materials, owner.UserId, material);
+
+        var deleted = await client.DeleteAsync($"/api/v1/native-notes/{material.NoteId}");
+        Assert.Equal(HttpStatusCode.OK, deleted.StatusCode);
+
+        var materialRead = await client.GetAsync($"/api/v1/native-notes/versions/{material.VersionId}");
+        Assert.Equal(HttpStatusCode.OK, materialRead.StatusCode);
+        var activeRead = await client.GetAsync($"/api/v1/native-notes/{material.NoteId}/current");
+        Assert.Equal(HttpStatusCode.Conflict, activeRead.StatusCode);
+
+        var asr = await client.PostAsJsonAsync("/api/v1/native-notes/asr-tasks/",
+            new StartNoteAsrRequest(Guid.NewGuid(), owner.UserId, material.VersionId, null));
+        Assert.Equal(HttpStatusCode.Conflict, asr.StatusCode);
+        Assert.Equal(40901, (await AuthRegistrationTestHost.ReadErrorAsync(asr)).Code);
+
+        var derived = await client.PostAsJsonAsync(Tasks,
+            new StartNoteDerivedTaskRequest(Guid.NewGuid(), owner.UserId, material.VersionId, null,
+                new NoteDerivedGenerationConsent(Guid.NewGuid(), Guid.NewGuid(),
+                    "https://synthetic.invalid/v1/", true)));
+        Assert.Equal(HttpStatusCode.Conflict, derived.StatusCode);
+        Assert.Equal(40901, (await AuthRegistrationTestHost.ReadErrorAsync(derived)).Code);
+
+        var processing = await client.PostAsJsonAsync("/api/v1/native-notes/processing/start",
+            new StartNoteProcessingRequest(material.NoteId, material.VersionId));
+        Assert.Equal(HttpStatusCode.Conflict, processing.StatusCode);
+        Assert.Equal(40901, (await AuthRegistrationTestHost.ReadErrorAsync(processing)).Code);
+    }
+
     private static NoteDerivedPlan Plan(Guid owner, Guid noteId, Guid sourceVersionId, int stepCount)
     {
         var input = new NoteDerivedInputSnapshot(owner, noteId, sourceVersionId, null, null,

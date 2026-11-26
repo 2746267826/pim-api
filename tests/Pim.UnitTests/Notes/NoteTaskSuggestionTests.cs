@@ -5,12 +5,14 @@ using Hangfire;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using Pim.Core.Ai;
 using Pim.Core.Exceptions;
 using Pim.Infrastructure.Ai;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
 using Pim.Infrastructure.Data.Entities;
+using Pim.Infrastructure.Notes;
 using Pim.Infrastructure.Secrets;
 using Pim.Module.Calendar.Entities;
 using Pim.Module.Calendar.Services;
@@ -1847,9 +1849,14 @@ public sealed class NoteTaskSuggestionTests
             Wire = wire;
             Profile = profile;
             var calendar = CreateCalendarService(db);
+            var materials = new NoteMaterialUploadStore(Options.Create(new NoteMaterialUploadOptions
+            {
+                StorageRoot = Path.Combine(Path.GetTempPath(), "pim-task-suggestion-materials",
+                    Guid.NewGuid().ToString("N"))
+            }));
             var calls = new AiTextCallService(db, secrets, new AiProfileChatClientFactory(wire),
                 currentUser, new AiTextCallGate());
-            Service = new NoteTaskSuggestionService(db, currentUser, source, calendar,
+            Service = new NoteTaskSuggestionService(db, currentUser, source, materials, calendar,
                 TimeProvider.System, NullLogger<NoteTaskSuggestionService>.Instance, jobs);
             Job = new NoteTaskSuggestionExtractionJob(db, calendar,
                 new AiTextNoteTaskSuggestionModelClient(calls),
@@ -1964,14 +1971,23 @@ public sealed class NoteTaskSuggestionTests
             TimeProvider.System);
 
         public NoteTaskSuggestionService NewService(
-            PimDbContext db, bool dispatchAvailable = true) => new(
-            db,
-            _currentUser,
-            Source,
-            CreateCalendarService(db),
-            TimeProvider.System,
-            NullLogger<NoteTaskSuggestionService>.Instance,
-            dispatchAvailable ? new RecordingJobs() : null);
+            PimDbContext db, bool dispatchAvailable = true)
+        {
+            var materials = new NoteMaterialUploadStore(Options.Create(new NoteMaterialUploadOptions
+            {
+                StorageRoot = Path.Combine(Path.GetTempPath(), "pim-task-suggestion-materials",
+                    Guid.NewGuid().ToString("N"))
+            }));
+            return new(
+                db,
+                _currentUser,
+                Source,
+                materials,
+                CreateCalendarService(db),
+                TimeProvider.System,
+                NullLogger<NoteTaskSuggestionService>.Instance,
+                dispatchAvailable ? new RecordingJobs() : null);
+        }
 
         public async Task<NoteTaskSuggestionDto> CreateSuggestionAsync(
             string title = "先写测试",

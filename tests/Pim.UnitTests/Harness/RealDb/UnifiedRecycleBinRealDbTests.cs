@@ -95,6 +95,103 @@ public sealed class UnifiedRecycleBinRealDbTests : IAsyncLifetime
                 && row.ResourceId == deletedEvent.Id.ToString("D")));
     }
 
+    [SkippableFact]
+    public async Task InboxTaskPurge_OnRealPostgres_HandlesNullCalendarIdAndRetry()
+    {
+        var service = await CreateServiceAsync("wo_q03_inbox_purge");
+        var db = _temp!.Db;
+        SeedUsers(db);
+        var task = new TaskEntity
+        {
+            UserId = _user,
+            CalendarId = null,
+            IsInbox = true,
+            Uid = Guid.NewGuid().ToString("N"),
+            Title = "收件箱已删任务",
+            DtStart = Now.AddHours(1),
+            DeletedAt = Now,
+            DeletedByOperationId = Guid.NewGuid(),
+            DeletedByOperationKind = "single"
+        };
+        db.Set<TaskEntity>().Add(task);
+        await db.SaveChangesAsync();
+
+        var request = new RecycleBinBatchRequest(
+        [
+            new RecycleBinItemRef(RecycleBinDomains.Task, task.Id, Now)
+        ]);
+        var first = await service.PurgeAsync(request);
+        Assert.Equal(1, first.Succeeded);
+        Assert.Null(await db.Set<TaskEntity>().IgnoreQueryFilters()
+            .SingleOrDefaultAsync(row => row.Id == task.Id));
+
+        var second = await service.PurgeAsync(request);
+        Assert.Equal(1, second.Succeeded);
+        Assert.Equal(1, await db.AuditLogs.CountAsync(
+            row => row.Action == "calendar.recycle_bin.purge"
+                && row.ResourceId == task.Id.ToString("D")));
+    }
+
+    [SkippableFact]
+    public async Task OutlookBoundCalendarPurge_OnRealPostgres_RemovesBindingBeforeCalendarAndIsIdempotent()
+    {
+        var service = await CreateServiceAsync("wo_q03_outlook_purge");
+        var db = _temp!.Db;
+        SeedUsers(db);
+        var connection = new OutlookConnectionEntity
+        {
+            UserId = _user,
+            Status = "connected",
+            Provider = "outlook"
+        };
+        var calendar = SeedCalendar(_user, "Outlook 日历", "calendar");
+        calendar.DeletedAt = Now;
+        calendar.DeletedByOperationId = Guid.NewGuid();
+        calendar.DeletedByOperationKind = "single";
+        var binding = new OutlookCalendarBindingEntity
+        {
+            ConnectionId = connection.Id,
+            PimCalendarId = calendar.Id,
+            GraphCalendarId = Guid.NewGuid().ToString("N"),
+            Name = "Outlook 日历",
+            RemoteState = "active",
+            SyncStrategy = "window-reconcile"
+        };
+        db.Set<OutlookConnectionEntity>().Add(connection);
+        db.Set<OutlookCalendarBindingEntity>().Add(binding);
+        await db.SaveChangesAsync();
+
+        var evt = SeedEvent(calendar, "Outlook 已删日程", deleted: true);
+        evt.OutlookCalendarBindingId = binding.Id;
+        evt.OutlookConnectionId = connection.Id;
+        evt.Source = "outlook";
+        var task = SeedTask(calendar, "Outlook 已删任务", deleted: true);
+        await db.SaveChangesAsync();
+
+        var request = new RecycleBinBatchRequest(
+        [
+            new RecycleBinItemRef(RecycleBinDomains.Calendar, calendar.Id, Now)
+        ]);
+        var first = await service.PurgeAsync(request);
+        Assert.Equal(1, first.Succeeded);
+        Assert.Null(await db.Set<CalendarEntity>().IgnoreQueryFilters()
+            .SingleOrDefaultAsync(row => row.Id == calendar.Id));
+        Assert.Null(await db.Set<OutlookCalendarBindingEntity>()
+            .SingleOrDefaultAsync(row => row.Id == binding.Id));
+        Assert.Null(await db.Set<EventEntity>().IgnoreQueryFilters()
+            .SingleOrDefaultAsync(row => row.Id == evt.Id));
+        Assert.Null(await db.Set<TaskEntity>().IgnoreQueryFilters()
+            .SingleOrDefaultAsync(row => row.Id == task.Id));
+        Assert.NotNull(await db.Set<OutlookConnectionEntity>()
+            .SingleOrDefaultAsync(row => row.Id == connection.Id));
+
+        var second = await service.PurgeAsync(request);
+        Assert.Equal(1, second.Succeeded);
+        Assert.Equal(1, await db.AuditLogs.CountAsync(
+            row => row.Action == "calendar.recycle_bin.purge"
+                && row.ResourceId == calendar.Id.ToString("D")));
+    }
+
     private async Task<UnifiedRecycleBinService> CreateServiceAsync(string prefix)
     {
         RealDbTestConnection.SkipIfUnavailable();

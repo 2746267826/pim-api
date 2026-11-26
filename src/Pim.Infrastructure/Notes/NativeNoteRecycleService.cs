@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Pim.Core.Exceptions;
+using Pim.Core.Notes;
 using Pim.Core.Operations;
 using Pim.Core.Storage;
 using Pim.Infrastructure.Auth;
@@ -21,10 +22,14 @@ public sealed class NativeNoteRecycleService(
     NoteAsrTaskStore asr,
     IAuditLogService audit,
     IFileAttachmentStore? attachments = null,
-    ILogger<NativeNoteRecycleService>? logger = null)
+    ILogger<NativeNoteRecycleService>? logger = null,
+    NoteProcessingStore? processing = null,
+    IEnumerable<INotePurgeContributor>? purgeContributors = null)
 {
     private const string AsrSourceType = "native-note-asr-task";
     private const string DerivedSourceType = "native-note-derived-task";
+    private static readonly string[] TerminalBatchStatuses =
+        ["Deleted", "Completed", "Failed", "Expired", "Cancelled"];
 
     public Task<IReadOnlyList<NativeNoteDeletedItem>> ListDeletedAsync(Guid owner,
         CancellationToken ct = default) => materials.ListDeletedAsync(owner, ct);
@@ -170,28 +175,77 @@ public sealed class NativeNoteRecycleService(
         if (derivedTasks.Any(NoteDerivedStore.IsActive))
             throw new DomainException(40901, "笔记的派生任务正在执行，请等待任务结束或停止后重试永久删除");
 
-        await materials.MarkPurgeStartedAsync(owner, noteId, expectedDeletedAt, ct);
+        var asrTaskIdSet = asrTaskIds.ToArray();
+        var attempts = await db.NoteAsrAttempts
+            .Where(row => row.OwnerId == owner
+                && (row.NoteId == noteId || asrTaskIdSet.Contains(row.TaskId)))
+            .ToListAsync(ct);
+        if (attempts.Any(row => row.State == "Leased"
+                || (row.State == "Queued" && !row.StopRequested)))
+            throw new DomainException(40901, "笔记的转写执行快照仍在进行，请等待任务结束或停止后重试永久删除");
+        var attemptIds = attempts.Select(row => row.Id).ToArray();
+        var now = DateTimeOffset.UtcNow;
+        var leases = attemptIds.Length == 0
+            ? new List<NoteAsrLeaseEntity>()
+            : await db.NoteAsrLeases
+                .Where(row => row.OwnerId == owner && attemptIds.Contains(row.AttemptId))
+                .ToListAsync(ct);
+        if (leases.Any(row => row.Status == "Active" && row.ExpiresAt > now))
+            throw new DomainException(40901, "笔记的转写租约仍有效，请等待任务结束或停止后重试永久删除");
+        var receipts = attemptIds.Length == 0
+            ? new List<NoteAsrAckReceiptEntity>()
+            : await db.NoteAsrAckReceipts
+                .Where(row => row.OwnerId == owner && attemptIds.Contains(row.AttemptId))
+                .ToListAsync(ct);
+        var evidence = attemptIds.Length == 0 && asrTaskIdSet.Length == 0
+            ? new List<NoteAsrSegmentEvidenceEntity>()
+            : await db.NoteAsrSegmentEvidence
+                .Where(row => row.OwnerId == owner
+                    && (attemptIds.Contains(row.AttemptId)
+                        || asrTaskIdSet.Contains(row.TaskId)))
+                .ToListAsync(ct);
+        var batchJobs = await db.NoteAsrBatchJobs
+            .Where(row => row.OwnerId == owner
+                && (asrTaskIdSet.Contains(row.TaskId)
+                    || (row.AttemptId.HasValue && attemptIds.Contains(row.AttemptId.Value))))
+            .ToListAsync(ct);
+        if (batchJobs.Any(row => !TerminalBatchStatuses.Contains(row.Status)))
+            throw new DomainException(40901, "笔记的 Batch 任务仍在进行，请等待任务结束或取消后重试永久删除");
 
         var derivedTaskIds = derivedTasks.Select(task => task.Request.TaskId).ToArray();
         var sourceIds = asrTaskIds.Concat(derivedTaskIds)
             .Select(id => id.ToString("D"))
             .ToHashSet(StringComparer.Ordinal);
 
-        var logs = sourceIds.Count == 0
-            ? new List<AiRequestLogEntity>()
-            : await db.AiRequestLogs
+        var logIds = new HashSet<Guid>();
+        if (sourceIds.Count > 0)
+        {
+            var sourceLogIds = await db.AiRequestLogs
                 .Where(log => log.UserId == owner
                     && sourceIds.Contains(log.SourceObjectId)
                     && (log.SourceObjectType == AsrSourceType || log.SourceObjectType == DerivedSourceType))
+                .Select(log => log.Id)
                 .ToListAsync(ct);
-        var logIds = logs.Select(log => log.Id).ToArray();
-
-        var images = logIds.Length == 0
+            logIds.UnionWith(sourceLogIds);
+        }
+        if (purgeContributors is not null)
+        {
+            foreach (var contributor in purgeContributors)
+                logIds.UnionWith((await contributor.StagePurgeAsync(owner, noteId, ct)).AiLogIds);
+        }
+        await materials.MarkPurgeStartedAsync(owner, noteId, expectedDeletedAt, ct);
+        var logIdSet = logIds.ToArray();
+        var logs = logIdSet.Length == 0
+            ? new List<AiRequestLogEntity>()
+            : await db.AiRequestLogs
+                .Where(log => log.UserId == owner && logIdSet.Contains(log.Id))
+                .ToListAsync(ct);
+        var images = logIdSet.Length == 0
             ? new List<AiCallImageEntity>()
-            : await db.AiCallImages.Where(row => logIds.Contains(row.LogId)).ToListAsync(ct);
-        var audio = logIds.Length == 0
+            : await db.AiCallImages.Where(row => logIdSet.Contains(row.LogId)).ToListAsync(ct);
+        var audio = logIdSet.Length == 0
             ? new List<AiCallAudioEntity>()
-            : await db.AiCallAudio.Where(row => logIds.Contains(row.LogId)).ToListAsync(ct);
+            : await db.AiCallAudio.Where(row => logIdSet.Contains(row.LogId)).ToListAsync(ct);
 
         if (attachments is not null)
         {
@@ -213,14 +267,26 @@ public sealed class NativeNoteRecycleService(
 
         await asr.DeleteForNoteAsync(owner, noteId, ct);
         await derived.DeleteNoteAsync(owner, noteId, ct);
+        if (processing is not null)
+            await processing.DeleteForNoteAsync(owner, noteId, ct);
 
-        if (logIds.Length > 0)
+        if (attempts.Count > 0)
+        {
+            db.NoteAsrAckReceipts.RemoveRange(receipts);
+            db.NoteAsrSegmentEvidence.RemoveRange(evidence);
+            db.NoteAsrLeases.RemoveRange(leases);
+            db.NoteAsrAttempts.RemoveRange(attempts);
+        }
+        if (batchJobs.Count > 0)
+            db.NoteAsrBatchJobs.RemoveRange(batchJobs);
+
+        if (logIdSet.Length > 0)
         {
             var jobs = await db.AiAsrJobs
-                .Where(row => row.OwnerId == owner && logIds.Contains(row.LogId))
+                .Where(row => row.OwnerId == owner && logIdSet.Contains(row.LogId))
                 .ToListAsync(ct);
             var observations = await db.AiAsrTransportObservations
-                .Where(row => logIds.Contains(row.LogId))
+                .Where(row => logIdSet.Contains(row.LogId))
                 .ToListAsync(ct);
             db.AiAsrTransportObservations.RemoveRange(observations);
             db.AiAsrJobs.RemoveRange(jobs);
@@ -249,7 +315,12 @@ public sealed class NativeNoteRecycleService(
                 ["materialVersions"] = materialResult.MaterialVersions.ToString(),
                 ["asrTasks"] = asrTaskIds.Count.ToString(),
                 ["derivedTasks"] = derivedTaskIds.Length.ToString(),
-                ["aiCalls"] = logIds.Length.ToString(),
+                ["asrAttempts"] = attempts.Count.ToString(),
+                ["asrLeases"] = leases.Count.ToString(),
+                ["asrAckReceipts"] = receipts.Count.ToString(),
+                ["asrSegmentEvidence"] = evidence.Count.ToString(),
+                ["asrBatchJobs"] = batchJobs.Count.ToString(),
+                ["aiCalls"] = logIdSet.Length.ToString(),
                 ["aiImages"] = images.Count.ToString(),
                 ["aiAudio"] = audio.Count.ToString()
             },
@@ -268,7 +339,7 @@ public sealed class NativeNoteRecycleService(
             materialResult.MaterialVersions,
             asrTaskIds.Count,
             derivedTaskIds.Length,
-            logIds.Length,
+            logIdSet.Length,
             images.Count,
             audio.Count);
     }

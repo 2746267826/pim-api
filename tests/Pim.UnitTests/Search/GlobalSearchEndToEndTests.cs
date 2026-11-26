@@ -73,6 +73,40 @@ public sealed class GlobalSearchEndToEndTests : IDisposable
         Assert.False(body.Contains("storagePath", StringComparison.OrdinalIgnoreCase));
     }
 
+    [Fact]
+    public async Task SoftDeletedNoteDisappearsFromGlobalSearch_ButStaysInRecycleBin()
+    {
+        using var factory = CreateHost();
+        var session = await AuthRegistrationTestHost.SeedAndLoginAsync(
+            factory, "search-deleted-" + Guid.NewGuid().ToString("N"));
+        using var client = AuthRegistrationTestHost.Authed(factory, session.AccessToken);
+        var marker = "软删搜索标记" + Guid.NewGuid().ToString("N");
+        var note = await CreateNoteAsync(factory, session.UserId, marker, marker);
+
+        using var before = await client.GetAsync(
+            $"/api/v1/search?q={Uri.EscapeDataString(marker)}&page=1&pageSize=20");
+        Assert.Equal(HttpStatusCode.OK, before.StatusCode);
+        var beforeRoot = await AuthRegistrationTestHost.ReadJsonAsync(before);
+        Assert.Single(beforeRoot.GetProperty("data").GetProperty("items").EnumerateArray()
+            .Where(item => item.GetProperty("domain").GetString() == "note"));
+
+        using var deleted = await client.DeleteAsync($"/api/v1/native-notes/{note.NoteId}");
+        Assert.Equal(HttpStatusCode.OK, deleted.StatusCode);
+
+        using var after = await client.GetAsync(
+            $"/api/v1/search?q={Uri.EscapeDataString(marker)}&page=1&pageSize=20");
+        Assert.Equal(HttpStatusCode.OK, after.StatusCode);
+        var afterRoot = await AuthRegistrationTestHost.ReadJsonAsync(after);
+        Assert.DoesNotContain(afterRoot.GetProperty("data").GetProperty("items").EnumerateArray(),
+            item => item.GetProperty("domain").GetString() == "note");
+
+        using var recycle = await client.GetAsync("/api/v1/recycle-bin?domain=note&page=1&pageSize=20");
+        Assert.Equal(HttpStatusCode.OK, recycle.StatusCode);
+        var recycleRoot = await AuthRegistrationTestHost.ReadJsonAsync(recycle);
+        Assert.Contains(recycleRoot.GetProperty("data").GetProperty("items").EnumerateArray(),
+            item => item.GetProperty("id").GetGuid() == note.NoteId);
+    }
+
     private WebApplicationFactory<Program> CreateHost()
         => AuthRegistrationTestHost.Create(AuthRegistrationTestHost.NewDbName("search-e2e"))
             .WithWebHostBuilder(builder =>

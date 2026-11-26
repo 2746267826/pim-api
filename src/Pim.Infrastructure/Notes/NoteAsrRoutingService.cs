@@ -398,6 +398,14 @@ public sealed class NoteAsrRoutingService(PimDbContext db, ICurrentUserService u
                 }
                 if (state.StopRequested)
                     return (null, null, "stopped");
+                if (!await materials.IsNoteActiveAsync(owner, state.NoteId, lockedCt))
+                {
+                    await legacyTasks.UpdateLockedAsync(owner, candidate.TaskId,
+                        current => current.StopRequested = true, lockedCt);
+                    await QuarantineClaimAsync(owner, candidate, "note_deleted",
+                        "笔记在回收站中，本机转写已停止；恢复笔记后需重新发起", lockedCt);
+                    return (null, null, "stopped");
+                }
                 if (state.Request.VersionId != candidate.VersionId ||
                     state.InputSha256 != candidate.InputSha256 ||
                     state.Steps.Count != candidate.ExpectedSegments ||
@@ -665,6 +673,16 @@ public sealed class NoteAsrRoutingService(PimDbContext db, ICurrentUserService u
     public async Task<NoteAsrAttemptDetailDto> StopAttemptAsync(Guid attemptId, CancellationToken ct)
     {
         var owner = await RequireActiveOwnerAsync(ct);
+        return await StopAttemptForOwnerAsync(owner, attemptId, ct);
+    }
+
+    /// <summary>
+    /// Background-safe stop used when no HTTP current user exists (for example a note entering the
+    /// recycle bin while a Hangfire pass is running). The caller must already own the note boundary.
+    /// </summary>
+    internal async Task<NoteAsrAttemptDetailDto> StopAttemptForOwnerAsync(Guid owner, Guid attemptId,
+        CancellationToken ct)
+    {
         var attempt = await db.NoteAsrAttempts.AsNoTracking()
             .SingleOrDefaultAsync(x => x.Id == attemptId && x.OwnerId == owner, ct)
             ?? throw new DomainException(40401, "转写 attempt 不存在");
@@ -1076,6 +1094,7 @@ public sealed class NoteAsrRoutingService(PimDbContext db, ICurrentUserService u
         if (routeConsent is not null && NoteAsrRoute.IsCloud(route) && config is null)
             throw new DomainException(40901, "云端路由配置已变化，请刷新后重新确认");
         var version = await materials.GetAsync(owner, versionId, ct);
+        await materials.EnsureNoteActiveAsync(owner, version.Upload.NoteId, ct);
         var task = await legacyTasks.ReadAsync(owner, taskId, ct);
         var inputSha = NoteMaterialManifestValidator.Hash(version.InputJson);
         if (task.Request.VersionId != versionId || task.NoteId != version.Upload.NoteId ||

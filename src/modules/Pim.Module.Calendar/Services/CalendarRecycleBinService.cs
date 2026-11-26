@@ -772,12 +772,13 @@ public sealed class CalendarRecycleBinService
         DateTimeOffset? expectedDeletedAt,
         CancellationToken ct)
     {
-        var bookId = await _db.Set<TaskEntity>()
+        var target = await _db.Set<TaskEntity>()
             .IgnoreQueryFilters()
             .Where(t => t.Id == id && t.UserId == UserId)
-            .Select(t => (Guid?)t.CalendarId)
-            .FirstOrDefaultAsync(ct)
-            ?? throw new DomainException(02004, "任务不存在");
+            .Select(t => new { t.CalendarId })
+            .FirstOrDefaultAsync(ct);
+        if (target is null) throw new DomainException(02004, "任务不存在");
+        var bookId = target.CalendarId;
 
         return await TaskRowLock.WithTaskAndCalendarLocksAsync(
             _db,
@@ -823,10 +824,14 @@ public sealed class CalendarRecycleBinService
                     .ToListAsync(ct);
                 if (events.Any(e => e.DeletedAt is null) || tasks.Any(t => t.DeletedAt is null))
                     throw new DomainException(40901, "该日历仍有未删除内容，请先恢复并处理后重试永久清理");
+                var bindings = await _db.Set<OutlookCalendarBindingEntity>()
+                    .Where(binding => binding.PimCalendarId == id)
+                    .ToListAsync(ct);
                 _db.Set<EventEntity>().RemoveRange(events);
                 _db.Set<TaskEntity>().RemoveRange(tasks);
+                _db.Set<OutlookCalendarBindingEntity>().RemoveRange(bindings);
                 _db.Set<CalendarEntity>().Remove(calendar);
-                var affected = 1 + events.Count + tasks.Count;
+                var affected = 1 + events.Count + tasks.Count + bindings.Count;
                 await _db.SaveChangesAsync(ct);
                 await _audit.RecordSuccessAsync(
                     UserId,
@@ -864,9 +869,16 @@ public sealed class CalendarRecycleBinService
         var expiredTasks = await _db.Set<TaskEntity>().IgnoreQueryFilters()
             .Where(t => t.UserId == UserId && t.DeletedAt != null && t.DeletedAt < cutoff)
             .ToListAsync(ct);
+        var expiredCalendarIds = expiredCalendars.Select(c => c.Id).ToArray();
+        var expiredBindings = expiredCalendarIds.Length == 0
+            ? new List<OutlookCalendarBindingEntity>()
+            : await _db.Set<OutlookCalendarBindingEntity>()
+                .Where(binding => expiredCalendarIds.Contains(binding.PimCalendarId))
+                .ToListAsync(ct);
         var count = expiredCalendars.Count + expiredEvents.Count + expiredTasks.Count;
         if (executeDelete && count > 0)
         {
+            _db.RemoveRange(expiredBindings);
             _db.RemoveRange(expiredEvents);
             _db.RemoveRange(expiredTasks);
             _db.RemoveRange(expiredCalendars);

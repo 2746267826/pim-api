@@ -93,6 +93,7 @@ public sealed class NoteAsrBatchService(PimDbContext db, ICurrentUserService use
             .OrderByDescending(x => x.CreatedAt).ThenBy(x => x.Id).FirstOrDefaultAsync(ct);
         if (existingJob is not null)
             return Describe(existingJob);
+        await materials.EnsureVersionNoteActiveAsync(owner, attempt.VersionId, ct);
         if (attempt.State != "Queued")
             throw new DomainException(40901, "Batch attempt 已离开待提交状态");
 
@@ -786,6 +787,8 @@ public sealed class NoteAsrBatchService(PimDbContext db, ICurrentUserService use
         var providerStatus = MimoBatchStatus.Normalize(job.StatusRaw);
         if (!MimoBatchStatus.IsTerminal(providerStatus) || job.OutputImportedAt is not null)
             return;
+        if (!await NoteActiveAsync(job.OwnerId, job, ct))
+            return;
         if (job.OutputFileId is null && job.ErrorFileId is null)
         {
             job.LastErrorCode = "result_files_missing";
@@ -828,6 +831,16 @@ public sealed class NoteAsrBatchService(PimDbContext db, ICurrentUserService use
             job.LastErrorCode = "result_import_failed";
             job.LastErrorMessage = "Batch 已终态但结果文件尚未安全入库；轮询会重试下载，不得重复创建 Batch";
         }
+    }
+
+    private async Task<bool> NoteActiveAsync(Guid owner, NoteAsrBatchJobEntity job,
+        CancellationToken ct)
+    {
+        if (job.AttemptId is not { } attemptId) return true;
+        var noteId = await db.NoteAsrAttempts.AsNoTracking()
+            .Where(x => x.Id == attemptId && x.OwnerId == owner)
+            .Select(x => (Guid?)x.NoteId).SingleOrDefaultAsync(ct);
+        return noteId is not { } id || await materials.IsNoteActiveAsync(owner, id, ct);
     }
 
     private async Task<(AiModelProfileEntity Profile, Uri BaseUri, string ApiKey)> AuthorizedProfileAsync(

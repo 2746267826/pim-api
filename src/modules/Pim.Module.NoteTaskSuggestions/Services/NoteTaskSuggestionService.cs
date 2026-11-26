@@ -10,6 +10,7 @@ using Pim.Core.Exceptions;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
 using Pim.Infrastructure.Data.Entities;
+using Pim.Infrastructure.Notes;
 using Pim.Module.Calendar.DTOs;
 using Pim.Module.Calendar.Entities;
 using Pim.Module.Calendar.Services;
@@ -23,6 +24,7 @@ internal sealed class NoteTaskSuggestionService(
     PimDbContext db,
     ICurrentUserService currentUser,
     INoteTaskSuggestionSourceReader sourceReader,
+    NoteMaterialUploadStore materials,
     CalendarService calendar,
     TimeProvider timeProvider,
     ILogger<NoteTaskSuggestionService> logger,
@@ -44,6 +46,7 @@ internal sealed class NoteTaskSuggestionService(
             throw new DomainException(50301,
                 "任务建议后台处理未配置；本次未创建提取记录，请稍后重试");
 
+        await materials.EnsureNoteActiveAsync(owner, request.NoteId, ct);
         var source = await sourceReader.ReadAsync(request.ArtifactId, request.VersionId, ct);
         if (source.NoteId != request.NoteId || source.ArtifactId != request.ArtifactId ||
             source.ArtifactVersionId != request.VersionId)

@@ -23,6 +23,8 @@ using Pim.Module.Files.Entities;
 using Pim.Module.Files.Providers.Abstractions;
 using Pim.Module.Files.Providers.Local;
 using Pim.Module.Files.Services;
+using Pim.Module.NoteTaskSuggestions.Entities;
+using Pim.Module.NoteTaskSuggestions.Services;
 using Pim.UnitTests.Files;
 using Xunit;
 
@@ -57,6 +59,7 @@ public sealed class UnifiedRecycleBinServiceTests : IDisposable
     {
         PimDbContext.RegisterModuleAssembly(typeof(CalendarEntity).Assembly);
         PimDbContext.RegisterModuleAssembly(typeof(FileProviderEntity).Assembly);
+        PimDbContext.RegisterModuleAssembly(typeof(NoteTaskSuggestionExtractionEntity).Assembly);
         _db = new PimDbContext(new DbContextOptionsBuilder<PimDbContext>()
             .UseInMemoryDatabase("q03-" + Guid.NewGuid())
             .Options);
@@ -70,8 +73,11 @@ public sealed class UnifiedRecycleBinServiceTests : IDisposable
         _materials = new NoteMaterialUploadStore(noteOptions, clock);
         _derived = new NoteDerivedStore(noteOptions, clock);
         _asr = new NoteAsrTaskStore(noteOptions);
+        var processing = new NoteProcessingStore(noteOptions, clock);
         _audit = new AuditLogService(_db);
-        _notes = new NativeNoteRecycleService(_db, _materials, _derived, _asr, _audit);
+        _notes = new NativeNoteRecycleService(_db, _materials, _derived, _asr, _audit,
+            processing: processing,
+            purgeContributors: [new NoteTaskSuggestionPurgeContributor(_db)]);
         var user = new FixedCurrentUser(_user);
         _calendar = new CalendarRecycleBinService(_db, user, new CalendarAuditWriter(_audit));
 
@@ -462,8 +468,10 @@ public sealed class UnifiedRecycleBinServiceTests : IDisposable
 
         Assert.Equal("success", Assert.Single(receipt.Items).Status);
         await Assert.ThrowsAsync<DomainException>(() => _materials.GetAsync(_user, note.VersionId));
-        Assert.False(File.Exists(Path.Combine(_root, "asr-tasks", _user.ToString("D"), asrTaskId + ".json")));
-        Assert.False(File.Exists(Path.Combine(_root, "derived", _user.ToString("D"), "tasks", derivedTaskId + ".json")));
+        Assert.False(File.Exists(Path.Combine(_root, "asr-tasks", _user.ToString("D"),
+            asrTaskId.ToString("D") + ".json")));
+        Assert.False(File.Exists(Path.Combine(_root, "derived", _user.ToString("D"), "tasks",
+            derivedTaskId.ToString("D") + ".json")));
         Assert.Null(await _db.AiRequestLogs.SingleOrDefaultAsync(x => x.Id == asrLog.Id));
         Assert.Null(await _db.AiRequestLogs.SingleOrDefaultAsync(x => x.Id == derivedLog.Id));
         Assert.Empty(await _db.AiCallImages.ToListAsync());
@@ -508,6 +516,113 @@ public sealed class UnifiedRecycleBinServiceTests : IDisposable
         Assert.Equal(RecycleBinItemStatuses.Success, Assert.Single(purge.Items).Status);
         Assert.Null(await _materials.GetDeletedAsync(_user, note.NoteId));
         await Assert.ThrowsAsync<DomainException>(() => _materials.GetAsync(_user, note.VersionId));
+    }
+
+    [Fact]
+    public async Task NotePurge_RemovesAsrRoutingBatchAndTaskSuggestionEvidence()
+    {
+        var note = await SeedNoteAsync(_user, "深度清理的笔记");
+        var asrTaskId = SeedAsrTask(note);
+        var derivedTaskId = SeedDerivedTask(note);
+        var asrLog = SeedAiLog("native-note-asr-task", asrTaskId);
+        _ = SeedAiLog("native-note-derived-task", derivedTaskId);
+        var artifactVersionId = Guid.NewGuid();
+        var suggestionLog = SeedAiLog("note-derived-version", artifactVersionId);
+        var attempt = new NoteAsrAttemptEntity
+        {
+            Id = Guid.NewGuid(),
+            OwnerId = _user,
+            TaskId = asrTaskId,
+            NoteId = note.NoteId,
+            VersionId = note.VersionId,
+            State = "Succeeded"
+        };
+        var lease = new NoteAsrLeaseEntity
+        {
+            OwnerId = _user,
+            AttemptId = attempt.Id,
+            NodeId = Guid.NewGuid(),
+            Status = "Expired",
+            ExpiresAt = Now.AddMinutes(-1)
+        };
+        var receipt = new NoteAsrAckReceiptEntity
+        {
+            OwnerId = _user,
+            AttemptId = attempt.Id,
+            LeaseId = lease.Id,
+            Kind = "segment",
+            Result = "Succeeded",
+            ResultText = "敏感转写内容"
+        };
+        var evidence = new NoteAsrSegmentEvidenceEntity
+        {
+            OwnerId = _user,
+            AttemptId = attempt.Id,
+            TaskId = asrTaskId,
+            VersionId = note.VersionId,
+            ResultText = "敏感分片证据"
+        };
+        var batch = new NoteAsrBatchJobEntity
+        {
+            OwnerId = _user,
+            TaskId = asrTaskId,
+            AttemptId = attempt.Id,
+            Status = "Completed",
+            CredentialSecret = "protected-credential",
+            ResultJson = "{\"text\":\"敏感批量结果\"}"
+        };
+        var extraction = new NoteTaskSuggestionExtractionEntity
+        {
+            UserId = _user,
+            RequestId = Guid.NewGuid(),
+            NoteId = note.NoteId,
+            ArtifactId = Guid.NewGuid(),
+            ArtifactVersionId = artifactVersionId,
+            SourceContentMarkdown = "敏感任务建议正文",
+            Status = NoteTaskSuggestionExtractionStatuses.Succeeded,
+            AiCallLogId = suggestionLog.Id
+        };
+        var suggestion = new NoteTaskSuggestionEntity
+        {
+            UserId = _user,
+            ExtractionId = extraction.Id,
+            NoteId = note.NoteId,
+            ArtifactId = extraction.ArtifactId,
+            ArtifactVersionId = artifactVersionId,
+            Title = "敏感任务标题",
+            Description = "敏感任务描述"
+        };
+        _db.AddRange(lease, receipt, evidence, batch, extraction, suggestion, attempt);
+        _db.AiAsrJobs.Add(new AiAsrJobEntity
+        {
+            OwnerId = _user,
+            LogId = asrLog.Id,
+            ClientRequestId = "deep-purge-asr"
+        });
+        await _db.SaveChangesAsync();
+        await _notes.SoftDeleteAsync(_user, note.NoteId);
+
+        var result = await _service.PurgeAsync(Batch((RecycleBinDomains.Note, note.NoteId)));
+
+        Assert.Equal("success", Assert.Single(result.Items).Status);
+        Assert.Empty(await _db.NoteAsrAttempts.ToListAsync());
+        Assert.Empty(await _db.NoteAsrLeases.ToListAsync());
+        Assert.Empty(await _db.NoteAsrAckReceipts.ToListAsync());
+        Assert.Empty(await _db.NoteAsrSegmentEvidence.ToListAsync());
+        Assert.Empty(await _db.NoteAsrBatchJobs.ToListAsync());
+        Assert.Empty(await _db.AiAsrJobs.ToListAsync());
+        Assert.Empty(await _db.Set<NoteTaskSuggestionExtractionEntity>().ToListAsync());
+        Assert.Empty(await _db.Set<NoteTaskSuggestionEntity>().ToListAsync());
+        Assert.Empty(await _db.AiRequestLogs.ToListAsync());
+        Assert.False(File.Exists(Path.Combine(_root, "asr-tasks", _user.ToString("D"), asrTaskId + ".json")));
+        Assert.False(File.Exists(Path.Combine(_root, "derived", _user.ToString("D"), "tasks", derivedTaskId + ".json")));
+        await Assert.ThrowsAsync<DomainException>(() => _materials.GetAsync(_user, note.VersionId));
+        await Assert.ThrowsAsync<DomainException>(() => _asr.ReadAsync(_user, asrTaskId, default));
+        await Assert.ThrowsAsync<DomainException>(() => _derived.ReadTaskAsync(_user, derivedTaskId, default));
+        var audit = Assert.Single(await _db.AuditLogs
+            .Where(row => row.Action == "recycle_bin.note.purge").ToListAsync());
+        Assert.DoesNotContain("敏感", audit.MetadataJson);
+        Assert.DoesNotContain("protected-credential", audit.MetadataJson);
     }
 
     [Fact]

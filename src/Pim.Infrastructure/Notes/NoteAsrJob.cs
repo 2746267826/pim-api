@@ -16,7 +16,8 @@ using Pim.Infrastructure.Data.Entities;
 namespace Pim.Infrastructure.Notes;
 
 public sealed class NoteAsrDispatchJob(NoteAsrTaskStore tasks, NoteAsrService asr,
-    IBackgroundJobClient jobs, ILogger<NoteAsrDispatchJob> logger)
+    IBackgroundJobClient jobs, ILogger<NoteAsrDispatchJob> logger,
+    NoteMaterialUploadStore? materials = null)
 {
     [AutomaticRetry(Attempts = 0)]
     public async Task RunAsync(CancellationToken ct)
@@ -27,6 +28,11 @@ public sealed class NoteAsrDispatchJob(NoteAsrTaskStore tasks, NoteAsrService as
             try
             {
                 var state = await tasks.ReadAsync(owner, id, ct);
+                if (materials is not null && !await materials.IsNoteActiveAsync(owner, state.NoteId, ct))
+                {
+                    await asr.StopForInactiveNoteAsync(owner, id, ct);
+                    continue;
+                }
                 if (state.Route is not null)
                     state = await asr.EnsureAttemptForOwnerAsync(owner, id,
                         state.Request.VersionId, ct);
@@ -58,6 +64,13 @@ public sealed class NoteAsrJob(NoteAsrTaskStore tasks, NoteMaterialUploadStore m
         {
             ct.ThrowIfCancellationRequested();
             var state = await tasks.ReadAsync(owner, id, ct);
+            if (!await materials.IsNoteActiveAsync(owner, state.NoteId, ct))
+            {
+                // A soft-deleted note keeps its checkpoint readable, but must not emit new results.
+                // Stopping here also makes the checkpoint purgeable instead of leaving it queued.
+                await tasks.UpdateAsync(owner, id, current => current.StopRequested = true, ct);
+                return;
+            }
             if (!NoteAsrTaskStore.CloudPipeline(state)) return;
             if (state.Route is not null && state.AttemptId is null) return;
             if (state.AttemptId is { } routedAttempt)

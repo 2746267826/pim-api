@@ -16,7 +16,8 @@ namespace Pim.Infrastructure.Notes;
 public sealed class NoteDerivedDispatchJob(
     NoteDerivedStore tasks,
     IBackgroundJobClient jobs,
-    ILogger<NoteDerivedDispatchJob> logger)
+    ILogger<NoteDerivedDispatchJob> logger,
+    NoteMaterialUploadStore? materials = null)
 {
     [AutomaticRetry(Attempts = 0)]
     public async Task RunAsync(CancellationToken ct)
@@ -27,6 +28,12 @@ public sealed class NoteDerivedDispatchJob(
             try
             {
                 var state = await tasks.ReadTaskAsync(owner, taskId, ct);
+                if (materials is not null && !await materials.IsNoteActiveAsync(owner, state.NoteId, ct))
+                {
+                    await tasks.UpdateTaskAsync(owner, taskId,
+                        current => current.StopRequested = true, ct);
+                    continue;
+                }
                 var needsStopCheckpoint = state.StopRequested &&
                     state.Steps.Any(step => step.Current.Status == "Queued");
                 if (!NoteDerivedStore.IsActive(state) && !needsStopCheckpoint) continue;
@@ -67,6 +74,14 @@ public sealed class NoteDerivedJob(
         {
             ct.ThrowIfCancellationRequested();
             var state = await tasks.ReadTaskAsync(owner, taskId, ct);
+            if (!await materials.IsNoteActiveAsync(owner, state.NoteId, ct))
+            {
+                // Keep the checkpoint for inspection/restore, but never call a provider or write
+                // a new derived result for a note that is in the recycle bin.
+                await tasks.UpdateTaskAsync(owner, taskId,
+                    current => current.StopRequested = true, ct);
+                return;
+            }
             if (state.AwaitingAsr || NoteDerivedStore.NeedsAsrRecovery(state))
             {
                 if (!await MaterializeAsrInputsAsync(owner, taskId, ct)) return;
