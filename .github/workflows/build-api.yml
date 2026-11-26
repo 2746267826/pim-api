@@ -69,6 +69,19 @@ jobs:
       PIM_TEST_CONN: "Host=127.0.0.1;Port=5432;Database=pim_ci;Username=pim_ci;Password=pim_ci_temporary"
 
     steps:
+      # 防回归：test-shard 用 `| tee` 记录日志，必须取 PIPESTATUS[0] 才是 dotnet test 的退出码。
+      # 写成 RC=$? 会拿到 tee 的 0，测试失败被吞、job 报 success（2026-11-26 实际发生：
+      # shard-5 有 4 个用例失败却显示 success）。
+      - name: Guard - exit-code plumbing works
+        run: |
+          set +e
+          ( exit 7 ) | tee /dev/null > /dev/null
+          RC=${PIPESTATUS[0]}
+          if [ "$RC" -ne 7 ]; then
+            echo "::error::PIPESTATUS plumbing broken (got $RC, expected 7): shard failures would be swallowed as success"
+            exit 1
+          fi
+          echo "exit-code plumbing OK - dotnet test failures will fail the shard"
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -329,7 +342,9 @@ jobs:
           dotnet test Pim.sln --configuration Release --no-restore \
             --filter "$SHARD_FILTER" \
             --logger "console;verbosity=minimal" 2>&1 | tee "/tmp/${SHARD_NAME}.log"
-          RC=$?
+          # 必须取 PIPESTATUS[0]（dotnet test 的退出码）：`| tee` 会把 $? 变成 tee 的 0，
+          # 导致任何测试失败都被吞掉、job 报 success（false green）。不要改回 $?。
+          RC=${PIPESTATUS[0]}
           END=$(date +%s)
           echo "=== ${SHARD_NAME} 测试耗时: $((END-START)) 秒 ==="
           grep -E 'Passed!|Failed!|Total tests|Passed:|Failed:|Skipped:' "/tmp/${SHARD_NAME}.log" | tail -5
