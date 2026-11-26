@@ -1,7 +1,7 @@
 # MCP Server 使用文档 / MCP Server Guide
 
-> PIM MCP v3 — 100 只读 + 49 写入工具（HTTP 多客户端 + 工具级权限），给自家可信 AI Agent 专用。
-> PIM MCP v3 — 100 read-only + 49 write tools (HTTP multi-client + tool-level permissions), for trusted internal AI Agent.
+> PIM MCP v3 — 99 只读 + 49 写入工具（HTTP 多客户端 + 工具级权限），给自家可信 AI Agent 专用。
+> PIM MCP v3 — 99 read-only + 49 write tools (HTTP multi-client + tool-level permissions), for trusted internal AI Agent.
 
 ## 目录 / Table of Contents
 - [1. 概览 / Overview](#1-概览--overview)
@@ -14,7 +14,7 @@
   - [5.3 Mobile 19](#53-mobile-19)
   - [5.4 QuickNotes 3](#54-quicknotes-3)
   - [5.5 Files 7](#55-files-7)
-  - [5.6 Core/Infra 14](#56-coreinfra-14)
+  - [5.6 Core/Infra 13](#56-coreinfra-13)
   - [5.7 写入工具 49 / Write Tools 49](#57-写入工具-49--write-tools-49)
 - [6. HTTP 接入与 Token / HTTP Access & Tokens](#6-http-接入与-token--http-access--tokens)
 - [7. 典型调用流 / Recipes](#7-典型调用流--recipes)
@@ -28,8 +28,8 @@
 ### 是什么 / What it is
 - Python `FastMCP` 服务，地址 `scripts/mcp/pim_mcp_server.py`（**已退役**，仅作行为基准；线上 `/mcp` 是 .NET 进程内服务）。
 - 双传输：`stdio`（默认，兼容 v2）+ `Streamable HTTP`（Phase 3，多客户端远程并发）。
-- 线上 `/mcp`（.NET，`McpToolCatalog`）：**149 工具** = 读取 `100`（Calendar 31 + PcTracker 26 + Mobile 19 + QuickNotes 3 + Files 7 + Core/Infra 14）+ 写入 `49`（Calendar 30 + QuickNotes 8 + Files 5 + PcTracker 4 + Mobile 2）。
-- 退役的 Python 基准脚本：**148 工具** = 读取 `99` + 写入 `49`（比 .NET 少 `get_mobile_liveness_summary`，且 WO-PC-BACKEND-20261001 REQ-6 又下线了 `get_pc_aw_heatmap`）。
+- 线上 `/mcp`（.NET，`McpToolCatalog`）：**148 工具** = 读取 `99`（Calendar 31 + PcTracker 26 + Mobile 19 + QuickNotes 3 + Files 7 + Core/Infra 13）+ 写入 `49`（Calendar 30 + QuickNotes 8 + Files 5 + PcTracker 4 + Mobile 2）。
+- 退役的 Python 基准脚本：**147 工具** = 读取 `98` + 写入 `49`（比 .NET 少 `get_mobile_liveness_summary`；两者均随 J05 移除 `get_ai_status`，且 WO-PC-BACKEND-20261001 REQ-6 下线了 `get_pc_aw_heatmap`）。
   （计数按 `scripts/mcp/pim_mcp_server.py --check` 与 `McpToolCatalog` 实际目录核对。）
 - Python `FastMCP` service at `scripts/mcp/pim_mcp_server.py`. stdio (default) + Streamable HTTP.
 
@@ -83,7 +83,7 @@ dotnet src/Pim.Api.dll --urls http://127.0.0.1:5858
 PIM_ACCESS_TOKEN=<jwt> dotnet src/Pim.Api.dll --mcp-stdio
 ```
 - `--mcp-stdio` 模式下 stdout 只承载 MCP 协议，日志走 stderr 与文件。
-- 自检：`dotnet test tests/Pim.UnitTests` 的 `Mcp*` 用例覆盖 149 工具契约等价性。
+- 自检：`dotnet test tests/Pim.UnitTests` 的 `Mcp*` 用例覆盖 148 工具契约等价性。
 - 生产部署（HTTP 模式）：见 §6「生产部署 / Production deployment」——Pim.Api 单容器直接对外。
 
 ### 客户端配置 / Client configs
@@ -2724,7 +2724,7 @@ async def get_file_open_link(fileId: str) -> Any: ...
 }
 ```
 
-### 5.6 Core/Infra 14
+### 5.6 Core/Infra 13
 
 #### `get_today_sections` — Today registry.
 - **API**: `GET /today/sections?date`

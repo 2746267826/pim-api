@@ -11,9 +11,10 @@ DEPRECATED (2026-09-01): MCP Server 已集成进 Pim.Api（.NET 8）进程内（
 - 本脚本中 create_category 同步修正为调用 POST /api/v1/pc/app-category-rules，彻底避免废弃脚本
   误调时向树形分类入口写入脏数据。
 
-Exposes 148 tools: 99 read-only (Calendar / PcTracker / Mobile / QuickNotes / Files / Core/Infra)
+Exposes 147 tools: 98 read-only (Calendar / PcTracker / Mobile / QuickNotes / Files / Core/Infra)
 plus 49 write tools (Calendar 30 + QuickNotes 8 + Files 5 + PcTracker 4 + Mobile 2).
-（WO-PC-BACKEND-20261001 REQ-6：get_pc_aw_heatmap 随遗留端点 pc/aw/heatmap 下线，149 → 148 / 100 → 99。）
+（WO-PC-BACKEND-20261001 REQ-6：get_pc_aw_heatmap 随遗留端点 pc/aw/heatmap 下线，149 → 148 / 100 → 99；
+  J05：移除旧 LiteLLM 网关 get_ai_status，148 → 147 / 99 → 98。）
 
 Transports:
 - stdio (default, v2-compatible): Bearer pass-through. Client obtains JWT via
@@ -2368,7 +2369,7 @@ async def get_file_open_link(file_id: str) -> Any:
     return res
 
 
-# ===================== Core/Infra 14 =====================
+# ===================== Core/Infra 13 =====================
 
 @mcp.tool()
 async def get_today_sections(
@@ -3306,7 +3307,7 @@ def _build_http_app() -> Any:
 
 
 def _run_check() -> None:
-    """Self-check: verify tool inventory (99 read + 49 write) without starting a server."""
+    """Self-check: verify tool inventory (98 read + 49 write) without starting a server."""
     tools = _list_tools_meta()
     read = [t for t in tools if t["group"] == "read"]
     write = [t for t in tools if t["group"] == "write"]
