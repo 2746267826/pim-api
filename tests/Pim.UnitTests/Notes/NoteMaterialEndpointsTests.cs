@@ -261,7 +261,14 @@ public sealed class NoteMaterialEndpointsTests : IDisposable
         Assert.True(bundleContent.TryGetProperty("application/zip", out var zipContent), bundleResponse.GetRawText());
         Assert.Equal("string", zipContent.GetProperty("schema").GetProperty("type").GetString());
         Assert.Equal("binary", zipContent.GetProperty("schema").GetProperty("format").GetString());
-        Assert.False(paths.TryGetProperty(Root + "/{noteId}", out _));
+        Assert.True(paths.TryGetProperty(Root + "/{noteId}", out var deletion));
+        Assert.True(deletion.TryGetProperty("delete", out var deleteOperation));
+        Assert.True(deleteOperation.TryGetProperty("security", out var deleteSecurity)
+            && deleteSecurity.GetArrayLength() > 0);
+        var deleteSchema = deleteOperation.GetProperty("responses").GetProperty("200")
+            .GetProperty("content").GetProperty("application/json").GetProperty("schema");
+        Assert.Equal("#/components/schemas/NativeNoteDeletedItemApiResponse",
+            deleteSchema.GetProperty("$ref").GetString());
         Assert.True(document.RootElement.GetProperty("components").GetProperty("schemas").TryGetProperty("BeginNoteMaterialUploadRequest", out _));
         _ = _factory.Services.GetRequiredService<ISwaggerProvider>();
     }
