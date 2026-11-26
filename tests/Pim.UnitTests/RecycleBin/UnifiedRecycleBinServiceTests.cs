@@ -20,6 +20,7 @@ using Pim.Infrastructure.Storage;
 using Pim.Module.Calendar.Entities;
 using Pim.Module.Calendar.Services;
 using Pim.Module.Files.Entities;
+using Pim.Module.Files.Providers.Abstractions;
 using Pim.Module.Files.Providers.Local;
 using Pim.Module.Files.Services;
 using Pim.UnitTests.Files;
