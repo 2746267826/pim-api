@@ -412,6 +412,7 @@ public sealed class NativeNoteMcpService(
     {
         if (request.StepKeys is not { Count: > 0 } || request.Consent is null)
             throw new DomainException(40001, "请选择待恢复步骤并核对处理目标");
+        var stepKeys = request.StepKeys;
         var owner = Owner;
         return operations.RunAsync(
             owner,
@@ -423,7 +424,7 @@ public sealed class NativeNoteMcpService(
                 request.TaskId,
                 request.RetryId,
                 ExpectedRevision = request.ExpectedRevision,
-                stepKeys = request.StepKeys?.OrderBy(key => key, StringComparer.Ordinal).ToArray(),
+                stepKeys = stepKeys.OrderBy(key => key, StringComparer.Ordinal).ToArray(),
                 Consent = request.Consent,
                 AcknowledgePossibleDuplicateCharge = request.AcknowledgePossibleDuplicateCharge,
             },
@@ -439,7 +440,7 @@ public sealed class NativeNoteMcpService(
                         request.RetryId,
                         owner,
                         request.ExpectedRevision,
-                        request.StepKeys,
+                        stepKeys,
                         request.Consent,
                         request.AcknowledgePossibleDuplicateCharge),
                     lockedCt);
@@ -576,7 +577,8 @@ public sealed class NativeNoteMcpService(
         {
             throw;
         }
-        catch (InvalidDataException)
+        catch (Exception exception) when (exception is InvalidDataException or IOException
+                                               or NotSupportedException)
         {
             throw new DomainException(40001, "材料包不是有效的 ZIP 文件");
         }

@@ -470,7 +470,7 @@ public sealed class NativeNoteMcpRealDbTests
         });
         Assert.True(retry.IsError);
         Assert.Contains(retry.Payload.GetProperty("code").GetInt32(), new[] { 404, 409 });
-        var retryWithoutConsent = await host.CallAsync(host.McpAWrite,
+        var retryWithoutSteps = await host.CallAsync(host.McpAWrite,
             "retry_native_note_processing", new
             {
                 noteId,
@@ -479,11 +479,11 @@ public sealed class NativeNoteMcpRealDbTests
                 retryId = Guid.NewGuid().ToString("D"),
                 expectedRevision = Guid.NewGuid().ToString("D"),
                 stepKeys = Array.Empty<string>(),
-                consent = (object?)null,
+                consent = Consent(),
                 acknowledgePossibleDuplicateCharge = false,
             });
-        Assert.True(retryWithoutConsent.IsError);
-        Assert.Equal(400, retryWithoutConsent.Payload.GetProperty("code").GetInt32());
+        Assert.True(retryWithoutSteps.IsError);
+        Assert.Equal(400, retryWithoutSteps.Payload.GetProperty("code").GetInt32());
 
         var adopt = await host.CallAsync(host.McpAWrite, "adopt_native_note_result", new
         {
