@@ -20929,6 +20929,9 @@
           "latestEvent": {
             "$ref": "#/components/schemas/EventResponse"
           },
+          "noChangesApplied": {
+            "type": "boolean"
+          },
           "replayed": {
             "type": "boolean"
           },

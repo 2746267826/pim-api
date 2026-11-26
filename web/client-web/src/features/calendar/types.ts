@@ -478,6 +478,7 @@ export interface OutlookWriteResult {
   undoAvailable?: boolean
   userMessage?: string | null
   replayed?: boolean
+  noChangesApplied?: boolean
 }
 
 /* ── 查询参数 ─────────────────────────────────────────────── */
