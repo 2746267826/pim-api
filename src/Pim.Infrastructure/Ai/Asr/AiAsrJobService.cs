@@ -969,6 +969,28 @@ public sealed class AiAsrJobService(
         return root.ToJsonString(Json);
     }
 
+    /// <summary>Reads only an explicit JSON boolean; missing, malformed or non-boolean values stay unknown.</summary>
+    internal static bool? ProviderAttemptedMetadata(string? metadata)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(metadata ?? "{}");
+            if (document.RootElement.ValueKind != JsonValueKind.Object ||
+                !document.RootElement.TryGetProperty("providerAttempted", out var value))
+                return null;
+            return value.ValueKind switch
+            {
+                JsonValueKind.True => true,
+                JsonValueKind.False => false,
+                _ => null
+            };
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
     private async Task CompleteAsync(AiAsrJobEntity job, AiRequestLogEntity log, string status,
         string? errorCode, string? errorMessage, string abortSource, bool outcomeKnown,
         string? nextAction, string? responseBody, bool responseTooLarge,

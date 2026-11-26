@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore;
 using Npgsql;
 using Pim.Core.Ai;
 using Pim.Core.Exceptions;
+using Pim.Infrastructure.Ai.Asr;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
 using Pim.Infrastructure.Data.Entities;
@@ -393,7 +394,8 @@ public sealed class AiUsageLimitService(
                         (excludedRequestKey == null || x.CorrelationId != excludedRequestKey) &&
                         (x.InitiatedAt ?? x.StartedAt) >= scope.StartsAt &&
                         (x.InitiatedAt ?? x.StartedAt) < scope.EndsAt)
-            .Select(x => new UsageRow(x.Status, x.TotalTokens, x.EstimatedCost, x.Currency, x.MetadataJson))
+            .Select(x => new UsageRow(x.Status, x.Purpose, x.TotalTokens, x.EstimatedCost, x.Currency,
+                x.MetadataJson))
             .ToListAsync(ct);
 
         var providerRows = rows.Where(WasProviderAttempted).ToList();
@@ -406,7 +408,10 @@ public sealed class AiUsageLimitService(
         var costUsed = costKnown.Count == 0 ? null : (decimal?)costKnown.Sum(x => x.EstimatedCost!.Value);
         var running = rows.Count(x => x.Status is "running" or "preparing" or "queued" or "cancelling");
         var incomplete = rows.Count(x => x.Status is "incomplete" or "timed_out" or "cancelled");
-        var tokenUnknown = providerRows.Count - tokenKnown.Count;
+        // A running Batch is in-flight, not a terminal unknown. Its token usage is reconciled when
+        // the Batch reaches a terminal state; treating it as unknown here would freeze every other
+        // call on the same connection for up to the provider's 24h completion window.
+        var tokenUnknown = providerRows.Count(x => x.TotalTokens is null && !IsRunningBatch(x));
         var costUnknown = providerRows.Count - costKnown.Count;
         var tokenStatus = rule.TokenLimit is not null && tokenUnknown > 0
             ? AiUsageLimitStatuses.Unknown
@@ -655,31 +660,18 @@ public sealed class AiUsageLimitService(
     private static AiUsageLimitSnapshotDto EmptySnapshot() =>
         new(null, null, null, null, null, 0, 0, 0, default, default);
 
-    private static bool? ProviderAttempted(string? metadata)
+    private static bool WasProviderAttempted(UsageRow row)
     {
-        try
-        {
-            using var document = JsonDocument.Parse(metadata ?? "{}");
-            if (document.RootElement.ValueKind != JsonValueKind.Object)
-                return null;
-            if (!document.RootElement.TryGetProperty("providerAttempted", out var value))
-                return null;
-            return value.ValueKind switch
-            {
-                JsonValueKind.True => true,
-                JsonValueKind.False => false,
-                _ => null
-            };
-        }
-        catch (Exception error) when (error is JsonException or InvalidOperationException)
-        {
-            return null;
-        }
+        var marker = AiAsrJobService.ProviderAttemptedMetadata(row.MetadataJson);
+        if (marker is { } attempted) return attempted || row.Status == "succeeded";
+        // Missing or malformed metadata is unknown usage and must fail closed. Explicit false is
+        // authoritative for timed_out/incomplete rows: recovery can close a request that never
+        // reached the provider without manufacturing a usage_limit_unknown block.
+        return true;
     }
 
-    private static bool WasProviderAttempted(UsageRow row) =>
-        row.Status is "succeeded" or "incomplete" or "timed_out" ||
-        ProviderAttempted(row.MetadataJson) != false;
+    private static bool IsRunningBatch(UsageRow row) =>
+        row.Purpose == AiCallPurposes.AsrBatch && row.Status == "running";
 
     private static AiUsageLimitRuleEntity DefaultRule(Guid connectionId) => new()
     {
@@ -708,6 +700,6 @@ public sealed class AiUsageLimitService(
     private static DomainException Stale() => new(40901, "用量设置已被修改，请刷新核对后再保存");
 
     private sealed record PeriodScope(string Period, string CycleKey, DateTimeOffset StartsAt, DateTimeOffset EndsAt);
-    private sealed record UsageRow(string Status, int? TotalTokens, decimal? EstimatedCost, string? Currency,
-        string MetadataJson);
+    private sealed record UsageRow(string Status, string Purpose, int? TotalTokens, decimal? EstimatedCost,
+        string? Currency, string MetadataJson);
 }

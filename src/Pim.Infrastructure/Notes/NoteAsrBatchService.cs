@@ -30,7 +30,7 @@ public sealed class NoteAsrBatchService(PimDbContext db, ICurrentUserService use
     private static readonly TimeSpan PersistenceBudget = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan ResultImportLease = TimeSpan.FromMinutes(2);
     private static readonly TimeSpan SubmissionAuditBudget = TimeSpan.FromHours(1);
-    internal const string AuditPurpose = "ai.asr-batch";
+    internal const string AuditPurpose = AiCallPurposes.AsrBatch;
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     private readonly AiTextCallGate _gate = gate;
 
@@ -756,8 +756,10 @@ public sealed class NoteAsrBatchService(PimDbContext db, ICurrentUserService use
     /// <summary>
     /// Projects Batch lifecycle and reported per-item token usage into the shared
     /// <c>ai_request_logs</c> ledger. Missing token data is preserved as unknown instead of zero so
-    /// the connection limit fails closed. A legacy row that predates this audit is created with
-    /// <c>providerAttempted=true</c> because an already submitted Batch may have reached MiMo.
+    /// the connection limit fails closed. The provider marker is derived from persisted evidence:
+    /// an explicit true marker, an uploaded input file, or a verified batch id. A row without that
+    /// evidence stays not-attempted, so a timeout before transport never manufactures an unknown
+    /// usage block.
     /// </summary>
     private async Task SyncAuditFromJobAsync(NoteAsrBatchJobEntity job, CancellationToken ct)
     {
@@ -819,7 +821,8 @@ public sealed class NoteAsrBatchService(PimDbContext db, ICurrentUserService use
         audit.ErrorCode = job.LastErrorCode;
         audit.ErrorMessage = job.LastErrorMessage;
         audit.ExecutionExpiresAt = job.BatchId is not null || terminal ? null : audit.ExecutionExpiresAt;
-        audit.MetadataJson = AiAsrJobService.SetProviderAttemptedMetadata(audit.MetadataJson, true);
+        audit.MetadataJson = AiAsrJobService.SetProviderAttemptedMetadata(
+            audit.MetadataJson, ProviderAttemptedForAudit(job, audit.MetadataJson));
         if (terminal)
         {
             audit.FinishedAt ??= now;
@@ -866,8 +869,14 @@ public sealed class NoteAsrBatchService(PimDbContext db, ICurrentUserService use
         PromptTokens = usage?.Prompt,
         CompletionTokens = usage?.Completion,
         TotalTokens = usage?.Total,
-        MetadataJson = AiAsrJobService.SetProviderAttemptedMetadata("{}", true)
+        MetadataJson = AiAsrJobService.SetProviderAttemptedMetadata("{}",
+            job.BatchId is not null || job.InputFileId is not null)
     };
+
+    private static bool ProviderAttemptedForAudit(NoteAsrBatchJobEntity job, string? metadata) =>
+        job.BatchId is not null ||
+        job.InputFileId is not null ||
+        AiAsrJobService.ProviderAttemptedMetadata(metadata) is true;
 
     private static bool IsTerminalAuditStatus(string status) =>
         status is "succeeded" or "failed" or "incomplete" or "timed_out" or "cancelled" or "blocked";

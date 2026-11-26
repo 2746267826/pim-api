@@ -23,12 +23,22 @@ namespace Pim.UnitTests.Notes;
 
 /// <summary>
 /// Real relational concurrency proof for #516 phase 1. Requires a disposable synthetic
-/// PostgreSQL cluster via PIM_ASR516_PG; never points at production or pim_test.
+/// PostgreSQL cluster via <c>PIM_ASR516_PG</c>, or the disposable CI database in
+/// <c>PIM_TEST_CONN</c>; never points at production.
 /// </summary>
 public sealed class NoteAsrRoutingConcurrencyTests
 {
     private static readonly string StorageRoot = Path.Combine(Path.GetTempPath(), "pim-asr516-tests");
-    private static string? ConnectionString => Environment.GetEnvironmentVariable("PIM_ASR516_PG");
+    private static string? ConnectionString
+    {
+        get
+        {
+            var dedicated = Environment.GetEnvironmentVariable("PIM_ASR516_PG");
+            return string.IsNullOrWhiteSpace(dedicated)
+                ? Environment.GetEnvironmentVariable("PIM_TEST_CONN")
+                : dedicated;
+        }
+    }
 
     [SkippableFact]
     public async Task Local_evidence_without_matching_receipt_never_counts_as_success()

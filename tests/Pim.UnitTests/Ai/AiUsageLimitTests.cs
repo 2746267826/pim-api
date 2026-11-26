@@ -270,7 +270,7 @@ public sealed class AiUsageLimitTests
     }
 
     [Fact]
-    public async Task TryBegin_IgnoresQueuedPlaceholders_ButCountsProviderEnteredIncomplete()
+    public async Task TryBegin_IgnoresQueuedPlaceholders()
     {
         await using var db = Db();
         var service = Service(db, new AdminUser());
@@ -288,19 +288,87 @@ public sealed class AiUsageLimitTests
             TimeSpan.FromMinutes(1), default);
         Assert.True(beforeProvider.Allowed);
         await service.EndAsync(beforeProvider.Lease, default);
+    }
 
-        db.AiRequestLogs.Add(Log(connection.Id, Now, null, null, status: "incomplete",
+    [Theory]
+    [InlineData("incomplete")]
+    [InlineData("timed_out")]
+    public async Task TryBegin_ExplicitPreProviderTerminalOutcomeDoesNotBecomeUnknown(string status)
+    {
+        await using var db = Db();
+        var service = Service(db, new AdminUser());
+        var connection = await service.CreateConnectionAsync("前置超时连接", default);
+        await service.SaveRuleAsync(connection.Id, new(connection.Limit.Revision, true,
+            AiUsageLimitPeriods.Month, 80, 100, null, null, "Asia/Shanghai"), default);
+        db.AiRequestLogs.Add(Log(connection.Id, Now, null, null, status: status,
             metadataJson: """{"providerAttempted":false}"""));
         await db.SaveChangesAsync();
-        var afterUnknown = await service.TryBeginAsync(connection.Id, "incomplete-provider",
+
+        var decision = await service.TryBeginAsync(connection.Id, "pre-provider-terminal",
             "test", TimeSpan.FromMinutes(1), default);
 
-        Assert.False(afterUnknown.Allowed);
-        Assert.Equal("usage_limit_unknown", afterUnknown.ErrorCode);
+        Assert.True(decision.Allowed);
+        await service.EndAsync(decision.Lease, default);
+        var usage = await service.GetUsageAsync(connection.Id, AiUsageLimitPeriods.Month, "2026-11", default);
+        Assert.Equal(0, usage.TokenUnknownRequestCount);
+    }
+
+    [Theory]
+    [InlineData("incomplete")]
+    [InlineData("timed_out")]
+    public async Task TryBegin_ExplicitProviderAttemptedTerminalWithoutTokensFailsClosed(string status)
+    {
+        await using var db = Db();
+        var service = Service(db, new AdminUser());
+        var connection = await service.CreateConnectionAsync("服务商已尝试连接", default);
+        await service.SaveRuleAsync(connection.Id, new(connection.Limit.Revision, true,
+            AiUsageLimitPeriods.Month, 80, 100, null, null, "Asia/Shanghai"), default);
+        db.AiRequestLogs.Add(Log(connection.Id, Now, null, null, status: status,
+            metadataJson: """{"providerAttempted":true}"""));
+        await db.SaveChangesAsync();
+
+        var decision = await service.TryBeginAsync(connection.Id, "provider-terminal",
+            "test", TimeSpan.FromMinutes(1), default);
+
+        Assert.False(decision.Allowed);
+        Assert.Equal("usage_limit_unknown", decision.ErrorCode);
     }
 
     [Fact]
-    public async Task ExpiredRunningCallRecoveryMarksProviderAttemptedAndFailsClosed()
+    public async Task TryBegin_TreatsRunningBatchUsageAsPendingNotUnknown()
+    {
+        await using var db = Db();
+        var service = Service(db, new AdminUser());
+        var connection = await service.CreateConnectionAsync("运行中Batch连接", default);
+        await service.SaveRuleAsync(connection.Id, new(connection.Limit.Revision, true,
+            AiUsageLimitPeriods.Month, 80, 100, null, null, "Asia/Shanghai"), default);
+        var batch = Log(connection.Id, Now, null, null, status: "running",
+            metadataJson: """{"providerAttempted":true}""", purpose: AiCallPurposes.AsrBatch);
+        db.AiRequestLogs.Add(batch);
+        await db.SaveChangesAsync();
+
+        var whileRunning = await service.TryBeginAsync(connection.Id, "while-batch-running",
+            "ai.text-call", TimeSpan.FromMinutes(1), default);
+        Assert.True(whileRunning.Allowed);
+        await service.EndAsync(whileRunning.Lease, default);
+        var runningUsage = await service.GetUsageAsync(connection.Id, AiUsageLimitPeriods.Month,
+            "2026-11", default);
+        Assert.Equal(1, runningUsage.RequestCount);
+        Assert.Equal(1, runningUsage.RunningRequestCount);
+        Assert.Equal(0, runningUsage.TokenUnknownRequestCount);
+
+        batch.Status = "incomplete";
+        batch.FinishedAt = Now;
+        await db.SaveChangesAsync();
+        var afterTerminal = await service.TryBeginAsync(connection.Id, "after-batch-terminal",
+            "ai.text-call", TimeSpan.FromMinutes(1), default);
+
+        Assert.False(afterTerminal.Allowed);
+        Assert.Equal("usage_limit_unknown", afterTerminal.ErrorCode);
+    }
+
+    [Fact]
+    public async Task ExpiredRunningCallRecoveryPreservesExplicitFalseAndAllowsNextCall()
     {
         await using var db = Db();
         var service = Service(db, new AdminUser());
@@ -318,11 +386,41 @@ public sealed class AiUsageLimitTests
         var recovered = await db.AiRequestLogs.AsNoTracking().SingleAsync(x => x.Id == row.Id);
         Assert.Equal("incomplete", recovered.Status);
         using (var metadata = JsonDocument.Parse(recovered.MetadataJson))
-            Assert.True(metadata.RootElement.GetProperty("providerAttempted").GetBoolean());
+            Assert.False(metadata.RootElement.GetProperty("providerAttempted").GetBoolean());
         var decision = await service.TryBeginAsync(connection.Id, "after-recovery", "test",
             TimeSpan.FromMinutes(1), default);
-        Assert.False(decision.Allowed);
-        Assert.Equal("usage_limit_unknown", decision.ErrorCode);
+        Assert.True(decision.Allowed);
+        await service.EndAsync(decision.Lease, default);
+    }
+
+    [SkippableFact]
+    [Trait("DataSource", "RealDb")]
+    public async Task PostgresExpiredRunningRecoveryPreservesExplicitFalse()
+    {
+        await using var database = await TempMigrationDatabase.CreateAsync("test_j09_recovery_false");
+        await database.MigrateAsync();
+        var service = Service(database.Db, new AdminUser(), new FixedTimeProvider(Now));
+        var connection = await service.CreateConnectionAsync("PostgreSQL前置超时连接", default);
+        await service.SaveRuleAsync(connection.Id, new(connection.Limit.Revision, true,
+            AiUsageLimitPeriods.Month, 80, 100, null, null, "Asia/Shanghai"), default);
+        var row = Log(connection.Id, DateTimeOffset.UtcNow.AddMinutes(-5), null, null,
+            status: "running", metadataJson: """{"providerAttempted":false}""",
+            executionExpiresAt: DateTimeOffset.UtcNow.AddMinutes(-1));
+        database.Db.AiRequestLogs.Add(row);
+        await database.Db.SaveChangesAsync();
+
+        await AiCallRecovery.RecoverExpiredAsync(database.Db, default);
+
+        database.Db.ChangeTracker.Clear();
+        var recovered = await database.Db.AiRequestLogs.AsNoTracking()
+            .SingleAsync(x => x.Id == row.Id);
+        Assert.Equal("incomplete", recovered.Status);
+        using (var metadata = JsonDocument.Parse(recovered.MetadataJson))
+            Assert.False(metadata.RootElement.GetProperty("providerAttempted").GetBoolean());
+        var decision = await service.TryBeginAsync(connection.Id, "after-postgres-recovery-false",
+            "test", TimeSpan.FromMinutes(1), default);
+        Assert.True(decision.Allowed);
+        await service.EndAsync(decision.Lease, default);
     }
 
     [SkippableFact]
@@ -618,11 +716,11 @@ public sealed class AiUsageLimitTests
     private static AiRequestLogEntity Log(Guid connectionId, DateTimeOffset startedAt, int? tokens,
         decimal? cost, string? currency = null, DateTimeOffset? initiatedAt = default,
         string status = "succeeded", string? metadataJson = null,
-        DateTimeOffset? executionExpiresAt = null) => new()
+        DateTimeOffset? executionExpiresAt = null, string? purpose = null) => new()
         {
             Id = Guid.NewGuid(),
             Module = "system",
-            Purpose = "ai.text-call",
+            Purpose = purpose ?? "ai.text-call",
             SourceObjectType = "ai-model",
             SourceObjectId = "synthetic",
             Provider = "openai-compatible",

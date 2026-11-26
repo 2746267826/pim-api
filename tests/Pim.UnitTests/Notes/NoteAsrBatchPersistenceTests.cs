@@ -23,7 +23,11 @@ using Xunit;
 
 namespace Pim.UnitTests.Notes;
 
-/// <summary>Synthetic PostgreSQL/HTTP only: no paid request, credential, or real audio.</summary>
+/// <summary>
+/// Synthetic PostgreSQL/HTTP only: no paid request, credential, or real audio. The database comes
+/// from <c>PIM_ASR516_PG</c> when configured, otherwise from the disposable CI
+/// <c>PIM_TEST_CONN</c> database; production is never used.
+/// </summary>
 [Collection("NoteAsrBatchSyntheticPg")]
 public sealed class NoteAsrBatchPersistenceTests
 {
@@ -31,9 +35,16 @@ public sealed class NoteAsrBatchPersistenceTests
     // PIM_ASR516_PG remains the dedicated local/reviewer switch. CI provisions the same
     // disposable PostgreSQL through PIM_TEST_CONN, so the Batch suite must run there rather
     // than disappearing as skipped evidence. Both point at throwaway databases only.
-    private static string? ConnectionString =>
-        Environment.GetEnvironmentVariable("PIM_ASR516_PG") ??
-        Environment.GetEnvironmentVariable("PIM_TEST_CONN");
+    private static string? ConnectionString
+    {
+        get
+        {
+            var dedicated = Environment.GetEnvironmentVariable("PIM_ASR516_PG");
+            return string.IsNullOrWhiteSpace(dedicated)
+                ? Environment.GetEnvironmentVariable("PIM_TEST_CONN")
+                : dedicated;
+        }
+    }
 
     [SkippableFact]
     public async Task Input_is_bounded_and_custom_ids_cannot_escape_attempt_segments()

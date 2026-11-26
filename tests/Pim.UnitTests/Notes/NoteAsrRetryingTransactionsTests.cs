@@ -216,6 +216,69 @@ public sealed class NoteAsrRetryingTransactionsTests
     }
 
     [SkippableFact]
+    public async Task Batch_replay_legacy_audit_marker_uses_upload_and_batch_evidence()
+    {
+        await using var database = await SyntheticDatabase.CreateAsync();
+        var factory = new SyntheticBatchFactory(
+            (_, _) => throw new InvalidOperationException("must not upload on replay"),
+            (_, _) => throw new InvalidOperationException("must not create on replay"));
+        var cases = new[]
+        {
+            (BatchId: (string?)null, InputFileId: (string?)null, Expected: false),
+            (BatchId: (string?)null, InputFileId: (string?)"file-replay", Expected: true),
+            (BatchId: (string?)"batch-replay", InputFileId: (string?)null, Expected: true)
+        };
+
+        foreach (var scenario in cases)
+        {
+            var seed = await SeedAsync(database);
+            await SeedPendingBatchJobAsync(database, seed, "Creating", scenario.BatchId,
+                scenario.InputFileId);
+            await using var db = database.NewContext(seed.Owner);
+            await StartAsync(Service(db, seed.Owner, factory), seed);
+            var audit = await db.AiRequestLogs.AsNoTracking().SingleAsync(x =>
+                x.UserId == seed.Owner && x.Purpose == NoteAsrBatchService.AuditPurpose);
+            using var metadata = JsonDocument.Parse(audit.MetadataJson);
+            Assert.Equal(scenario.Expected,
+                metadata.RootElement.GetProperty("providerAttempted").GetBoolean());
+        }
+
+        Assert.Equal(0, factory.UploadCalls);
+        Assert.Equal(0, factory.CreateCalls);
+    }
+
+    [SkippableFact]
+    public async Task Batch_replay_preserves_explicit_provider_marker_without_handles()
+    {
+        await using var database = await SyntheticDatabase.CreateAsync();
+        var factory = new SyntheticBatchFactory(
+            (_, _) => throw new InvalidOperationException("must not upload on replay"),
+            (_, _) => throw new InvalidOperationException("must not create on replay"));
+        var cases = new[]
+        {
+            (Metadata: """{"providerAttempted":false}""", Expected: false),
+            (Metadata: """{"providerAttempted":true}""", Expected: true)
+        };
+
+        foreach (var scenario in cases)
+        {
+            var seed = await SeedAsync(database);
+            await SeedPendingBatchJobAsync(database, seed, "Unknown", auditMetadata: scenario.Metadata);
+            await using var db = database.NewContext(seed.Owner);
+            await StartAsync(Service(db, seed.Owner, factory), seed);
+            var audit = await db.AiRequestLogs.AsNoTracking().SingleAsync(x =>
+                x.UserId == seed.Owner && x.Purpose == NoteAsrBatchService.AuditPurpose);
+            Assert.Equal("incomplete", audit.Status);
+            using var metadata = JsonDocument.Parse(audit.MetadataJson);
+            Assert.Equal(scenario.Expected,
+                metadata.RootElement.GetProperty("providerAttempted").GetBoolean());
+        }
+
+        Assert.Equal(0, factory.UploadCalls);
+        Assert.Equal(0, factory.CreateCalls);
+    }
+
+    [SkippableFact]
     public async Task Evidence_write_uses_retry_strategy_and_is_idempotent()
     {
         await using var database = await SyntheticDatabase.CreateAsync();
@@ -375,6 +438,63 @@ public sealed class NoteAsrRetryingTransactionsTests
             CancellationToken.None);
     }
 
+    private static async Task SeedPendingBatchJobAsync(SyntheticDatabase database, Seed seed,
+        string status, string? batchId = null, string? inputFileId = null,
+        string? auditMetadata = null)
+    {
+        await using var db = database.NewContext(seed.Owner);
+        var profile = await db.AiModelProfiles.AsNoTracking()
+            .SingleAsync(x => x.Id == seed.ProfileId);
+        var now = DateTimeOffset.UtcNow;
+        var job = new NoteAsrBatchJobEntity
+        {
+            OwnerId = seed.Owner,
+            TaskId = seed.TaskId,
+            AttemptId = seed.AttemptId,
+            Status = status,
+            BatchId = batchId,
+            InputFileId = inputFileId,
+            Model = seed.Model,
+            BaseUrl = BatchOrigin.AbsoluteUri,
+            ProfileRevision = profile.Revision,
+            CredentialSecret = "synthetic-key",
+            ConsentRef = "consent-1",
+            CompletionWindow = MimoBatchDefaults.CompletionWindow,
+            ExpectedCustomIdsJson = "[]",
+            CreatedAt = now.AddMinutes(-5),
+            UpdatedAt = now.AddMinutes(-5)
+        };
+        db.NoteAsrBatchJobs.Add(job);
+        if (auditMetadata is not null)
+        {
+            db.AiRequestLogs.Add(new AiRequestLogEntity
+            {
+                UserId = seed.Owner,
+                ClientRequestId = job.Id,
+                ModelProfileId = profile.Id,
+                ProviderConnectionId = profile.ProviderConnectionId,
+                ModelProfileName = profile.Name,
+                ModelRevision = profile.Revision,
+                ModelEndpoint = profile.BaseUrl,
+                Module = "notes",
+                Purpose = NoteAsrBatchService.AuditPurpose,
+                SourceObjectType = "note-asr-batch",
+                SourceObjectId = job.Id.ToString("D"),
+                Provider = MimoMultimodalPreset.PresetId,
+                Model = seed.Model,
+                CorrelationId = job.Id.ToString("N"),
+                Status = "running",
+                AttemptNumber = 1,
+                MaxAttempts = 1,
+                StartedAt = now.AddMinutes(-5),
+                InitiatedAt = now.AddMinutes(-5),
+                ExecutionExpiresAt = now.AddHours(1),
+                MetadataJson = auditMetadata
+            });
+        }
+        await db.SaveChangesAsync();
+    }
+
     private static async Task<Seed> SeedAsync(SyntheticDatabase database)
     {
         var owner = Guid.NewGuid();
@@ -415,11 +535,22 @@ public sealed class NoteAsrRetryingTransactionsTests
                 AsrBatchBaseUrl = BatchOrigin.AbsoluteUri, ApiKeySecret = "synthetic-key",
                 ProviderConnectionId = connectionId, CreatedAt = now, UpdatedAt = now
             });
-            db.AiModelRuntime.Add(new AiModelRuntimeEntity
+            var runtime = await db.AiModelRuntime
+                .SingleOrDefaultAsync(x => x.Id == AiModelRuntimeEntity.SingletonId);
+            if (runtime is null)
             {
-                Id = AiModelRuntimeEntity.SingletonId, Revision = Guid.NewGuid(), Enabled = true,
-                TranscriptionModelId = profileId
-            });
+                db.AiModelRuntime.Add(new AiModelRuntimeEntity
+                {
+                    Id = AiModelRuntimeEntity.SingletonId, Revision = Guid.NewGuid(), Enabled = true,
+                    TranscriptionModelId = profileId
+                });
+            }
+            else
+            {
+                runtime.Revision = Guid.NewGuid();
+                runtime.Enabled = true;
+                runtime.TranscriptionModelId = profileId;
+            }
             db.NoteAsrAttempts.Add(new NoteAsrAttemptEntity
             {
                 Id = attemptId, OwnerId = owner, TaskId = taskId, NoteId = material.Version.Upload.NoteId,

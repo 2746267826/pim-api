@@ -30,7 +30,12 @@ public static class AiCallRecovery
                         CASE WHEN jsonb_typeof(metadata_json) = 'object'
                             THEN metadata_json ELSE jsonb_build_object() END,
                         ARRAY['providerAttempted'],
-                        'true'::jsonb,
+                        CASE
+                            WHEN jsonb_typeof(metadata_json) = 'object'
+                                AND jsonb_typeof(metadata_json -> 'providerAttempted') = 'boolean'
+                                THEN metadata_json -> 'providerAttempted'
+                            ELSE 'true'::jsonb
+                        END,
                         true)
                 WHERE status = 'running'
                   AND (purpose <> {AiAsrJobService.AuditPurpose} OR NOT EXISTS (
@@ -62,7 +67,8 @@ public static class AiCallRecovery
             row.ErrorMessage = message;
             row.FinishedAt = row.ExecutionExpiresAt ?? recoveredAt;
             row.MetadataJson = AiAsrJobService.SetProviderAttemptedMetadata(
-                row.MetadataJson, true);
+                row.MetadataJson,
+                AiAsrJobService.ProviderAttemptedMetadata(row.MetadataJson) ?? true);
         }
     }
 }
