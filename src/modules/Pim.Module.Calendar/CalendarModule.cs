@@ -1,5 +1,6 @@
 using System.Reflection;
 using System.Text.Json;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
@@ -115,7 +116,11 @@ public class CalendarModule : IModule
         .Produces<ApiResponse<string>>(400)
         .Produces<ApiResponse<string>>(500);
 
-        group.MapPost("/data-center/batch/preview", async (
+        var governanceGroup = group.MapGroup("/data-center")
+            .RequireAuthorization(new AuthorizeAttribute { Roles = AdminBootstrap.AdminRole })
+            .RequireCurrentActiveAdmin();
+
+        governanceGroup.MapPost("/batch/preview", async (
             [FromBody] DataCenterBatchOperationRequest req,
             [FromServices] DataCenterGovernanceService svc,
             CancellationToken ct) =>
@@ -123,10 +128,11 @@ public class CalendarModule : IModule
                 await svc.PreviewBatchOperationAsync(req, ct))))
         .Produces<ApiResponse<DataCenterBatchPreviewResponse>>(200)
         .Produces(401)
+        .Produces(403)
         .Produces<ApiResponse<string>>(400)
         .Produces<ApiResponse<string>>(500);
 
-        group.MapPost("/data-center/batch/request-confirmation", async (
+        governanceGroup.MapPost("/batch/request-confirmation", async (
             [FromBody] DataCenterBatchOperationRequest req,
             [FromServices] DataCenterGovernanceService svc,
             CancellationToken ct) =>
@@ -134,10 +140,11 @@ public class CalendarModule : IModule
                 await svc.RequestBatchConfirmationAsync(req, ct))))
         .Produces<ApiResponse<OperationConfirmationDto>>(200)
         .Produces(401)
+        .Produces(403)
         .Produces<ApiResponse<string>>(400)
         .Produces<ApiResponse<string>>(500);
 
-        group.MapPost("/data-center/batch/execute", async (
+        governanceGroup.MapPost("/batch/execute", async (
             [FromBody] DataCenterExecuteBatchRequest req,
             [FromServices] DataCenterGovernanceService svc,
             CancellationToken ct) =>
@@ -145,10 +152,11 @@ public class CalendarModule : IModule
                 await svc.ExecuteConfirmedBatchAsync(req.ConfirmationId, ct))))
         .Produces<ApiResponse<DataCenterBatchExecutionResponse>>(200)
         .Produces(401)
+        .Produces(403)
         .Produces<ApiResponse<string>>(400)
         .Produces<ApiResponse<string>>(500);
 
-        group.MapGet("/data-center/audit/export", async (
+        governanceGroup.MapGet("/audit/export", async (
             [FromQuery] DateTimeOffset? start,
             [FromQuery] DateTimeOffset? end,
             [FromServices] DataCenterGovernanceService svc,
@@ -160,10 +168,11 @@ public class CalendarModule : IModule
                     ct))))
         .Produces<ApiResponse<Pim.Core.Audit.AuditExportResponse>>(200)
         .Produces(401)
+        .Produces(403)
         .Produces<ApiResponse<string>>(400)
         .Produces<ApiResponse<string>>(500);
 
-        group.MapPost("/data-center/restore/preview", async (
+        governanceGroup.MapPost("/restore/preview", async (
             [FromBody] DataCenterRestoreRequest req,
             [FromServices] DataCenterGovernanceService svc,
             CancellationToken ct) =>
@@ -171,10 +180,11 @@ public class CalendarModule : IModule
                 await svc.PreviewRestoreAsync(req, ct))))
         .Produces<ApiResponse<Pim.Core.Audit.RestorePreviewResponse>>(200)
         .Produces(401)
+        .Produces(403)
         .Produces<ApiResponse<string>>(400)
         .Produces<ApiResponse<string>>(500);
 
-        group.MapPost("/data-center/restore/request-confirmation", async (
+        governanceGroup.MapPost("/restore/request-confirmation", async (
             [FromBody] DataCenterRestoreRequest req,
             [FromServices] DataCenterGovernanceService svc,
             CancellationToken ct) =>
@@ -182,6 +192,7 @@ public class CalendarModule : IModule
                 await svc.RequestRestoreConfirmationAsync(req, ct))))
         .Produces<ApiResponse<OperationConfirmationDto>>(200)
         .Produces(401)
+        .Produces(403)
         .Produces<ApiResponse<string>>(400)
         .Produces<ApiResponse<string>>(500);
 

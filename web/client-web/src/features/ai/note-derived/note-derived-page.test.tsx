@@ -115,7 +115,8 @@ function page() {
   return render(<MemoryRouter initialEntries={[entry]}><QueryClientProvider client={client}><NoteDerivedPage /></QueryClientProvider></MemoryRouter>)
 }
 async function chooseSource() {
-  await userEvent.click(await screen.findByRole('combobox', { name: '材料版本' }))
+  const label = auth.user.role === 'admin' ? '材料版本' : '选择笔记内容'
+  await userEvent.click(await screen.findByRole('combobox', { name: label }))
   await userEvent.click(await screen.findByRole('option', { name: /零录音材料/ }))
 }
 async function chooseDestination() {
@@ -124,7 +125,7 @@ async function chooseDestination() {
 }
 
 beforeEach(() => {
-  localStorage.clear(); vi.resetAllMocks(); auth.user.id = owner; auth.user.role = 'user'
+  localStorage.clear(); vi.resetAllMocks(); auth.user.id = owner; auth.user.role = 'admin'
   window.history.replaceState({}, '', '/')
   Object.defineProperties(HTMLElement.prototype, {
     hasPointerCapture: { configurable: true, value: () => false }, setPointerCapture: { configurable: true, value: () => undefined },
@@ -154,18 +155,22 @@ beforeEach(() => {
 })
 afterEach(() => { cleanup(); client?.clear() })
 
-it('loads ordinary sources including zero recordings and never calls admin model settings', async () => {
+it('loads ordinary sources without version controls and never calls admin model settings', async () => {
+  auth.user.role = 'user'
   const collection = NAV_GROUPS.find((group) => group.label === '收集')
   expect(collection?.items).toContainEqual(expect.objectContaining({ to: '/native-notes', label: '笔记' }))
   page()
   expect(await screen.findByRole('heading', { name: '继续处理这篇笔记' })).toBeTruthy()
-  expect(screen.getByText('选择固定版本后，按需转写录音或直接整理。')).toBeTruthy()
+  expect(screen.getByText('选择笔记内容后，按需转写录音或直接整理。')).toBeTruthy()
   expect(screen.getByText('隐私与处理说明').closest('details')?.open).toBe(false)
   await chooseSource()
-  expect(screen.getByText('该版本没有录音，可直接整理成完整记录和分析。')).toBeTruthy()
+  expect(screen.getByText('这份内容没有录音，可直接整理成完整记录和分析。')).toBeTruthy()
   expect(screen.queryByText('先完成录音转写，再整理成完整记录和分析。')).toBeNull()
-  expect(screen.getByRole('heading', { name: '选择笔记材料' }).previousElementSibling).toBeNull()
-  expect((await screen.findAllByText(/零录音版本/)).length).toBeGreaterThan(0)
+  expect(screen.getByRole('heading', { name: '选择笔记内容' }).previousElementSibling).toBeNull()
+  expect(screen.queryByRole('combobox', { name: '材料版本' })).toBeNull()
+  expect(screen.queryByText('零录音版本')).toBeNull()
+  expect(screen.queryByText(/固定版本/)).toBeNull()
+  expect((await screen.findAllByText(/没有录音/)).length).toBeGreaterThan(0)
   expect(derived.sources).toHaveBeenCalled()
   expect(derived.destinations).toHaveBeenCalled()
   expect(assistant.noteAsrTasks).not.toHaveBeenCalled()
@@ -173,7 +178,19 @@ it('loads ordinary sources including zero recordings and never calls admin model
   expect(screen.getByText('隐私与处理说明').closest('details')?.textContent).toContain('普通账号只能使用管理员启用的共享目标')
 })
 
+it('renders an ordinary processing page from note and action context without version controls', async () => {
+  auth.user.role = 'user'
+  window.history.replaceState({}, '', `/native-notes/processing?noteId=${noteId}&version=${sourceVersionId}&action=organize`)
+
+  page()
+
+  expect(await screen.findByRole('heading', { name: '继续处理这篇笔记' })).toBeTruthy()
+  await waitFor(() => expect(screen.getByRole('link', { name: '返回所选笔记' }).getAttribute('href')).toBe(`/native-notes?note=${noteId}`))
+  expect(screen.queryByRole('combobox', { name: '材料版本' })).toBeNull()
+})
+
 it('explains an empty shared destination catalogue without exposing admin configuration to ordinary users', async () => {
+  auth.user.role = 'user'
   derived.destinations.mockResolvedValue({ total: 0, items: [] })
   page(); await chooseSource()
 
@@ -182,18 +199,44 @@ it('explains an empty shared destination catalogue without exposing admin config
   expect(screen.queryByRole('link', { name: /ASR 配置/ })).toBeNull()
 })
 
+it('shows only the shared destination name to ordinary users in the generation summary', async () => {
+  auth.user.role = 'user'
+  page(); await chooseSource(); await chooseDestination()
+
+  const disclosure = screen.getByRole('group', { name: '本次生成目标、材料范围与费用' })
+  expect(disclosure.textContent).toContain('本次目标：合成共享目标')
+  expect(disclosure.textContent).not.toContain(destination.model)
+  expect(screen.queryByText(new RegExp(destination.model))).toBeNull()
+})
+
 it('shows the ordinary-user ASR start entry on native notes without admin model queries', async () => {
+  auth.user.role = 'user'
   derived.sources.mockResolvedValue({ total: 1, offset: 0, items: [{ ...source, recordings: 1, totalSamples: 16000 }] })
   page()
   await chooseSource()
   expect(await screen.findByText('启动录音转写')).toBeTruthy()
   expect(screen.getByText('先完成录音转写，再整理成完整记录和分析。')).toBeTruthy()
-  expect(screen.getByRole('heading', { name: '选择笔记材料' }).previousElementSibling).toBeNull()
+  expect(screen.getByRole('heading', { name: '选择笔记内容' }).previousElementSibling).toBeNull()
+  expect(screen.queryByText(/固定材料版本/)).toBeNull()
+  expect(screen.queryByText(/当前固定版本/)).toBeNull()
+  expect(screen.queryByText(/本版本录音转写任务/)).toBeNull()
   expect(await screen.findByText('没有本机模型')).toBeTruthy()
   await waitFor(() => expect(assistant.noteAsrDestinations).toHaveBeenCalledOnce())
   expect(assistant.asrRouteConfig).toHaveBeenCalled()
   expect(assistant.models).not.toHaveBeenCalled()
   expect(assistant.asrPresets).not.toHaveBeenCalled()
+})
+
+it('hides raw ASR phase values from the ordinary task summary', async () => {
+  auth.user.role = 'user'
+  derived.sources.mockResolvedValue({ total: 1, offset: 0, items: [{ ...source, recordings: 1, totalSamples: 16000 }] })
+  assistant.noteAsrTasks.mockResolvedValue([{ ...asrTask, phase: 'VendorPhase' }])
+
+  page(); await chooseSource()
+
+  const summary = await screen.findByRole('status', { name: '当前转写任务摘要' })
+  expect(summary.textContent).toContain('处理状态待核对')
+  expect(summary.textContent).not.toContain('VendorPhase')
 })
 
 it('uses the task-list selection as the sole completed ASR choice for generation', async () => {
@@ -297,13 +340,14 @@ it('does not offer a duplicate transcription start while this version is queued 
 })
 
 it('does not authorize generation from a succeeded ASR task with failed segments', async () => {
+  auth.user.role = 'user'
   derived.sources.mockResolvedValue({ total: 1, offset: 0, items: [{ ...source, recordings: 1, totalSamples: 16000 }] })
   assistant.noteAsrTasks.mockResolvedValue([inconsistentSucceededAsrTask])
   page()
   await chooseSource()
   await chooseDestination()
 
-  expect(await screen.findByText(/请在转写任务列表中选择本版本完整成功的结果/)).toBeTruthy()
+  expect(await screen.findByText(/请在转写任务列表中选择当前内容完整成功的结果/)).toBeTruthy()
   expect((screen.getByRole('checkbox', { name: /确认将上述材料发送至上方所选生成目标/ }) as HTMLInputElement).disabled).toBe(true)
   expect((screen.getByRole('button', { name: /生成完整记录与分析/ }) as HTMLButtonElement).disabled).toBe(true)
   expect(derived.start).not.toHaveBeenCalled()
@@ -489,11 +533,397 @@ it('shows generated candidates and requires an explicit head selection before ma
   expect(await screen.findByText('完整记录')).toBeTruthy()
   expect(await screen.findByText('等待明确选择')).toBeTruthy()
   await waitFor(() => expect(derived.version).toHaveBeenCalled())
+  expect(screen.queryByRole('button', { name: '采用这份整理结果' })).toBeNull()
   const history = screen.getByText('高级选项：版本历史与处理详情')
   expect(history.closest('details')?.open).toBe(false)
   await userEvent.click(history)
   await userEvent.click(await screen.findByRole('button', { name: '明确设为当前版本' }))
   await waitFor(() => expect(derived.select).toHaveBeenCalledWith(artifactId, expect.objectContaining({ expectedHeadRevision: artifact.revision, versionId })))
+})
+
+it('keeps version history and internal processing identifiers out of the ordinary-user derived page', async () => {
+  auth.user.role = 'user'
+  const historySource = {
+    ...source,
+    versionId: 'abababab-abab-4bab-8bab-abababababab',
+    title: '历史材料不应出现',
+    isCurrent: false,
+  }
+  derived.sources.mockResolvedValue({ total: 2, offset: 0, items: [source, historySource] })
+  derived.artifacts.mockResolvedValue([artifact])
+  derived.tasks.mockResolvedValue([task])
+  derived.task.mockResolvedValue(task)
+  taskSuggestions.list.mockResolvedValue({
+    total: 1,
+    items: [{
+      id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      revision: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+      versionId,
+      ordinal: 1,
+      status: 'Draft',
+      title: '跟进客户报价',
+      description: '确认报价单。',
+      priority: 5,
+      due: null,
+      taskId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+      sourceContentSha256: 'd'.repeat(64),
+    }],
+  })
+
+  page(); await chooseSource()
+  expect(await screen.findByRole('combobox', { name: '选择笔记内容' })).toBeTruthy()
+  expect(await screen.findByText('从笔记提取任务与日程建议')).toBeTruthy()
+  expect(screen.getByText(/只从当前内容的正文提取/)).toBeTruthy()
+  await userEvent.click(screen.getByRole('combobox', { name: '选择笔记内容' }))
+  expect(screen.queryByRole('option', { name: /历史材料不应出现/ })).toBeNull()
+  expect(screen.getByRole('option', { name: /零录音材料/ })).toBeTruthy()
+  await userEvent.keyboard('{Escape}')
+  expect(screen.queryByRole('button', { name: '明确设为当前版本' })).toBeNull()
+  expect(screen.queryByText('高级选项：版本历史与处理详情')).toBeNull()
+  expect(screen.queryByText(/材料来源版本/)).toBeNull()
+  expect(screen.queryByText(/固定内容 SHA-256/)).toBeNull()
+  expect(screen.queryByText(/来源摘要/)).toBeNull()
+  expect(screen.queryByText(new RegExp(sourceVersionId))).toBeNull()
+  expect(screen.queryByText(new RegExp(taskId))).toBeNull()
+  expect(screen.queryByText(new RegExp(versionId))).toBeNull()
+
+  await userEvent.click(await screen.findByText(/更多：历史任务与处理进度/))
+  await userEvent.click(await screen.findByRole('button', { name: /材料覆盖完整/ }))
+  expect(await screen.findByRole('status', { name: '当前整理任务摘要' })).toBeTruthy()
+  await userEvent.click(await screen.findByText(/更多：任务详情、停止与恢复/))
+  expect(await screen.findByRole('heading', { name: '当前任务进度' })).toBeTruthy()
+  expect(screen.queryByText(/任务 ID/)).toBeNull()
+  expect(screen.queryByText(/材料来源版本/)).toBeNull()
+  expect(screen.queryByText(/输入摘要/)).toBeNull()
+
+  await userEvent.click(await screen.findByRole('button', { name: '采用这份整理结果' }))
+  await waitFor(() => expect(derived.select).toHaveBeenCalledWith(artifactId, expect.objectContaining({ versionId })))
+})
+
+it('hides raw derived phases, attempt diagnostics and issue messages from ordinary users', async () => {
+  auth.user.role = 'user'
+  const rawTask: NoteDerivedTask = {
+    ...task,
+    phase: 'VendorPhase',
+    issues: [{
+      code: 'provider_issue_code',
+      message: 'provider issue diagnostic',
+      sourcePath: 'internal/path',
+      stepKey: 'internal-step-key',
+    }],
+  }
+  const rawStep = {
+    key: 'internal-step-key',
+    kind: 'VendorStepKind' as never,
+    status: 'VendorStepStatus',
+    attempts: [{
+      requestId: 'abababab-abab-4bab-8bab-abababababab',
+      status: 'VendorAttemptStatus',
+      errorCode: 'provider_attempt_code',
+      errorMessage: 'provider attempt diagnostic',
+      logId: 'cdcdcdcd-cdcd-4cdc-8cdc-cdcdcdcdcdcd',
+    }],
+  }
+  derived.tasks.mockResolvedValue([rawTask])
+  derived.task.mockResolvedValue(rawTask)
+  derived.steps.mockResolvedValue({ total: 1, offset: 0, items: [rawStep] })
+  derived.stop.mockRejectedValue(new Error('provider stop diagnostic'))
+
+  page(); await chooseSource()
+  await userEvent.click(await screen.findByText(/更多：历史任务与处理进度/))
+  await userEvent.click(await screen.findByRole('button', { name: /材料覆盖完整/ }))
+
+  const summary = await screen.findByRole('status', { name: '当前整理任务摘要' })
+  expect(summary.textContent).toContain('处理状态待核对')
+  await userEvent.click(await screen.findByText(/更多：任务详情、停止与恢复/))
+  expect(await screen.findByRole('heading', { name: '当前任务进度' })).toBeTruthy()
+  expect(screen.queryAllByText(/VendorPhase/)).toHaveLength(0)
+  expect(screen.queryAllByText(/provider issue diagnostic/)).toHaveLength(0)
+  expect(screen.getByText('这项材料或步骤尚未完整处理，请刷新核对。')).toBeTruthy()
+
+  await userEvent.click(screen.getByText('步骤与尝试详情'))
+  expect(await screen.findByText(/第 1 次/)).toBeTruthy()
+  expect(screen.queryAllByText(/VendorStepKind|VendorStepStatus|VendorAttemptStatus|provider attempt diagnostic|provider_attempt_code|provider_issue_code|internal-step-key|internal\/path/)).toHaveLength(0)
+  expect(screen.getAllByText('处理步骤').length).toBeGreaterThan(0)
+  expect(screen.getAllByText(/处理状态待核对/).length).toBeGreaterThan(0)
+
+  await userEvent.click(screen.getByRole('button', { name: /停止后续步骤/ }))
+  expect(await screen.findByText(/停止状态未确认/)).toBeTruthy()
+  expect(screen.queryAllByText(/provider stop diagnostic/)).toHaveLength(0)
+})
+
+it('keeps raw derived phases and attempt diagnostics for admins', async () => {
+  const rawTask: NoteDerivedTask = {
+    ...task,
+    phase: 'VendorPhase',
+    issues: [{
+      code: 'provider_issue_code',
+      message: 'provider issue diagnostic',
+      sourcePath: 'internal/path',
+      stepKey: 'internal-step-key',
+    }],
+  }
+  const rawStep = {
+    key: 'internal-step-key',
+    kind: 'VendorStepKind' as never,
+    status: 'VendorStepStatus',
+    attempts: [{
+      requestId: 'abababab-abab-4bab-8bab-abababababab',
+      status: 'VendorAttemptStatus',
+      errorCode: 'provider_attempt_code',
+      errorMessage: 'provider attempt diagnostic',
+      logId: 'cdcdcdcd-cdcd-4cdc-8cdc-cdcdcdcdcdcd',
+    }],
+  }
+  derived.tasks.mockResolvedValue([rawTask])
+  derived.task.mockResolvedValue(rawTask)
+  derived.steps.mockResolvedValue({ total: 1, offset: 0, items: [rawStep] })
+
+  page(); await chooseSource()
+  await userEvent.click(await screen.findByText(/更多：历史任务与处理进度/))
+  await userEvent.click(await screen.findByRole('button', { name: /材料覆盖完整/ }))
+
+  const summary = await screen.findByRole('status', { name: '当前整理任务摘要' })
+  expect(summary.textContent).toContain('VendorPhase')
+  await userEvent.click(await screen.findByText(/更多：任务详情、停止与恢复/))
+  expect(await screen.findByRole('heading', { name: '当前任务进度' })).toBeTruthy()
+  expect(screen.getAllByText(/VendorPhase/).length).toBeGreaterThan(0)
+  expect(screen.getByText('provider issue diagnostic')).toBeTruthy()
+  expect(screen.getByText(/provider_issue_code/)).toBeTruthy()
+
+  await userEvent.click(screen.getByText('步骤、尝试与 endpoint 详情'))
+  expect(await screen.findByText(/第 1 次/)).toBeTruthy()
+  expect(screen.getAllByText(/VendorStepKind/).length).toBeGreaterThan(0)
+  expect(screen.getAllByText(/VendorStepStatus/).length).toBeGreaterThan(0)
+  expect(screen.getByText(/VendorAttemptStatus/)).toBeTruthy()
+  expect(screen.getByText(/provider attempt diagnostic/)).toBeTruthy()
+  expect(screen.getByText(/provider_attempt_code/)).toBeTruthy()
+})
+
+it('hides raw derived read errors from ordinary users', async () => {
+  auth.user.role = 'user'
+  derived.tasks.mockResolvedValue([task])
+  derived.destinations.mockRejectedValue(new Error('provider destination diagnostic'))
+  derived.steps.mockRejectedValue(new Error('provider steps diagnostic'))
+
+  page(); await chooseSource()
+
+  expect(await screen.findByText(/安全目标加载失败/)).toBeTruthy()
+  expect(screen.queryAllByText(/provider destination diagnostic/)).toHaveLength(0)
+  await userEvent.click(await screen.findByText(/更多：历史任务与处理进度/))
+  await userEvent.click(await screen.findByRole('button', { name: /材料覆盖完整/ }))
+  await userEvent.click(await screen.findByText(/更多：任务详情、停止与恢复/))
+  expect(await screen.findByText(/步骤读取失败/)).toBeTruthy()
+  expect(screen.queryAllByText(/provider steps diagnostic/)).toHaveLength(0)
+})
+
+it('hides raw artifact and manual-save errors from ordinary users', async () => {
+  auth.user.role = 'user'
+  const headArtifact: NoteDerivedArtifact = { ...artifact, headVersionId: versionId }
+  derived.artifacts.mockResolvedValue([headArtifact])
+  derived.version.mockRejectedValue(new Error('provider version diagnostic'))
+
+  page(); await chooseSource()
+
+  expect(await screen.findByText(/内容读取失败：请刷新核对/)).toBeTruthy()
+  expect(screen.queryAllByText(/provider version diagnostic/)).toHaveLength(0)
+
+  cleanup()
+  derived.version.mockResolvedValue({ ...version, isHead: true })
+  derived.saveManual.mockRejectedValue(new Error('provider manual-save diagnostic'))
+  page(); await chooseSource()
+  await userEvent.click(await screen.findByRole('button', { name: '保存修改' }))
+
+  expect(await screen.findByText(/保存状态未确认/)).toBeTruthy()
+  expect(screen.queryAllByText(/provider manual-save diagnostic/)).toHaveLength(0)
+})
+
+it('keeps raw artifact and manual-save errors for admins', async () => {
+  const headArtifact: NoteDerivedArtifact = { ...artifact, headVersionId: versionId }
+  derived.artifacts.mockResolvedValue([headArtifact])
+  derived.version.mockRejectedValue(new Error('provider version diagnostic'))
+
+  page(); await chooseSource()
+
+  expect(await screen.findByText(/版本读取失败：provider version diagnostic/)).toBeTruthy()
+
+  cleanup()
+  derived.version.mockResolvedValue({ ...version, isHead: true })
+  derived.saveManual.mockRejectedValue(new Error('provider manual-save diagnostic'))
+  page(); await chooseSource()
+  await userEvent.click(await screen.findByRole('button', { name: '保存为人工修订' }))
+
+  expect(await screen.findByText(/provider manual-save diagnostic/)).toBeTruthy()
+})
+
+it('ignores a historical version in an ordinary-user processing link', async () => {
+  auth.user.role = 'user'
+  const historySource = {
+    ...source,
+    versionId: 'abababab-abab-4bab-8bab-abababababab',
+    title: '历史材料不应出现',
+    isCurrent: false,
+  }
+  derived.sources.mockResolvedValue({ total: 2, offset: 0, items: [historySource, source] })
+  window.history.replaceState({}, '', `/?noteId=${noteId}&version=${historySource.versionId}`)
+
+  page()
+
+  expect(await screen.findByText('这份内容没有录音，可直接整理成完整记录和分析。')).toBeTruthy()
+  expect(screen.queryByText('历史材料不应出现')).toBeNull()
+  expect(screen.queryByText(new RegExp(historySource.versionId))).toBeNull()
+})
+
+it('lets ordinary users inspect and adopt a newer result without version history', async () => {
+  auth.user.role = 'user'
+  const nextVersionId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+  const headArtifact: NoteDerivedArtifact = {
+    ...artifact,
+    headVersionId: versionId,
+    versions: [
+      { ...artifact.versions[0]!, isHead: true },
+      {
+        ...artifact.versions[0]!,
+        versionId: nextVersionId,
+        createdAt: '2026-10-29T00:01:00Z',
+        isHead: false,
+      },
+    ],
+  }
+  const nextVersion: NoteDerivedVersion = {
+    ...version,
+    versionId: nextVersionId,
+    contentMarkdown: '新生成候选正文',
+    createdAt: '2026-10-29T00:01:00Z',
+    isHead: false,
+  }
+  derived.artifacts.mockResolvedValue([headArtifact])
+  derived.version.mockImplementation((_artifactId: string, id: string) =>
+    Promise.resolve(id === nextVersionId ? nextVersion : version))
+  derived.select.mockResolvedValue({
+    ...headArtifact,
+    revision: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+    headVersionId: nextVersionId,
+  })
+
+  page(); await chooseSource()
+
+  expect(await screen.findByText('有新的整理结果尚未采用；当前内容保持不变。')).toBeTruthy()
+  expect(screen.queryByText('高级选项：版本历史与处理详情')).toBeNull()
+  expect(screen.queryByText(new RegExp(nextVersionId))).toBeNull()
+  await userEvent.click(screen.getByRole('button', { name: '查看新结果' }))
+
+  expect(await screen.findByDisplayValue('新生成候选正文')).toBeTruthy()
+  expect(screen.queryByText(new RegExp(nextVersionId))).toBeNull()
+  await userEvent.click(screen.getByRole('button', { name: '采用这份整理结果' }))
+
+  await waitFor(() => expect(derived.select).toHaveBeenCalledWith(
+    artifactId,
+    expect.objectContaining({ versionId: nextVersionId }),
+  ))
+})
+
+it('offers only the newest unselected result that is newer than the current head', async () => {
+  auth.user.role = 'user'
+  const headCreatedAt = '2026-10-30T00:00:00Z'
+  const staleVersionId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+  const newestVersionId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
+  const baseSummary = artifact.versions[0]!
+  const headArtifact: NoteDerivedArtifact = {
+    ...artifact,
+    headVersionId: versionId,
+    versions: [
+      { ...baseSummary, versionId: staleVersionId, createdAt: '2026-10-29T00:00:00Z', isHead: false },
+      { ...baseSummary, versionId, createdAt: headCreatedAt, isHead: true },
+      { ...baseSummary, versionId: newestVersionId, createdAt: '2026-10-31T00:00:00Z', isHead: false },
+    ],
+  }
+  derived.artifacts.mockResolvedValue([headArtifact])
+  derived.version.mockImplementation((_artifactId: string, id: string) => Promise.resolve(id === newestVersionId
+    ? {
+        ...version,
+        versionId: newestVersionId,
+        contentMarkdown: '最新候选正文',
+        createdAt: '2026-10-31T00:00:00Z',
+        isHead: false,
+      }
+    : { ...version, versionId, createdAt: headCreatedAt, isHead: true }))
+
+  page(); await chooseSource()
+
+  expect(await screen.findByText('有新的整理结果尚未采用；当前内容保持不变。')).toBeTruthy()
+  await userEvent.click(screen.getByRole('button', { name: '查看新结果' }))
+  expect(await screen.findByDisplayValue('最新候选正文')).toBeTruthy()
+  expect(screen.queryByText(new RegExp(staleVersionId))).toBeNull()
+})
+
+it('does not prompt for an older unselected result after a newer head is current', async () => {
+  auth.user.role = 'user'
+  const staleVersionId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+  const baseSummary = artifact.versions[0]!
+  derived.artifacts.mockResolvedValue([{
+    ...artifact,
+    headVersionId: versionId,
+    versions: [
+      { ...baseSummary, versionId: staleVersionId, createdAt: '2026-10-28T00:00:00Z', isHead: false },
+      { ...baseSummary, versionId, createdAt: '2026-10-30T00:00:00Z', isHead: true },
+    ],
+  }])
+  derived.version.mockResolvedValue({
+    ...version,
+    versionId,
+    contentMarkdown: '当前已采用正文',
+    createdAt: '2026-10-30T00:00:00Z',
+    isHead: true,
+  })
+
+  page(); await chooseSource()
+
+  expect(await screen.findByDisplayValue('当前已采用正文')).toBeTruthy()
+  expect(screen.queryByText('有新的整理结果尚未采用；当前内容保持不变。')).toBeNull()
+  expect(screen.queryByRole('button', { name: '查看新结果' })).toBeNull()
+})
+
+it('shows the selected new result instead of an existing local draft and restores the draft when returning', async () => {
+  auth.user.role = 'user'
+  const nextVersionId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+  const headArtifact: NoteDerivedArtifact = {
+    ...artifact,
+    headVersionId: versionId,
+    versions: [
+      { ...artifact.versions[0]!, isHead: true },
+      {
+        ...artifact.versions[0]!,
+        versionId: nextVersionId,
+        createdAt: '2026-10-29T00:01:00Z',
+        isHead: false,
+      },
+    ],
+  }
+  const nextVersion: NoteDerivedVersion = {
+    ...version,
+    versionId: nextVersionId,
+    contentMarkdown: '新生成候选正文',
+    createdAt: '2026-10-29T00:01:00Z',
+    isHead: false,
+  }
+  derived.artifacts.mockResolvedValue([headArtifact])
+  derived.version.mockImplementation((_artifactId: string, id: string) =>
+    Promise.resolve(id === nextVersionId ? nextVersion : version))
+
+  page(); await chooseSource()
+
+  const editor = await screen.findByLabelText('完整记录正文')
+  await userEvent.clear(editor)
+  await userEvent.type(editor, '当前内容的本机旧草稿')
+  expect(screen.getByText('有未保存修改')).toBeTruthy()
+
+  await userEvent.click(screen.getByRole('button', { name: '查看新结果' }))
+  expect(await screen.findByDisplayValue('新生成候选正文')).toBeTruthy()
+  expect(screen.queryByDisplayValue('当前内容的本机旧草稿')).toBeNull()
+
+  await userEvent.click(screen.getByRole('button', { name: '返回当前内容' }))
+  expect(await screen.findByDisplayValue('当前内容的本机旧草稿')).toBeTruthy()
 })
 
 it('mounts task suggestions only for the selected owned artifact version', async () => {

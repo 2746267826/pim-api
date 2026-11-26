@@ -110,12 +110,14 @@ export function RequireAdmin() {
       </div>
     )
   }
-  if (user && user.role !== 'admin') {
+  if (!user || user.role !== 'admin') {
     return (
       <EmptyState
         icon={ShieldAlert}
         title="需要管理员权限"
-        description={`当前账户「${user.displayName || user.username}」为普通用户，无法访问该页面的接口。请使用管理员账户登录。`}
+        description={user
+          ? `当前账户「${user.displayName || user.username}」为普通用户，无法访问该页面的接口。请使用管理员账户登录。`
+          : '未确认管理员登录状态，无法访问该页面的接口。请重新登录管理员账户。'}
       />
     )
   }

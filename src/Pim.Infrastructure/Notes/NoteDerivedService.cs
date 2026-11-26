@@ -26,6 +26,7 @@ public sealed class NoteDerivedService(
     IOptions<NoteDerivedAudioContextOptions> audioContext)
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
+    private bool _includeDiagnostics;
     private Guid Owner => user.UserId ?? throw new DomainException(40101, "请先登录");
     private bool BackgroundProcessingAvailable => !(bool.TryParse(configuration["DisableHangfire"], out var disabled) && disabled)
         && !string.IsNullOrWhiteSpace(configuration.GetConnectionString("DefaultConnection"));
@@ -114,7 +115,8 @@ public sealed class NoteDerivedService(
     {
         var owner = await RequireActiveOwnerAsync(ct);
         await job.ReconcileAsync(owner, taskId, ct);
-        return await job.ReceiptAsync(owner, taskId, ct);
+        return NoteResponsePrivacy.RedactReceipt(
+            await job.ReceiptAsync(owner, taskId, ct), _includeDiagnostics);
     }
 
     public async Task<NoteDerivedStepsDto> StepsAsync(Guid taskId, int offset, int limit, CancellationToken ct)
@@ -123,8 +125,9 @@ public sealed class NoteDerivedService(
         if (offset < 0 || limit is < 1 or > 100)
             throw Invalid("派生步骤分页范围无效，单页最多100步");
         var state = await store.ReadTaskAsync(owner, taskId, ct);
-        return new(state.Steps.Count, offset, state.Steps.Skip(offset).Take(limit)
+        var steps = new NoteDerivedStepsDto(state.Steps.Count, offset, state.Steps.Skip(offset).Take(limit)
             .Select(NoteDerivedStore.DescribeStep).ToArray());
+        return NoteResponsePrivacy.RedactSteps(steps, _includeDiagnostics);
     }
 
     public async Task<NoteDerivedTaskDto> StopAsync(Guid taskId, CancellationToken ct)
@@ -245,20 +248,23 @@ public sealed class NoteDerivedService(
         var artifacts = await store.ListArtifactsAsync(owner, noteId, ct);
         var result = new List<NoteDerivedArtifactDto>(artifacts.Count);
         foreach (var artifact in artifacts)
-            result.Add(await store.DescribeArtifactAsync(owner, artifact.ArtifactId, ct));
+            result.Add(NoteResponsePrivacy.RedactArtifact(
+                await store.DescribeArtifactAsync(owner, artifact.ArtifactId, ct), _includeDiagnostics));
         return result;
     }
 
     public async Task<NoteDerivedArtifactDto> GetArtifactAsync(Guid artifactId, CancellationToken ct)
     {
         var owner = await RequireActiveOwnerAsync(ct);
-        return await store.DescribeArtifactAsync(owner, artifactId, ct);
+        return NoteResponsePrivacy.RedactArtifact(
+            await store.DescribeArtifactAsync(owner, artifactId, ct), _includeDiagnostics);
     }
 
     public async Task<NoteDerivedVersionDto> GetVersionAsync(Guid artifactId, Guid versionId, CancellationToken ct)
     {
         var owner = await RequireActiveOwnerAsync(ct);
-        return await store.GetVersionAsync(owner, artifactId, versionId, ct);
+        return NoteResponsePrivacy.RedactVersion(
+            await store.GetVersionAsync(owner, artifactId, versionId, ct), _includeDiagnostics);
     }
 
     public async Task<NoteDerivedMutationDto> SaveManualRevisionAsync(Guid artifactId,
@@ -266,17 +272,18 @@ public sealed class NoteDerivedService(
     {
         var owner = await RequireActiveOwnerAsync(ct);
         var mutation = await store.AppendManualAsync(owner, artifactId, request, ct);
-        return mutation with
+        return NoteResponsePrivacy.RedactMutation(mutation with
         {
             Artifact = await store.DescribeArtifactAsync(owner, mutation.Artifact.ArtifactId, ct)
-        };
+        }, _includeDiagnostics);
     }
 
     public async Task<NoteDerivedArtifactDto> SelectAsync(Guid artifactId,
         SelectNoteDerivedVersionRequest request, CancellationToken ct)
     {
         var owner = await RequireActiveOwnerAsync(ct);
-        return await store.SelectHeadAsync(owner, artifactId, request, ct);
+        return NoteResponsePrivacy.RedactArtifact(
+            await store.SelectHeadAsync(owner, artifactId, request, ct), _includeDiagnostics);
     }
 
     private async Task<NoteDerivedInputSnapshot> BuildSnapshotAsync(Guid owner, NoteMaterialVersionDto version,
@@ -616,14 +623,14 @@ public sealed class NoteDerivedService(
         }
         var record = await store.GetArtifactAsync(state.Owner, state.CompleteRecordArtifactId, ct);
         var analysis = await store.GetArtifactAsync(state.Owner, state.IndependentAnalysisArtifactId, ct);
-        return described with
+        return NoteResponsePrivacy.RedactTask(described with
         {
             Artifacts =
             [
                 new(record.ArtifactId, record.Kind, record.HeadVersionId),
                 new(analysis.ArtifactId, analysis.Kind, analysis.HeadVersionId)
             ]
-        };
+        }, _includeDiagnostics);
     }
 
     private async Task<Guid> RequireActiveOwnerAsync(CancellationToken ct)
@@ -635,8 +642,14 @@ public sealed class NoteDerivedService(
 
     private async Task RequireActiveOwnerAsync(Guid owner, CancellationToken ct)
     {
-        if (!await db.Users.AsNoTracking().AnyAsync(x => x.Id == owner && x.IsActive, ct))
+        var account = await db.Users.AsNoTracking()
+            .Where(x => x.Id == owner)
+            .Select(x => new { x.IsActive, x.Role })
+            .SingleOrDefaultAsync(ct);
+        if (account is null || !account.IsActive)
             throw new DomainException(40301, "账号已停用，不能创建或查看派生稿任务");
+        _includeDiagnostics = string.Equals(account.Role, AdminBootstrap.AdminRole,
+            StringComparison.OrdinalIgnoreCase);
     }
 
     private bool CredentialAvailable(string protectedValue)

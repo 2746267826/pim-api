@@ -31,6 +31,7 @@ export interface NoteEditorPaneProps {
   ownerId: string
   serverBinding: string
   api: NativeNotesClient
+  showVersionDetails: boolean
   versionId?: string
   seed?: NoteEditorSeed
   onDirtyChange?: (dirty: boolean) => void
@@ -54,6 +55,7 @@ interface LoadedEditorProps {
   legacyNotice?: string
   serverBinding: string
   api: NativeNotesClient
+  showVersionDetails: boolean
   onDirtyChange?: (dirty: boolean) => void
   onSaved: (upload: NoteMaterialUpload) => void
   promoteInFlight: boolean
@@ -65,6 +67,7 @@ export function NoteEditorPane({
   ownerId,
   serverBinding,
   api,
+  showVersionDetails,
   versionId,
   seed,
   onDirtyChange,
@@ -108,6 +111,7 @@ export function NoteEditorPane({
       legacyNotice={seed.legacyNotice}
       serverBinding={serverBinding}
       api={api}
+      showVersionDetails={showVersionDetails}
       onDirtyChange={onDirtyChange}
       onSaved={onSaved}
       promoteInFlight={promoteInFlight}
@@ -117,13 +121,13 @@ export function NoteEditorPane({
   }
 
   if (material.isPending || hydrated.isPending) {
-    return <Card className="space-y-3 p-5"><Skeleton className="h-9 w-2/3" /><Skeleton className="h-56" /><p className="text-xs text-text-3">正在核对固定材料、正文块和图片原字节…</p></Card>
+    return <Card className="space-y-3 p-5"><Skeleton className="h-9 w-2/3" /><Skeleton className="h-56" /><p className="text-xs text-text-3">{showVersionDetails ? '正在核对固定材料、正文块和图片原字节…' : '正在载入笔记内容…'}</p></Card>
   }
   if (material.isError) {
     return <Card className="p-5"><InlineAlert tone="crit" title="笔记读取失败">{errorText(material.error)}</InlineAlert></Card>
   }
   if (hydrated.isError || !hydrated.data) {
-    return <Card className="p-5"><InlineAlert tone="crit" title="材料原字节核对失败">{errorText(hydrated.error)}</InlineAlert></Card>
+    return <Card className="p-5"><InlineAlert tone="crit" title={showVersionDetails ? '材料原字节核对失败' : '笔记内容读取失败'}>{errorText(hydrated.error)}</InlineAlert></Card>
   }
 
   const parsed = hydrated.data.parsed
@@ -141,6 +145,7 @@ export function NoteEditorPane({
     sourceInputJson={parsed.sourceInputJson}
     serverBinding={serverBinding}
     api={api}
+    showVersionDetails={showVersionDetails}
     onDirtyChange={onDirtyChange}
     onSaved={onSaved}
     promoteInFlight={promoteInFlight}
@@ -173,6 +178,7 @@ function LoadedEditor({
   legacyNotice,
   serverBinding,
   api,
+  showVersionDetails,
   onDirtyChange,
   onSaved,
   promoteInFlight,
@@ -316,13 +322,13 @@ function LoadedEditor({
       )
       assertUploadSessionActive(session)
       setMessage(upload.hasConflict
-        ? '新版本已完整保存，但另一端同时更新了当前版本；两份材料均保留，请明确选择当前版本。'
-        : '新版本已完整保存，并成为当前材料版本。')
+        ? '内容已完整保存，但另一端也保存了修改；两份内容均已保留，请选择采用哪一份。'
+        : '正文已同步。')
       setDirty(false)
       onSaved(upload)
     } catch (failure) {
       if (!isUploadSessionActive(session)) return
-      setError(`${errorText(failure)}。材料和版本标识已保留，可在本页重试。`)
+      setError(`${errorText(failure)}。本次提交状态已保留，可在本页重试。`)
     } finally {
       if (isUploadSessionActive(session)) setBusy(false)
     }
@@ -468,7 +474,7 @@ function LoadedEditor({
     setProgress(null)
     setVersionId(createMaterialId())
     setError('')
-    setMessage('已放弃本页冻结的提交尝试；部分未完成上传会由服务端按策略过期清理。再次保存会使用新的版本标识。')
+    setMessage('已放弃本页的提交尝试；部分未完成上传会由服务端按策略过期清理。再次保存会重新提交。')
   }
 
   return <Card className="overflow-hidden">
@@ -486,26 +492,28 @@ function LoadedEditor({
     <div className="space-y-4 p-5">
       {legacyNotice && <InlineAlert tone="warn" title="旧闪念兼容副本">{legacyNotice}</InlineAlert>}
       {lockedReason && <InlineAlert tone={!isCurrent ? 'warn' : 'info'}>{lockedReason}</InlineAlert>}
-      <section className="rounded-ctl border border-border bg-surface p-3" aria-labelledby="note-save-identity">
-        <div className="flex flex-wrap items-center gap-2">
-          <h2 id="note-save-identity" className="text-xs font-semibold text-text-1">本次保存回执</h2>
-          <StatusBadge tone={isCurrent ? 'ok' : 'warn'} dot={false}>{isCurrent ? '可编辑' : '只读历史版本'}</StatusBadge>
-          <StatusBadge className="ml-auto" tone="neutral" dot={false}>修订 {revision}</StatusBadge>
-        </div>
-        <dl className="mt-2 grid gap-x-4 gap-y-1 text-[11px] leading-5 sm:grid-cols-[8rem_minmax(0,1fr)]">
-          <dt className="text-text-4">笔记 ID</dt>
-          <dd className="mono break-all text-text-2">{noteId}</dd>
-          <dt className="text-text-4">当前载入版本 ID</dt>
-          <dd className="mono break-all text-text-2">{baseVersionId ?? '尚未保存'}</dd>
-          <dt className="text-text-4">本次保存编号</dt>
-          <dd className="mono break-all text-text-2">{versionId}</dd>
-          <dt className="text-text-4">本次保存来源版本</dt>
-          <dd className="mono break-all text-text-2">{baseVersionId ?? '新建笔记'}</dd>
-        </dl>
-        <p className="mt-2 text-[11px] leading-5 text-text-3">
-          保存编号在提交后由服务器固定为版本 ID；历史版本只读，不能覆盖当前版本。
-        </p>
-      </section>
+      {showVersionDetails && (
+        <section className="rounded-ctl border border-border bg-surface p-3" aria-labelledby="note-save-identity">
+          <div className="flex flex-wrap items-center gap-2">
+            <h2 id="note-save-identity" className="text-xs font-semibold text-text-1">本次保存回执</h2>
+            <StatusBadge tone={isCurrent ? 'ok' : 'warn'} dot={false}>{isCurrent ? '可编辑' : '只读历史版本'}</StatusBadge>
+            <StatusBadge className="ml-auto" tone="neutral" dot={false}>修订 {revision}</StatusBadge>
+          </div>
+          <dl className="mt-2 grid gap-x-4 gap-y-1 text-[11px] leading-5 sm:grid-cols-[8rem_minmax(0,1fr)]">
+            <dt className="text-text-4">笔记 ID</dt>
+            <dd className="mono break-all text-text-2">{noteId}</dd>
+            <dt className="text-text-4">当前载入版本 ID</dt>
+            <dd className="mono break-all text-text-2">{baseVersionId ?? '尚未保存'}</dd>
+            <dt className="text-text-4">本次保存编号</dt>
+            <dd className="mono break-all text-text-2">{versionId}</dd>
+            <dt className="text-text-4">本次保存来源版本</dt>
+            <dd className="mono break-all text-text-2">{baseVersionId ?? '新建笔记'}</dd>
+          </dl>
+          <p className="mt-2 text-[11px] leading-5 text-text-3">
+            保存编号在提交后由服务器固定为版本 ID；历史版本只读，不能覆盖当前版本。
+          </p>
+        </section>
+      )}
       <div>
         <Label htmlFor="native-note-title">笔记标题</Label>
         <Input id="native-note-title" aria-label="笔记标题" className="mt-1" maxLength={500} value={title}
@@ -549,7 +557,7 @@ function LoadedEditor({
             <Textarea id={`native-note-block-${block.id}`} aria-label={`正文块 ${index + 1}`} className="min-h-64 font-sans text-sm leading-6"
               value={block.text} disabled={!editable} onChange={(event) => editMarkdown(block.id, event.target.value)} />
           </div>
-          : <MaterialImageBlock key={block.id} block={block} index={index} editable={editable && !('sha256' in block)}
+          : <MaterialImageBlock key={block.id} block={block} index={index} showTechnicalDetails={showVersionDetails} editable={editable && !('sha256' in block)}
             onEdit={block.kind === 'ink' && !('sha256' in block) ? () => openInkEditor(block.id, block.ink) : undefined}
             onRemove={block.kind === 'photo' && !('sha256' in block)
               ? () => {
@@ -607,21 +615,26 @@ function LoadedEditor({
             <Save className="size-4" aria-hidden />{busy ? '正在保存…' : frozen ? '重试同一提交' : '保存笔记'}
           </Button>
           {dirty && <StatusBadge tone="warn" dot={false}>有未保存更改</StatusBadge>}
-          {!dirty && baseVersionId && <StatusBadge tone="ok" dot={false}>已从服务器载入</StatusBadge>}
+          {!dirty && baseVersionId && (
+            <StatusBadge tone="ok" dot={false}>{showVersionDetails ? '已从服务器载入' : '无未保存更改'}</StatusBadge>
+          )}
           {!dirty && !baseVersionId && <StatusBadge tone="neutral" dot={false}>尚未保存</StatusBadge>}
         </div>
         {progress && <div className="rounded-ctl border border-info-border bg-info-soft p-3 text-xs text-text-2">
           <p className="font-medium text-text-1">正在同步笔记</p>
-          <p className="mt-1 break-all">{progress.completedParts} / {progress.totalParts} · {progress.currentPath}</p>
+          <p className="mt-1 break-all">
+            {progress.completedParts} / {progress.totalParts}
+            {showVersionDetails ? ` · ${progress.currentPath}` : ''}
+          </p>
         </div>}
         {error && <InlineAlert tone="crit" title="未完成">{error}</InlineAlert>}
-        {message && <InlineAlert tone={message.includes('同时更新') ? 'warn' : 'ok'}>{message}</InlineAlert>}
+        {message && <InlineAlert tone={message.includes('选择采用哪一份') ? 'warn' : 'ok'}>{message}</InlineAlert>}
       </section>
 
       <details className="rounded-ctl border border-border px-3 py-2 text-xs leading-5 text-text-3">
-        <summary className="cursor-pointer">更多：历史材料、下载、导出与诊断</summary>
+        <summary className="cursor-pointer">{showVersionDetails ? '更多：历史材料、下载、导出与诊断' : '更多：下载、导出与诊断'}</summary>
         <div className="mt-3 flex flex-wrap items-center gap-2">
-          {baseVersionId && !isCurrent && (
+          {showVersionDetails && baseVersionId && !isCurrent && (
             <Button
               size="sm"
               loading={promoteInFlight && promotingVersionId === baseVersionId}
@@ -631,7 +644,7 @@ function LoadedEditor({
               明确设为当前版本
             </Button>
           )}
-          {baseVersionId && <Button size="sm" variant="secondary" disabled={downloading} loading={downloading} onClick={() => void downloadOriginalBundle()}>
+          {showVersionDetails && baseVersionId && <Button size="sm" variant="secondary" disabled={downloading} loading={downloading} onClick={() => void downloadOriginalBundle()}>
             <Download className="size-4" aria-hidden />下载完整原始材料包
           </Button>}
           <Button size="sm" variant="ghost" disabled={busy || exporting || Boolean(inkEditor) || inkPending} loading={exporting} onClick={() => void exportPackage()}>
@@ -639,7 +652,7 @@ function LoadedEditor({
           </Button>
           {frozen && <Button size="sm" variant="ghost" disabled={busy} onClick={createBlankVersion}><RotateCcw className="size-4" aria-hidden />重新开始保存</Button>}
         </div>
-        {baseVersionId && <p className="mt-2">原始材料包下载上限为 128 MiB。</p>}
+        {showVersionDetails && baseVersionId && <p className="mt-2">原始材料包下载上限为 128 MiB。</p>}
         <p className="mt-2">正文、照片、手写和已有录音材料保持在同一顺序。</p>
       </details>
     </div>
@@ -649,12 +662,14 @@ function LoadedEditor({
 function MaterialImageBlock({
   block,
   index,
+  showTechnicalDetails,
   editable,
   onEdit,
   onRemove,
 }: {
   block: Extract<MaterialDraftBlock, { kind: 'photo' | 'ink' }>
   index: number
+  showTechnicalDetails: boolean
   editable: boolean
   onEdit?: () => void
   onRemove?: () => void
@@ -665,7 +680,9 @@ function MaterialImageBlock({
     <div className="flex flex-wrap items-center gap-2 border-t border-divider px-3 py-2">
       <div>
         <p className="text-xs font-medium text-text-1">{block.kind === 'photo' ? `照片 ${index + 1}` : `手写卡片 ${index + 1}`}</p>
-        <p className="break-all text-[11px] text-text-4">{block.kind === 'photo' ? block.assetId : '原始向量、尺寸与身份随 note.json 保留'}</p>
+        {showTechnicalDetails && (
+          <p className="break-all text-[11px] text-text-4">{block.kind === 'photo' ? block.assetId : '原始向量、尺寸与身份随 note.json 保留'}</p>
+        )}
       </div>
       <StatusBadge className="ml-auto" tone={block.kind === 'photo' ? 'info' : 'neutral'} dot={false}>
         {block.kind === 'photo' ? '照片原字节' : '可编辑向量'}

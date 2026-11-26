@@ -7,6 +7,7 @@ using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Pim.Infrastructure.Auth;
+using Pim.Infrastructure.Audit;
 using Pim.Infrastructure.Data;
 using Xunit;
 
@@ -111,6 +112,65 @@ public class AdminEndpointsE2ETests
         Assert.Equal(HttpStatusCode.OK, promoteResp.StatusCode);
         var demoteResp2 = await alice.PostAsJsonAsync($"/api/v1/admin/users/{GetUserId(list, "alice")}/role", new { role = "user" });
         Assert.Equal(HttpStatusCode.OK, demoteResp2.StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden,
+            (await Authed(factory, r1.AccessToken!).GetAsync("/api/v1/admin/users")).StatusCode);
+        var staleAdminClient = Authed(factory, r1.AccessToken!);
+        var staleAdminAuditVersionId = Guid.NewGuid();
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
+            db.AuditVersions.Add(new AuditVersionEntity
+            {
+                Id = staleAdminAuditVersionId,
+                UserId = GetUserId(factory, "alice"),
+                ObjectType = "event",
+                ObjectId = Guid.NewGuid(),
+                Source = "synthetic-stale-admin",
+                BeforeJson = "{}",
+                AfterJson = "{\"title\":\"stale\"}",
+                ChangedFieldsJson = "[\"title\"]",
+            });
+            await db.SaveChangesAsync();
+        }
+        Assert.Equal(HttpStatusCode.Forbidden,
+            (await staleAdminClient.GetAsync(
+                $"/api/v1/operations/audit/event/{Guid.NewGuid()}")).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden,
+            (await staleAdminClient.GetAsync("/api/v1/operations/audit/export")).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden,
+            (await staleAdminClient.GetAsync("/api/v1/calendar/data-center/audit/export")).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden,
+            (await staleAdminClient.PostAsync(
+                $"/api/v1/operations/audit/{Guid.NewGuid()}/restore-preview", null)).StatusCode);
+        var staleGovernanceRequests = new (string Method, string Path, object? Body)[]
+        {
+            ("POST", "/api/v1/calendar/data-center/batch/preview", new { action = "archive", objects = Array.Empty<object>() }),
+            ("POST", "/api/v1/calendar/data-center/batch/request-confirmation", new { action = "archive", objects = Array.Empty<object>() }),
+            ("POST", "/api/v1/calendar/data-center/batch/execute", new { confirmationId = Guid.NewGuid() }),
+            ("POST", "/api/v1/calendar/data-center/restore/preview", new { auditVersionId = Guid.NewGuid(), reason = "synthetic" }),
+            ("POST", "/api/v1/calendar/data-center/restore/request-confirmation", new { auditVersionId = Guid.NewGuid(), reason = "synthetic" }),
+        };
+        foreach (var (method, path, body) in staleGovernanceRequests)
+        {
+            Assert.Equal(HttpStatusCode.Forbidden,
+                (await SendAsync(staleAdminClient, method, path, body)).StatusCode);
+        }
+
+        var staleQueryResponse = await staleAdminClient.PostAsJsonAsync(
+            "/api/v1/calendar/data-center/query",
+            new
+            {
+                search = (string?)null,
+                objectType = (string?)null,
+                source = (string?)null,
+                pendingOnly = false,
+                page = 1,
+                pageSize = 50
+            });
+        Assert.Equal(HttpStatusCode.OK, staleQueryResponse.StatusCode);
+        var staleQueryData = (await ReadDataAsync(staleQueryResponse)).GetProperty("data");
+        Assert.DoesNotContain(staleQueryData.GetProperty("items").EnumerateArray(),
+            item => item.GetProperty("objectType").GetString() == "audit-version");
 
         // 7b. bob 重新登录获取带 admin 角色的新令牌（旧令牌仍是 user 角色）
         var bobLogin = await anon.PostAsJsonAsync("/api/v1/auth/login", new { username = "bob", password = "password123" });
@@ -160,6 +220,26 @@ public class AdminEndpointsE2ETests
     }
 
     [Fact]
+    public async Task AdminUsers_DisabledAdminToken_Returns403()
+    {
+        using var factory = CreateFactory($"admin-authz-{Guid.NewGuid()}");
+        var anon = factory.CreateClient();
+        var admin = await RegisterAsync(anon, "disabled-admin");
+        Assert.Equal(HttpStatusCode.Created, admin.Status);
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
+            var user = await db.Users.SingleAsync(u => u.Username == "disabled-admin");
+            user.IsActive = false;
+            await db.SaveChangesAsync();
+        }
+
+        var client = Authed(factory, admin.AccessToken!);
+        Assert.Equal(HttpStatusCode.Forbidden, (await client.GetAsync("/api/v1/admin/users")).StatusCode);
+    }
+
+    [Fact]
     public async Task Me_Anonymous_Returns401()
     {
         using var factory = CreateFactory($"admin-authz-{Guid.NewGuid()}");
@@ -181,6 +261,200 @@ public class AdminEndpointsE2ETests
         Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
         var body = await ReadDataAsync(resp);
         Assert.Equal(40041, body.GetProperty("code").GetInt32());
+    }
+
+    [Fact]
+    public async Task OperationsAudit_IsAdminOnly()
+    {
+        using var factory = CreateFactory($"z01-audit-authz-{Guid.NewGuid()}");
+        var anon = factory.CreateClient();
+        var admin = await RegisterAsync(anon, "audit-admin");
+        var ordinary = await RegisterAsync(anon, "audit-user");
+        var objectId = Guid.NewGuid();
+        var path = $"/api/v1/operations/audit/event/{objectId}";
+
+        var adminClient = Authed(factory, admin.AccessToken!);
+        Assert.Equal(HttpStatusCode.OK, (await adminClient.GetAsync(path)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await adminClient.GetAsync("/api/v1/operations/audit/export")).StatusCode);
+        var adminRestoreVersionId = Guid.NewGuid();
+        var adminUserId = GetUserId(factory, "audit-admin");
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
+            db.AuditVersions.Add(new AuditVersionEntity
+            {
+                Id = adminRestoreVersionId,
+                UserId = adminUserId,
+                ObjectType = "event",
+                ObjectId = objectId,
+                Source = "synthetic",
+                BeforeJson = "{}",
+                AfterJson = "{\"title\":\"synthetic\"}",
+                ChangedFieldsJson = "[\"title\"]",
+            });
+            await db.SaveChangesAsync();
+        }
+        Assert.Equal(HttpStatusCode.OK,
+            (await adminClient.PostAsync($"/api/v1/operations/audit/{adminRestoreVersionId}/restore-preview", null)).StatusCode);
+
+        var ordinaryClient = Authed(factory, ordinary.AccessToken!);
+        Assert.Equal(HttpStatusCode.Forbidden, (await ordinaryClient.GetAsync(path)).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await ordinaryClient.GetAsync("/api/v1/operations/audit/export")).StatusCode);
+        var restorePath = $"/api/v1/operations/audit/{Guid.NewGuid()}/restore-preview";
+        Assert.Equal(HttpStatusCode.Forbidden, (await ordinaryClient.PostAsync(restorePath, null)).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await anon.GetAsync(path)).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await anon.GetAsync("/api/v1/operations/audit/export")).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await anon.PostAsync(restorePath, null)).StatusCode);
+    }
+
+    [Fact]
+    public async Task CalendarGovernance_IsAdminOnly_ButDataCenterQueryRemainsAvailableToOrdinaryUsers()
+    {
+        using var factory = CreateFactory($"z01-calendar-governance-{Guid.NewGuid()}");
+        var anon = factory.CreateClient();
+        var admin = await RegisterAsync(anon, "calendar-admin");
+        var ordinary = await RegisterAsync(anon, "calendar-user");
+        var adminClient = Authed(factory, admin.AccessToken!);
+        var ordinaryClient = Authed(factory, ordinary.AccessToken!);
+        var objectId = Guid.NewGuid();
+        var adminAuditVersionId = Guid.NewGuid();
+        var ordinaryAuditVersionId = Guid.NewGuid();
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
+            db.AuditVersions.AddRange(
+                new AuditVersionEntity
+                {
+                    Id = adminAuditVersionId,
+                    UserId = GetUserId(factory, "calendar-admin"),
+                    ObjectType = "event",
+                    ObjectId = objectId,
+                    Source = "synthetic-admin",
+                    BeforeJson = "{}",
+                    AfterJson = "{\"title\":\"admin\"}",
+                    ChangedFieldsJson = "[\"title\"]",
+                },
+                new AuditVersionEntity
+                {
+                    Id = ordinaryAuditVersionId,
+                    UserId = GetUserId(factory, "calendar-user"),
+                    ObjectType = "event",
+                    ObjectId = Guid.NewGuid(),
+                    Source = "synthetic-ordinary",
+                    BeforeJson = "{}",
+                    AfterJson = "{\"title\":\"ordinary\"}",
+                    ChangedFieldsJson = "[\"title\"]",
+                });
+            await db.SaveChangesAsync();
+        }
+        var governanceRequests = new (string Method, string Path, object? Body)[]
+        {
+            ("POST", "/api/v1/calendar/data-center/batch/preview", new { action = "archive", objects = new[] { new { objectType = "task", objectId } } }),
+            ("POST", "/api/v1/calendar/data-center/batch/request-confirmation", new { action = "archive", objects = new[] { new { objectType = "task", objectId } } }),
+            ("POST", "/api/v1/calendar/data-center/batch/execute", new { confirmationId = Guid.NewGuid() }),
+            ("GET", "/api/v1/calendar/data-center/audit/export", null),
+            ("POST", "/api/v1/calendar/data-center/restore/preview", new { auditVersionId = Guid.NewGuid(), reason = "synthetic" }),
+            ("POST", "/api/v1/calendar/data-center/restore/request-confirmation", new { auditVersionId = Guid.NewGuid(), reason = "synthetic" }),
+        };
+
+        foreach (var (method, path, body) in governanceRequests)
+        {
+            Assert.Equal(HttpStatusCode.Unauthorized, (await SendAsync(anon, method, path, body)).StatusCode);
+            Assert.Equal(HttpStatusCode.Forbidden, (await SendAsync(ordinaryClient, method, path, body)).StatusCode);
+        }
+
+        var query = new { search = (string?)null, objectType = (string?)null, source = (string?)null, pendingOnly = false, page = 1, pageSize = 50 };
+        Assert.Equal(HttpStatusCode.OK, (await ordinaryClient.PostAsJsonAsync("/api/v1/calendar/data-center/query", query)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await adminClient.PostAsJsonAsync("/api/v1/calendar/data-center/query", query)).StatusCode);
+        var auditQuery = new { search = (string?)null, objectType = "audit-version", source = "synthetic-admin", pendingOnly = false, page = 1, pageSize = 50 };
+        var ordinaryAuditResponse = await ordinaryClient.PostAsJsonAsync(
+            "/api/v1/calendar/data-center/query", auditQuery);
+        Assert.Equal(HttpStatusCode.OK, ordinaryAuditResponse.StatusCode);
+        var ordinaryAuditData = (await ReadDataAsync(ordinaryAuditResponse)).GetProperty("data");
+        Assert.Equal(0, ordinaryAuditData.GetProperty("totalCount").GetInt32());
+        Assert.Equal(0, ordinaryAuditData.GetProperty("items").GetArrayLength());
+
+        var adminAuditResponse = await adminClient.PostAsJsonAsync(
+            "/api/v1/calendar/data-center/query", auditQuery);
+        Assert.Equal(HttpStatusCode.OK, adminAuditResponse.StatusCode);
+        var adminAuditData = (await ReadDataAsync(adminAuditResponse)).GetProperty("data");
+        Assert.Equal(1, adminAuditData.GetProperty("totalCount").GetInt32());
+        var adminAuditItem = Assert.Single(adminAuditData.GetProperty("items").EnumerateArray());
+        Assert.Equal(adminAuditVersionId.ToString("D"), adminAuditItem.GetProperty("objectId").GetString());
+        Assert.NotEqual(ordinaryAuditVersionId.ToString("D"), adminAuditItem.GetProperty("objectId").GetString());
+
+        var batchPreview = await adminClient.PostAsJsonAsync("/api/v1/calendar/data-center/batch/preview",
+            new { action = "archive", objects = new[] { new { objectType = "task", objectId } } });
+        Assert.Equal(HttpStatusCode.OK, batchPreview.StatusCode);
+        var batchConfirmation = await adminClient.PostAsJsonAsync("/api/v1/calendar/data-center/batch/request-confirmation",
+            new { action = "archive", objects = new[] { new { objectType = "task", objectId } } });
+        Assert.Equal(HttpStatusCode.OK, batchConfirmation.StatusCode);
+        var batchConfirmationId = (await ReadDataAsync(batchConfirmation)).GetProperty("data").GetProperty("id").GetGuid();
+        Assert.Equal(HttpStatusCode.OK,
+            (await adminClient.PostAsync($"/api/v1/operations/confirmations/{batchConfirmationId}/confirm-strict", null)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK,
+            (await adminClient.PostAsJsonAsync("/api/v1/calendar/data-center/batch/execute",
+                new { confirmationId = batchConfirmationId })).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await adminClient.GetAsync("/api/v1/calendar/data-center/audit/export")).StatusCode);
+
+        var auditVersionId = Guid.NewGuid();
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
+            db.AuditVersions.Add(new AuditVersionEntity
+            {
+                Id = auditVersionId,
+                UserId = GetUserId(factory, "calendar-admin"),
+                ObjectType = "event",
+                ObjectId = objectId,
+                Source = "synthetic",
+                BeforeJson = "{}",
+                AfterJson = "{\"title\":\"synthetic\"}",
+                ChangedFieldsJson = "[\"title\"]",
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var restorePreview = await adminClient.PostAsJsonAsync("/api/v1/calendar/data-center/restore/preview",
+            new { auditVersionId, reason = "synthetic" });
+        Assert.Equal(HttpStatusCode.OK, restorePreview.StatusCode);
+        Assert.Equal(HttpStatusCode.OK,
+            (await adminClient.PostAsJsonAsync("/api/v1/calendar/data-center/restore/request-confirmation",
+                new { auditVersionId, reason = "synthetic" })).StatusCode);
+    }
+
+    [Fact]
+    public async Task CalendarGovernance_DisabledAdminToken_IsForbidden()
+    {
+        using var factory = CreateFactory($"z01-calendar-disabled-admin-{Guid.NewGuid()}");
+        var anon = factory.CreateClient();
+        var admin = await RegisterAsync(anon, "calendar-disabled-admin");
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
+            var user = await db.Users.SingleAsync(u => u.Username == "calendar-disabled-admin");
+            user.IsActive = false;
+            await db.SaveChangesAsync();
+        }
+
+        var client = Authed(factory, admin.AccessToken!);
+        Assert.Equal(HttpStatusCode.Forbidden,
+            (await client.GetAsync("/api/v1/calendar/data-center/audit/export")).StatusCode);
+    }
+
+    private static async Task<HttpResponseMessage> SendAsync(HttpClient client, string method, string path, object? body)
+    {
+        using var request = new HttpRequestMessage(new HttpMethod(method), path);
+        if (body is not null) request.Content = JsonContent.Create(body);
+        return await client.SendAsync(request);
+    }
+
+    private static Guid GetUserId(WebApplicationFactory<Program> factory, string username)
+    {
+        using var scope = factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
+        return db.Users.Single(u => u.Username == username).Id;
     }
 
     private static string GetUserId(JsonElement listResponse, string username)

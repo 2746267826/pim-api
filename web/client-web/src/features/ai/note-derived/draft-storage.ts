@@ -16,6 +16,8 @@ export interface NoteDerivedDraftScope {
   readonly artifactId: string
   readonly sourceVersionId: string
   readonly kind: NoteDerivedArtifactKind
+  /** Ordinary-user editing is scoped to the selected result version. */
+  readonly artifactVersionId?: string
 }
 
 export interface PendingMutationIntent {
@@ -145,14 +147,62 @@ export function sameDraftScope(left: NoteDerivedDraftScope, right: NoteDerivedDr
     left.serverBinding === right.serverBinding &&
     left.artifactId === right.artifactId &&
     left.sourceVersionId === right.sourceVersionId &&
-    left.kind === right.kind
+    left.kind === right.kind &&
+    left.artifactVersionId === right.artifactVersionId
 }
 
 export function noteDerivedDraftStorageKey(scope: NoteDerivedDraftScope): string | null {
   if (!isUsableDraftScope(scope)) return null
   const parts = [scope.ownerId, scope.serverBinding, scope.artifactId, scope.sourceVersionId, scope.kind]
-    .map((part) => encodeURIComponent(part))
-  return `${STORAGE_PREFIX}/${parts.join('/')}`
+  if (scope.artifactVersionId) parts.push(scope.artifactVersionId)
+  return `${STORAGE_PREFIX}/${parts.map((part) => encodeURIComponent(part)).join('/')}`
+}
+
+function legacyDraftScopeForResultVersion(scope: NoteDerivedDraftScope): NoteDerivedDraftScope | null {
+  if (!scope.artifactVersionId) return null
+  return {
+    ownerId: scope.ownerId,
+    serverBinding: scope.serverBinding,
+    artifactId: scope.artifactId,
+    sourceVersionId: scope.sourceVersionId,
+    kind: scope.kind,
+  }
+}
+
+function loadLegacyDraftForResultVersion(
+  scope: NoteDerivedDraftScope,
+  storage: DraftStoragePort,
+): DraftStorageResult<StoredNoteDerivedDraft | null> {
+  const legacy = legacyDraftScopeForResultVersion(scope)
+  if (!legacy) return { ok: true, value: null }
+  const legacyKey = noteDerivedDraftStorageKey(legacy)
+  if (!legacyKey) return { ok: true, value: null }
+  const raw = storage.get(legacyKey)
+  if (raw == null) return { ok: true, value: null }
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    if (!isStoredDraft(parsed)) throw new Error('invalid draft shape')
+    const bindingMatches = parsed.binding.artifactVersionId
+      ? sameDraftScope(parsed.binding, scope)
+      : sameDraftScope(parsed.binding, legacy)
+    if (!bindingMatches) {
+      return { ok: false, error: { code: 'scope-mismatch', message: '本机草稿与当前账号、服务器或材料版本不一致，未载入。' } }
+    }
+    // A legacy draft has no result-version scope. Only adopt it for the exact version its
+    // base token points at; otherwise an old head draft would mask a newer result again.
+    if (parsed.draft.baseToken !== scope.artifactVersionId) return { ok: true, value: null }
+    return {
+      ok: true,
+      value: {
+        ...parsed,
+        binding: scope,
+        localRevision: localRevisionOf(parsed),
+        localWriteId: parsed.localWriteId ?? legacyWriteId(raw),
+      },
+    }
+  } catch {
+    return { ok: false, error: { code: 'corrupt', message: '本机草稿数据损坏，未载入；现有内容不会被静默替换。' } }
+  }
 }
 
 export function createStoredDraft(
@@ -213,7 +263,8 @@ function isStoredDraft(value: unknown): value is StoredNoteDerivedDraft {
     typeof scope.serverBinding === 'string' &&
     typeof scope.artifactId === 'string' &&
     typeof scope.sourceVersionId === 'string' &&
-    (scope.kind === 'CompleteRecord' || scope.kind === 'IndependentAnalysis')
+    (scope.kind === 'CompleteRecord' || scope.kind === 'IndependentAnalysis') &&
+    (scope.artifactVersionId === undefined || typeof scope.artifactVersionId === 'string')
 }
 
 export function loadStoredDraft(
@@ -225,8 +276,9 @@ export function loadStoredDraft(
   }
   const key = noteDerivedDraftStorageKey(scope)
   if (!key) return { ok: false, error: { code: 'unbound', message: '本机草稿作用域不完整。' } }
-  const raw = (options.storage ?? browserStorage).get(key)
-  if (raw == null) return { ok: true, value: null }
+  const storage = options.storage ?? browserStorage
+  const raw = storage.get(key)
+  if (raw == null) return loadLegacyDraftForResultVersion(scope, storage)
   try {
     const parsed: unknown = JSON.parse(raw)
     if (!isStoredDraft(parsed)) throw new Error('invalid draft shape')

@@ -21,7 +21,7 @@ vi.mock('@/features/operations/api', () => ({ auditApi: auditApiMock }))
 vi.mock('@/features/auth/auth-context', () => ({
   useAuth: () => ({
     user: authState.userId
-      ? { id: authState.userId, username: authState.userId, displayName: authState.userId, role: 'user' }
+      ? { id: authState.userId, username: authState.userId, displayName: authState.userId, role: 'admin' }
       : null,
   }),
 }))

@@ -9,6 +9,7 @@ import {
   confirmIntentScope,
   extractionIntentScope,
   saveConfirmIntent,
+  saveExtractionId,
 } from './intent-storage'
 import type {
   NoteTaskSuggestion,
@@ -146,7 +147,7 @@ const extraction: NoteTaskSuggestionExtraction = {
 
 let client: QueryClient
 
-function page() {
+function page(showTechnicalDetails = true) {
   client = new QueryClient({
     defaultOptions: {
       queries: { retry: false, gcTime: 0 },
@@ -161,6 +162,7 @@ function page() {
         noteId={noteId}
         artifactId={artifactId}
         versionId={versionId}
+        showTechnicalDetails={showTechnicalDetails}
       />
     </QueryClientProvider>,
   )
@@ -209,6 +211,85 @@ afterEach(() => {
 })
 
 describe('NoteTaskSuggestionsPanel', () => {
+  it('hides frozen digests, task ids and revisions from ordinary users', async () => {
+    const taskId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd'
+    api.list.mockResolvedValue({ total: 1, items: [{ ...suggestion, taskId }] })
+    page(false)
+
+    expect(await screen.findByText('任务与日程建议')).toBeTruthy()
+    expect(screen.getByText(/只从当前内容的正文提取/)).toBeTruthy()
+    expect(screen.getByRole('checkbox', {
+      name: /确认将当前完整正文发送到所选文本模型/,
+    })).toBeTruthy()
+    expect(screen.queryByText(/固定内容 SHA-256/)).toBeNull()
+    expect(screen.queryByText(/固定提示/)).toBeNull()
+    expect(screen.queryByText(/本版本建议/)).toBeNull()
+    expect(screen.queryByText(/任务 ID/)).toBeNull()
+    expect(screen.queryByText(/来源摘要/)).toBeNull()
+    expect(screen.queryByText(new RegExp(taskId))).toBeNull()
+    expect(screen.queryByText(new RegExp(suggestionRevision.slice(0, 8)))).toBeNull()
+    expect(screen.queryByText(new RegExp(contentSha256.slice(0, 12)))).toBeNull()
+  })
+
+  it('hides raw extraction status and diagnostics from ordinary users', async () => {
+    saveExtractionId(userId, serverBinding, versionId, extractionId)
+    api.extraction.mockResolvedValue({
+      ...extraction,
+      status: 'VendorPhase' as unknown as NoteTaskSuggestionExtraction['status'],
+      errorCode: 'provider-error-code',
+      errorMessage: 'provider extraction diagnostic',
+    })
+    page(false)
+
+    expect(await screen.findByText('提取记录')).toBeTruthy()
+    expect(screen.getByText('提取状态待核对')).toBeTruthy()
+    expect(screen.getByText(/提取未完整完成/)).toBeTruthy()
+    expect(screen.queryAllByText(/VendorPhase|provider extraction diagnostic|provider-error-code/)).toHaveLength(0)
+  })
+
+  it('keeps raw extraction status and diagnostics for admins', async () => {
+    saveExtractionId(userId, serverBinding, versionId, extractionId)
+    api.extraction.mockResolvedValue({
+      ...extraction,
+      status: 'VendorPhase' as unknown as NoteTaskSuggestionExtraction['status'],
+      errorCode: 'provider-error-code',
+      errorMessage: 'provider extraction diagnostic',
+    })
+    page(true)
+
+    expect(await screen.findByText('VendorPhase')).toBeTruthy()
+    expect(screen.getByText(/provider extraction diagnostic/)).toBeTruthy()
+  })
+
+  it('hides raw extraction read errors from ordinary users', async () => {
+    saveExtractionId(userId, serverBinding, versionId, extractionId)
+    api.extraction.mockRejectedValue(new Error('provider extraction read diagnostic'))
+    page(false)
+
+    expect(await screen.findByText('提取状态读取失败')).toBeTruthy()
+    expect(screen.getByText(/提取状态暂时无法读取/)).toBeTruthy()
+    expect(screen.queryAllByText(/provider extraction read diagnostic/)).toHaveLength(0)
+  })
+
+  it('shows only the shared display name in ordinary-user text target labels', async () => {
+    page(false)
+    await screen.findByText('任务与日程建议')
+    await chooseDestination()
+
+    expect(screen.getByRole('combobox', { name: '文本模型目标' }).textContent).toBe('合成文本目标')
+    expect(screen.queryByText(new RegExp(destination.model))).toBeNull()
+  })
+
+  it('keeps the underlying text model available to admins', async () => {
+    page(true)
+    await screen.findByText('本版本建议')
+    await chooseDestination()
+
+    expect(screen.getByRole('combobox', { name: '文本模型目标' }).textContent).toContain(
+      `合成文本目标 · ${destination.model}`,
+    )
+  })
+
   it('does not request extraction before explicit charge consent and freezes the owned artifact digest', async () => {
     page()
     await chooseDestination()
@@ -398,6 +479,31 @@ describe('NoteTaskSuggestionsPanel', () => {
       expectedRevision: suggestionRevision,
     })
     expect(await screen.findAllByText(/任务建议已被修改/)).not.toHaveLength(0)
+    expect(screen.getAllByText('待确认')).not.toHaveLength(0)
+  })
+
+  it('hides raw suggestion action errors from ordinary users', async () => {
+    api.list.mockResolvedValue({ total: 1, items: [suggestion] })
+    api.update.mockRejectedValue(new Error('provider update diagnostic'))
+    api.dismiss.mockRejectedValue(new Error('provider dismiss diagnostic'))
+    api.confirm.mockRejectedValue(new Error('provider confirm diagnostic'))
+    page(false)
+
+    await userEvent.click(await screen.findByRole('button', { name: '编辑' }))
+    await userEvent.click(screen.getByRole('button', { name: '保存修改' }))
+    expect(await screen.findByText(/保存未确认/)).toBeTruthy()
+    expect(screen.queryAllByText(/provider update diagnostic/)).toHaveLength(0)
+    await userEvent.click(screen.getByRole('button', { name: '取消' }))
+
+    await userEvent.click(screen.getByRole('button', { name: '放弃' }))
+    await userEvent.click(screen.getByRole('button', { name: '再次点击确认放弃' }))
+    expect(await screen.findByText(/放弃未确认/)).toBeTruthy()
+    expect(screen.queryAllByText(/provider dismiss diagnostic/)).toHaveLength(0)
+
+    await userEvent.click(screen.getByRole('button', { name: '确认创建任务' }))
+    await userEvent.click(screen.getByRole('button', { name: '再次点击创建任务' }))
+    expect(await screen.findByText(/确认状态未确认/)).toBeTruthy()
+    expect(screen.queryAllByText(/provider confirm diagnostic/)).toHaveLength(0)
     expect(screen.getAllByText('待确认')).not.toHaveLength(0)
   })
 
