@@ -5,6 +5,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Pim.Api.DTOs;
 using Pim.Api.Services;
+using Pim.Core.Exceptions;
 using Pim.Core.Notes;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
