@@ -108,9 +108,7 @@ public sealed class McpToolExecutor
         var auditableArgs = args is null ? null : SanitizeForAudit(args);
         var summary = auditableArgs is null || auditableArgs.Count == 0
             ? string.Empty
-            : JsonSerializer.Serialize(auditableArgs, SerializerOptions);
-        if (summary.Length > ActivityParamsSummaryMaxChars)
-            summary = summary[..ActivityParamsSummaryMaxChars];
+            : SummarizeForActivity(auditableArgs);
 
         var durationMs = (long)Math.Round(Stopwatch.GetElapsedTime(startedAt).TotalMilliseconds);
         RecentActivity.Enqueue(new McpActivityEntry(
@@ -351,6 +349,33 @@ public sealed class McpToolExecutor
         }
         return result;
     }
+
+    private static string SummarizeForActivity(JsonObject sanitizedArgs)
+    {
+        var summary = JsonSerializer.Serialize(sanitizedArgs, SerializerOptions);
+        if (summary.Length <= ActivityParamsSummaryMaxChars)
+            return summary;
+
+        // Put redacted fields first so the 120-character preview proves the payload was
+        // masked instead of merely cutting it off before the marker appears.
+        var prioritized = new JsonObject();
+        foreach (var (key, value) in sanitizedArgs)
+        {
+            if (IsRedacted(value)) prioritized[key] = value?.DeepClone();
+        }
+        foreach (var (key, value) in sanitizedArgs)
+        {
+            if (!IsRedacted(value)) prioritized[key] = value?.DeepClone();
+        }
+        summary = JsonSerializer.Serialize(prioritized, SerializerOptions);
+        return summary.Length <= ActivityParamsSummaryMaxChars
+            ? summary
+            : summary[..ActivityParamsSummaryMaxChars];
+    }
+
+    private static bool IsRedacted(JsonNode? value)
+        => value is JsonValue jsonValue && jsonValue.TryGetValue<string>(out var text) &&
+           text.StartsWith("[redacted base64", StringComparison.Ordinal);
 
     // ===================== dispatch =====================
 
