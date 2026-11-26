@@ -377,6 +377,7 @@ export interface AiPlanPlaceholder {
 export interface GenerateAiPlanResponse {
   source: 'ai' | 'rule-engine' | 'none'
   placeholders: AiPlanPlaceholder[]
+  fallbackReason: string | null
 }
 
 /* ── Outlook 状态（工作台状态卡） ──────────────────────────── */

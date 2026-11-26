@@ -2460,12 +2460,6 @@ async def get_status_summary() -> Any:
 
 
 @mcp.tool()
-async def get_ai_status() -> Any:
-    """Get AI gateway status. Returns {enabled, model, health}. Maps to GET /ai/status."""
-    return await _call_api("GET", "/api/v1/ai/status")
-
-
-@mcp.tool()
 async def get_ai_requests(
     from_time: Optional[str] = None,
     to: Optional[str] = None,

@@ -39,9 +39,18 @@ public sealed class AiModelSettingsService(PimDbContext db, ISecretProtector sec
                 ?? throw new DomainException(40401, "模型配置不存在");
             if (request.ExpectedRevision != row.Revision) throw Conflict();
             var config = await db.AiModelRuntime.AsNoTracking().SingleOrDefaultAsync(ct);
-            if (config is not null && (config.TextModelId == row.Id && (capabilities & 1) == 0 ||
-                config.VisionModelId == row.Id && (capabilities & 2) == 0 ||
-                config.TranscriptionModelId == row.Id && (capabilities & 4) == 0))
+            if (config is not null && (config.TextModelId == row.Id &&
+                    !AiModelCapabilityFlags.Has(capabilities, AiModelCapability.Text) ||
+                config.VisionModelId == row.Id &&
+                    !AiModelCapabilityFlags.Has(capabilities, AiModelCapability.Vision) ||
+                config.TranscriptionModelId == row.Id &&
+                    !AiModelCapabilityFlags.Has(capabilities, AiModelCapability.Transcription) ||
+                config.NoteOrganizationModelId == row.Id &&
+                    !AiModelCapabilityFlags.Has(capabilities, AiModelCapability.Text) ||
+                config.NoteTodoModelId == row.Id &&
+                    !AiModelCapabilityFlags.Has(capabilities, AiModelCapability.Text) ||
+                config.CalendarPlanningModelId == row.Id &&
+                    !AiModelCapabilityFlags.Has(capabilities, AiModelCapability.Text)))
                 throw Invalid("请先清空或切换对应默认模型，再移除此能力");
         }
         else
@@ -50,25 +59,26 @@ public sealed class AiModelSettingsService(PimDbContext db, ISecretProtector sec
             if (string.IsNullOrEmpty(key)) throw Invalid("新模型需要API Key；无鉴权本地服务可填写非空占位值");
             row = new(); db.AiModelProfiles.Add(row);
         }
-        if (row.AsrPresetId is not null && capabilities != 4)
+        if (row.AsrPresetId is not null && capabilities != AiModelCapabilityFlags.Transcription)
             throw Invalid("ASR独立配置不可改为文本/视觉配置，请另建模型以隔离凭据");
-        if (capabilities == 4 && presetId is null) presetId = row.AsrPresetId;
-        if (capabilities == 4 && id is null && presetId is null) throw Invalid("新建ASR配置需要选择接入预设");
+        var isAsr = capabilities == AiModelCapabilityFlags.Transcription;
+        if (isAsr && presetId is null) presetId = row.AsrPresetId;
+        if (isAsr && id is null && presetId is null) throw Invalid("新建ASR配置需要选择接入预设");
         if (batchBaseUrl is not null)
         {
-            if (capabilities != 4 || presetId != "mimo-multimodal")
+            if (!isAsr || presetId != "mimo-multimodal")
                 throw Invalid("Batch 地址仅用于独立的 MiMo 多模态 ASR 配置");
             if (!new Uri(batchBaseUrl).Host.Contains("batch-api-", StringComparison.OrdinalIgnoreCase))
                 throw Invalid("MiMo Batch 必须填写 batch-api-* 专用 origin，不能复用实时 ASR 地址");
         }
-        if (request.AsrPrompt is not null && capabilities != 4)
+        if (request.AsrPrompt is not null && !isAsr)
             throw Invalid("自定义转写提示词只能保存到独立ASR配置");
         if (request.AsrPrompt is not null && prompt!.Text != AiAsrPromptTemplate.DefaultText &&
             presetId != "mimo-multimodal")
             throw Invalid("仅 MiMo 多模态预设支持可修改转写提示词；旧ASR保持固定协议");
         if (presetId is not null)
         {
-            if (capabilities != 4) throw Invalid("ASR预设需使用独立语音转写配置，不可混用文本/视觉凭据");
+            if (!isAsr) throw Invalid("ASR预设需使用独立语音转写配置，不可混用文本/视觉凭据");
             if (row.AsrPresetId is not null && row.AsrPresetId != presetId && key is null)
                 throw Invalid("切换ASR厂商预设需要重新填写凭据，不能自动沿用旧密钥");
             var preset = asrPresets?.Resolve(presetId) ?? throw Invalid("ASR预设不可用");
@@ -119,7 +129,9 @@ public sealed class AiModelSettingsService(PimDbContext db, ISecretProtector sec
         var row = await db.AiModelProfiles.SingleOrDefaultAsync(x => x.Id == id, ct)
             ?? throw new DomainException(40401, "模型配置不存在");
         if (row.Revision != revision) throw Conflict();
-        if (await db.AiModelRuntime.AnyAsync(x => x.TextModelId == id || x.VisionModelId == id || x.TranscriptionModelId == id, ct))
+        if (await db.AiModelRuntime.AnyAsync(x => x.TextModelId == id || x.VisionModelId == id ||
+                x.TranscriptionModelId == id || x.NoteOrganizationModelId == id || x.NoteTodoModelId == id ||
+                x.CalendarPlanningModelId == id, ct))
             throw new DomainException(40901, "请先清空或切换默认模型；已有调用记录不会随配置删除");
         db.AiModelProfiles.Remove(row);
         try { await db.SaveChangesAsync(ct); }
@@ -137,16 +149,44 @@ public sealed class AiModelSettingsService(PimDbContext db, ISecretProtector sec
     {
         var row = await db.AiModelRuntime.SingleOrDefaultAsync(ct);
         if ((row?.Revision ?? Guid.Empty) != request.ExpectedRevision) throw Conflict();
-        foreach (var (id, flag) in new[] { (request.TextModelId, 1), (request.VisionModelId, 2), (request.TranscriptionModelId, 4) })
+        var textModelId = ClearEmpty(request.TextModelId);
+        var visionModelId = ClearEmpty(request.VisionModelId);
+        var transcriptionModelId = ClearEmpty(request.TranscriptionModelId);
+        var purposes = new
+        {
+            NoteOrganization = request.HasNoteOrganizationModelId
+                ? ClearEmpty(request.NoteOrganizationModelId)
+                : row?.NoteOrganizationModelId,
+            NoteTodo = request.HasNoteTodoModelId
+                ? ClearEmpty(request.NoteTodoModelId)
+                : row?.NoteTodoModelId,
+            CalendarPlanning = request.HasCalendarPlanningModelId
+                ? ClearEmpty(request.CalendarPlanningModelId)
+                : row?.CalendarPlanningModelId
+        };
+        foreach (var (id, flag) in new[]
+                 {
+                     (textModelId, AiModelCapabilityFlags.Text),
+                     (visionModelId, AiModelCapabilityFlags.Vision),
+                     (transcriptionModelId, AiModelCapabilityFlags.Transcription),
+                     (purposes.NoteOrganization, AiModelCapabilityFlags.Text),
+                     (purposes.NoteTodo, AiModelCapabilityFlags.Text),
+                     (purposes.CalendarPlanning, AiModelCapabilityFlags.Text)
+                 })
         {
             if (id is null) continue;
             var profile = await db.AiModelProfiles.AsNoTracking().SingleOrDefaultAsync(x => x.Id == id, ct);
             if (profile is null || request.Enabled && !profile.Enabled || (profile.Capabilities & flag) == 0)
                 throw Invalid("默认模型不存在、未启用或未声明对应能力");
+            if (flag == AiModelCapabilityFlags.Transcription && string.IsNullOrWhiteSpace(profile.AsrPresetId))
+                throw Invalid("默认语音转写模型必须绑定可用的ASR预设");
         }
         if (row is null) { row = new(); db.AiModelRuntime.Add(row); }
-        row.Enabled = request.Enabled; row.TextModelId = request.TextModelId;
-        row.VisionModelId = request.VisionModelId; row.TranscriptionModelId = request.TranscriptionModelId;
+        row.Enabled = request.Enabled; row.TextModelId = textModelId;
+        row.VisionModelId = visionModelId; row.TranscriptionModelId = transcriptionModelId;
+        row.NoteOrganizationModelId = purposes.NoteOrganization;
+        row.NoteTodoModelId = purposes.NoteTodo;
+        row.CalendarPlanningModelId = purposes.CalendarPlanning;
         row.Revision = Guid.NewGuid();
         try { await db.SaveChangesAsync(ct); }
         catch (DbUpdateConcurrencyException) { throw Conflict(); }
@@ -172,16 +212,21 @@ public sealed class AiModelSettingsService(PimDbContext db, ISecretProtector sec
     {
         if (values is null || values.Count is < 1 or > 3 || values.Distinct().Count() != values.Count || values.Any(v => !Enum.IsDefined(v)))
             throw Invalid("请选择至少一种有效模型能力");
-        return values.Aggregate(0, (result, item) => result | (1 << (int)item));
+        return values.Aggregate(0, (result, item) => result | AiModelCapabilityFlags.ToFlag(item));
     }
     public static AiModelDto Map(AiModelProfileEntity row) => new(row.Id, row.Revision, row.Name, row.BaseUrl,
-        row.Model, row.Enabled, Enum.GetValues<AiModelCapability>().Where(v => (row.Capabilities & (1 << (int)v)) != 0).ToArray(),
+        row.Model, row.Enabled, Enum.GetValues<AiModelCapability>()
+            .Where(v => AiModelCapabilityFlags.Has(row.Capabilities, v)).ToArray(),
         row.ApiKeySecret.Length != 0, row.TimeoutSeconds, row.MaxOutputTokens, row.CreatedAt, row.UpdatedAt,
         row.AsrPresetId, row.AsrBatchBaseUrl, row.AsrPrompt,
-        row.Capabilities == 4 ? AiAsrPromptTemplate.Normalize(row.AsrPrompt).Revision : null,
+        row.Capabilities == AiModelCapabilityFlags.Transcription
+            ? AiAsrPromptTemplate.Normalize(row.AsrPrompt).Revision
+            : null,
         row.ProviderConnectionId);
     private static AiModelSettingsDto Map(AiModelRuntimeEntity row) => new(row.Revision, row.Enabled,
-        row.TextModelId, row.VisionModelId, row.TranscriptionModelId);
+        row.TextModelId, row.VisionModelId, row.TranscriptionModelId, row.NoteOrganizationModelId,
+        row.NoteTodoModelId, row.CalendarPlanningModelId);
+    private static Guid? ClearEmpty(Guid? id) => id == Guid.Empty ? null : id;
     private static DomainException Invalid(string message) => new(40001, message);
     private void DetachAfterFailedSave(AiModelProfileEntity row, AiProviderConnectionEntity? dedicatedConnection)
     {

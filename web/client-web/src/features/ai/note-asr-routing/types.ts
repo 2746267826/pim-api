@@ -89,6 +89,9 @@ export interface RouteConfigView {
   localModelRevision: string | null
   cloudConfigured: boolean
   cloudModelId: string | null
+  effectiveCloudModelId?: string | null
+  effectiveCloudModelName?: string | null
+  effectiveCloudRoute?: string | null
   consentVersion: string
   updatedAtLabel: string
 }

@@ -120,6 +120,10 @@ public sealed class MimoMultimodalPreset(Func<HttpMessageHandler?, HttpClient> i
         {
             throw new DomainException(50401, "MiMo多模态请求超时，结果未确认，本次未自动重试");
         }
+        catch (AiProviderCircuitOpenException)
+        {
+            throw;
+        }
         catch (HttpRequestException)
         {
             throw new DomainException(50206, "MiMo多模态连接异常，结果未确认，本次未自动重试");

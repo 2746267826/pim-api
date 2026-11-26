@@ -15,34 +15,6 @@ public static class AiEndpoints
             .RequireAuthorization(new AuthorizeAttribute { Roles = "admin" })
             .RequireCurrentActiveAdmin();
 
-        group.MapGet("/status", async (IAiUsageService usage, CancellationToken ct) =>
-            Results.Ok(ApiResponse<AiStatusDto>.Ok(await usage.GetStatusAsync(ct))))
-        .Produces<ApiResponse<AiStatusDto>>(200)
-        .Produces(401)
-        .Produces(403)
-        .Produces<ApiResponse<string>>(500);
-
-        group.MapPost("/test", async (IAiGateway gateway, CancellationToken ct) =>
-        {
-            var result = await gateway.CompleteAsync(new AiGatewayRequest(
-                Module: "system",
-                Purpose: "ai.test",
-                SourceObjectType: "system",
-                SourceObjectId: "ai-test",
-                Messages: [new AiMessage(AiMessageRole.User, "Reply with the word ok.")],
-                Model: null,
-                SchemaName: null,
-                SchemaVersion: null,
-                MaxOutputTokens: 32,
-                MaxAttempts: 1,
-                Metadata: new Dictionary<string, string> { ["endpoint"] = "/api/v1/ai/test" }), ct);
-            return Results.Ok(ApiResponse<AiResult>.Ok(result));
-        })
-        .Produces<ApiResponse<AiResult>>(200)
-        .Produces(401)
-        .Produces(403)
-        .Produces<ApiResponse<string>>(500);
-
         group.MapGet("/requests", async (
             DateTimeOffset? from,
             DateTimeOffset? to,
@@ -93,15 +65,6 @@ public static class AiEndpoints
         .Produces<ApiResponse<string>>(400)
         .Produces<ApiResponse<string>>(500);
 
-        group.MapPost("/health-check", async (IAiProviderHealthService health, IAiUsageService usage, CancellationToken ct) =>
-        {
-            await health.CheckAsync(ct);
-            return Results.Ok(ApiResponse<AiStatusDto>.Ok(await usage.GetStatusAsync(ct)));
-        })
-        .Produces<ApiResponse<AiStatusDto>>(200)
-        .Produces(401)
-        .Produces(403)
-        .Produces<ApiResponse<string>>(500);
     }
 
     public static bool TryParseStatus(string? value, out AiRequestStatus? status)

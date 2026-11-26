@@ -69,6 +69,31 @@ public static class AiModelEndpoints
         group.MapDelete("/models/{id:guid}", async (Guid id, [FromQuery] Guid revision, [FromServices] AiModelSettingsService service, CancellationToken ct) =>
         { await service.DeleteAsync(id, revision, ct); return Results.Ok(ApiResponse<bool>.Ok(true)); })
             .Produces<ApiResponse<bool>>(200).Produces(401).Produces(403).Produces(404).Produces(409);
+        group.MapPost("/models/{id:guid}/connection-test", async (Guid id, AiConnectionTestRequest request,
+            [FromServices] IAiConnectionTestService service, CancellationToken ct) =>
+            Results.Ok(ApiResponse<AiConnectionTestResultDto>.Ok(await service.TestAsync(id, request, ct))))
+            .WithMetadata(new RequestSizeLimitAttribute(4096))
+            .Produces<ApiResponse<AiConnectionTestResultDto>>(200).Produces(400).Produces(401).Produces(403)
+            .Produces(404).Produces(409).Produces(413).Produces(503);
+        group.MapGet("/models/connection-tests/latest", async (
+            [FromServices] IAiConnectionTestService service, CancellationToken ct) =>
+            Results.Ok(ApiResponse<IReadOnlyList<AiConnectionTestSummaryDto>>.Ok(
+                await service.ListLatestAsync(ct))))
+            .Produces<ApiResponse<IReadOnlyList<AiConnectionTestSummaryDto>>>(200)
+            .Produces(401).Produces(403);
+        group.MapGet("/models/{id:guid}/connection-tests/latest", async (Guid id, Guid revision,
+            AiModelCapability capability, [FromServices] IAiConnectionTestService service,
+            CancellationToken ct) =>
+        {
+            if (revision == Guid.Empty)
+                return Results.BadRequest(ApiResponse<string>.Error(40001, "必须指定模型配置修订"));
+            var result = await service.GetLatestAsync(id, revision, capability, ct);
+            return result is null
+                ? Results.NotFound(ApiResponse<string>.Error(40401, "当前修订尚无该能力的测试记录"))
+                : Results.Ok(ApiResponse<AiConnectionTestResultDto>.Ok(result));
+        })
+            .Produces<ApiResponse<AiConnectionTestResultDto>>(200).Produces(400).Produces(401).Produces(403)
+            .Produces<ApiResponse<string>>(404);
         group.MapGet("/model-settings", async ([FromServices] AiModelSettingsService service, CancellationToken ct) =>
             Results.Ok(ApiResponse<AiModelSettingsDto>.Ok(await service.GetSettingsAsync(ct))))
             .Produces<ApiResponse<AiModelSettingsDto>>(200).Produces(401).Produces(403);

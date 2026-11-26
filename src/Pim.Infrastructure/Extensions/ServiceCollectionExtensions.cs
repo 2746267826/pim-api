@@ -42,13 +42,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IDaemonHeartbeatService, DaemonHeartbeatService>();
         services.AddScoped<EndpointStatusService>();
         services.AddScoped<ISystemStatusService, SystemStatusService>();
-        services.Configure<AiOptions>(configuration.GetSection("Ai"));
-        services.AddScoped<IAiGateway, AiGateway>();
         services.AddScoped<IAiUsageService, AiUsageService>();
-        services.AddScoped<IAiProviderHealthService, AiProviderHealthService>();
-        services.AddScoped<IAiRequestLogWriter, AiRequestLogWriter>();
-        services.AddSingleton<IAiSchemaRegistry, AiSchemaRegistry>();
-        services.AddSingleton<IAiChatClientFactory, AiChatClientFactory>();
         services.AddScoped<AiModelSettingsService>();
         services.AddScoped<AiUsageLimitService>(sp => new AiUsageLimitService(
             sp.GetRequiredService<PimDbContext>(),
@@ -60,6 +54,7 @@ public static class ServiceCollectionExtensions
             _ => sp.GetRequiredService<IHttpClientFactory>().CreateClient(AiProfileChatClientFactory.ClientName)));
         services.AddSingleton<AiAsrPresetRegistry>();
         services.AddScoped<AiTextCallService>();
+        services.AddScoped<IAiPurposeTextCallService>(sp => sp.GetRequiredService<AiTextCallService>());
         services.AddScoped<AiVisionMaterialService>();
         services.AddScoped<AiAsrMaterialService>();
         services.AddScoped<AiAsrCallService>();
@@ -67,13 +62,17 @@ public static class ServiceCollectionExtensions
         services.AddScoped<AiAsrTransportObservationService>();
         services.AddSingleton<IRemoteAudioFetcher, SecureRemoteAudioFetcher>();
         services.AddSingleton<AiTextCallGate>();
+        services.AddSingleton<AiProviderCircuitBreaker>(sp =>
+            new AiProviderCircuitBreaker(sp.GetService<TimeProvider>()));
+        services.AddScoped<IAiConnectionTestService, AiConnectionTestService>();
         services.AddSingleton<IAiProfileChatClientFactory, AiProfileChatClientFactory>();
+        services.AddTransient<AiProviderCircuitBreakerHandler>();
         services.AddTransient<AiTextResponseLimitHandler>();
         services.AddHttpClient(AiProfileChatClientFactory.ClientName, client => client.Timeout = Timeout.InfiniteTimeSpan)
             .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false,
                 AutomaticDecompression = System.Net.DecompressionMethods.GZip | System.Net.DecompressionMethods.Deflate | System.Net.DecompressionMethods.Brotli })
+            .AddHttpMessageHandler<AiProviderCircuitBreakerHandler>()
             .AddHttpMessageHandler<AiTextResponseLimitHandler>();
-        services.AddHttpClient("litellm-health");
         var conn = configuration.GetConnectionString("DefaultConnection");
         var disableHangfire = bool.TryParse(configuration["DisableHangfire"], out var d) && d;
         if (disableHangfire)

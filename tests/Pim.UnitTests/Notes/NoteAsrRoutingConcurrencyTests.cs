@@ -10,6 +10,7 @@ using Pim.Core.Exceptions;
 using Pim.Core.Notes;
 using Pim.Infrastructure.Ai;
 using Pim.Infrastructure.Ai.Asr;
+using Pim.Infrastructure.Ai.Asr.Mimo;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
 using Pim.Infrastructure.Data.Entities;
@@ -764,6 +765,96 @@ public sealed class NoteAsrRoutingConcurrencyTests
         Assert.Equal(1, await check.NoteAsrAttempts.Where(x => x.Id == attemptId)
             .Select(x => x.CompletedSegments).SingleAsync());
         await CleanupAsync(owner);
+    }
+
+    [SkippableFact]
+    public async Task Account_cloud_route_without_override_follows_changed_global_transcription_default()
+    {
+        Skip.If(string.IsNullOrWhiteSpace(ConnectionString), "PIM_ASR516_PG is not configured");
+        var owner = Guid.NewGuid();
+        var asrId = Guid.NewGuid();
+        var multimodalId = Guid.NewGuid();
+        AiModelRuntimeEntity? previousRuntime = null;
+        await CleanupAsync(owner);
+        var options = Options.Create(new NoteMaterialUploadOptions { StorageRoot = StorageRoot });
+        var materials = new NoteMaterialUploadStore(options);
+        var tasks = new NoteAsrTaskStore(options);
+        var material = NoteDerivedFixture.CreateMaterial(audioSamples: 1_000);
+        await NoteDerivedFixture.UploadAsync(materials, owner, material);
+        try
+        {
+            await using (var db = NewDb(owner))
+            {
+                await db.Database.EnsureCreatedAsync();
+                previousRuntime = await db.AiModelRuntime.AsNoTracking().SingleOrDefaultAsync();
+                await db.Users.AddAsync(NewUser(owner));
+                db.AiModelProfiles.AddRange(
+                    new AiModelProfileEntity
+                    {
+                        Id = asrId, Name = $"asr-{owner:N}", NormalizedName = $"asr-{owner:N}",
+                        BaseUrl = "https://asr.example.invalid/v1/", Model = "mimo-v2.5-asr",
+                        Enabled = true, Capabilities = AiModelCapabilityFlags.Transcription,
+                        AsrPresetId = "mimo-asr", ApiKeySecret = "synthetic"
+                    },
+                    new AiModelProfileEntity
+                    {
+                        Id = multimodalId, Name = $"multimodal-{owner:N}",
+                        NormalizedName = $"multimodal-{owner:N}",
+                        BaseUrl = "https://multimodal.example.invalid/v1/", Model = "mimo-v2.6-flash",
+                        Enabled = true, Capabilities = AiModelCapabilityFlags.Transcription,
+                        AsrPresetId = MimoMultimodalPreset.PresetId, ApiKeySecret = "synthetic"
+                    });
+                await db.SaveChangesAsync();
+                await UpsertRuntimeAsync(db, asrId);
+                var initial = await NewService(db, owner).UpdateConfigAsync(
+                    new UpdateNoteAsrRouteConfigRequest(Guid.Empty, NoteAsrRoute.CloudAsr,
+                        "local-model", "r1", null, "consent-follow-global"), CancellationToken.None);
+                Assert.Null(initial.CloudModelId);
+                Assert.Equal(NoteAsrRoute.CloudAsr, initial.DefaultRoute);
+                Assert.Equal<Guid?>(asrId, initial.EffectiveCloudModelId);
+                Assert.Equal(NoteAsrRoute.CloudAsr, initial.EffectiveCloudRoute);
+
+                await UpsertRuntimeAsync(db, multimodalId);
+                var replanned = await NewService(db, owner).GetConfigAsync(CancellationToken.None);
+                Assert.Null(replanned.CloudModelId);
+                Assert.Equal(NoteAsrRoute.CloudMultimodal, replanned.DefaultRoute);
+                Assert.Equal<Guid?>(multimodalId, replanned.EffectiveCloudModelId);
+                Assert.Equal(NoteAsrRoute.CloudMultimodal, replanned.EffectiveCloudRoute);
+                Assert.Equal<Guid?>(multimodalId, await db.AiModelRuntime.AsNoTracking()
+                    .Select(x => x.TranscriptionModelId).SingleAsync());
+            }
+
+            await using (var db = NewDb(owner))
+            {
+                var presets = new AiAsrPresetRegistry([
+                    new MimoAsrPreset(new UnusedChatClientFactory()),
+                    new MimoMultimodalPreset(_ => new HttpClient())
+                ]);
+                var routing = NewService(db, owner, presets);
+                var service = new NoteAsrService(tasks, materials, db, new FixedUser(owner), presets,
+                    new ConfigurationBuilder().Build(), new PassthroughSecrets(), routing);
+                var version = await materials.GetAsync(owner, material.VersionId, CancellationToken.None);
+                var request = await service.BuildDefaultRequestForProcessingAsync(owner, version,
+                    CancellationToken.None);
+                Assert.Equal(NoteAsrRoute.CloudMultimodal, request.Route?.Route);
+                Assert.Equal<Guid?>(multimodalId, request.Consent?.ModelId);
+            }
+        }
+        finally
+        {
+            await using (var db = NewDb(owner))
+            {
+                db.AiModelProfiles.RemoveRange(db.AiModelProfiles.Where(x => x.Id == asrId || x.Id == multimodalId));
+                if (previousRuntime is null)
+                    db.AiModelRuntime.RemoveRange(db.AiModelRuntime.Where(x => x.Id == AiModelRuntimeEntity.SingletonId));
+                else
+                {
+                    db.AiModelRuntime.Update(previousRuntime);
+                }
+                await db.SaveChangesAsync();
+            }
+            await CleanupAsync(owner);
+        }
     }
 
     [SkippableFact]
@@ -1722,6 +1813,26 @@ public sealed class NoteAsrRoutingConcurrencyTests
             npgsql => { if (retryOnFailure) npgsql.EnableRetryOnFailure(3); });
         if (interceptor is not null) builder.AddInterceptors(interceptor);
         return new PimDbContext(builder.Options, new FixedUser(owner));
+    }
+
+    private static async Task UpsertRuntimeAsync(PimDbContext db, Guid transcriptionModelId)
+    {
+        var runtime = await db.AiModelRuntime.SingleOrDefaultAsync(x => x.Id == AiModelRuntimeEntity.SingletonId);
+        if (runtime is null)
+        {
+            db.AiModelRuntime.Add(new AiModelRuntimeEntity
+            {
+                Id = AiModelRuntimeEntity.SingletonId, Revision = Guid.NewGuid(), Enabled = true,
+                TranscriptionModelId = transcriptionModelId
+            });
+        }
+        else
+        {
+            runtime.Revision = Guid.NewGuid();
+            runtime.Enabled = true;
+            runtime.TranscriptionModelId = transcriptionModelId;
+        }
+        await db.SaveChangesAsync();
     }
 
     private static NoteAsrRoutingService NewService(PimDbContext db, Guid owner,

@@ -20,16 +20,6 @@ services:
       - Kopia__Password=${KOPIA_PASSWORD}
       - DataProtection__KeysPath=/data/data-protection
       - Tika__BaseUrl=${TIKA_BASE_URL:-}
-      - Ai__Enabled=${AI_ENABLED:-false}
-      - Ai__Provider=litellm
-      - Ai__BaseUrl=http://litellm:4000
-      - Ai__ApiKey=${PIM_LITELLM_VIRTUAL_KEY}
-      - Ai__DefaultModel=${PIM_AI_DEFAULT_MODEL:-pim-default}
-      - Ai__TimeoutSeconds=30
-      - Ai__MaxOutputTokensPerRequest=1000
-      - Ai__MaxAttemptsPerRequest=2
-      - Ai__SaveFullPrompts=true
-      - Ai__SaveFullResponses=true
       - PIM_OPS_KEY=${PIM_OPS_KEY:-}
       # 日志最低级别；不设置时用配置里的 Logging:LogLevel:Default（Development 默认 Debug）
       - PIM_LOG_LEVEL=${PIM_LOG_LEVEL:-}
@@ -40,8 +30,6 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      litellm:
-        condition: service_started
     networks:
       - pim-net
 
@@ -107,48 +95,6 @@ services:
       retries: 5
     networks:
       - pim-net
-
-
-  litellm:
-    image: docker.litellm.ai/berriai/litellm:main-latest
-    restart: unless-stopped
-    command: ["--config", "/app/config.yaml", "--port", "4000"]
-    environment:
-      - DATABASE_URL=postgresql://pim:${PG_PASSWORD}@postgres:5432/litellm
-      - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY}
-      - LITELLM_SALT_KEY=${LITELLM_SALT_KEY}
-      - LITELLM_UPSTREAM_MODEL=${LITELLM_UPSTREAM_MODEL}
-      - LITELLM_UPSTREAM_API_KEY=${LITELLM_UPSTREAM_API_KEY}
-      - LITELLM_UPSTREAM_API_BASE=${LITELLM_UPSTREAM_API_BASE}
-    volumes:
-      - ./litellm-config.yaml:/app/config.yaml:ro
-    depends_on:
-      postgres:
-        condition: service_healthy
-      litellm-db-init:
-        condition: service_completed_successfully
-    networks:
-      - pim-net
-
-  litellm-db-init:
-    image: postgres:16-alpine
-    restart: "no"
-    environment:
-      - PGPASSWORD=${PG_PASSWORD}
-    command: >
-      sh -c "psql -h postgres -U pim -d postgres -v ON_ERROR_STOP=1 -tc
-      \"SELECT 1 FROM pg_database WHERE datname = 'litellm'\"
-      | grep -q 1
-      || psql -h postgres -U pim -d postgres -v ON_ERROR_STOP=1 -c
-      \"CREATE DATABASE litellm\""
-    depends_on:
-      postgres:
-        condition: service_healthy
-    networks:
-      - pim-net
-
-
-
 
 
 

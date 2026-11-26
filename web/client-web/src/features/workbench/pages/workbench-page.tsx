@@ -20,7 +20,7 @@ import { todayBusinessDay } from '@/lib/businessDay'
 import { formatDurationC, formatRange, formatTime } from '@/lib/datetime'
 import { POLL } from '@/lib/polling'
 import { Button, Card, CardTitle, EmptyState, MetricCard, PageHeader, Segmented, StatusBadge } from '@/components/ui'
-import { notifySuccess } from '@/lib/notify'
+import { notifySuccess, notifyWarning } from '@/lib/notify'
 
 interface PcSummaryTiles {
   keystats?: { keyPresses?: number } | null
@@ -48,7 +48,7 @@ function AiSuggestionCard({ item }: { item: AiPlanPlaceholder }) {
       <div className="flex items-center gap-2">
         <StatusBadge tone="info" dot={false}>
           <Sparkles className="mr-0.5 inline size-3" aria-hidden />
-          {item.source === 'ai' ? 'AI 规则' : item.source === 'rule-engine' ? '规则引擎' : item.source}
+          {item.source === 'ai' ? 'AI 建议' : item.source === 'rule-engine' ? '规则引擎' : item.source}
         </StatusBadge>
         <span className="tnum ml-auto text-xs text-text-3">{formatRange(item.startsAt, item.endsAt)}</span>
       </div>
@@ -184,7 +184,12 @@ export function WorkbenchPage() {
               loading={ai.generate.isPending}
               onClick={async () => {
                 const res = await ai.generate.mutateAsync(Number(horizon))
-                notifySuccess(res.placeholders.length > 0 ? `已生成 ${res.placeholders.length} 条建议` : '没有可排的任务')
+                const summary = res.placeholders.length > 0 ? `已生成 ${res.placeholders.length} 条建议` : '没有可排的任务'
+                if (res.source === 'rule-engine' && res.fallbackReason) {
+                  notifyWarning(summary, `AI 建议不可用，已回退到规则引擎：${res.fallbackReason}`)
+                } else {
+                  notifySuccess(summary)
+                }
               }}
             >
               <Sparkles className="size-4" aria-hidden /> 一键生成

@@ -88,7 +88,10 @@ export function RouteConfigEditor({
   const localProfile = localModels.find((model) => model.id === selectedLocal && usable(model))
   const cloudProfile = cloudModels.find((model) => model.id === selectedCloud && usable(model) &&
     model.cloudConfigured !== false)
-  const cloudReadyNow = Boolean(cloudProfile && (config.cloudConfigured || cloudProfile.cloudConfigured === true))
+  const followsGlobalCloud = selectedCloud === ''
+  const cloudReadyNow = followsGlobalCloud
+    ? Boolean(config.effectiveCloudModelId)
+    : Boolean(cloudProfile && (config.cloudConfigured || cloudProfile.cloudConfigured === true))
   const defaultLocalBlocked = selectedRoute === 'local' && !localProfile
   const defaultCloudBlocked = selectedRoute === 'cloud' && !cloudReadyNow
   const locked = readOnly || disabled || busy || !onSave
@@ -173,17 +176,23 @@ export function RouteConfigEditor({
           onValueChange={(value) => edit(() => setLocalModelId(set(value)))} /></div>
       <div><Label htmlFor="note-asr-cloud-model">云端模型</Label>
         <Select id="note-asr-cloud-model" ariaLabel="云端模型" value={selectedCloud}
-          options={modelOptions(cloudModels, '未选择云端模型')} disabled={locked}
+          options={modelOptions(cloudModels, '跟随全局默认')} disabled={locked}
           onValueChange={(value) => edit(() => setCloudModelId(set(value)))} /></div>
     </div>
     <p className="text-xs text-text-3">
-      本机与云端配置彼此独立保存；默认路由只决定新任务默认使用哪一个。默认本机不要求云端密钥，默认云端必须有已配置的可用模型。
+      本机与云端配置彼此独立保存；默认路由只决定新任务默认使用哪一个。云端留空时跟随管理员默认语音转写模型，选择具体模型则作为本账号覆盖。
+      {followsGlobalCloud && config.effectiveCloudModelName
+        ? ` 当前全局目标：${config.effectiveCloudModelName}。`
+        : ''}
+      已开始的任务保持发起时固定的目标与版本。
     </p>
     {defaultLocalBlocked && <InlineAlert tone="warn" title="本机默认路由缺少可用模型">
       请选择一个已启用、带版本标识的本机模型；也可以切换为已配置的云端默认路由。
     </InlineAlert>}
     {defaultCloudBlocked && <InlineAlert tone="warn" title="云端尚未配置">
-      {hasConfiguredCloudProfile
+      {followsGlobalCloud
+        ? '管理员尚未配置可用的全局语音转写默认模型；可先保存本机默认，或由管理员补齐后再切换云端。'
+        : hasConfiguredCloudProfile
         ? '已有可用云端配置；选择该配置并保存云端模型后，才能把默认路由改为云端。'
         : '管理员还没有配置可用的云端模型；不能把默认路由改为云端，也不会自动回退到本机。'}
     </InlineAlert>}

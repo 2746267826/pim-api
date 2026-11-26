@@ -62,6 +62,18 @@ describe('toRouteConfigSave', () => {
       .toBe('cloud-asr')
   })
 
+  it('账号跟随全局默认时使用服务端报告的实际预设路由，不凭空猜测', () => {
+    const follow = {
+      ...config,
+      defaultRoute: 'local',
+      cloudModelId: null,
+      effectiveCloudModelId: '00000000-0000-4000-8000-00000000b009',
+      effectiveCloudRoute: 'cloud-multimodal',
+    }
+    expect(toRouteConfigSave(intent({ defaultRouteId: 'cloud', cloudModelId: null }), follow, null, local))
+      .toMatchObject({ defaultRoute: 'cloud-multimodal', cloudModelId: null })
+  })
+
   it('显式null只清空目标字段，其他字段仍回填为完整值', () => {
     expect(toRouteConfigSave(intent({ cloudModelId: null }), config, cloud, local)).toMatchObject({
       localModelId: 'local-model-1', localModelRevision: 'local-rev-1', cloudModelId: null,

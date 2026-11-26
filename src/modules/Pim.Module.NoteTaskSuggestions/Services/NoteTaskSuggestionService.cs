@@ -7,6 +7,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Pim.Core.Ai;
 using Pim.Core.Exceptions;
+using Pim.Infrastructure.Ai;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
 using Pim.Infrastructure.Data.Entities;
@@ -463,11 +464,12 @@ internal sealed class NoteTaskSuggestionService(
             .SingleOrDefaultAsync(x => x.Id == AiModelRuntimeEntity.SingletonId, ct);
         var profile = await db.AiModelProfiles.AsNoTracking()
             .SingleOrDefaultAsync(x => x.Id == consent.ModelId, ct);
-        if (runtime is not { Enabled: true } || runtime.TextModelId != consent.ModelId ||
+        var purposeModelId = AiPurposeModelResolver.ResolveId(runtime, AiPurpose.NoteTodo);
+        if (runtime is not { Enabled: true } || purposeModelId != consent.ModelId ||
             profile is null || !profile.Enabled ||
-            (profile.Capabilities & AiModelCapabilityFlags.Text) == 0 ||
+            !AiModelCapabilityFlags.Has(profile.Capabilities, AiModelCapability.Text) ||
             string.IsNullOrWhiteSpace(profile.ApiKeySecret))
-            throw new DomainException(40901, "当前文本模型不可用，请先在 AI 设置中启用并保存凭据");
+            throw new DomainException(40901, "当前提取待办默认模型不可用，请先在 AI 设置中启用并保存凭据");
         if (profile.Revision != consent.ModelRevision ||
             !string.Equals(profile.BaseUrl, consent.Endpoint, StringComparison.Ordinal))
             throw new DomainException(40901, "文本模型或目标地址已变化，请刷新后重新确认费用与来源");

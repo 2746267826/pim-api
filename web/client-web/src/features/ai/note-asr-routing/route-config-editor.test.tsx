@@ -100,7 +100,7 @@ describe('RouteConfigEditor', () => {
     save.mockClear()
     render(<RouteConfigEditor config={dual} accountScope="user-1" loading={false} loadError={null}
       onReload={() => {}} localModels={localModels} cloudModels={cloudModels} onSave={save} />)
-    await choose('云端模型', '未选择云端模型')
+    await choose('云端模型', '跟随全局默认')
     await userEvent.click(screen.getByRole('checkbox', { name: '确认保存路由设置' }))
     await userEvent.click(screen.getByRole('button', { name: '保存路由设置' }))
     await waitFor(() => expect(save).toHaveBeenCalledOnce())
@@ -127,6 +127,28 @@ describe('RouteConfigEditor', () => {
     expect((screen.getByRole('button', { name: '保存路由设置' }) as HTMLButtonElement).disabled).toBe(true)
     await userEvent.click(screen.getByRole('button', { name: '保存路由设置' }))
     expect(save).not.toHaveBeenCalled()
+  })
+
+  it('账号可跟随全局默认并保留null覆盖，已开始的版本仍由服务端冻结', async () => {
+    const save = vi.fn().mockResolvedValue(undefined)
+    const global = {
+      ...config,
+      defaultRouteId: 'cloud',
+      effectiveCloudModelId: '00000000-0000-4000-8000-00000000b009',
+      effectiveCloudModelName: '全局 MiMo Flash',
+      effectiveCloudRoute: 'cloud-multimodal',
+    }
+    render(<RouteConfigEditor config={global} accountScope="user-1" loading={false} loadError={null}
+      onReload={() => {}} localModels={localModels} cloudModels={cloudModels} onSave={save} />)
+
+    expect(screen.getByText(/当前全局目标：全局 MiMo Flash/)).toBeTruthy()
+    await userEvent.click(screen.getByRole('checkbox', { name: '确认保存路由设置' }))
+    await userEvent.click(screen.getByRole('button', { name: '保存路由设置' }))
+
+    await waitFor(() => expect(save).toHaveBeenCalledOnce())
+    expect(save.mock.calls[0]?.[0]).toMatchObject({
+      defaultRouteId: 'cloud', cloudModelId: null, confirmed: true,
+    })
   })
 
   it('选择云端会让未配置状态立即阻止保存', async () => {

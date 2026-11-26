@@ -211,6 +211,21 @@ afterEach(() => {
 })
 
 describe('NoteTaskSuggestionsPanel', () => {
+  it('preselects the NoteTodo purpose default returned by the server', async () => {
+    derived.destinations.mockResolvedValue({
+      total: 1,
+      items: [destination],
+      defaultModelId: modelId,
+      purpose: 'NoteTodo',
+    })
+    page()
+
+    await waitFor(() => expect(
+      screen.getByRole('combobox', { name: '文本模型目标' }).textContent,
+    ).toContain('合成文本目标'))
+    expect(derived.destinations).toHaveBeenCalledWith('NoteTodo', expect.any(AbortSignal))
+  })
+
   it('hides frozen digests, task ids and revisions from ordinary users', async () => {
     const taskId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd'
     api.list.mockResolvedValue({ total: 1, items: [{ ...suggestion, taskId }] })

@@ -6,7 +6,7 @@ import { useAuth } from '@/features/auth/auth-context'
 import { notifyError, notifySuccess } from '@/lib/notify'
 import { formatTime } from '@/lib/datetime'
 import { Button, Card, Chip, Dialog, DialogBody, DialogContent, DialogFooter, DialogHeader, EmptyState, Input, Label, PageHeader, Segmented, Select, Skeleton, StatusBadge, Switch, Textarea } from '@/components/ui'
-import { aiApi, type AsrPreset, type CallRequest, type CallResult, type Model, type ModelSettings, type SaveSettings } from './api'
+import { aiApi, type AsrPreset, type CallRequest, type CallResult, type ConnectionTestSummary, type Model, type ModelSettings, type SaveSettings } from './api'
 import { createAiRequestId } from './request-id'
 import { capabilities, capabilityNames, ModelEditor } from './model-editor'
 import { CallImages, VisionCall } from './vision-call'
@@ -16,10 +16,16 @@ import { isMimoPro } from './asr-model-guidance'
 import { AsrResultInsights } from './asr-result-insights'
 import { NoteAsrRoutingView } from './note-asr-routing-view'
 import { AiUsageLimits } from './ai-usage-limits'
+import { ConnectionTestDialog, connectionTestStatusNames } from './connection-test'
 
 const states = { Queued: '排队中', Cancelling: '取消中', Succeeded: '成功', Failed: '失败', Blocked: '未执行', TimedOut: '超时', FailedValidation: '结构不符', Running: '进行中', Cancelled: '已取消', Incomplete: '未完整/未确认' }
 const pageTabs = ['models', 'asr', 'history', 'usage'] as const
 type PageTab = typeof pageTabs[number]
+const purposeFields = [
+  { key: 'noteOrganizationModelId' as const, label: '笔记整理默认模型' },
+  { key: 'noteTodoModelId' as const, label: '提取待办默认模型' },
+  { key: 'calendarPlanningModelId' as const, label: '日历排程默认模型' },
+]
 function pageTab(value: string | null): PageTab {
   return pageTabs.includes(value as PageTab) ? value as PageTab : 'models'
 }
@@ -28,6 +34,19 @@ function State({ value }: { value: string }) {
 }
 const errorText = (error: unknown) => error instanceof Error ? error.message : '请求失败，请稍后重试'
 
+function ConnectionTestBadge({ model, tests }: { model: Model; tests: ConnectionTestSummary[] }) {
+  const latest = tests.filter((test) => test.modelId === model.id)
+    .sort((left, right) => right.testedAt.localeCompare(left.testedAt))[0]
+  if (!latest) return <StatusBadge tone="neutral" dot={false}>未测试连接</StatusBadge>
+  const stale = latest.modelRevision !== model.revision
+  const tone = latest.status === 'Succeeded' ? (stale ? 'warn' : 'ok')
+    : latest.status === 'Running' ? 'info'
+      : latest.status === 'Blocked' || latest.status === 'CapabilityMismatch' || latest.status === 'Unknown'
+        ? 'warn' : 'crit'
+  return <StatusBadge tone={tone} dot={false}>
+    {connectionTestStatusNames[latest.status]}{stale ? '（旧修订，需重测）' : ''}
+  </StatusBadge>
+}
 export function AiSettingsPage() {
   const { user } = useAuth()
   if (!user || user.role !== 'admin') return <><PageHeader title="AI 设置" /><EmptyState title="需要管理员权限" description="模型配置与调用记录由管理员管理。" /></>
@@ -49,12 +68,14 @@ function Workspace({ userId }: { userId: string }) {
   const [asrOpened, setAsrOpened] = useState(false)
   const [creatingAsr, setCreatingAsr] = useState(false)
   const [editing, setEditing] = useState<Model | null | undefined>(undefined)
+  const [testing, setTesting] = useState<Model | null>(null)
   const [deleting, setDeleting] = useState<Model | null>(null)
   const [busy, setBusy] = useState(false)
   const [detailId, setDetailId] = useState<string | null>(null)
   const models = useQuery({ queryKey: [...prefix, 'models'], queryFn: ({ signal }) => aiApi.models(signal) })
   const settings = useQuery({ queryKey: [...prefix, 'settings'], queryFn: ({ signal }) => aiApi.settings(signal) })
   const connections = useQuery({ queryKey: [...prefix, 'connections'], queryFn: ({ signal }) => aiApi.connections(signal) })
+  const connectionTests = useQuery({ queryKey: [...prefix, 'connection-tests'], queryFn: ({ signal }) => aiApi.connectionTests(signal), enabled: tab === 'models' })
   const presets = useQuery({ queryKey: ['ai-asr-presets'], queryFn: ({ signal }) => aiApi.asrPresets(signal), enabled: tab === 'asr' })
   const refresh = () => qc.invalidateQueries({ queryKey: prefix })
   useEffect(() => () => {
@@ -66,6 +87,9 @@ function Workspace({ userId }: { userId: string }) {
     try {
       const saved = await aiApi.saveSettings({ enabled: settings.data.enabled, textModelId: settings.data.textModelId,
         visionModelId: settings.data.visionModelId, transcriptionModelId: settings.data.transcriptionModelId,
+        noteOrganizationModelId: settings.data.noteOrganizationModelId ?? null,
+        noteTodoModelId: settings.data.noteTodoModelId ?? null,
+        calendarPlanningModelId: settings.data.calendarPlanningModelId ?? null,
         expectedRevision: settings.data.revision, ...patch })
       qc.setQueryData([...prefix, 'settings'], saved); notifySuccess('模型设置已保存')
     } catch (error) { notifyError(errorText(error)); void refresh() }
@@ -83,7 +107,7 @@ function Workspace({ userId }: { userId: string }) {
       {(models.isError || settings.isError) && (!models.data || !settings.data) ? <Card className="p-5"><EmptyState title="模型设置加载失败" description={errorText(models.error ?? settings.error)} action={<Button onClick={() => void refresh()}>重试</Button>} /></Card>
         : !models.data || !settings.data ? <Skeleton className="h-48" /> : <>
           <Card className="space-y-4 p-5">
-            <div className="flex items-center justify-between gap-4"><div><h2 className="text-sm font-semibold text-text-1">SDK 直连</h2><p className="mt-1 text-xs text-text-3">此开关控制新直连调用；旧环境链路保留原有配置。</p></div>
+            <div className="flex items-center justify-between gap-4"><div><h2 className="text-sm font-semibold text-text-1">SDK 直连</h2><p className="mt-1 text-xs text-text-3">此开关控制所有 AI/ASR 调用；不存在旧网关回退路径。</p></div>
               <div className="flex items-center gap-2"><Label htmlFor="ai-sdk-enabled">启用 SDK 直连</Label><Switch id="ai-sdk-enabled" checked={settings.data.enabled} disabled={busy} onCheckedChange={(enabled) => void patchSettings({ enabled })} /></div></div>
             <div className="grid gap-3 md:grid-cols-3">{capabilities.map((cap) => {
               const field = cap === 'Text' ? 'textModelId' : cap === 'Vision' ? 'visionModelId' : 'transcriptionModelId'
@@ -93,6 +117,20 @@ function Workspace({ userId }: { userId: string }) {
                 options={[{ value: '', label: '未选择' }, ...options.map((m) => ({ value: m.id, label: m.name + (m.enabled ? '' : '（已停用）') }))]}
                 onValueChange={(value) => void patchSettings({ [field]: value || null })} /></div>
             })}</div>
+            <div className="space-y-2 rounded-ctl border border-border p-3">
+              <div><p className="text-sm font-medium text-text-1">按用途默认模型</p>
+                <p className="mt-1 text-xs leading-5 text-text-3">用途未选择时沿用上方文本/视觉默认；选择后不会再静默改用其他模型。笔记整理需要声明的能力覆盖本次材料（含图片时必须有视觉）。</p></div>
+              <div className="grid gap-3 md:grid-cols-3">
+                {purposeFields.map((field) => {
+                  const chosen = settings.data![field.key]
+                  const options = models.data!.filter((m) => m.capabilities.includes('Text') && (m.enabled || m.id === chosen))
+                  return <div key={field.key}><Label htmlFor={`ai-purpose-${field.key}`}>{field.label}</Label>
+                    <Select id={`ai-purpose-${field.key}`} ariaLabel={field.label} value={chosen ?? ''} disabled={busy}
+                      options={[{ value: '', label: '沿用类型默认' }, ...options.map((m) => ({ value: m.id, label: m.name + (m.enabled ? '' : '（已停用）') }))]}
+                      onValueChange={(value) => void patchSettings({ [field.key]: value || null })} /></div>
+                })}
+              </div>
+            </div>
             <p className="text-xs text-text-3">已开始的调用使用固定配置。文本与图片直接调用，ASR通过接入预设使用独立模型与凭据。</p>
           </Card>
           <Card className="p-5"><div className="mb-4 flex flex-wrap items-center justify-between gap-3"><h2 className="text-sm font-semibold text-text-1">模型配置（{models.data.length}）</h2><div className="flex flex-wrap gap-2">
@@ -100,10 +138,10 @@ function Workspace({ userId }: { userId: string }) {
             <Button size="sm" variant="primary" onClick={() => { setCreatingAsr(false); setEditing(null) }}><Plus className="size-4" aria-hidden />添加模型</Button></div></div>
             {models.data.length === 0 ? <EmptyState title="添加第一个模型" description="保存服务地址、模型标识和凭据，即可启用文字调用。" />
               : <div className="grid gap-3 lg:grid-cols-2">{models.data.map((model) => <div key={model.id} className="min-w-0 space-y-2 rounded-ctl border border-border p-4">
-                <div className="flex flex-wrap items-center gap-2"><span className="font-medium text-text-1">{model.name}</span><StatusBadge tone={model.enabled ? 'ok' : 'neutral'} dot={false}>{model.enabled ? '已启用' : '已停用'}</StatusBadge></div>
+                <div className="flex flex-wrap items-center gap-2"><span className="font-medium text-text-1">{model.name}</span><StatusBadge tone={model.enabled ? 'ok' : 'neutral'} dot={false}>{model.enabled ? '已启用' : '已停用'}</StatusBadge><ConnectionTestBadge model={model} tests={connectionTests.data ?? []} /></div>
                 <p className="break-all font-mono text-xs text-text-2">{model.model}</p><p className="break-all text-xs text-text-3">{model.baseUrl}</p>
                 <div className="flex flex-wrap gap-1">{model.capabilities.map((cap) => <Chip key={cap}>{capabilityNames[cap]}</Chip>)}</div>
-                <div className="flex flex-wrap items-center justify-between gap-2"><span className="text-xs text-text-3">凭据{model.hasApiKey ? '已保存' : '未设置'} · {model.timeoutSeconds}秒 · {model.asrPresetId ? `ASR预设 ${model.asrPresetId}` : `${model.maxOutputTokens}输出上限`}</span><div className="flex gap-1"><Button size="sm" variant="ghost" onClick={() => setEditing(model)} aria-label={`编辑 ${model.name}`}>编辑</Button><Button size="sm" variant="ghost" onClick={() => setDeleting(model)} aria-label={`删除 ${model.name}`}>删除</Button></div></div>
+                <div className="flex flex-wrap items-center justify-between gap-2"><span className="text-xs text-text-3">凭据{model.hasApiKey ? '已保存' : '未设置'} · {model.timeoutSeconds}秒 · {model.asrPresetId ? `ASR预设 ${model.asrPresetId}` : `${model.maxOutputTokens}输出上限`}</span><div className="flex flex-wrap gap-1"><Button size="sm" variant="ghost" onClick={() => setTesting(model)} aria-label={`测试连接 ${model.name}`}>测试连接</Button><Button size="sm" variant="ghost" onClick={() => setEditing(model)} aria-label={`编辑 ${model.name}`}>编辑</Button><Button size="sm" variant="ghost" onClick={() => setDeleting(model)} aria-label={`删除 ${model.name}`}>删除</Button></div></div>
               </div>)}</div>}
           </Card>
           <Segmented className="flex-wrap rounded-2xl" value={callMode} onValueChange={(value) => { setCallMode(value); if (value === 'asr') setAsrOpened(true); if (value === 'note-asr') setNoteAsrOpened(true) }} options={[{ value: 'text', label: '文字调用' }, { value: 'vision', label: '图片与正文' }, { value: 'asr', label: '音频转写' }, { value: 'note-asr', label: '笔记录音任务' }]} />
@@ -111,7 +149,6 @@ function Workspace({ userId }: { userId: string }) {
           <div hidden={callMode !== 'vision'}><VisionCall userId={userId} models={models.data} settings={settings.data} changed={() => void refresh()} showDetail={setDetailId} renderStatus={(status) => <State value={status} />} /></div>
           {asrOpened && <div hidden={callMode !== 'asr'}><AsrCall userId={userId} models={models.data} settings={settings.data} changed={() => void refresh()} showDetail={setDetailId} renderStatus={(status) => <State value={status} />} /></div>}
           {noteAsrOpened && <div hidden={callMode !== 'note-asr'}><NoteAsrTasks userId={userId} models={models.data} settings={settings.data} showDetail={setDetailId} /></div>}
-          <LegacyInfo prefix={prefix} />
         </>}
     </div>
     {tab === 'history' && <History prefix={prefix} showDetail={setDetailId} />}
@@ -119,6 +156,7 @@ function Workspace({ userId }: { userId: string }) {
     {editing !== undefined && <ModelEditor key={editing?.id ?? (creatingAsr ? 'new-asr' : 'new')} model={editing}
       connections={connections.data ?? []} connectionsLoading={connections.isLoading}
       initialAsr={creatingAsr && editing === null} close={() => setEditing(undefined)} save={async (body) => { const result = await aiApi.saveModel(editing?.id, body); await refresh(); notifySuccess('模型已保存'); return result }} />}
+    {testing && <ConnectionTestDialog model={testing} close={() => { setTesting(null); void refresh() }} onShowLog={setDetailId} />}
     <Dialog open={deleting != null} onOpenChange={(open) => { if (!open && !busy) setDeleting(null) }}><DialogContent showClose={!busy}>
       <DialogHeader title="删除模型配置" description="已有调用记录保留；默认模型需先切换或清空。" /><DialogBody><p className="text-sm text-text-2">确认删除“{deleting?.name}”？</p></DialogBody>
       <DialogFooter><Button variant="secondary" disabled={busy} onClick={() => setDeleting(null)}>取消</Button><Button variant="primary" loading={busy} onClick={() => {
@@ -287,13 +325,4 @@ function AsrInfo({ metadata }: { metadata: string }) {
   try { const parsed: unknown = JSON.parse(metadata); if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null; value = parsed as Record<string, unknown> } catch { return null }
   return <div className="space-y-1 text-xs text-text-3"><p>ASR预设 {String(value.asrPresetId ?? '未提供')} · v{String(value.asrPresetVersion ?? '—')} · 语言 {String(value.language ?? '—')} · 服务商报告音频 {typeof value.reportedAudioSeconds === 'number' ? `${value.reportedAudioSeconds}秒` : '时长未知'}；音频按指纹引用保存。</p>
     <p>中断来源 {String(value.abortSource ?? '未提供')} · 结果已知 {value.outcomeKnown === true ? '是' : '否'} · 网关状态 {String(value.gatewayStatus ?? '未提供')} · 服务商状态 {String(value.upstreamStatus ?? '未提供')} · 输出上限 {String(value.maxOutputTokens ?? '未提供')} token</p></div>
-}
-
-function LegacyInfo({ prefix }: { prefix: string[] }) {
-  const [open, setOpen] = useState(false)
-  const data = useQuery({ queryKey: [...prefix, 'legacy'], queryFn: ({ signal }) => aiApi.legacy(signal), enabled: open })
-  return <div><Button variant="ghost" size="sm" onClick={() => setOpen((v) => !v)}>{open ? '收起' : '查看'}旧环境链路信息</Button>{open && <Card className="mt-2 space-y-2 p-4 text-xs text-text-3">
-    <p>尚未迁移的原有功能继续沿用环境配置，调用记录与直连统一统计。</p>
-    {data.data ? <><p>旧链路：{data.data.enabled ? '已启用' : '未启用'} · {data.data.provider} · {data.data.defaultModel}</p><p className="break-all">{data.data.baseUrl}</p></> : data.isError ? <p>{errorText(data.error)}</p> : <p>正在读取…</p>}
-  </Card>}</div>
 }

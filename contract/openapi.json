@@ -1753,6 +1753,205 @@
         ],
         "type": "object"
       },
+      "AiConnectionTestRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "capability": {
+            "$ref": "#/components/schemas/AiModelCapability"
+          },
+          "clientRequestId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "expectedRevision": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "capability",
+          "clientRequestId",
+          "expectedRevision"
+        ],
+        "type": "object"
+      },
+      "AiConnectionTestResultDto": {
+        "additionalProperties": false,
+        "properties": {
+          "capability": {
+            "$ref": "#/components/schemas/AiModelCapability"
+          },
+          "clientRequestId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "durationMs": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "errorCode": {
+            "nullable": true,
+            "type": "string"
+          },
+          "errorMessage": {
+            "nullable": true,
+            "type": "string"
+          },
+          "logId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "modelId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "modelRevision": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "probe": {
+            "type": "string"
+          },
+          "providerAttempted": {
+            "type": "boolean"
+          },
+          "replayed": {
+            "type": "boolean"
+          },
+          "responsePreview": {
+            "nullable": true,
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/AiConnectionTestStatus"
+          },
+          "testedAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "capability",
+          "clientRequestId",
+          "durationMs",
+          "logId",
+          "modelId",
+          "modelRevision",
+          "probe",
+          "providerAttempted",
+          "replayed",
+          "status",
+          "testedAt"
+        ],
+        "type": "object"
+      },
+      "AiConnectionTestResultDtoApiResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "data": {
+            "$ref": "#/components/schemas/AiConnectionTestResultDto"
+          },
+          "message": {
+            "type": "string"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
+        "type": "object"
+      },
+      "AiConnectionTestStatus": {
+        "enum": [
+          "Succeeded",
+          "Failed",
+          "TimedOut",
+          "Blocked",
+          "CapabilityMismatch",
+          "Running",
+          "Cancelled",
+          "Unknown"
+        ],
+        "type": "string"
+      },
+      "AiConnectionTestSummaryDto": {
+        "additionalProperties": false,
+        "properties": {
+          "capability": {
+            "$ref": "#/components/schemas/AiModelCapability"
+          },
+          "logId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "modelId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "modelRevision": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "providerAttempted": {
+            "type": "boolean"
+          },
+          "status": {
+            "$ref": "#/components/schemas/AiConnectionTestStatus"
+          },
+          "testedAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "capability",
+          "logId",
+          "modelId",
+          "modelRevision",
+          "providerAttempted",
+          "status",
+          "testedAt"
+        ],
+        "type": "object"
+      },
+      "AiConnectionTestSummaryDtoIReadOnlyListApiResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/AiConnectionTestSummaryDto"
+            },
+            "nullable": true,
+            "type": "array"
+          },
+          "message": {
+            "type": "string"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
+        "type": "object"
+      },
       "AiModelCapability": {
         "enum": [
           "Text",
@@ -1904,8 +2103,23 @@
       "AiModelSettingsDto": {
         "additionalProperties": false,
         "properties": {
+          "calendarPlanningModelId": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          },
           "enabled": {
             "type": "boolean"
+          },
+          "noteOrganizationModelId": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          },
+          "noteTodoModelId": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
           },
           "revision": {
             "format": "uuid",
@@ -2206,6 +2420,14 @@
           "timestamp"
         ],
         "type": "object"
+      },
+      "AiPurpose": {
+        "enum": [
+          "NoteOrganization",
+          "NoteTodo",
+          "CalendarPlanning"
+        ],
+        "type": "string"
       },
       "AiRequestLogDetailDto": {
         "additionalProperties": false,
@@ -2554,134 +2776,6 @@
           "Incomplete"
         ],
         "type": "string"
-      },
-      "AiResult": {
-        "additionalProperties": false,
-        "properties": {
-          "logId": {
-            "format": "uuid",
-            "nullable": true,
-            "type": "string"
-          },
-          "parsedOutputJson": {
-            "nullable": true,
-            "type": "string"
-          },
-          "responseText": {
-            "nullable": true,
-            "type": "string"
-          },
-          "schemaValidationErrors": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "status": {
-            "$ref": "#/components/schemas/AiRequestStatus"
-          },
-          "usage": {
-            "$ref": "#/components/schemas/AiTokenUsage"
-          },
-          "userFacingError": {
-            "nullable": true,
-            "type": "string"
-          }
-        },
-        "required": [
-          "schemaValidationErrors",
-          "status",
-          "usage"
-        ],
-        "type": "object"
-      },
-      "AiResultApiResponse": {
-        "additionalProperties": false,
-        "properties": {
-          "code": {
-            "format": "int32",
-            "type": "integer"
-          },
-          "data": {
-            "$ref": "#/components/schemas/AiResult"
-          },
-          "message": {
-            "type": "string"
-          },
-          "timestamp": {
-            "format": "date-time",
-            "type": "string"
-          }
-        },
-        "required": [
-          "code",
-          "message",
-          "timestamp"
-        ],
-        "type": "object"
-      },
-      "AiStatusDto": {
-        "additionalProperties": false,
-        "properties": {
-          "baseUrl": {
-            "type": "string"
-          },
-          "defaultModel": {
-            "type": "string"
-          },
-          "enabled": {
-            "type": "boolean"
-          },
-          "lastError": {
-            "nullable": true,
-            "type": "string"
-          },
-          "lastHealthCheckAt": {
-            "format": "date-time",
-            "nullable": true,
-            "type": "string"
-          },
-          "provider": {
-            "type": "string"
-          },
-          "recentSuccessfulCallAt": {
-            "format": "date-time",
-            "nullable": true,
-            "type": "string"
-          }
-        },
-        "required": [
-          "baseUrl",
-          "defaultModel",
-          "enabled",
-          "provider"
-        ],
-        "type": "object"
-      },
-      "AiStatusDtoApiResponse": {
-        "additionalProperties": false,
-        "properties": {
-          "code": {
-            "format": "int32",
-            "type": "integer"
-          },
-          "data": {
-            "$ref": "#/components/schemas/AiStatusDto"
-          },
-          "message": {
-            "type": "string"
-          },
-          "timestamp": {
-            "format": "date-time",
-            "type": "string"
-          }
-        },
-        "required": [
-          "code",
-          "message",
-          "timestamp"
-        ],
-        "type": "object"
       },
       "AiTextCallRequest": {
         "additionalProperties": false,
@@ -9915,6 +10009,10 @@
       "GenerateAiPlanResponse": {
         "additionalProperties": false,
         "properties": {
+          "fallbackReason": {
+            "nullable": true,
+            "type": "string"
+          },
           "placeholders": {
             "items": {
               "$ref": "#/components/schemas/AiPlanPlaceholderViewDto"
@@ -16990,6 +17088,19 @@
           "defaultRoute": {
             "type": "string"
           },
+          "effectiveCloudModelId": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          },
+          "effectiveCloudModelName": {
+            "nullable": true,
+            "type": "string"
+          },
+          "effectiveCloudRoute": {
+            "nullable": true,
+            "type": "string"
+          },
           "localModelId": {
             "nullable": true,
             "type": "string"
@@ -17843,11 +17954,19 @@
       "NoteDerivedDestinationsDto": {
         "additionalProperties": false,
         "properties": {
+          "defaultModelId": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          },
           "items": {
             "items": {
               "$ref": "#/components/schemas/NoteDerivedDestinationDto"
             },
             "type": "array"
+          },
+          "purpose": {
+            "$ref": "#/components/schemas/AiPurpose"
           },
           "total": {
             "format": "int32",
@@ -23353,11 +23472,26 @@
       "SaveAiModelSettingsRequest": {
         "additionalProperties": false,
         "properties": {
+          "calendarPlanningModelId": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          },
           "enabled": {
             "type": "boolean"
           },
           "expectedRevision": {
             "format": "uuid",
+            "type": "string"
+          },
+          "noteOrganizationModelId": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          },
+          "noteTodoModelId": {
+            "format": "uuid",
+            "nullable": true,
             "type": "string"
           },
           "textModelId": {
@@ -27743,46 +27877,6 @@
         ]
       }
     },
-    "/api/v1/ai/health-check": {
-      "post": {
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AiStatusDtoApiResponse"
-                }
-              }
-            },
-            "description": "OK"
-          },
-          "401": {
-            "description": "Unauthorized"
-          },
-          "403": {
-            "description": "Forbidden"
-          },
-          "500": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/StringApiResponse"
-                }
-              }
-            },
-            "description": "Internal Server Error"
-          }
-        },
-        "security": [
-          {
-            "bearerAuth": []
-          }
-        ],
-        "tags": [
-          "Pim.Api"
-        ]
-      }
-    },
     "/api/v1/ai/model-settings": {
       "get": {
         "responses": {
@@ -27931,6 +28025,36 @@
         ]
       }
     },
+    "/api/v1/ai/models/connection-tests/latest": {
+      "get": {
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AiConnectionTestSummaryDtoIReadOnlyListApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Pim.Api"
+        ]
+      }
+    },
     "/api/v1/ai/models/{id}": {
       "delete": {
         "parameters": [
@@ -28033,6 +28157,143 @@
           },
           "409": {
             "description": "Conflict"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Pim.Api"
+        ]
+      }
+    },
+    "/api/v1/ai/models/{id}/connection-test": {
+      "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AiConnectionTestRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AiConnectionTestResultDtoApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "409": {
+            "description": "Conflict"
+          },
+          "413": {
+            "description": "Content Too Large"
+          },
+          "503": {
+            "description": "Service Unavailable"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Pim.Api"
+        ]
+      }
+    },
+    "/api/v1/ai/models/{id}/connection-tests/latest": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "revision",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "capability",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/AiModelCapability"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AiConnectionTestResultDtoApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "Not Found"
           }
         },
         "security": [
@@ -28405,86 +28666,6 @@
           },
           "409": {
             "description": "Conflict"
-          }
-        },
-        "security": [
-          {
-            "bearerAuth": []
-          }
-        ],
-        "tags": [
-          "Pim.Api"
-        ]
-      }
-    },
-    "/api/v1/ai/status": {
-      "get": {
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AiStatusDtoApiResponse"
-                }
-              }
-            },
-            "description": "OK"
-          },
-          "401": {
-            "description": "Unauthorized"
-          },
-          "403": {
-            "description": "Forbidden"
-          },
-          "500": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/StringApiResponse"
-                }
-              }
-            },
-            "description": "Internal Server Error"
-          }
-        },
-        "security": [
-          {
-            "bearerAuth": []
-          }
-        ],
-        "tags": [
-          "Pim.Api"
-        ]
-      }
-    },
-    "/api/v1/ai/test": {
-      "post": {
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AiResultApiResponse"
-                }
-              }
-            },
-            "description": "OK"
-          },
-          "401": {
-            "description": "Unauthorized"
-          },
-          "403": {
-            "description": "Forbidden"
-          },
-          "500": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/StringApiResponse"
-                }
-              }
-            },
-            "description": "Internal Server Error"
           }
         },
         "security": [
@@ -44933,6 +45114,15 @@
     },
     "/api/v1/native-notes/derived-tasks/destinations": {
       "get": {
+        "parameters": [
+          {
+            "in": "query",
+            "name": "purpose",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -44943,6 +45133,9 @@
               }
             },
             "description": "OK"
+          },
+          "400": {
+            "description": "Bad Request"
           },
           "401": {
             "description": "Unauthorized"

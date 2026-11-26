@@ -20,7 +20,7 @@ namespace Pim.Infrastructure.Ai;
 
 public sealed class AiTextCallService(PimDbContext db, ISecretProtector secrets, IAiProfileChatClientFactory clients,
     ICurrentUserService currentUser, AiTextCallGate gate, AiVisionMaterialService? visionMaterials = null,
-    AiUsageLimitService? usageLimits = null)
+    AiUsageLimitService? usageLimits = null) : IAiPurposeTextCallService
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     internal const int MaxAudioContextBytes = 8 * 1024 * 1024;
@@ -37,7 +37,20 @@ public sealed class AiTextCallService(PimDbContext db, ISecretProtector secrets,
     public Task<AiTextCallResultDto> CallAsync(AiTextCallRequest request, CancellationToken ct)
     {
         var owner = currentUser.UserId ?? throw new DomainException(1002, "请先登录");
-        return CallCoreAsync(owner, request, null, null, null, null, ct);
+        return CallCoreAsync(owner, request, null, null, null, null, null, ct);
+    }
+
+    /// <summary>
+    /// Server-initiated text call for a configured purpose. The client cannot choose another
+    /// purpose default; an unset purpose falls back to the legacy text/vision defaults.
+    /// </summary>
+    public Task<AiTextCallResultDto> CallForPurposeAsync(AiPurpose purpose, AiTextCallRequest request,
+        CancellationToken ct)
+    {
+        var owner = currentUser.UserId ?? throw new DomainException(1002, "请先登录");
+        if (request.ExpectedUserId != owner)
+            throw new DomainException(40301, "会话已改变，本次未发送模型");
+        return CallCoreAsync(owner, request, null, null, null, null, purpose, ct);
     }
 
     public Task<AiTextCallResultDto> CallVisionAsync(AiVisionCallRequest request, CancellationToken ct)
@@ -47,7 +60,7 @@ public sealed class AiTextCallService(PimDbContext db, ISecretProtector secrets,
             throw new DomainException(40001, "请先核对本次图片、模型与目标地址，并明确同意发送图片");
         return CallCoreAsync(currentUser.UserId!.Value,
             new(request.ClientRequestId, request.ExpectedUserId, request.Prompt, request.SystemPrompt, request.ModelId),
-            AiVisionMaterialService.Decode(request), null, request.Consent, null, ct);
+            AiVisionMaterialService.Decode(request), null, request.Consent, null, null, ct);
     }
 
     // Background callers must supply the durable owner from their persisted task. This never impersonates an HTTP user.
@@ -57,7 +70,7 @@ public sealed class AiTextCallService(PimDbContext db, ISecretProtector secrets,
     {
         var scope = RequireOwnerCallScope(sourceObjectType, sourceObjectId, purpose);
         await RequireActiveOwnerAsync(owner, ct);
-        return await CallCoreAsync(owner, request, null, null, destination, scope, ct);
+        return await CallCoreAsync(owner, request, null, null, destination, scope, null, ct);
     }
 
     /// <summary>
@@ -71,7 +84,7 @@ public sealed class AiTextCallService(PimDbContext db, ISecretProtector secrets,
         var scope = RequireOwnerCallScope(sourceObjectType, sourceObjectId, purpose);
         await RequireActiveOwnerAsync(owner, ct);
         ValidateAudioContext(owner, audio);
-        return await CallCoreAsync(owner, request, null, audio, destination, scope, ct);
+        return await CallCoreAsync(owner, request, null, audio, destination, scope, null, ct);
     }
 
     internal async Task<AiTextCallResultDto> CallVisionForOwnerAsync(Guid owner, AiVisionCallRequest request,
@@ -84,12 +97,12 @@ public sealed class AiTextCallService(PimDbContext db, ISecretProtector secrets,
             throw new DomainException(40001, "请先核对本次图片、模型与目标地址，并明确同意发送图片");
         return await CallCoreAsync(owner,
             new(request.ClientRequestId, request.ExpectedUserId, request.Prompt, request.SystemPrompt, request.ModelId),
-            AiVisionMaterialService.Decode(request), null, request.Consent, scope, ct);
+            AiVisionMaterialService.Decode(request), null, request.Consent, scope, null, ct);
     }
 
     private async Task<AiTextCallResultDto> CallCoreAsync(Guid userId, AiTextCallRequest request,
         IReadOnlyList<AiVisionInput>? images, IReadOnlyList<AiAudioContextInput>? audio,
-        AiVisionDestinationConsent? consent, OwnerCallScope? scope,
+        AiVisionDestinationConsent? consent, OwnerCallScope? scope, AiPurpose? purpose,
         CancellationToken ct)
     {
         var vision = images is not null;
@@ -99,13 +112,15 @@ public sealed class AiTextCallService(PimDbContext db, ISecretProtector secrets,
         if (request.ClientRequestId == Guid.Empty || string.IsNullOrWhiteSpace(request.Prompt) ||
             request.Prompt.Length + (request.SystemPrompt?.Length ?? 0) > 200_000 || request.SystemPrompt?.Length > 32_000)
             throw new DomainException(40001, "需要有效请求标识和正文；系统提示最多32000字符，总输入最多200000字符");
-        var fingerprint = Fingerprint(request, images, audio, consent, scope);
+        var fingerprint = Fingerprint(request, images, audio, consent, scope, purpose);
         await AiCallRecovery.RecoverExpiredAsync(db, ct);
         var old = await FindAsync(userId, request.ClientRequestId, ct);
         if (old is not null) return Replay(old, fingerprint);
 
         var config = await db.AiModelRuntime.AsNoTracking().SingleOrDefaultAsync(ct);
-        var selected = request.ModelId ?? (vision ? config?.VisionModelId : config?.TextModelId);
+        var selected = request.ModelId ?? (purpose is { } purposeValue
+            ? AiPurposeModelResolver.ResolveId(config, purposeValue)
+            : vision ? config?.VisionModelId : config?.TextModelId);
         var profile = selected is { } id ? await db.AiModelProfiles.AsNoTracking().SingleOrDefaultAsync(x => x.Id == id, ct) : null;
         // Consent is an assertion against server configuration, never a client-controlled routing override.
         // No file upload or model transport occurs if the displayed model/address/revision has changed.
@@ -123,9 +138,13 @@ public sealed class AiTextCallService(PimDbContext db, ISecretProtector secrets,
         var finalMessages = messages.Select(m => new { role = m.Role.Value, content = m.Text }).ToArray();
         string? key = null; string? configurationError = null;
         if (config?.Enabled != true) configurationError = "SDK直连尚未启用，请在模型设置中启用";
-        else if (profile is null) configurationError = audioMode ? "未选择有效音频上下文模型"
-            : vision ? "未选择有效视觉模型" : "未选择有效文本模型";
-        else if (!profile.Enabled || (profile.Capabilities & (vision ? 2 : 1)) == 0) configurationError = "模型未启用或未声明对应能力";
+        else if (profile is null) configurationError = purpose is { } missingPurpose
+            ? $"未配置{AiPurposeModelResolver.DisplayName(missingPurpose)}默认模型"
+            : audioMode ? "未选择有效音频上下文模型"
+                : vision ? "未选择有效视觉模型" : "未选择有效文本模型";
+        else if (!profile.Enabled || !AiModelCapabilityFlags.Has(profile.Capabilities,
+                     vision ? AiModelCapability.Vision : AiModelCapability.Text))
+            configurationError = "模型未启用或未声明对应能力";
         else if (vision && visionMaterials is null) configurationError = "图片材料存储尚不可用";
         else
         {
@@ -137,10 +156,15 @@ public sealed class AiTextCallService(PimDbContext db, ISecretProtector secrets,
         var row = new AiRequestLogEntity
         {
             UserId = userId, ClientRequestId = request.ClientRequestId, InputHash = fingerprint,
-            Module = scope is null ? "system" : "notes",
-            Purpose = scope?.Purpose ?? (vision ? "ai.vision-call" : "ai.text-call"),
-            SourceObjectType = scope?.SourceObjectType ?? "ai-model",
-            SourceObjectId = scope?.SourceObjectId ?? selected?.ToString() ?? "default",
+            Module = purpose is AiPurpose.CalendarPlanning ? "calendar"
+                : purpose is AiPurpose.NoteOrganization or AiPurpose.NoteTodo ? "notes"
+                : scope is null ? "system" : "notes",
+            Purpose = scope?.Purpose ?? (purpose is { } logPurpose
+                ? AiPurposeModelResolver.LogPurpose(logPurpose)
+                : vision ? "ai.vision-call" : "ai.text-call"),
+            SourceObjectType = scope?.SourceObjectType ?? (purpose is null ? "ai-model" : "user"),
+            SourceObjectId = scope?.SourceObjectId ?? (purpose is null
+                ? selected?.ToString() ?? "default" : userId.ToString()),
             Provider = "openai-compatible",
             Model = profile?.Model ?? "未选择", ModelProfileId = profile?.Id, ModelProfileName = profile?.Name,
             ProviderConnectionId = profile?.ProviderConnectionId,
@@ -289,6 +313,12 @@ public sealed class AiTextCallService(PimDbContext db, ISecretProtector secrets,
                     row.ContentRedacted = row.ContentRedacted == true || redacted;
                 }
             }
+            catch (AiProviderCircuitOpenException error)
+            {
+                row.Status = "blocked";
+                row.ErrorCode = "circuit_open";
+                row.ErrorMessage = error.Message;
+            }
             catch (Exception)
             { row.Status = "failed"; row.ErrorCode = materialsReady ? "provider_error" : "image_prepare_failed";
                 row.ErrorMessage = materialsReady ? "模型连接、格式或响应大小异常；本次未自动重试，请核对调用记录" : "图片材料未能完整保存，本次未发送模型，请核对文件来源和调用记录"; }
@@ -365,18 +395,22 @@ public sealed class AiTextCallService(PimDbContext db, ISecretProtector secrets,
         db.AiRequestLogs.AsNoTracking().SingleOrDefaultAsync(x => x.UserId == user && x.ClientRequestId == request, ct);
 
     private static string Fingerprint(AiTextCallRequest request, IReadOnlyList<AiVisionInput>? images,
-        IReadOnlyList<AiAudioContextInput>? audio, AiVisionDestinationConsent? consent, OwnerCallScope? scope)
+        IReadOnlyList<AiAudioContextInput>? audio, AiVisionDestinationConsent? consent, OwnerCallScope? scope,
+        AiPurpose? purpose)
     {
         var vision = images is not null;
         var audioMode = audio is not null;
         if (scope is null)
         {
-            // Existing HTTP text request IDs keep their original fingerprint.
-            return Hash(audioMode ? JsonSerializer.Serialize(new { kind = "audio", request.ModelId, request.SystemPrompt,
-                request.Prompt, consent, audio = AudioFingerprint(audio!) }, Json)
-                : vision ? JsonSerializer.Serialize(new { kind = "vision", request.ModelId, request.SystemPrompt, request.Prompt,
-                consent, images = images!.Select(x => new { x.Name, x.ContentType, x.Sha256, size = x.Bytes.Length }) }, Json)
-                : JsonSerializer.Serialize(new { request.ModelId, request.SystemPrompt, request.Prompt }, Json));
+            // Existing HTTP text/vision/audio request IDs keep their original fingerprint shape.
+            if (purpose is null)
+                return Hash(audioMode ? JsonSerializer.Serialize(new { kind = "audio", request.ModelId, request.SystemPrompt,
+                    request.Prompt, consent, audio = AudioFingerprint(audio!) }, Json)
+                    : vision ? JsonSerializer.Serialize(new { kind = "vision", request.ModelId, request.SystemPrompt, request.Prompt,
+                        consent, images = images!.Select(x => new { x.Name, x.ContentType, x.Sha256, size = x.Bytes.Length }) }, Json)
+                    : JsonSerializer.Serialize(new { request.ModelId, request.SystemPrompt, request.Prompt }, Json));
+            return Hash(JsonSerializer.Serialize(new { kind = "purpose", purpose, request.ModelId,
+                request.SystemPrompt, request.Prompt }, Json));
         }
         return Hash(audioMode ? JsonSerializer.Serialize(new { kind = "audio", sourceObjectType = scope.SourceObjectType,
             sourceObjectId = scope.SourceObjectId, purpose = scope.Purpose, request.ModelId, request.SystemPrompt,

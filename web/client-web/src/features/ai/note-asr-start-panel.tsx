@@ -59,7 +59,8 @@ export function NoteAsrStartPanel({ userId, serverBinding, versionId, onCreated,
     queryKey: ['ai', userId, serverBinding, 'asr-route-config'],
     queryFn: ({ signal }) => aiApi.asrRouteConfig(signal),
   })
-  const savedDestination = destinations.data?.items.find((item) => item.modelId === config.data?.cloudModelId) ?? null
+  const effectiveCloudModelId = config.data?.effectiveCloudModelId ?? config.data?.cloudModelId
+  const savedDestination = destinations.data?.items.find((item) => item.modelId === effectiveCloudModelId) ?? null
   const selectedDestination = savedDestination
   const effectiveRoute = route === 'default'
     ? config.data && isActualCloudRoute(config.data.defaultRoute) ? 'cloud' : 'local'
@@ -79,7 +80,8 @@ export function NoteAsrStartPanel({ userId, serverBinding, versionId, onCreated,
   )
   const languageOptions = (selectedDestination?.languages ?? ['auto', 'zh', 'en'])
     .map((value) => ({ value, label: languageNames[value] ?? value }))
-  const cloudInvalid = Boolean(config.data?.cloudModelId) && !savedDestination
+  const cloudInvalid = (Boolean(config.data?.cloudModelId) && !config.data?.effectiveCloudModelId) ||
+    (Boolean(config.data?.effectiveCloudModelId) && !savedDestination)
   const executionLabel = effectiveRoute === 'cloud'
     ? selectedExecutionMode === 'batch' ? '云端 · Batch 闲时' : '云端 · 实时'
     : localConfigured ? '本机队列' : '本机 · 未配置模型'

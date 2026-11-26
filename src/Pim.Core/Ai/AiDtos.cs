@@ -1,24 +1,4 @@
-using Pim.Core.Common;
-
 namespace Pim.Core.Ai;
-
-public sealed record AiMessage(AiMessageRole Role, string Content);
-
-public sealed record AiGatewayRequest(
-    string Module,
-    string Purpose,
-    string SourceObjectType,
-    string SourceObjectId,
-    IReadOnlyList<AiMessage> Messages,
-    string? Model = null,
-    string? SchemaName = null,
-    string? SchemaVersion = null,
-    int? MaxOutputTokens = null,
-    int? MaxAttempts = null,
-    IReadOnlyDictionary<string, string>? Metadata = null)
-{
-    public int EffectiveMaxAttempts => Math.Clamp(MaxAttempts ?? 1, 1, 2);
-}
 
 public sealed record AiTokenUsage(
     int? PromptTokens,
@@ -27,40 +7,11 @@ public sealed record AiTokenUsage(
     decimal? EstimatedCost,
     string? Currency);
 
-public sealed record AiResult(
-    AiRequestStatus Status,
-    string? ResponseText,
-    string? ParsedOutputJson,
-    IReadOnlyList<string> SchemaValidationErrors,
-    AiTokenUsage Usage,
-    Guid? LogId,
-    string? UserFacingError)
-{
-    public static AiResult FailedValidation(Guid? logId, IReadOnlyList<string> errors) =>
-        new(
-            AiRequestStatus.FailedValidation,
-            ResponseText: null,
-            ParsedOutputJson: null,
-            SchemaValidationErrors: errors,
-            Usage: new AiTokenUsage(null, null, null, null, null),
-            LogId: logId,
-            UserFacingError: "AI 响应不符合要求的格式，未生成建议。");
-}
-
 public sealed record AiSchemaDefinition(
     string Name,
     string Version,
     string JsonSchema,
     string Description);
-
-public sealed record AiStatusDto(
-    bool Enabled,
-    string Provider,
-    string BaseUrl,
-    string DefaultModel,
-    DateTimeOffset? LastHealthCheckAt,
-    string? LastError,
-    DateTimeOffset? RecentSuccessfulCallAt);
 
 public sealed record AiRequestLogFilter(
     DateTimeOffset? From,

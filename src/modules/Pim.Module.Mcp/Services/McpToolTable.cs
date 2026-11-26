@@ -223,7 +223,6 @@ public static class McpToolTable
             S("get_system_status", "GET", "/api/v1/status"),
             S("get_system_health", "GET", "/health", kind: McpToolKind.Health),
             S("get_status_summary", "GET", "/api/v1/status/summary"),
-            S("get_ai_status", "GET", "/api/v1/ai/status"),
             S("get_ai_requests", "GET", "/api/v1/ai/requests", Q("fromTime=from", "to", "module", "status", "page", "pageSize")),
             S("get_ai_usage_summary", "GET", "/api/v1/ai/usage/summary", Q("fromTime=from", "to"), req: R("fromTime")),
             S("get_audit_timeline", "GET", "/api/v1/operations/audit/{objectType}/{objectId}"),
