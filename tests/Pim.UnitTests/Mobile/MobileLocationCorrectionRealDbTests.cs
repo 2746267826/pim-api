@@ -175,6 +175,7 @@ public sealed class MobileLocationCorrectionRealDbTests
                 };
                 db.Set<MobileLocationPointEntity>().AddRange(points);
                 await db.SaveChangesAsync();
+                db.ResetSaveAttempts();
 
                 var query = new MobileLocationQueryRequest(
                     RangeStartUtc: Now.AddHours(-1),
@@ -272,6 +273,8 @@ public sealed class MobileLocationCorrectionRealDbTests
         public int SaveAttemptCount => Volatile.Read(ref _saveAttempts);
 
         public int CompetitorInsertCount => Volatile.Read(ref _competitorInsertCount);
+
+        public void ResetSaveAttempts() => Interlocked.Exchange(ref _saveAttempts, 0);
 
         public void ArmCompetingInsert(Guid boundaryPointId, string competitorKind)
         {
