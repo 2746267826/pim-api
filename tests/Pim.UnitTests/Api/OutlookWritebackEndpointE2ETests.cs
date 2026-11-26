@@ -1152,14 +1152,15 @@ public sealed class OutlookWritebackEndpointE2ETests
 
         if (scope == "instance")
             graph.Enqueue(HttpStatusCode.OK, SeriesOccurrenceListJson);
-        graph.Enqueue(_request =>
+        graph.AfterResponse = async request =>
         {
-            temp.ExecuteAsync(
-                    "ALTER TABLE events RENAME TO events_r03_read_failure")
-                .GetAwaiter()
-                .GetResult();
-            return new HttpResponseMessage(HttpStatusCode.NoContent);
-        });
+            if (request.Method == "DELETE")
+            {
+                await temp.ExecuteAsync(
+                    "ALTER TABLE events RENAME TO events_r03_read_failure");
+            }
+        };
+        graph.Enqueue(HttpStatusCode.NoContent);
 
         var failed = await client.DeleteAsync(url);
         Assert.Equal(HttpStatusCode.BadGateway, failed.StatusCode);
