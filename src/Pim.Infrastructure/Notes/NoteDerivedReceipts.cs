@@ -490,17 +490,12 @@ internal static class NoteDerivedReceipts
             var referenced = root.TryGetProperty("audioInputsReferenced", out var count) &&
                 count.ValueKind == JsonValueKind.Number && count.TryGetInt32(out var parsedCount)
                 ? parsedCount : -1;
-            var hashes = root.TryGetProperty("audioInputsSha256", out var hashValues) &&
-                hashValues.ValueKind == JsonValueKind.Array
-                ? hashValues.EnumerateArray()
-                    .Where(x => x.ValueKind == JsonValueKind.String)
-                    .Select(x => x.GetString())
-                    .ToArray()
-                : [];
+            var hashes = ReadAudioHashes(root);
             var expected = step.Audio.OrderBy(x => x.Ordinal)
                 .Select(x => x.SourceSha256).ToArray();
             if (encoding != "sha256-reference" || referenced != expected.Length ||
-                hashes.Length != expected.Length || !hashes.SequenceEqual(expected))
+                hashes is null || hashes.Length != expected.Length ||
+                !hashes.SequenceEqual(expected))
                 AddIssue(issues, "audio_batch_wire_mismatch",
                     "录音批次回执缺少与固定分片一致的数量、来源摘要或审计编码", stepKey);
             var owner = ParseGuid(root, "audioContextOwnerId");
@@ -510,10 +505,9 @@ internal static class NoteDerivedReceipts
                 version != state.Request.VersionId)
                 AddIssue(issues, "audio_batch_wire_identity_mismatch",
                     "录音批次的音频上下文没有绑定当前账号、笔记和固定材料版本", stepKey);
-            if (Occurrences(log.RequestMessagesJson, "pim-ai-audio:") < expected.Length ||
-                log.RequestMessagesJson.Contains("data:audio/wav;base64,", StringComparison.Ordinal))
+            if (!AudioRequestSnapshotMatchesExactly(log.RequestMessagesJson, expected.Length))
                 AddIssue(issues, "audio_batch_wire_snapshot_mismatch",
-                    "录音批次请求快照没有使用服务端音频引用或包含原始音频数据", stepKey);
+                    "录音批次请求快照的 input_audio 数量、顺序或 data 引用与固定分片不一致", stepKey);
         }
         catch (Exception error) when (error is JsonException or InvalidOperationException)
         {
@@ -531,6 +525,25 @@ internal static class NoteDerivedReceipts
     {
         var issues = new List<NoteDerivedIssueDto>();
         CheckNoAudioWire(issues, log, stepKey);
+        return issues;
+    }
+
+    internal static IReadOnlyList<NoteDerivedIssueDto> ValidateSynthesisAudioWire(
+        NoteDerivedTaskState state, NoteDerivedStepState step, AiRequestLogEntity log)
+    {
+        var issues = new List<NoteDerivedIssueDto>();
+        var audioBatched = state.Steps.Any(x =>
+            x.Kind == NoteDerivedStepKind.AudioBatchEvidence);
+        if (audioBatched)
+        {
+            // Once long audio is represented by batch evidence, every synthesis call must
+            // prove it did not replay raw audio, regardless of any audio copied into the step.
+            AddIssues(issues, ValidateNoAudioWire(log, step.Key));
+            return issues;
+        }
+        var audio = step.Audio.Count > 0 ? step.Audio : state.Plan.Input.Audio;
+        if (audio.Count > 0)
+            CheckAudioWire(issues, log, state, audio, step.Key);
         return issues;
     }
 
@@ -564,6 +577,15 @@ internal static class NoteDerivedReceipts
                     stepKey);
                 return;
             }
+            if (root.TryGetProperty("audioInputsSha256", out var hashValues) &&
+                (hashValues.ValueKind != JsonValueKind.Array ||
+                 hashValues.GetArrayLength() != 0))
+            {
+                AddIssue(issues, "audio_replayed_in_synthesis",
+                    "汇总或分析回执声明了音频来源摘要，与 audioInputsReferenced=0 矛盾",
+                    stepKey);
+                return;
+            }
             var hasEncoding = root.TryGetProperty("audioEncoding", out var encoding);
             if (hasEncoding && encoding.ValueKind != JsonValueKind.Null)
             {
@@ -571,9 +593,7 @@ internal static class NoteDerivedReceipts
                     "汇总或分析回执仍声明音频编码，不能证明未重复携带原始音频", stepKey);
                 return;
             }
-            if (log.RequestMessagesJson.Contains("input_audio", StringComparison.Ordinal) ||
-                log.RequestMessagesJson.Contains("pim-ai-audio:", StringComparison.Ordinal) ||
-                log.RequestMessagesJson.Contains("data:audio/wav;base64,", StringComparison.Ordinal))
+            if (!RequestSnapshotHasNoAudioParts(log.RequestMessagesJson))
             {
                 AddIssue(issues, "audio_replayed_in_synthesis",
                     "汇总或分析步骤重复携带了原始音频；长录音必须只引用批次证据", stepKey);
@@ -598,6 +618,87 @@ internal static class NoteDerivedReceipts
         var separator = key.LastIndexOf(':');
         return separator >= 0 && int.TryParse(key[(separator + 1)..], out var number)
             ? Math.Max(0, number - 1) : 0;
+    }
+
+    /// <summary>
+    /// Exact structural check for an audio request snapshot. Text content may mention
+    /// reference-like strings; only real input_audio parts count. The part count, order,
+    /// and data references must all match what the server intended to send.
+    /// </summary>
+    internal static bool AudioRequestSnapshotMatchesExactly(string requestMessagesJson,
+        int expectedCount)
+    {
+        if (expectedCount < 0) return false;
+        try
+        {
+            using var document = JsonDocument.Parse(requestMessagesJson);
+            if (document.RootElement.ValueKind != JsonValueKind.Array) return false;
+            var index = 0;
+            foreach (var message in document.RootElement.EnumerateArray())
+            {
+                if (message.ValueKind != JsonValueKind.Object) return false;
+                if (!message.TryGetProperty("content", out var content)) continue;
+                if (content.ValueKind == JsonValueKind.String) continue;
+                if (content.ValueKind != JsonValueKind.Array) return false;
+                foreach (var part in content.EnumerateArray())
+                {
+                    if (part.ValueKind != JsonValueKind.Object) return false;
+                    var isAudioPart = part.TryGetProperty("type", out var type) &&
+                        type.ValueKind == JsonValueKind.String &&
+                        string.Equals(type.GetString(), "input_audio", StringComparison.Ordinal);
+                    var hasAudio = part.TryGetProperty("input_audio", out var audio);
+                    if (!isAudioPart && !hasAudio) continue;
+                    if (!isAudioPart || !hasAudio || index >= expectedCount ||
+                        audio.ValueKind != JsonValueKind.Object)
+                        return false;
+                    if (!audio.TryGetProperty("data", out var data) ||
+                        data.ValueKind != JsonValueKind.String ||
+                        !string.Equals(data.GetString(),
+                            $"pim-ai-audio:{index + 1:D5}", StringComparison.Ordinal))
+                        return false;
+                    if (!audio.TryGetProperty("format", out var format) ||
+                        format.ValueKind != JsonValueKind.String ||
+                        !string.Equals(format.GetString(), "wav", StringComparison.Ordinal))
+                        return false;
+                    index++;
+                }
+            }
+            return index == expectedCount;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    internal static bool RequestSnapshotHasNoAudioParts(string requestMessagesJson)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(requestMessagesJson);
+            if (document.RootElement.ValueKind != JsonValueKind.Array) return false;
+            foreach (var message in document.RootElement.EnumerateArray())
+            {
+                if (message.ValueKind != JsonValueKind.Object) return false;
+                if (!message.TryGetProperty("content", out var content)) continue;
+                if (content.ValueKind == JsonValueKind.String) continue;
+                if (content.ValueKind != JsonValueKind.Array) return false;
+                foreach (var part in content.EnumerateArray())
+                {
+                    if (part.ValueKind != JsonValueKind.Object) return false;
+                    if (part.TryGetProperty("input_audio", out _)) return false;
+                    if (part.TryGetProperty("type", out var type) &&
+                        type.ValueKind == JsonValueKind.String &&
+                        string.Equals(type.GetString(), "input_audio", StringComparison.Ordinal))
+                        return false;
+                }
+            }
+            return true;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
     }
 
     private static StepVerification VerifyTextStep(NoteDerivedTaskState state,
@@ -636,10 +737,7 @@ internal static class NoteDerivedReceipts
         }
 
         CheckCommonLog(local, log, state, step.Current.RequestId, purpose, "synthesis", step.Key);
-        if (audio.Count > 0)
-            CheckAudioWire(local, log, state, audio, step.Key);
-        else if (state.Plan.Input.Audio.Count > 0)
-            AddIssues(local, ValidateNoAudioWire(log, step.Key));
+        AddIssues(local, ValidateSynthesisAudioWire(state, step, log));
         if (step.Current.LogId != log.Id)
             AddIssue(local, "synthesis_log_id_mismatch",
                 "合成步骤保存的调用记录标识与实际回执不一致", stepKey: step.Key);
@@ -1013,17 +1111,13 @@ internal static class NoteDerivedReceipts
             var encoding = root.TryGetProperty("audioEncoding", out var value) &&
                 value.ValueKind == JsonValueKind.String ? value.GetString() : null;
             var referenced = root.TryGetProperty("audioInputsReferenced", out var count) &&
-                count.ValueKind == JsonValueKind.Number ? count.GetInt32() : -1;
-            var hashes = root.TryGetProperty("audioInputsSha256", out var hashValues) &&
-                hashValues.ValueKind == JsonValueKind.Array
-                ? hashValues.EnumerateArray()
-                    .Where(x => x.ValueKind == JsonValueKind.String)
-                    .Select(x => x.GetString())
-                    .ToArray()
-                : [];
+                count.ValueKind == JsonValueKind.Number && count.TryGetInt32(out var parsedCount)
+                ? parsedCount : -1;
+            var hashes = ReadAudioHashes(root);
             var expected = planned.OrderBy(x => x.Ordinal).Select(x => x.SourceSha256).ToArray();
             if (encoding != "sha256-reference" || referenced != planned.Count ||
-                hashes.Length != expected.Length || !hashes.SequenceEqual(expected))
+                hashes is null || hashes.Length != expected.Length ||
+                !hashes.SequenceEqual(expected))
                 AddIssue(issues, "audio_wire_incomplete",
                     "合成回执缺少与固定录音清单一致的数量、来源摘要或审计编码证据", stepKey);
             var owner = root.TryGetProperty("audioContextOwnerId", out var ownerValue) &&
@@ -1039,10 +1133,10 @@ internal static class NoteDerivedReceipts
                 version != state.Request.VersionId)
                 AddIssue(issues, "audio_wire_identity_mismatch",
                     "合成回执的音频上下文没有绑定当前账号、笔记和固定材料版本", stepKey);
-            if (Occurrences(log.RequestMessagesJson, "pim-ai-audio:") < planned.Count ||
-                log.RequestMessagesJson.Contains("data:audio/wav;base64,", StringComparison.Ordinal))
+            if (!AudioRequestSnapshotMatchesExactly(log.RequestMessagesJson, planned.Count))
                 AddIssue(issues, "audio_wire_mismatch",
-                    "合成回执的请求快照没有使用服务端音频引用或包含原始音频数据", stepKey);
+                    "合成回执请求快照的 input_audio 数量、顺序或 data 引用与固定录音清单不一致",
+                    stepKey);
         }
         catch (JsonException)
         {
@@ -1051,16 +1145,21 @@ internal static class NoteDerivedReceipts
         }
     }
 
-    private static int Occurrences(string text, string value)
+    private static string[]? ReadAudioHashes(JsonElement root)
     {
-        var count = 0;
-        var offset = 0;
-        while ((offset = text.IndexOf(value, offset, StringComparison.Ordinal)) >= 0)
+        if (!root.TryGetProperty("audioInputsSha256", out var values) ||
+            values.ValueKind != JsonValueKind.Array)
+            return null;
+        var hashes = new string[values.GetArrayLength()];
+        var index = 0;
+        foreach (var value in values.EnumerateArray())
         {
-            count++;
-            offset += value.Length;
+            if (value.ValueKind != JsonValueKind.String) return null;
+            var hash = value.GetString();
+            if (hash is null) return null;
+            hashes[index++] = hash;
         }
-        return count;
+        return hashes;
     }
 
     private static string EvidenceInputFingerprint(NoteDerivedTaskState state,

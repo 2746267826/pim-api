@@ -592,14 +592,14 @@ public sealed class NoteDerivedNoAudioWireTests
     {
         var issues = Check("""
             {"providerAttempted":true,"requestBodyCaptured":true,"responseBodyComplete":true,
-             "audioInputsReferenced":0,"audioEncoding":null}
+             "audioInputsReferenced":0,"audioInputsSha256":[],"audioEncoding":null}
             """);
 
         Assert.Empty(issues);
     }
 
     [Fact]
-    public void NoAudioWireAcceptsMissingEncodingButRequiresExplicitZero()
+    public void NoAudioWireAcceptsMissingHashesAndEncodingButRequiresExplicitZero()
     {
         var issues = Check("""
             {"providerAttempted":true,"requestBodyCaptured":true,"responseBodyComplete":true,
@@ -622,6 +622,10 @@ public sealed class NoteDerivedNoAudioWireTests
     [InlineData("""{"providerAttempted":true,"requestBodyCaptured":true,"responseBodyComplete":true,"audioInputsReferenced":1}""")]
     [InlineData("""{"providerAttempted":true,"requestBodyCaptured":true,"responseBodyComplete":true,"audioInputsReferenced":0,"audioEncoding":"sha256-reference"}""")]
     [InlineData("""{"providerAttempted":true,"requestBodyCaptured":true,"responseBodyComplete":true,"audioInputsReferenced":0,"audioEncoding":""}""")]
+    [InlineData("""{"providerAttempted":true,"requestBodyCaptured":true,"responseBodyComplete":true,"audioInputsReferenced":0,"audioInputsSha256":["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]}""")]
+    [InlineData("""{"providerAttempted":true,"requestBodyCaptured":true,"responseBodyComplete":true,"audioInputsReferenced":0,"audioInputsSha256":[123]}""")]
+    [InlineData("""{"providerAttempted":true,"requestBodyCaptured":true,"responseBodyComplete":true,"audioInputsReferenced":0,"audioInputsSha256":null}""")]
+    [InlineData("""{"providerAttempted":true,"requestBodyCaptured":true,"responseBodyComplete":true,"audioInputsReferenced":0,"audioInputsSha256":"aa"}""")]
     public void NoAudioWireFailsClosedOnIncompleteOrAmbiguousMetadata(string metadata)
     {
         var issues = Check(metadata);
@@ -631,15 +635,36 @@ public sealed class NoteDerivedNoAudioWireTests
             "audio_replayed_in_synthesis" or "audio_replay_unverifiable");
     }
 
+    [Fact]
+    public void NoAudioWireRejectsRealAudioPartsButNotReferenceTextInThePrompt()
+    {
+        var promptOnly = NoteDerivedReceipts.ValidateNoAudioWire(Log("""
+            {"providerAttempted":true,"requestBodyCaptured":true,"responseBodyComplete":true,
+             "audioInputsReferenced":0,"audioInputsSha256":[],"audioEncoding":null}
+            """, """
+            [{"role":"user","content":"prompt text may mention pim-ai-audio:00001, input_audio or data:audio/wav;base64,AAAA without an audio part"}]
+            """), "record-synthesis");
+        Assert.Empty(promptOnly);
+
+        var issues = NoteDerivedReceipts.ValidateNoAudioWire(Log("""
+            {"providerAttempted":true,"requestBodyCaptured":true,"responseBodyComplete":true,
+             "audioInputsReferenced":0,"audioInputsSha256":[],"audioEncoding":null}
+            """, """[{"role":"user","content":[{"type":"input_audio"}]}]"""),
+            "record-synthesis");
+        Assert.Contains(issues, issue => issue.Code == "audio_replayed_in_synthesis");
+    }
+
     [Theory]
-    [InlineData("""[{"role":"user","content":[{"type":"input_audio"}]}]""")]
-    [InlineData("""[{"role":"user","content":"pim-ai-audio:00001"}]""")]
-    [InlineData("""[{"role":"user","content":"data:audio/wav;base64,AAAA"}]""")]
-    public void NoAudioWireRejectsAudioReferencesInTheRequestSnapshot(string messages)
+    [InlineData("not-json")]
+    [InlineData("{}")]
+    [InlineData("""[{"role":"user","content":[42]}]""")]
+    [InlineData("""[{"role":"user","content":[{"input_audio":{"data":"x"}}]}]""")]
+    [InlineData("""[{"role":"user","content":[{"type":"input_audio","input_audio":{}}]}]""")]
+    public void NoAudioWireFailsClosedOnUnparseableOrAudioBearingSnapshots(string messages)
     {
         var issues = NoteDerivedReceipts.ValidateNoAudioWire(Log("""
             {"providerAttempted":true,"requestBodyCaptured":true,"responseBodyComplete":true,
-             "audioInputsReferenced":0,"audioEncoding":null}
+             "audioInputsReferenced":0,"audioInputsSha256":[],"audioEncoding":null}
             """, messages), "record-synthesis");
 
         Assert.Contains(issues, issue => issue.Code == "audio_replayed_in_synthesis");
@@ -653,4 +678,38 @@ public sealed class NoteDerivedNoAudioWireTests
         MetadataJson = metadata,
         RequestMessagesJson = messages
     };
+}
+
+public sealed class NoteDerivedAudioRequestSnapshotTests
+{
+    [Fact]
+    public void ExactAudioPartsAreAcceptedEvenWhenThePromptTextContainsAudioLikeStrings()
+    {
+        const string messages = """
+            [{"role":"user","content":[
+              {"type":"text","text":"The prompt may mention pim-ai-audio:99999 or input_audio without sending audio."},
+              {"type":"input_audio","input_audio":{"data":"pim-ai-audio:00001","format":"wav"}},
+              {"type":"input_audio","input_audio":{"data":"pim-ai-audio:00002","format":"wav"}}]}]
+            """;
+
+        Assert.True(NoteDerivedReceipts.AudioRequestSnapshotMatchesExactly(messages, 2));
+    }
+
+    [Theory]
+    [InlineData("""[{"role":"user","content":[{"type":"input_audio","input_audio":{"data":"pim-ai-audio:00001","format":"wav"}}]}]""", 2)]
+    [InlineData("""[{"role":"user","content":[{"type":"input_audio","input_audio":{"data":"pim-ai-audio:00001","format":"wav"}},{"type":"input_audio","input_audio":{"data":"pim-ai-audio:00002","format":"wav"}},{"type":"input_audio","input_audio":{"data":"pim-ai-audio:00003","format":"wav"}}]}]""", 2)]
+    [InlineData("""[{"role":"user","content":[{"type":"input_audio","input_audio":{"data":"pim-ai-audio:00002","format":"wav"}}]}]""", 1)]
+    [InlineData("""[{"role":"user","content":[{"type":"input_audio","input_audio":{"data":"pim-ai-audio:00001","format":"wav"}},{"type":"input_audio","input_audio":{"data":"pim-ai-audio:00001","format":"wav"}}]}]""", 2)]
+    [InlineData("""[{"role":"user","content":[{"type":"input_audio","input_audio":{"data":123,"format":"wav"}}]}]""", 1)]
+    [InlineData("""[{"role":"user","content":[{"type":"input_audio","input_audio":{"data":"pim-ai-audio:00001","format":"mp3"}}]}]""", 1)]
+    [InlineData("""[{"role":"user","content":[{"input_audio":{"data":"pim-ai-audio:00001","format":"wav"}}]}]""", 1)]
+    [InlineData("""[{"role":"user","content":[{"type":"input_audio","input_audio":{}}]}]""", 1)]
+    [InlineData("""[{"role":"user","content":"pim-ai-audio:00001"}]""", 1)]
+    [InlineData("""[{"role":"user","content":[42]}]""", 1)]
+    [InlineData("not-json", 1)]
+    public void NonExactAudioPartsAreRejected(string messages, int expectedCount)
+    {
+        Assert.False(NoteDerivedReceipts.AudioRequestSnapshotMatchesExactly(
+            messages, expectedCount));
+    }
 }

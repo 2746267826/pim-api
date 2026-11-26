@@ -1,7 +1,9 @@
 using System.Net;
 using System.Net.Http.Json;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
@@ -18,6 +20,7 @@ using Pim.Core.Notes;
 using Pim.Infrastructure.Ai;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
+using Pim.Infrastructure.Data.Entities;
 using Pim.Infrastructure.Notes;
 using Pim.Infrastructure.Secrets;
 using Pim.UnitTests.Api;
@@ -48,6 +51,8 @@ public sealed class NoteDerivedJobTests : IAsyncLifetime
     private int _activeAudioBatches;
     private int _maxActiveAudioBatches;
     private bool _failFirstAudioBatchOnce;
+    private bool _failFirstRecordOnce;
+    private Func<Task>? _recordHook;
     private readonly Dictionary<int, int> _audioBatchAttempts = [];
     private readonly List<(int Index, string Body)> _audioBatchBodies = [];
     private readonly List<(int Index, string Text)> _audioBatchResults = [];
@@ -114,6 +119,17 @@ public sealed class NoteDerivedJobTests : IAsyncLifetime
             {
                 lock (_recordBodies) _recordBodies.Add(root.GetRawText());
                 _recordRecordingPrompt = prompt;
+                if (_recordHook is { } hook)
+                {
+                    _recordHook = null;
+                    await hook();
+                }
+                if (_failFirstRecordOnce)
+                {
+                    _failFirstRecordOnce = false;
+                    request.HttpContext.Response.StatusCode = 500;
+                    return Completion(call, "synthetic record failure");
+                }
                 return Completion(call, RecordCompletion());
             }
             if (content.ValueKind == JsonValueKind.Array &&
@@ -309,6 +325,43 @@ public sealed class NoteDerivedJobTests : IAsyncLifetime
             StringComparison.Ordinal));
         Assert.All(audioLogs, log => Assert.DoesNotContain(Convert.ToBase64String(material.Content[5]),
             log.RequestPayloadJson, StringComparison.Ordinal));
+
+        var legacyState = await verificationScope.ServiceProvider
+            .GetRequiredService<NoteDerivedStore>()
+            .ReadTaskAsync(_owner, task.TaskId, default);
+        var legacyRecord = legacyState.Steps.Single(x => x.Key == "record-synthesis");
+        var legacyReceipt = audioLogs.Single(x =>
+            x.Purpose == NoteDerivedPrompts.RecordPurpose);
+        Assert.Empty(NoteDerivedReceipts.ValidateSynthesisAudioWire(
+            legacyState, legacyRecord, legacyReceipt));
+        var legacyOriginalMessages = legacyReceipt.RequestMessagesJson;
+        var legacyValidHashes = JsonNode.Parse(legacyReceipt.MetadataJson)!["audioInputsSha256"]!
+            .AsArray().Select(x => x?.DeepClone()).ToArray();
+        var legacyMessages = JsonNode.Parse(legacyReceipt.RequestMessagesJson)!.AsArray();
+        var legacyContent = legacyMessages.OfType<JsonObject>()
+            .Select(message => message["content"] as JsonArray)
+            .First(array => array is not null)!;
+        var legacyAudioPart = legacyContent.OfType<JsonObject>()
+            .First(part => part["type"]?.GetValue<string>() == "input_audio");
+        legacyContent.Add(legacyAudioPart.DeepClone());
+        legacyReceipt.RequestMessagesJson = legacyMessages.ToJsonString();
+        Assert.Contains(NoteDerivedReceipts.ValidateSynthesisAudioWire(
+                legacyState, legacyRecord, legacyReceipt),
+            issue => issue.Code == "audio_wire_mismatch");
+
+        legacyReceipt.RequestMessagesJson = legacyOriginalMessages;
+        var legacyMetadata = JsonNode.Parse(legacyReceipt.MetadataJson)!.AsObject();
+        var invalidLegacyHashes = new JsonArray();
+        foreach (var hash in legacyValidHashes)
+        {
+            JsonNode? invalid = invalidLegacyHashes.Count == 0 ? JsonValue.Create(7) : hash;
+            invalidLegacyHashes.Add(invalid);
+        }
+        legacyMetadata["audioInputsSha256"] = invalidLegacyHashes;
+        legacyReceipt.MetadataJson = legacyMetadata.ToJsonString();
+        Assert.Contains(NoteDerivedReceipts.ValidateSynthesisAudioWire(
+                legacyState, legacyRecord, legacyReceipt),
+            issue => issue.Code == "audio_wire_incomplete");
     }
 
     [Fact]
@@ -591,6 +644,136 @@ public sealed class NoteDerivedJobTests : IAsyncLifetime
         }
     }
 
+    [Fact]
+    public async Task RecordPublishRevalidatesAudioBatchAfterProviderCallBeforeCreatingVersion()
+    {
+        var material = NoteDerivedFixture.CreateMaterial(audioSamples: 16_000 * 181);
+        var materials = _factory.Services.GetRequiredService<NoteMaterialUploadStore>();
+        await NoteDerivedFixture.UploadAsync(materials, _owner, material);
+        var allowlist = new NoteDerivedAudioContextOptions
+        {
+            ModelNames = ["derived-model"],
+            MaxBatchBytes = 2 * 1024 * 1024,
+            MaxParallelCalls = 2
+        };
+        var task = await StartWithAudioContextAsync(material, allowlist);
+        _recordHook = CorruptFirstAudioBatchAsync;
+
+        await Run(task.TaskId, allowlist);
+
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var store = scope.ServiceProvider.GetRequiredService<NoteDerivedStore>();
+            var state = await store.ReadTaskAsync(_owner, task.TaskId, default);
+            var record = state.Steps.Single(x => x.Key == "record-synthesis");
+            Assert.Equal("Blocked", record.Current.Status);
+            Assert.StartsWith("audio_batch_", record.Current.ErrorCode);
+            Assert.Single(_recordBodies);
+            Assert.Empty(_analysisBodies);
+            var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
+            Assert.Equal(1, await db.AiRequestLogs.CountAsync(x => x.UserId == _owner &&
+                x.Purpose == NoteDerivedPrompts.RecordPurpose));
+        }
+        await AssertNoDerivedVersionsAsync(task.TaskId);
+    }
+
+    [Theory]
+    [InlineData("Running", "metadata")]
+    [InlineData("Unknown", "missing")]
+    public async Task ReconcilingRecoveredRecordReceiptRevalidatesAudioBatchesBeforePublishing(
+        string checkpointStatus, string corruption)
+    {
+        var (task, _) = await StartRecordRetryAsync();
+        await AddRecoveredRecordReceiptAsync(task.TaskId, checkpointStatus, corruption);
+
+        var calls = _recordBodies.Count;
+        var reconciled = await Data<NoteDerivedTaskDto>(
+            await _client.GetAsync($"{DerivedRoute}/{task.TaskId}"));
+        var recordAfter = reconciled.Steps.Single(x => x.Key == "record-synthesis");
+        Assert.Equal("Blocked", recordAfter.Status);
+        Assert.StartsWith("audio_batch_", recordAfter.Attempts[^1].ErrorCode);
+        Assert.Equal(calls, _recordBodies.Count);
+        Assert.Empty(_analysisBodies);
+        await AssertNoDerivedVersionsAsync(task.TaskId);
+    }
+
+    [Fact]
+    public async Task RecoveredRecordReceiptRevalidatesAudioBatchesBeforePublishing()
+    {
+        var (task, allowlist) = await StartRecordRetryAsync();
+        await AddRecoveredRecordReceiptAsync(task.TaskId, "Running", "metadata");
+
+        var calls = _recordBodies.Count;
+        await Run(task.TaskId, allowlist);
+
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var state = await scope.ServiceProvider.GetRequiredService<NoteDerivedStore>()
+                .ReadTaskAsync(_owner, task.TaskId, default);
+            var record = state.Steps.Single(x => x.Key == "record-synthesis");
+            Assert.Equal("Blocked", record.Current.Status);
+            Assert.StartsWith("audio_batch_", record.Current.ErrorCode);
+        }
+        Assert.Equal(calls, _recordBodies.Count);
+        Assert.Empty(_analysisBodies);
+        await AssertNoDerivedVersionsAsync(task.TaskId);
+    }
+
+    [Fact]
+    public async Task AudioBatchReceiptRejectsNonExactHashesAndRequestParts()
+    {
+        var material = NoteDerivedFixture.CreateMaterial(audioSamples: 16_000 * 181);
+        var materials = _factory.Services.GetRequiredService<NoteMaterialUploadStore>();
+        await NoteDerivedFixture.UploadAsync(materials, _owner, material);
+        var allowlist = new NoteDerivedAudioContextOptions
+        {
+            ModelNames = ["derived-model"],
+            MaxBatchBytes = 2 * 1024 * 1024,
+            MaxParallelCalls = 2
+        };
+        var task = await StartWithAudioContextAsync(material, allowlist);
+        await Run(task.TaskId, allowlist);
+
+        using var scope = _factory.Services.CreateScope();
+        var store = scope.ServiceProvider.GetRequiredService<NoteDerivedStore>();
+        var state = await store.ReadTaskAsync(_owner, task.TaskId, default);
+        var step = state.Steps.First(x => x.Kind == NoteDerivedStepKind.AudioBatchEvidence);
+        var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
+        var log = await db.AiRequestLogs.AsNoTracking()
+            .SingleAsync(x => x.Id == step.Current.LogId);
+        Assert.Empty(NoteDerivedReceipts.ValidateAudioBatchReceipt(state, step, log));
+
+        var metadata = JsonNode.Parse(log.MetadataJson)!.AsObject();
+        var validHashes = metadata["audioInputsSha256"]!.AsArray();
+        metadata["audioInputsSha256"] = new JsonArray(
+            validHashes.Select(x => x?.DeepClone()).Append(JsonValue.Create("extra")).ToArray());
+        log.MetadataJson = metadata.ToJsonString();
+        Assert.Contains(NoteDerivedReceipts.ValidateAudioBatchReceipt(state, step, log),
+            issue => issue.Code == "audio_batch_wire_mismatch");
+
+        var invalidHashes = new JsonArray();
+        foreach (var hash in validHashes)
+            invalidHashes.Add(invalidHashes.Count == 0 ? JsonValue.Create(7) : hash?.DeepClone());
+        metadata["audioInputsSha256"] = invalidHashes;
+        log.MetadataJson = metadata.ToJsonString();
+        Assert.Contains(NoteDerivedReceipts.ValidateAudioBatchReceipt(state, step, log),
+            issue => issue.Code == "audio_batch_wire_mismatch");
+
+        metadata["audioInputsSha256"] = new JsonArray(
+            validHashes.Select(x => x?.DeepClone()).ToArray());
+        log.MetadataJson = metadata.ToJsonString();
+        var messages = JsonNode.Parse(log.RequestMessagesJson)!.AsArray();
+        var content = messages.OfType<JsonObject>()
+            .Select(message => message["content"] as JsonArray)
+            .First(array => array is not null)!;
+        var audioPart = content.OfType<JsonObject>()
+            .First(part => part["type"]?.GetValue<string>() == "input_audio");
+        content.Add(audioPart.DeepClone());
+        log.RequestMessagesJson = messages.ToJsonString();
+        Assert.Contains(NoteDerivedReceipts.ValidateAudioBatchReceipt(state, step, log),
+            issue => issue.Code == "audio_batch_wire_snapshot_mismatch");
+    }
+
     private NoteDerivedJob CreateJob(IServiceProvider services,
         NoteDerivedAudioContextOptions? audioContext = null) => new(
         services.GetRequiredService<NoteDerivedStore>(),
@@ -629,6 +812,121 @@ public sealed class NoteDerivedJobTests : IAsyncLifetime
         var job = CreateJob(scope.ServiceProvider, audioContext);
         await job.RunAsync(_owner, taskId, default);
     }
+
+    private async Task<(NoteDerivedTaskDto Task, NoteDerivedAudioContextOptions Allowlist)>
+        StartRecordRetryAsync()
+    {
+        var material = NoteDerivedFixture.CreateMaterial(audioSamples: 16_000 * 181);
+        var materials = _factory.Services.GetRequiredService<NoteMaterialUploadStore>();
+        await NoteDerivedFixture.UploadAsync(materials, _owner, material);
+        var allowlist = new NoteDerivedAudioContextOptions
+        {
+            ModelNames = ["derived-model"],
+            MaxBatchBytes = 2 * 1024 * 1024,
+            MaxParallelCalls = 2
+        };
+        _failFirstRecordOnce = true;
+        var task = await StartWithAudioContextAsync(material, allowlist);
+        await Run(task.TaskId, allowlist);
+        Assert.Empty(_analysisBodies);
+
+        using var scope = _factory.Services.CreateScope();
+        var store = scope.ServiceProvider.GetRequiredService<NoteDerivedStore>();
+        var state = await store.ReadTaskAsync(_owner, task.TaskId, default);
+        Assert.Equal("Failed",
+            state.Steps.Single(x => x.Key == "record-synthesis").Current.Status);
+        var retry = await Data<NoteDerivedTaskDto>(await _client.PostAsJsonAsync(
+            $"{DerivedRoute}/{task.TaskId}/retry",
+            new RetryNoteDerivedTaskRequest(Guid.NewGuid(), _owner, state.Revision,
+                ["record-synthesis"], state.Request.Consent, true)));
+        Assert.Equal("Queued", retry.Phase);
+        return (task, allowlist);
+    }
+
+    private async Task AddRecoveredRecordReceiptAsync(Guid taskId, string checkpointStatus,
+        string corruption)
+    {
+        const string recoveredRecord = "## synthetic recovered record\n\nBatch evidence was validated again.";
+        using var scope = _factory.Services.CreateScope();
+        var store = scope.ServiceProvider.GetRequiredService<NoteDerivedStore>();
+        var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
+        var state = await store.ReadTaskAsync(_owner, taskId, default);
+        var record = state.Steps.Single(x => x.Key == "record-synthesis");
+        var receipt = new AiRequestLogEntity
+        {
+            Id = Guid.NewGuid(),
+            UserId = _owner,
+            ClientRequestId = record.Current.RequestId,
+            Module = "notes",
+            Purpose = NoteDerivedPrompts.RecordPurpose,
+            SourceObjectType = NoteDerivedPrompts.SourceObjectType,
+            SourceObjectId = taskId.ToString("D"),
+            Provider = "openai-compatible",
+            Model = "derived-model",
+            ModelProfileId = _generationModel.Id,
+            ModelProfileName = _generationModel.Name,
+            ModelRevision = _generationModel.Revision,
+            ModelEndpoint = _generationModel.BaseUrl,
+            CorrelationId = Guid.NewGuid().ToString("N"),
+            Status = "succeeded",
+            AttemptNumber = 1,
+            MaxAttempts = 1,
+            StartedAt = DateTimeOffset.UtcNow,
+            FinishedAt = DateTimeOffset.UtcNow,
+            ExecutionExpiresAt = DateTimeOffset.UtcNow.AddMinutes(5),
+            ResponseText = recoveredRecord,
+            OutputHash = Hash(recoveredRecord),
+            MetadataJson = """
+                {"providerAttempted":true,"requestBodyCaptured":true,"responseBodyComplete":true,
+                 "audioInputsReferenced":0,"audioInputsSha256":[],"audioEncoding":null}
+                """,
+            RequestMessagesJson = "[]"
+        };
+        db.AiRequestLogs.Add(receipt);
+        var batch = state.Steps.First(x => x.Kind == NoteDerivedStepKind.AudioBatchEvidence);
+        var batchLog = await db.AiRequestLogs.SingleAsync(x => x.Id == batch.Current.LogId);
+        if (corruption == "metadata") batchLog.MetadataJson = "{}";
+        await db.SaveChangesAsync();
+        await store.UpdateTaskAsync(_owner, taskId, current =>
+        {
+            var step = current.Steps.Single(x => x.Key == "record-synthesis");
+            step.Current.Status = checkpointStatus;
+            step.Current.LogId = receipt.Id;
+            if (corruption == "missing")
+                current.Steps.Single(x => x.Key == batch.Key).Current.LogId = Guid.NewGuid();
+            step.Current.ErrorCode = "synthetic_checkpoint_unknown";
+            step.Current.ErrorMessage = "Synthetic recovered checkpoint";
+        }, default);
+    }
+
+    private async Task CorruptFirstAudioBatchAsync()
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
+        var log = await db.AiRequestLogs
+            .Where(x => x.UserId == _owner &&
+                x.Purpose == NoteDerivedPrompts.AudioBatchPurpose)
+            .OrderBy(x => x.Id)
+            .FirstAsync();
+        log.MetadataJson = "{}";
+        await db.SaveChangesAsync();
+    }
+
+    private async Task AssertNoDerivedVersionsAsync(Guid taskId)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var store = scope.ServiceProvider.GetRequiredService<NoteDerivedStore>();
+        var state = await store.ReadTaskAsync(_owner, taskId, default);
+        var record = await store.DescribeArtifactAsync(_owner,
+            state.CompleteRecordArtifactId, default);
+        var analysis = await store.DescribeArtifactAsync(_owner,
+            state.IndependentAnalysisArtifactId, default);
+        Assert.Empty(record.Versions);
+        Assert.Empty(analysis.Versions);
+    }
+
+    private static string Hash(string value) =>
+        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value))).ToLowerInvariant();
 
     private static object Completion(int call, string content) => new
     {

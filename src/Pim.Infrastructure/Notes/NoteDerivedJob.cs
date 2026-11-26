@@ -855,6 +855,14 @@ public sealed class NoteDerivedJob(
             }
             else if (step.Kind != NoteDerivedStepKind.AudioBatchEvidence)
             {
+                var audioIssue = await RevalidateAudioEvidenceForPublishAsync(
+                    state, step, receipt, ct);
+                if (audioIssue is not null)
+                {
+                    await StopWithIssueAsync(owner, taskId, stepKey, audioIssue.Code,
+                        audioIssue.Message, "Blocked", ct);
+                    return StepOutcome.Stop;
+                }
                 var coverage = await BuildCoverageAsync(state, ct, stepKey, stepKey);
                 if (!coverage.Coverage.Complete)
                 {
@@ -904,6 +912,61 @@ public sealed class NoteDerivedJob(
             stopTask: unknown || status == "Blocked",
             cancelDependentsOnly: !(unknown || status == "Blocked"));
         return unknown || status == "Blocked" ? StepOutcome.Stop : StepOutcome.Continue;
+    }
+
+    /// <summary>
+    /// A synthesis result can be replayed long after its evidence was prepared. Re-read the
+    /// current batch receipts immediately before publishing so a receipt mutated in the
+    /// prepare/send/apply window cannot produce a candidate version.
+    /// </summary>
+    private async Task<NoteDerivedIssueDto?> RevalidateAudioEvidenceForPublishAsync(
+        NoteDerivedTaskState state, NoteDerivedStepState step,
+        Pim.Infrastructure.Data.Entities.AiRequestLogEntity synthesisReceipt,
+        CancellationToken ct)
+    {
+        var batches = state.Steps
+            .Where(x => x.Kind == NoteDerivedStepKind.AudioBatchEvidence)
+            .OrderBy(x => x.Key, StringComparer.Ordinal)
+            .ToArray();
+        if (batches.Length > 0)
+        {
+            var logIds = batches.Where(x => x.Current.LogId.HasValue)
+                .Select(x => x.Current.LogId!.Value)
+                .Distinct()
+                .ToArray();
+            var logs = logIds.Length == 0
+                ? new Dictionary<Guid, Pim.Infrastructure.Data.Entities.AiRequestLogEntity>()
+                : (await db.AiRequestLogs.AsNoTracking()
+                    .Where(x => x.UserId == state.Owner && logIds.Contains(x.Id))
+                    .ToListAsync(ct))
+                    .ToDictionary(x => x.Id);
+            foreach (var batch in batches)
+            {
+                if (batch.Current.Status != "Succeeded" ||
+                    batch.Current.LogId is not { } logId ||
+                    !logs.TryGetValue(logId, out var batchReceipt) ||
+                    batchReceipt.Status != "succeeded")
+                    return Issue("audio_batch_receipt_missing",
+                        "合成发布前找不到仍成功的录音批次回执；不生成候选版本", step.Key);
+                var issues = NoteDerivedReceipts.ValidateAudioBatchReceipt(
+                    state, batch, batchReceipt);
+                if (issues.Count > 0) return issues[0];
+                if (string.IsNullOrWhiteSpace(batchReceipt.ResponseText) ||
+                    batchReceipt.OutputHash != Digest(batchReceipt.ResponseText) ||
+                    batch.Current.ResultSha256 != Digest(batchReceipt.ResponseText))
+                    return Issue("audio_batch_output_mismatch",
+                        "录音批次回执正文或输出摘要已与成功检查点不一致；不生成候选版本",
+                        step.Key);
+                var limit = batch.MaxOutputCharacters > 0
+                    ? batch.MaxOutputCharacters : NoteDerivedLimits.MaxEvidenceCharsPerStep;
+                if (batchReceipt.ResponseText.Length > limit)
+                    return Issue("audio_batch_output_too_large",
+                        "录音批次证据超过本批字符预算；不生成候选版本", step.Key);
+            }
+        }
+        var wireIssues = NoteDerivedReceipts.ValidateSynthesisAudioWire(
+            state, step, synthesisReceipt);
+        return wireIssues.Count > 0 ? wireIssues[0] : null;
     }
 
     private async Task AppendVersionAsync(NoteDerivedTaskState state, NoteDerivedStepState step,
