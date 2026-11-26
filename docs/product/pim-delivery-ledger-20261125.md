@@ -6,17 +6,17 @@
 
 | 项 | 当前快照 |
 | --- | --- |
-| 盘点时间 | 2026-11-25；2026-11-26 19:48 CST 实时复核（Asia/Shanghai） |
+| 盘点时间 | 2026-11-25；2026-11-26 19:52 CST 实时复核（Asia/Shanghai） |
 | 交付包 | `PIM功能确认-最终交付-20261122.zip`，SHA-256 `b488a01e6f317a2735f387a918787204791fb32a38ad9ce064a07166f4b8a864` |
 | pim-api | `origin/master@c47542e19fb2329d365a8d9df42c3e4a7fabc9c7`（PR #597 Z01 隐私/授权收口为 squash merge `c47542e1`；#594 D04 Web merge `1dd3032d`；#600 Q08 merge `a4919618`；#589 I03/I04 merge `05552e84`；#585 J09、#588 R01、#601/#603/#604 版本与发布安全已落地）；当前契约 `contract/openapi.json` SHA-256 `5f5bffc67f26d70a15507d093d526c62c27270f4627a5feaba97b79be6eb73e7`（1,309,674 B）；master CI `45791709210` success（`CI Gate`、6 个 API shard、`web-build`、`build-docker`、`release`、契约通知 success；`build-mcp` skipped）；#606 仍 OPEN（head `047563cc`），其 docs-only tree 已由 master 落地 |
 | pim-android | `origin/master@b23fbe89007db6f5a47ad7522286858b567a3dba`（PR #100 I03/I04 于 2026-11-25T18:07:03Z squash merge；#97 D04 merge `c7ff54f7`；#89/#91/#94 已合并）；契约快照 SHA-256 `cf04f50ff799ff51021c4842eb18f2039fbf7a844965fbbd935dc6c0fb106ddc`（1,301,488 B），来源 `pim-api@05552e84`，已落后当前 API master；合并后 master CI `45671814150` **failure**：`Contract freshness` 失败（运行时上游 `pim-api@1dd3032d` 契约 `31ebcf4c…`/1,309,035 B），其余 build/shell/connected/codegen success；契约同步 PR #93 OPEN（head `63ce05dd`，CI `45793789400` failure：`ApiService.kt:431 search` 返回类型仍为 `SearchResultPagedResultApiResponse`，契约要求 `GlobalSearchResultApiResponse`） |
 | pim-windows | `origin/master@70b735a5c7067be1a277cd19e18aa45ff50dc1c4`（PR #59 M06 工作台/载荷收口；#58 M05、#57 R04、#52 D04 鼠标手写、#53 M06 热键子项已合并）；契约快照 SHA-256 `893af01abbecd4bab0cd46600e1c6a7a3ee6777e5a9cbef33a3a9a6bc05fe318`（1,300,373 B），来源 `pim-api@b0f92b16`，已落后当前 API master；master CI `45652799869` success（含 `release`）；契约同步 PR #60 OPEN（head `7bf52b7a`，CI `45793795936` failure：`test-client-core` CS9035 `NoteTaskSuggestionDto.Kind` 测试夹具缺必填字段，需先合入 #62 的夹具修复）；#61/#62/#63 仍 OPEN |
 | 状态口径 | `PASS`：当前 head 且适用平台完整验收；`FAIL`：确认缺口仍存在或实现未合并；`NOT-VERIFIED`：实现存在但当前 head 无完整验收；`BLOCKED`：缺产品裁决/外部前提；`APPROVED-EXCEPTION`：交付包明确跳过或替代。 |
-| 本轮 PASS | **0**。2026-11-26 19:48 CST 前已合并 #594、#597、#600、pim-android #97/#100、pim-windows #59、pim-api #589/#604 等，但：D04 Web #594 虽已合并、独立复审仍 **MERGED / NOT ACCEPTED**；Z01 #597 只完成 API/Web 角色化脱敏，真实浏览器、Android/Windows 与协议例外仍 NOT-VERIFIED；Q08 #600 的 API/Web 自动化通过，但真实浏览器双账号、持久索引/重建/离线缓存与字段级定位未验；I03/I04 Android #100 已合并但 Android master 契约 freshness 失败、Windows #62 仍 OPEN；J09/#590、R02/#610、R03/#615、R05/#613、Q03/#614、Q04/#607+#101+#63、Q05/#609、P05/#602、H03/#612、J05/J06/J08/#617、S01/Windows #61 均未合并或未完成真实验收。CI、WPF/AVD、组件测试不能替代真实设备、真实 provider、真实浏览器或生产/发布证据。 |
+| 本轮 PASS | **0**。2026-11-26 19:52 CST 前已合并 #594、#597、#600、pim-android #97/#100、pim-windows #59、pim-api #589/#604 等，但：D04 Web #594 虽已合并、独立复审仍 **MERGED / NOT ACCEPTED**；Z01 #597 只完成 API/Web 角色化脱敏，真实浏览器、Android/Windows 与协议例外仍 NOT-VERIFIED；Q08 #600 的 API/Web 自动化通过，但真实浏览器双账号、持久索引/重建/离线缓存与字段级定位未验；I03/I04 Android #100 已合并但 Android master 契约 freshness 失败、Windows #62 仍 OPEN；J09/#590、R02/#610、R03/#615、R05/#613、Q03/#614、Q04/#607+#101+#63、Q05/#609、P05/#602、H03/#612、J05/J06/J08/#617、S01/Windows #61 均未合并或未完成真实验收。CI、WPF/AVD、组件测试不能替代真实设备、真实 provider、真实浏览器或生产/发布证据。 |
 
 > 关键防回归规则：不把旧 PR head、旧 CI、demo、历史源码审计或客户端契约快照当作当前 head 的 PASS；`NOT-VERIFIED` 不是通过；**代码合并 ≠ PASS**。本台账对 Android 只认远端 `origin/master@b23fbe89007db6f5a47ad7522286858b567a3dba` 及已核实的 PR 状态；对 Windows 只认 `origin/master@70b735a5c7067be1a277cd19e18aa45ff50dc1c4`。Android master 当前 CI 因契约 freshness 为红，Android/Windows 契约同步 PR #93/#60 也分别为红；在契约刷新完成前，不得把客户端 CI 旧绿或已合并 PR 当作当前契约兼容证据。`api-v26.11.1174`/`api-v26.11.1182` 都是 pre-release，不是正式发布或生产部署证据。#606 仍 OPEN，但其 docs-only tree 已由 master 落地，本台账只记该事实，不关闭 PR。
 
-### 2026-11-26 19:48 CST 仓库与契约基线
+### 2026-11-26 19:52 CST 仓库与契约基线
 
 本轮以 GitHub 只读查询、三个仓库 `origin/master` 和 `contract/openapi.json` 为准；不访问 `pim_prod`，不修改 workflow。代码合并、CI、真实设备、真实 provider、真实浏览器、生产/发布证据分栏记录。
 
@@ -33,7 +33,7 @@
 | pim-android #93 契约刷新至 `pim-api@c47542e` | `63ce05dd5c11339c1d6173aed0035c542c35af50` | `45793789400` failure | `:core:verifyContractEndpoints`：`ApiService.kt:431 search` 返回 `SearchResultPagedResultApiResponse`，契约要求 `GlobalSearchResultApiResponse` | 先合入 #101/#102 中的 search 类型适配，再刷新并重跑 #93 |
 | pim-windows #60 契约刷新至 `pim-api@c47542e` | `7bf52b7abcde9db096b0f4f93ee277a4c000615d` | `45793795936` failure | `test-client-core` CS9035：`NoteTaskSuggestionServiceTests.cs` 的 `NoteTaskSuggestionDto.Kind` 必填字段未赋值 | 先合入 #62 的测试夹具修复，再刷新并重跑 #60 |
 
-### 已合并 PR（2026-11-26 19:48 CST 复核）
+### 已合并 PR（2026-11-26 19:52 CST 复核）
 
 | PR | head | merge | required CI / 合并后 CI | 判定与边界 |
 | --- | --- | --- | --- | --- |
@@ -46,7 +46,7 @@
 | pim-android #100 I03/I04 客户端 | `d7fb90526aca6e11b6c59d8b0382f51ea513199d` | `b23fbe89…`（2026-11-25T18:07:03Z） | PR `45664901880` success（instrumented `45664901925` skipped）；合并后 master `45671814150` **failure**（contract freshness） | 代码已合并但 Android master 契约红；真实设备与 Android↔Web 闭环 NOT-VERIFIED |
 | pim-windows #59 M06 工作台 | `c4266cc…` | `70b735a5…` | `45601852563` success；合并后 `45652799869` success（含 `release`） | 原生工作台/托盘入口落地；M06 伞项仍 FAIL（通知/深链、本地编辑器、旧壳退役、真实桌面/升级未完成） |
 
-### 开放 PR 当前状态（2026-11-26 19:48 CST）
+### 开放 PR 当前状态（2026-11-26 19:52 CST）
 
 > 截至快照，下列开放 PR 在 GitHub 均无正式 review（`reviews=0`）；表中“复审/状态”只记录已核实的独立复审或实现线索，未复审不等于通过。
 
@@ -60,7 +60,7 @@
 | pim-api #610 | R02 | `fd7b7c7a8ef7efe61f68fd9b886d7804953bf1f8` | `45752009493` success；6 shard 6824 passed/103 skipped/0 failed | REST/MCP 显式偏移、IANA、未知时区、DST fold | 未合并；真实 Microsoft Graph、真实浏览器→API→PostgreSQL NOT-VERIFIED；R02-AC12 依赖 R03 |
 | pim-api #612 | H03-AC10 | `0f367b497efe4bc067e27361ee60c66b221a6beb` | `45750782446` success | 长音频分批、预算/并发上限、失败批次重试、汇总不重放音频 | 未合并；真实多模态 provider、Hangfire 多进程、Web/Android/Windows 真机 NOT-VERIFIED |
 | pim-api #613 | R05 | `e7af8e2654fca7c712090df42b9b07aea75e625d` | `45810948540` **failure**：shard-6 1 failed/5448 passed/24 skipped；`CI Gate` failure；`build`、`web-build`、`build-docker` success；前一 head `78c380d0` 的 `45805667214` failure：shard-6 4 failed/5445 passed/24 skipped | 新增 19 个 native-note MCP 工具、requestId 幂等/CAS/整包；当前 head 为复审阻塞修复 | 不可合并；当前 head 失败为 `NativeNoteMcpRealDbTests.PackageUpload_RoundTripsAndReplaysIdempotently_WhileCasAndBadPackagesFailClosed`（`NativeNoteMcpRealDbTests.cs:199/377`，`Assert.Contains("[redacted base64")` 未找到）；前一 head 另有 `OwnerIsolationAndReadOnlyToken_AreEnforced` 与 2 个 `OutlookAuthorizationSessionTests`；外部独立 MCP NOT-VERIFIED |
-| pim-api #614 | Q03 | `8a8f67fff4f65afa243eb5eb1763584360434611` | `45811770777` **in_progress**（19:48 CST；shard-1/2/3/4/6、`build`、`web-build`、`build-docker` success，仅 shard-5 未完成，`CI Gate` 未出）；前一 head `18298c0a` 的 `45809919481` success 不能替代当前 head | 统一回收站 API/Web、笔记/文件/任务/日历四域、CAS/逐项回执 | 未合并；真实浏览器、Android/Windows 原生回收站 NOT-VERIFIED；Android/Windows 明确不在本 PR 范围 |
+| pim-api #614 | Q03 | `8a8f67fff4f65afa243eb5eb1763584360434611` | `45811770777` success：`CI Gate`、6 shard、`build`、`web-build`、`build-docker` success；`build-mcp`/`release`/契约通知 skipped | 统一回收站 API/Web、笔记/文件/任务/日历四域、CAS/逐项回执 | 未合并；真实浏览器、Android/Windows 原生回收站 NOT-VERIFIED；Android/Windows 明确不在本 PR 范围 |
 | pim-api #615 | R03 | `a3e585a1bf630c0450780f4ae7d9d80a0927ed43` | `45799051896` success | Outlook 写回账本、ETag、幂等、撤销、MCP 409/502 回执、独立复审删除收敛 | 未合并；真实 Microsoft Graph NOT-VERIFIED；`LOCAL_STATE_PENDING` 等恢复分支未做真实故障注入 |
 | pim-api #617 | J05/J06/J08 | `d9de7b662fd31663c19e55bbe925b66f5d648045` | `45807850247` success；6 shard 原始日志 6843 passed/100 skipped/0 failed | LiteLLM 退场、用途默认模型、ASR 跟随全局、按 revision 测试连接、传输熔断 | 未合并；真实第三方 provider、管理员浏览器、无 LiteLLM 生产部署、Batch/音频理解 NOT-VERIFIED；.NET MCP 148 与退役 Python 147 仍差 1 工具，等价性 PARTIAL |
 | pim-android #101 | Q04 | `539f4231d986f780e6a6504a8d3fd364984234d2` | `45677902910` success | 远程 HTTP 保存/测试前阻断；回环/`10.0.2.2` 例外；私有 CA 不降校验 | 未合并；契约快照仍为 `pim-api@1dd3032`，相对当前 `c47542e1` 已陈旧；真实设备/私有 CA/公网 TLS NOT-VERIFIED |
@@ -81,7 +81,7 @@
 | R02 | #598 已合并；#610 待合并；R02-AC12 依赖 R03 #615 | #610 CI 绿；真实 Graph、真实浏览器→API→PostgreSQL NOT-VERIFIED；R02-AC12 BLOCKED | FAIL（R02-AC12 BLOCKED） |
 | R03 | #615 待合并；依赖真实 Microsoft Graph 与故障注入 | #615 CI 绿、独立复审删除收敛；真实 Graph、撤销/ETag/未知结果恢复未验 | FAIL |
 | R05 | #613 当前 head CI 红；依赖外部独立 MCP 客户端 | #613 当前 head `e7af8e26` 的 CI `45810948540` failure：shard-6 1 failed/5448 passed；前一 head `78c380d0` shard-6 4 failed；外部 MCP NOT-VERIFIED | FAIL（CI 红） |
-| Q03 | #614 当前 head 待 CI 收口；Android/Windows 原生回收站未实现 | #614 当前 head `8a8f67ff` 的 CI `45811770777` 仅 shard-5 未完成；API/Web 四域回收站；真实浏览器、Android/Windows 原生 NOT-VERIFIED | FAIL（当前 head 未完成 CI） |
+| Q03 | #614 CI 绿、待合并；Android/Windows 原生回收站未实现 | #614 当前 head `8a8f67ff` 的 CI `45811770777` success；API/Web 四域回收站；真实浏览器、Android/Windows 原生 NOT-VERIFIED | FAIL |
 | Q04 | #607 + Android #101 + Windows #63 三仓同批；真实公网 TLS 最后验 | 三 PR CI 均绿但均未合并；客户端契约快照陈旧；真实证书/反代/生产入口 NOT-VERIFIED | FAIL |
 | Q05 | #609 待合并；依赖 Android/Windows 诊断上报与生产部署 | API/Web 诊断页/ZIP/脱敏/限额已实现；真实 Android/Windows 客户端与生产 NOT-VERIFIED | FAIL |
 | P05 | #602 待合并；依赖真实浏览器与 Android/Windows 只读消费 | API/Web 纠正/排除/补点/合并/CAS/游标已实现；真实浏览器 E2E、客户端 NOT-VERIFIED | FAIL |
@@ -150,7 +150,7 @@
 | S Release / 版本与发布安全 | 0 | 0 | 1 | 0 | 0 |
 | Z 反向要求 | 0 | 1 | 1 | 0 | 0 |
 
-> 2026-11-26 19:48 CST 复核：#594、#597、#600、Android #97/#100、#589、#59、#604 已合并；#606 内容已由 master 落地但 PR 仍 OPEN；#590/#596/#602/#607/#609/#610/#612/#613/#614/#615/#617、Android #101/#102、Windows #61/#62/#63 仍 OPEN。计数保持不变：PASS 0、FAIL 82、NOT-VERIFIED 71（含 S01）、BLOCKED 2、APPROVED-EXCEPTION 6，合计 161。Q08/Z01/D04/I03/I04 均因“代码合并但真实验收未完成”或“客户端/Windows 未闭合”保持 FAIL/PARTIAL；S01 保持 NOT-VERIFIED；没有任何已合并 PR 被提升为 PASS。
+> 2026-11-26 19:52 CST 复核：#594、#597、#600、Android #97/#100、#589、#59、#604 已合并；#606 内容已由 master 落地但 PR 仍 OPEN；#590/#596/#602/#607/#609/#610/#612/#613/#614/#615/#617、Android #101/#102、Windows #61/#62/#63 仍 OPEN。计数保持不变：PASS 0、FAIL 82、NOT-VERIFIED 71（含 S01）、BLOCKED 2、APPROVED-EXCEPTION 6，合计 161。Q08/Z01/D04/I03/I04 均因“代码合并但真实验收未完成”或“客户端/Windows 未闭合”保持 FAIL/PARTIAL；S01 保持 NOT-VERIFIED；没有任何已合并 PR 被提升为 PASS。
 
 ## 明确阻塞
 
