@@ -1,5 +1,3 @@
-using System.Text.Json.Serialization;
-
 namespace Pim.Module.Calendar.DTOs;
 
 public sealed record OutlookAuthorizationSessionResponse(
@@ -63,16 +61,7 @@ public sealed record OutlookWriteRequest(
     Guid ClientOperationId,
     string? ExpectedEtag = null,
     Guid? OriginalEventId = null,
-    string? RecurrenceId = null)
-{
-    /// <summary>
-    /// Stable fingerprint of the public event request. It is not part of the API
-    /// contract; the event gateway uses it so a replay can be verified even after
-    /// the local event row has been soft-deleted or removed.
-    /// </summary>
-    [JsonIgnore]
-    public string? RequestPayloadHash { get; init; }
-}
+    string? RecurrenceId = null);
 
 public sealed record OutlookWriteResult(
     string Status,

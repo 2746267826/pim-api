@@ -4020,6 +4020,11 @@ namespace Pim.Infrastructure.Data.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("request_event_id");
 
+                    b.Property<string>("RequestHash")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("request_hash");
+
                     b.Property<Guid?>("ResultEventId")
                         .HasColumnType("uuid")
                         .HasColumnName("result_event_id");

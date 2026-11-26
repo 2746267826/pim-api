@@ -51,15 +51,17 @@ public sealed class OutlookEventWriteService
     }
 
     public async Task<OutlookWriteResult> ExecuteAsync(
-        Guid userId, OutlookWriteRequest request, CancellationToken ct)
-        => await ExecuteCoreAsync(userId, request, null, ct);
+        Guid userId, OutlookWriteRequest request, CancellationToken ct,
+        string? requestHash = null)
+        => await ExecuteCoreAsync(userId, request, null, requestHash, ct);
 
     public async Task<OutlookWriteResult> ExecuteUndoAsync(
         Guid userId, OutlookWriteRequest request, Guid undoOfOperationId, CancellationToken ct)
-        => await ExecuteCoreAsync(userId, request, undoOfOperationId, ct);
+        => await ExecuteCoreAsync(userId, request, undoOfOperationId, null, ct);
 
     private async Task<OutlookWriteResult> ExecuteCoreAsync(
-        Guid userId, OutlookWriteRequest request, Guid? undoOfOperationId, CancellationToken ct)
+        Guid userId, OutlookWriteRequest request, Guid? undoOfOperationId,
+        string? requestHash, CancellationToken ct)
     {
         if (request.Operation is not ("create" or "update" or "delete"))
             throw new DomainException(02009, "不支持的 Microsoft 日程操作。");
@@ -106,7 +108,7 @@ public sealed class OutlookEventWriteService
         if (request.Operation == "create" && request.Scope != "instance")
             throw new DomainException(02009, "创建操作 Scope 仅支持 instance。");
 
-        var payloadHash = ResolvePayloadHash(request, binding.Id, undoOfOperationId);
+        var payloadHash = ComputePayloadHash(request, undoOfOperationId);
         var existing = await _db.Set<OutlookWritebackOperationEntity>()
             .FirstOrDefaultAsync(
                 o => o.UserId == userId && o.ClientOperationId == request.ClientOperationId,
@@ -131,6 +133,7 @@ public sealed class OutlookEventWriteService
             EventId = request.EventId,
             Scope = request.Scope,
             PayloadHash = payloadHash,
+            RequestHash = requestHash,
             State = "processing",
             AttemptCount = 1,
             UndoState = undoOfOperationId is null && request.Scope == "instance"
@@ -146,6 +149,7 @@ public sealed class OutlookEventWriteService
         operation.RequestEventId ??= request.EventId;
         operation.EventId = request.EventId;
         operation.Scope = request.Scope;
+        operation.RequestHash ??= requestHash;
 
         return request.Operation switch
         {
@@ -235,7 +239,6 @@ public sealed class OutlookEventWriteService
             await _db.SaveChangesAsync(ct);
             return ReplayCached(priorUndo);
         }
-        var conflictLatestEtag = GetConflictLatestEtag(priorUndo);
 
         original.UndoState = "in-progress";
         original.UpdatedAt = _timeProvider.GetUtcNow();
@@ -284,6 +287,11 @@ public sealed class OutlookEventWriteService
                         ?? throw new DomainException(02009, "原更新操作的日程已不存在，无法撤销。");
                     if (string.IsNullOrWhiteSpace(original.PreviousDraftJson))
                         throw new DomainException(02009, "原更新操作缺少可恢复内容，无法撤销。");
+                    // A conflicted undo proved the locally cached ETag is stale.
+                    // Retry must send the ETag returned by the conflict read, not the
+                    // pre-conflict token that Graph already rejected.
+                    var expectedEtag =
+                        GetConflictLatestEtag(priorUndo) ?? eventEntity.OutlookEtag;
                     undoRequest = new OutlookWriteRequest(
                         "update",
                         original.CalendarBindingId,
@@ -291,7 +299,7 @@ public sealed class OutlookEventWriteService
                         DeserializeDraft(original.PreviousDraftJson),
                         original.Scope,
                         undoClientOperationId,
-                        ExpectedEtag: conflictLatestEtag ?? eventEntity.OutlookEtag);
+                        ExpectedEtag: expectedEtag);
                     break;
                 }
                 case "delete":
@@ -351,7 +359,7 @@ public sealed class OutlookEventWriteService
         Guid clientOperationId,
         Guid? requestEventId,
         string? scope,
-        string requestPayloadHash,
+        string? requestHash,
         CancellationToken ct)
     {
         var operation = await _db.Set<OutlookWritebackOperationEntity>()
@@ -370,10 +378,9 @@ public sealed class OutlookEventWriteService
         if (!string.IsNullOrWhiteSpace(scope)
             && !string.Equals(operation.Scope, scope, StringComparison.OrdinalIgnoreCase))
             return IdempotencyConflict(operation);
-        var boundRequestHash = BindPayloadHash(operation.CalendarBindingId, requestPayloadHash);
-        if (string.IsNullOrWhiteSpace(requestPayloadHash)
-            || (!string.Equals(operation.PayloadHash, requestPayloadHash, StringComparison.Ordinal)
-                && !string.Equals(operation.PayloadHash, boundRequestHash, StringComparison.Ordinal)))
+        if (string.IsNullOrWhiteSpace(operation.RequestHash)
+            || string.IsNullOrWhiteSpace(requestHash)
+            || !string.Equals(operation.RequestHash, requestHash, StringComparison.Ordinal))
             return IdempotencyConflict(operation);
 
         return operation.State switch
@@ -960,150 +967,150 @@ public sealed class OutlookEventWriteService
                 remoteWriteAttempted: remoteWriteAttempted);
         }
 
-        int affectedCount;
-        EventEntity resultEntity;
-        if (request.Scope == "series")
+        try
         {
-            var seriesEvents = await _db.Set<EventEntity>()
-                .IgnoreQueryFilters()
-                .Where(e => e.OutlookCalendarBindingId == binding.Id
-                    && e.DeletedAt == null
-                    && (e.OutlookEventId == graphTargetId || e.OutlookSeriesMasterId == graphTargetId))
-                .ToListAsync(CancellationToken.None);
+            int affectedCount;
+            EventEntity resultEntity;
+            if (request.Scope == "series")
+            {
+                var seriesEvents = await _db.Set<EventEntity>()
+                    .IgnoreQueryFilters()
+                    .Where(e => e.OutlookCalendarBindingId == binding.Id
+                        && e.DeletedAt == null
+                        && (e.OutlookEventId == graphTargetId || e.OutlookSeriesMasterId == graphTargetId))
+                    .ToListAsync(CancellationToken.None);
 
-            var ids = new HashSet<Guid>(seriesEvents.Select(e => e.Id));
-            if (!ids.Contains(localEvent.Id))
-            {
-                seriesEvents.Add(localEvent);
-            }
-
-            foreach (var evt in seriesEvents)
-            {
-                ApplySoftDelete(evt, request.ClientOperationId, now);
-            }
-            affectedCount = seriesEvents.Count;
-            resultEntity = localEvent;
-        }
-        else if (target.IsOccurrenceWrite)
-        {
-            var cancelled = target.ExistingOccurrence;
-            if (cancelled is null)
-            {
-                cancelled = await FindOccurrenceExceptionAsync(
-                    target.Master?.Id, target.RecurrenceId, ct);
-            }
-            if (cancelled is null)
-            {
-                // A legacy occurrence row can already own the concrete Graph occurrence id
-                // without being flagged as an exception. Inserting another row with the same
-                // (binding, outlook_event_id) would violate the unique index after Graph has
-                // already accepted the DELETE, so reuse that row and converge it to a
-                // cancelled exception instead.
-                cancelled = await FindOccurrenceByGraphIdAsync(
-                    binding.Id, target.GraphTargetId, ct);
-            }
-            if (cancelled is null)
-            {
-                cancelled = new EventEntity
+                var ids = new HashSet<Guid>(seriesEvents.Select(e => e.Id));
+                if (!ids.Contains(localEvent.Id))
                 {
-                    Id = Guid.NewGuid(),
-                    CalendarId = binding.PimCalendarId,
-                    Uid = target.ValidationEntity.Uid,
-                    Title = target.ValidationEntity.Title,
-                    Description = target.ValidationEntity.Description,
-                    Location = target.ValidationEntity.Location,
-                    DtStart = target.ValidationEntity.DtStart,
-                    DtEnd = target.ValidationEntity.DtEnd,
-                    IsAllDay = target.ValidationEntity.IsAllDay,
-                    AllDayStartDate = target.ValidationEntity.AllDayStartDate,
-                    AllDayEndDateExclusive = target.ValidationEntity.AllDayEndDateExclusive,
-                    TimeZoneId = target.ValidationEntity.TimeZoneId,
-                    SourceTimeZoneId = target.ValidationEntity.SourceTimeZoneId,
-                    OriginalStartTimeZone = target.ValidationEntity.OriginalStartTimeZone,
-                    OriginalEndTimeZone = target.ValidationEntity.OriginalEndTimeZone,
-                    IsException = true,
-                    IsSeriesMaster = false,
-                    SeriesMasterId = target.Master?.Id,
-                    RecurrenceId = target.RecurrenceId,
-                    RRule = null,
-                    Source = "outlook",
-                    Status = "CANCELLED",
-                    OutlookEventId = target.ValidationEntity.OutlookEventId,
-                    OutlookCalendarBindingId = binding.Id,
-                    OutlookConnectionId = connection.Id,
-                    OutlookEventType = target.ValidationEntity.OutlookEventType,
-                    OutlookSeriesMasterId = target.ValidationEntity.OutlookSeriesMasterId,
-                    OutlookEtag = target.ValidationEntity.OutlookEtag,
-                    IsMuted = target.ValidationEntity.IsMuted,
-                    CreatedAt = now,
-                    UpdatedAt = now,
-                    DtStamp = now
-                };
-                _db.Set<EventEntity>().Add(cancelled);
+                    seriesEvents.Add(localEvent);
+                }
+
+                foreach (var evt in seriesEvents)
+                {
+                    ApplySoftDelete(evt, request.ClientOperationId, now);
+                }
+                affectedCount = seriesEvents.Count;
+                resultEntity = localEvent;
+            }
+            else if (target.IsOccurrenceWrite)
+            {
+                var cancelled = target.ExistingOccurrence;
+                if (cancelled is null)
+                {
+                    cancelled = await FindOccurrenceExceptionAsync(
+                        target.Master?.Id, target.RecurrenceId, ct);
+                }
+                if (cancelled is null)
+                {
+                    // A legacy occurrence row can already own the concrete Graph occurrence id
+                    // without being flagged as an exception. Inserting another row with the same
+                    // (binding, outlook_event_id) would violate the unique index after Graph has
+                    // already accepted the DELETE, so reuse that row and converge it to a
+                    // cancelled exception instead.
+                    cancelled = await FindOccurrenceByGraphIdAsync(
+                        binding.Id, target.GraphTargetId, ct);
+                }
+                if (cancelled is null)
+                {
+                    cancelled = new EventEntity
+                    {
+                        Id = Guid.NewGuid(),
+                        CalendarId = binding.PimCalendarId,
+                        Uid = target.ValidationEntity.Uid,
+                        Title = target.ValidationEntity.Title,
+                        Description = target.ValidationEntity.Description,
+                        Location = target.ValidationEntity.Location,
+                        DtStart = target.ValidationEntity.DtStart,
+                        DtEnd = target.ValidationEntity.DtEnd,
+                        IsAllDay = target.ValidationEntity.IsAllDay,
+                        AllDayStartDate = target.ValidationEntity.AllDayStartDate,
+                        AllDayEndDateExclusive = target.ValidationEntity.AllDayEndDateExclusive,
+                        TimeZoneId = target.ValidationEntity.TimeZoneId,
+                        SourceTimeZoneId = target.ValidationEntity.SourceTimeZoneId,
+                        OriginalStartTimeZone = target.ValidationEntity.OriginalStartTimeZone,
+                        OriginalEndTimeZone = target.ValidationEntity.OriginalEndTimeZone,
+                        IsException = true,
+                        IsSeriesMaster = false,
+                        SeriesMasterId = target.Master?.Id,
+                        RecurrenceId = target.RecurrenceId,
+                        RRule = null,
+                        Source = "outlook",
+                        Status = "CANCELLED",
+                        OutlookEventId = target.ValidationEntity.OutlookEventId,
+                        OutlookCalendarBindingId = binding.Id,
+                        OutlookConnectionId = connection.Id,
+                        OutlookEventType = target.ValidationEntity.OutlookEventType,
+                        OutlookSeriesMasterId = target.ValidationEntity.OutlookSeriesMasterId,
+                        OutlookEtag = target.ValidationEntity.OutlookEtag,
+                        IsMuted = target.ValidationEntity.IsMuted,
+                        CreatedAt = now,
+                        UpdatedAt = now,
+                        DtStamp = now
+                    };
+                    _db.Set<EventEntity>().Add(cancelled);
+                }
+                else
+                {
+                    cancelled.DeletedAt = null;
+                    cancelled.DeletedByOperationId = null;
+                    cancelled.DeletedByOperationKind = null;
+                    cancelled.IsException = true;
+                    cancelled.IsSeriesMaster = false;
+                    cancelled.Status = "CANCELLED";
+                    cancelled.UpdatedAt = now;
+                    cancelled.DtStamp = now;
+                    if (target.Master is not null)
+                        cancelled.SeriesMasterId = target.Master.Id;
+                    if (!string.IsNullOrEmpty(target.RecurrenceId))
+                        cancelled.RecurrenceId = target.RecurrenceId;
+                    cancelled.RRule = null;
+                }
+                affectedCount = 1;
+                resultEntity = cancelled;
             }
             else
             {
-                cancelled.DeletedAt = null;
-                cancelled.DeletedByOperationId = null;
-                cancelled.DeletedByOperationKind = null;
-                cancelled.IsException = true;
-                cancelled.IsSeriesMaster = false;
-                cancelled.Status = "CANCELLED";
-                cancelled.UpdatedAt = now;
-                cancelled.DtStamp = now;
-                if (target.Master is not null)
-                    cancelled.SeriesMasterId = target.Master.Id;
-                if (!string.IsNullOrEmpty(target.RecurrenceId))
-                    cancelled.RecurrenceId = target.RecurrenceId;
-                cancelled.RRule = null;
+                ApplySoftDelete(localEvent, request.ClientOperationId, now);
+                affectedCount = 1;
+                resultEntity = localEvent;
             }
-            affectedCount = 1;
-            resultEntity = cancelled;
-        }
-        else
-        {
-            ApplySoftDelete(localEvent, request.ClientOperationId, now);
-            affectedCount = 1;
-            resultEntity = localEvent;
-        }
 
-        batch.Status = "completed";
-        batch.FinishedAt = now;
-        batch.UpdatedAt = now;
-        batch.UpdatedCount = affectedCount;
-        batch.ConfirmationCount = 0;
-        batch.StepsJson = JsonSerializer.Serialize(new[]
-        {
-            new { step = "graph-delete", status = "success", timestamp = now },
-            new { step = "soft-delete", status = "success", timestamp = now }
-        });
-        PopulateBatchHistory(batch, binding.Name, "delete", "completed",
-            resultEntity.Id, resultEntity.Title, 0, 0, affectedCount, 0, 0, binding.Id);
-        operation.EventId = resultEntity.Id;
-        operation.ResultEventId = resultEntity.Id;
-        operation.ResultStatus = "deleted";
-        var result = BuildSuccessResult(operation, "deleted", null);
-        operation.ResultJson = SerializeResult(result);
-        operation.State = "completed";
-        operation.ErrorCode = null;
-        operation.ErrorMessage = null;
-        operation.CompletedAt = now;
-        operation.UpdatedAt = now;
-        try
-        {
+            batch.Status = "completed";
+            batch.FinishedAt = now;
+            batch.UpdatedAt = now;
+            batch.UpdatedCount = affectedCount;
+            batch.ConfirmationCount = 0;
+            batch.StepsJson = JsonSerializer.Serialize(new[]
+            {
+                new { step = "graph-delete", status = "success", timestamp = now },
+                new { step = "soft-delete", status = "success", timestamp = now }
+            });
+            PopulateBatchHistory(batch, binding.Name, "delete", "completed",
+                resultEntity.Id, resultEntity.Title, 0, 0, affectedCount, 0, 0, binding.Id);
+            operation.EventId = resultEntity.Id;
+            operation.ResultEventId = resultEntity.Id;
+            operation.ResultStatus = "deleted";
+            var result = BuildSuccessResult(operation, "deleted", null);
+            operation.ResultJson = SerializeResult(result);
+            operation.State = "completed";
+            operation.ErrorCode = null;
+            operation.ErrorMessage = null;
+            operation.CompletedAt = now;
+            operation.UpdatedAt = now;
             await _db.SaveChangesAsync(CancellationToken.None);
+
+            await AuditSuccessAsync(
+                userId, operation.UndoOfOperationId is null ? "outlook.event.delete" : "outlook.event.undo",
+                resultEntity.Id, operation);
+
+            return result;
         }
         catch (Exception ex)
         {
             return await MarkLocalStatePendingAsync(
                 operation, batch, ex, binding.Name, "delete", localEvent.Id, localEvent.Title);
         }
-
-        await AuditSuccessAsync(
-            userId, operation.UndoOfOperationId is null ? "outlook.event.delete" : "outlook.event.undo",
-            resultEntity.Id, operation);
-
-        return result;
     }
 
     private async Task<EventEntity?> FindEventAsync(Guid eventId, Guid userId, CancellationToken ct)
@@ -1285,20 +1292,31 @@ public sealed class OutlookEventWriteService
                 SeriesMasterId = localEvent.Id,
                 RecurrenceId = recurrenceId
             };
-            OutlookEventMapper.ApplyGraphEvent(
-                snapshot,
-                occurrence.Value,
-                binding.Id,
-                binding.PimCalendarId,
-                binding.ConnectionId,
-                Guid.NewGuid());
+            try
+            {
+                OutlookEventMapper.ApplyGraphEvent(
+                    snapshot,
+                    occurrence.Value,
+                    binding.Id,
+                    binding.PimCalendarId,
+                    binding.ConnectionId,
+                    Guid.NewGuid());
+            }
+            catch (Exception)
+            {
+                throw new GraphRequestException(
+                    HttpStatusCode.BadGateway,
+                    "Graph returned a malformed occurrence response.");
+            }
             snapshot.IsException = true;
             snapshot.IsSeriesMaster = false;
             snapshot.SeriesMasterId = localEvent.Id;
             snapshot.RecurrenceId = recurrenceId;
             snapshot.RRule = null;
             if (string.IsNullOrEmpty(snapshot.OutlookEventId))
-                throw new DomainException(02009, "Outlook 发生项缺少事件 ID，无法写回单次。");
+                throw new GraphRequestException(
+                    HttpStatusCode.BadGateway,
+                    "Graph occurrence response is missing its event id.");
 
             return new WriteTarget(
                 localEvent,
@@ -1427,6 +1445,24 @@ public sealed class OutlookEventWriteService
         catch (GraphRequestException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
         {
             return null;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (OutlookReauthenticationRequiredException)
+        {
+            throw;
+        }
+        catch (GraphRequestException)
+        {
+            throw;
+        }
+        catch (Exception)
+        {
+            throw new GraphRequestException(
+                HttpStatusCode.BadGateway,
+                "Graph returned a malformed occurrence response.");
         }
         return null;
     }
@@ -2396,22 +2432,6 @@ public sealed class OutlookEventWriteService
         };
     }
 
-    private static string? GetConflictLatestEtag(
-        OutlookWritebackOperationEntity? operation)
-    {
-        if (operation is not { State: "conflict" }
-            || string.IsNullOrWhiteSpace(operation.ResultJson))
-            return null;
-        try
-        {
-            return DeserializeResult(operation.ResultJson)?.LatestEtag;
-        }
-        catch (JsonException)
-        {
-            return null;
-        }
-    }
-
     private OutlookWriteResult BuildSuccessResult(
         OutlookWritebackOperationEntity operation,
         string status,
@@ -2464,6 +2484,25 @@ public sealed class OutlookEventWriteService
             ? null
             : JsonSerializer.Deserialize<OutlookWriteResult>(json, JsonOptions);
 
+    private static string? GetConflictLatestEtag(
+        OutlookWritebackOperationEntity? operation)
+    {
+        if (operation is not { State: "conflict" }
+            || string.IsNullOrWhiteSpace(operation.ResultJson))
+            return null;
+        try
+        {
+            return DeserializeResult(operation.ResultJson)?.LatestEtag
+                is { Length: > 0 } latestEtag
+                ? latestEtag
+                : null;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
     private static string SerializeDraft(CreateEventRequest draft)
         => JsonSerializer.Serialize(draft, JsonOptions);
 
@@ -2491,15 +2530,31 @@ public sealed class OutlookEventWriteService
             .ToLowerInvariant();
     }
 
-    private static string ResolvePayloadHash(
-        OutlookWriteRequest request, Guid bindingId, Guid? undoOfOperationId)
-        => undoOfOperationId is null && !string.IsNullOrWhiteSpace(request.RequestPayloadHash)
-            ? BindPayloadHash(bindingId, request.RequestPayloadHash)
-            : ComputePayloadHash(request, undoOfOperationId);
-
-    private static string BindPayloadHash(Guid bindingId, string requestPayloadHash)
+    /// <summary>
+    /// Hashes the caller-supplied request before local event resolution. Unlike the
+    /// resolved payload hash, this can be recomputed after the event row has been
+    /// removed, so a replay can never substitute a different payload for the one
+    /// that produced the cached receipt.
+    /// </summary>
+    public static string ComputeRequestHash(
+        string operation,
+        Guid? eventId,
+        object? body,
+        string? scope,
+        Guid? originalEventId,
+        string? recurrenceId,
+        string? expectedEtag)
     {
-        var canonical = $"{bindingId:D}:{requestPayloadHash}";
+        var canonical = JsonSerializer.Serialize(new
+        {
+            operation,
+            eventId,
+            body,
+            scope,
+            originalEventId,
+            recurrenceId,
+            expectedEtag
+        }, JsonOptions);
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical)))
             .ToLowerInvariant();
     }

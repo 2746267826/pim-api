@@ -23,6 +23,7 @@ public sealed class OutlookWritebackOperationEntity : IUserOwnedEntity
     [Column("event_id")] public Guid? EventId { get; set; }
     [Column("scope"), MaxLength(16)] public string Scope { get; set; } = "instance";
     [Column("payload_hash"), MaxLength(64)] public string PayloadHash { get; set; } = string.Empty;
+    [Column("request_hash"), MaxLength(64)] public string? RequestHash { get; set; }
     [Column("state"), MaxLength(24)] public string State { get; set; } = "processing";
     [Column("attempt_count")] public int AttemptCount { get; set; } = 1;
     [Column("result_event_id")] public Guid? ResultEventId { get; set; }

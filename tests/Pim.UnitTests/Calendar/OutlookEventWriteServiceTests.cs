@@ -3291,7 +3291,6 @@ public sealed class OutlookEventWriteServiceTests
         var (_, bindingId, calendarId, eventId) = await SetupUpdateAsync(db, UserId);
         var handler = new ScriptedHttpMessageHandler();
         handler.Enqueue(HttpStatusCode.OK, UpdatedEventJson());
-        handler.Enqueue(HttpStatusCode.PreconditionFailed);
         handler.Enqueue(HttpStatusCode.OK, LatestGraphEventJson);
         handler.Enqueue(HttpStatusCode.OK, """{"value":[]}""");
         handler.Enqueue(request => request.Headers.IfMatch.ToString() == "latest-etag"
@@ -3309,6 +3308,9 @@ public sealed class OutlookEventWriteServiceTests
                 "update", bindingId, eventId, MakeDraft(calendarId), "instance", OpId,
                 ExpectedEtag: "W/\"original-etag\""),
             default);
+
+        handler.EnforceIfMatch = true;
+        handler.CurrentEtag = "latest-etag";
 
         var conflict = await service.UndoAsync(UserId, OpId, default);
 
@@ -3330,6 +3332,7 @@ public sealed class OutlookEventWriteServiceTests
         Assert.NotEqual("IDEMPOTENCY_CONFLICT", retried.ErrorCode);
         Assert.Equal(deterministicUndoId, retried.ClientOperationId);
         Assert.Equal(5, handler.Requests.Count);
+        Assert.Equal("updated-etag", handler.Requests[1].Headers.IfMatch.ToString());
         Assert.Equal(HttpMethod.Patch, handler.Requests[^1].Method);
         Assert.Equal("latest-etag", handler.Requests[^1].Headers.IfMatch.ToString());
 

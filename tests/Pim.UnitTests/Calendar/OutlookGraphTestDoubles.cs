@@ -104,6 +104,8 @@ internal sealed class ScriptedHttpMessageHandler : HttpMessageHandler
 
     public List<HttpRequestMessage> Requests { get; } = [];
     public List<HttpRequestMessage> OriginalRequests { get; } = [];
+    public bool EnforceIfMatch { get; set; }
+    public string? CurrentEtag { get; set; }
 
     public void Enqueue(HttpStatusCode statusCode, string? body = null, string? retryAfter = null)
     {
@@ -139,6 +141,19 @@ internal sealed class ScriptedHttpMessageHandler : HttpMessageHandler
     {
         if (cancellationToken.IsCancellationRequested)
             return Task.FromCanceled<HttpResponseMessage>(cancellationToken);
+
+        if (EnforceIfMatch
+            && CurrentEtag is not null
+            && request.Method != HttpMethod.Get
+            && !string.Equals(
+                request.Headers.IfMatch.ToString(),
+                CurrentEtag,
+                StringComparison.Ordinal))
+        {
+            OriginalRequests.Add(request);
+            Requests.Add(SnapshotRequest(request));
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.PreconditionFailed));
+        }
 
         var script = _scripts.Count > 0 ? _scripts.Dequeue() : null;
         if (script is null)

@@ -1,6 +1,3 @@
-using System.Security.Cryptography;
-using System.Text;
-using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Pim.Core.Exceptions;
 using Pim.Infrastructure.Data;
@@ -16,9 +13,6 @@ namespace Pim.Module.Calendar.Services;
 /// </summary>
 public sealed class OutlookCalendarWritebackGateway
 {
-    private static readonly JsonSerializerOptions PayloadHashJsonOptions =
-        new(JsonSerializerDefaults.Web);
-
     private readonly PimDbContext _db;
     private readonly OutlookEventWriteService _writeService;
 
@@ -51,8 +45,8 @@ public sealed class OutlookCalendarWritebackGateway
             return null;
 
         var draft = request with { CalendarId = calendar.Id };
-        var requestPayloadHash = ComputeRequestPayloadHash(
-            "create", null, request, null, null, null, null);
+        var requestHash = OutlookEventWriteService.ComputeRequestHash(
+            "create", null, draft, "instance", null, null, null);
         return await ExecuteSafelyAsync(
             userId,
             new OutlookWriteRequest(
@@ -61,10 +55,8 @@ public sealed class OutlookCalendarWritebackGateway
                 null,
                 draft,
                 "instance",
-                clientOperationId)
-            {
-                RequestPayloadHash = requestPayloadHash
-            },
+                clientOperationId),
+            requestHash,
             clientOperationId,
             ct);
     }
@@ -82,7 +74,7 @@ public sealed class OutlookCalendarWritebackGateway
     {
         var effectiveRecurrenceId = recurrenceId ?? request.RecurrenceId;
         var scopeHint = NormalizeScopeHint(scope);
-        var requestPayloadHash = ComputeRequestPayloadHash(
+        var requestHash = OutlookEventWriteService.ComputeRequestHash(
             "update",
             eventId,
             request,
@@ -100,7 +92,7 @@ public sealed class OutlookCalendarWritebackGateway
                 clientOperationId,
                 eventId,
                 scopeHint,
-                requestPayloadHash,
+                requestHash,
                 ct);
         }
 
@@ -126,10 +118,8 @@ public sealed class OutlookCalendarWritebackGateway
                 clientOperationId,
                 ExpectedEtag: expectedEtag,
                 OriginalEventId: originalEventId,
-                RecurrenceId: effectiveRecurrenceId)
-            {
-                RequestPayloadHash = requestPayloadHash
-            },
+                RecurrenceId: effectiveRecurrenceId),
+            requestHash,
             clientOperationId,
             ct);
     }
@@ -145,8 +135,14 @@ public sealed class OutlookCalendarWritebackGateway
         CancellationToken ct)
     {
         var scopeHint = NormalizeScopeHint(scope);
-        var requestPayloadHash = ComputeRequestPayloadHash(
-            "delete", eventId, null, scopeHint, originalEventId, recurrenceId, expectedEtag);
+        var requestHash = OutlookEventWriteService.ComputeRequestHash(
+            "delete",
+            eventId,
+            null,
+            scopeHint,
+            originalEventId,
+            recurrenceId,
+            expectedEtag);
         var entity = await ResolveEventAsync(
             userId, eventId, scope, originalEventId, recurrenceId, ct);
         if (entity is null)
@@ -157,7 +153,7 @@ public sealed class OutlookCalendarWritebackGateway
                 clientOperationId,
                 eventId,
                 scopeHint,
-                requestPayloadHash,
+                requestHash,
                 ct);
         }
 
@@ -176,10 +172,8 @@ public sealed class OutlookCalendarWritebackGateway
                 clientOperationId,
                 ExpectedEtag: expectedEtag,
                 OriginalEventId: originalEventId,
-                RecurrenceId: recurrenceId)
-            {
-                RequestPayloadHash = requestPayloadHash
-            },
+                RecurrenceId: recurrenceId),
+            requestHash,
             clientOperationId,
             ct);
     }
@@ -237,12 +231,13 @@ public sealed class OutlookCalendarWritebackGateway
     private async Task<OutlookWriteResult> ExecuteSafelyAsync(
         Guid userId,
         OutlookWriteRequest request,
+        string requestHash,
         Guid clientOperationId,
         CancellationToken ct)
     {
         try
         {
-            return await _writeService.ExecuteAsync(userId, request, ct);
+            return await _writeService.ExecuteAsync(userId, request, ct, requestHash);
         }
         catch (HttpRequestException)
         {
@@ -281,28 +276,5 @@ public sealed class OutlookCalendarWritebackGateway
         if (string.Equals(scope, "series", StringComparison.OrdinalIgnoreCase))
             return "series";
         return scope.Trim();
-    }
-
-    private static string ComputeRequestPayloadHash(
-        string operation,
-        Guid? eventId,
-        object? payload,
-        string? scopeHint,
-        Guid? originalEventId,
-        string? recurrenceId,
-        string? expectedEtag)
-    {
-        var canonical = JsonSerializer.Serialize(new
-        {
-            operation,
-            eventId,
-            payload,
-            scope = scopeHint ?? "auto",
-            originalEventId,
-            recurrenceId,
-            expectedEtag = string.IsNullOrWhiteSpace(expectedEtag) ? null : expectedEtag.Trim()
-        }, PayloadHashJsonOptions);
-        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical)))
-            .ToLowerInvariant();
     }
 }
