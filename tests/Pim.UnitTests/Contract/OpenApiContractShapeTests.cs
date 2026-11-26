@@ -92,12 +92,12 @@ public sealed class OpenApiContractShapeTests
         Assert.Equal(
             "#/components/headers/X-Pim-Transport",
             shared.Headers["X-Pim-Transport"].Reference?.ReferenceV3);
-        Assert.Equal(
-            "https-required",
-            Document.Components.Headers["X-Pim-Transport"].Schema.Enum
-                .OfType<OpenApiString>()
-                .Single()
-                .Value);
+        var transportValues = Document.Components.Headers["X-Pim-Transport"].Schema.Enum
+            .OfType<OpenApiString>()
+            .Select(item => item.Value)
+            .ToList();
+        Assert.Contains("cleartext", transportValues);
+        Assert.Contains("https-required", transportValues);
         Assert.True(shared.Headers.ContainsKey("X-Pim-Request-Scheme"));
         Assert.True(shared.Headers.ContainsKey("Upgrade"));
         Assert.True(shared.Headers.ContainsKey("Cache-Control"));
