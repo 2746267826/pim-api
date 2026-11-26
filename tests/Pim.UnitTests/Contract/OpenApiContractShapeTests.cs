@@ -164,11 +164,18 @@ public sealed class OpenApiContractShapeTests
             .Operations[OperationType.Get];
         Assert.NotEmpty(operation.Security);
         var response = operation.Responses["200"];
-        var content = Assert.Single(response.Content);
-        Assert.Equal("application/octet-stream", content.Key);
-        Assert.Equal("string", content.Value.Schema.Type);
-        Assert.Equal("binary", content.Value.Schema.Format);
-        Assert.Null(content.Value.Schema.Reference);
+        var expectedContentTypes = new[]
+        {
+            "application/json", "application/octet-stream", "audio/ogg", "audio/wav",
+            "image/jpeg", "image/png", "image/webp", "text/markdown; charset=utf-8"
+        };
+        Assert.Equal(expectedContentTypes.Order(), response.Content.Keys.Order());
+        Assert.All(response.Content.Values, content =>
+        {
+            Assert.Equal("string", content.Schema.Type);
+            Assert.Equal("binary", content.Schema.Format);
+            Assert.Null(content.Schema.Reference);
+        });
         Assert.Equal("string", response.Headers["X-Content-SHA256"].Schema.Type);
         Assert.Equal("^[0-9a-f]{64}$", response.Headers["X-Content-SHA256"].Schema.Pattern);
         Assert.Equal("string", response.Headers["X-Content-Type-Options"].Schema.Type);
