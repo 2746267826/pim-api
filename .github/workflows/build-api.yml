@@ -325,6 +325,7 @@ jobs:
           SHARD_NAME: ${{ matrix.name }}
         run: |
           set +e
+          set -o pipefail
           START=$(date +%s)
           dotnet test Pim.sln --configuration Release --no-restore \
             --filter "$SHARD_FILTER" \
@@ -332,7 +333,24 @@ jobs:
           RC=$?
           END=$(date +%s)
           echo "=== ${SHARD_NAME} 测试耗时: $((END-START)) 秒 ==="
-          grep -E 'Passed!|Failed!|Total tests|Passed:|Failed:|Skipped:' "/tmp/${SHARD_NAME}.log" | tail -5
+          if grep -q 'error CS' "/tmp/${SHARD_NAME}.log"; then
+            echo "::error::${SHARD_NAME} 日志包含 C# 编译错误，拒绝判绿"
+            grep -n 'error CS' "/tmp/${SHARD_NAME}.log" | head -20
+            exit 1
+          fi
+          if grep -Eq '^Failed! +- Failed: +[1-9][0-9]*,' "/tmp/${SHARD_NAME}.log"; then
+            echo "::error::${SHARD_NAME} 日志包含 Failed>0 的真实测试失败汇总，拒绝判绿"
+            grep -E '^Failed! +- Failed:' "/tmp/${SHARD_NAME}.log" | tail -5
+            exit 1
+          fi
+          SUMMARY=$(grep -E 'Passed! +- Failed: +0, Passed: +[1-9][0-9]*,' \
+            "/tmp/${SHARD_NAME}.log" | tail -1)
+          if [ -z "$SUMMARY" ]; then
+            echo "::error::${SHARD_NAME} 没有 dotnet test 汇总行，拒绝把无测试证据当作通过"
+            tail -80 "/tmp/${SHARD_NAME}.log"
+            exit 1
+          fi
+          echo "$SUMMARY"
           exit $RC
 
       - name: 'Upload ${{ matrix.name }} log'
