@@ -382,6 +382,7 @@ public sealed class NoteDerivedEndpointsTests : IDisposable
             $"{Tasks}/{taskId}/stop", null));
         Assert.True(stopped.StopRequested);
         Assert.Equal("Stopped", stopped.Phase);
+        Assert.All(stopped.Steps, step => Assert.Equal("Cancelled", step.Status));
         var repeatedStop = await Data<NoteDerivedTaskDto>(await client.PostAsync(
             $"{Tasks}/{taskId}/stop", null));
         Assert.Equal(stopped.Revision, repeatedStop.Revision);
