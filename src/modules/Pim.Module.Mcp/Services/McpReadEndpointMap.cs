@@ -41,12 +41,17 @@ public static class McpReadEndpointMap
 
     private static void Add(Dictionary<string, Regex[]> map, string tool, string pathTemplate)
     {
-        var regex = "^" + Regex.Replace(Regex.Escape(pathTemplate), @"\\\{[^}]+\\\}",
-            "[^/]+") + "$";
+        // Regex.Escape only escapes the opening brace, so a replacement keyed on "\}" would
+        // never match and every "{id}" route would stay a literal. Escape each literal segment
+        // instead and treat whole brace segments as a single path parameter.
+        var pattern = "^" + string.Join("/", pathTemplate.Split('/').Select(segment =>
+            segment.StartsWith('{') && segment.EndsWith('}')
+                ? "[^/]+"
+                : Regex.Escape(segment))) + "$";
         map[tool] =
         [
-            new Regex(regex, RegexOptions.Compiled | RegexOptions.IgnoreCase |
-                             RegexOptions.CultureInvariant)
+            new Regex(pattern, RegexOptions.Compiled | RegexOptions.IgnoreCase |
+                               RegexOptions.CultureInvariant)
         ];
     }
 }

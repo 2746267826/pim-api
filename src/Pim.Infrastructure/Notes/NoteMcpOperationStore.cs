@@ -194,6 +194,7 @@ public sealed class NoteMcpOperationStore(IOptions<NoteMaterialUploadOptions> op
             {
                 OperationId = operationId,
                 NoteId = noteId,
+                Status = state,
                 Replayed = false,
             };
         }
