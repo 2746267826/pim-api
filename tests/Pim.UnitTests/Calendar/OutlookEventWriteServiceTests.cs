@@ -852,6 +852,51 @@ public sealed class OutlookEventWriteServiceTests
     }
 
     [Fact]
+    public async Task Delete_CompletionSaveFailure_IsRetryableNotOutcomeUnknown()
+    {
+        var db = CreateCountingDb();
+        var (_, bindingId, _, eventId) = await SetupUpdateAsync(db, UserId);
+        db.ResetSaveCallCount();
+        db.ThrowOnCallNumber = 2;
+        var handler = new ScriptedHttpMessageHandler();
+        handler.Enqueue(HttpStatusCode.NoContent);
+        handler.Enqueue(HttpStatusCode.NotFound);
+        var service = CreateService(db, handler);
+        var request = new OutlookWriteRequest(
+            "delete", bindingId, eventId, null, "instance", OpId,
+            ExpectedEtag: "W/\"etag\"");
+
+        var first = await service.ExecuteAsync(UserId, request, default);
+
+        Assert.Equal("error", first.Status);
+        Assert.Equal("LOCAL_STATE_PENDING", first.ErrorCode);
+        Assert.False(first.NoChangesApplied);
+        db.ChangeTracker.Clear();
+        var afterFailure = await db.Set<OutlookWritebackOperationEntity>().SingleAsync();
+        Assert.Equal("failed", afterFailure.State);
+        Assert.Equal("LOCAL_STATE_PENDING", afterFailure.ErrorCode);
+        Assert.NotEqual("OPERATION_OUTCOME_UNKNOWN", afterFailure.ErrorCode);
+        Assert.Null((await db.Set<EventEntity>().IgnoreQueryFilters()
+            .SingleAsync(e => e.Id == eventId)).DeletedAt);
+        var failedBatch = await db.Set<OutlookSyncBatchEntity>().SingleAsync();
+        Assert.Equal("failed", failedBatch.Status);
+        Assert.Contains("local-state-pending", failedBatch.ErrorsJson);
+        Assert.Single(handler.Requests);
+
+        var retried = await service.ExecuteAsync(UserId, request, default);
+
+        Assert.Equal("deleted", retried.Status);
+        Assert.Equal(2, handler.Requests.Count);
+        Assert.Equal(HttpMethod.Delete, handler.Requests[1].Method);
+        db.ChangeTracker.Clear();
+        var operation = await db.Set<OutlookWritebackOperationEntity>().SingleAsync();
+        Assert.Equal("completed", operation.State);
+        Assert.Equal(2, operation.AttemptCount);
+        Assert.NotNull((await db.Set<EventEntity>().IgnoreQueryFilters()
+            .SingleAsync(e => e.Id == eventId)).DeletedAt);
+    }
+
+    [Fact]
     public async Task Delete412_LocalUnchanged_ReturnsLatestRemote()
     {
         await using var db = CreateDb();

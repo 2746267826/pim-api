@@ -828,6 +828,16 @@ public sealed class OutlookEventWriteService
             }
             if (cancelled is null)
             {
+                // A legacy occurrence row can already own the concrete Graph occurrence id
+                // without being flagged as an exception. Inserting another row with the same
+                // (binding, outlook_event_id) would violate the unique index after Graph has
+                // already accepted the DELETE, so reuse that row and converge it to a
+                // cancelled exception instead.
+                cancelled = await FindOccurrenceByGraphIdAsync(
+                    binding.Id, target.GraphTargetId, ct);
+            }
+            if (cancelled is null)
+            {
                 cancelled = new EventEntity
                 {
                     Id = Guid.NewGuid(),
@@ -870,6 +880,8 @@ public sealed class OutlookEventWriteService
                 cancelled.DeletedAt = null;
                 cancelled.DeletedByOperationId = null;
                 cancelled.DeletedByOperationKind = null;
+                cancelled.IsException = true;
+                cancelled.IsSeriesMaster = false;
                 cancelled.Status = "CANCELLED";
                 cancelled.UpdatedAt = now;
                 cancelled.DtStamp = now;
@@ -877,6 +889,7 @@ public sealed class OutlookEventWriteService
                     cancelled.SeriesMasterId = target.Master.Id;
                 if (!string.IsNullOrEmpty(target.RecurrenceId))
                     cancelled.RecurrenceId = target.RecurrenceId;
+                cancelled.RRule = null;
             }
             affectedCount = 1;
             resultEntity = cancelled;
@@ -916,9 +929,8 @@ public sealed class OutlookEventWriteService
         }
         catch (Exception ex)
         {
-            await MarkOutcomeUnknownAsync(
+            return await MarkLocalStatePendingAsync(
                 operation, batch, ex, binding.Name, "delete", localEvent.Id, localEvent.Title);
-            throw;
         }
 
         await AuditSuccessAsync(
@@ -1170,6 +1182,22 @@ public sealed class OutlookEventWriteService
             .FirstOrDefault();
     }
 
+    private async Task<EventEntity?> FindOccurrenceByGraphIdAsync(
+        Guid bindingId, string? outlookEventId, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(outlookEventId))
+            return null;
+        var candidates = await _db.Set<EventEntity>()
+            .IgnoreQueryFilters()
+            .Where(e => e.OutlookCalendarBindingId == bindingId
+                && e.OutlookEventId == outlookEventId)
+            .ToListAsync(ct);
+        return candidates
+            .OrderBy(e => e.DeletedAt is null ? 0 : 1)
+            .ThenByDescending(e => e.UpdatedAt)
+            .FirstOrDefault();
+    }
+
     private async Task<JsonElement?> FindOccurrenceAsync(
         Guid connectionId,
         string graphCalendarId,
@@ -1403,7 +1431,8 @@ public sealed class OutlookEventWriteService
             });
             var failedResult = new OutlookWriteResult(
                 "error", null, null, null, resultCode, resultMessage,
-                operationRecord.ClientOperationId, false, false, resultMessage);
+                operationRecord.ClientOperationId, false, false, resultMessage,
+                NoChangesApplied: true);
             operationRecord.State = "failed";
             operationRecord.ErrorCode = resultCode;
             operationRecord.ErrorMessage = resultMessage;
@@ -1516,7 +1545,8 @@ public sealed class OutlookEventWriteService
             "conflict", null, latestEvent, latestEtag,
             "CONFLICT", "事件在 Outlook 中已被修改。请刷新后重新编辑。",
             operationRecord.ClientOperationId, false, false,
-            "事件在 Outlook 中已被修改。请刷新后重新编辑；系统不会静默覆盖远端改动。");
+            "事件在 Outlook 中已被修改。请刷新后重新编辑；系统不会静默覆盖远端改动。",
+            NoChangesApplied: true);
         operationRecord.State = "conflict";
         operationRecord.ErrorCode = "CONFLICT";
         operationRecord.ErrorMessage = conflictResult.ErrorMessage;
@@ -1555,7 +1585,8 @@ public sealed class OutlookEventWriteService
         var result = new OutlookWriteResult(
             "reauth-required", null, null, null, "REAUTH_REQUIRED",
             "Microsoft 需要重新授权。", operationRecord.ClientOperationId, false, false,
-            "Microsoft 授权已失效，请重新授权后使用同一 clientOperationId 重试。");
+            "Microsoft 授权已失效，请重新授权后使用同一 clientOperationId 重试。",
+            NoChangesApplied: true);
         operationRecord.State = "failed";
         operationRecord.ErrorCode = "REAUTH_REQUIRED";
         operationRecord.ErrorMessage = result.ErrorMessage;
@@ -1782,6 +1813,105 @@ public sealed class OutlookEventWriteService
         }
     }
 
+    /// <summary>
+    /// A DELETE has already succeeded at Graph when local persistence fails. Graph DELETE is
+    /// idempotent (404 means "already gone"), so the operation is safe to retry with the same
+    /// clientOperationId. Persist a retryable ledger state instead of claiming the remote
+    /// outcome is unknown, which would incorrectly block the user from converging local state.
+    /// </summary>
+    private async Task<OutlookWriteResult> MarkLocalStatePendingAsync(
+        OutlookWritebackOperationEntity operationRecord,
+        OutlookSyncBatchEntity batch,
+        Exception ex,
+        string calendarName,
+        string operation,
+        Guid? eventId = null,
+        string? eventTitle = null)
+    {
+        var now = _timeProvider.GetUtcNow();
+        batch.Status = "failed";
+        batch.FailureCount = 1;
+        batch.FinishedAt = now;
+        batch.UpdatedAt = now;
+        batch.ConfirmationCount = 0;
+        SetBatchError(
+            batch,
+            "local-state-pending",
+            "Graph DELETE succeeded; local state commit is pending.");
+        PopulateBatchHistory(batch, calendarName, operation, "failed", eventId, eventTitle,
+            0, 0, 0, 0, 1, GetBindingIdFromBatch(batch));
+        batch.StepsJson = JsonSerializer.Serialize(new[]
+        {
+            new { step = $"graph-{operation}", status = "success", timestamp = now },
+            new { step = "persist-local", status = "pending", timestamp = now }
+        });
+
+        const string message =
+            "Outlook 已删除，但本地状态尚未保存。请使用同一 clientOperationId 重试；系统不会重复删除远端。";
+        var result = new OutlookWriteResult(
+            "error",
+            null,
+            null,
+            null,
+            "LOCAL_STATE_PENDING",
+            message,
+            operationRecord.ClientOperationId,
+            false,
+            false,
+            message);
+        operationRecord.State = "failed";
+        operationRecord.ErrorCode = "LOCAL_STATE_PENDING";
+        operationRecord.ErrorMessage = message;
+        operationRecord.ResultJson = SerializeResult(result);
+        operationRecord.CompletedAt = null;
+        operationRecord.UpdatedAt = now;
+
+        try
+        {
+            _logger.LogWarning(
+                ex,
+                "Graph DELETE succeeded but local writeback commit failed for operation {OperationRecordId}",
+                operationRecord.Id);
+            _db.ChangeTracker.Clear();
+            var persistedOperation = await _db.Set<OutlookWritebackOperationEntity>()
+                .FirstOrDefaultAsync(o => o.Id == operationRecord.Id, CancellationToken.None);
+            var persistedBatch = await _db.Set<OutlookSyncBatchEntity>()
+                .FirstOrDefaultAsync(b => b.Id == batch.Id, CancellationToken.None);
+            if (persistedOperation is not null)
+            {
+                persistedOperation.State = operationRecord.State;
+                persistedOperation.ErrorCode = operationRecord.ErrorCode;
+                persistedOperation.ErrorMessage = operationRecord.ErrorMessage;
+                persistedOperation.ResultJson = operationRecord.ResultJson;
+                persistedOperation.CompletedAt = null;
+                persistedOperation.UpdatedAt = now;
+            }
+            if (persistedBatch is not null)
+            {
+                persistedBatch.Status = batch.Status;
+                persistedBatch.FailureCount = batch.FailureCount;
+                persistedBatch.FinishedAt = batch.FinishedAt;
+                persistedBatch.UpdatedAt = batch.UpdatedAt;
+                persistedBatch.ConfirmationCount = 0;
+                persistedBatch.ErrorsJson = batch.ErrorsJson;
+                persistedBatch.ErrorSummary = batch.ErrorSummary;
+                persistedBatch.PerCalendarJson = batch.PerCalendarJson;
+                persistedBatch.StepsJson = batch.StepsJson;
+            }
+            if (persistedOperation is not null || persistedBatch is not null)
+                await _db.SaveChangesAsync(CancellationToken.None);
+        }
+        catch (Exception saveEx)
+        {
+            _logger.LogWarning(
+                saveEx,
+                "Failed to persist retryable local-state outcome for writeback operation {OperationRecordId}",
+                operationRecord.Id);
+        }
+
+        return result;
+    }
+
     private async Task<OutlookWriteResult?> SaveStartAsync(
         OutlookSyncBatchEntity batch,
         OutlookWritebackOperationEntity operation,
@@ -1854,7 +1984,8 @@ public sealed class OutlookEventWriteService
             ErrorCode: "IDEMPOTENCY_CONFLICT",
             ErrorMessage: "同一 clientOperationId 已用于不同的写回内容。请使用新的 clientOperationId。",
             ClientOperationId: operation.ClientOperationId,
-            UserMessage: "同一 clientOperationId 已用于不同的写回内容。请使用新的 clientOperationId。");
+            UserMessage: "同一 clientOperationId 已用于不同的写回内容。请使用新的 clientOperationId。",
+            NoChangesApplied: true);
 
     private static OutlookWriteResult OperationInProgress(OutlookWritebackOperationEntity operation)
         => new(

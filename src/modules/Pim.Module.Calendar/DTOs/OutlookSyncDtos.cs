@@ -74,7 +74,8 @@ public sealed record OutlookWriteResult(
     bool RequiresConfirmation = false,
     bool UndoAvailable = false,
     string? UserMessage = null,
-    bool Replayed = false);
+    bool Replayed = false,
+    bool NoChangesApplied = false);
 
 public sealed record UpdateOutlookClientIdRequest(Guid ClientId);
 public sealed record OutlookAuthorizationSessionRequest(Guid SessionId);
