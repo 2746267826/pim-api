@@ -721,6 +721,7 @@ public sealed class NoteDerivedJobTests : IAsyncLifetime
     [InlineData("source", "synthesis_source_mismatch")]
     [InlineData("model", "synthesis_model_mismatch")]
     [InlineData("input", "synthesis_input_mismatch")]
+    [InlineData("body", "synthesis_output_mismatch")]
     [InlineData("output", "synthesis_output_mismatch")]
     [InlineData("result", "synthesis_result_mismatch")]
     [InlineData("fingerprint", "publish_evidence_changed")]
@@ -753,6 +754,12 @@ public sealed class NoteDerivedJobTests : IAsyncLifetime
     }
 
     [Theory]
+    [InlineData("delete", "synthesis_receipt_missing")]
+    [InlineData("request", "synthesis_request_mismatch")]
+    [InlineData("purpose", "synthesis_purpose_mismatch")]
+    [InlineData("source", "synthesis_source_mismatch")]
+    [InlineData("model", "synthesis_model_mismatch")]
+    [InlineData("body", "synthesis_result_mismatch")]
     [InlineData("input", "synthesis_input_mismatch")]
     [InlineData("output", "synthesis_output_mismatch")]
     [InlineData("result", "synthesis_result_mismatch")]
@@ -771,6 +778,34 @@ public sealed class NoteDerivedJobTests : IAsyncLifetime
         var record = state.Steps.Single(x => x.Key == "record-synthesis");
         Assert.Equal("Blocked", record.Current.Status);
         Assert.Equal(expectedCode, record.Current.ErrorCode);
+        Assert.Equal(calls, _recordBodies.Count);
+        Assert.Empty(_analysisBodies);
+        await AssertNoDerivedVersionsAsync(task.TaskId);
+    }
+
+    [Theory]
+    [InlineData("Running", "delete", "synthesis_receipt_missing")]
+    [InlineData("Unknown", "delete", "synthesis_receipt_missing")]
+    [InlineData("Running", "request", "synthesis_request_mismatch")]
+    [InlineData("Unknown", "request", "synthesis_request_mismatch")]
+    [InlineData("Running", "purpose", "synthesis_purpose_mismatch")]
+    [InlineData("Unknown", "model", "synthesis_model_mismatch")]
+    [InlineData("Running", "body", "synthesis_result_mismatch")]
+    [InlineData("Unknown", "output", "synthesis_output_mismatch")]
+    [InlineData("Running", "result", "synthesis_result_mismatch")]
+    [InlineData("Unknown", "result", "synthesis_result_mismatch")]
+    public async Task ReconcilingRecoveredRecordBlocksCorruptedSynthesisReceipt(
+        string checkpointStatus, string corruption, string expectedCode)
+    {
+        var (task, _) = await StartRecordRetryAsync();
+        await AddRecoveredRecordReceiptAsync(task.TaskId, checkpointStatus, "none", corruption);
+
+        var calls = _recordBodies.Count;
+        var reconciled = await Data<NoteDerivedTaskDto>(
+            await _client.GetAsync($"{DerivedRoute}/{task.TaskId}"));
+        var recordAfter = reconciled.Steps.Single(x => x.Key == "record-synthesis");
+        Assert.Equal("Blocked", recordAfter.Status);
+        Assert.Equal(expectedCode, recordAfter.Attempts[^1].ErrorCode);
         Assert.Equal(calls, _recordBodies.Count);
         Assert.Empty(_analysisBodies);
         await AssertNoDerivedVersionsAsync(task.TaskId);
@@ -1043,6 +1078,11 @@ public sealed class NoteDerivedJobTests : IAsyncLifetime
         {
             case null:
                 break;
+            case "delete":
+                break;
+            case "body":
+                receipt.ResponseText = "## synthetic tampered recovered record body";
+                break;
             case "input":
                 receipt.InputHash = Hash("tampered input");
                 break;
@@ -1057,7 +1097,8 @@ public sealed class NoteDerivedJobTests : IAsyncLifetime
                 throw new InvalidOperationException("unknown synthesis corruption " +
                     synthesisCorruption);
         }
-        db.AiRequestLogs.Add(receipt);
+        if (synthesisCorruption != "delete")
+            db.AiRequestLogs.Add(receipt);
         var batchLog = await db.AiRequestLogs.SingleAsync(x => x.Id == batch.Current.LogId);
         if (corruption == "metadata") batchLog.MetadataJson = "{}";
         await db.SaveChangesAsync();
@@ -1066,6 +1107,7 @@ public sealed class NoteDerivedJobTests : IAsyncLifetime
             var step = current.Steps.Single(x => x.Key == "record-synthesis");
             step.Current.Status = checkpointStatus;
             step.Current.LogId = receipt.Id;
+            step.Current.ResultSha256 = Hash(recoveredRecord);
             if (corruption == "missing")
                 current.Steps.Single(x => x.Key == batch.Key).Current.LogId = Guid.NewGuid();
             step.Current.ErrorCode = "synthetic_checkpoint_unknown";
@@ -1121,6 +1163,9 @@ public sealed class NoteDerivedJobTests : IAsyncLifetime
                 break;
             case "input":
                 log.InputHash = Hash("tampered input");
+                break;
+            case "body":
+                log.ResponseText = "## tampered record body only\n\nOutput hash is unchanged.";
                 break;
             case "output":
                 log.OutputHash = Hash("tampered output");

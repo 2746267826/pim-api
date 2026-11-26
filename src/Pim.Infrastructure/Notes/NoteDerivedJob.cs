@@ -172,10 +172,27 @@ public sealed class NoteDerivedJob(
         var requestId = step.Current.RequestId;
 
         await AiCallRecovery.RecoverExpiredAsync(db, ct);
-        var receipt = await FindReceiptAsync(owner, requestId, ct);
+        var synthesis = step.Kind is NoteDerivedStepKind.RecordSynthesis or
+            NoteDerivedStepKind.AnalysisSynthesis;
+        var boundLogId = step.Current.LogId;
+        var receipt = boundLogId is { } logId && synthesis
+            ? await FindReceiptByIdAsync(owner, logId, ct)
+            : await FindReceiptAsync(owner, requestId, ct);
         if (receipt is not null)
         {
-            if (!ReceiptMatches(step, receipt, state, out var bindingError))
+            if (boundLogId is not null && synthesis)
+            {
+                var identity = NoteDerivedReceipts.ValidateSynthesisReceiptIdentity(
+                    state, step, receipt, boundLogId,
+                    requireSucceeded: receipt.Status == "succeeded");
+                if (identity.Count > 0)
+                {
+                    await StopWithIssueAsync(owner, taskId, step.Key, identity[0].Code,
+                        identity[0].Message, "Blocked", ct);
+                    return StepOutcome.Stop;
+                }
+            }
+            else if (!ReceiptMatches(step, receipt, state, out var bindingError))
             {
                 await StopWithIssueAsync(owner, taskId, step.Key, "ai_receipt_source_mismatch",
                     bindingError, "Blocked", ct);
@@ -196,6 +213,12 @@ public sealed class NoteDerivedJob(
 
         if (step.Current.Status is "Running" or "Unknown")
         {
+            if (boundLogId is not null && synthesis)
+            {
+                await StopWithIssueAsync(owner, taskId, step.Key, "synthesis_receipt_missing",
+                    "恢复时找不到检查点绑定的合成回执；不生成候选版本", "Blocked", ct);
+                return StepOutcome.Stop;
+            }
             if (await IsStaleWithoutReceiptAsync(state, step, ct))
             {
                 await StopWithIssueAsync(owner, taskId, step.Key, "ai_outcome_unknown",
@@ -422,8 +445,36 @@ public sealed class NoteDerivedJob(
                 step.Current.Status is not ("Running" or "Unknown"))
                 continue;
 
-            var receipt = await FindReceiptAsync(owner, candidate.RequestId, ct);
-            if (receipt is null || receipt.Status != "succeeded" ||
+            var synthesis = step.Kind is NoteDerivedStepKind.RecordSynthesis or
+                NoteDerivedStepKind.AnalysisSynthesis;
+            var boundLogId = step.Current.LogId;
+            var receipt = boundLogId is { } logId && synthesis
+                ? await FindReceiptByIdAsync(owner, logId, ct)
+                : await FindReceiptAsync(owner, candidate.RequestId, ct);
+            if (receipt is null)
+            {
+                if (boundLogId is not null && synthesis)
+                {
+                    await StopWithIssueAsync(owner, taskId, step.Key,
+                        "synthesis_receipt_missing",
+                        "恢复时找不到检查点绑定的合成回执；不生成候选版本", "Blocked", ct);
+                    continue;
+                }
+                continue;
+            }
+            if (boundLogId is not null && synthesis)
+            {
+                if (receipt.Status != "succeeded") continue;
+                var identity = NoteDerivedReceipts.ValidateSynthesisReceiptIdentity(
+                    state, step, receipt, boundLogId);
+                if (identity.Count > 0)
+                {
+                    await StopWithIssueAsync(owner, taskId, step.Key, identity[0].Code,
+                        identity[0].Message, "Blocked", ct);
+                    continue;
+                }
+            }
+            else if (receipt.Status != "succeeded" ||
                 !ReceiptMatches(step, receipt, state, out _))
                 continue;
 
@@ -791,10 +842,28 @@ public sealed class NoteDerivedJob(
 
         if (result.Status == AiRequestStatus.Succeeded)
         {
-            if (receipt is null || receipt.Status != "succeeded")
+            var synthesis = step.Kind is NoteDerivedStepKind.RecordSynthesis or
+                NoteDerivedStepKind.AnalysisSynthesis;
+            if (receipt is null)
             {
-                await StopWithIssueAsync(owner, taskId, stepKey, "ai_receipt_missing",
-                    "成功结果缺少可核验的真实回执", "Unknown", ct);
+                if (synthesis)
+                    await StopWithIssueAsync(owner, taskId, stepKey, "synthesis_receipt_missing",
+                        "成功结果缺少可核验的合成回执；不生成候选版本", "Blocked", ct,
+                        result.LogId);
+                else
+                    await StopWithIssueAsync(owner, taskId, stepKey, "ai_receipt_missing",
+                        "成功结果缺少可核验的真实回执", "Unknown", ct);
+                return StepOutcome.Stop;
+            }
+            if (receipt.Status != "succeeded")
+            {
+                if (synthesis)
+                    await StopWithIssueAsync(owner, taskId, stepKey, "synthesis_status_mismatch",
+                        "成功结果对应的合成回执不是成功状态；不生成候选版本", "Blocked", ct,
+                        receipt.Id);
+                else
+                    await StopWithIssueAsync(owner, taskId, stepKey, "ai_receipt_missing",
+                        "成功结果缺少可核验的真实回执", "Unknown", ct);
                 return StepOutcome.Stop;
             }
             if (string.IsNullOrWhiteSpace(result.ResponseText))
@@ -870,6 +939,31 @@ public sealed class NoteDerivedJob(
             }
             else if (step.Kind != NoteDerivedStepKind.AudioBatchEvidence)
             {
+                var resultHash = Digest(result.ResponseText);
+                if (step.Current.ResultSha256 is { } checkpoint)
+                {
+                    if (checkpoint != resultHash)
+                    {
+                        await StopWithIssueAsync(owner, taskId, stepKey,
+                            "synthesis_result_mismatch",
+                            "合成成功回执正文与已保存的结果检查点不一致；不生成候选版本",
+                            "Blocked", ct, receipt.Id);
+                        return StepOutcome.Stop;
+                    }
+                }
+                else
+                {
+                    // Persist the provider result digest before publication so a recovery
+                    // cannot rewrite both the receipt body and OutputHash consistently.
+                    await tasks.UpdateTaskAsync(owner, taskId, current =>
+                    {
+                        var stored = current.Steps.Single(x => x.Key == stepKey);
+                        if (stored.Current.RequestId != requestId)
+                            throw new InvalidDataException(
+                                "Derived attempt changed while checkpointing its result");
+                        stored.Current.ResultSha256 = resultHash;
+                    }, ct);
+                }
                 var publishIssue = await PublishSynthesisVersionAsync(owner, taskId, stepKey,
                     requestId, receipt.Id, result.ResponseText, ct);
                 if (publishIssue is not null)
@@ -1488,6 +1582,11 @@ public sealed class NoteDerivedJob(
         Guid owner, Guid requestId, CancellationToken ct) =>
         await db.AiRequestLogs.AsNoTracking()
             .SingleOrDefaultAsync(x => x.UserId == owner && x.ClientRequestId == requestId, ct);
+
+    private async Task<Pim.Infrastructure.Data.Entities.AiRequestLogEntity?> FindReceiptByIdAsync(
+        Guid owner, Guid logId, CancellationToken ct) =>
+        await db.AiRequestLogs.AsNoTracking()
+            .SingleOrDefaultAsync(x => x.UserId == owner && x.Id == logId, ct);
 
     private static bool ReceiptMatches(NoteDerivedStepState step,
         Pim.Infrastructure.Data.Entities.AiRequestLogEntity receipt, NoteDerivedTaskState state,

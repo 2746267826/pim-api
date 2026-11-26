@@ -464,13 +464,7 @@ internal static class NoteDerivedReceipts
         string resultText, string? expectedInputHash, Guid? pendingLogId = null)
     {
         var issues = new List<NoteDerivedIssueDto>();
-        var purpose = step.Kind == NoteDerivedStepKind.RecordSynthesis
-            ? NoteDerivedPrompts.RecordPurpose
-            : NoteDerivedPrompts.AnalysisPurpose;
-        CheckCommonLog(issues, log, state, step.Current.RequestId, purpose, "synthesis", step.Key);
-        if ((step.Current.LogId ?? pendingLogId) != log.Id)
-            AddIssue(issues, "synthesis_log_id_mismatch",
-                "合成步骤保存的调用记录标识与实际回执不一致", stepKey: step.Key);
+        AddIssues(issues, ValidateSynthesisReceiptIdentity(state, step, log, pendingLogId));
         if (expectedInputHash is null)
             AddIssue(issues, "synthesis_input_missing",
                 "无法重建合成步骤的固定输入，不能证明实际发送内容", stepKey: step.Key);
@@ -495,6 +489,27 @@ internal static class NoteDerivedReceipts
         if (step.Current.ResultSha256 is { } checkpoint && checkpoint != Digest(resultText))
             AddIssue(issues, "synthesis_step_result_mismatch",
                 "步骤检查点保存的结果摘要与实际成功回执正文不一致", stepKey: step.Key);
+        return issues;
+    }
+
+    /// <summary>
+    /// Reuses the canonical receipt identity checks for synthesis receipts. Recovery may
+    /// inspect a bound receipt before deciding whether its non-success status is replayable,
+    /// so status verification is optional there; publish always requires success.
+    /// </summary>
+    internal static IReadOnlyList<NoteDerivedIssueDto> ValidateSynthesisReceiptIdentity(
+        NoteDerivedTaskState state, NoteDerivedStepState step, AiRequestLogEntity log,
+        Guid? pendingLogId = null, bool requireSucceeded = true)
+    {
+        var issues = new List<NoteDerivedIssueDto>();
+        var purpose = step.Kind == NoteDerivedStepKind.RecordSynthesis
+            ? NoteDerivedPrompts.RecordPurpose
+            : NoteDerivedPrompts.AnalysisPurpose;
+        CheckCommonLog(issues, log, state, step.Current.RequestId, purpose, "synthesis", step.Key,
+            requireSucceeded);
+        if ((step.Current.LogId ?? pendingLogId) != log.Id)
+            AddIssue(issues, "synthesis_log_id_mismatch",
+                "合成步骤保存的调用记录标识与实际回执不一致", stepKey: step.Key);
         return issues;
     }
 
@@ -977,7 +992,8 @@ internal static class NoteDerivedReceipts
         Guid requestId,
         string purpose,
         string prefix,
-        string stepKey)
+        string stepKey,
+        bool checkStatus = true)
     {
         if (log.UserId != state.Owner)
             AddIssue(issues, $"{prefix}_owner_mismatch",
@@ -985,7 +1001,7 @@ internal static class NoteDerivedReceipts
         if (log.ClientRequestId != requestId)
             AddIssue(issues, $"{prefix}_request_mismatch",
                 "实际调用回执的 ClientRequestId 与当前步骤尝试不一致", stepKey);
-        if (log.Status != "succeeded")
+        if (checkStatus && log.Status != "succeeded")
             AddIssue(issues, $"{prefix}_status_mismatch",
                 "步骤标记成功，但实际调用回执不是成功状态", stepKey);
         if (log.Purpose != purpose)
