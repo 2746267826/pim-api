@@ -230,7 +230,16 @@ public sealed class UnifiedRecycleBinService(
         }
 
         var title = await NoteTitleAsync(id, ct);
-        _ = await notes.PurgeAsync(UserId, id, item.ExpectedDeletedAt, ct);
+        var purge = await notes.PurgeAsync(UserId, id, item.ExpectedDeletedAt, ct);
+        var alreadyGone = purge is
+        {
+            MaterialVersions: 0,
+            AsrTasks: 0,
+            DerivedTasks: 0,
+            AiCalls: 0,
+            AiImages: 0,
+            AiAudio: 0
+        };
         return Success(
             index,
             RecycleBinDomains.Note,
@@ -238,7 +247,9 @@ public sealed class UnifiedRecycleBinService(
             title,
             action,
             "builtin",
-            "笔记及其原稿、材料、转写与派生数据已永久删除");
+            alreadyGone
+                ? "笔记已永久删除，无需重复提交"
+                : "笔记及其原稿、材料、转写与派生数据已永久删除");
     }
 
     private async Task<RecycleBinItemResultDto> ExecuteFileAsync(
