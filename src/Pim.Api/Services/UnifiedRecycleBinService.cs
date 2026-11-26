@@ -162,6 +162,7 @@ public sealed class UnifiedRecycleBinService(
 
         try
         {
+            var processingToken = claim.Operation.ProcessingToken;
             var receipt = await RunBatchAsync(
                 action,
                 request,
@@ -170,11 +171,15 @@ public sealed class UnifiedRecycleBinService(
                 claim.Operation.Id,
                 operationId,
                 ct);
-            return await CompleteOperationAsync(claim.Operation.Id, receipt, ct);
+            return await CompleteOperationAsync(
+                claim.Operation.Id, processingToken, receipt, ct);
         }
         catch
         {
-            await ReleaseOperationAsync(claim.Operation.Id, CancellationToken.None);
+            await ReleaseOperationAsync(
+                claim.Operation.Id,
+                claim.Operation.ProcessingToken,
+                CancellationToken.None);
             throw;
         }
     }
@@ -301,8 +306,9 @@ public sealed class UnifiedRecycleBinService(
             },
             ct);
 
-    private async Task<RecycleBinBatchReceiptDto> CompleteOperationAsync(
+    internal async Task<RecycleBinBatchReceiptDto> CompleteOperationAsync(
         Guid operationEntityId,
+        Guid processingToken,
         RecycleBinBatchReceiptDto receipt,
         CancellationToken ct)
     {
@@ -312,15 +318,42 @@ public sealed class UnifiedRecycleBinService(
         // partial mutation that the receipt reports as failed.
         db.ChangeTracker.Clear();
         // A failing item may have cleared the change tracker (note purge does this so a
-        // partial purge can never be committed), which detaches the operation entity.
-        // Re-read it by id so completion is still persisted.
-        var operation = await db.RecycleBinOperations.SingleOrDefaultAsync(
-            row => row.Id == operationEntityId, ct)
-            ?? throw new InvalidOperationException(
-                $"Recycle-bin operation {operationEntityId} disappeared before completion.");
+        // partial purge can never be committed). The conditional update below revalidates
+        // the processing token so a stale lease cannot overwrite a newer receipt.
         var now = DateTimeOffset.UtcNow;
+        var receiptJson = JsonSerializer.Serialize(receipt, ReceiptJson);
+        if (db.Database.IsRelational())
+        {
+            var updated = await db.RecycleBinOperations
+                .Where(row => row.Id == operationEntityId
+                    && row.UserId == UserId
+                    && row.Status == RecycleBinOperationStatuses.Running
+                    && row.ProcessingToken == processingToken)
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(row => row.Status, RecycleBinOperationStatuses.Completed)
+                    .SetProperty(row => row.ReceiptJson, receiptJson)
+                    .SetProperty(row => row.CompletedAt, (DateTimeOffset?)now)
+                    .SetProperty(row => row.UpdatedAt, now)
+                    .SetProperty(row => row.LeaseExpiresAt, now), ct);
+            if (updated == 0)
+                throw new DomainException(
+                    40904,
+                    "该 operationId 的处理租约已变化，请使用同一 operationId 重试");
+            return receipt;
+        }
+
+        var operation = await db.RecycleBinOperations.SingleOrDefaultAsync(
+            row => row.Id == operationEntityId && row.UserId == UserId, ct)
+            ?? throw new DomainException(
+                40904,
+                "该 operationId 的处理记录不存在，请使用同一 operationId 重试");
+        if (operation.Status != RecycleBinOperationStatuses.Running
+            || operation.ProcessingToken != processingToken)
+            throw new DomainException(
+                40904,
+                "该 operationId 的处理租约已变化，请使用同一 operationId 重试");
         operation.Status = RecycleBinOperationStatuses.Completed;
-        operation.ReceiptJson = JsonSerializer.Serialize(receipt, ReceiptJson);
+        operation.ReceiptJson = receiptJson;
         operation.CompletedAt = now;
         operation.UpdatedAt = now;
         operation.LeaseExpiresAt = now;
@@ -328,16 +361,33 @@ public sealed class UnifiedRecycleBinService(
         return receipt;
     }
 
-    private async Task ReleaseOperationAsync(Guid operationId, CancellationToken ct)
+    internal async Task ReleaseOperationAsync(
+        Guid operationId, Guid processingToken, CancellationToken ct)
     {
         try
         {
             db.ChangeTracker.Clear();
-            var operation = await db.RecycleBinOperations
-                .SingleOrDefaultAsync(row => row.Id == operationId, ct);
-            if (operation is null || operation.Status == RecycleBinOperationStatuses.Completed)
-                return;
             var now = DateTimeOffset.UtcNow;
+            if (db.Database.IsRelational())
+            {
+                await db.RecycleBinOperations
+                    .Where(row => row.Id == operationId
+                        && row.UserId == UserId
+                        && row.Status == RecycleBinOperationStatuses.Running
+                        && row.ProcessingToken == processingToken)
+                    .ExecuteUpdateAsync(setters => setters
+                        .SetProperty(row => row.LeaseExpiresAt, now)
+                        .SetProperty(row => row.UpdatedAt, now), ct);
+                return;
+            }
+
+            var operation = await db.RecycleBinOperations
+                .SingleOrDefaultAsync(
+                    row => row.Id == operationId && row.UserId == UserId, ct);
+            if (operation is null
+                || operation.Status == RecycleBinOperationStatuses.Completed
+                || operation.ProcessingToken != processingToken)
+                return;
             operation.LeaseExpiresAt = now;
             operation.UpdatedAt = now;
             await db.SaveChangesAsync(ct);
@@ -461,11 +511,7 @@ public sealed class UnifiedRecycleBinService(
                 && entity.Provider != null
                 && entity.Provider.UserId == UserId, ct);
         if (row is null)
-        {
-            if (!restore && item.ExpectedDeletedAt.HasValue)
-                return Success(index, RecycleBinDomains.File, id, "文件", action, "builtin", "文件已永久删除，无需重复提交");
             throw new DomainException(40401, "文件不存在");
-        }
         var provider = row.Provider ?? throw new DomainException(40401, "文件来源不存在");
         var source = SourceOf(provider.Provider);
         if (!row.IsDeleted)
@@ -523,7 +569,7 @@ public sealed class UnifiedRecycleBinService(
                 && entity.Provider != null
                 && entity.Provider.UserId == UserId, ct);
         if (row is null)
-            return Success(index, RecycleBinDomains.File, id, "文件", action, "builtin", "文件已永久删除，无需重复提交");
+            throw new DomainException(40401, "文件不存在或已永久删除");
         var provider = row.Provider ?? throw new DomainException(40401, "文件来源不存在");
         if (provider.Provider != LocalFileProvider.Key)
             throw new DomainException(40901, "只能永久清理内置存储文件");
@@ -593,18 +639,7 @@ public sealed class UnifiedRecycleBinService(
     {
         var target = await CalendarTargetAsync(item.Domain, item.Id, ct);
         if (target is null)
-        {
-            if (!restore && item.ExpectedDeletedAt.HasValue)
-                return Success(
-                    index,
-                    item.Domain,
-                    item.Id,
-                    "日历项",
-                    action,
-                    "pim",
-                    "日历项已永久删除，无需重复提交");
             throw new DomainException(40401, "日历项不存在");
-        }
         if (restore && target.Active)
         {
             return Success(

@@ -116,10 +116,11 @@ public sealed class UnifiedRecycleBinRealDbTests : IAsyncLifetime
         db.Set<TaskEntity>().Add(task);
         await db.SaveChangesAsync();
 
+        var operationId = Guid.NewGuid();
         var request = new RecycleBinBatchRequest(
         [
             new RecycleBinItemRef(RecycleBinDomains.Task, task.Id, Now)
-        ]);
+        ], operationId);
         var first = await service.PurgeAsync(request);
         Assert.Equal(1, first.Succeeded);
         Assert.Null(await db.Set<TaskEntity>().IgnoreQueryFilters()
@@ -127,9 +128,18 @@ public sealed class UnifiedRecycleBinRealDbTests : IAsyncLifetime
 
         var second = await service.PurgeAsync(request);
         Assert.Equal(1, second.Succeeded);
+        Assert.Equal(first.ReceiptId, second.ReceiptId);
         Assert.Equal(1, await db.AuditLogs.CountAsync(
             row => row.Action == "calendar.recycle_bin.purge"
                 && row.ResourceId == task.Id.ToString("D")));
+
+        var unproven = await service.PurgeAsync(new RecycleBinBatchRequest(
+        [
+            new RecycleBinItemRef(RecycleBinDomains.Task, task.Id, Now)
+        ]));
+        var unprovenItem = Assert.Single(unproven.Items);
+        Assert.Equal(RecycleBinItemStatuses.Failed, unprovenItem.Status);
+        Assert.Equal(40401, unprovenItem.ErrorCode);
     }
 
     [SkippableFact]
@@ -168,10 +178,11 @@ public sealed class UnifiedRecycleBinRealDbTests : IAsyncLifetime
         var task = SeedTask(calendar, "Outlook 已删任务", deleted: true);
         await db.SaveChangesAsync();
 
+        var operationId = Guid.NewGuid();
         var request = new RecycleBinBatchRequest(
         [
             new RecycleBinItemRef(RecycleBinDomains.Calendar, calendar.Id, Now)
-        ]);
+        ], operationId);
         var first = await service.PurgeAsync(request);
         Assert.Equal(1, first.Succeeded);
         Assert.Null(await db.Set<CalendarEntity>().IgnoreQueryFilters()
@@ -187,9 +198,73 @@ public sealed class UnifiedRecycleBinRealDbTests : IAsyncLifetime
 
         var second = await service.PurgeAsync(request);
         Assert.Equal(1, second.Succeeded);
+        Assert.Equal(first.ReceiptId, second.ReceiptId);
         Assert.Equal(1, await db.AuditLogs.CountAsync(
             row => row.Action == "calendar.recycle_bin.purge"
                 && row.ResourceId == calendar.Id.ToString("D")));
+    }
+
+    [SkippableFact]
+    public async Task Operation_StaleProcessingTokenCannotCompleteOrClearNewLease()
+    {
+        var service = await CreateServiceAsync("wo_q03_operation_token");
+        var db = _temp!.Db;
+        SeedUsers(db);
+        await db.SaveChangesAsync();
+
+        var staleToken = Guid.NewGuid();
+        var newToken = Guid.NewGuid();
+        var operation = new RecycleBinOperationEntity
+        {
+            UserId = _user,
+            OperationId = Guid.NewGuid(),
+            Action = "restore",
+            PayloadHash = "payload",
+            Status = RecycleBinOperationStatuses.Running,
+            ProcessingToken = staleToken,
+            LeaseExpiresAt = Now.AddMinutes(-1),
+            AttemptCount = 1,
+            CreatedAt = Now.AddMinutes(-2),
+            UpdatedAt = Now.AddMinutes(-2)
+        };
+        db.RecycleBinOperations.Add(operation);
+        await db.SaveChangesAsync();
+
+        operation.ProcessingToken = newToken;
+        operation.LeaseExpiresAt = DateTimeOffset.UtcNow.AddMinutes(5);
+        operation.AttemptCount = 2;
+        operation.UpdatedAt = DateTimeOffset.UtcNow;
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+
+        var receipt = new RecycleBinBatchReceiptDto(
+            Guid.NewGuid(),
+            operation.OperationId,
+            "restore",
+            0,
+            0,
+            0,
+            []);
+        var stale = await Assert.ThrowsAsync<DomainException>(() =>
+            service.CompleteOperationAsync(operation.Id, staleToken, receipt, default));
+        Assert.Equal(40904, stale.ErrorCode);
+        await service.ReleaseOperationAsync(operation.Id, staleToken, default);
+
+        var afterStale = await db.RecycleBinOperations.AsNoTracking()
+            .SingleAsync(row => row.Id == operation.Id);
+        Assert.Equal(RecycleBinOperationStatuses.Running, afterStale.Status);
+        Assert.Equal(newToken, afterStale.ProcessingToken);
+        Assert.True(afterStale.LeaseExpiresAt > DateTimeOffset.UtcNow);
+        Assert.Null(afterStale.ReceiptJson);
+
+        var completed = await service.CompleteOperationAsync(
+            operation.Id, newToken, receipt, default);
+        Assert.Equal(receipt.ReceiptId, completed.ReceiptId);
+        var final = await db.RecycleBinOperations.AsNoTracking()
+            .SingleAsync(row => row.Id == operation.Id);
+        Assert.Equal(RecycleBinOperationStatuses.Completed, final.Status);
+        Assert.Equal(newToken, final.ProcessingToken);
+        Assert.NotNull(final.ReceiptJson);
     }
 
     private async Task<UnifiedRecycleBinService> CreateServiceAsync(string prefix)

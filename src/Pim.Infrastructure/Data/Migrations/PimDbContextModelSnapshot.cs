@@ -2423,6 +2423,7 @@ namespace Pim.Infrastructure.Data.Migrations
                         .HasColumnName("payload_hash");
 
                     b.Property<Guid>("ProcessingToken")
+                        .IsConcurrencyToken()
                         .HasColumnType("uuid")
                         .HasColumnName("processing_token");
 
@@ -2542,6 +2543,7 @@ namespace Pim.Infrastructure.Data.Migrations
                         .HasColumnName("lease_expires_at");
 
                     b.Property<Guid?>("LeaseToken")
+                        .IsConcurrencyToken()
                         .HasColumnType("uuid")
                         .HasColumnName("lease_token");
 

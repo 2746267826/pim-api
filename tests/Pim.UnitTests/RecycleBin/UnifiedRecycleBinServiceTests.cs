@@ -395,7 +395,7 @@ public sealed class UnifiedRecycleBinServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task BatchPurge_RetryAfterAppliedReturnsIdempotentSuccess()
+    public async Task BatchPurge_SameOperationIdReplaysWholeReceiptAfterApplied()
     {
         var note = await SeedNoteAsync(_user, "幂等永久删除笔记");
         await _notes.SoftDeleteAsync(_user, note.NoteId);
@@ -412,17 +412,80 @@ public sealed class UnifiedRecycleBinServiceTests : IDisposable
             new RecycleBinItemRef(RecycleBinDomains.Note, note.NoteId, deletedNote!.DeletedAt),
             new RecycleBinItemRef(RecycleBinDomains.File, localFile.Id, fileRow.DeletedAt),
             new RecycleBinItemRef(RecycleBinDomains.Calendar, evt.Id, evt.DeletedAt)
-        ]);
+        ], Guid.NewGuid());
 
         var first = await _service.PurgeAsync(request);
         var second = await _service.PurgeAsync(request);
 
         Assert.Equal(3, first.Succeeded);
         Assert.Equal(3, second.Succeeded);
-        Assert.All(second.Items, item => Assert.Equal(RecycleBinItemStatuses.Success, item.Status));
-        Assert.Contains("无需重复", second.Items.Single(item => item.Id == note.NoteId).Message);
-        Assert.Contains("无需重复", second.Items.Single(item => item.Id == localFile.Id).Message);
-        Assert.Contains("无需重复", second.Items.Single(item => item.Id == evt.Id).Message);
+        Assert.Equal(first.ReceiptId, second.ReceiptId);
+        Assert.Equal(first.Items, second.Items);
+    }
+
+    [Fact]
+    public async Task BatchPurge_WithoutProofDoesNotClaimMissingFileOrCalendarWasPurged()
+    {
+        var note = await SeedNoteAsync(_user, "有完成意图证明的笔记");
+        await _notes.SoftDeleteAsync(_user, note.NoteId);
+        var localFile = await SeedLocalFileAsync("没有持久回执的文件.txt");
+        await _files.DeleteToTrashAsync(localFile.Id);
+        var book = SeedCalendar(_user, "没有持久回执的日历", "calendar", deleted: false);
+        var evt = SeedEvent(book, "没有持久回执的日程", deleted: true);
+        await _db.SaveChangesAsync();
+
+        var first = await _service.PurgeAsync(Batch(
+            (RecycleBinDomains.Note, note.NoteId),
+            (RecycleBinDomains.File, localFile.Id),
+            (RecycleBinDomains.Calendar, evt.Id)));
+        var second = await _service.PurgeAsync(Batch(
+            (RecycleBinDomains.Note, note.NoteId),
+            (RecycleBinDomains.File, localFile.Id),
+            (RecycleBinDomains.Calendar, evt.Id)));
+
+        Assert.Equal(3, first.Succeeded);
+        var noteRetry = second.Items.Single(item => item.Id == note.NoteId);
+        Assert.Equal(RecycleBinItemStatuses.Success, noteRetry.Status);
+        Assert.Contains("无需重复", noteRetry.Message);
+        var fileRetry = second.Items.Single(item => item.Id == localFile.Id);
+        var calendarRetry = second.Items.Single(item => item.Id == evt.Id);
+        Assert.Equal(RecycleBinItemStatuses.Failed, fileRetry.Status);
+        Assert.Equal(40401, fileRetry.ErrorCode);
+        Assert.Equal(RecycleBinItemStatuses.Failed, calendarRetry.Status);
+        Assert.Equal(40401, calendarRetry.ErrorCode);
+    }
+
+    [Fact]
+    public async Task BatchPurge_WithExpectedTokenRequiresProvenState()
+    {
+        var activeNote = await SeedNoteAsync(_user, "仍在笔记库的笔记");
+        var foreignNote = await SeedNoteAsync(_other, "别人的已删笔记");
+        await _notes.SoftDeleteAsync(_other, foreignNote.NoteId);
+        var foreignDeleted = await _materials.GetDeletedAsync(_other, foreignNote.NoteId);
+        var missingNote = Guid.NewGuid();
+        var missingFile = Guid.NewGuid();
+        var missingCalendar = Guid.NewGuid();
+        var expected = Now.AddMinutes(-1);
+
+        var receipt = await _service.PurgeAsync(new RecycleBinBatchRequest(
+        [
+            new RecycleBinItemRef(RecycleBinDomains.Note, activeNote.NoteId, expected),
+            new RecycleBinItemRef(RecycleBinDomains.Note, missingNote, expected),
+            new RecycleBinItemRef(RecycleBinDomains.Note, foreignNote.NoteId, foreignDeleted!.DeletedAt),
+            new RecycleBinItemRef(RecycleBinDomains.File, missingFile, expected),
+            new RecycleBinItemRef(RecycleBinDomains.Calendar, missingCalendar, expected)
+        ]));
+
+        Assert.Equal(5, receipt.Failed);
+        Assert.All(receipt.Items, item => Assert.Equal(RecycleBinItemStatuses.Failed, item.Status));
+        Assert.Equal(40901, receipt.Items.Single(item => item.Id == activeNote.NoteId).ErrorCode);
+        Assert.Equal(40401, receipt.Items.Single(item => item.Id == missingNote).ErrorCode);
+        Assert.Equal(40401, receipt.Items.Single(item => item.Id == foreignNote.NoteId).ErrorCode);
+        Assert.Equal(40401, receipt.Items.Single(item => item.Id == missingFile).ErrorCode);
+        Assert.Equal(40401, receipt.Items.Single(item => item.Id == missingCalendar).ErrorCode);
+        Assert.Equal(activeNote.VersionId,
+            (await _materials.GetCurrentAsync(_user, activeNote.NoteId)).Upload.VersionId);
+        Assert.NotNull(await _materials.GetDeletedAsync(_other, foreignNote.NoteId));
     }
 
     [Fact]
@@ -556,6 +619,75 @@ public sealed class UnifiedRecycleBinServiceTests : IDisposable
 
         Assert.Equal("failed", Assert.Single(receipt.Items).Status);
         Assert.NotNull(await _materials.GetCurrentAsync(_user, note.NoteId));
+    }
+
+    [Fact]
+    public async Task FailedPrecheckThenRestore_StalePurgeRetriesNeverDeleteActiveNote()
+    {
+        var note = await SeedNoteAsync(_user, "预检失败后已恢复的笔记");
+        var asrTaskId = SeedAsrTask(note);
+        _db.NoteAsrAttempts.Add(new NoteAsrAttemptEntity
+        {
+            OwnerId = _user,
+            TaskId = asrTaskId,
+            NoteId = note.NoteId,
+            VersionId = note.VersionId,
+            State = "Leased"
+        });
+        await _db.SaveChangesAsync();
+        await _notes.SoftDeleteAsync(_user, note.NoteId);
+        var deleted = await _materials.GetDeletedAsync(_user, note.NoteId);
+
+        var precheck = await Assert.ThrowsAsync<DomainException>(() =>
+            _notes.PurgeAsync(_user, note.NoteId, deleted!.DeletedAt));
+        Assert.Equal(40901, precheck.ErrorCode);
+
+        var pending = await _db.RecycleBinPurgeIntents.AsNoTracking()
+            .SingleAsync(row => row.UserId == _user
+                && row.Domain == "note"
+                && row.ItemId == note.NoteId);
+        Assert.Equal(RecycleBinPurgePhases.Pending, pending.Phase);
+        Assert.Null(pending.LeaseToken);
+        Assert.NotNull(pending.LastError);
+
+        var restored = await _service.RestoreAsync(Batch((RecycleBinDomains.Note, note.NoteId)));
+        Assert.Equal(RecycleBinItemStatuses.Success, Assert.Single(restored.Items).Status);
+        var abandoned = await _db.RecycleBinPurgeIntents.AsNoTracking()
+            .SingleAsync(row => row.Id == pending.Id);
+        Assert.Equal(RecycleBinPurgePhases.Abandoned, abandoned.Phase);
+        Assert.Null(abandoned.LeaseToken);
+
+        var expectedRetry = await _service.PurgeAsync(new RecycleBinBatchRequest(
+        [
+            new RecycleBinItemRef(
+                RecycleBinDomains.Note,
+                note.NoteId,
+                deleted!.DeletedAt)
+        ]));
+        var noTokenRetry = await _service.PurgeAsync(
+            Batch((RecycleBinDomains.Note, note.NoteId)));
+
+        var expectedResult = Assert.Single(expectedRetry.Items);
+        var noTokenResult = Assert.Single(noTokenRetry.Items);
+        Assert.Equal(RecycleBinItemStatuses.Failed, expectedResult.Status);
+        Assert.Equal(40901, expectedResult.ErrorCode);
+        Assert.Equal(RecycleBinItemStatuses.Failed, noTokenResult.Status);
+        Assert.Equal(40901, noTokenResult.ErrorCode);
+
+        var current = await _materials.GetCurrentAsync(_user, note.NoteId);
+        Assert.Equal(note.VersionId, current.Upload.VersionId);
+        Assert.NotNull(await _materials.GetAsync(_user, note.VersionId));
+        Assert.NotNull(await _asr.ReadAsync(_user, asrTaskId, default));
+        Assert.True(File.Exists(Path.Combine(
+            _root, "asr-tasks", _user.ToString("D"), asrTaskId + ".json")));
+        Assert.NotNull(await _db.NoteAsrAttempts.SingleOrDefaultAsync(
+            row => row.TaskId == asrTaskId && row.NoteId == note.NoteId));
+        Assert.Equal(0, await _db.AuditLogs.CountAsync(row =>
+            row.Action == "recycle_bin.note.purge"
+            && row.ResourceId == note.NoteId.ToString("D")));
+        Assert.Equal(RecycleBinPurgePhases.Abandoned,
+            (await _db.RecycleBinPurgeIntents.AsNoTracking()
+                .SingleAsync(row => row.Id == pending.Id)).Phase);
     }
 
     [Fact]

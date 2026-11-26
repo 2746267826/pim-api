@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Encodings.Web;
@@ -215,6 +216,154 @@ public sealed class NativeNotePurgeRecoveryRealDbTests : IAsyncLifetime
         Assert.Equal(1, await db.AuditLogs.CountAsync(row =>
             row.Action == "recycle_bin.note.purge"
             && row.ResourceId == note.NoteId.ToString("D")));
+    }
+
+    [SkippableFact]
+    public async Task FailedPrecheckThenRestore_StaleOrTokenlessPurgeCannotDeleteActiveNote()
+    {
+        RealDbTestConnection.SkipIfUnavailable();
+        _temp = await TempMigrationDatabase.CreateAsync("wo_q03_note_restore_guard");
+        await _temp.MigrateAsync();
+        SeedUser(_temp.Db);
+        await _temp.Db.SaveChangesAsync();
+
+        var options = Options.Create(new NoteMaterialUploadOptions
+        {
+            StorageRoot = _root,
+            MaxVersionBytes = 32 * 1024 * 1024,
+            MaxUserReservedBytes = 64 * 1024 * 1024
+        });
+        var materials = new NoteMaterialUploadStore(options, new FixedClock(Now));
+        var derived = new NoteDerivedStore(options, new FixedClock(Now));
+        var asr = new NoteAsrTaskStore(options);
+        var note = await SeedNoteAsync(materials, _user, "预检失败后恢复的 PostgreSQL 笔记");
+        var asrTaskId = SeedAsrTask(note);
+        _temp.Db.NoteAsrAttempts.Add(new NoteAsrAttemptEntity
+        {
+            OwnerId = _user,
+            TaskId = asrTaskId,
+            NoteId = note.NoteId,
+            VersionId = note.VersionId,
+            State = "Leased"
+        });
+        await _temp.Db.SaveChangesAsync();
+        await materials.SoftDeleteAsync(_user, note.NoteId);
+        var deleted = await materials.GetDeletedAsync(_user, note.NoteId);
+        Assert.NotNull(deleted);
+
+        var notes = new NativeNoteRecycleService(
+            _temp.Db,
+            materials,
+            derived,
+            asr,
+            new AuditLogService(_temp.Db),
+            purgeContributors: [new NoteTaskSuggestionPurgeContributor(_temp.Db)]);
+        var precheck = await Assert.ThrowsAsync<DomainException>(() =>
+            notes.PurgeAsync(_user, note.NoteId, deleted!.DeletedAt));
+        Assert.Equal(40901, precheck.ErrorCode);
+
+        var pending = await _temp.Db.RecycleBinPurgeIntents.AsNoTracking()
+            .SingleAsync(row => row.UserId == _user
+                && row.Domain == "note"
+                && row.ItemId == note.NoteId);
+        Assert.Equal(RecycleBinPurgePhases.Pending, pending.Phase);
+        Assert.Null(pending.LeaseToken);
+
+        var restore = await notes.RestoreAsync(_user, note.NoteId, deleted.DeletedAt);
+        Assert.True(restore.Changed);
+        var abandoned = await _temp.Db.RecycleBinPurgeIntents.AsNoTracking()
+            .SingleAsync(row => row.Id == pending.Id);
+        Assert.Equal(RecycleBinPurgePhases.Abandoned, abandoned.Phase);
+        Assert.Null(abandoned.LeaseToken);
+
+        var expectedRetry = await Assert.ThrowsAsync<DomainException>(() =>
+            notes.PurgeAsync(_user, note.NoteId, deleted.DeletedAt));
+        var tokenlessRetry = await Assert.ThrowsAsync<DomainException>(() =>
+            notes.PurgeAsync(_user, note.NoteId));
+        Assert.Equal(40901, expectedRetry.ErrorCode);
+        Assert.Equal(40901, tokenlessRetry.ErrorCode);
+
+        var current = await materials.GetCurrentAsync(_user, note.NoteId);
+        Assert.Equal(note.VersionId, current.Upload.VersionId);
+        Assert.NotNull(await materials.GetAsync(_user, note.VersionId));
+        Assert.True(File.Exists(AsrPath(asrTaskId)));
+        Assert.NotNull(await _temp.Db.NoteAsrAttempts.AsNoTracking()
+            .SingleOrDefaultAsync(row => row.TaskId == asrTaskId && row.NoteId == note.NoteId));
+        Assert.Equal(0, await _temp.Db.AuditLogs.CountAsync(row =>
+            row.Action == "recycle_bin.note.purge"
+            && row.ResourceId == note.NoteId.ToString("D")));
+        Assert.Equal(RecycleBinPurgePhases.Abandoned,
+            (await _temp.Db.RecycleBinPurgeIntents.AsNoTracking()
+                .SingleAsync(row => row.Id == pending.Id)).Phase);
+    }
+
+    [SkippableFact]
+    public async Task PurgeIntent_StaleLeaseTokenCannotCompleteOrClearNewLease()
+    {
+        RealDbTestConnection.SkipIfUnavailable();
+        _temp = await TempMigrationDatabase.CreateAsync("wo_q03_intent_token");
+        await _temp.MigrateAsync();
+        SeedUser(_temp.Db);
+        await _temp.Db.SaveChangesAsync();
+
+        var options = Options.Create(new NoteMaterialUploadOptions
+        {
+            StorageRoot = _root,
+            MaxVersionBytes = 32 * 1024 * 1024,
+            MaxUserReservedBytes = 64 * 1024 * 1024
+        });
+        var notes = new NativeNoteRecycleService(
+            _temp.Db,
+            new NoteMaterialUploadStore(options, new FixedClock(Now)),
+            new NoteDerivedStore(options, new FixedClock(Now)),
+            new NoteAsrTaskStore(options),
+            new AuditLogService(_temp.Db));
+        var staleToken = Guid.NewGuid();
+        var newToken = Guid.NewGuid();
+        var deletedAt = DateTimeOffset.UtcNow;
+        var intent = new RecycleBinPurgeIntentEntity
+        {
+            UserId = _user,
+            Domain = "note",
+            ItemId = Guid.NewGuid(),
+            Generation = deletedAt.ToUniversalTime().UtcTicks.ToString(CultureInfo.InvariantCulture),
+            ExpectedDeletedAt = deletedAt,
+            Title = "租约令牌回归",
+            Phase = RecycleBinPurgePhases.Pending,
+            LeaseToken = staleToken,
+            LeaseExpiresAt = DateTimeOffset.UtcNow.AddMinutes(-1),
+            AttemptCount = 1,
+            CreatedAt = DateTimeOffset.UtcNow.AddMinutes(-2),
+            UpdatedAt = DateTimeOffset.UtcNow.AddMinutes(-2)
+        };
+        _temp.Db.RecycleBinPurgeIntents.Add(intent);
+        await _temp.Db.SaveChangesAsync();
+
+        intent.LeaseToken = newToken;
+        intent.LeaseExpiresAt = DateTimeOffset.UtcNow.AddMinutes(5);
+        intent.AttemptCount = 2;
+        intent.UpdatedAt = DateTimeOffset.UtcNow;
+        await _temp.Db.SaveChangesAsync();
+        _temp.Db.ChangeTracker.Clear();
+
+        var stale = await Assert.ThrowsAsync<DomainException>(() =>
+            notes.MarkCompletedAsync(intent.Id, staleToken, default));
+        Assert.Equal(40901, stale.ErrorCode);
+        await notes.ReleaseIntentAsync(intent.Id, staleToken, "stale release", default);
+
+        var afterStale = await _temp.Db.RecycleBinPurgeIntents.AsNoTracking()
+            .SingleAsync(row => row.Id == intent.Id);
+        Assert.Equal(RecycleBinPurgePhases.Pending, afterStale.Phase);
+        Assert.Equal<Guid?>(newToken, afterStale.LeaseToken);
+        Assert.True(afterStale.LeaseExpiresAt > DateTimeOffset.UtcNow);
+        Assert.Null(afterStale.LastError);
+
+        await notes.MarkCompletedAsync(intent.Id, newToken, default);
+        var completed = await _temp.Db.RecycleBinPurgeIntents.AsNoTracking()
+            .SingleAsync(row => row.Id == intent.Id);
+        Assert.Equal(RecycleBinPurgePhases.Completed, completed.Phase);
+        Assert.Null(completed.LeaseToken);
+        Assert.NotNull(completed.CompletedAt);
     }
 
     private void SeedUser(PimDbContext db)

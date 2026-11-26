@@ -369,6 +369,7 @@ public class PimDbContext : DbContext
         {
             e.HasIndex(x => new { x.UserId, x.OperationId }).IsUnique();
             e.HasIndex(x => new { x.UserId, x.Status, x.LeaseExpiresAt });
+            e.Property(x => x.ProcessingToken).IsConcurrencyToken();
             e.Property(x => x.CreatedAt).HasDefaultValueSql("now()");
             e.Property(x => x.UpdatedAt).HasDefaultValueSql("now()");
         });
@@ -376,6 +377,7 @@ public class PimDbContext : DbContext
         {
             e.HasIndex(x => new { x.UserId, x.Domain, x.ItemId, x.Generation }).IsUnique();
             e.HasIndex(x => new { x.UserId, x.Phase, x.LeaseExpiresAt });
+            e.Property(x => x.LeaseToken).IsConcurrencyToken();
             e.Property(x => x.CreatedAt).HasDefaultValueSql("now()");
             e.Property(x => x.UpdatedAt).HasDefaultValueSql("now()");
         });
