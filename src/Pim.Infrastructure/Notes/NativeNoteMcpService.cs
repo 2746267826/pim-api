@@ -610,8 +610,6 @@ public sealed class NativeNoteMcpService(
         {
             var inputText = Encoding.UTF8.GetString(inputBytes);
             var manifestText = Encoding.UTF8.GetString(manifestBytes);
-            var input = JsonNode.Parse(inputText)?.AsObject()
-                ?? throw new DomainException(40001, "material-version.json 不是 JSON 对象");
             var manifest = JsonNode.Parse(manifestText)?.AsObject()
                 ?? throw new DomainException(40001, "materials.json 不是 JSON 对象");
             var manifestNoteId = manifest["noteId"]?.GetValue<string>();
@@ -632,9 +630,8 @@ public sealed class NativeNoteMcpService(
             if (expectedPaths.Any(path => !entries.ContainsKey(path)))
                 throw new DomainException(40001, "材料包缺少材料清单中的文件");
 
-            input["id"] = versionId.ToString("D");
             manifest["versionId"] = versionId.ToString("D");
-            var rewrittenInput = input.ToJsonString();
+            var rewrittenInput = RewriteInputVersionId(inputText, versionId);
             manifest["inputSha256"] = Hash(Encoding.UTF8.GetBytes(rewrittenInput));
             var rewrittenManifest = manifest.ToJsonString();
             return new PackageContents(versionId, zipBytes, rewrittenInput, rewrittenManifest,
@@ -649,6 +646,44 @@ public sealed class NativeNoteMcpService(
         {
             throw new DomainException(40001, "材料包元数据格式无效");
         }
+    }
+
+    private static string RewriteInputVersionId(string inputText, Guid versionId)
+    {
+        using var document = JsonDocument.Parse(inputText);
+        var root = document.RootElement;
+        if (root.ValueKind != JsonValueKind.Object)
+            throw new DomainException(40001, "material-version.json 不是 JSON 对象");
+
+        var builder = new StringBuilder(inputText.Length + 64);
+        builder.Append('{');
+        var first = true;
+        var wroteId = false;
+        foreach (var property in root.EnumerateObject())
+        {
+            if (!first) builder.Append(',');
+            first = false;
+            builder.Append(JsonSerializer.Serialize(property.Name)).Append(':');
+            if (property.NameEquals("id"))
+            {
+                builder.Append(JsonSerializer.Serialize(versionId.ToString("D")));
+                wroteId = true;
+            }
+            else
+            {
+                // Preserve each nested token verbatim. The manifest hashes note.json and the
+                // recording manifests from these raw representations, so reserializing the
+                // enclosing document would change escaping/whitespace and reject valid packages.
+                builder.Append(property.Value.GetRawText());
+            }
+        }
+        if (!wroteId)
+        {
+            if (!first) builder.Append(',');
+            builder.Append("\"id\":").Append(JsonSerializer.Serialize(versionId.ToString("D")));
+        }
+        builder.Append('}');
+        return builder.ToString();
     }
 
     private static Guid StableVersionId(Guid owner, Guid noteId, Guid requestId)

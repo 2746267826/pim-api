@@ -63,17 +63,25 @@ public sealed class NativeNoteMcpRealDbTests
         }
 
         var package = Package(fixture);
-        var deniedUpload = await host.CallAsync(host.McpBWrite, "upload_native_note_package", new
+        var crossOwnerUpload = await host.CallAsync(host.McpBWrite, "upload_native_note_package", new
         {
             noteId = fixture.Request.NoteId,
             requestId = Guid.NewGuid().ToString("D"),
             packageBase64 = Convert.ToBase64String(package),
         });
-        Assert.True(deniedUpload.IsError);
-        Assert.Equal(404, deniedUpload.Payload.GetProperty("code").GetInt32());
-        Assert.Equal(1, (await host.CallAsync(host.McpARead, "get_native_note_versions",
-                new { noteId = fixture.Request.NoteId })).Payload.GetProperty("data")
-            .GetProperty("total").GetInt32());
+        // Note ids are owner-scoped. B may create its own note with the same client-supplied id,
+        // but it must never see or replace A's material/head.
+        Assert.False(crossOwnerUpload.IsError, crossOwnerUpload.Payload.GetRawText());
+        var ownerAVersions = (await host.CallAsync(host.McpARead, "get_native_note_versions",
+                new { noteId = fixture.Request.NoteId })).Payload.GetProperty("data");
+        var ownerBVersions = (await host.CallAsync(host.McpBWrite, "get_native_note_versions",
+                new { noteId = fixture.Request.NoteId })).Payload.GetProperty("data");
+        Assert.Equal(1, ownerAVersions.GetProperty("total").GetInt32());
+        Assert.Equal(1, ownerBVersions.GetProperty("total").GetInt32());
+        Assert.Equal(fixture.Request.VersionId,
+            ownerAVersions.GetProperty("currentVersionId").GetGuid());
+        Assert.NotEqual(ownerAVersions.GetProperty("currentVersionId").GetGuid(),
+            ownerBVersions.GetProperty("currentVersionId").GetGuid());
 
         var download = await host.CallAsync(host.McpARead, "get_native_note_package",
             new { noteId = fixture.Request.NoteId });
@@ -202,6 +210,17 @@ public sealed class NativeNoteMcpRealDbTests
             });
         Assert.True(mismatchedReplay.IsError);
         Assert.Equal(409, mismatchedReplay.Payload.GetProperty("code").GetInt32());
+        var mismatchedRevisionReplay = await host.CallAsync(host.McpAWrite,
+            "upload_native_note_package", new
+            {
+                noteId,
+                requestId = requestId.ToString("D"),
+                packageBase64 = Convert.ToBase64String(package),
+                promote = true,
+                expectedRevision = Guid.NewGuid().ToString("D"),
+            });
+        Assert.True(mismatchedRevisionReplay.IsError);
+        Assert.Equal(409, mismatchedRevisionReplay.Payload.GetProperty("code").GetInt32());
 
         var staleCurrent = await host.CallAsync(host.McpAWrite, "upload_native_note_package", new
         {
@@ -235,6 +254,11 @@ public sealed class NativeNoteMcpRealDbTests
         Assert.Equal(versionId.ToString("D"), manifest["versionId"]!.GetValue<string>());
         Assert.Equal(Sha256(entries["material-version.json"]),
             manifest["inputSha256"]!.GetValue<string>());
+        using (var materialVersion = JsonDocument.Parse(entries["material-version.json"]))
+        {
+            Assert.Equal(entries["note.json"], Encoding.UTF8.GetBytes(
+                materialVersion.RootElement.GetProperty("note").GetRawText()));
+        }
 
         var reassembled = new List<byte>();
         var chunkOffset = 0;
