@@ -54,6 +54,10 @@ const AppKnowledgeBasePage = lazyPage(() => import('@/features/knowledge/pages/a
 const CategoryTreePage = lazyPage(() => import('@/features/knowledge/pages/app-knowledge-page'), 'CategoryTreePage')
 const EndpointShellPage = lazyPage(() => import('@/features/endpoints/pages/endpoint-shell-page'), 'EndpointShellPage')
 const StatusPage = lazyPage(() => import('@/features/operations/pages/status-page'), 'StatusPage')
+const DiagnosticsPage = lazyPage(
+  () => import('@/features/diagnostics/pages/diagnostics-page'),
+  'DiagnosticsPage',
+)
 
 /* 设置子页同文件，共享一个 chunk */
 const settingsPages = () => import('@/features/settings/pages/settings-pages')
@@ -124,6 +128,7 @@ export const router = createBrowserRouter([
 
           // ── 系统 ──
           { path: 'status', element: <StatusPage /> },
+          { path: 'diagnostics', element: <DiagnosticsPage /> },
           { path: 'settings', element: <SettingsHubPage /> },
           { path: 'settings/server', element: <ServerSettingsPage /> },
           { path: 'settings/microsoft', element: <MicrosoftPage /> },

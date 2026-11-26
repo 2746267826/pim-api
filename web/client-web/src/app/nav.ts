@@ -1,4 +1,5 @@
 import {
+  Activity,
   Bell,
   Calendar,
   CheckSquare,
@@ -72,7 +73,10 @@ export const NAV_GROUPS: NavGroup[] = [
   },
   {
     label: '系统',
-    items: [{ to: '/settings', label: '设置', icon: Settings }],
+    items: [
+      { to: '/diagnostics', label: '诊断', icon: Activity },
+      { to: '/settings', label: '设置', icon: Settings },
+    ],
   },
 ]
 

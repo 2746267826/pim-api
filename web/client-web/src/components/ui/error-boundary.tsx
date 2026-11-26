@@ -2,6 +2,8 @@ import { Component } from 'react'
 import type { ErrorInfo, ReactNode } from 'react'
 import { AlertTriangle } from 'lucide-react'
 import { Button } from './button'
+import { reportWebError } from '@/features/diagnostics/queue'
+import { redactDiagnosticText } from '@/features/diagnostics/redaction'
 
 interface ErrorBoundaryProps {
   /** page = 页面级错误边界（提示+重试+回首页）；card = 卡片级（模块内提示，不影响整页） */
@@ -22,11 +24,19 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
   state: ErrorBoundaryState = { error: null, stack: null }
 
   static getDerivedStateFromError(error: Error): ErrorBoundaryState {
-    return { error, stack: error.stack?.split('\n').slice(1, 5).join('\n') ?? null }
+    const safe = new Error(redactDiagnosticText(error.message, 500))
+    safe.name = error.name
+    safe.stack = redactDiagnosticText(error.stack ?? '', 4_000)
+    return { error: safe, stack: safe.stack?.split('\n').slice(1, 5).join('\n') ?? null }
   }
 
   componentDidCatch(error: Error, info: ErrorInfo) {
-    console.error('[PIM] 渲染错误', error, info.componentStack)
+    reportWebError(error, info.componentStack ?? undefined)
+    console.error(
+      '[PIM] 渲染错误',
+      redactDiagnosticText(error.message, 500),
+      redactDiagnosticText(info.componentStack ?? '', 1_000),
+    )
   }
 
   private reset = () => this.setState({ error: null })

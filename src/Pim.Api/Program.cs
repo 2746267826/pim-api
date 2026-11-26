@@ -209,7 +209,10 @@ builder.Services.AddCors(options =>
             policy.WithOrigins(allowedOrigins)
                 .AllowAnyMethod()
                 .AllowAnyHeader()
-                .WithExposedHeaders("Content-Disposition", CorrelationIdMiddleware.HeaderName)
+                .WithExposedHeaders(
+                    "Content-Disposition",
+                    CorrelationIdMiddleware.HeaderName,
+                    "Retry-After")
                 .AllowCredentials();
         }
         else
@@ -218,7 +221,10 @@ builder.Services.AddCors(options =>
             policy.WithOrigins("http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:5858", "http://127.0.0.1:5858")
                 .AllowAnyMethod()
                 .AllowAnyHeader()
-                .WithExposedHeaders("Content-Disposition", CorrelationIdMiddleware.HeaderName)
+                .WithExposedHeaders(
+                    "Content-Disposition",
+                    CorrelationIdMiddleware.HeaderName,
+                    "Retry-After")
                 .AllowCredentials();
         }
     });
@@ -254,6 +260,7 @@ builder.Services.AddSingleton<OpsLogsService>();
 builder.Services.AddSingleton<SqlAstValidator>();
 builder.Services.AddScoped<OpsDbService>();
 builder.Services.AddSingleton<OpsRateLimiter>();
+builder.Services.AddScoped<DiagnosticExportService>();
 builder.Services.AddClientShell(builder.Configuration);
 builder.Services.AddTileServices(builder.Configuration);
 builder.Services.AddMemoryCache();
@@ -317,6 +324,7 @@ app.UseMiddleware<OpsRateLimitMiddleware>();
 app.UseMiddleware<OpsKeyMiddleware>();
 app.UseMiddleware<McpScopedTokenMiddleware>();
 app.UseAuthorization();
+app.UseMiddleware<DiagnosticRequestSizeMiddleware>();
 try
 {
     app.UseHangfireDashboard("/hangfire", new DashboardOptions
@@ -455,6 +463,7 @@ app.MapAdminEndpoints();
 // Search endpoint (uses ISearchProvider from modules)
 app.MapSearchEndpoints();
 app.MapStatusEndpoints();
+app.MapDiagnosticEndpoints();
 app.MapDaemonEndpoints();
 app.MapEndpointEndpoints();
 app.MapOperationsEndpoints();
