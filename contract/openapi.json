@@ -15516,6 +15516,1092 @@
         },
         "type": "object"
       },
+      "NativeNoteMcpAdoptDto": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact": {
+            "$ref": "#/components/schemas/NoteDerivedArtifactDto"
+          },
+          "hasConflict": {
+            "type": "boolean"
+          },
+          "versionId": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "artifact",
+          "hasConflict",
+          "versionId"
+        ],
+        "type": "object"
+      },
+      "NativeNoteMcpAdoptDtoNativeNoteMcpOperationResultDto": {
+        "additionalProperties": false,
+        "properties": {
+          "receipt": {
+            "$ref": "#/components/schemas/NativeNoteMcpReceiptDto"
+          },
+          "result": {
+            "$ref": "#/components/schemas/NativeNoteMcpAdoptDto"
+          }
+        },
+        "required": [
+          "receipt"
+        ],
+        "type": "object"
+      },
+      "NativeNoteMcpAdoptDtoNativeNoteMcpOperationResultDtoApiResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "data": {
+            "$ref": "#/components/schemas/NativeNoteMcpAdoptDtoNativeNoteMcpOperationResultDto"
+          },
+          "message": {
+            "type": "string"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
+        "type": "object"
+      },
+      "NativeNoteMcpAdoptRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "expectedHeadRevision": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "requestId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "versionId": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expectedHeadRevision",
+          "requestId",
+          "versionId"
+        ],
+        "type": "object"
+      },
+      "NativeNoteMcpCancelUploadDto": {
+        "additionalProperties": false,
+        "properties": {
+          "removed": {
+            "type": "boolean"
+          },
+          "revision": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          },
+          "versionId": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "removed",
+          "versionId"
+        ],
+        "type": "object"
+      },
+      "NativeNoteMcpCancelUploadDtoNativeNoteMcpOperationResultDto": {
+        "additionalProperties": false,
+        "properties": {
+          "receipt": {
+            "$ref": "#/components/schemas/NativeNoteMcpReceiptDto"
+          },
+          "result": {
+            "$ref": "#/components/schemas/NativeNoteMcpCancelUploadDto"
+          }
+        },
+        "required": [
+          "receipt"
+        ],
+        "type": "object"
+      },
+      "NativeNoteMcpCancelUploadDtoNativeNoteMcpOperationResultDtoApiResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "data": {
+            "$ref": "#/components/schemas/NativeNoteMcpCancelUploadDtoNativeNoteMcpOperationResultDto"
+          },
+          "message": {
+            "type": "string"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
+        "type": "object"
+      },
+      "NativeNoteMcpCancelUploadRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "expectedRevision": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          },
+          "requestId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "versionId": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "requestId",
+          "versionId"
+        ],
+        "type": "object"
+      },
+      "NativeNoteMcpDetailDto": {
+        "additionalProperties": false,
+        "properties": {
+          "conflictCandidates": {
+            "items": {
+              "$ref": "#/components/schemas/NoteMaterialUploadDto"
+            },
+            "type": "array"
+          },
+          "current": {
+            "$ref": "#/components/schemas/NoteMaterialUploadDto"
+          },
+          "currentVersionId": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          },
+          "derivedArtifacts": {
+            "items": {
+              "$ref": "#/components/schemas/NoteDerivedArtifactDto"
+            },
+            "type": "array"
+          },
+          "derivedTasks": {
+            "items": {
+              "$ref": "#/components/schemas/NoteDerivedTaskDto"
+            },
+            "type": "array"
+          },
+          "hasConflict": {
+            "type": "boolean"
+          },
+          "noteId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "processing": {
+            "$ref": "#/components/schemas/NoteProcessingStatusDto"
+          },
+          "receipt": {
+            "$ref": "#/components/schemas/NativeNoteMcpReceiptDto"
+          },
+          "revision": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "totalVersions": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "updatedAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "versions": {
+            "items": {
+              "$ref": "#/components/schemas/NoteMaterialUploadDto"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "conflictCandidates",
+          "derivedArtifacts",
+          "derivedTasks",
+          "hasConflict",
+          "noteId",
+          "receipt",
+          "revision",
+          "status",
+          "title",
+          "totalVersions",
+          "updatedAt",
+          "versions"
+        ],
+        "type": "object"
+      },
+      "NativeNoteMcpDetailDtoApiResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "data": {
+            "$ref": "#/components/schemas/NativeNoteMcpDetailDto"
+          },
+          "message": {
+            "type": "string"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
+        "type": "object"
+      },
+      "NativeNoteMcpLifecycleDto": {
+        "additionalProperties": false,
+        "properties": {
+          "revision": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "updatedAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "revision",
+          "status",
+          "updatedAt"
+        ],
+        "type": "object"
+      },
+      "NativeNoteMcpLifecycleDtoNativeNoteMcpOperationResultDto": {
+        "additionalProperties": false,
+        "properties": {
+          "receipt": {
+            "$ref": "#/components/schemas/NativeNoteMcpReceiptDto"
+          },
+          "result": {
+            "$ref": "#/components/schemas/NativeNoteMcpLifecycleDto"
+          }
+        },
+        "required": [
+          "receipt"
+        ],
+        "type": "object"
+      },
+      "NativeNoteMcpLifecycleDtoNativeNoteMcpOperationResultDtoApiResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "data": {
+            "$ref": "#/components/schemas/NativeNoteMcpLifecycleDtoNativeNoteMcpOperationResultDto"
+          },
+          "message": {
+            "type": "string"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
+        "type": "object"
+      },
+      "NativeNoteMcpLifecycleRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "expectedRevision": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          },
+          "requestId": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "requestId"
+        ],
+        "type": "object"
+      },
+      "NativeNoteMcpNoteSummaryDto": {
+        "additionalProperties": false,
+        "properties": {
+          "conflictCount": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "currentVersionId": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          },
+          "hasConflict": {
+            "type": "boolean"
+          },
+          "noteId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "revision": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "updatedAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "versionCount": {
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "conflictCount",
+          "hasConflict",
+          "noteId",
+          "revision",
+          "status",
+          "title",
+          "updatedAt",
+          "versionCount"
+        ],
+        "type": "object"
+      },
+      "NativeNoteMcpPackageRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "expectedCurrentVersionId": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          },
+          "expectedRevision": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          },
+          "packageBase64": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "promote": {
+            "type": "boolean"
+          },
+          "requestId": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "packageBase64",
+          "requestId"
+        ],
+        "type": "object"
+      },
+      "NativeNoteMcpPackageUploadDto": {
+        "additionalProperties": false,
+        "properties": {
+          "conflictCandidates": {
+            "items": {
+              "$ref": "#/components/schemas/NoteMaterialUploadDto"
+            },
+            "type": "array"
+          },
+          "currentVersionId": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          },
+          "hasConflict": {
+            "type": "boolean"
+          },
+          "revision": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "upload": {
+            "$ref": "#/components/schemas/NoteMaterialUploadDto"
+          }
+        },
+        "required": [
+          "conflictCandidates",
+          "hasConflict",
+          "revision",
+          "upload"
+        ],
+        "type": "object"
+      },
+      "NativeNoteMcpPackageUploadDtoNativeNoteMcpOperationResultDto": {
+        "additionalProperties": false,
+        "properties": {
+          "receipt": {
+            "$ref": "#/components/schemas/NativeNoteMcpReceiptDto"
+          },
+          "result": {
+            "$ref": "#/components/schemas/NativeNoteMcpPackageUploadDto"
+          }
+        },
+        "required": [
+          "receipt"
+        ],
+        "type": "object"
+      },
+      "NativeNoteMcpPackageUploadDtoNativeNoteMcpOperationResultDtoApiResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "data": {
+            "$ref": "#/components/schemas/NativeNoteMcpPackageUploadDtoNativeNoteMcpOperationResultDto"
+          },
+          "message": {
+            "type": "string"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
+        "type": "object"
+      },
+      "NativeNoteMcpPageDto": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/NativeNoteMcpNoteSummaryDto"
+            },
+            "type": "array"
+          },
+          "limit": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "offset": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "total": {
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "limit",
+          "offset",
+          "total"
+        ],
+        "type": "object"
+      },
+      "NativeNoteMcpPageDtoApiResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "data": {
+            "$ref": "#/components/schemas/NativeNoteMcpPageDto"
+          },
+          "message": {
+            "type": "string"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
+        "type": "object"
+      },
+      "NativeNoteMcpProcessingDto": {
+        "additionalProperties": false,
+        "properties": {
+          "status": {
+            "$ref": "#/components/schemas/NoteProcessingStatusDto"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "type": "object"
+      },
+      "NativeNoteMcpProcessingDtoNativeNoteMcpOperationResultDto": {
+        "additionalProperties": false,
+        "properties": {
+          "receipt": {
+            "$ref": "#/components/schemas/NativeNoteMcpReceiptDto"
+          },
+          "result": {
+            "$ref": "#/components/schemas/NativeNoteMcpProcessingDto"
+          }
+        },
+        "required": [
+          "receipt"
+        ],
+        "type": "object"
+      },
+      "NativeNoteMcpProcessingDtoNativeNoteMcpOperationResultDtoApiResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "data": {
+            "$ref": "#/components/schemas/NativeNoteMcpProcessingDtoNativeNoteMcpOperationResultDto"
+          },
+          "message": {
+            "type": "string"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
+        "type": "object"
+      },
+      "NativeNoteMcpProcessingRetryRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "acknowledgePossibleDuplicateCharge": {
+            "type": "boolean"
+          },
+          "consent": {
+            "$ref": "#/components/schemas/NoteDerivedGenerationConsent"
+          },
+          "expectedRevision": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "requestId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "retryId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "stepKeys": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "taskId": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "acknowledgePossibleDuplicateCharge",
+          "consent",
+          "expectedRevision",
+          "requestId",
+          "retryId",
+          "stepKeys",
+          "taskId"
+        ],
+        "type": "object"
+      },
+      "NativeNoteMcpProcessingStartRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "expectedRevision": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          },
+          "requestId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "versionId": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "requestId",
+          "versionId"
+        ],
+        "type": "object"
+      },
+      "NativeNoteMcpPromoteRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "expectedCurrentVersionId": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          },
+          "expectedRevision": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          },
+          "requestId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "versionId": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "requestId",
+          "versionId"
+        ],
+        "type": "object"
+      },
+      "NativeNoteMcpReceiptDto": {
+        "additionalProperties": false,
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "noteId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "operation": {
+            "type": "string"
+          },
+          "replayed": {
+            "type": "boolean"
+          },
+          "requestId": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          },
+          "revision": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "at",
+          "message",
+          "noteId",
+          "operation",
+          "replayed",
+          "status"
+        ],
+        "type": "object"
+      },
+      "NativeNoteMcpResultsDto": {
+        "additionalProperties": false,
+        "properties": {
+          "artifacts": {
+            "items": {
+              "$ref": "#/components/schemas/NoteDerivedArtifactDto"
+            },
+            "type": "array"
+          },
+          "noteId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "receipt": {
+            "$ref": "#/components/schemas/NativeNoteMcpReceiptDto"
+          },
+          "revision": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "tasks": {
+            "items": {
+              "$ref": "#/components/schemas/NoteDerivedTaskDto"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "artifacts",
+          "noteId",
+          "receipt",
+          "revision",
+          "tasks"
+        ],
+        "type": "object"
+      },
+      "NativeNoteMcpResultsDtoApiResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "data": {
+            "$ref": "#/components/schemas/NativeNoteMcpResultsDto"
+          },
+          "message": {
+            "type": "string"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
+        "type": "object"
+      },
+      "NativeNoteMcpRetryDto": {
+        "additionalProperties": false,
+        "properties": {
+          "task": {
+            "$ref": "#/components/schemas/NoteDerivedTaskDto"
+          }
+        },
+        "required": [
+          "task"
+        ],
+        "type": "object"
+      },
+      "NativeNoteMcpRetryDtoNativeNoteMcpOperationResultDto": {
+        "additionalProperties": false,
+        "properties": {
+          "receipt": {
+            "$ref": "#/components/schemas/NativeNoteMcpReceiptDto"
+          },
+          "result": {
+            "$ref": "#/components/schemas/NativeNoteMcpRetryDto"
+          }
+        },
+        "required": [
+          "receipt"
+        ],
+        "type": "object"
+      },
+      "NativeNoteMcpRetryDtoNativeNoteMcpOperationResultDtoApiResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "data": {
+            "$ref": "#/components/schemas/NativeNoteMcpRetryDtoNativeNoteMcpOperationResultDto"
+          },
+          "message": {
+            "type": "string"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
+        "type": "object"
+      },
+      "NativeNoteMcpSuggestionConfirmRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "expectedRevision": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "requestId": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expectedRevision",
+          "requestId"
+        ],
+        "type": "object"
+      },
+      "NativeNoteMcpSuggestionDismissRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "expectedRevision": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "requestId": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expectedRevision",
+          "requestId"
+        ],
+        "type": "object"
+      },
+      "NativeNoteMcpSuggestionExtractionRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "acknowledgePossibleCharge": {
+            "type": "boolean"
+          },
+          "artifactId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "consent": {
+            "$ref": "#/components/schemas/NoteDerivedGenerationConsent"
+          },
+          "expectedContentSha256": {
+            "maxLength": 64,
+            "minLength": 1,
+            "type": "string"
+          },
+          "requestId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "versionId": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "acknowledgePossibleCharge",
+          "artifactId",
+          "consent",
+          "expectedContentSha256",
+          "requestId",
+          "versionId"
+        ],
+        "type": "object"
+      },
+      "NativeNoteMcpVersionMutationDto": {
+        "additionalProperties": false,
+        "properties": {
+          "conflictCandidates": {
+            "items": {
+              "$ref": "#/components/schemas/NoteMaterialUploadDto"
+            },
+            "type": "array"
+          },
+          "currentVersionId": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          },
+          "revision": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "upload": {
+            "$ref": "#/components/schemas/NoteMaterialUploadDto"
+          }
+        },
+        "required": [
+          "conflictCandidates",
+          "revision",
+          "upload"
+        ],
+        "type": "object"
+      },
+      "NativeNoteMcpVersionMutationDtoNativeNoteMcpOperationResultDto": {
+        "additionalProperties": false,
+        "properties": {
+          "receipt": {
+            "$ref": "#/components/schemas/NativeNoteMcpReceiptDto"
+          },
+          "result": {
+            "$ref": "#/components/schemas/NativeNoteMcpVersionMutationDto"
+          }
+        },
+        "required": [
+          "receipt"
+        ],
+        "type": "object"
+      },
+      "NativeNoteMcpVersionMutationDtoNativeNoteMcpOperationResultDtoApiResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "data": {
+            "$ref": "#/components/schemas/NativeNoteMcpVersionMutationDtoNativeNoteMcpOperationResultDto"
+          },
+          "message": {
+            "type": "string"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
+        "type": "object"
+      },
+      "NativeNoteMcpVersionsDto": {
+        "additionalProperties": false,
+        "properties": {
+          "conflictCandidates": {
+            "items": {
+              "$ref": "#/components/schemas/NoteMaterialUploadDto"
+            },
+            "type": "array"
+          },
+          "currentVersionId": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          },
+          "hasConflict": {
+            "type": "boolean"
+          },
+          "noteId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "receipt": {
+            "$ref": "#/components/schemas/NativeNoteMcpReceiptDto"
+          },
+          "revision": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "total": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "versions": {
+            "items": {
+              "$ref": "#/components/schemas/NoteMaterialUploadDto"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "conflictCandidates",
+          "hasConflict",
+          "noteId",
+          "receipt",
+          "revision",
+          "total",
+          "versions"
+        ],
+        "type": "object"
+      },
+      "NativeNoteMcpVersionsDtoApiResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "data": {
+            "$ref": "#/components/schemas/NativeNoteMcpVersionsDto"
+          },
+          "message": {
+            "type": "string"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
+        "type": "object"
+      },
       "NativeNotePageDto": {
         "additionalProperties": false,
         "properties": {
@@ -19525,6 +20611,46 @@
         ],
         "type": "object"
       },
+      "NoteTaskSuggestionDtoNativeNoteMcpOperationResultDto": {
+        "additionalProperties": false,
+        "properties": {
+          "receipt": {
+            "$ref": "#/components/schemas/NativeNoteMcpReceiptDto"
+          },
+          "result": {
+            "$ref": "#/components/schemas/NoteTaskSuggestionDto"
+          }
+        },
+        "required": [
+          "receipt"
+        ],
+        "type": "object"
+      },
+      "NoteTaskSuggestionDtoNativeNoteMcpOperationResultDtoApiResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "data": {
+            "$ref": "#/components/schemas/NoteTaskSuggestionDtoNativeNoteMcpOperationResultDto"
+          },
+          "message": {
+            "type": "string"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
+        "type": "object"
+      },
       "NoteTaskSuggestionExtractionDto": {
         "additionalProperties": false,
         "properties": {
@@ -19670,6 +20796,46 @@
         ],
         "type": "object"
       },
+      "NoteTaskSuggestionExtractionDtoNativeNoteMcpOperationResultDto": {
+        "additionalProperties": false,
+        "properties": {
+          "receipt": {
+            "$ref": "#/components/schemas/NativeNoteMcpReceiptDto"
+          },
+          "result": {
+            "$ref": "#/components/schemas/NoteTaskSuggestionExtractionDto"
+          }
+        },
+        "required": [
+          "receipt"
+        ],
+        "type": "object"
+      },
+      "NoteTaskSuggestionExtractionDtoNativeNoteMcpOperationResultDtoApiResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "data": {
+            "$ref": "#/components/schemas/NoteTaskSuggestionExtractionDtoNativeNoteMcpOperationResultDto"
+          },
+          "message": {
+            "type": "string"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
+        "type": "object"
+      },
       "NoteTaskSuggestionExtractionStatusDto": {
         "enum": [
           "Queued",
@@ -19715,6 +20881,46 @@
           },
           "data": {
             "$ref": "#/components/schemas/NoteTaskSuggestionListDto"
+          },
+          "message": {
+            "type": "string"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
+        "type": "object"
+      },
+      "NoteTaskSuggestionListDtoNativeNoteMcpOperationResultDto": {
+        "additionalProperties": false,
+        "properties": {
+          "receipt": {
+            "$ref": "#/components/schemas/NativeNoteMcpReceiptDto"
+          },
+          "result": {
+            "$ref": "#/components/schemas/NoteTaskSuggestionListDto"
+          }
+        },
+        "required": [
+          "receipt"
+        ],
+        "type": "object"
+      },
+      "NoteTaskSuggestionListDtoNativeNoteMcpOperationResultDtoApiResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "data": {
+            "$ref": "#/components/schemas/NoteTaskSuggestionListDtoNativeNoteMcpOperationResultDto"
           },
           "message": {
             "type": "string"
@@ -45280,6 +46486,1130 @@
         ],
         "tags": [
           "Native note derived artifacts"
+        ]
+      }
+    },
+    "/api/v1/native-notes/mcp/notes": {
+      "get": {
+        "parameters": [
+          {
+            "in": "query",
+            "name": "status",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "schema": {
+              "format": "int32",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "format": "int32",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NativeNoteMcpPageDtoApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Native notes MCP"
+        ]
+      }
+    },
+    "/api/v1/native-notes/mcp/notes/{noteId}": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "noteId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "includeResults",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "versionLimit",
+            "schema": {
+              "format": "int32",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NativeNoteMcpDetailDtoApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Native notes MCP"
+        ]
+      }
+    },
+    "/api/v1/native-notes/mcp/notes/{noteId}/cancel-upload": {
+      "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "noteId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NativeNoteMcpCancelUploadRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NativeNoteMcpCancelUploadDtoNativeNoteMcpOperationResultDtoApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "409": {
+            "description": "Conflict"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Native notes MCP"
+        ]
+      }
+    },
+    "/api/v1/native-notes/mcp/notes/{noteId}/lifecycle/archive": {
+      "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "noteId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NativeNoteMcpLifecycleRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NativeNoteMcpLifecycleDtoNativeNoteMcpOperationResultDtoApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "409": {
+            "description": "Conflict"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Native notes MCP"
+        ]
+      }
+    },
+    "/api/v1/native-notes/mcp/notes/{noteId}/lifecycle/delete": {
+      "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "noteId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NativeNoteMcpLifecycleRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NativeNoteMcpLifecycleDtoNativeNoteMcpOperationResultDtoApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "409": {
+            "description": "Conflict"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Native notes MCP"
+        ]
+      }
+    },
+    "/api/v1/native-notes/mcp/notes/{noteId}/lifecycle/restore": {
+      "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "noteId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NativeNoteMcpLifecycleRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NativeNoteMcpLifecycleDtoNativeNoteMcpOperationResultDtoApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "409": {
+            "description": "Conflict"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Native notes MCP"
+        ]
+      }
+    },
+    "/api/v1/native-notes/mcp/notes/{noteId}/package": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "noteId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "versionId",
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/zip": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Native notes MCP"
+        ]
+      },
+      "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "noteId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NativeNoteMcpPackageRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NativeNoteMcpPackageUploadDtoNativeNoteMcpOperationResultDtoApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "409": {
+            "description": "Conflict"
+          },
+          "413": {
+            "description": "Content Too Large"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Native notes MCP"
+        ]
+      }
+    },
+    "/api/v1/native-notes/mcp/notes/{noteId}/processing": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "noteId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "versionId",
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NativeNoteMcpProcessingDtoNativeNoteMcpOperationResultDtoApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Native notes MCP"
+        ]
+      }
+    },
+    "/api/v1/native-notes/mcp/notes/{noteId}/processing/retry": {
+      "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "noteId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NativeNoteMcpProcessingRetryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NativeNoteMcpRetryDtoNativeNoteMcpOperationResultDtoApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "409": {
+            "description": "Conflict"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Native notes MCP"
+        ]
+      }
+    },
+    "/api/v1/native-notes/mcp/notes/{noteId}/processing/start": {
+      "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "noteId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NativeNoteMcpProcessingStartRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NativeNoteMcpProcessingDtoNativeNoteMcpOperationResultDtoApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "409": {
+            "description": "Conflict"
+          },
+          "503": {
+            "description": "Service Unavailable"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Native notes MCP"
+        ]
+      }
+    },
+    "/api/v1/native-notes/mcp/notes/{noteId}/promote": {
+      "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "noteId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NativeNoteMcpPromoteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NativeNoteMcpVersionMutationDtoNativeNoteMcpOperationResultDtoApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "409": {
+            "description": "Conflict"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Native notes MCP"
+        ]
+      }
+    },
+    "/api/v1/native-notes/mcp/notes/{noteId}/results": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "noteId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NativeNoteMcpResultsDtoApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Native notes MCP"
+        ]
+      }
+    },
+    "/api/v1/native-notes/mcp/notes/{noteId}/results/{artifactId}/adopt": {
+      "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "noteId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "artifactId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NativeNoteMcpAdoptRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NativeNoteMcpAdoptDtoNativeNoteMcpOperationResultDtoApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "409": {
+            "description": "Conflict"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Native notes MCP"
+        ]
+      }
+    },
+    "/api/v1/native-notes/mcp/notes/{noteId}/suggestions": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "noteId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "schema": {
+              "$ref": "#/components/schemas/NoteTaskSuggestionStatusDto"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NoteTaskSuggestionListDtoNativeNoteMcpOperationResultDtoApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Native notes MCP"
+        ]
+      }
+    },
+    "/api/v1/native-notes/mcp/notes/{noteId}/suggestions/extractions": {
+      "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "noteId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NativeNoteMcpSuggestionExtractionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NoteTaskSuggestionExtractionDtoNativeNoteMcpOperationResultDtoApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "409": {
+            "description": "Conflict"
+          },
+          "503": {
+            "description": "Service Unavailable"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Native notes MCP"
+        ]
+      }
+    },
+    "/api/v1/native-notes/mcp/notes/{noteId}/suggestions/{suggestionId}/confirm": {
+      "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "noteId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "suggestionId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NativeNoteMcpSuggestionConfirmRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NoteTaskSuggestionDtoNativeNoteMcpOperationResultDtoApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "409": {
+            "description": "Conflict"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Native notes MCP"
+        ]
+      }
+    },
+    "/api/v1/native-notes/mcp/notes/{noteId}/suggestions/{suggestionId}/dismiss": {
+      "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "noteId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "suggestionId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NativeNoteMcpSuggestionDismissRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NoteTaskSuggestionDtoNativeNoteMcpOperationResultDtoApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "409": {
+            "description": "Conflict"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Native notes MCP"
+        ]
+      }
+    },
+    "/api/v1/native-notes/mcp/notes/{noteId}/versions": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "noteId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "format": "int32",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NativeNoteMcpVersionsDtoApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Native notes MCP"
         ]
       }
     },
