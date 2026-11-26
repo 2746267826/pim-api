@@ -1,5 +1,6 @@
-using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Mvc;
+using System.Globalization;
+using System.Security.Cryptography;
 using Pim.Core.Common;
 using Pim.Core.Exceptions;
 using Pim.Core.Notes;
@@ -81,22 +82,43 @@ public static class NoteMcpEndpoints
             context.Response.Headers.CacheControl = "private, no-store";
             context.Response.Headers["X-PIM-Note-Id"] = resolved.NoteId.ToString("D");
             context.Response.Headers["X-PIM-Version-Id"] = resolved.VersionId.ToString("D");
-            var bodyControl = context.Features.Get<IHttpBodyControlFeature>()
-                ?? throw new InvalidOperationException("ZIP export requires an HTTP body control feature");
-            return Results.Stream(async output =>
+            var tempPath = Path.Combine(Path.GetTempPath(),
+                $"pim-native-note-{resolved.NoteId:D}-{Guid.NewGuid():N}.zip");
+            var streamOptions = new FileStreamOptions
             {
-                // ZipArchive writes its central directory synchronously when disposed.
-                var allowSynchronousIo = bodyControl.AllowSynchronousIO;
-                bodyControl.AllowSynchronousIO = true;
-                try
-                {
-                    await service.WritePackageAsync(noteId, resolved.VersionId, output, ct);
-                }
-                finally
-                {
-                    bodyControl.AllowSynchronousIO = allowSynchronousIo;
-                }
-            }, "application/zip", $"{noteId:D}.pimnote.zip");
+                Mode = FileMode.CreateNew,
+                Access = FileAccess.ReadWrite,
+                Share = FileShare.Read,
+                BufferSize = 64 * 1024,
+                Options = FileOptions.Asynchronous | FileOptions.SequentialScan |
+                          FileOptions.DeleteOnClose,
+            };
+            if (!OperatingSystem.IsWindows())
+            {
+                streamOptions.UnixCreateMode =
+                    UnixFileMode.UserRead | UnixFileMode.UserWrite;
+            }
+            var stream = new FileStream(tempPath, streamOptions);
+            try
+            {
+                // ZipArchive writes its central directory synchronously when disposed. Build the
+                // ZIP on a seekable temp file first so this works in in-process MCP requests
+                // where IHttpBodyControlFeature is unavailable, then stream the completed file.
+                await service.WritePackageAsync(noteId, resolved.VersionId, stream, ct);
+                await stream.FlushAsync(ct);
+                var packageSha256 = await HashStreamAsync(stream, ct);
+                context.Response.Headers["X-PIM-Package-Sha256"] = packageSha256;
+                context.Response.Headers["X-PIM-Package-Byte-Length"] =
+                    stream.Length.ToString(CultureInfo.InvariantCulture);
+                stream.Position = 0;
+                return Results.File(stream, "application/zip",
+                    $"{noteId:D}.pimnote.zip", enableRangeProcessing: true);
+            }
+            catch
+            {
+                await stream.DisposeAsync();
+                throw;
+            }
         })
             .Produces<Stream>(200, "application/zip").Produces(401)
             .Produces<ApiResponse<string>>(404).Produces<ApiResponse<string>>(409);
@@ -305,4 +327,20 @@ public static class NoteMcpEndpoints
 
     private static Guid UserId(ICurrentUserService user)
         => user.UserId ?? throw new DomainException(40101, "请先登录");
+
+    private static async Task<string> HashStreamAsync(FileStream stream, CancellationToken ct)
+    {
+        var position = stream.Position;
+        stream.Position = 0;
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        var buffer = new byte[64 * 1024];
+        while (true)
+        {
+            var read = await stream.ReadAsync(buffer, ct);
+            if (read == 0) break;
+            hash.AppendData(buffer, 0, read);
+        }
+        stream.Position = position;
+        return Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant();
+    }
 }
