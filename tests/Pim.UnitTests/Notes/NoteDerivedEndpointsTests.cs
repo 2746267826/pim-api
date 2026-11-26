@@ -426,8 +426,9 @@ public sealed class NoteDerivedEndpointsTests : IDisposable
         var otherUnavailable = await otherClient.DeleteAsync($"/api/v1/native-notes/{material.NoteId}");
         Assert.Equal(HttpStatusCode.NotFound, otherUnavailable.StatusCode);
         Assert.Equal(404, (await AuthRegistrationTestHost.ReadErrorAsync(otherUnavailable)).Code);
-        Assert.Equal(HttpStatusCode.NotFound,
-            (await client.GetAsync($"/api/v1/native-notes/{material.NoteId}/current")).StatusCode);
+        var activeLookup = await client.GetAsync($"/api/v1/native-notes/{material.NoteId}/current");
+        Assert.Equal(HttpStatusCode.Conflict, activeLookup.StatusCode);
+        Assert.Equal(40901, (await AuthRegistrationTestHost.ReadErrorAsync(activeLookup)).Code);
         Assert.NotNull(await materials.GetDeletedAsync(owner.UserId, material.NoteId, default));
         Assert.Equal(taskId, (await store.ReadTaskAsync(owner.UserId, taskId, default)).Request.TaskId);
         Assert.Equal(material.VersionId,
