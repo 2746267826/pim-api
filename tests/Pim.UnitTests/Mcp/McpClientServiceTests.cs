@@ -215,12 +215,13 @@ public sealed class McpClientServiceTests : IDisposable
             ["write"] = new() { ["create_task"] = true },
         };
         var dto = await _service.UpdateAsync(created.Client.Id, null, writeOnly, _owner);
-        // WO-PC-BACKEND-20261001 REQ-6 后为 100；J05 移除 LiteLLM 状态工具后为 99。
-        Assert.Equal(99, dto.Permissions["read"].Count);
+        // WO-PC-BACKEND-20261001 REQ-6 后为 100；J05 移除状态工具后为 99；
+        // R05 追加 7 个 native-note 读工具后为 106。
+        Assert.Equal(106, dto.Permissions["read"].Count);
         Assert.True(dto.Permissions["read"]["get_tasks"]);
         Assert.True(dto.Permissions["write"]["create_task"]);
         // Unlisted write tools keep their previous value (not wiped).
-        Assert.Equal(49, dto.Permissions["write"].Count);
+        Assert.Equal(61, dto.Permissions["write"].Count);
     }
 
     [Fact]
@@ -234,8 +235,9 @@ public sealed class McpClientServiceTests : IDisposable
         var dto = await _service.UpdateAsync(created.Client.Id, null, singleKey, _owner);
         Assert.False(dto.Permissions["read"]["get_events"]);
         Assert.True(dto.Permissions["read"]["get_tasks"]);
-        // WO-PC-BACKEND-20261001 REQ-6 后为 100；J05 移除 LiteLLM 状态工具后为 99。
-        Assert.Equal(99, dto.Permissions["read"].Count);
+        // WO-PC-BACKEND-20261001 REQ-6 后为 100；J05 移除状态工具后为 99；
+        // R05 追加 7 个 native-note 读工具后为 106。
+        Assert.Equal(106, dto.Permissions["read"].Count);
     }
 
     private sealed class StubHostEnvironment : IHostEnvironment

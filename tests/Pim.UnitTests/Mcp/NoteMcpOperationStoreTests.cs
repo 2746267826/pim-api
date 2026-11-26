@@ -86,6 +86,31 @@ public sealed class NoteMcpOperationStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task PendingMarkerIsDurableBeforeTheMutationStarts()
+    {
+        var store = Store();
+        var requestId = Guid.NewGuid();
+        var observedPending = false;
+
+        var result = await RunAsync(store, requestId, new { value = 1 }, async _ =>
+        {
+            var marker = await ReadOperationAsync(requestId);
+            Assert.Equal("pending", marker.GetProperty("state").GetString());
+            Assert.False(marker.TryGetProperty("responseJson", out var responseJson) &&
+                responseJson.ValueKind != JsonValueKind.Null);
+            observedPending = true;
+            return Result(requestId, "applied");
+        });
+
+        Assert.True(observedPending);
+        Assert.Equal("applied", result.Result);
+        var completed = await ReadOperationAsync(requestId);
+        Assert.Equal("completed", completed.GetProperty("state").GetString());
+        Assert.NotEqual(JsonValueKind.Null,
+            completed.GetProperty("responseJson").ValueKind);
+    }
+
+    [Fact]
     public async Task DomainFailureIsRecordedAndDoesNotReexecuteTheRequestId()
     {
         var store = Store();
@@ -157,11 +182,12 @@ public sealed class NoteMcpOperationStoreTests : IDisposable
             JsonSerializer.Serialize(ledger, Json));
 
         var calls = 0;
-        var replay = await RunAsync(Store(), requestId, fingerprintInput, _ =>
+        var store = Store();
+        var replay = await store.RunAsync(_owner, requestId, operation, fingerprintInput, _ =>
         {
             calls++;
             return Task.FromResult(Result(requestId, "must not run"));
-        });
+        }, CancellationToken.None);
         Assert.Equal("legacy", replay.Result);
         Assert.True(replay.Receipt.Replayed);
         Assert.Equal(0, calls);
