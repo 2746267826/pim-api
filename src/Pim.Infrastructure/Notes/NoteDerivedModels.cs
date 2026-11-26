@@ -5,14 +5,15 @@ namespace Pim.Infrastructure.Notes;
 
 internal static class NoteDerivedLimits
 {
-    internal const string PlanVersion = "note-derived-v1";
+    internal const string PlanVersion = "note-derived-v2";
     internal const int MaxImages = 32;
     internal const int MaxImagesPerVisionCall = 4;
     internal const int MaxImageBytes = 4 * 1024 * 1024;
     internal const int MaxVisionCallBytes = 8 * 1024 * 1024;
     internal const int MaxVisionCalls = 8;
     internal const int MaxEvidenceCharsPerStep = 50_000;
-    internal const int MaxEvidenceSteps = 12;
+    // 64 audio batches + 8 vision batches + record/analysis must stay admissible.
+    internal const int MaxEvidenceSteps = 80;
     // Keep this aligned with AiTextCallService's actual SDK input limit.
     internal const int MaxSynthesisInputChars = 200_000;
     internal const int MaxDerivedContentCharacters = 1_000_000;
@@ -87,7 +88,10 @@ internal sealed record NoteDerivedPlanStep(
     NoteDerivedStepKind Kind,
     IReadOnlyList<string> DependsOn,
     IReadOnlyList<NoteDerivedImageInput> Images,
-    int InputCharacters);
+    int InputCharacters,
+    IReadOnlyList<NoteDerivedAudioInput>? Audio = null,
+    IReadOnlyList<int>? TranscriptOrdinals = null,
+    int MaxOutputCharacters = 0);
 
 internal sealed record NoteDerivedPlan(
     string PlanVersion,
@@ -133,6 +137,9 @@ internal sealed class NoteDerivedStepState
     public NoteDerivedStepKind Kind { get; set; }
     public IReadOnlyList<string> DependsOn { get; set; } = [];
     public IReadOnlyList<NoteDerivedImageInput> Images { get; set; } = [];
+    public IReadOnlyList<NoteDerivedAudioInput> Audio { get; set; } = [];
+    public IReadOnlyList<int> TranscriptOrdinals { get; set; } = [];
+    public int MaxOutputCharacters { get; set; }
     public int InputCharacters { get; set; }
     public List<NoteDerivedAttemptState> Attempts { get; set; } = [new()];
     [JsonIgnore]

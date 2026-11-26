@@ -69,7 +69,7 @@ public sealed class NoteDerivedService(
         var built = await snapshots.BuildAsync(owner, version, inputSha, manifestSha,
             request.AsrTaskId, waitForAsr, allowIncompleteAsr, ct, allowAudioContext);
         var snapshot = built.Snapshot;
-        var plan = new NoteDerivedPlanner().Build(snapshot);
+        var plan = new NoteDerivedPlanner(audioContext.Value).Build(snapshot);
         var state = await store.CreateTaskAsync(owner, request, plan, fingerprint, ct,
             built.AwaitingAsr);
         return await DescribeAsync(state, ct);
@@ -120,8 +120,8 @@ public sealed class NoteDerivedService(
     public async Task<NoteDerivedStepsDto> StepsAsync(Guid taskId, int offset, int limit, CancellationToken ct)
     {
         var owner = await RequireActiveOwnerAsync(ct);
-        if (offset < 0 || limit is < 1 or > 20)
-            throw Invalid("派生步骤分页范围无效，单页最多20步");
+        if (offset < 0 || limit is < 1 or > 100)
+            throw Invalid("派生步骤分页范围无效，单页最多100步");
         var state = await store.ReadTaskAsync(owner, taskId, ct);
         return new(state.Steps.Count, offset, state.Steps.Skip(offset).Take(limit)
             .Select(NoteDerivedStore.DescribeStep).ToArray());
@@ -142,7 +142,7 @@ public sealed class NoteDerivedService(
             throw new DomainException(40301, "账号已改变，请重新核对");
         if (request.RetryId == Guid.Empty || request.Consent?.Confirmed != true ||
             !request.AcknowledgePossibleDuplicateCharge ||
-            request.StepKeys is not { Count: > 0 and <= 20 } ||
+            request.StepKeys is not { Count: > 0 and <= 100 } ||
             request.StepKeys.Distinct(StringComparer.Ordinal).Count() != request.StepKeys.Count ||
             request.StepKeys.Any(string.IsNullOrWhiteSpace))
             throw Invalid("请选择待恢复步骤，核对原目标，并确认重试可能重复计费");
@@ -159,7 +159,7 @@ public sealed class NoteDerivedService(
             if (previous != fingerprint) throw Conflict("恢复标识已经绑定另一组步骤，原恢复记录保留");
             return await DescribeAsync(before, ct);
         }
-        if (before.Blocked || before.Plan.Steps.Count == 0)
+        if (before.Blocked || before.Plan is null || before.Plan.Steps.Count == 0)
             throw Conflict("当前任务存在输入级阻断，不能按步骤重试");
         if (request.Consent != before.Request.Consent)
             throw Conflict("重试目标与固定任务不一致，请新建任务");
@@ -183,7 +183,25 @@ public sealed class NoteDerivedService(
                 if (step.Attempts.Count >= 10)
                     throw new DomainException(41301, "单步尝试次数已达10次，原结果保留");
             }
-            foreach (var key in request.StepKeys)
+            // A selected batch must also restore its cancelled downstream steps; successful
+            // steps are never replayed so the provider call identity stays one-shot.
+            var effective = new HashSet<string>(request.StepKeys, StringComparer.Ordinal);
+            var changed = true;
+            while (changed)
+            {
+                changed = false;
+                foreach (var step in state.Steps.Where(step =>
+                             !effective.Contains(step.Key) &&
+                             (step.Current.Status is "Cancelled" or "Failed" or "Unknown" or "Blocked") &&
+                             step.DependsOn.Any(effective.Contains)))
+                {
+                    if (step.Attempts.Count >= 10)
+                        throw new DomainException(41301, "单步尝试次数已达10次，原结果保留");
+                    effective.Add(step.Key);
+                    changed = true;
+                }
+            }
+            foreach (var key in effective)
             {
                 var step = state.Steps.Single(x => x.Key == key);
                 if (step.Current.Status != "Queued")

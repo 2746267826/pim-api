@@ -55,6 +55,7 @@ const phaseNames: Record<string, string> = {
 }
 const stepNames: Record<string, string> = {
   ImageEvidence: '图片证据',
+  AudioBatchEvidence: '录音批次整理',
   RecordSynthesis: '完整记录整理',
   AnalysisSynthesis: '独立分析',
 }

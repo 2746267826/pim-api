@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using Hangfire;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Pim.Core.Ai;
@@ -52,7 +53,8 @@ public sealed class NoteDerivedJob(
     PimDbContext db,
     AiTextCallService calls,
     IOptions<NoteDerivedAudioContextOptions> audioContext,
-    ILogger<NoteDerivedJob> logger)
+    ILogger<NoteDerivedJob> logger,
+    IServiceScopeFactory? scopeFactory = null)
 {
     private static readonly TimeSpan UnknownWithoutReceiptAfter = TimeSpan.FromMinutes(15);
 
@@ -63,7 +65,8 @@ public sealed class NoteDerivedJob(
         if (lease is null) return;
 
         // Fairness bound mirrors ASR. Every exit is a durable checkpoint and never allocates a new attempt.
-        for (var processed = 0; processed < 64; processed++)
+        var deferred = new HashSet<string>(StringComparer.Ordinal);
+        for (var processed = 0; processed < 256; processed++)
         {
             ct.ThrowIfCancellationRequested();
             var state = await tasks.ReadTaskAsync(owner, taskId, ct);
@@ -80,95 +83,155 @@ public sealed class NoteDerivedJob(
                 return;
             }
 
-            var step = ReadyStep(state);
-            if (step is null) return;
-            var requestId = step.Current.RequestId;
-
-            await AiCallRecovery.RecoverExpiredAsync(db, ct);
-            var receipt = await FindReceiptAsync(owner, requestId, ct);
-            if (receipt is not null)
+            var ready = ReadySteps(state).Where(x => !deferred.Contains(x.Key)).ToArray();
+            if (ready.Length == 0)
             {
-                if (!ReceiptMatches(step, receipt, state, out var bindingError))
-                {
-                    await StopWithIssueAsync(owner, taskId, step.Key, "ai_receipt_source_mismatch",
-                        bindingError, "Blocked", ct);
-                    return;
-                }
-                if (receipt.Status == "running")
-                {
-                    if (receipt.ExecutionExpiresAt is { } expires && expires <= DateTimeOffset.UtcNow)
-                        await StopWithIssueAsync(owner, taskId, step.Key, "ai_outcome_unknown",
-                            "调用执行期限已过，结果无法确认；不会自动重发，请显式确认可能重复收费后重试",
-                            "Unknown", ct);
-                    return;
-                }
-
-                var result = AiCallAudit.Result(receipt, true);
-                var completed = await ApplyResultAsync(owner, taskId, step.Key, requestId, result, receipt, ct);
-                if (!completed) return;
+                await ReconcileCoverageAsync(owner, taskId, ct);
+                return;
+            }
+            if (ready.Length == 1 || scopeFactory is null)
+            {
+                var outcome = await RunStepLockedAsync(owner, taskId, ready[0].Key, ct);
+                if (outcome == StepOutcome.Stop) return;
+                if (outcome == StepOutcome.Deferred) deferred.Add(ready[0].Key);
                 continue;
             }
 
-            if (step.Current.Status is "Running" or "Unknown")
+            var limit = Math.Clamp(audioContext.Value.MaxParallelCalls, 1,
+                NoteDerivedAudioContextOptions.HardMaxParallelCalls);
+            var wave = ready.Take(limit).Select(x => x.Key).ToArray();
+            var outcomes = await Task.WhenAll(wave.Select(key =>
+                RunStepInScopeAsync(owner, taskId, key, ct)));
+            for (var index = 0; index < wave.Length; index++)
             {
-                if (await IsStaleWithoutReceiptAsync(state, step, ct))
-                {
+                if (outcomes[index] == StepOutcome.Stop) return;
+                if (outcomes[index] == StepOutcome.Deferred) deferred.Add(wave[index]);
+            }
+        }
+    }
+
+    private async Task ReconcileCoverageAsync(Guid owner, Guid taskId, CancellationToken ct)
+    {
+        var latest = await tasks.ReadTaskAsync(owner, taskId, ct);
+        if (latest.Steps.Any(x => x.Current.Status is "Queued" or "Running")) return;
+        var coverage = await BuildCoverageAsync(latest, ct);
+        if (coverage.Coverage == latest.Coverage) return;
+        await tasks.UpdateTaskAsync(owner, taskId, current =>
+        {
+            current.Coverage = coverage.Coverage;
+            current.Issues = coverage.Coverage.Issues.ToList();
+        }, ct);
+    }
+
+    private async Task<StepOutcome> RunStepInScopeAsync(Guid owner, Guid taskId, string stepKey,
+        CancellationToken ct)
+    {
+        if (scopeFactory is null)
+            return await RunStepLockedAsync(owner, taskId, stepKey, ct);
+        using var scope = scopeFactory.CreateScope();
+        var job = new NoteDerivedJob(
+            tasks,
+            materials,
+            asrTasks,
+            scope.ServiceProvider.GetRequiredService<NoteDerivedSnapshotBuilder>(),
+            scope.ServiceProvider.GetRequiredService<PimDbContext>(),
+            scope.ServiceProvider.GetRequiredService<AiTextCallService>(),
+            audioContext,
+            logger);
+        return await job.RunStepLockedAsync(owner, taskId, stepKey, ct);
+    }
+
+    private async Task<StepOutcome> RunStepLockedAsync(Guid owner, Guid taskId, string stepKey,
+        CancellationToken ct)
+    {
+        var state = await tasks.ReadTaskAsync(owner, taskId, ct);
+        var step = state.Steps.SingleOrDefault(x => x.Key == stepKey);
+        if (step is null) return StepOutcome.Stop;
+        var requestId = step.Current.RequestId;
+
+        await AiCallRecovery.RecoverExpiredAsync(db, ct);
+        var receipt = await FindReceiptAsync(owner, requestId, ct);
+        if (receipt is not null)
+        {
+            if (!ReceiptMatches(step, receipt, state, out var bindingError))
+            {
+                await StopWithIssueAsync(owner, taskId, step.Key, "ai_receipt_source_mismatch",
+                    bindingError, "Blocked", ct);
+                return StepOutcome.Stop;
+            }
+            if (receipt.Status == "running")
+            {
+                if (receipt.ExecutionExpiresAt is { } expires && expires <= DateTimeOffset.UtcNow)
                     await StopWithIssueAsync(owner, taskId, step.Key, "ai_outcome_unknown",
-                        "已持久化发送意图但未找到调用回执，结果无法确认；不会自动重发，请显式确认可能重复收费后重试",
+                        "调用执行期限已过，结果无法确认；不会自动重发，请显式确认可能重复收费后重试",
                         "Unknown", ct);
-                }
-                return;
-            }
-            if (state.StopRequested || step.Current.Status != "Queued") return;
-
-            var prepared = await PrepareAsync(state, step, ct);
-            if (prepared.Issue is not null)
-            {
-                await StopWithIssueAsync(owner, taskId, step.Key, prepared.Issue.Code,
-                    prepared.Issue.Message, "Blocked", ct);
-                return;
+                return StepOutcome.Deferred;
             }
 
-            // The durable attempt is marked Running before the only possible external send.
-            await tasks.UpdateTaskAsync(owner, taskId, current =>
-            {
-                var stored = current.Steps.Single(x => x.Key == step.Key);
-                if (stored.Current.RequestId != requestId)
-                    throw new InvalidDataException("Derived attempt changed during execution");
-                stored.InputCharacters = prepared.InputCharacters;
-                if (!current.StopRequested) stored.Current.Status = "Running";
-            }, ct);
-            if ((await tasks.ReadTaskAsync(owner, taskId, ct)).StopRequested) return;
+            var recovered = AiCallAudit.Result(receipt, true);
+            return await ApplyResultAsync(owner, taskId, step.Key, requestId, recovered, receipt, ct);
+        }
 
-            try
+        if (step.Current.Status is "Running" or "Unknown")
+        {
+            if (await IsStaleWithoutReceiptAsync(state, step, ct))
             {
-                var result = await SendAsync(owner, state, step, prepared, requestId, ct);
-                var receiptAfterSend = await FindReceiptAsync(owner, requestId, ct);
-                var completed = await ApplyResultAsync(owner, taskId, step.Key, requestId, result,
-                    receiptAfterSend, ct);
-                if (!completed) return;
+                await StopWithIssueAsync(owner, taskId, step.Key, "ai_outcome_unknown",
+                    "已持久化发送意图但未找到调用回执，结果无法确认；不会自动重发，请显式确认可能重复收费后重试",
+                    "Unknown", ct);
+                return StepOutcome.Stop;
             }
-            catch (OperationCanceledException) { throw; }
-            catch (DomainException error)
-            {
-                var unknown = error.ErrorCode == 50301;
-                await StopWithIssueAsync(owner, taskId, step.Key,
-                    unknown ? "ai_outcome_unknown" : "ai_call_blocked",
-                    unknown
-                        ? "调用结果未能确认保存；不会自动重发，请先核对调用记录"
-                        : error.Message,
-                    unknown ? "Unknown" : "Blocked", ct);
-                return;
-            }
-            catch (Exception error) when (error is IOException or DbUpdateException or
-                System.Text.Json.JsonException or InvalidDataException)
-            {
-                logger.LogWarning("Derived task {TaskId} step {StepKey} lost its checkpoint ({ErrorType})",
-                    taskId, step.Key, error.GetType().Name);
-                await StopWithIssueAsync(owner, taskId, step.Key, "checkpoint_unknown",
-                    "材料或检查点读写中断，结果无法确认；任务已停止且不会自动重发", "Unknown", ct);
-                return;
-            }
+            return StepOutcome.Deferred;
+        }
+        if (state.StopRequested || step.Current.Status != "Queued") return StepOutcome.Deferred;
+
+        var prepared = await PrepareAsync(state, step, ct);
+        if (prepared.Issue is not null)
+        {
+            await StopWithIssueAsync(owner, taskId, step.Key, prepared.Issue.Code,
+                prepared.Issue.Message, "Blocked", ct);
+            return StepOutcome.Stop;
+        }
+
+        // The durable attempt is marked Running before the only possible external send.
+        await tasks.UpdateTaskAsync(owner, taskId, current =>
+        {
+            var stored = current.Steps.Single(x => x.Key == step.Key);
+            if (stored.Current.RequestId != requestId)
+                throw new InvalidDataException("Derived attempt changed during execution");
+            stored.InputCharacters = prepared.InputCharacters;
+            if (!current.StopRequested) stored.Current.Status = "Running";
+        }, ct);
+        if ((await tasks.ReadTaskAsync(owner, taskId, ct)).StopRequested)
+            return StepOutcome.Deferred;
+
+        try
+        {
+            var result = await SendAsync(owner, state, step, prepared, requestId, ct);
+            var receiptAfterSend = await FindReceiptAsync(owner, requestId, ct);
+            return await ApplyResultAsync(owner, taskId, step.Key, requestId, result,
+                receiptAfterSend, ct);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (DomainException error)
+        {
+            var unknown = error.ErrorCode == 50301;
+            await StopWithIssueAsync(owner, taskId, step.Key,
+                unknown ? "ai_outcome_unknown" : "ai_call_blocked",
+                unknown
+                    ? "调用结果未能确认保存；不会自动重发，请先核对调用记录"
+                    : error.Message,
+                unknown ? "Unknown" : "Blocked", ct);
+            return StepOutcome.Stop;
+        }
+        catch (Exception error) when (error is IOException or DbUpdateException or
+            System.Text.Json.JsonException or InvalidDataException)
+        {
+            logger.LogWarning("Derived task {TaskId} step {StepKey} lost its checkpoint ({ErrorType})",
+                taskId, step.Key, error.GetType().Name);
+            await StopWithIssueAsync(owner, taskId, step.Key, "checkpoint_unknown",
+                "材料或检查点读写中断，结果无法确认；任务已停止且不会自动重发", "Unknown", ct);
+            return StepOutcome.Stop;
         }
     }
 
@@ -196,7 +259,7 @@ public sealed class NoteDerivedJob(
             var built = await snapshots.BuildAsync(owner, version, state.InputSha256,
                 state.ManifestSha256, state.Request.AsrTaskId,
                 waitForAsr: true, allowIncompleteAsr: false, ct);
-            var plan = new NoteDerivedPlanner().Build(built.Snapshot);
+            var plan = new NoteDerivedPlanner(audioContext.Value).Build(built.Snapshot);
             if (built.AwaitingAsr)
             {
                 if (legacy)
@@ -293,6 +356,9 @@ public sealed class NoteDerivedJob(
             DependsOn = step.DependsOn,
             Images = step.Images,
             InputCharacters = step.InputCharacters,
+            Audio = step.Audio ?? [],
+            TranscriptOrdinals = step.TranscriptOrdinals ?? [],
+            MaxOutputCharacters = step.MaxOutputCharacters,
             Attempts = [new()]
         }).ToList();
         current.Blocked = !awaitingAsr &&
@@ -443,14 +509,14 @@ public sealed class NoteDerivedJob(
             asrModel, accepted);
     }
 
-    private static NoteDerivedStepState? ReadyStep(NoteDerivedTaskState state)
+    private static IReadOnlyList<NoteDerivedStepState> ReadySteps(NoteDerivedTaskState state)
     {
-        var running = state.Steps.FirstOrDefault(x => x.Current.Status == "Running");
-        if (running is not null) return running;
-        if (state.StopRequested) return null;
-        return state.Steps.FirstOrDefault(candidate => candidate.Current.Status == "Queued" &&
+        var running = state.Steps.Where(x => x.Current.Status == "Running").ToArray();
+        if (running.Length > 0) return running;
+        if (state.StopRequested) return [];
+        return state.Steps.Where(candidate => candidate.Current.Status == "Queued" &&
             candidate.DependsOn.All(key => state.Steps.Any(step =>
-                step.Key == key && step.Current.Status == "Succeeded")));
+                step.Key == key && step.Current.Status == "Succeeded"))).ToArray();
     }
 
     private async Task<PreparedCall> PrepareAsync(NoteDerivedTaskState state, NoteDerivedStepState step,
@@ -494,20 +560,49 @@ public sealed class NoteDerivedJob(
             return PreparedCall.Vision(prompt, images, prompt.Length);
         }
 
+        if (step.Kind == NoteDerivedStepKind.AudioBatchEvidence)
+        {
+            if (step.Audio.Count is < 1 or > NoteDerivedAudioContext.MaxSlices)
+                return PreparedCall.Failed(Issue("audio_batch_invalid",
+                    "录音批次必须包含 1-5000 个固定片段；不自动拆分或截断", step.Key));
+            var perBatchBytes = Math.Clamp(audioContext.Value.MaxBatchBytes, 1024,
+                NoteDerivedAudioContext.MaxBytes);
+            if (step.Audio.Sum(x => x.SizeBytes) > perBatchBytes)
+                return PreparedCall.Failed(Issue("audio_batch_too_large",
+                    $"录音批次合计超过 {perBatchBytes} 字节预算；不压缩、不截断", step.Key));
+            var denied = await AudioContextDeniedAsync(state, step.Key, ct);
+            if (denied is not null) return PreparedCall.Failed(denied);
+            var loaded = await LoadAudioSlicesAsync(state, step.Audio, step.Key, ct);
+            if (loaded.Issue is not null) return PreparedCall.Failed(loaded.Issue);
+            var batchIndex = AudioBatchIndex(step.Key);
+            var batchCount = state.Steps.Count(x => x.Kind == NoteDerivedStepKind.AudioBatchEvidence);
+            var transcripts = state.Plan.Input.Transcripts
+                .Where(x => step.TranscriptOrdinals.Contains(x.Ordinal));
+            var audioBatchPrompt = NoteDerivedPrompts.AudioBatch(step.Key, batchIndex, batchCount,
+                step.Audio, transcripts);
+            if (audioBatchPrompt.Length > NoteDerivedLimits.MaxSynthesisInputChars)
+                return PreparedCall.Failed(Issue("audio_batch_prompt_too_large",
+                    "录音批次提示超过 SDK 实际输入上限；未截断且不会发送", step.Key));
+            return PreparedCall.Text(audioBatchPrompt, audioBatchPrompt.Length, loaded.Items);
+        }
+
         var evidence = await LoadEvidenceAsync(state, ct);
         if (evidence.Issue is not null) return PreparedCall.Failed(evidence.Issue);
+        var audioBatched = state.Steps.Any(x => x.Kind == NoteDerivedStepKind.AudioBatchEvidence);
         if (step.Kind == NoteDerivedStepKind.RecordSynthesis)
         {
             var coverage = await BuildCoverageAsync(state, ct);
             if (!coverage.Coverage.Complete)
                 return PreparedCall.Failed(Issue("record_coverage_incomplete",
                     "完整记录只能在全部 Markdown、ASR、照片和手写预览覆盖齐备后生成", step.Key));
-            var prompt = NoteDerivedPrompts.Record(state.Plan.Input, evidence.Items);
+            var prompt = NoteDerivedPrompts.Record(state.Plan.Input, evidence.Items, audioBatched);
             if (prompt.Length > NoteDerivedLimits.MaxSynthesisInputChars)
                 return PreparedCall.Failed(Issue("record_input_too_large",
                     $"完整记录输入 {prompt.Length} 字符，超过 SDK 实际上限 {NoteDerivedLimits.MaxSynthesisInputChars}；未截断且不会发送",
                     step.Key));
-            var audio = await LoadAudioContextAsync(state, step.Key, ct);
+            var audio = audioBatched
+                ? new AudioCheck([], null)
+                : await LoadAudioContextAsync(state, step.Key, ct);
             if (audio.Issue is not null) return PreparedCall.Failed(audio.Issue);
             return PreparedCall.Text(prompt, prompt.Length, audio.Items);
         }
@@ -539,14 +634,23 @@ public sealed class NoteDerivedJob(
             return PreparedCall.Failed(Issue("record_version_invalid",
                 "完整记录具体版本的身份、来源或正文校验失败，独立分析未发送", step.Key));
         var analysis = NoteDerivedPrompts.Analysis(state.Plan.Input, recordVersionId,
-            recordVersion.ContentMarkdown, evidence.Items);
+            recordVersion.ContentMarkdown, evidence.Items, audioBatched);
         if (analysis.Length > NoteDerivedLimits.MaxSynthesisInputChars)
             return PreparedCall.Failed(Issue("analysis_input_too_large",
                 $"独立分析输入 {analysis.Length} 字符，超过 SDK 实际上限 {NoteDerivedLimits.MaxSynthesisInputChars}；未截断且不会发送",
                 step.Key));
-        var audioContext = await LoadAudioContextAsync(state, step.Key, ct);
-        if (audioContext.Issue is not null) return PreparedCall.Failed(audioContext.Issue);
-        return PreparedCall.Text(analysis, analysis.Length, audioContext.Items);
+        var synthesisAudio = audioBatched
+            ? new AudioCheck([], null)
+            : await LoadAudioContextAsync(state, step.Key, ct);
+        if (synthesisAudio.Issue is not null) return PreparedCall.Failed(synthesisAudio.Issue);
+        return PreparedCall.Text(analysis, analysis.Length, synthesisAudio.Items);
+    }
+
+    private static int AudioBatchIndex(string key)
+    {
+        var separator = key.LastIndexOf(':');
+        return separator >= 0 && int.TryParse(key[(separator + 1)..], out var number)
+            ? Math.Max(0, number - 1) : 0;
     }
 
     private async Task<AudioCheck> LoadAudioContextAsync(NoteDerivedTaskState state, string stepKey,
@@ -556,7 +660,12 @@ public sealed class NoteDerivedJob(
         if (planned.Count == 0) return new([], null);
         var denied = await AudioContextDeniedAsync(state, stepKey, ct);
         if (denied is not null) return new([], denied);
+        return await LoadAudioSlicesAsync(state, planned, stepKey, ct);
+    }
 
+    private async Task<AudioCheck> LoadAudioSlicesAsync(NoteDerivedTaskState state,
+        IReadOnlyList<NoteDerivedAudioInput> planned, string stepKey, CancellationToken ct)
+    {
         var items = new List<AiAudioContextInput>(planned.Count);
         long total = 0;
         foreach (var audio in planned.OrderBy(x => x.Ordinal))
@@ -620,8 +729,12 @@ public sealed class NoteDerivedJob(
                 state.Request.TaskId.ToString("D"), NoteDerivedPrompts.VisionPurpose, ct);
         }
         var text = new AiTextCallRequest(requestId, owner, prepared.Prompt!, ModelId: consent.ModelId);
-        var purpose = step.Kind == NoteDerivedStepKind.RecordSynthesis
-            ? NoteDerivedPrompts.RecordPurpose : NoteDerivedPrompts.AnalysisPurpose;
+        var purpose = step.Kind switch
+        {
+            NoteDerivedStepKind.AudioBatchEvidence => NoteDerivedPrompts.AudioBatchPurpose,
+            NoteDerivedStepKind.RecordSynthesis => NoteDerivedPrompts.RecordPurpose,
+            _ => NoteDerivedPrompts.AnalysisPurpose
+        };
         var destination = new AiVisionDestinationConsent(consent.ModelId, consent.ModelRevision,
             consent.Endpoint, consent.Confirmed);
         return prepared.Audio.Count > 0
@@ -631,7 +744,7 @@ public sealed class NoteDerivedJob(
                 NoteDerivedPrompts.SourceObjectType, state.Request.TaskId.ToString("D"), purpose, ct);
     }
 
-    private async Task<bool> ApplyResultAsync(Guid owner, Guid taskId, string stepKey, Guid requestId,
+    private async Task<StepOutcome> ApplyResultAsync(Guid owner, Guid taskId, string stepKey, Guid requestId,
         AiTextCallResultDto result, Pim.Infrastructure.Data.Entities.AiRequestLogEntity? receipt,
         CancellationToken ct)
     {
@@ -646,13 +759,25 @@ public sealed class NoteDerivedJob(
             {
                 await StopWithIssueAsync(owner, taskId, stepKey, "ai_receipt_missing",
                     "成功结果缺少可核验的真实回执", "Unknown", ct);
-                return false;
+                return StepOutcome.Stop;
             }
             if (string.IsNullOrWhiteSpace(result.ResponseText))
             {
                 await StopWithIssueAsync(owner, taskId, stepKey, "ai_output_empty",
-                    "模型成功回执没有可用正文；未生成派生版本", "Failed", ct);
-                return false;
+                    "模型成功回执没有可用正文；未生成派生版本", "Failed", ct,
+                    stopTask: false, cancelDependentsOnly: true);
+                return StepOutcome.Continue;
+            }
+            if (step.Kind == NoteDerivedStepKind.AudioBatchEvidence)
+            {
+                if (step.MaxOutputCharacters > 0 &&
+                    result.ResponseText.Length > step.MaxOutputCharacters)
+                {
+                    await StopWithIssueAsync(owner, taskId, stepKey, "audio_batch_output_too_large",
+                        $"录音批次输出 {result.ResponseText.Length} 字符，超过本批 {step.MaxOutputCharacters} 字符预算；未截断，可显式重试",
+                        "Failed", ct, stopTask: false, cancelDependentsOnly: true);
+                    return StepOutcome.Continue;
+                }
             }
             if (step.Kind == NoteDerivedStepKind.ImageEvidence &&
                 result.ResponseText.Length > NoteDerivedLimits.MaxEvidenceCharsPerStep)
@@ -660,15 +785,16 @@ public sealed class NoteDerivedJob(
                 await StopWithIssueAsync(owner, taskId, stepKey, "vision_evidence_too_large",
                     $"视觉证据 {result.ResponseText.Length} 字符，超过单步上限 {NoteDerivedLimits.MaxEvidenceCharsPerStep}；未截断",
                     "Blocked", ct);
-                return false;
+                return StepOutcome.Stop;
             }
-            if (step.Kind is not NoteDerivedStepKind.ImageEvidence &&
+            if (step.Kind is not (NoteDerivedStepKind.ImageEvidence or
+                    NoteDerivedStepKind.AudioBatchEvidence) &&
                 result.ResponseText.Length > NoteDerivedLimits.MaxDerivedContentCharacters)
             {
                 await StopWithIssueAsync(owner, taskId, stepKey, "derived_content_too_large",
                     $"模型输出 {result.ResponseText.Length} 字符，超过派生产物上限 {NoteDerivedLimits.MaxDerivedContentCharacters}；未截断",
                     "Blocked", ct);
-                return false;
+                return StepOutcome.Stop;
             }
 
             if (step.Kind == NoteDerivedStepKind.ImageEvidence)
@@ -677,24 +803,26 @@ public sealed class NoteDerivedJob(
                 if (actual.Issues.Count > 0)
                 {
                     await StopWithIssueAsync(owner, taskId, stepKey, actual.Issues[0].Code,
-                        actual.Issues[0].Message, "Failed", ct);
-                    return false;
+                        actual.Issues[0].Message, "Failed", ct,
+                        stopTask: false, cancelDependentsOnly: true);
+                    return StepOutcome.Continue;
                 }
                 if (!BatchMatchesExactly(step, receipt.Id, actual.Images))
                 {
                     await StopWithIssueAsync(owner, taskId, stepKey, "vision_evidence_missing",
-                        "视觉调用成功回执缺少完整的实际 AiCallImages；不按计划或清单伪造覆盖", "Failed", ct);
-                    return false;
+                        "视觉调用成功回执缺少完整的实际 AiCallImages；不按计划或清单伪造覆盖", "Failed", ct,
+                        stopTask: false, cancelDependentsOnly: true);
+                    return StepOutcome.Continue;
                 }
             }
-            else
+            else if (step.Kind != NoteDerivedStepKind.AudioBatchEvidence)
             {
                 var coverage = await BuildCoverageAsync(state, ct, stepKey);
                 if (!coverage.Coverage.Complete)
                 {
                     await StopWithIssueAsync(owner, taskId, stepKey, "synthesis_coverage_incomplete",
                         "材料覆盖尚未齐备，模型输出只保留为检查点，不发布为完整版本", "Blocked", ct);
-                    return false;
+                    return StepOutcome.Stop;
                 }
                 await AppendVersionAsync(state, step, receipt, result.ResponseText, coverage.Coverage, ct);
             }
@@ -717,7 +845,7 @@ public sealed class NoteDerivedJob(
                 current.Coverage = coverageAfter.Coverage;
                 current.Issues = coverageAfter.Coverage.Issues.ToList();
             }, ct);
-            return true;
+            return StepOutcome.Continue;
         }
 
         var status = result.Status switch
@@ -734,8 +862,10 @@ public sealed class NoteDerivedJob(
             unknown
                 ? "调用结果未确认；不会自动重发，请显式确认可能重复收费后重试"
                 : result.ErrorMessage ?? "模型调用失败",
-            status, ct, result.LogId);
-        return false;
+            status, ct, result.LogId,
+            stopTask: unknown || status == "Blocked",
+            cancelDependentsOnly: !(unknown || status == "Blocked"));
+        return unknown || status == "Blocked" ? StepOutcome.Stop : StepOutcome.Continue;
     }
 
     private async Task AppendVersionAsync(NoteDerivedTaskState state, NoteDerivedStepState step,
@@ -925,7 +1055,7 @@ public sealed class NoteDerivedJob(
         var issues = new List<NoteDerivedIssueDto>(state.Plan.InitialCoverage.Issues);
         issues.AddRange(transcripts.Issues);
         foreach (var step in state.Steps.Where(x => x.Key != successfulStepKey &&
-            (x.Current.Status is "Failed" or "Unknown" or "Blocked")))
+            (x.Current.Status is "Failed" or "Unknown" or "Blocked" or "Cancelled")))
         {
             issues.Add(Issue("step_" + step.Current.Status.ToLowerInvariant(),
                 step.Current.ErrorMessage ?? "派生步骤未成功", stepKey: step.Key));
@@ -1027,7 +1157,10 @@ public sealed class NoteDerivedJob(
         var actual = await ReadActualImagesAsync(state, ct);
         issues.AddRange(actual.Issues);
         var vision = state.Steps.Where(x => x.Kind == NoteDerivedStepKind.ImageEvidence).ToArray();
-        var logIds = vision.Where(x => x.Current.Status == "Succeeded" && x.Current.LogId is not null)
+        var audioBatches = state.Steps.Where(x =>
+            x.Kind == NoteDerivedStepKind.AudioBatchEvidence).ToArray();
+        var logIds = vision.Concat(audioBatches)
+            .Where(x => x.Current.Status == "Succeeded" && x.Current.LogId is not null)
             .Select(x => x.Current.LogId!.Value).ToArray();
         var receipts = await db.AiRequestLogs.AsNoTracking()
             .Where(x => x.UserId == state.Owner && logIds.Contains(x.Id))
@@ -1050,6 +1183,30 @@ public sealed class NoteDerivedJob(
             }
             items.Add(new(step.Key, receipt.Id, receipt.ResponseText, step.Images));
         }
+        foreach (var step in audioBatches)
+        {
+            if (step.Current.Status != "Succeeded" || step.Current.LogId is not { } logId ||
+                !receipts.TryGetValue(logId, out var receipt) ||
+                receipt.Status != "succeeded" ||
+                receipt.Purpose != NoteDerivedPrompts.AudioBatchPurpose ||
+                string.IsNullOrWhiteSpace(receipt.ResponseText) ||
+                receipt.OutputHash != Digest(receipt.ResponseText) ||
+                step.Current.ResultSha256 != Digest(receipt.ResponseText))
+            {
+                issues.Add(Issue("audio_batch_evidence_missing",
+                    "录音批次缺少可核验的成功回执正文", stepKey: step.Key));
+                continue;
+            }
+            var limit = step.MaxOutputCharacters > 0
+                ? step.MaxOutputCharacters : NoteDerivedLimits.MaxEvidenceCharsPerStep;
+            if (receipt.ResponseText.Length > limit)
+            {
+                issues.Add(Issue("audio_batch_evidence_too_large",
+                    "录音批次证据超过本批字符预算；未截断", stepKey: step.Key));
+                continue;
+            }
+            items.Add(new(step.Key, receipt.Id, receipt.ResponseText, []));
+        }
         return issues.Count == 0 ? new(items, null) : new(items, issues[0]);
     }
 
@@ -1065,6 +1222,7 @@ public sealed class NoteDerivedJob(
         var purpose = step.Kind switch
         {
             NoteDerivedStepKind.ImageEvidence => NoteDerivedPrompts.VisionPurpose,
+            NoteDerivedStepKind.AudioBatchEvidence => NoteDerivedPrompts.AudioBatchPurpose,
             NoteDerivedStepKind.RecordSynthesis => NoteDerivedPrompts.RecordPurpose,
             _ => NoteDerivedPrompts.AnalysisPurpose
         };
@@ -1095,7 +1253,8 @@ public sealed class NoteDerivedJob(
     }
 
     private async Task StopWithIssueAsync(Guid owner, Guid taskId, string stepKey, string code,
-        string message, string status, CancellationToken ct, Guid? logId = null)
+        string message, string status, CancellationToken ct, Guid? logId = null,
+        bool stopTask = true, bool cancelDependentsOnly = false)
     {
         using var budget = new CancellationTokenSource(TimeSpan.FromSeconds(5));
         await tasks.UpdateTaskAsync(owner, taskId, current =>
@@ -1106,18 +1265,42 @@ public sealed class NoteDerivedJob(
             step.Current.ErrorCode = code;
             step.Current.ErrorMessage = message;
             if (status is "Failed" or "Unknown" or "Cancelled" or "Blocked")
-                foreach (var queued in current.Steps.Where(x => x.Current.Status == "Queued"))
+            {
+                if (cancelDependentsOnly)
                 {
-                    queued.Current.Status = "Cancelled";
-                    queued.Current.ErrorCode = "upstream_not_succeeded";
-                    queued.Current.ErrorMessage = "前序步骤未成功，未发送后续外部调用";
+                    var affected = new HashSet<string>(StringComparer.Ordinal) { step.Key };
+                    var changed = true;
+                    while (changed)
+                    {
+                        changed = false;
+                        foreach (var queued in current.Steps.Where(x =>
+                                     x.Current.Status == "Queued" &&
+                                     x.DependsOn.Any(affected.Contains)))
+                        {
+                            queued.Current.Status = "Cancelled";
+                            queued.Current.ErrorCode = "upstream_not_succeeded";
+                            queued.Current.ErrorMessage = "前序步骤未成功，未发送后续外部调用";
+                            affected.Add(queued.Key);
+                            changed = true;
+                        }
+                    }
                 }
+                else
+                {
+                    foreach (var queued in current.Steps.Where(x => x.Current.Status == "Queued"))
+                    {
+                        queued.Current.Status = "Cancelled";
+                        queued.Current.ErrorCode = "upstream_not_succeeded";
+                        queued.Current.ErrorMessage = "前序步骤未成功，未发送后续外部调用";
+                    }
+                }
+            }
             var issue = new NoteDerivedIssueDto(code, message, StepKey: stepKey);
             var issues = current.Issues.Append(issue)
                 .DistinctBy(x => (x.Code, x.Message, x.SourcePath, x.BlockId, x.StepKey)).ToList();
             current.Issues = issues;
             current.Coverage = current.Coverage with { Complete = false, Issues = issues };
-            if (status == "Blocked") current.StopRequested = true;
+            if (status == "Blocked" && stopTask) current.StopRequested = true;
         }, budget.Token);
     }
 
@@ -1172,4 +1355,11 @@ public sealed class NoteDerivedJob(
         NoteDerivedIssueDto? Issue);
     private sealed record AudioCheck(IReadOnlyList<AiAudioContextInput> Items,
         NoteDerivedIssueDto? Issue);
+
+    private enum StepOutcome
+    {
+        Continue,
+        Stop,
+        Deferred
+    }
 }

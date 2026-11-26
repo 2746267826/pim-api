@@ -45,6 +45,11 @@ public sealed class NoteDerivedJobTests : IAsyncLifetime
     private string? _recordRecordingPrompt;
     private string? _recordAnalysisPrompt;
     private int _calls;
+    private int _activeAudioBatches;
+    private int _maxActiveAudioBatches;
+    private bool _failFirstAudioBatchOnce;
+    private readonly Dictionary<int, int> _audioBatchAttempts = [];
+    private readonly List<(int Index, string Body)> _audioBatchBodies = [];
 
     public async Task InitializeAsync()
     {
@@ -67,6 +72,35 @@ public sealed class NoteDerivedJobTests : IAsyncLifetime
             }
 
             var prompt = PromptText(content);
+            if (prompt.Contains("长录音分批整理器", StringComparison.Ordinal))
+            {
+                var batch = AudioBatchNumber(prompt);
+                var active = Interlocked.Increment(ref _activeAudioBatches);
+                lock (_audioBatchAttempts)
+                    _maxActiveAudioBatches = Math.Max(_maxActiveAudioBatches, active);
+                try
+                {
+                    await Task.Delay(150);
+                    int attempt;
+                    lock (_audioBatchAttempts)
+                    {
+                        _audioBatchAttempts.TryGetValue(batch, out var prior);
+                        attempt = prior + 1;
+                        _audioBatchAttempts[batch] = attempt;
+                    }
+                    if (_failFirstAudioBatchOnce && batch == 1 && attempt == 1)
+                    {
+                        request.HttpContext.Response.StatusCode = 500;
+                        return Completion(call, "synthetic upstream failure");
+                    }
+                    lock (_audioBatchBodies) _audioBatchBodies.Add((batch, root.GetRawText()));
+                    return Completion(call, $"批次证据 {batch}：本批录音已按时间顺序整理。");
+                }
+                finally
+                {
+                    Interlocked.Decrement(ref _activeAudioBatches);
+                }
+            }
             if (prompt.Contains("独立分析器", StringComparison.Ordinal))
             {
                 lock (_analysisBodies) _analysisBodies.Add(root.GetRawText());
@@ -326,6 +360,127 @@ public sealed class NoteDerivedJobTests : IAsyncLifetime
         Assert.Contains(task.Issues, issue => issue.Code == "asr_required");
     }
 
+    [Fact]
+    public async Task LongAudioIsSplitIntoBoundedBatchesThenMergedWithoutReplayingAudio()
+    {
+        var material = NoteDerivedFixture.CreateMaterial(audioSamples: 16_000 * 181);
+        var materials = _factory.Services.GetRequiredService<NoteMaterialUploadStore>();
+        await NoteDerivedFixture.UploadAsync(materials, _owner, material);
+        var allowlist = new NoteDerivedAudioContextOptions
+        {
+            ModelNames = ["derived-model"],
+            MaxBatchBytes = 2 * 1024 * 1024,
+            MaxParallelCalls = 2
+        };
+
+        var task = await StartWithAudioContextAsync(material, allowlist);
+
+        Assert.Equal(new[]
+        {
+            "image-batch:0001",
+            "audio-batch:0001", "audio-batch:0002", "audio-batch:0003",
+            "record-synthesis", "analysis-synthesis"
+        }, task.Steps.Select(x => x.Key));
+        await Run(task.TaskId, allowlist);
+
+        using var scope = _factory.Services.CreateScope();
+        var state = await scope.ServiceProvider.GetRequiredService<NoteDerivedStore>()
+            .ReadTaskAsync(_owner, task.TaskId, default);
+        var completed = NoteDerivedStore.DescribeTask(state);
+        Assert.Equal("Succeeded", completed.Phase);
+        Assert.True(completed.Coverage.Complete, JsonSerializer.Serialize(completed.Coverage));
+        Assert.Equal(3, state.Steps.Count(x =>
+            x.Kind == NoteDerivedStepKind.AudioBatchEvidence &&
+            x.Current.Status == "Succeeded"));
+        Assert.Equal(2, _maxActiveAudioBatches);
+
+        var ordered = _audioBatchBodies.OrderBy(x => x.Index).ToArray();
+        Assert.Equal(new[] { 1, 2, 3 }, ordered.Select(x => x.Index));
+        var pcm = ordered.SelectMany(item => AudioPayload(item.Body).AsSpan(44).ToArray()).ToArray();
+        var expected = material.Content[^1].AsSpan(44).ToArray();
+        Assert.Equal(expected, pcm);
+
+        var record = Assert.Single(_recordBodies);
+        Assert.DoesNotContain("input_audio", record, StringComparison.Ordinal);
+        Assert.DoesNotContain(Convert.ToBase64String(material.Content[^1]), record,
+            StringComparison.Ordinal);
+        Assert.Contains("批次证据 1", record, StringComparison.Ordinal);
+        Assert.Contains("批次证据 2", record, StringComparison.Ordinal);
+        Assert.Contains("批次证据 3", record, StringComparison.Ordinal);
+        var analysis = Assert.Single(_analysisBodies);
+        Assert.DoesNotContain("input_audio", analysis, StringComparison.Ordinal);
+        Assert.Contains("批次证据 1", analysis, StringComparison.Ordinal);
+        Assert.DoesNotContain("input_audio", _recordRecordingPrompt!, StringComparison.Ordinal);
+
+        var receipt = await CreateJob(scope.ServiceProvider, allowlist)
+            .ReceiptAsync(_owner, task.TaskId, default);
+        Assert.True(receipt.Complete, JsonSerializer.Serialize(receipt.Issues));
+        Assert.Equal(3, receipt.Batches.Count(x => x.StepKey.StartsWith("audio-batch:", StringComparison.Ordinal)));
+        var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
+        Assert.Equal(3, await db.AiRequestLogs.CountAsync(x => x.UserId == _owner &&
+            x.Purpose == NoteDerivedPrompts.AudioBatchPurpose));
+        Assert.Equal(1, await db.AiRequestLogs.CountAsync(x => x.UserId == _owner &&
+            x.Purpose == NoteDerivedPrompts.RecordPurpose));
+        Assert.Equal(1, await db.AiRequestLogs.CountAsync(x => x.UserId == _owner &&
+            x.Purpose == NoteDerivedPrompts.AnalysisPurpose));
+    }
+
+    [Fact]
+    public async Task FailedAudioBatchIsRetriedWithoutResendingSuccessfulBatchesOrRecord()
+    {
+        var material = NoteDerivedFixture.CreateMaterial(audioSamples: 16_000 * 181);
+        var materials = _factory.Services.GetRequiredService<NoteMaterialUploadStore>();
+        await NoteDerivedFixture.UploadAsync(materials, _owner, material);
+        var allowlist = new NoteDerivedAudioContextOptions
+        {
+            ModelNames = ["derived-model"],
+            MaxBatchBytes = 2 * 1024 * 1024,
+            MaxParallelCalls = 2
+        };
+        _failFirstAudioBatchOnce = true;
+        var task = await StartWithAudioContextAsync(material, allowlist);
+
+        await Run(task.TaskId, allowlist);
+
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var state = await scope.ServiceProvider.GetRequiredService<NoteDerivedStore>()
+                .ReadTaskAsync(_owner, task.TaskId, default);
+            Assert.Equal("NeedsAttention", NoteDerivedStore.DescribeTask(state).Phase);
+            Assert.Equal("Failed", state.Steps.Single(x => x.Key == "audio-batch:0001").Current.Status);
+            Assert.Equal("Succeeded", state.Steps.Single(x => x.Key == "audio-batch:0002").Current.Status);
+            Assert.Equal("Succeeded", state.Steps.Single(x => x.Key == "audio-batch:0003").Current.Status);
+            Assert.Equal("Cancelled", state.Steps.Single(x => x.Key == "record-synthesis").Current.Status);
+            Assert.Equal("Cancelled", state.Steps.Single(x => x.Key == "analysis-synthesis").Current.Status);
+            Assert.Empty(_recordBodies);
+            Assert.Empty(_analysisBodies);
+            _failFirstAudioBatchOnce = false;
+
+            var retry = await Data<NoteDerivedTaskDto>(await _client.PostAsJsonAsync(
+                $"{DerivedRoute}/{task.TaskId}/retry",
+                new RetryNoteDerivedTaskRequest(Guid.NewGuid(), _owner, state.Revision,
+                    ["audio-batch:0001"], state.Request.Consent, true)));
+            Assert.Equal("Queued", retry.Phase);
+        }
+
+        await Run(task.TaskId, allowlist);
+
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var state = await scope.ServiceProvider.GetRequiredService<NoteDerivedStore>()
+                .ReadTaskAsync(_owner, task.TaskId, default);
+            Assert.Equal("Succeeded", NoteDerivedStore.DescribeTask(state).Phase);
+            Assert.Equal(2, _audioBatchAttempts[1]);
+            Assert.Equal(1, _audioBatchAttempts[2]);
+            Assert.Equal(1, _audioBatchAttempts[3]);
+            Assert.Single(_recordBodies);
+            Assert.Single(_analysisBodies);
+            var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
+            Assert.Equal(4, await db.AiRequestLogs.CountAsync(x => x.UserId == _owner &&
+                x.Purpose == NoteDerivedPrompts.AudioBatchPurpose));
+        }
+    }
+
     private NoteDerivedJob CreateJob(IServiceProvider services,
         NoteDerivedAudioContextOptions? audioContext = null) => new(
         services.GetRequiredService<NoteDerivedStore>(),
@@ -335,7 +490,8 @@ public sealed class NoteDerivedJobTests : IAsyncLifetime
         services.GetRequiredService<PimDbContext>(),
         services.GetRequiredService<AiTextCallService>(),
         Options.Create(audioContext ?? new NoteDerivedAudioContextOptions()),
-        NullLogger<NoteDerivedJob>.Instance);
+        NullLogger<NoteDerivedJob>.Instance,
+        services.GetRequiredService<IServiceScopeFactory>());
 
     private async Task<NoteDerivedTaskDto> StartWithAudioContextAsync(
         NoteDerivedFixture.Material material, NoteDerivedAudioContextOptions audioContext)
@@ -384,6 +540,29 @@ public sealed class NoteDerivedJobTests : IAsyncLifetime
         return string.Join("\n", content.EnumerateArray()
             .Where(part => part.TryGetProperty("text", out _))
             .Select(part => part.GetProperty("text").GetString()));
+    }
+
+    private static int AudioBatchNumber(string prompt)
+    {
+        const string marker = "（第 ";
+        var start = prompt.IndexOf(marker, StringComparison.Ordinal);
+        if (start < 0) return 0;
+        start += marker.Length;
+        var end = prompt.IndexOf(" /", start, StringComparison.Ordinal);
+        return end > start && int.TryParse(prompt[start..end], out var number) ? number : 0;
+    }
+
+    private static byte[] AudioPayload(string body)
+    {
+        using var document = JsonDocument.Parse(body);
+        var messages = document.RootElement.GetProperty("messages");
+        var content = messages[messages.GetArrayLength() - 1].GetProperty("content");
+        var data = content.EnumerateArray()
+            .Single(part => part.GetProperty("type").GetString() == "input_audio")
+            .GetProperty("input_audio").GetProperty("data").GetString()!;
+        const string prefix = "data:audio/wav;base64,";
+        return Convert.FromBase64String(data.StartsWith(prefix, StringComparison.Ordinal)
+            ? data[prefix.Length..] : data);
     }
 
     private static IEnumerable<string> ImageUrls(JsonElement root)

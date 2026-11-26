@@ -88,9 +88,22 @@ canonical contract 现为 `e38d1991b372174a3a4bac10df0a35eee90de92d268a5f1d35762
 
 - 只有 `NativeNotes:AudioContext:ModelIds` 或 `ModelNames` 命中的模型配置才允许接收原始录音；两个列表默认均为空，未配置时继续要求同版本 ASR，现有纯文本、无录音和 ASR 转写路径不变。
 - 音频只从固定材料版本中已提交的 `AudioChunk` 读取，按 owner、note、version、file index、录音/分片身份、偏移、样本数和文件 SHA-256 绑定；提示词只列录音身份和摘要，不下发任意路径或令牌。
-- 每次 provider 调用最多 8 MiB、5,000 个上下文片段，并按现有 60 秒 `SamplesPerCall` 切片。超限明确阻断为 `audio_context_too_large` 或 `audio_context_slice_limit`，不截断、不转码、不发送部分音频。
+- 每次 provider 调用仍严格最多 8 MiB、5,000 个上下文片段，并按现有 60 秒 `SamplesPerCall` 切片。超限时由下方长音频分批链路处理；单个片段自身超过 8 MiB 时阻断为 `audio_slice_too_large`，不截断、不转码、不发送部分音频。
 - 音频字节不写入任务 JSON、请求快照或日志；审计只保存 `pim-ai-audio:{index}` 引用、源摘要、数量及 owner/note/version 身份。任务执行前会重新校验模型仍在该白名单，失败时保留阻断状态。
-- 该切片未实现 H03 已确认的长音频自动分批、批次汇总、总结/概览/标题/标签产物，也未接入或验证真实第三方多模态 provider、真实 Hangfire 多进程、Web/Android/Windows 设备流程。上述能力仍为 `NOT-VERIFIED` / `BLOCKED`，不能据此宣称完整 H03。
+
+### 3.2.2 长音频自动分批与汇总
+
+长音频不再因超过单次 8 MiB 直接阻断，而是在固定材料快照和模型白名单校验之后自动规划受控批次：
+
+- **预算**：任务级默认总预算 256 MiB、32 批；硬上限 1 GiB、64 批。每批仍受单次 8 MiB/5,000 片限制（`MaxBatchBytes` 只允许调低，不允许超过 8 MiB）。总预算、批数、单片段或证据字符预算不足均产生输入级阻断，不截断、不静默丢弃。
+- **确定性批次**：按固定片段 `Ordinal` 顺序切批，每批写入 `audio-batch:{NNNN}` 步骤；批次、依赖和本批转写序号持久化在任务 JSON 中。能一次容纳时仍保留原有单次原始音频路径，不额外产生批次步骤。
+- **时间顺序上下文**：每批只附带与本批片段 `(recording, segment, chunk, sourceOffset, samples)` 时间范围重叠的成功 ASR 转写，避免跨批重复或错序。完整记录的提示词只拼接按步骤键排序的批次证据，不再重复发送原始音频。
+- **汇总门禁**：`record-synthesis` 依赖全部图片批次和全部录音批次成功后才可发送；`analysis-synthesis` 依赖已校验的完整记录具体版本。最终汇总和独立分析都不再携带 `input_audio`，避免二次 provider 调用重复计费。
+- **输出预算**：规划器按 200,000 字符总输入上限为每批分配证据字符预算（最低 1,000 字符）；批次输出超过本批预算时标记 `Failed` 且不截断，可由用户显式重试。
+- **并发与恢复**：单个任务内最多 `MaxParallelCalls`（默认 2，硬上限 4）个 provider 调用；每步使用独立 DI scope/DbContext。部分批次失败只取消其下游依赖，其他批次继续。显式恢复只重发失败/未确认批次及其已取消下游，成功批次永不重发；恢复标识、尝试次数和请求 ID 均持久化。
+- **回执**：录音批次成功回执必须核对用途、来源对象、模型目标、片段数量、源 SHA、owner/note/version、`providerAttempted`、`requestBodyCaptured`、`responseBodyComplete`、`audioInputsReferenced` 和请求快照中的服务端音频引用；最终汇总回执额外证明未重复携带原始音频。
+
+验证边界：自动化测试覆盖 fake provider 的字节顺序、并发上限、部分失败恢复、真实 PostgreSQL 的请求 ID 幂等与冲突，以及真实迁移库上的审计元数据。真实第三方多模态 provider、真实 Hangfire 多进程/多实例竞争、Web/Android/Windows 真机流程仍未验证，不能据此宣称完整 H03 生产验收通过。
 
 ### 3.3 成功、部分与未知
 

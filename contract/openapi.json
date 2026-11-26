@@ -18143,7 +18143,8 @@
           "TextBlock",
           "TranscriptSegment",
           "Photo",
-          "InkPreview"
+          "InkPreview",
+          "AudioSegment"
         ],
         "type": "string"
       },
@@ -18247,6 +18248,7 @@
       "NoteDerivedStepKind": {
         "enum": [
           "ImageEvidence",
+          "AudioBatchEvidence",
           "RecordSynthesis",
           "AnalysisSynthesis"
         ],

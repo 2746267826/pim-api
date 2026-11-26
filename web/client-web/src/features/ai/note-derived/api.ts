@@ -25,7 +25,7 @@ export const noteDerivedApi = {
     return apiGet<NoteDerivedTask[]>(`/api/v1/native-notes/derived-tasks${query}`, { signal })
   },
   task: (id: string, signal?: AbortSignal) => apiGet<NoteDerivedTask>(`/api/v1/native-notes/derived-tasks/${encodeURIComponent(id)}`, { signal }),
-  steps: (id: string, offset: number, signal?: AbortSignal) => apiGet<NoteDerivedSteps>(`/api/v1/native-notes/derived-tasks/${encodeURIComponent(id)}/steps?offset=${offset}&limit=20`, { signal }),
+  steps: (id: string, offset: number, signal?: AbortSignal) => apiGet<NoteDerivedSteps>(`/api/v1/native-notes/derived-tasks/${encodeURIComponent(id)}/steps?offset=${offset}&limit=100`, { signal }),
   start: (body: StartNoteDerived) => apiPost<NoteDerivedTask>('/api/v1/native-notes/derived-tasks', body),
   stop: (id: string) => apiPost<NoteDerivedTask>(`/api/v1/native-notes/derived-tasks/${encodeURIComponent(id)}/stop`, {}),
   retry: (id: string, body: RetryNoteDerived) => apiPost<NoteDerivedTask>(`/api/v1/native-notes/derived-tasks/${encodeURIComponent(id)}/retry`, body),

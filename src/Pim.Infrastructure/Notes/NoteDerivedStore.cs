@@ -78,6 +78,9 @@ public sealed class NoteDerivedStore(IOptions<NoteMaterialUploadOptions> options
                 DependsOn = step.DependsOn,
                 Images = step.Images,
                 InputCharacters = step.InputCharacters,
+                Audio = step.Audio ?? [],
+                TranscriptOrdinals = step.TranscriptOrdinals ?? [],
+                MaxOutputCharacters = step.MaxOutputCharacters,
                 Attempts = [new()]
             }).ToList(),
             CompleteRecordArtifactId = record.ArtifactId,
