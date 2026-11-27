@@ -2891,8 +2891,8 @@ namespace Pim.Infrastructure.Data.Migrations
                         .IsRequired()
                         .ValueGeneratedOnAdd()
                         .HasColumnType("text")
-                        .HasColumnName("device_overrides_json")
-                        .HasDefaultValue("{}");
+                        .HasDefaultValue("{}")
+                        .HasColumnName("device_overrides_json");
 
                     b.Property<bool>("InAppEnabled")
                         .HasColumnType("boolean")

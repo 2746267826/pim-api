@@ -540,6 +540,45 @@ public sealed class NotificationEndpointsE2ETests
     }
 
     [SkippableFact]
+    public async Task ConcurrentFirstPreferenceUpdates_CreateOneRowAndKeepEveryDeviceOverride()
+    {
+        var (temp, factory) = await NewHostAsync();
+        await using var _ = temp;
+        using var __ = factory;
+        var client = Authed(factory, Guid.NewGuid());
+
+        var responses = await Task.WhenAll(
+            Enumerable.Range(0, 10).Select(index =>
+                SendWithDeviceAsync(
+                    client,
+                    HttpMethod.Put,
+                    "/api/v1/notifications/preferences",
+                    $"first-browser-{index}",
+                    """{"calendarReminder":false}""")));
+
+        foreach (var response in responses)
+        {
+            var raw = await response.Content.ReadAsStringAsync();
+            Assert.True(response.IsSuccessStatusCode, $"{(int)response.StatusCode} {raw}");
+        }
+
+        await using var db = NotificationTestSupport.NewDbContext(temp.ConnectionString);
+        var preferences = await db.NotificationPreferences
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync();
+        using var document = JsonDocument.Parse(preferences.DeviceOverridesJson);
+        for (var index = 0; index < 10; index++)
+        {
+            var deviceId = $"first-browser-{index}";
+            Assert.True(
+                document.RootElement.TryGetProperty(deviceId, out var device),
+                $"device {deviceId} override was lost");
+            Assert.False(device.GetProperty("calendarReminder").GetBoolean());
+        }
+    }
+
+    [SkippableFact]
     public async Task InvalidSubscription_IsRejected_AndNotPersisted()
     {
         var (temp, factory) = await NewHostAsync();

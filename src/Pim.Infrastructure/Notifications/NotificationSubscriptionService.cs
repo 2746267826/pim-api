@@ -72,8 +72,12 @@ public sealed class NotificationSubscriptionService(
         {
             try
             {
-                var subscription = await UpsertOnceAsync(
-                    userId, deviceId, endpoint, endpointHash, p256Dh, auth, now, ct);
+                var subscription = await UserSessionLock.RunAsync(
+                    db,
+                    userId,
+                    () => UpsertOnceAsync(
+                        userId, deviceId, endpoint, endpointHash, p256Dh, auth, now, ct),
+                    ct);
                 logger.LogInformation(
                     "Notification subscription {SubscriptionId} upserted",
                     subscription.Id);
@@ -122,16 +126,6 @@ public sealed class NotificationSubscriptionService(
         DateTimeOffset now,
         CancellationToken ct)
     {
-        await using var transaction = db.Database.IsNpgsql()
-            ? await db.Database.BeginTransactionAsync(ct)
-            : null;
-        if (transaction is not null)
-        {
-            await db.Database.ExecuteSqlInterpolatedAsync(
-                $"SELECT pg_advisory_xact_lock(hashtextextended({endpointHash}, 0))",
-                ct);
-        }
-
         var existing = await db.NotificationSubscriptions
             .IgnoreQueryFilters()
             .SingleOrDefaultAsync(
@@ -215,8 +209,6 @@ public sealed class NotificationSubscriptionService(
         subscription.LastErrorMessage = null;
 
         await db.SaveChangesAsync(ct);
-        if (transaction is not null)
-            await transaction.CommitAsync(ct);
         return subscription;
     }
 
@@ -294,23 +286,24 @@ public sealed class NotificationSubscriptionService(
     public async Task<NotificationSubscriptionDto?> RevokeAsync(Guid id, CancellationToken ct)
     {
         var userId = UserId;
-        var subscription = await db.NotificationSubscriptions
-            .SingleOrDefaultAsync(s => s.Id == id && s.UserId == userId, ct);
-        if (subscription is null) return null;
-
-        var now = clock.GetUtcNow();
-        if (subscription.Status != "Revoked")
+        if (!db.Database.IsNpgsql())
         {
-            subscription.Status = "Revoked";
-            subscription.RevokedAt = now;
-            subscription.UpdatedAt = now;
-            subscription.Version = Guid.NewGuid();
-            await SuppressPendingDeliveriesAsync(subscription.Id, "subscription_revoked", ct);
+            var subscription = await db.NotificationSubscriptions
+                .SingleOrDefaultAsync(s => s.Id == id && s.UserId == userId, ct);
+            if (subscription is null) return null;
+            await RevokeTrackedAsync([subscription], "subscription_revoked", ct);
             await db.SaveChangesAsync(ct);
-            logger.LogInformation(
-                "Notification subscription {SubscriptionId} revoked", subscription.Id);
+            return Map(subscription);
         }
-        return Map(subscription);
+
+        return await UserSessionLock.RunAsync(db, userId, async () =>
+        {
+            var subscription = await LockSubscriptionAsync(id, userId, ct);
+            if (subscription is null) return null;
+            await RevokeTrackedAsync([subscription], "subscription_revoked", ct);
+            await db.SaveChangesAsync(ct);
+            return Map(subscription);
+        }, ct);
     }
 
     public async Task<NotificationSubscriptionRevokeResponse> RevokeCurrentAsync(
@@ -319,94 +312,121 @@ public sealed class NotificationSubscriptionService(
     {
         var userId = UserId;
         var deviceId = NotificationDeviceId.NormalizeOptional(request.DeviceId);
-        var endpointHash = NormalizeEndpointHash(request.Endpoint);
+        string? endpointHash = null;
+        if (TryNormalizeEndpointForRevocation(request.Endpoint, out var endpoint))
+            endpointHash = HashEndpoint(endpoint.AbsoluteUri);
+        else if (!string.IsNullOrWhiteSpace(request.Endpoint) && deviceId.Length == 0)
+            throw new DomainException(40001, "推送地址无效");
         if (deviceId.Length == 0 && endpointHash is null)
-            throw new DomainException(40001, "缺少设备标识或推送地址");
+            throw new DomainException(40001, "至少提供设备标识或推送地址");
 
+        if (!db.Database.IsNpgsql())
+        {
+            var candidates = await FindCurrentSubscriptionsAsync(
+                userId, deviceId, endpointHash, ct);
+            if (candidates.Count == 0)
+                return new NotificationSubscriptionRevokeResponse(0);
+            await RevokeTrackedAsync(candidates, "logout_revoked", ct);
+            await db.SaveChangesAsync(ct);
+            return new NotificationSubscriptionRevokeResponse(candidates.Count);
+        }
+
+        return await UserSessionLock.RunAsync(db, userId, async () =>
+        {
+            var candidates = await FindCurrentSubscriptionsAsync(
+                userId, deviceId, endpointHash, ct);
+            db.ChangeTracker.Clear();
+            var locked = new List<NotificationSubscriptionEntity>(candidates.Count);
+            foreach (var candidate in candidates.OrderBy(s => s.Id))
+            {
+                var subscription = await LockSubscriptionAsync(candidate.Id, userId, ct);
+                if (subscription is { Status: "Active" })
+                    locked.Add(subscription);
+            }
+
+            if (locked.Count == 0)
+                return new NotificationSubscriptionRevokeResponse(0);
+
+            await RevokeTrackedAsync(locked, "logout_revoked", ct);
+            await db.SaveChangesAsync(ct);
+            return new NotificationSubscriptionRevokeResponse(locked.Count);
+        }, ct);
+    }
+
+    private async Task<List<NotificationSubscriptionEntity>> FindCurrentSubscriptionsAsync(
+        Guid userId,
+        string deviceId,
+        string? endpointHash,
+        CancellationToken ct)
+    {
         var query = db.NotificationSubscriptions
             .IgnoreQueryFilters()
             .Where(s => s.UserId == userId &&
                         s.Channel == NotificationChannels.WebPush &&
                         s.Status == "Active");
-        if (deviceId.Length > 0)
-            query = query.Where(s => s.DeviceId == deviceId);
-        if (endpointHash is not null)
-            query = query.Where(s => s.EndpointHash == endpointHash);
-
-        var subscriptions = await query
-            .Select(s => s.Id)
-            .ToListAsync(ct);
-        if (subscriptions.Count == 0)
-            return new NotificationSubscriptionRevokeResponse(0);
-
-        var now = clock.GetUtcNow();
-        var revoked = 0;
-        if (db.Database.IsRelational())
+        if (endpointHash is not null && deviceId.Length > 0)
         {
-            foreach (var subscriptionId in subscriptions)
-            {
-                var version = Guid.NewGuid();
-                var updated = await db.NotificationSubscriptions
-                    .IgnoreQueryFilters()
-                    .Where(s => s.Id == subscriptionId &&
-                                s.UserId == userId &&
-                                s.Status == "Active")
-                    .ExecuteUpdateAsync(setters => setters
-                        .SetProperty(s => s.Status, "Revoked")
-                        .SetProperty(s => s.RevokedAt, now)
-                        .SetProperty(s => s.UpdatedAt, now)
-                        .SetProperty(s => s.Version, version), ct);
-                if (updated == 0) continue;
-
-                await SuppressPendingDeliveriesAsync(
-                    subscriptionId, "logout_revoked", ct);
-                revoked += updated;
-            }
+            query = query.Where(s =>
+                s.EndpointHash == endpointHash || s.DeviceId == deviceId);
+        }
+        else if (endpointHash is not null)
+        {
+            query = query.Where(s => s.EndpointHash == endpointHash);
         }
         else
         {
-            var entities = await db.NotificationSubscriptions
-                .IgnoreQueryFilters()
-                .Where(s => subscriptions.Contains(s.Id) && s.Status == "Active")
-                .ToListAsync(ct);
-            foreach (var subscription in entities)
-            {
-                subscription.Status = "Revoked";
-                subscription.RevokedAt = now;
-                subscription.UpdatedAt = now;
-                subscription.Version = Guid.NewGuid();
-                await SuppressPendingDeliveriesAsync(
-                    subscription.Id, "logout_revoked", ct);
-                revoked += 1;
-            }
-            if (revoked > 0)
-                await db.SaveChangesAsync(ct);
+            query = query.Where(s => s.DeviceId == deviceId);
         }
 
-        if (revoked > 0)
-        {
-            logger.LogInformation(
-                "Revoked {Count} browser notification subscriptions for user {UserId} at logout",
-                revoked,
-                userId);
-        }
-        return new NotificationSubscriptionRevokeResponse(revoked);
+        return await query.OrderBy(s => s.Id).ToListAsync(ct);
     }
 
-    private static string? NormalizeEndpointHash(string? endpoint)
+    private async Task<NotificationSubscriptionEntity?> LockSubscriptionAsync(
+        Guid id,
+        Guid userId,
+        CancellationToken ct) =>
+        await db.NotificationSubscriptions
+            .FromSqlInterpolated($"""
+                SELECT * FROM notification_subscriptions
+                WHERE id = {id} AND user_id = {userId}
+                FOR UPDATE
+                """)
+            .IgnoreQueryFilters()
+            .SingleOrDefaultAsync(ct);
+
+    private async Task RevokeTrackedAsync(
+        IReadOnlyCollection<NotificationSubscriptionEntity> subscriptions,
+        string errorCode,
+        CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(endpoint))
-            return null;
-        if (endpoint.Length > 2048 ||
-            !Uri.TryCreate(endpoint.Trim(), UriKind.Absolute, out var parsed) ||
-            parsed.Scheme != Uri.UriSchemeHttps ||
-            !string.IsNullOrEmpty(parsed.UserInfo) ||
-            !string.IsNullOrEmpty(parsed.Fragment))
+        var now = clock.GetUtcNow();
+        foreach (var subscription in subscriptions)
         {
-            throw new DomainException(40001, "推送地址无效");
+            if (subscription.Status == "Revoked") continue;
+            subscription.Status = "Revoked";
+            subscription.RevokedAt = now;
+            subscription.UpdatedAt = now;
+            subscription.Version = Guid.NewGuid();
         }
 
-        return HashEndpoint(parsed.AbsoluteUri);
+        foreach (var subscription in subscriptions)
+            await SuppressPendingDeliveriesAsync(subscription.Id, errorCode, ct);
+    }
+
+    private static bool TryNormalizeEndpointForRevocation(
+        string? value,
+        out Uri endpoint)
+    {
+        endpoint = null!;
+        if (string.IsNullOrWhiteSpace(value) || value.Length > 2048) return false;
+        if (!Uri.TryCreate(value.Trim(), UriKind.Absolute, out var parsed) ||
+            parsed.Scheme != Uri.UriSchemeHttps ||
+            !string.IsNullOrEmpty(parsed.UserInfo) ||
+            !string.IsNullOrEmpty(parsed.Fragment) ||
+            parsed.Port != 443)
+            return false;
+        endpoint = parsed;
+        return true;
     }
 
     private async Task SuppressPendingDeliveriesAsync(

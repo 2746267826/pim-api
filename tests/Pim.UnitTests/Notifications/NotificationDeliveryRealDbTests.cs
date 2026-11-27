@@ -218,6 +218,60 @@ public sealed class NotificationDeliveryRealDbTests
     }
 
     [SkippableFact]
+    public async Task Revocation_WaitsForInFlightDelivery_AndDoesNotStartAnotherSend()
+    {
+        var (temp, clock, user, fake) = await NewDatabaseAsync();
+        await using var _ = temp;
+        var deliveryId = await PrepareOneDeliveryAsync(temp, clock, user, fake);
+        var sendStarted = new TaskCompletionSource<bool>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseSend = new TaskCompletionSource<bool>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        fake.Handler = async (_, _, ct) =>
+        {
+            sendStarted.TrySetResult(true);
+            await releaseSend.Task.WaitAsync(ct);
+            return PushSendResult.Delivered();
+        };
+
+        await using var workerDb = NotificationTestSupport.NewDbContext(temp.ConnectionString);
+        var worker = NotificationTestSupport.NewWorker(workerDb, fake, clock);
+        var deliverTask = worker.DeliverOnceAsync(CancellationToken.None);
+        await sendStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        await using var revokeDb = NotificationTestSupport.NewDbContext(temp.ConnectionString);
+        var subscriptions = new NotificationSubscriptionService(
+            revokeDb,
+            new FixedCurrentUser(user),
+            NotificationTestSupport.Secrets,
+            fake,
+            Microsoft.Extensions.Options.Options.Create(new WebPushOptions
+            {
+                AllowedEndpointHosts = ["fcm.googleapis.com"]
+            }),
+            clock,
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<NotificationSubscriptionService>.Instance);
+        var revokeTask = subscriptions.RevokeCurrentAsync(
+            new RevokeCurrentNotificationSubscriptionRequest("device-delivery", null),
+            CancellationToken.None);
+
+        var early = await Task.WhenAny(
+            revokeTask,
+            Task.Delay(TimeSpan.FromMilliseconds(300)));
+        Assert.NotSame(revokeTask, early);
+
+        releaseSend.TrySetResult(true);
+        await deliverTask.WaitAsync(TimeSpan.FromSeconds(10));
+        var revoked = await revokeTask.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal(1, revoked.Revoked);
+        Assert.Equal(1, fake.Calls);
+        Assert.Equal(
+            NotificationDeliveryStatuses.Delivered,
+            (await NotificationTestSupport.ReadDeliveryAsync(
+                temp.ConnectionString, deliveryId)).Status);
+    }
+
+    [SkippableFact]
     public async Task MissingProvider_SkipsPush_ButKeepsInAppNotification()
     {
         var (temp, clock, user, fake) = await NewDatabaseAsync();

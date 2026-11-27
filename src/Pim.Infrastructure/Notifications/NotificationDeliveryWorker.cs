@@ -105,22 +105,80 @@ public sealed class NotificationDeliveryWorker(
 
     private async Task DeliverOneAsync(Guid deliveryId, CancellationToken ct)
     {
-        var delivery = await db.NotificationDeliveries
-            .IgnoreQueryFilters()
-            .Include(d => d.Event)
-            .SingleOrDefaultAsync(d => d.Id == deliveryId, ct);
-        if (delivery is null) return;
+        if (!db.Database.IsNpgsql())
+        {
+            var delivery = await db.NotificationDeliveries
+                .IgnoreQueryFilters()
+                .Include(d => d.Event)
+                .SingleOrDefaultAsync(d => d.Id == deliveryId, ct);
+            if (delivery is null) return;
+            var subscription = await db.NotificationSubscriptions
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .SingleOrDefaultAsync(s => s.Id == delivery.SubscriptionId, ct);
+            await DeliverLoadedAsync(delivery, subscription, ct);
+            return;
+        }
 
+        var strategy = db.Database.CreateExecutionStrategy();
+        await strategy.ExecuteAsync(async () =>
+        {
+            db.ChangeTracker.Clear();
+            await using var transaction = await db.Database.BeginTransactionAsync(ct);
+
+            var target = await db.NotificationDeliveries
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(d => d.Id == deliveryId)
+                .Select(d => new { d.SubscriptionId, d.UserId })
+                .SingleOrDefaultAsync(ct);
+            if (target is null)
+            {
+                await transaction.CommitAsync(ct);
+                return;
+            }
+
+            // Lock ordering is subscription -> delivery everywhere. Revocation
+            // therefore either happens before this send or waits until the
+            // delivery transaction has committed.
+            var subscription = await db.NotificationSubscriptions
+                .FromSqlInterpolated($"""
+                    SELECT * FROM notification_subscriptions
+                    WHERE id = {target.SubscriptionId}
+                    FOR UPDATE
+                    """)
+                .IgnoreQueryFilters()
+                .SingleOrDefaultAsync(ct);
+            var delivery = await db.NotificationDeliveries
+                .FromSqlInterpolated($"""
+                    SELECT * FROM notification_deliveries
+                    WHERE id = {deliveryId}
+                    FOR UPDATE
+                    """)
+                .IgnoreQueryFilters()
+                .SingleOrDefaultAsync(ct);
+            if (delivery is null)
+            {
+                await transaction.CommitAsync(ct);
+                return;
+            }
+            await db.Entry(delivery).Reference(d => d.Event).LoadAsync(ct);
+            await DeliverLoadedAsync(delivery, subscription, ct);
+            await transaction.CommitAsync(ct);
+        });
+    }
+
+    private async Task DeliverLoadedAsync(
+        NotificationDeliveryEntity delivery,
+        NotificationSubscriptionEntity? subscription,
+        CancellationToken ct)
+    {
         var now = clock.GetUtcNow();
         try
         {
             if (delivery.Status != NotificationDeliveryStatuses.Processing)
                 return;
 
-            var subscription = await db.NotificationSubscriptions
-                .IgnoreQueryFilters()
-                .AsNoTracking()
-                .SingleOrDefaultAsync(s => s.Id == delivery.SubscriptionId, ct);
             if (subscription is null ||
                 subscription.Status != "Active" ||
                 subscription.UserId != delivery.UserId)
@@ -342,13 +400,23 @@ public sealed class NotificationDeliveryWorker(
     {
         var id = Guid.NewGuid();
         await db.Database.ExecuteSqlInterpolatedAsync($"""
+            WITH active_subscription AS (
+                SELECT s.id AS subscription_id, s.device_id
+                FROM notification_subscriptions s
+                WHERE s.id = {subscription.Id}
+                  AND s.user_id = {notification.UserId}
+                  AND s.channel = {NotificationChannels.WebPush}
+                  AND s.status = 'Active'
+                FOR SHARE
+            )
             INSERT INTO notification_deliveries
                 (id, event_id, subscription_id, user_id, channel, device_id, status,
                  attempt_count, next_attempt_at, created_at, updated_at)
-            VALUES
-                ({id}, {notification.Id}, {subscription.Id}, {notification.UserId},
-                 {NotificationChannels.WebPush}, {subscription.DeviceId},
-                 {NotificationDeliveryStatuses.Pending}, 0, {now}, {now}, {now})
+            SELECT
+                {id}, {notification.Id}, a.subscription_id, {notification.UserId},
+                {NotificationChannels.WebPush}, a.device_id,
+                {NotificationDeliveryStatuses.Pending}, 0, {now}, {now}, {now}
+            FROM active_subscription a
             ON CONFLICT (event_id, subscription_id) DO NOTHING
             """, ct);
     }

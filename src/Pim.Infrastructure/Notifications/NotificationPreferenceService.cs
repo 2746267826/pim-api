@@ -35,20 +35,35 @@ public sealed class NotificationPreferenceService(
         var now = clock.GetUtcNow();
         if (db.Database.IsNpgsql())
         {
-            await using var transaction = await db.Database.BeginTransactionAsync(ct);
-            // 同一账号的偏好写入串行化：并发首插只创建一个账号行，设备级 JSON
-            // 合并也不会互相覆盖。锁随事务释放，不需要额外的锁表或重试。
-            await db.Database.ExecuteSqlInterpolatedAsync(
-                $"SELECT pg_advisory_xact_lock(hashtextextended({userId.ToString()}, 0))",
-                ct);
-
-            var entity = await db.NotificationPreferences
-                .SingleOrDefaultAsync(p => p.UserId == userId, ct)
-                ?? AddPreferenceEntity(userId, now);
-            ApplyUpdate(entity, request, normalizedDeviceId, now);
-            await db.SaveChangesAsync(ct);
-            await transaction.CommitAsync(ct);
-            return Map(entity, normalizedDeviceId, now);
+            return await UserSessionLock.RunAsync(db, userId, async () =>
+            {
+                // Two first writes can both observe "no row". Insert-or-ignore,
+                // then lock the single row, serializes both first-write creation
+                // and subsequent device-override JSON updates.
+                var emptyDeviceOverrides = "{}";
+                await db.Database.ExecuteSqlInterpolatedAsync($"""
+                    INSERT INTO notification_preferences
+                        (user_id, in_app_enabled, push_enabled, task_completed,
+                         note_transcription_completed, note_derived_completed,
+                         calendar_reminder, device_overrides_json, version,
+                         created_at, updated_at)
+                    VALUES
+                        ({userId}, true, true, true, true, true, true, {emptyDeviceOverrides},
+                         {Guid.NewGuid()}, {now}, {now})
+                    ON CONFLICT (user_id) DO NOTHING
+                    """, ct);
+                var entity = await db.NotificationPreferences
+                    .FromSqlInterpolated($"""
+                        SELECT * FROM notification_preferences
+                        WHERE user_id = {userId}
+                        FOR UPDATE
+                        """)
+                    .IgnoreQueryFilters()
+                    .SingleAsync(ct);
+                ApplyUpdate(entity, request, normalizedDeviceId, now);
+                await db.SaveChangesAsync(ct);
+                return Map(entity, normalizedDeviceId, now);
+            }, ct);
         }
 
         var unlockedEntity = await db.NotificationPreferences
