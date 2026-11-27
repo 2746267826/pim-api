@@ -21,6 +21,10 @@ public sealed class NotificationSubscriptionService(
     TimeProvider clock,
     ILogger<NotificationSubscriptionService> logger)
 {
+    private const int MaxUpsertAttempts = 2;
+    private const string EndpointOwnershipConflictMessage =
+        "该推送地址已归属其他账号，本版本仅允许原账号继续使用，不支持跨账号换绑";
+
     private Guid UserId => currentUser.UserId ?? throw new DomainException(40101, "请先登录");
 
     public NotificationCapabilitiesDto GetCapabilities() =>
@@ -62,7 +66,7 @@ public sealed class NotificationSubscriptionService(
 
         var now = clock.GetUtcNow();
         var endpointHash = HashEndpoint(endpoint.AbsoluteUri);
-        for (var attempt = 1; ; attempt++)
+        for (var attempt = 1; attempt <= MaxUpsertAttempts; attempt++)
         {
             try
             {
@@ -73,12 +77,51 @@ public sealed class NotificationSubscriptionService(
                     subscription.Id);
                 return Map(subscription);
             }
-            catch (DbUpdateException error) when (attempt == 1 && IsUniqueViolation(error))
+            catch (DbUpdateException error) when (IsUniqueViolation(error))
             {
-                // 同一浏览器端点可能被两个并发请求同时插入；唯一键落败方清空跟踪后按更新重试。
                 db.ChangeTracker.Clear();
+                if (attempt < MaxUpsertAttempts)
+                {
+                    // 同一浏览器端点可能被两个并发请求同时插入；唯一键落败方清空跟踪后重试。
+                    // 日志只记录账号，不记录 endpoint/hash 等唯一键细节。
+                    logger.LogWarning(
+                        "Notification subscription upsert hit a unique conflict; retrying for user {UserId}",
+                        userId);
+                    continue;
+                }
+
+                return await ResolveFinalUniqueConflictAsync(userId, endpointHash, ct);
             }
         }
+
+        throw new InvalidOperationException("通知订阅 upsert 重试流程未返回结果");
+    }
+
+    private async Task<NotificationSubscriptionDto> ResolveFinalUniqueConflictAsync(
+        Guid userId,
+        string endpointHash,
+        CancellationToken ct)
+    {
+        var existing = await db.NotificationSubscriptions
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleOrDefaultAsync(
+                s => s.Channel == NotificationChannels.WebPush && s.EndpointHash == endpointHash,
+                ct);
+        if (existing is not null && existing.UserId == userId)
+        {
+            // 同账号并发 upsert 的落败方：另一请求已写入同一 endpoint，按幂等返回现有订阅。
+            logger.LogInformation(
+                "Notification subscription upsert converged to existing subscription {SubscriptionId}",
+                existing.Id);
+            return Map(existing);
+        }
+
+        // 跨账号冲突，或最终仍无法确认归属：都收敛为安全的 40906，不让 23505 冒泡成 500。
+        logger.LogWarning(
+            "Notification subscription endpoint ownership conflict for user {UserId}",
+            userId);
+        throw new DomainException(40906, EndpointOwnershipConflictMessage);
     }
 
     private async Task<NotificationSubscriptionEntity> UpsertOnceAsync(
@@ -117,7 +160,7 @@ public sealed class NotificationSubscriptionService(
                     userId);
                 throw new DomainException(
                     40906,
-                    "该推送地址已绑定其他账号，请先在原账号撤销订阅后再试");
+                    EndpointOwnershipConflictMessage);
             }
         }
 

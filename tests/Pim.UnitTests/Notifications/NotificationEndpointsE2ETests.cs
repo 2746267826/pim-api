@@ -204,6 +204,9 @@ public sealed class NotificationEndpointsE2ETests
         {
             Assert.Equal(40906, document.RootElement.GetProperty("code").GetInt32());
             Assert.Equal(JsonValueKind.Null, document.RootElement.GetProperty("data").ValueKind);
+            Assert.Equal(
+                "该推送地址已归属其他账号，本版本仅允许原账号继续使用，不支持跨账号换绑",
+                document.RootElement.GetProperty("message").GetString());
         }
         Assert.DoesNotContain(endpoint, raw, StringComparison.Ordinal);
         Assert.DoesNotContain(ownerP256Dh, raw, StringComparison.Ordinal);
@@ -325,6 +328,123 @@ public sealed class NotificationEndpointsE2ETests
         var listed = await ReadDataAsync(
             await first.GetAsync("/api/v1/notifications/subscriptions"));
         Assert.Equal(1, listed.GetArrayLength());
+    }
+
+    [SkippableFact]
+    public async Task ConcurrentCrossAccountSubscriptionUpserts_ReturnOneOwnerAndOne40906()
+    {
+        var (temp, factory) = await NewHostAsync();
+        await using var _ = temp;
+        using var __ = factory;
+        var ownerId = Guid.NewGuid();
+        var strangerId = Guid.NewGuid();
+        var owner = Authed(factory, ownerId);
+        var stranger = Authed(factory, strangerId);
+        var endpoint = $"https://fcm.googleapis.com/wp/{Guid.NewGuid():N}";
+        var (ownerP256Dh, ownerAuth) = NotificationTestSupport.SubscriptionKeys();
+        var (strangerP256Dh, strangerAuth) = NotificationTestSupport.SubscriptionKeys();
+        var ownerBody = JsonSerializer.Serialize(new
+        {
+            deviceId = "owner-race-browser",
+            channel = "WebPush",
+            endpoint,
+            keys = new { p256dh = ownerP256Dh, auth = ownerAuth }
+        });
+        var strangerBody = JsonSerializer.Serialize(new
+        {
+            deviceId = "stranger-race-browser",
+            channel = "WebPush",
+            endpoint,
+            keys = new { p256dh = strangerP256Dh, auth = strangerAuth }
+        });
+
+        var responses = await Task.WhenAll(
+            owner.PostAsync("/api/v1/notifications/subscriptions", Json(ownerBody)),
+            stranger.PostAsync("/api/v1/notifications/subscriptions", Json(strangerBody)));
+        var ownerResponse = responses[0];
+        var strangerResponse = responses[1];
+        Assert.NotEqual(ownerResponse.IsSuccessStatusCode, strangerResponse.IsSuccessStatusCode);
+
+        var winnerId = ownerResponse.IsSuccessStatusCode ? ownerId : strangerId;
+        var loserId = ownerResponse.IsSuccessStatusCode ? strangerId : ownerId;
+        var loserResponse = ownerResponse.IsSuccessStatusCode ? strangerResponse : ownerResponse;
+        Assert.Equal(HttpStatusCode.Conflict, loserResponse.StatusCode);
+        var raw = await loserResponse.Content.ReadAsStringAsync();
+        using (var document = JsonDocument.Parse(raw))
+        {
+            Assert.Equal(40906, document.RootElement.GetProperty("code").GetInt32());
+            Assert.Equal(JsonValueKind.Null, document.RootElement.GetProperty("data").ValueKind);
+            Assert.DoesNotContain(
+                "撤销后",
+                document.RootElement.GetProperty("message").GetString(),
+                StringComparison.Ordinal);
+        }
+        Assert.DoesNotContain(endpoint, raw, StringComparison.Ordinal);
+        Assert.DoesNotContain(ownerP256Dh, raw, StringComparison.Ordinal);
+        Assert.DoesNotContain(ownerAuth, raw, StringComparison.Ordinal);
+        Assert.DoesNotContain(strangerP256Dh, raw, StringComparison.Ordinal);
+        Assert.DoesNotContain(strangerAuth, raw, StringComparison.Ordinal);
+        Assert.DoesNotContain(ownerId.ToString("D"), raw, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(strangerId.ToString("D"), raw, StringComparison.OrdinalIgnoreCase);
+
+        Assert.Equal(1, await CountSubscriptionsAsync(temp));
+        await using var db = NotificationTestSupport.NewDbContext(temp.ConnectionString);
+        var subscription = await db.NotificationSubscriptions
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync();
+        Assert.Equal(winnerId, subscription.UserId);
+        Assert.NotEqual(loserId, subscription.UserId);
+        Assert.Equal("Active", subscription.Status);
+    }
+
+    [SkippableFact]
+    public async Task RevokedEndpoint_RemainsOwned_AndOnlyOriginalAccountCanReactivate()
+    {
+        var (temp, factory) = await NewHostAsync();
+        await using var _ = temp;
+        using var __ = factory;
+        var ownerId = Guid.NewGuid();
+        var owner = Authed(factory, ownerId);
+        var endpoint = $"https://fcm.googleapis.com/wp/{Guid.NewGuid():N}";
+        var (ownerP256Dh, ownerAuth) = NotificationTestSupport.SubscriptionKeys();
+        var body = JsonSerializer.Serialize(new
+        {
+            deviceId = "revoked-owner-browser",
+            channel = "WebPush",
+            endpoint,
+            keys = new { p256dh = ownerP256Dh, auth = ownerAuth }
+        });
+        var created = await ReadDataAsync(await owner.PostAsync(
+            "/api/v1/notifications/subscriptions", Json(body)));
+        var subscriptionId = created.GetProperty("id").GetGuid();
+        var revoked = await ReadDataAsync(await owner.DeleteAsync(
+            $"/api/v1/notifications/subscriptions/{subscriptionId}"));
+        Assert.Equal("Revoked", revoked.GetProperty("status").GetString());
+
+        var stranger = Authed(factory, Guid.NewGuid());
+        var (strangerP256Dh, strangerAuth) = NotificationTestSupport.SubscriptionKeys();
+        var conflict = await stranger.PostAsync(
+            "/api/v1/notifications/subscriptions",
+            Json(JsonSerializer.Serialize(new
+            {
+                deviceId = "revoked-stranger-browser",
+                channel = "WebPush",
+                endpoint,
+                keys = new { p256dh = strangerP256Dh, auth = strangerAuth }
+            })));
+        Assert.Equal(HttpStatusCode.Conflict, conflict.StatusCode);
+        var raw = await conflict.Content.ReadAsStringAsync();
+        using (var document = JsonDocument.Parse(raw))
+        {
+            Assert.Equal(40906, document.RootElement.GetProperty("code").GetInt32());
+        }
+
+        var reactivated = await ReadDataAsync(await owner.PostAsync(
+            "/api/v1/notifications/subscriptions", Json(body)));
+        Assert.Equal(subscriptionId, reactivated.GetProperty("id").GetGuid());
+        Assert.Equal("Active", reactivated.GetProperty("status").GetString());
+        Assert.Equal(1, await CountSubscriptionsAsync(temp));
     }
 
     [SkippableFact]

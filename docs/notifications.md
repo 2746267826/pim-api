@@ -42,7 +42,7 @@ Notifications__WebPush__Subject=mailto:ops@example.com
 
 ### 订阅所有权
 
-同一 `channel + endpoint_hash` 只归属一个账号。若该浏览器推送地址已绑定其他账号，`POST /api/v1/notifications/subscriptions` 返回 HTTP `409` / 业务码 `40906`，不会转移订阅、改写原账号的 `user_id`、密钥、`created_at` 或 `version`，也不会抑制原账号仍处于 `Pending` / `Retrying` / `Processing` 的投递。需要换绑时，先在原账号撤销该订阅。冲突响应只包含通用错误码和安全文案，不回显 endpoint、订阅密钥或原账号信息。
+同一 `channel + endpoint_hash` 一旦绑定即只归属该账号（无论订阅状态为 `Active` 还是 `Revoked`）。若该浏览器推送地址已绑定其他账号，`POST /api/v1/notifications/subscriptions` 返回 HTTP `409` / 业务码 `40906`，不会转移订阅、改写原账号的 `user_id`、密钥、`created_at` 或 `version`，也不会抑制原账号仍处于 `Pending` / `Retrying` / `Processing` 的投递。当前版本不提供跨账号换绑或释放路径：原账号撤销订阅只会把订阅标记为 `Revoked` 并抑制未发送投递，不会清空 `endpoint_hash`，其他账号仍不能绑定同一推送地址；只有原账号可以再次提交同一 endpoint 重新启用订阅。冲突响应只包含通用错误码和安全文案，不回显 endpoint、订阅密钥或原账号信息。
 
 ## 队列状态
 
