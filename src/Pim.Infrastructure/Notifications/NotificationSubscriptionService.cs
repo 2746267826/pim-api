@@ -1,6 +1,8 @@
+using System.Data;
 using System.Security.Cryptography;
 using System.Text;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Npgsql;
@@ -77,7 +79,7 @@ public sealed class NotificationSubscriptionService(
                     subscription.Id);
                 return Map(subscription);
             }
-            catch (DbUpdateException error) when (IsUniqueViolation(error))
+            catch (Exception error) when (IsUniqueViolation(error))
             {
                 db.ChangeTracker.Clear();
                 if (attempt < MaxUpsertAttempts)
@@ -102,26 +104,12 @@ public sealed class NotificationSubscriptionService(
         string endpointHash,
         CancellationToken ct)
     {
-        var existing = await db.NotificationSubscriptions
-            .IgnoreQueryFilters()
-            .AsNoTracking()
-            .SingleOrDefaultAsync(
-                s => s.Channel == NotificationChannels.WebPush && s.EndpointHash == endpointHash,
-                ct);
-        if (existing is not null && existing.UserId == userId)
-        {
-            // 同账号并发 upsert 的落败方：另一请求已写入同一 endpoint，按幂等返回现有订阅。
-            logger.LogInformation(
-                "Notification subscription upsert converged to existing subscription {SubscriptionId}",
-                existing.Id);
-            return Map(existing);
-        }
-
-        // 跨账号冲突，或最终仍无法确认归属：都收敛为安全的 40906，不让 23505 冒泡成 500。
-        logger.LogWarning(
-            "Notification subscription endpoint ownership conflict for user {UserId}",
-            userId);
-        throw new DomainException(40906, EndpointOwnershipConflictMessage);
+        var existing = await ResolveExistingAfterUniqueConflictAsync(userId, endpointHash, ct);
+        // 同账号并发 upsert 的落败方：另一请求已写入同一 endpoint，按幂等返回现有订阅。
+        logger.LogInformation(
+            "Notification subscription upsert converged to existing subscription {SubscriptionId}",
+            existing.Id);
+        return Map(existing);
     }
 
     private async Task<NotificationSubscriptionEntity> UpsertOnceAsync(
@@ -148,7 +136,27 @@ public sealed class NotificationSubscriptionService(
                 UserId = userId,
                 CreatedAt = now
             };
-            db.NotificationSubscriptions.Add(subscription);
+            if (db.Database.IsNpgsql())
+            {
+                var inserted = await TryInsertSubscriptionAsync(
+                    subscription, userId, deviceId, endpoint, endpointHash, p256Dh, auth, now, ct);
+                if (inserted)
+                {
+                    subscription = await db.NotificationSubscriptions
+                        .IgnoreQueryFilters()
+                        .SingleOrDefaultAsync(s => s.Id == subscription.Id, ct)
+                        ?? throw new DomainException(40906, EndpointOwnershipConflictMessage);
+                }
+                else
+                {
+                    subscription = await ResolveExistingAfterUniqueConflictAsync(
+                        userId, endpointHash, ct);
+                }
+            }
+            else
+            {
+                db.NotificationSubscriptions.Add(subscription);
+            }
         }
         else
         {
@@ -198,6 +206,77 @@ public sealed class NotificationSubscriptionService(
 
         await db.SaveChangesAsync(ct);
         return subscription;
+    }
+
+    private async Task<NotificationSubscriptionEntity> ResolveExistingAfterUniqueConflictAsync(
+        Guid userId,
+        string endpointHash,
+        CancellationToken ct)
+    {
+        var existing = await db.NotificationSubscriptions
+            .IgnoreQueryFilters()
+            .SingleOrDefaultAsync(
+                s => s.Channel == NotificationChannels.WebPush && s.EndpointHash == endpointHash,
+                ct);
+        if (existing is not null && existing.UserId == userId)
+            return existing;
+
+        // 跨账号冲突，或最终仍无法确认归属：都收敛为安全的 40906，不让 23505 冒泡成 500。
+        logger.LogWarning(
+            "Notification subscription endpoint ownership conflict for user {UserId}",
+            userId);
+        throw new DomainException(40906, EndpointOwnershipConflictMessage);
+    }
+
+    private async Task<bool> TryInsertSubscriptionAsync(
+        NotificationSubscriptionEntity subscription,
+        Guid userId,
+        string deviceId,
+        Uri endpoint,
+        string endpointHash,
+        byte[] p256Dh,
+        byte[] auth,
+        DateTimeOffset now,
+        CancellationToken ct)
+    {
+        var endpointCiphertext = protector.Protect(endpoint.AbsoluteUri);
+        var p256DhCiphertext = protector.Protect(WebPushCrypto.Base64UrlEncode(p256Dh));
+        var authCiphertext = protector.Protect(WebPushCrypto.Base64UrlEncode(auth));
+        var endpointHost = endpoint.IdnHost.ToLowerInvariant();
+        var connection = db.Database.GetDbConnection();
+        if (connection.State != ConnectionState.Open)
+            await connection.OpenAsync(ct);
+
+        // 原生 INSERT 不经过 EF SaveChanges，避免并发首插落败时 EF 以 Error 级别
+        // 记录含 endpoint_hash 的唯一键异常；ON CONFLICT 让正常并发首插无需抛错。
+        await using var command = new NpgsqlCommand("""
+            INSERT INTO notification_subscriptions
+                (id, user_id, device_id, channel, endpoint_ciphertext, endpoint_hash,
+                 endpoint_host, p256dh_ciphertext, auth_ciphertext, status, version,
+                 created_at, updated_at, last_seen_at, revoked_at, last_error_code, last_error_message)
+            VALUES
+                (@id, @user_id, @device_id, @channel, @endpoint_ciphertext, @endpoint_hash,
+                 @endpoint_host, @p256dh_ciphertext, @auth_ciphertext, @status, @version,
+                 @created_at, @updated_at, @last_seen_at, NULL, NULL, NULL)
+            ON CONFLICT (channel, endpoint_hash) DO NOTHING
+            """, (NpgsqlConnection)connection);
+        command.Parameters.AddWithValue("id", subscription.Id);
+        command.Parameters.AddWithValue("user_id", userId);
+        command.Parameters.AddWithValue("device_id", deviceId);
+        command.Parameters.AddWithValue("channel", NotificationChannels.WebPush);
+        command.Parameters.AddWithValue("endpoint_ciphertext", endpointCiphertext);
+        command.Parameters.AddWithValue("endpoint_hash", endpointHash);
+        command.Parameters.AddWithValue("endpoint_host", endpointHost);
+        command.Parameters.AddWithValue("p256dh_ciphertext", p256DhCiphertext);
+        command.Parameters.AddWithValue("auth_ciphertext", authCiphertext);
+        command.Parameters.AddWithValue("status", "Active");
+        command.Parameters.AddWithValue("version", subscription.Version);
+        command.Parameters.AddWithValue("created_at", now);
+        command.Parameters.AddWithValue("updated_at", now);
+        command.Parameters.AddWithValue("last_seen_at", now);
+        if (db.Database.CurrentTransaction is { } transaction)
+            command.Transaction = (NpgsqlTransaction)transaction.GetDbTransaction();
+        return await command.ExecuteNonQueryAsync(ct) == 1;
     }
 
     public async Task<NotificationSubscriptionDto?> RevokeAsync(Guid id, CancellationToken ct)

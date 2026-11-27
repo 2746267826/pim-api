@@ -21,17 +21,44 @@ public sealed class NotificationSubscriptionConflictTests
     {
         PimDbContext.RegisterModuleAssembly(
             typeof(Pim.Module.Calendar.Entities.ReminderEntity).Assembly);
-        var temp = await TempMigrationDatabase.CreateAsync("test_notification_conflict");
-        await using var _ = temp;
+        await using var temp = await TempMigrationDatabase.CreateAsync("test_notification_conflict");
         await temp.MigrateAsync();
 
-        var userId = Guid.NewGuid();
         var endpoint = $"https://fcm.googleapis.com/wp/{Guid.NewGuid():N}";
         var endpointHash = Convert.ToHexString(
             SHA256.HashData(Encoding.UTF8.GetBytes(endpoint))).ToLowerInvariant();
+        await temp.ExecuteAsync($"""
+            CREATE SEQUENCE notification_conflict_attempts;
+            CREATE FUNCTION notification_conflict_trigger_fn()
+            RETURNS trigger
+            LANGUAGE plpgsql
+            AS $function$
+            BEGIN
+                PERFORM nextval('notification_conflict_attempts');
+                RAISE EXCEPTION 'forced unique violation'
+                    USING ERRCODE = '23505',
+                          CONSTRAINT = 'IX_notification_subscriptions_channel_endpoint_hash',
+                          DETAIL = 'Key (channel, endpoint_hash)=(WebPush, {endpointHash}) already exists.';
+                RETURN NEW;
+            END;
+            $function$;
+            CREATE TRIGGER notification_conflict_trigger
+            BEFORE INSERT ON notification_subscriptions
+            FOR EACH ROW
+            WHEN (NEW.channel = '{NotificationChannels.WebPush}'
+                  AND NEW.endpoint_hash = '{endpointHash}')
+            EXECUTE FUNCTION notification_conflict_trigger_fn();
+            """);
+
+        var userId = Guid.NewGuid();
         var (p256Dh, auth) = NotificationTestSupport.SubscriptionKeys();
-        var logger = new RecordingLogger<NotificationSubscriptionService>();
-        await using var db = new ConflictInjectingDbContext(temp.ConnectionString, endpointHash);
+        var serviceLogs = new RecordingLogger<NotificationSubscriptionService>();
+        var efLogs = new List<string>();
+        var options = new DbContextOptionsBuilder<PimDbContext>()
+            .UseNpgsql(temp.ConnectionString)
+            .LogTo(efLogs.Add, LogLevel.Warning)
+            .Options;
+        await using var db = new PimDbContext(options);
         var service = new NotificationSubscriptionService(
             db,
             new FixedCurrentUser(userId),
@@ -42,7 +69,7 @@ public sealed class NotificationSubscriptionConflictTests
                 AllowedEndpointHosts = ["fcm.googleapis.com"]
             }),
             new ManualTimeProvider(DateTimeOffset.UtcNow),
-            logger);
+            serviceLogs);
 
         var error = await Assert.ThrowsAsync<DomainException>(() => service.UpsertAsync(
             new CreateNotificationSubscriptionRequest(
@@ -56,7 +83,11 @@ public sealed class NotificationSubscriptionConflictTests
         Assert.Equal(
             "该推送地址已归属其他账号，本版本仅允许原账号继续使用，不支持跨账号换绑",
             error.Message);
-        Assert.Equal(2, db.InjectedConflicts);
+        Assert.Equal(
+            2L,
+            await ScalarAsync(
+                temp.ConnectionString,
+                "SELECT last_value FROM notification_conflict_attempts"));
         await using (var verify = NotificationTestSupport.NewDbContext(temp.ConnectionString))
         {
             Assert.Equal(0, await verify.NotificationSubscriptions
@@ -64,93 +95,32 @@ public sealed class NotificationSubscriptionConflictTests
                 .CountAsync());
         }
 
-        var log = string.Join("\n", logger.Messages);
+        Assert.Contains(
+            serviceLogs.Messages,
+            message => message.Contains("unique conflict", StringComparison.Ordinal));
+        Assert.Contains(
+            serviceLogs.Messages,
+            message => message.Contains("ownership conflict", StringComparison.Ordinal));
+        var log = string.Join("\n", serviceLogs.Messages.Concat(efLogs));
         Assert.DoesNotContain(endpointHash, log, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain(endpoint, log, StringComparison.Ordinal);
         Assert.DoesNotContain(p256Dh, log, StringComparison.Ordinal);
         Assert.DoesNotContain(auth, log, StringComparison.Ordinal);
         Assert.DoesNotContain("23505", log, StringComparison.Ordinal);
+        Assert.DoesNotContain("PostgresException", log, StringComparison.Ordinal);
+        Assert.DoesNotContain("duplicate key", log, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain(
             "IX_notification_subscriptions",
             log,
             StringComparison.OrdinalIgnoreCase);
     }
 
-    private sealed class ConflictInjectingDbContext : PimDbContext
+    private static async Task<long> ScalarAsync(string connectionString, string sql)
     {
-        private readonly string _connectionString;
-        private readonly string _endpointHash;
-
-        public ConflictInjectingDbContext(string connectionString, string endpointHash)
-            : base(new DbContextOptionsBuilder<PimDbContext>()
-                .UseNpgsql(connectionString)
-                .Options)
-        {
-            _connectionString = connectionString;
-            _endpointHash = endpointHash;
-        }
-
-        public int InjectedConflicts { get; private set; }
-
-        public override async Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
-        {
-            var conflictId = await InsertConflictAsync(cancellationToken);
-            try
-            {
-                var result = await base.SaveChangesAsync(cancellationToken);
-                await DeleteConflictAsync(conflictId, cancellationToken);
-                return result;
-            }
-            catch (DbUpdateException)
-            {
-                await DeleteConflictAsync(conflictId, cancellationToken);
-                InjectedConflicts++;
-                throw;
-            }
-        }
-
-        private async Task<Guid> InsertConflictAsync(CancellationToken ct)
-        {
-            var id = Guid.NewGuid();
-            await using var connection = new NpgsqlConnection(_connectionString);
-            await connection.OpenAsync(ct);
-            await using var command = connection.CreateCommand();
-            command.CommandText = """
-                INSERT INTO notification_subscriptions
-                    (id, user_id, device_id, channel, endpoint_ciphertext, endpoint_hash,
-                     endpoint_host, p256dh_ciphertext, auth_ciphertext, status, version,
-                     created_at, updated_at)
-                VALUES
-                    (@id, @user_id, @device_id, @channel, @endpoint_ciphertext, @endpoint_hash,
-                     @endpoint_host, @p256dh_ciphertext, @auth_ciphertext, @status, @version,
-                     @created_at, @updated_at)
-                """;
-            command.Parameters.AddWithValue("id", id);
-            command.Parameters.AddWithValue("user_id", Guid.NewGuid());
-            command.Parameters.AddWithValue("device_id", "conflict-owner");
-            command.Parameters.AddWithValue("channel", NotificationChannels.WebPush);
-            command.Parameters.AddWithValue("endpoint_ciphertext", "encrypted");
-            command.Parameters.AddWithValue("endpoint_hash", _endpointHash);
-            command.Parameters.AddWithValue("endpoint_host", "fcm.googleapis.com");
-            command.Parameters.AddWithValue("p256dh_ciphertext", "encrypted");
-            command.Parameters.AddWithValue("auth_ciphertext", "encrypted");
-            command.Parameters.AddWithValue("status", "Active");
-            command.Parameters.AddWithValue("version", Guid.NewGuid());
-            command.Parameters.AddWithValue("created_at", DateTimeOffset.UtcNow);
-            command.Parameters.AddWithValue("updated_at", DateTimeOffset.UtcNow);
-            await command.ExecuteNonQueryAsync(ct);
-            return id;
-        }
-
-        private async Task DeleteConflictAsync(Guid id, CancellationToken ct)
-        {
-            await using var connection = new NpgsqlConnection(_connectionString);
-            await connection.OpenAsync(ct);
-            await using var command = connection.CreateCommand();
-            command.CommandText = "DELETE FROM notification_subscriptions WHERE id = @id";
-            command.Parameters.AddWithValue("id", id);
-            await command.ExecuteNonQueryAsync(ct);
-        }
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync();
+        await using var command = new NpgsqlCommand(sql, connection);
+        return Convert.ToInt64(await command.ExecuteScalarAsync());
     }
 
     private sealed class RecordingLogger<T> : ILogger<T>
