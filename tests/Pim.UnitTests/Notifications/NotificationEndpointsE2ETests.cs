@@ -275,6 +275,268 @@ public sealed class NotificationEndpointsE2ETests
     }
 
     [SkippableFact]
+    public async Task LogoutRevoke_RevokesOnlyTheOwnersBrowserSubscription_AndSuppressesPendingDeliveries()
+    {
+        var (temp, factory) = await NewHostAsync();
+        await using var _ = temp;
+        using var __ = factory;
+        var ownerId = Guid.NewGuid();
+        var owner = Authed(factory, ownerId);
+        var endpoint = $"https://fcm.googleapis.com/wp/{Guid.NewGuid():N}";
+        var (p256Dh, auth) = NotificationTestSupport.SubscriptionKeys();
+        var created = await ReadDataAsync(await owner.PostAsync(
+            "/api/v1/notifications/subscriptions",
+            Json(JsonSerializer.Serialize(new
+            {
+                deviceId = "shared-browser",
+                channel = "WebPush",
+                endpoint,
+                keys = new { p256dh = p256Dh, auth }
+            }))));
+        var subscriptionId = created.GetProperty("id").GetGuid();
+
+        await ReadDataAsync(await owner.PostAsync(
+            "/api/v1/notifications/test", Json("{}")));
+        using (var scope = factory.Services.CreateScope())
+        {
+            var worker = scope.ServiceProvider.GetRequiredService<NotificationDeliveryWorker>();
+            await worker.FanoutOnceAsync(CancellationToken.None);
+        }
+
+        var revokeBody = JsonSerializer.Serialize(new
+        {
+            deviceId = "shared-browser",
+            endpoint
+        });
+        var revokeResponse = await owner.PostAsync(
+            "/api/v1/notifications/subscriptions/revoke-current", Json(revokeBody));
+        var raw = await revokeResponse.Content.ReadAsStringAsync();
+        Assert.True(
+            revokeResponse.IsSuccessStatusCode,
+            $"{(int)revokeResponse.StatusCode} {raw}");
+        using (var document = JsonDocument.Parse(raw))
+        {
+            Assert.Equal(1, document.RootElement.GetProperty("data").GetProperty("revoked").GetInt32());
+        }
+        Assert.DoesNotContain(endpoint, raw, StringComparison.Ordinal);
+        Assert.DoesNotContain(p256Dh, raw, StringComparison.Ordinal);
+        Assert.DoesNotContain(auth, raw, StringComparison.Ordinal);
+
+        NotificationSubscriptionEntity revoked;
+        await using (var db = NotificationTestSupport.NewDbContext(temp.ConnectionString))
+        {
+            revoked = await db.NotificationSubscriptions
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .SingleAsync(s => s.Id == subscriptionId);
+            Assert.Equal("Revoked", revoked.Status);
+            Assert.NotNull(revoked.RevokedAt);
+            var deliveries = await db.NotificationDeliveries
+                .IgnoreQueryFilters()
+                .Where(d => d.SubscriptionId == subscriptionId)
+                .ToListAsync();
+            Assert.Single(deliveries);
+            Assert.Equal(NotificationDeliveryStatuses.Suppressed, deliveries[0].Status);
+            Assert.Equal("logout_revoked", deliveries[0].LastErrorCode);
+        }
+
+        var secondRaw = await owner.PostAsync(
+            "/api/v1/notifications/subscriptions/revoke-current", Json(revokeBody));
+        Assert.True(secondRaw.IsSuccessStatusCode);
+        Assert.Equal(
+            revoked.Version,
+            (await NotificationTestSupport.NewDbContext(temp.ConnectionString)
+                .NotificationSubscriptions
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .SingleAsync(s => s.Id == subscriptionId)).Version);
+
+        var stranger = Authed(factory, Guid.NewGuid());
+        var strangerRaw = await stranger.PostAsync(
+            "/api/v1/notifications/subscriptions/revoke-current", Json(revokeBody));
+        Assert.True(strangerRaw.IsSuccessStatusCode);
+        using (var document = JsonDocument.Parse(await strangerRaw.Content.ReadAsStringAsync()))
+        {
+            Assert.Equal(0, document.RootElement.GetProperty("data").GetProperty("revoked").GetInt32());
+        }
+    }
+
+    [SkippableFact]
+    public async Task RevokeCurrent_DoesNotRevokeAnotherAccountsSubscription()
+    {
+        var (temp, factory) = await NewHostAsync();
+        await using var _ = temp;
+        using var __ = factory;
+        var ownerId = Guid.NewGuid();
+        var owner = Authed(factory, ownerId);
+        var endpoint = $"https://fcm.googleapis.com/wp/{Guid.NewGuid():N}";
+        var (p256Dh, auth) = NotificationTestSupport.SubscriptionKeys();
+        var created = await ReadDataAsync(await owner.PostAsync(
+            "/api/v1/notifications/subscriptions",
+            Json(JsonSerializer.Serialize(new
+            {
+                deviceId = "owner-shared-browser",
+                channel = "WebPush",
+                endpoint,
+                keys = new { p256dh = p256Dh, auth }
+            }))));
+        var subscriptionId = created.GetProperty("id").GetGuid();
+
+        var stranger = Authed(factory, Guid.NewGuid());
+        var body = JsonSerializer.Serialize(new
+        {
+            deviceId = "owner-shared-browser",
+            endpoint
+        });
+        var denied = await ReadDataAsync(await stranger.PostAsync(
+            "/api/v1/notifications/subscriptions/revoke-current", Json(body)));
+        Assert.Equal(0, denied.GetProperty("revoked").GetInt32());
+
+        await using (var db = NotificationTestSupport.NewDbContext(temp.ConnectionString))
+        {
+            var stillActive = await db.NotificationSubscriptions
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .SingleAsync(s => s.Id == subscriptionId);
+            Assert.Equal(ownerId, stillActive.UserId);
+            Assert.Equal("Active", stillActive.Status);
+        }
+
+        var revoked = await ReadDataAsync(await owner.PostAsync(
+            "/api/v1/notifications/subscriptions/revoke-current", Json(body)));
+        Assert.Equal(1, revoked.GetProperty("revoked").GetInt32());
+    }
+
+    [SkippableFact]
+    public async Task LogoutRevoke_PreventsAccountBFromReceivingAccountAPush()
+    {
+        var (temp, factory) = await NewHostAsync();
+        await using var _ = temp;
+        using var __ = factory;
+        var accountA = Guid.NewGuid();
+        var clientA = Authed(factory, accountA);
+        var endpoint = $"https://fcm.googleapis.com/wp/{Guid.NewGuid():N}";
+        var (p256Dh, auth) = NotificationTestSupport.SubscriptionKeys();
+        var subscription = await ReadDataAsync(await clientA.PostAsync(
+            "/api/v1/notifications/subscriptions",
+            Json(JsonSerializer.Serialize(new
+            {
+                deviceId = "shared-browser",
+                channel = "WebPush",
+                endpoint,
+                keys = new { p256dh = p256Dh, auth }
+            }))));
+        var subscriptionId = subscription.GetProperty("id").GetGuid();
+
+        await ReadDataAsync(await clientA.PostAsync(
+            "/api/v1/notifications/test", Json("{}")));
+        var revoke = await ReadDataAsync(await clientA.PostAsync(
+            "/api/v1/notifications/subscriptions/revoke-current",
+            Json(JsonSerializer.Serialize(new { deviceId = "shared-browser", endpoint }))));
+        Assert.Equal(1, revoke.GetProperty("revoked").GetInt32());
+
+        var accountB = Guid.NewGuid();
+        var clientB = Authed(factory, accountB);
+        Assert.Empty((await ReadDataAsync(
+            await clientB.GetAsync("/api/v1/notifications/subscriptions"))).EnumerateArray());
+        await ReadDataAsync(await clientB.PostAsync(
+            "/api/v1/notifications/test", Json("{}")));
+
+        var fake = new FakePushTransport();
+        var clock = new ManualTimeProvider(DateTimeOffset.UtcNow);
+        var protector = factory.Services.GetRequiredService<ISecretProtector>();
+        await using (var db = NotificationTestSupport.NewDbContext(temp.ConnectionString))
+        {
+            var worker = NotificationTestSupport.NewWorker(
+                db, fake, clock, protector: protector);
+            await worker.RunOnceAsync(CancellationToken.None);
+        }
+
+        Assert.Equal(0, fake.Calls);
+        await using (var db = NotificationTestSupport.NewDbContext(temp.ConnectionString))
+        {
+            Assert.Equal(
+                "Revoked",
+                (await db.NotificationSubscriptions
+                    .IgnoreQueryFilters()
+                    .AsNoTracking()
+                    .SingleAsync(s => s.Id == subscriptionId)).Status);
+            Assert.False(await db.NotificationDeliveries
+                .IgnoreQueryFilters()
+                .AnyAsync(d => d.SubscriptionId == subscriptionId &&
+                               d.Status == NotificationDeliveryStatuses.Pending));
+        }
+    }
+
+    [SkippableFact]
+    public async Task NewDeviceOverride_InheritsAccountLevelPushDisabled()
+    {
+        var (temp, factory) = await NewHostAsync();
+        await using var _ = temp;
+        using var __ = factory;
+        var client = Authed(factory, Guid.NewGuid());
+
+        await ReadDataAsync(await client.PutAsync(
+            "/api/v1/notifications/preferences",
+            Json("""{"pushEnabled":false}""")));
+        var inherited = await ReadDataAsync(await SendWithDeviceAsync(
+            client,
+            HttpMethod.Put,
+            "/api/v1/notifications/preferences",
+            "new-browser",
+            """{"taskCompleted":false}"""));
+        Assert.False(inherited.GetProperty("pushEnabled").GetBoolean());
+        Assert.False(inherited.GetProperty("taskCompleted").GetBoolean());
+
+        var optedIn = await ReadDataAsync(await SendWithDeviceAsync(
+            client,
+            HttpMethod.Put,
+            "/api/v1/notifications/preferences",
+            "new-browser",
+            """{"pushEnabled":true}"""));
+        Assert.True(optedIn.GetProperty("pushEnabled").GetBoolean());
+    }
+
+    [SkippableFact]
+    public async Task ConcurrentPreferenceUpdates_KeepFirstWriteAndEveryDeviceOverride()
+    {
+        var (temp, factory) = await NewHostAsync();
+        await using var _ = temp;
+        using var __ = factory;
+        var client = Authed(factory, Guid.NewGuid());
+
+        var initial = Enumerable.Range(0, 10).Select(index =>
+            SendWithDeviceAsync(
+                client,
+                HttpMethod.Put,
+                "/api/v1/notifications/preferences",
+                $"browser-{index}",
+                index == 0
+                    ? """{"taskCompleted":false}"""
+                    : """{"calendarReminder":false}"""));
+        var responses = await Task.WhenAll(initial);
+        foreach (var response in responses)
+        {
+            var raw = await response.Content.ReadAsStringAsync();
+            Assert.True(response.IsSuccessStatusCode, $"{(int)response.StatusCode} {raw}");
+        }
+
+        await using var db = NotificationTestSupport.NewDbContext(temp.ConnectionString);
+        var preferences = await db.NotificationPreferences
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync();
+        Assert.False(preferences.TaskCompleted);
+        using var document = JsonDocument.Parse(preferences.DeviceOverridesJson);
+        for (var index = 0; index < 10; index++)
+        {
+            Assert.True(
+                document.RootElement.TryGetProperty($"browser-{index}", out _),
+                $"device browser-{index} override was lost");
+        }
+    }
+
+    [SkippableFact]
     public async Task InvalidSubscription_IsRejected_AndNotPersisted()
     {
         var (temp, factory) = await NewHostAsync();
@@ -543,6 +805,10 @@ public sealed class NotificationEndpointsE2ETests
             var response = await anonymous.GetAsync(path);
             Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
         }
+        var revoke = await anonymous.PostAsync(
+            "/api/v1/notifications/subscriptions/revoke-current",
+            Json("""{"deviceId":"browser-a"}"""));
+        Assert.Equal(HttpStatusCode.Unauthorized, revoke.StatusCode);
     }
 
     [SkippableFact]

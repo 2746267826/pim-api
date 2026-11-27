@@ -143,7 +143,10 @@ describe('NotificationsSettingsPage', () => {
     fixture.api.retryDelivery.mockResolvedValue({ ...deliveries.items[0], status: 'Pending' })
   })
 
-  afterEach(() => cleanup())
+  afterEach(() => {
+    cleanup()
+    vi.unstubAllGlobals()
+  })
 
   it('loads preferences and saves a partial update when a category is switched off', async () => {
     const user = userEvent.setup()
@@ -225,5 +228,39 @@ describe('NotificationsSettingsPage', () => {
     await waitFor(() =>
       expect(fixture.notifySuccess).toHaveBeenCalledWith('已标记 1 条通知为已读'),
     )
+  })
+
+  it('resumes SSE from the newest known cursor after a silent disconnect', async () => {
+    const user = userEvent.setup()
+    const calls: string[] = []
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push(String(input))
+      if (calls.length === 1) {
+        const encoder = new TextEncoder()
+        const stream = new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(encoder.encode(': keep-alive\n\n'))
+            setTimeout(() => controller.close(), 0)
+          },
+        })
+        return Promise.resolve(new Response(stream, {
+          status: 200,
+          headers: { 'content-type': 'text/event-stream' },
+        }))
+      }
+      return new Promise<Response>((_, reject) => {
+        const signal = init?.signal
+        signal?.addEventListener('abort', () =>
+          reject(new DOMException('aborted', 'AbortError')))
+      })
+    }))
+    renderPage()
+
+    expect(await screen.findByText('1 条未读')).toBeTruthy()
+    await user.click(screen.getByRole('button', { name: '开始实时接收' }))
+
+    await waitFor(() => expect(calls.length).toBeGreaterThanOrEqual(2))
+    expect(calls[0]).toBe('/api/v1/notifications/stream?after=9')
+    expect(calls[1]).toBe('/api/v1/notifications/stream?after=9')
   })
 })

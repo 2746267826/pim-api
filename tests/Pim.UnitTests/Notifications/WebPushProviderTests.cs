@@ -147,6 +147,121 @@ public sealed class WebPushProviderTests
         Assert.Empty(handler.Requests);
     }
 
+    [Fact]
+    public void Aes128GcmPayload_DecryptsWithTheUserAgentPrivateKey()
+    {
+        using var userAgent = ECDiffieHellman.Create(ECCurve.NamedCurves.nistP256);
+        var userAgentParameters = userAgent.ExportParameters(true);
+        var userAgentPublicKey = EncodePoint(userAgentParameters);
+        var authSecret = RandomNumberGenerator.GetBytes(16);
+        var payload = Encoding.UTF8.GetBytes(
+            """{"title":"任务已完成","body":"RFC8291 回环","data":{"url":"/tasks"}}""");
+
+        var body = WebPushCrypto.Encrypt(
+            payload, userAgentPublicKey, authSecret, out var applicationServerPublicKey);
+        Assert.Equal(65, body[20]);
+        var keyId = body[21..86];
+        Assert.Equal(applicationServerPublicKey, keyId);
+
+        using var applicationServer = ECDiffieHellman.Create(new ECParameters
+        {
+            Curve = ECCurve.NamedCurves.nistP256,
+            Q = new ECPoint
+            {
+                X = keyId[1..33].ToArray(),
+                Y = keyId[33..65].ToArray()
+            }
+        });
+        var sharedSecret = userAgent.DeriveKeyMaterial(applicationServer.PublicKey);
+        var authInfo = Concat("WebPush: info\0"u8.ToArray(), userAgentPublicKey, keyId);
+        var ikm = HkdfExpand(HkdfExtract(authSecret, sharedSecret), authInfo, 32);
+        var salt = body[..16];
+        var prk = HkdfExtract(salt, ikm);
+        var cek = HkdfExpand(prk, "Content-Encoding: aes128gcm\0"u8.ToArray(), 16);
+        var nonce = HkdfExpand(prk, "Content-Encoding: nonce\0"u8.ToArray(), 12);
+        var ciphertext = body[86..^16];
+        var tag = body[^16..];
+        var plaintext = new byte[ciphertext.Length];
+        using (var aes = new AesGcm(cek, 16))
+            aes.Decrypt(nonce, ciphertext, tag, plaintext);
+
+        Assert.Equal(0x02, plaintext[^1]);
+        Assert.Equal(payload, plaintext[..^1]);
+    }
+
+    [Theory]
+    [InlineData("0.0.0.0")]
+    [InlineData("192.0.0.1")]
+    [InlineData("192.0.2.10")]
+    [InlineData("192.88.99.1")]
+    [InlineData("198.51.100.10")]
+    [InlineData("203.0.113.10")]
+    [InlineData("2001:db8::1")]
+    [InlineData("2001:2::1")]
+    [InlineData("2001:10::1")]
+    [InlineData("fec0::1")]
+    [InlineData("64:ff9b::7f00:1")]
+    public void SpecialPurposeAddressesAreNotPublic(string address)
+    {
+        Assert.False(WebPushNotificationProvider.IsPublicAddress(IPAddress.Parse(address)));
+    }
+
+    [Theory]
+    [InlineData("8.8.8.8")]
+    [InlineData("2606:4700:4700::1111")]
+    public void InternetAddressesRemainPublic(string address)
+    {
+        Assert.True(WebPushNotificationProvider.IsPublicAddress(IPAddress.Parse(address)));
+    }
+
+    private static byte[] EncodePoint(ECParameters parameters)
+    {
+        var key = new byte[65];
+        key[0] = 0x04;
+        parameters.Q.X!.CopyTo(key, 1);
+        parameters.Q.Y!.CopyTo(key, 33);
+        return key;
+    }
+
+    private static byte[] Concat(params byte[][] values)
+    {
+        var result = new byte[values.Sum(value => value.Length)];
+        var offset = 0;
+        foreach (var value in values)
+        {
+            value.CopyTo(result, offset);
+            offset += value.Length;
+        }
+        return result;
+    }
+
+    private static byte[] HkdfExtract(byte[] salt, byte[] ikm)
+    {
+        using var hmac = new HMACSHA256(salt);
+        return hmac.ComputeHash(ikm);
+    }
+
+    private static byte[] HkdfExpand(byte[] prk, byte[] info, int length)
+    {
+        var output = new byte[length];
+        var previous = Array.Empty<byte>();
+        var offset = 0;
+        byte counter = 1;
+        while (offset < length)
+        {
+            var input = new byte[previous.Length + info.Length + 1];
+            previous.CopyTo(input, 0);
+            info.CopyTo(input, previous.Length);
+            input[^1] = counter++;
+            using var hmac = new HMACSHA256(prk);
+            previous = hmac.ComputeHash(input);
+            var take = Math.Min(previous.Length, length - offset);
+            previous.AsSpan(0, take).CopyTo(output.AsSpan(offset));
+            offset += take;
+        }
+        return output;
+    }
+
     private static WebPushNotificationProvider NewProvider(
         TestVapidKeys keys,
         RecordingHandler handler) =>
