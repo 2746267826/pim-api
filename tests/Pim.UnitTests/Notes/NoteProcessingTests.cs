@@ -1757,15 +1757,15 @@ public sealed class NoteProcessingTests(NoteProcessingFixture host)
     private async Task<(AiModelDto Asr, AiModelDto Derived)> ConfigureAsync(
         HttpClient client, bool auto)
     {
-        var suffix = Guid.NewGuid().ToString("N");
-        var asr = await Data<AiModelDto>(await client.PostAsJsonAsync("/api/v1/ai/models",
-            new SaveAiModelRequest("ASR " + suffix, "http://asr.invalid/v1/", "mimo-v2.5-asr",
-                true, [AiModelCapability.Transcription], 30, 1024, "synthetic-asr-key",
-                AsrPresetId: "mimo-asr")));
-        var derived = await Data<AiModelDto>(await client.PostAsJsonAsync("/api/v1/ai/models",
-            new SaveAiModelRequest("整理 " + suffix, "http://derived.invalid/v1/",
-                "synthetic-text", true, [AiModelCapability.Text, AiModelCapability.Vision],
-                30, 4096, "synthetic-derived-key")));
+        var models = await Data<IReadOnlyList<AiModelDto>>(
+            await client.GetAsync("/api/v1/ai/models"));
+        var asr = await SaveOrResetModelAsync(client, models, "ASR note-processing",
+            "http://asr.invalid/v1/", "mimo-v2.5-asr", [AiModelCapability.Transcription],
+            1024, "synthetic-asr-key", "mimo-asr");
+        var derived = await SaveOrResetModelAsync(client, models, "整理 note-processing",
+            "http://derived.invalid/v1/", "synthetic-text",
+            [AiModelCapability.Text, AiModelCapability.Vision], 4096,
+            "synthetic-derived-key", null);
         var settings = await Data<AiModelSettingsDto>(
             await client.GetAsync("/api/v1/ai/model-settings"));
         _ = await Data<AiModelSettingsDto>(await client.PutAsJsonAsync(
@@ -1774,6 +1774,20 @@ public sealed class NoteProcessingTests(NoteProcessingFixture host)
                 asr.Id)));
         _ = await SetAutoProcessingAsync(client, auto);
         return (asr, derived);
+    }
+
+    private static async Task<AiModelDto> SaveOrResetModelAsync(HttpClient client,
+        IReadOnlyList<AiModelDto> models, string name, string baseUrl, string model,
+        IReadOnlyList<AiModelCapability> capabilities, int maxOutputTokens, string apiKey,
+        string? presetId)
+    {
+        var existing = models.FirstOrDefault(candidate => candidate.Name == name);
+        var request = new SaveAiModelRequest(name, baseUrl, model, true, capabilities, 30,
+            maxOutputTokens, apiKey, existing?.Revision, presetId);
+        return existing is null
+            ? await Data<AiModelDto>(await client.PostAsJsonAsync("/api/v1/ai/models", request))
+            : await Data<AiModelDto>(await client.PutAsJsonAsync(
+                $"/api/v1/ai/models/{existing.Id}", request));
     }
 
     private static async Task<NoteAsrRouteConfigDto> ConfigureCloudRouteAsync(
