@@ -1,5 +1,6 @@
 using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
+using Microsoft.EntityFrameworkCore;
 
 namespace Pim.Infrastructure.Data.Entities;
 
@@ -10,6 +11,7 @@ namespace Pim.Infrastructure.Data.Entities;
 /// after its retention window; the identity and fingerprint are never deleted.
 /// </summary>
 [Table("note_mcp_operations")]
+[PrimaryKey(nameof(OwnerId), nameof(RequestId))]
 public sealed class NoteMcpOperationEntity
 {
     [Column("owner_id")] public Guid OwnerId { get; set; }
