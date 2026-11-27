@@ -814,6 +814,50 @@ public sealed class NoteMaterialUploadStoreTests : IDisposable
         Assert.True(Directory.GetFiles(cache, "*.pcm").Sum(path => new FileInfo(path).Length) <= 100);
     }
 
+    [Fact]
+    public void Verification_cache_evicts_the_least_recently_used_entry()
+    {
+        var cache = new BoundedLruCache<string, int>(2);
+        cache.Set("a", 1);
+        cache.Set("b", 2);
+        Assert.True(cache.TryGet("a", out var a));
+        Assert.Equal(1, a);
+
+        cache.Set("c", 3);
+
+        Assert.False(cache.TryGet("b", out _));
+        Assert.True(cache.TryGet("a", out a));
+        Assert.Equal(1, a);
+        Assert.True(cache.TryGet("c", out var c));
+        Assert.Equal(3, c);
+        Assert.Equal(2, cache.Count);
+        Assert.Equal(1, cache.RemoveWhere(key => key == "a"));
+        Assert.False(cache.TryGet("a", out _));
+    }
+
+    [Fact]
+    public async Task Process_caches_are_bounded_across_material_versions_and_audio_keys()
+    {
+        var options = new NoteMaterialUploadOptions
+        {
+            StorageRoot = _root, MaxVersionBytes = 32 * 1024 * 1024,
+            MaxUserReservedBytes = 64 * 1024 * 1024, VerifiedFileCacheMaxEntries = 2
+        };
+        var store = Store(options: options);
+        var fixtures = Enumerable.Range(0, 3).Select(_ => Fixture.Create()).ToArray();
+        foreach (var fixture in fixtures)
+        {
+            await store.BeginAsync(_user, fixture.Request);
+            await UploadAll(store, fixture);
+            await store.CompleteAsync(_user, fixture.Request.VersionId);
+        }
+        foreach (var fixture in fixtures)
+            await store.VerifyAudioFileAsync(_user, fixture.Request.VersionId, 5, CancellationToken.None);
+
+        Assert.Equal(2, store.VerifiedFileCacheCount);
+        Assert.Equal(64, store.AudioDecodeGateSlotCount);
+    }
+
     private NoteMaterialUploadStore Store(TimeProvider? time = null, NoteMaterialUploadOptions? options = null) =>
         new(Options.Create(options ?? _options), time);
 

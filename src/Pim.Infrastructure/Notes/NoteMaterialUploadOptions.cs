@@ -16,6 +16,7 @@ public sealed class NoteMaterialUploadOptions
     public string FfmpegPath { get; set; } = "ffmpeg";
     public int AudioDecodeTimeoutSeconds { get; set; } = 120;
     public int MaxConcurrentAudioDecodes { get; set; } = 2;
+    public int VerifiedFileCacheMaxEntries { get; set; } = 4096;
     public long AudioCacheMaxBytes { get; set; } = 2L * 1024 * 1024 * 1024;
     public int AudioCacheMaxAgeHours { get; set; } = 24;
 
@@ -24,6 +25,7 @@ public sealed class NoteMaterialUploadOptions
         MaxUserReservedBytes >= MaxVersionBytes && MaxFiles is >= 2 and <= 100_000 &&
         MaxPendingVersions is > 0 and <= 100 && MaxVersionsPerUser is > 0 and <= 100_000 &&
         UploadExpiryHours is > 0 and <= 720 && MaxConcurrentAudioDecodes is >= 1 and <= 16 &&
+        VerifiedFileCacheMaxEntries is >= 1 and <= 65_536 &&
         AudioCacheMaxBytes >= NoteAudioFormats.MaxDecodedOpusFileBytes &&
         AudioCacheMaxAgeHours is >= 1 and <= 720;
 }

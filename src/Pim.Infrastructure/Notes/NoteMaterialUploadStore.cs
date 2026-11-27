@@ -1,6 +1,5 @@
 using System.Globalization;
 using System.Buffers.Binary;
-using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text;
@@ -23,8 +22,13 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
     private readonly TimeProvider _clock = clock ?? TimeProvider.System;
     private readonly ManagedBinaryStore _binaries = binaries ?? new(Options.Create(new ManagedBinaryOptions { Root = Path.Combine(options.Value.StorageRoot, "binary") }));
     private readonly NoteAudioDecoder _audioDecoder = new(options.Value);
-    private readonly ConcurrentDictionary<string, SemaphoreSlim> _audioDecodeGates = new(StringComparer.Ordinal);
-    private readonly ConcurrentDictionary<string, string> _verifiedFiles = new(StringComparer.Ordinal);
+    // Fixed stripes keep the process-local gate set bounded; a collision only serializes two
+    // unrelated decodes, which is safe because the decoder already has a process-wide cap.
+    private const int AudioDecodeGateSlots = 64;
+    private readonly SemaphoreSlim[] _audioDecodeGates = Enumerable.Range(0, AudioDecodeGateSlots)
+        .Select(_ => new SemaphoreSlim(1, 1)).ToArray();
+    private readonly BoundedLruCache<string, string> _verifiedFiles =
+        new(Math.Max(1, options.Value.VerifiedFileCacheMaxEntries), StringComparer.Ordinal);
     private readonly object _audioPruneLock = new();
     private DateTimeOffset _nextAudioPruneAt = DateTimeOffset.MinValue;
     private static readonly TimeSpan AudioPruneInterval = TimeSpan.FromMinutes(5);
@@ -39,6 +43,9 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
         "application/json", "text/markdown; charset=utf-8", "application/octet-stream"
     ];
     public static string ContentType(string path) => NoteAudioFormats.ContentType(path);
+
+    internal int VerifiedFileCacheCount => _verifiedFiles.Count;
+    internal int AudioDecodeGateSlotCount => _audioDecodeGates.Length;
 
     public async Task<NoteMaterialUploadDto> BeginAsync(Guid userId, BeginNoteMaterialUploadRequest request, CancellationToken ct = default)
     {
@@ -532,7 +539,7 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
     {
         var cacheKey = VerifyKey(userId, versionId, index);
         var signature = FileSignature(userId, versionId, index, file);
-        if (_verifiedFiles.TryGetValue(cacheKey, out var verified) && verified == signature) return;
+        if (_verifiedFiles.TryGet(cacheKey, out var verified) && verified == signature) return;
         using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         var buffer = new byte[64 * 1024];
         var header = new byte[44];
@@ -598,7 +605,7 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
                 opus!.Complete(samples);
             }
         }
-        _verifiedFiles[cacheKey] = signature;
+        _verifiedFiles.Set(cacheKey, signature);
     }
 
     private async Task<byte[]> ReadWavSliceAsync(Guid owner, Guid versionId, int fileIndex,
@@ -627,9 +634,8 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
         NoteUploadedMaterial file, string cachePath, CancellationToken ct)
     {
         var expectedBytes = checked(file.Samples!.Value * 2);
-        var gate = _audioDecodeGates.GetOrAdd(
-            file.Sha256 + ":" + file.Samples.Value.ToString(CultureInfo.InvariantCulture),
-            _ => new SemaphoreSlim(1, 1));
+        var gate = AudioDecodeGate(
+            file.Sha256 + ":" + file.Samples.Value.ToString(CultureInfo.InvariantCulture));
         await gate.WaitAsync(ct);
         try
         {
@@ -718,6 +724,17 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
         file.Sha256 + "-" + file.Samples!.Value.ToString(CultureInfo.InvariantCulture) + ".pcm");
     private string AudioCacheFolder => Path.Combine(Path.GetFullPath(_options.StorageRoot), "audio-cache");
     private string AudioWorkFolder => Path.Combine(Path.GetFullPath(_options.StorageRoot), "audio-work");
+
+    private SemaphoreSlim AudioDecodeGate(string key)
+    {
+        var hash = 2166136261u;
+        foreach (var character in key)
+        {
+            hash ^= character;
+            hash *= 16777619u;
+        }
+        return _audioDecodeGates[(int)(hash % (uint)AudioDecodeGateSlots)];
+    }
 
     private static bool IsValidPcmCache(string path, long expectedBytes)
     {
@@ -885,9 +902,7 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
             await _binaries.DeleteCollectionAsync(userId, ManagedBinaryStore.NoteParts, version, ct);
             DeleteFolder(VersionFolder(userId, version));
             var prefix = userId.ToString("D") + "/" + version.ToString("D") + "/";
-            foreach (var verified in _verifiedFiles.Keys)
-                if (verified.StartsWith(prefix, StringComparison.Ordinal))
-                    _verifiedFiles.TryRemove(verified, out _);
+            _verifiedFiles.RemoveWhere(verified => verified.StartsWith(prefix, StringComparison.Ordinal));
         }
         ledger.Deletions.Clear();
         await SaveLedgerAsync(userId, ledger, ct);

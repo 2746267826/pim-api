@@ -1385,6 +1385,33 @@ internal static class NoteAsrAcceptedEvidence
         proof.ResultSha256 == Convert.ToHexString(SHA256.HashData(
             System.Text.Encoding.UTF8.GetBytes(proof.ResultText))).ToLowerInvariant();
 
+    internal static string AdaptiveProviderHandle(Guid requestId) =>
+        "adaptive:" + requestId.ToString("N");
+
+    internal static bool AdaptiveCoverageMatches(string? coverageJson, NoteAsrStep step)
+    {
+        if (string.IsNullOrWhiteSpace(coverageJson) || step.ExecutionEpoch is not { } epoch)
+            return false;
+        try
+        {
+            using var document = JsonDocument.Parse(coverageJson);
+            var root = document.RootElement;
+            return root.ValueKind == JsonValueKind.Object &&
+                root.TryGetProperty("recordFormat", out var format) &&
+                format.ValueKind == JsonValueKind.String &&
+                format.GetString() == "adaptive-transcription-v1" &&
+                root.TryGetProperty("rootRequestId", out var request) &&
+                request.ValueKind == JsonValueKind.String &&
+                Guid.TryParse(request.GetString(), out var requestId) &&
+                requestId == step.Current.RequestId &&
+                root.TryGetProperty("executionEpoch", out var epochNode) &&
+                epochNode.ValueKind == JsonValueKind.String &&
+                Guid.TryParse(epochNode.GetString(), out var executionEpoch) &&
+                executionEpoch == epoch;
+        }
+        catch (JsonException) { return false; }
+    }
+
     internal static async Task<Dictionary<int, NoteAsrSegmentEvidenceEntity>> LoadAsync(PimDbContext db,
         Guid owner, NoteAsrAttemptEntity attempt, NoteAsrState state, CancellationToken ct)
     {
@@ -1419,8 +1446,10 @@ internal static class NoteAsrAcceptedEvidence
                 "batch" => attempt.Route == NoteAsrRoute.CloudMultimodal &&
                     attempt.ExecutionMode == NoteAsrExecutionMode.Batch,
                 "adaptive" => NoteAsrRoute.IsCloud(attempt.Route) &&
-                    row.ProviderHandle.StartsWith("adaptive:", StringComparison.Ordinal) &&
-                    !string.IsNullOrWhiteSpace(row.CoverageJson),
+                    state.Steps[row.SegmentIndex].Current.EvidenceId == row.Id &&
+                    row.ProviderHandle == AdaptiveProviderHandle(
+                        state.Steps[row.SegmentIndex].Current.RequestId) &&
+                    AdaptiveCoverageMatches(row.CoverageJson, state.Steps[row.SegmentIndex]),
                 _ => false
             };
             if (valid) accepted[row.SegmentIndex] = row;

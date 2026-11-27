@@ -38,6 +38,7 @@ public sealed class NoteAsrTests : IAsyncLifetime
     private int _failCall;
     private bool _block;
     private bool _truncateFirst;
+    private int? _truncateCall;
     private readonly TaskCompletionSource _started = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly List<byte[]> _received = [];
@@ -59,7 +60,7 @@ public sealed class NoteAsrTests : IAsyncLifetime
             Assert.Equal(bytes.Length - 44, (int)BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(40)));
             _started.TrySetResult(); if (_block) await _release.Task;
             if (call == _failCall) return Results.StatusCode(503);
-            var truncated = _truncateFirst && call == 1;
+            var truncated = (_truncateFirst && call == 1) || call == _truncateCall;
             return Results.Json(new { id = "synthetic-note-asr-" + call, @object = "chat.completion", created = 1780000000, model = "mimo-v2.5-asr",
                 choices = new[] { new { index = 0, finish_reason = truncated ? "length" : "stop",
                     message = new { role = "assistant", content = truncated
@@ -596,6 +597,147 @@ public sealed class NoteAsrTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task AdaptiveCheckpointFailureCompensatesEvidenceAndRetryBindsFreshRequestAndEpoch()
+    {
+        _truncateFirst = true;
+        var fixture = NoteMaterialUploadStoreTests.Fixture.Create(16_000 * 60);
+        await Upload(fixture);
+        var (task, consent) = await StartMultimodalAsync(fixture, "多模态检查点失败");
+        var tasks = _factory.Services.GetRequiredService<NoteAsrTaskStore>();
+        var injected = 0;
+        tasks.CheckpointWriteFailureForTests = state =>
+            state.Steps.Any(x => x.Current.Status == "Succeeded" && x.Current.EvidenceId is not null) &&
+            Interlocked.Exchange(ref injected, 1) == 0
+                ? new IOException("synthetic checkpoint write failure")
+                : null;
+
+        await Run(task.TaskId);
+        tasks.CheckpointWriteFailureForTests = null;
+
+        Assert.Equal(1, injected);
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
+            Assert.Empty(await db.NoteAsrSegmentEvidence.Where(x => x.OwnerId == _owner &&
+                x.TaskId == task.TaskId).ToListAsync());
+        }
+        var failed = await Get(task.TaskId);
+        Assert.True(failed.StopRequested);
+        var failedSegment = Assert.Single((await Segments(task.TaskId)).Items);
+        Assert.NotEqual("Succeeded", failedSegment.Status);
+        Assert.Null(failedSegment.EvidenceId);
+
+        var beforeRetry = JsonNode.Parse(await File.ReadAllTextAsync(TaskPath(task.TaskId)))!;
+        var oldRequestId = beforeRetry["steps"]![0]!["attempts"]![0]!["requestId"]!.GetValue<Guid>();
+        var oldEpoch = beforeRetry["steps"]![0]!["executionEpoch"]!.GetValue<Guid>();
+        var retried = await Data<NoteAsrTaskDto>(await _client.PostAsJsonAsync(
+            $"{Route}/{task.TaskId}/retry", new RetryNoteAsrRequest(Guid.NewGuid(), _owner,
+                failed.Revision, [0], consent, true)));
+        Assert.Equal("Queued", retried.Phase);
+
+        var afterRetry = JsonNode.Parse(await File.ReadAllTextAsync(TaskPath(task.TaskId)))!;
+        var step = afterRetry["steps"]![0]!;
+        var newAttempt = step["attempts"]!.AsArray().Last()!;
+        var newRequestId = newAttempt["requestId"]!.GetValue<Guid>();
+        var newEpoch = step["executionEpoch"]!.GetValue<Guid>();
+        Assert.NotEqual(oldRequestId, newRequestId);
+        Assert.NotEqual(oldEpoch, newEpoch);
+
+        _truncateFirst = false;
+        _truncateCall = _calls + 1;
+        await Run(task.TaskId);
+        Assert.Equal("Succeeded", (await Get(task.TaskId)).Phase);
+        var segment = Assert.Single((await Segments(task.TaskId)).Items);
+        Assert.Equal("Succeeded", segment.Status);
+        Assert.Equal("adaptive", segment.ReceiptKind);
+        Assert.DoesNotContain("丢弃的截断尾段", segment.Transcript);
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var evidence = await scope.ServiceProvider.GetRequiredService<PimDbContext>()
+                .NoteAsrSegmentEvidence.AsNoTracking().SingleAsync(x => x.OwnerId == _owner &&
+                    x.TaskId == task.TaskId);
+            Assert.Equal("adaptive:" + newRequestId.ToString("N"), evidence.ProviderHandle);
+            Assert.Contains(newEpoch.ToString("D"), evidence.CoverageJson);
+            Assert.DoesNotContain(oldRequestId.ToString("N"), evidence.CoverageJson);
+        }
+    }
+
+    [Fact]
+    public async Task AdaptiveEvidenceLeftByAFailedCheckpointIsIgnoredAndReplacedAfterRetry()
+    {
+        _truncateFirst = true;
+        var fixture = NoteMaterialUploadStoreTests.Fixture.Create(16_000 * 60);
+        await Upload(fixture);
+        var (task, consent) = await StartMultimodalAsync(fixture, "多模态旧证据隔离");
+        await Run(task.TaskId);
+        Assert.Equal("Succeeded", (await Get(task.TaskId)).Phase);
+        Guid staleEvidenceId;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            staleEvidenceId = (await scope.ServiceProvider.GetRequiredService<PimDbContext>()
+                .NoteAsrSegmentEvidence.AsNoTracking().SingleAsync(x => x.OwnerId == _owner &&
+                    x.TaskId == task.TaskId)).Id;
+        }
+
+        // Simulate a process crash after evidence commit but before the checkpoint write.
+        var path = TaskPath(task.TaskId);
+        var checkpoint = JsonNode.Parse(await File.ReadAllTextAsync(path))!;
+        var step = checkpoint["steps"]![0]!;
+        step["attempts"]![0]!["evidenceId"] = null;
+        step["attempts"]![0]!["status"] = "Unknown";
+        step["attempts"]![0]!["errorMessage"] = "模拟 checkpoint 写入失败";
+        checkpoint["stopRequested"] = true;
+        checkpoint["completionAcknowledged"] = false;
+        await File.WriteAllTextAsync(path, checkpoint.ToJsonString());
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
+            var attempt = await db.NoteAsrAttempts.SingleAsync(x => x.Id == task.AttemptId);
+            attempt.State = "Unknown";
+            attempt.StopRequested = true;
+            attempt.UpdatedAt = DateTimeOffset.UtcNow;
+            await db.SaveChangesAsync();
+        }
+
+        var stale = await Get(task.TaskId);
+        Assert.True(stale.StopRequested);
+        var staleSegment = Assert.Single((await Segments(task.TaskId)).Items);
+        Assert.NotEqual("Succeeded", staleSegment.Status);
+        Assert.Null(staleSegment.EvidenceId);
+
+        var beforeRetry = JsonNode.Parse(await File.ReadAllTextAsync(path))!;
+        var oldRequestId = beforeRetry["steps"]![0]!["attempts"]![0]!["requestId"]!.GetValue<Guid>();
+        var oldEpoch = beforeRetry["steps"]![0]!["executionEpoch"]!.GetValue<Guid>();
+        _truncateFirst = false;
+        _truncateCall = _calls + 1;
+        var retried = await Data<NoteAsrTaskDto>(await _client.PostAsJsonAsync(
+            $"{Route}/{task.TaskId}/retry", new RetryNoteAsrRequest(Guid.NewGuid(), _owner,
+                stale.Revision, [0], consent, true)));
+        Assert.Equal("Queued", retried.Phase);
+        await Run(task.TaskId);
+
+        Assert.Equal("Succeeded", (await Get(task.TaskId)).Phase);
+        var segment = Assert.Single((await Segments(task.TaskId)).Items);
+        Assert.Equal("Succeeded", segment.Status);
+        Assert.DoesNotContain("丢弃的截断尾段", segment.Transcript);
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
+            var evidence = await db.NoteAsrSegmentEvidence.AsNoTracking()
+                .SingleAsync(x => x.OwnerId == _owner && x.TaskId == task.TaskId);
+            Assert.NotEqual(staleEvidenceId, evidence.Id);
+            var stepAfter = JsonNode.Parse(await File.ReadAllTextAsync(path))!;
+            var newRequestId = stepAfter["steps"]![0]!["attempts"]!.AsArray().Last()!["requestId"]!
+                .GetValue<Guid>();
+            var newEpoch = stepAfter["steps"]![0]!["executionEpoch"]!.GetValue<Guid>();
+            Assert.Equal("adaptive:" + newRequestId.ToString("N"), evidence.ProviderHandle);
+            Assert.Contains(newEpoch.ToString("D"), evidence.CoverageJson);
+            Assert.DoesNotContain(oldRequestId.ToString("N"), evidence.CoverageJson);
+            Assert.NotEqual(oldEpoch, newEpoch);
+        }
+    }
+
+    [Fact]
     public async Task AdaptiveConfigurationRejectionAfterPreparationPersistsTerminalAttemptWithoutProviderCall()
     {
         var multimodal = await Data<AiModelDto>(await _client.PostAsJsonAsync("/api/v1/ai/models",
@@ -905,6 +1047,27 @@ public sealed class NoteAsrTests : IAsyncLifetime
         _ = await Data<NoteAsrRouteConfigDto>(await _client.PutAsJsonAsync(
             "/api/v1/native-notes/asr-routing/config", new UpdateNoteAsrRouteConfigRequest(
                 current.Revision, NoteAsrRoute.Local, "local-model", "r1", null, "local-v1")));
+    }
+
+    private async Task<(NoteAsrTaskDto Task, AiAsrDestinationConsent Consent)> StartMultimodalAsync(
+        NoteMaterialUploadStoreTests.Fixture fixture, string name)
+    {
+        var multimodal = await Data<AiModelDto>(await _client.PostAsJsonAsync("/api/v1/ai/models",
+            new SaveAiModelRequest(name, _provider.Urls.Single() + "/v1/",
+                "mimo-v2.6-flash", true, [AiModelCapability.Transcription], 30, 1024,
+                "synthetic-multimodal-key", AsrPresetId: "mimo-multimodal")));
+        var current = await Data<NoteAsrRouteConfigDto>(await _client.GetAsync(
+            "/api/v1/native-notes/asr-routing/config"));
+        var routeConfig = await Data<NoteAsrRouteConfigDto>(await _client.PutAsJsonAsync(
+            "/api/v1/native-notes/asr-routing/config", new UpdateNoteAsrRouteConfigRequest(
+                current.Revision, NoteAsrRoute.CloudMultimodal, null, null, multimodal.Id, "batch-v1")));
+        var consent = new AiAsrDestinationConsent(multimodal.Id, multimodal.Revision,
+            multimodal.BaseUrl + "chat/completions", "mimo-multimodal", "1", true);
+        var task = await Data<NoteAsrTaskDto>(await _client.PostAsJsonAsync(Route,
+            new StartNoteAsrRequest(Guid.NewGuid(), _owner, fixture.Request.VersionId, consent, "zh",
+                new NoteAsrRouteConsent(NoteAsrRoute.CloudMultimodal, routeConfig.Revision,
+                    routeConfig.ConsentVersion, true, NoteAsrExecutionMode.Realtime))));
+        return (task, consent);
     }
 
     private sealed class RecordedJobs : Hangfire.IBackgroundJobClient

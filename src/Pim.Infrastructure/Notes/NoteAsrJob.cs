@@ -478,6 +478,7 @@ public sealed class NoteAsrJob(NoteAsrTaskStore tasks, NoteMaterialUploadStore m
         {
             recordFormat = "adaptive-transcription-v1",
             rootRequestId = step.Current.RequestId,
+            executionEpoch = executionEpoch,
             promptRevision = attemptEntity.PromptRevision,
             promptSha256 = attemptEntity.PromptSha256,
             children = run.Successes.Select(x => new
@@ -489,11 +490,13 @@ public sealed class NoteAsrJob(NoteAsrTaskStore tasks, NoteMaterialUploadStore m
             }).ToArray()
         }, Json);
         var resultSha = Sha256(transcript);
-        var providerHandle = "adaptive:" + step.Current.RequestId.ToString("N");
+        var providerHandle = NoteAsrAcceptedEvidence.AdaptiveProviderHandle(step.Current.RequestId);
         var evidenceId = Guid.Empty;
         // Retry uses the same account-scoped task lock. Holding it across the epoch check,
         // evidence insert and checkpoint update makes stale adaptive success either fully win
-        // before the retry or observe the retry and write nothing.
+        // before the retry or observe the retry and write nothing. The checkpoint is the only
+        // commit point: if its write fails, the just-inserted row is compensated so a later
+        // retry cannot be blocked by evidence that no checkpoint ever accepted.
         var recorded = await tasks.WithLockAsync(owner, async lockedCt =>
         {
             var current = await tasks.ReadAsync(owner, taskId, lockedCt);
@@ -503,49 +506,78 @@ public sealed class NoteAsrJob(NoteAsrTaskStore tasks, NoteMaterialUploadStore m
             var existing = await db.NoteAsrSegmentEvidence.SingleOrDefaultAsync(x => x.OwnerId == owner &&
                 x.AttemptId == attemptEntity.Id && x.FencingToken == attemptEntity.FencingToken &&
                 x.SegmentIndex == step.Index && x.ReceiptKind == "adaptive", lockedCt);
+            var referenced = existing is not null &&
+                CheckpointReferencesEvidence(current, step.Index, existing.Id);
+            var created = false;
+            if (existing is not null &&
+                !AdaptiveEvidenceMatches(existing, providerHandle, resultSha, coverage))
+            {
+                // A previous process may have committed evidence and then failed before the
+                // checkpoint, so nothing consumes it. Only a referenced row is immutable.
+                if (referenced)
+                    throw new DomainException(40901, "同一分片已有不同自适应成功证据，原记录保留");
+                db.NoteAsrSegmentEvidence.Remove(existing);
+                await db.SaveChangesAsync(lockedCt);
+                existing = null;
+            }
             if (existing is null)
             {
-                existing = new NoteAsrSegmentEvidenceEntity
+                var candidate = NewAdaptiveEvidence(owner, taskId, attemptEntity, step,
+                    providerHandle, transcript, resultSha, coverage);
+                db.NoteAsrSegmentEvidence.Add(candidate);
+                try
                 {
-                    OwnerId = owner, AttemptId = attemptEntity.Id, TaskId = taskId,
-                    VersionId = attemptEntity.VersionId, Route = attemptEntity.Route,
-                    FencingToken = attemptEntity.FencingToken, SegmentIndex = step.Index,
-                    RecordingId = step.RecordingId, RecordingSegment = step.RecordingSegment,
-                    ChunkIndex = step.ChunkIndex, SourceFileIndex = step.FileIndex,
-                    SourceSha256 = step.Sha256, SourceOffsetSamples = step.SourceOffset, Samples = step.Samples,
-                    ReceiptKind = "adaptive", ProviderHandle = providerHandle,
-                    ResultText = transcript, ResultSha256 = resultSha, CoverageJson = coverage
-                };
-                db.NoteAsrSegmentEvidence.Add(existing);
-                try { await db.SaveChangesAsync(lockedCt); }
+                    await db.SaveChangesAsync(lockedCt);
+                    existing = candidate;
+                    created = true;
+                }
                 catch (DbUpdateException error) when (IsUniqueViolation(error))
                 {
-                    db.Entry(existing).State = EntityState.Detached;
+                    db.Entry(candidate).State = EntityState.Detached;
                     existing = await db.NoteAsrSegmentEvidence.AsNoTracking().SingleOrDefaultAsync(x =>
                         x.OwnerId == owner && x.AttemptId == attemptEntity.Id &&
                         x.FencingToken == attemptEntity.FencingToken && x.SegmentIndex == step.Index &&
-                        x.ReceiptKind == "adaptive", lockedCt);
-                    if (existing is null || existing.ProviderHandle != providerHandle ||
-                        existing.ResultSha256 != resultSha || existing.CoverageJson != coverage)
-                        throw new DomainException(40901, "同一分片已有不同自适应成功证据，原记录保留");
+                        x.ReceiptKind == "adaptive", lockedCt)
+                        ?? throw new DomainException(40901, "同一分片已有不同自适应成功证据，原记录保留");
+                    referenced = CheckpointReferencesEvidence(current, step.Index, existing.Id);
+                    if (!AdaptiveEvidenceMatches(existing, providerHandle, resultSha, coverage))
+                    {
+                        if (referenced)
+                            throw new DomainException(40901,
+                                "同一分片已有不同自适应成功证据，原记录保留");
+                        db.NoteAsrSegmentEvidence.Remove(existing);
+                        await db.SaveChangesAsync(lockedCt);
+                        var replacement = NewAdaptiveEvidence(owner, taskId, attemptEntity, step,
+                            providerHandle, transcript, resultSha, coverage);
+                        db.NoteAsrSegmentEvidence.Add(replacement);
+                        await db.SaveChangesAsync(lockedCt);
+                        existing = replacement;
+                        created = true;
+                    }
                 }
             }
-            else if (existing.ProviderHandle != providerHandle || existing.ResultSha256 != resultSha ||
-                     existing.CoverageJson != coverage)
-                throw new DomainException(40901, "同一分片已有不同自适应成功证据，原记录保留");
             evidenceId = existing.Id;
-            await tasks.UpdateLockedAsync(owner, taskId, latest =>
+            try
             {
-                if (!EpochMatches(latest, step.Index, executionEpoch))
-                    throw new StaleExecutionException();
-                if (latest.AttemptId != attemptEntity.Id || latest.StopRequested) return;
-                var target = latest.Steps[step.Index].Current;
-                target.Status = "Succeeded";
-                target.ErrorMessage = null;
-                target.LogId = rootLogId;
-                target.EvidenceId = evidenceId;
-                latest.CompletionAcknowledged = latest.Steps.All(x => x.Current.Status == "Succeeded");
-            }, lockedCt);
+                await tasks.UpdateLockedAsync(owner, taskId, latest =>
+                {
+                    if (!EpochMatches(latest, step.Index, executionEpoch))
+                        throw new StaleExecutionException();
+                    if (latest.AttemptId != attemptEntity.Id || latest.StopRequested) return;
+                    var target = latest.Steps[step.Index].Current;
+                    target.Status = "Succeeded";
+                    target.ErrorMessage = null;
+                    target.LogId = rootLogId;
+                    target.EvidenceId = evidenceId;
+                    latest.CompletionAcknowledged = latest.Steps.All(x => x.Current.Status == "Succeeded");
+                }, lockedCt);
+            }
+            catch
+            {
+                if (created || !referenced)
+                    await TryDeleteUncommittedEvidenceAsync(owner, evidenceId);
+                throw;
+            }
             return true;
         }, ct);
         if (!recorded || evidenceId == Guid.Empty)
@@ -721,6 +753,52 @@ public sealed class NoteAsrJob(NoteAsrTaskStore tasks, NoteMaterialUploadStore m
 
     private static string Sha256(string value) =>
         Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value))).ToLowerInvariant();
+
+    private static bool AdaptiveEvidenceMatches(NoteAsrSegmentEvidenceEntity row,
+        string providerHandle, string resultSha, string coverage) =>
+        row.ProviderHandle == providerHandle && row.ResultSha256 == resultSha &&
+        string.Equals(row.CoverageJson, coverage, StringComparison.Ordinal);
+
+    private static NoteAsrSegmentEvidenceEntity NewAdaptiveEvidence(Guid owner, Guid taskId,
+        NoteAsrAttemptEntity attempt, NoteAsrStep step, string providerHandle, string transcript,
+        string resultSha, string coverage) => new()
+    {
+        OwnerId = owner, AttemptId = attempt.Id, TaskId = taskId, VersionId = attempt.VersionId,
+        Route = attempt.Route, FencingToken = attempt.FencingToken, SegmentIndex = step.Index,
+        RecordingId = step.RecordingId, RecordingSegment = step.RecordingSegment,
+        ChunkIndex = step.ChunkIndex, SourceFileIndex = step.FileIndex,
+        SourceSha256 = step.Sha256, SourceOffsetSamples = step.SourceOffset, Samples = step.Samples,
+        ReceiptKind = "adaptive", ProviderHandle = providerHandle, ResultText = transcript,
+        ResultSha256 = resultSha, CoverageJson = coverage
+    };
+
+    private static bool CheckpointReferencesEvidence(NoteAsrState state, int stepIndex, Guid evidenceId) =>
+        stepIndex >= 0 && stepIndex < state.Steps.Count &&
+        state.Steps[stepIndex].Current.EvidenceId == evidenceId;
+
+    /// <summary>
+    /// Best-effort compensation for a failed checkpoint write. Leaving the row behind is safe for
+    /// readers (acceptance requires the checkpoint reference), but deleting it lets a later retry
+    /// reuse the same attempt/fence/segment unique slot without waiting for recovery.
+    /// </summary>
+    private async Task TryDeleteUncommittedEvidenceAsync(Guid owner, Guid evidenceId)
+    {
+        try
+        {
+            var row = db.NoteAsrSegmentEvidence.Local.FirstOrDefault(x =>
+                    x.OwnerId == owner && x.Id == evidenceId)
+                ?? await db.NoteAsrSegmentEvidence.FirstOrDefaultAsync(x =>
+                    x.OwnerId == owner && x.Id == evidenceId, CancellationToken.None);
+            if (row is null) return;
+            db.NoteAsrSegmentEvidence.Remove(row);
+            await db.SaveChangesAsync(CancellationToken.None);
+        }
+        catch (Exception error) when (error is DbUpdateException or InvalidOperationException)
+        {
+            // The original checkpoint failure is the actionable error. A leftover row is ignored
+            // by readers and replaced on the next adaptive success for this segment.
+        }
+    }
 
     private static bool IsUniqueViolation(Exception error)
     {
