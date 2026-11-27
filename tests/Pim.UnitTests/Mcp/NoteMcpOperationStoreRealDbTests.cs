@@ -60,13 +60,15 @@ public sealed class NoteMcpOperationStoreRealDbTests
                 return Task.FromResult(Result(owner, noteId, requestIds[0], clock, "must not run"));
             }));
         Assert.Equal(40901, expired.ErrorCode);
-        Assert.Contains("保留期", expired.Message);
-        Assert.Equal("failed", expired.Receipt.Status);
+        Assert.Contains("不再保留", expired.Message);
+        Assert.Equal("applied", expired.Receipt.Status);
         Assert.Equal(40901, expired.Receipt.ErrorCode);
         Assert.Equal(205, calls);
 
         var status = await store.GetAsync(owner, noteId, requestIds[0], default);
         Assert.Equal("succeeded", status.State);
+        Assert.Equal("applied", status.Receipt.Status);
+        Assert.Contains("不再保留", status.Receipt.Message);
         Assert.Equal(NoteMcpOperationStore.BuildOperationId(owner, "test_operation",
             requestIds[0]), status.OperationId);
 
@@ -196,6 +198,158 @@ public sealed class NoteMcpOperationStoreRealDbTests
         Assert.Equal("succeeded", status.State);
         Assert.Equal("applied", status.Receipt.Status);
         Assert.Contains("超过保留期", status.Receipt.Message);
+    }
+
+    [SkippableFact]
+    public async Task BulkPurgeClearsExpiredResponsesAndKeepsIdentityAndNewResponse()
+    {
+        await using var database = await TempMigrationDatabase.CreateAsync(
+            "test_mcp_idempotency_bulk_expiry");
+        await database.MigrateAsync();
+        var options = Options(database.ConnectionString);
+        var clock = new ManualClock(new DateTimeOffset(2026, 11, 27, 0, 0, 0, TimeSpan.Zero));
+        var store = new NoteMcpOperationStore(new PostgresNoteMcpOperationLedger(options), clock);
+        var owner = Guid.NewGuid();
+        var noteId = Guid.NewGuid();
+        var oldRequestId = Guid.NewGuid();
+        var newRequestId = Guid.NewGuid();
+
+        await RunAsync(store, owner, noteId, oldRequestId, new { value = "old" }, _ =>
+            Task.FromResult(Result(owner, noteId, oldRequestId, clock, "old-response")));
+        clock.Advance(TimeSpan.FromDays(31));
+        await RunAsync(store, owner, noteId, newRequestId, new { value = "new" }, _ =>
+            Task.FromResult(Result(owner, noteId, newRequestId, clock, "new-response")));
+
+        var oldRow = await database.Db.NoteMcpOperations.AsNoTracking()
+            .SingleAsync(x => x.OwnerId == owner && x.RequestId == oldRequestId);
+        Assert.Equal("completed", oldRow.State);
+        Assert.Equal(owner, oldRow.OwnerId);
+        Assert.Equal(oldRequestId, oldRow.RequestId);
+        Assert.Equal(noteId, oldRow.NoteId);
+        Assert.Equal("test_operation", oldRow.Operation);
+        Assert.Equal(NoteMcpOperationStore.BuildOperationId(owner, "test_operation",
+            oldRequestId), oldRow.OperationId);
+        Assert.False(string.IsNullOrWhiteSpace(oldRow.Fingerprint));
+        Assert.Null(oldRow.ResponseJson);
+        Assert.NotNull(oldRow.ResponsePurgedAt);
+
+        var newRow = await database.Db.NoteMcpOperations.AsNoTracking()
+            .SingleAsync(x => x.OwnerId == owner && x.RequestId == newRequestId);
+        Assert.Equal("completed", newRow.State);
+        Assert.NotNull(newRow.ResponseJson);
+        Assert.Null(newRow.ResponsePurgedAt);
+
+        var replay = await RunAsync(store, owner, noteId, newRequestId, new { value = "new" }, _ =>
+            throw new InvalidOperationException("must not execute a retained response"));
+        Assert.True(replay.Receipt.Replayed);
+        Assert.Equal("new-response", replay.Result);
+
+        var oldStatus = await store.GetAsync(owner, noteId, oldRequestId, default);
+        Assert.Equal("succeeded", oldStatus.State);
+        Assert.Equal("applied", oldStatus.Receipt.Status);
+        Assert.Contains("超过保留期", oldStatus.Receipt.Message);
+    }
+
+    [SkippableFact]
+    public async Task OwnerCapacityRejectsNewIdentityAndKeepsReplayAndUnknown()
+    {
+        await using var database = await TempMigrationDatabase.CreateAsync(
+            "test_mcp_idempotency_capacity");
+        await database.MigrateAsync();
+        var options = Options(database.ConnectionString);
+        var clock = new ManualClock(new DateTimeOffset(2026, 11, 27, 0, 0, 0, TimeSpan.Zero));
+        var store = new NoteMcpOperationStore(new PostgresNoteMcpOperationLedger(options), clock,
+            maxIdentityRowsPerOwner: 2);
+        var owner = Guid.NewGuid();
+        var noteId = Guid.NewGuid();
+        var completedId = Guid.NewGuid();
+        var pendingId = Guid.NewGuid();
+        var rejectedId = Guid.NewGuid();
+        var calls = 0;
+
+        await RunAsync(store, owner, noteId, completedId, new { value = 1 }, _ =>
+        {
+            calls++;
+            return Task.FromResult(Result(owner, noteId, completedId, clock, "done"));
+        });
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            RunAsync(store, owner, noteId, pendingId, new { value = 2 }, _ =>
+            {
+                calls++;
+                throw new OperationCanceledException("synthetic pending");
+            }));
+
+        var rejected = await Assert.ThrowsAsync<DomainException>(() =>
+            RunAsync(store, owner, noteId, rejectedId, new { value = 3 }, _ =>
+            {
+                calls++;
+                return Task.FromResult(Result(owner, noteId, rejectedId, clock, "must not run"));
+            }));
+        Assert.Equal(40901, rejected.ErrorCode);
+        Assert.Contains("容量上限", rejected.Message);
+        Assert.DoesNotContain("requestId", rejected.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(2, calls);
+        Assert.Equal(2, await database.Db.NoteMcpOperations
+            .CountAsync(x => x.OwnerId == owner));
+        Assert.False(await database.Db.NoteMcpOperations.AsNoTracking()
+            .AnyAsync(x => x.OwnerId == owner && x.RequestId == rejectedId));
+
+        var replay = await RunAsync(store, owner, noteId, completedId, new { value = 1 }, _ =>
+        {
+            calls++;
+            return Task.FromResult(Result(owner, noteId, completedId, clock, "must not run"));
+        });
+        Assert.True(replay.Receipt.Replayed);
+        Assert.Equal("done", replay.Result);
+
+        var pendingRetry = await Assert.ThrowsAsync<NativeNoteMcpOperationException>(() =>
+            RunAsync(store, owner, noteId, pendingId, new { value = 2 }, _ =>
+            {
+                calls++;
+                return Task.FromResult(Result(owner, noteId, pendingId, clock, "must not run"));
+            }));
+        Assert.Equal("unknown", pendingRetry.Receipt.Status);
+        Assert.Equal(2, calls);
+    }
+
+    [SkippableFact]
+    public async Task OwnerCapacityIsAtomicAcrossConcurrentInstances()
+    {
+        await using var database = await TempMigrationDatabase.CreateAsync(
+            "test_mcp_idempotency_capacity_concurrent");
+        await database.MigrateAsync();
+        var options = Options(database.ConnectionString);
+        var clock = new ManualClock(new DateTimeOffset(2026, 11, 27, 0, 0, 0, TimeSpan.Zero));
+        var owner = Guid.NewGuid();
+        var noteId = Guid.NewGuid();
+        var calls = 0;
+        var requestIds = Enumerable.Range(0, 8).Select(_ => Guid.NewGuid()).ToArray();
+
+        async Task<string> AttemptAsync(Guid requestId, int index)
+        {
+            var store = new NoteMcpOperationStore(new PostgresNoteMcpOperationLedger(options),
+                clock, maxIdentityRowsPerOwner: 3);
+            try
+            {
+                await RunAsync(store, owner, noteId, requestId, new { value = index }, _ =>
+                {
+                    Interlocked.Increment(ref calls);
+                    return Task.FromResult(Result(owner, noteId, requestId, clock, "ok"));
+                });
+                return "inserted";
+            }
+            catch (DomainException error) when (error.ErrorCode == 40901)
+            {
+                return "capacity";
+            }
+        }
+
+        var outcomes = await Task.WhenAll(requestIds.Select(AttemptAsync));
+        Assert.Equal(3, outcomes.Count(item => item == "inserted"));
+        Assert.Equal(5, outcomes.Count(item => item == "capacity"));
+        Assert.Equal(3, calls);
+        Assert.Equal(3, await database.Db.NoteMcpOperations
+            .CountAsync(x => x.OwnerId == owner));
     }
 
     [SkippableFact]
@@ -364,10 +518,11 @@ public sealed class NoteMcpOperationStoreRealDbTests
     private sealed class InsertBarrierLedger(INoteMcpOperationLedger inner,
         InsertBarrier barrier) : INoteMcpOperationLedger
     {
-        public async Task<bool> TryInsertAsync(NoteMcpOperationRow row, CancellationToken ct)
+        public async Task<NoteMcpOperationClaim> TryInsertAsync(NoteMcpOperationRow row,
+            int maxIdentityRowsPerOwner, CancellationToken ct)
         {
             await barrier.WaitAsync(ct);
-            return await inner.TryInsertAsync(row, ct);
+            return await inner.TryInsertAsync(row, maxIdentityRowsPerOwner, ct);
         }
 
         public Task<NoteMcpOperationRow?> FindAsync(Guid owner, Guid requestId,
@@ -392,8 +547,9 @@ public sealed class NoteMcpOperationStoreRealDbTests
     private sealed class PurgeFailingLedger(INoteMcpOperationLedger inner)
         : INoteMcpOperationLedger
     {
-        public Task<bool> TryInsertAsync(NoteMcpOperationRow row, CancellationToken ct)
-            => inner.TryInsertAsync(row, ct);
+        public Task<NoteMcpOperationClaim> TryInsertAsync(NoteMcpOperationRow row,
+            int maxIdentityRowsPerOwner, CancellationToken ct)
+            => inner.TryInsertAsync(row, maxIdentityRowsPerOwner, ct);
 
         public Task<NoteMcpOperationRow?> FindAsync(Guid owner, Guid requestId,
             CancellationToken ct) => inner.FindAsync(owner, requestId, ct);

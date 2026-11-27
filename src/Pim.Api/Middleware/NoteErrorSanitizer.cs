@@ -1,5 +1,6 @@
 using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Http;
+using Pim.Core.Notes;
 
 namespace Pim.Api.Middleware;
 
@@ -31,12 +32,25 @@ public static class NoteErrorSanitizer
 
     public static string SanitizeDomainMessage(string message, int statusCode)
     {
-        if (statusCode == StatusCodes.Status409Conflict &&
-            message.Contains("响应已超过保留期", StringComparison.Ordinal))
-            return "该操作结果已超过保留期，请先读取最新状态，再使用新的请求标识继续";
+        if (statusCode == StatusCodes.Status409Conflict)
+        {
+            if (ContainsAny(message, "响应已超过保留期", "response retention expired",
+                    "response expired"))
+                return NativeNoteMcpOperationMessages.ResponseExpired;
+            if (ContainsAny(message, "响应已不再保留", "response no longer retained",
+                    "response was purged"))
+                return NativeNoteMcpOperationMessages.ResponseNoLongerRetained;
+            if (ContainsAny(message, "幂等记录已达容量上限",
+                    "idempotency identity capacity reached"))
+                return NativeNoteMcpOperationMessages.IdentityCapacityExceeded;
+        }
 
         return InternalPattern.IsMatch(message) ? FallbackMessage(statusCode) : message;
     }
+
+    private static bool ContainsAny(string message, params string[] fragments)
+        => fragments.Any(fragment =>
+            message.Contains(fragment, StringComparison.OrdinalIgnoreCase));
 
     public static string BadRequestMessage(string? rawDetail, bool includeDiagnostics) =>
         includeDiagnostics ? $"请求参数格式无效: {rawDetail}" : "请求参数格式无效";

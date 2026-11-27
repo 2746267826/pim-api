@@ -280,7 +280,7 @@ public sealed class NoteMcpOperationStoreTests
     }
 
     [Fact]
-    public async Task MoreThanTwoHundredRequestsKeepIdentityAndExpiredReplayFailsClosed()
+    public async Task MoreThanTwoHundredResponsesKeepIdentityAndEvictedReplayFailsClosed()
     {
         var store = Store();
         var calls = 0;
@@ -311,13 +311,15 @@ public sealed class NoteMcpOperationStoreTests
                 return Task.FromResult(Result(requestIds[0], "must not run"));
             }));
         Assert.Equal(40901, expired.ErrorCode);
-        Assert.Contains("保留期", expired.Message);
-        Assert.Equal("failed", expired.Receipt.Status);
+        Assert.Contains("不再保留", expired.Message);
+        Assert.Equal("applied", expired.Receipt.Status);
         Assert.Equal(40901, expired.Receipt.ErrorCode);
         Assert.Equal(205, calls);
 
         var status = await store.GetAsync(_owner, _noteId, requestIds[0], default);
         Assert.Equal("succeeded", status.State);
+        Assert.Equal("applied", status.Receipt.Status);
+        Assert.Contains("不再保留", status.Receipt.Message);
         Assert.Equal(OperationId(requestIds[0]), status.OperationId);
 
         var conflict = await Assert.ThrowsAsync<NativeNoteMcpOperationException>(() =>
@@ -337,6 +339,59 @@ public sealed class NoteMcpOperationStoreTests
         Assert.Equal(requestIds[^1].ToString("D"), recent.Result);
         Assert.True(recent.Receipt.Replayed);
         Assert.Equal(205, calls);
+    }
+
+    [Fact]
+    public async Task OwnerCapacityRejectsNewRequestIdsWhileExistingIdentitiesStayReconcilable()
+    {
+        var store = Store(maxIdentityRowsPerOwner: 2);
+        var completedId = Guid.NewGuid();
+        var pendingId = Guid.NewGuid();
+        var calls = 0;
+
+        await RunAsync(store, completedId, new { value = 1 }, _ =>
+        {
+            calls++;
+            return Task.FromResult(Result(completedId, "done"));
+        });
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            RunAsync(store, pendingId, new { value = 2 }, _ =>
+            {
+                calls++;
+                throw new OperationCanceledException("synthetic pending");
+            }));
+
+        var rejectedId = Guid.NewGuid();
+        var rejected = await Assert.ThrowsAsync<DomainException>(() =>
+            RunAsync(store, rejectedId, new { value = 3 }, _ =>
+            {
+                calls++;
+                return Task.FromResult(Result(rejectedId, "must not run"));
+            }));
+        Assert.Equal(40901, rejected.ErrorCode);
+        Assert.Contains("容量上限", rejected.Message);
+        Assert.DoesNotContain("requestId", rejected.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("请求标识", rejected.Message, StringComparison.Ordinal);
+        Assert.Equal(2, _ledger.Count(_owner));
+        Assert.Throws<InvalidOperationException>(() => _ledger.Require(_owner, rejectedId));
+        Assert.Equal(2, calls);
+
+        var replay = await RunAsync(store, completedId, new { value = 1 }, _ =>
+        {
+            calls++;
+            return Task.FromResult(Result(completedId, "must not run"));
+        });
+        Assert.True(replay.Receipt.Replayed);
+        Assert.Equal("done", replay.Result);
+
+        var pendingRetry = await Assert.ThrowsAsync<NativeNoteMcpOperationException>(() =>
+            RunAsync(store, pendingId, new { value = 2 }, _ =>
+            {
+                calls++;
+                return Task.FromResult(Result(pendingId, "must not run"));
+            }));
+        Assert.Equal("unknown", pendingRetry.Receipt.Status);
+        Assert.Equal(2, calls);
     }
 
     [Fact]
@@ -589,7 +644,8 @@ public sealed class NoteMcpOperationStoreTests
         Assert.Equal(1, calls);
     }
 
-    private NoteMcpOperationStore Store() => new(_ledger, _clock);
+    private NoteMcpOperationStore Store(int? maxIdentityRowsPerOwner = null)
+        => new(_ledger, _clock, maxIdentityRowsPerOwner: maxIdentityRowsPerOwner);
 
     private Task<NativeNoteMcpOperationResultDto<string>> RunAsync(
         NoteMcpOperationStore store, Guid requestId, object fingerprintInput,
@@ -626,14 +682,19 @@ public sealed class NoteMcpOperationStoreTests
 
         public bool FailPurge { get; set; }
 
-        public async Task<bool> TryInsertAsync(NoteMcpOperationRow row, CancellationToken ct)
+        public async Task<NoteMcpOperationClaim> TryInsertAsync(NoteMcpOperationRow row,
+            int maxIdentityRowsPerOwner, CancellationToken ct)
         {
             await Task.Yield();
             lock (_gate)
             {
-                if (_rows.ContainsKey((row.OwnerId, row.RequestId))) return false;
+                if (_rows.ContainsKey((row.OwnerId, row.RequestId)))
+                    return NoteMcpOperationClaim.AlreadyExists;
+                if (_rows.Values.Count(item => item.OwnerId == row.OwnerId) >=
+                    maxIdentityRowsPerOwner)
+                    return NoteMcpOperationClaim.CapacityExceeded;
                 _rows[(row.OwnerId, row.RequestId)] = row;
-                return true;
+                return NoteMcpOperationClaim.Inserted;
             }
         }
 

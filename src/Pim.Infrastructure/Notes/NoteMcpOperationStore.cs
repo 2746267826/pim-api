@@ -4,6 +4,7 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using Pim.Core.Exceptions;
 using Pim.Core.Notes;
 
@@ -20,8 +21,9 @@ namespace Pim.Infrastructure.Notes;
 /// same identity. A pending marker is committed before the mutation starts. If the process stops
 /// after the mutation but before the result is written, the next call reports an unconfirmed
 /// outcome instead of executing the same mutation again. Completed/failed/unknown identities and
-/// fingerprints are never pruned; retention only removes the replay response body, after which an
-/// old request id fails closed with an explicit expired-result conflict.
+/// fingerprints are never evicted while an owner is below its hard identity capacity; retention
+/// only removes the replay response body. At the capacity boundary new request ids fail closed
+/// before any mutation runs, while existing request ids remain replayable/queryable.
 /// </para>
 /// </summary>
 public sealed class NoteMcpOperationStore
@@ -32,13 +34,18 @@ public sealed class NoteMcpOperationStore
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
     private readonly INoteMcpOperationLedger _ledger;
     private readonly TimeProvider _clock;
+    private readonly int _maxIdentityRowsPerOwner;
     private readonly ILogger<NoteMcpOperationStore>? _logger;
 
     internal NoteMcpOperationStore(INoteMcpOperationLedger ledger, TimeProvider? clock = null,
-        ILogger<NoteMcpOperationStore>? logger = null)
+        ILogger<NoteMcpOperationStore>? logger = null, int? maxIdentityRowsPerOwner = null)
     {
         _ledger = ledger;
         _clock = clock ?? TimeProvider.System;
+        _maxIdentityRowsPerOwner = maxIdentityRowsPerOwner ??
+            NoteMcpOperationOptions.DefaultMaxIdentityRowsPerOwner;
+        if (_maxIdentityRowsPerOwner <= 0)
+            throw new ArgumentOutOfRangeException(nameof(maxIdentityRowsPerOwner));
         _logger = logger;
     }
 
@@ -46,7 +53,9 @@ public sealed class NoteMcpOperationStore
     public static NoteMcpOperationStore Create(IServiceProvider services)
         => new(services.GetRequiredService<INoteMcpOperationLedger>(),
             services.GetService<TimeProvider>(),
-            services.GetService<ILogger<NoteMcpOperationStore>>());
+            services.GetService<ILogger<NoteMcpOperationStore>>(),
+            services.GetService<IOptions<NoteMcpOperationOptions>>()?
+                .Value.MaxIdentityRowsPerOwner);
 
     public async Task<NativeNoteMcpOperationResultDto<T>> RunAsync<T>(Guid owner, Guid requestId,
         Guid noteId, string operation, object fingerprintInput,
@@ -66,7 +75,16 @@ public sealed class NoteMcpOperationStore
 
         // The INSERT is the cross-instance single-winner claim. A process crash after this
         // commit leaves a pending tombstone, which all later retries must fail closed on.
-        if (!await _ledger.TryInsertAsync(pending, ct))
+        var claim = await _ledger.TryInsertAsync(pending, _maxIdentityRowsPerOwner, ct);
+        if (claim == NoteMcpOperationClaim.CapacityExceeded)
+        {
+            _logger?.LogWarning(
+                "Native-note MCP idempotency identity capacity reached for owner {Owner} " +
+                "(limit {Limit})", owner, _maxIdentityRowsPerOwner);
+            throw new DomainException(40901,
+                NativeNoteMcpOperationMessages.IdentityCapacityExceeded);
+        }
+        if (claim == NoteMcpOperationClaim.AlreadyExists)
         {
             var existing = await _ledger.FindAsync(owner, requestId, ct)
                 ?? throw new DomainException(40901,

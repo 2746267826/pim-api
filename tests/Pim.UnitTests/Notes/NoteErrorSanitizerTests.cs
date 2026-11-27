@@ -5,6 +5,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Pim.Api.Middleware;
 using Pim.Core.Exceptions;
+using Pim.Core.Notes;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
 using Pim.Infrastructure.Data.Entities;
@@ -59,15 +60,33 @@ public class NoteErrorSanitizerTests
             NoteErrorSanitizer.SanitizeDomainMessage(message, 409));
     }
 
+    [Theory]
+    [InlineData("该 requestId 已执行成功，但原响应已超过保留期；操作身份与输入指纹仍保留。",
+        "该操作结果已超过保留期，请先读取最新状态，再使用新的请求标识继续")]
+    [InlineData("该 requestId 已执行成功，但原响应已不再保留；操作身份与输入指纹仍保留。",
+        "该操作结果已不再保留，请先读取最新状态，再使用新的请求标识继续")]
+    [InlineData("requestId response no longer retained",
+        "该操作结果已不再保留，请先读取最新状态，再使用新的请求标识继续")]
+    [InlineData("requestId response retention expired",
+        "该操作结果已超过保留期，请先读取最新状态，再使用新的请求标识继续")]
+    public void KeepsUnavailableOperationConflictActionableWithoutEchoingRequestId(
+        string message, string expected)
+    {
+        var sanitized = NoteErrorSanitizer.SanitizeDomainMessage(message, 409);
+
+        Assert.Equal(expected, sanitized);
+        Assert.DoesNotContain("requestId", sanitized, StringComparison.OrdinalIgnoreCase);
+    }
+
     [Fact]
-    public void KeepsExpiredOperationConflictActionableWithoutEchoingRequestId()
+    public void KeepsIdentityCapacityConflictActionableWithoutEchoingRequestId()
     {
         const string message =
-            "该 requestId 已执行成功，但原响应已超过保留期；操作身份与输入指纹仍保留。";
+            "该 requestId 的幂等记录已达容量上限，无法开始新的写入；已有重试不受影响。";
 
         var sanitized = NoteErrorSanitizer.SanitizeDomainMessage(message, 409);
 
-        Assert.Equal("该操作结果已超过保留期，请先读取最新状态，再使用新的请求标识继续", sanitized);
+        Assert.Equal(NativeNoteMcpOperationMessages.IdentityCapacityExceeded, sanitized);
         Assert.DoesNotContain("requestId", sanitized, StringComparison.OrdinalIgnoreCase);
     }
 

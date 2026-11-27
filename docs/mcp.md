@@ -72,6 +72,7 @@ AI Agent --(MCP stdio 或 HTTP + Bearer)--> Pim.Api 进程内 MCP Server (.NET 8
 |---|---|---|
 | `MCP:Enabled` | `true` | `/mcp` 端点总开关 |
 | `MCP:Path` | `/mcp` | Streamable HTTP 端点路径 |
+| `NativeNotes:McpIdempotency:MaxIdentityRowsPerOwner` | `10000` | 每个 owner 永久保留的写入 requestId 身份行硬上限；达到上限后新 requestId 在 mutation 前 fail closed |
 | 环境变量 `PIM_ACCESS_TOKEN`/`PIM_TOKEN`/`MCP_BEARER_TOKEN` | - | stdio 模式 Bearer（选一）|
 | 环境变量 `PIM_TOKEN_FILE`/`PIM_TOKEN_PATH` | `<app>/.token` | stdio 刷新：token 文件（plain JWT 或 JSON `{accessToken, refreshToken}`），按 mtime 热重载 |
 | 环境变量 `PIM_REFRESH_TOKEN` | - | stdio 刷新：401 时自动 `POST /api/v1/auth/refresh` |
@@ -3136,7 +3137,9 @@ async def get_version(-) -> Any: ...
 
 > 原生笔记没有 archive/Archived 状态：文件夹用于日常归档，删除只进回收站。请求体上限：`/mcp` 为 96 MiB（覆盖 64 MB ZIP 的 base64 JSON-RPC），反向代理需同步放宽。所有写操作返回 `operationId`（`nop_...`）；失败/未知结果不猜测成功，可用 `get_native_note_operation` 按 requestId 对账。
 >
-> 写入 requestId 的身份与输入指纹持久保存在 PostgreSQL，按 owner + requestId 唯一，并由所有 API 实例共享。completed/failed/unknown 的身份和指纹不会因响应清理消失；清理只移除已完成操作的响应体。每次成功写入后会尽力清除超过 30 天及超出每个 owner 最近 200 条的响应体，这是 best-effort 容量整理，不是严格的行数上限。Get 和 replay 都独立检查响应是否仍可用：超过 30 天的响应即使清理失败也不会重放，replay 返回 409；Get 返回 `state=succeeded` 和原始 receipt 状态，并说明响应已超过保留期。因 200 条整理而提前移除的响应，Get 仍返回 `state=succeeded`，但提示响应不再保留；replay 同样返回 409。超过 30 天的 Get/replay 会按 owner + requestId 尝试单行响应清理，清理最多等待 2 秒且失败不改变上述 fail-closed 语义。pending/unknown 永远保留并继续 fail closed。为保证旧 requestId 永不重新执行，身份墓碑没有行数上限，表规模随唯一写请求数增长；当前没有自动归档或删除策略，部署方需将其作为存储容量监控项。
+> 写入 requestId 的身份与输入指纹持久保存在 PostgreSQL，按 owner + requestId 唯一，并由所有 API 实例共享。completed/failed/unknown 的身份和指纹不会因响应清理消失；清理只移除已完成操作的响应体。每次成功写入后会尽力清除超过 30 天及超出每个 owner 最近 200 条的响应体，这是 best-effort 响应整理，不是身份行的删除策略。Get 和 replay 都独立检查响应是否仍可用：超过 30 天的响应即使清理失败也不会重放，replay 返回 409；Get 返回 `state=succeeded` 和原始 receipt 状态，并说明响应已超过保留期。因 200 条整理而提前移除的响应，Get 仍返回 `state=succeeded`，但提示响应不再保留；replay 同样返回 409。超过 30 天的 Get/replay 会按 owner + requestId 尝试单行响应清理，清理最多等待 2 秒且失败不改变上述 fail-closed 语义。pending/unknown 永远保留并继续 fail closed。
+>
+> 身份墓碑按 owner 有硬容量上限：默认 10000 行，可用 `NativeNotes:McpIdempotency:MaxIdentityRowsPerOwner` 调整。pending/unknown/failed/completed 都计入容量，且不会为了腾出空间而删除任何可能仍会被重试的身份。达到上限后，新 requestId 会在业务 mutation 开始前以 409 fail closed 拒绝，并提示已有写入的重试与状态查询不受影响、联系管理员扩容；已有 requestId 的 replay/Get 仍按原语义工作。因此单 owner 的身份行数量有明确上界，整表规模上界为 owner 数 × 该上限；部署方仍需监控表大小，但不再存在单个 owner 无界增长的墓碑。
 >
 > 本切片未包含：笔记正文 create/update、文件夹/标签管理、彻底删除/清空回收站、ASR 片段级重试、按板块采用。
 

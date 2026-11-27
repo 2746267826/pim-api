@@ -14,16 +14,21 @@ internal static class NoteMcpOperationStates
 
 internal static class NoteMcpOperationRetention
 {
-    /// <summary>Completed response bodies retained per owner. Identity rows are never capped.</summary>
+    /// <summary>Completed response bodies retained per owner.</summary>
     public const int MaxCompletedResponses = 200;
 
-    /// <summary>Completed response bodies older than this are purged. Identity rows remain.</summary>
+    /// <summary>
+    /// Completed response bodies older than this are purged. Identity rows are bounded by
+    /// <see cref="NoteMcpOperationOptions.MaxIdentityRowsPerOwner"/> instead.
+    /// </summary>
     public static readonly TimeSpan ResponseRetention = TimeSpan.FromDays(30);
 }
 
 /// <summary>
 /// One durable request-id binding. <see cref="ResponseJson"/> is the only field that may be
-/// cleared by retention; state, fingerprint and the composite identity remain forever.
+/// cleared by retention; state, fingerprint and the composite identity remain until the owner's
+/// hard capacity is reached, after which new identities fail closed instead of evicting any
+/// existing identity.
 /// </summary>
 internal sealed record NoteMcpOperationRow(
     Guid OwnerId,
@@ -43,13 +48,37 @@ internal sealed record NoteMcpOperationRow(
     int? ErrorCode,
     string? ErrorMessage);
 
+/// <summary>Hard per-owner capacity for permanent native-note request-id identities.</summary>
+public sealed class NoteMcpOperationOptions
+{
+    public const int DefaultMaxIdentityRowsPerOwner = 10_000;
+
+    /// <summary>
+    /// Maximum identity rows retained for one owner. Pending, failed, unknown and completed
+    /// identities all count. Once the cap is reached, new request ids are rejected before any
+    /// mutation runs; existing request ids stay replayable/queryable.
+    /// </summary>
+    public int MaxIdentityRowsPerOwner { get; set; } = DefaultMaxIdentityRowsPerOwner;
+
+    public bool IsValid() => MaxIdentityRowsPerOwner > 0;
+}
+
+internal enum NoteMcpOperationClaim
+{
+    Inserted,
+    AlreadyExists,
+    CapacityExceeded,
+}
+
 internal interface INoteMcpOperationLedger
 {
     /// <summary>
-    /// Atomically inserts the pending marker. Returns false when any instance already owns
-    /// this (owner, request id) pair; callers must then load and validate the existing row.
+    /// Atomically inserts the pending marker unless the owner already owns this
+    /// (owner, request id) pair or has reached the hard identity capacity. Capacity accounting
+    /// is serialized per owner, so concurrent instances cannot exceed the cap.
     /// </summary>
-    Task<bool> TryInsertAsync(NoteMcpOperationRow row, CancellationToken ct);
+    Task<NoteMcpOperationClaim> TryInsertAsync(NoteMcpOperationRow row,
+        int maxIdentityRowsPerOwner, CancellationToken ct);
 
     Task<NoteMcpOperationRow?> FindAsync(Guid owner, Guid requestId, CancellationToken ct);
 
@@ -77,19 +106,52 @@ internal interface INoteMcpOperationLedger
 internal sealed class PostgresNoteMcpOperationLedger(DbContextOptions<PimDbContext> options)
     : INoteMcpOperationLedger
 {
-    public async Task<bool> TryInsertAsync(NoteMcpOperationRow row, CancellationToken ct)
+    private const int CapacityLockNamespace = 0x4E4D4350;
+
+    public async Task<NoteMcpOperationClaim> TryInsertAsync(NoteMcpOperationRow row,
+        int maxIdentityRowsPerOwner, CancellationToken ct)
     {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxIdentityRowsPerOwner);
         await using var db = new PimDbContext(options);
-        var affected = await db.Database.ExecuteSqlInterpolatedAsync($"""
-            INSERT INTO "note_mcp_operations"
-                ("owner_id", "request_id", "note_id", "operation", "operation_id",
-                 "fingerprint", "state", "created_at")
-            VALUES
-                ({row.OwnerId}, {row.RequestId}, {row.NoteId}, {row.Operation},
-                 {row.OperationId}, {row.Fingerprint}, {row.State}, {row.CreatedAt})
-            ON CONFLICT ("owner_id", "request_id") DO NOTHING
-            """, ct);
-        return affected == 1;
+        var strategy = db.Database.CreateExecutionStrategy();
+        return await strategy.ExecuteAsync(async () =>
+        {
+            await using var transaction = await db.Database.BeginTransactionAsync(ct);
+
+            // Serialize the count+insert pair for one owner. The count is a separate command
+            // after the advisory lock is acquired, so its READ COMMITTED snapshot includes the
+            // previous holder's committed identities.
+            await db.Database.ExecuteSqlInterpolatedAsync($"""
+                SELECT pg_advisory_xact_lock(
+                    {CapacityLockNamespace}, hashtext({row.OwnerId.ToString("D")}))
+                """, ct);
+            var affected = await db.Database.ExecuteSqlInterpolatedAsync($"""
+                INSERT INTO "note_mcp_operations"
+                    ("owner_id", "request_id", "note_id", "operation", "operation_id",
+                     "fingerprint", "state", "created_at")
+                SELECT {row.OwnerId}, {row.RequestId}, {row.NoteId}, {row.Operation},
+                       {row.OperationId}, {row.Fingerprint}, {row.State}, {row.CreatedAt}
+                WHERE (
+                    SELECT count(*) FROM "note_mcp_operations"
+                    WHERE "owner_id" = {row.OwnerId}
+                ) < {maxIdentityRowsPerOwner}
+                ON CONFLICT ("owner_id", "request_id") DO NOTHING
+                """, ct);
+            if (affected == 1)
+            {
+                await transaction.CommitAsync(ct);
+                return NoteMcpOperationClaim.Inserted;
+            }
+
+            // A full ledger must not hide an existing request id: retries and lookups of old
+            // identities remain valid even when no new identity can be admitted.
+            var exists = await db.NoteMcpOperations.AsNoTracking()
+                .AnyAsync(x => x.OwnerId == row.OwnerId && x.RequestId == row.RequestId, ct);
+            await transaction.CommitAsync(ct);
+            return exists
+                ? NoteMcpOperationClaim.AlreadyExists
+                : NoteMcpOperationClaim.CapacityExceeded;
+        });
     }
 
     public async Task<NoteMcpOperationRow?> FindAsync(Guid owner, Guid requestId,
