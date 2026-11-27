@@ -1466,10 +1466,11 @@ public sealed class NoteProcessingTests(NoteProcessingFixture host)
         Assert.True(afterEnsure.StopRequested);
         Assert.All(afterEnsure.Steps, step => Assert.Equal("Blocked", step.Current.Status));
 
-        var rejected = await Assert.ThrowsAsync<DomainException>(() => asrService.RetryAsync(taskId,
+        var rejected = await client.PostAsJsonAsync(
+            $"/api/v1/native-notes/asr-tasks/{taskId}/retry",
             new RetryNoteAsrRequest(Guid.NewGuid(), owner.UserId, afterEnsure.Revision, [0],
-                afterEnsure.Request.Consent, true), CancellationToken.None));
-        Assert.Equal(40901, rejected.ErrorCode);
+                afterEnsure.Request.Consent, true));
+        Assert.Equal(HttpStatusCode.Conflict, rejected.StatusCode);
         var afterRetry = await AsrTaskAsync(owner.UserId, taskId);
         Assert.Equal(afterEnsure.Revision, afterRetry.Revision);
         Assert.Empty(afterRetry.Retries);
