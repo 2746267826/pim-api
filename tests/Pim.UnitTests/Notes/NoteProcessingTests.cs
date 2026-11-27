@@ -464,12 +464,6 @@ public sealed class NoteProcessingTests(NoteProcessingFixture host)
         var planResponse = await client.GetAsync(
             $"{Processing}/plan?noteId={material.NoteId}&versionId={material.VersionId}");
         var planJson = JsonNode.Parse(await planResponse.Content.ReadAsStringAsync())!["data"]!;
-        var asrTarget = planJson["targets"]!.AsArray()
-            .Single(target => target!["kind"]!.GetValue<string>() == "Asr")!;
-        Assert.Equal(route.Revision.ToString("D"),
-            asrTarget["routeConfigRevision"]!.GetValue<string>());
-        Assert.Equal("synthetic-cloud-consent-v1",
-            asrTarget["routeConsentVersion"]!.GetValue<string>());
         var plan = planJson.Deserialize<NoteProcessingPlanDto>(Json)!;
 
         using (var scope = host.Factory.Services.CreateScope())
@@ -489,6 +483,13 @@ public sealed class NoteProcessingTests(NoteProcessingFixture host)
                 NoteProcessingTaskKind.Asr)));
         Assert.Equal(0, host.Models.Calls);
         Assert.Equal(0, await AiCallCountAsync(owner.UserId));
+
+        var asrTarget = planJson["targets"]!.AsArray()
+            .Single(target => target!["kind"]!.GetValue<string>() == "Asr")!;
+        Assert.Equal(route.Revision.ToString("D"),
+            asrTarget["routeConfigRevision"]!.GetValue<string>());
+        Assert.Equal("synthetic-cloud-consent-v1",
+            asrTarget["routeConsentVersion"]!.GetValue<string>());
     }
 
     [Fact]

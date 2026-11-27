@@ -1626,14 +1626,15 @@ public sealed class NoteAsrRoutingConcurrencyTests
         var canonical = NewTaskState(owner, canonicalTaskId, material.NoteId,
             material.Request.VersionId, inputSha, CloneSteps(steps), DateTimeOffset.UtcNow.AddMinutes(-2),
             route: NoteAsrRoute.Local, routeRevision: revision, routeConsent: "consent-local");
+        var duplicateAttemptId = Guid.NewGuid();
         var duplicate = NewTaskState(owner, duplicateTaskId, material.NoteId,
             material.Request.VersionId, inputSha, CloneSteps(steps), DateTimeOffset.UtcNow.AddMinutes(-1),
+            attemptId: hasExistingAttempt ? duplicateAttemptId : null,
             route: NoteAsrRoute.Local, routeRevision: revision, routeConsent: "consent-local");
         await WriteTaskStateAsync(canonical);
         await WriteTaskStateAsync(duplicate);
         await WriteChainAsync(owner, material.Request.VersionId, canonicalTaskId);
 
-        var duplicateAttemptId = Guid.NewGuid();
         if (hasExistingAttempt)
         {
             await using var seed = NewDb(owner);
@@ -1726,7 +1727,7 @@ public sealed class NoteAsrRoutingConcurrencyTests
         var versionId = Guid.NewGuid();
         var noteId = Guid.NewGuid();
         var inputSha = new string('a', 64);
-        var steps = SyntheticSteps(noteId);
+        var steps = SyntheticSteps();
         var canonicalTaskId = Guid.NewGuid();
         var duplicateTaskId = Guid.NewGuid();
         var duplicateAttemptId = Guid.NewGuid();
@@ -1763,6 +1764,58 @@ public sealed class NoteAsrRoutingConcurrencyTests
             new NoteMaterialUploadOptions { StorageRoot = StorageRoot }));
         Assert.Equal(duplicate.Revision,
             (await taskStore.ReadAsync(owner, duplicateTaskId, CancellationToken.None)).Revision);
+        await CleanupAsync(owner);
+    }
+
+    [SkippableFact]
+    public async Task Claim_rejects_task_attempt_binding_mismatch_before_creating_lease()
+    {
+        Skip.If(string.IsNullOrWhiteSpace(ConnectionString), "PIM_ASR516_PG is not configured");
+        var owner = Guid.NewGuid();
+        var nodeId = Guid.NewGuid();
+        await CleanupAsync(owner);
+        await SeedActiveOwnerAsync(owner);
+        await using (var db = NewDb(owner))
+        {
+            db.NoteAsrNodes.Add(Node(owner, nodeId, "node-a", DateTimeOffset.UtcNow));
+            await db.SaveChangesAsync();
+        }
+
+        var versionId = Guid.NewGuid();
+        var noteId = Guid.NewGuid();
+        var inputSha = new string('a', 64);
+        var steps = SyntheticSteps();
+        var taskId = Guid.NewGuid();
+        var candidateAttemptId = Guid.NewGuid();
+        var otherAttemptId = Guid.NewGuid();
+        var state = NewTaskState(owner, taskId, noteId, versionId, inputSha,
+            CloneSteps(steps), DateTimeOffset.UtcNow.AddMinutes(-1), attemptId: otherAttemptId,
+            route: NoteAsrRoute.Local, routeRevision: Guid.NewGuid(), routeConsent: "consent-local");
+        await WriteTaskStateAsync(state);
+        await WriteChainAsync(owner, versionId, taskId);
+        await using (var db = NewDb(owner))
+        {
+            db.NoteAsrAttempts.Add(LocalAttempt(owner, candidateAttemptId, taskId,
+                noteId, versionId, inputSha, steps.Count));
+            await db.SaveChangesAsync();
+        }
+
+        await using var serviceDb = NewDb(owner);
+        var error = await Assert.ThrowsAsync<DomainException>(() =>
+            NewService(serviceDb, owner).ClaimAsync(
+                new ClaimNoteAsrTaskRequest(nodeId, "binding-mismatch"), CancellationToken.None));
+        Assert.Equal(40901, error.ErrorCode);
+        await using var check = NewDb(owner);
+        Assert.Equal(0, await check.NoteAsrLeases.CountAsync(x => x.OwnerId == owner));
+        Assert.Equal(0, await check.NoteAsrAckReceipts.CountAsync(x => x.OwnerId == owner));
+        var attempt = await check.NoteAsrAttempts.AsNoTracking()
+            .SingleAsync(x => x.Id == candidateAttemptId);
+        Assert.Equal("Queued", attempt.State);
+        Assert.Equal(0L, attempt.FencingToken);
+        var taskStore = new NoteAsrTaskStore(Options.Create(
+            new NoteMaterialUploadOptions { StorageRoot = StorageRoot }));
+        Assert.Equal(state.Revision,
+            (await taskStore.ReadAsync(owner, taskId, CancellationToken.None)).Revision);
         await CleanupAsync(owner);
     }
 

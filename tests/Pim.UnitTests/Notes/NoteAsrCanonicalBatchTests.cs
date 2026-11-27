@@ -72,7 +72,7 @@ public sealed class NoteAsrCanonicalBatchTests
             config.ConsentVersion = "consent-v2";
             await db.SaveChangesAsync();
         }
-        var jsonl = await NoteAsrBatchJsonlReader.GenerateFromPlanAsync(seeded.Owner,
+        await using var jsonl = await NoteAsrBatchJsonlReader.GenerateFromPlanAsync(seeded.Owner,
             seeded.VersionId, seeded.Steps, NoteAsrPlan.SamplesPerCall, "zh", seeded.Model,
             seeded.PromptText, seeded.Materials,
             128 * 1024 * 1024,
@@ -82,8 +82,24 @@ public sealed class NoteAsrCanonicalBatchTests
         var error = await Assert.ThrowsAsync<DomainException>(() =>
             seeded.Service.StartAsync(new StartNoteAsrBatchRequest(seeded.CanonicalTaskId,
                     seeded.CanonicalAttemptId, seeded.ProfileId, seeded.ConsentVersion, true),
-                new MemoryStream(jsonl.Content), jsonl.Length, "pim-canonical.jsonl",
+                jsonl.Content, jsonl.Length, "pim-canonical.jsonl",
                 CancellationToken.None));
+
+        Assert.Equal(40901, error.ErrorCode);
+        await seeded.AssertNoSubmissionAsync();
+    }
+
+    [SkippableFact]
+    public async Task Batch_initial_submit_rejects_task_attempt_binding_mismatch_without_job_or_provider()
+    {
+        await using var seeded = await SeedAsync();
+        seeded.CanonicalState.AttemptId = Guid.NewGuid();
+        await seeded.WriteCanonicalStateAsync();
+        var request = BatchRequest(seeded, seeded.CanonicalTaskId,
+            seeded.CanonicalState.Revision, seeded.ConsentVersion);
+
+        var error = await Assert.ThrowsAsync<DomainException>(() =>
+            seeded.Service.StartFromTaskAsync(request, CancellationToken.None));
 
         Assert.Equal(40901, error.ErrorCode);
         await seeded.AssertNoSubmissionAsync();
@@ -205,7 +221,8 @@ public sealed class NoteAsrCanonicalBatchTests
 
         var batchOptions = Options.Create(new NoteAsrBatchOptions
         {
-            AllowUnverifiedAudioBatch = true
+            AllowUnverifiedAudioBatch = true,
+            MaxJsonlBytes = checked((int)MimoBatchDefaults.MaxJsonlBytes)
         });
         var serviceDb = NewDb(temp.ConnectionString, owner);
         var service = new NoteAsrBatchService(serviceDb, user, tasks, materials,
@@ -380,6 +397,9 @@ public sealed class NoteAsrCanonicalBatchTests
 
         public PimDbContext NewDb() => NoteAsrCanonicalBatchTests.NewDb(
             _temp.ConnectionString, Owner);
+
+        public Task WriteCanonicalStateAsync() => NoteAsrCanonicalBatchTests.WriteStateAsync(
+            _storageRoot, CanonicalState);
 
         public async Task AssertNoSubmissionAsync()
         {
