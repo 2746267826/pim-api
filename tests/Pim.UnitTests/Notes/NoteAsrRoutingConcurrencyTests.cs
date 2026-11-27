@@ -839,7 +839,7 @@ public sealed class NoteAsrRoutingConcurrencyTests
                     new ConfigurationBuilder().Build(), new PassthroughSecrets(), routing);
                 var version = await materials.GetAsync(owner, material.VersionId, CancellationToken.None);
                 var request = await service.BuildDefaultRequestForProcessingAsync(owner, version,
-                    CancellationToken.None);
+                    confirmed: true, CancellationToken.None);
                 Assert.Equal(NoteAsrRoute.CloudMultimodal, request.Route?.Route);
                 Assert.Equal<Guid?>(multimodalId, request.Consent?.ModelId);
             }
