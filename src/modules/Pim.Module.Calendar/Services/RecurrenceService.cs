@@ -456,7 +456,7 @@ public class RecurrenceService
         return expanded.OccurrenceStart < rangeEnd && expanded.OccurrenceEnd > rangeStart;
     }
 
-    private static Guid DeriveOccurrenceId(Guid eventId, DateTimeOffset occurrenceStart)
+    internal static Guid DeriveOccurrenceId(Guid eventId, DateTimeOffset occurrenceStart)
     {
         var input = $"{eventId:D}|{occurrenceStart:yyyyMMddTHHmmssZ}";
         var hash = MD5.HashData(Encoding.UTF8.GetBytes(input));

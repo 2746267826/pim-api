@@ -111,6 +111,21 @@ public sealed class GraphCalendarClient
             $"me/calendars/{EscapeDataString(calendarId)}/events/{EscapeDataString(eventId)}?$select={CalendarEventSelect}",
             token), ct, allowNull: true);
 
+    /// <summary>
+    /// Lists the concrete instances of a recurring series. The returned ids are the
+    /// occurrence/exception ids accepted by PATCH/DELETE; the series master id must
+    /// never be used for a "this occurrence only" write.
+    /// </summary>
+    public IAsyncEnumerable<GraphPage> GetEventInstancesAsync(
+        Guid connectionId, string calendarId, string seriesMasterId,
+        DateTimeOffset start, DateTimeOffset end, CancellationToken ct)
+        => GetPagesAsync(connectionId,
+            $"{GraphBase}me/calendars/{EscapeDataString(calendarId)}/events/" +
+            $"{EscapeDataString(seriesMasterId)}/instances" +
+            $"?startDateTime={Uri.EscapeDataString(FormatUtc(start))}" +
+            $"&endDateTime={Uri.EscapeDataString(FormatUtc(end))}" +
+            $"&$select={CalendarEventSelect}", ct);
+
     public IAsyncEnumerable<GraphPage> GetEventAttachmentsAsync(
         Guid connectionId, string calendarId, string eventId, CancellationToken ct)
         => GetPagesAsync(connectionId,

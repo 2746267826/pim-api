@@ -96,6 +96,16 @@ export interface EventResponse {
   displayTimeZoneId?: string | null
   displayLocalStart?: string | null
   displayLocalEnd?: string | null
+  /** R03：本次 Outlook 写回操作 ID（重放/撤销时使用） */
+  clientOperationId?: string | null
+  /** R03：是否需要额外确认（受控写回成功时为 false） */
+  requiresConfirmation?: boolean
+  /** R03：是否仍可撤销 */
+  undoAvailable?: boolean
+  /** R03：可直接展示给用户的回执 */
+  userMessage?: string | null
+  /** R03：是否命中幂等账本的重放结果 */
+  replayed?: boolean
 }
 
 /** Outlook 镜像事件（source 以 outlook 开头）走写回通道而非直接 PUT/DELETE */
@@ -463,6 +473,12 @@ export interface OutlookWriteResult {
   latestEtag: string | null
   errorCode: string | null
   errorMessage: string | null
+  clientOperationId?: string | null
+  requiresConfirmation?: boolean
+  undoAvailable?: boolean
+  userMessage?: string | null
+  replayed?: boolean
+  noChangesApplied?: boolean
 }
 
 /* ── 查询参数 ─────────────────────────────────────────────── */

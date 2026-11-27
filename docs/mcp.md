@@ -40,7 +40,8 @@
 - 覆盖 AI 常用场景：今天有啥事 / 这周效率 / 人在哪在干啥 / 找文件笔记 / 顺手把日程任务排进去。
 
 ### 不能做什么 / What it cannot do
-- 写入仅限 49 个已开放工具；`batch/execute`、`/ops/*`、Outlook 写回、端侧采集上传、confirmations 等一律不开。
+- 写入仅限 49 个已开放工具；`batch/execute`、`/ops/*`、端侧采集上传、confirmations 等一律不开。Outlook 日程写回已封装进 `create_event` / `update_event` / `delete_event`，不需要单独调用 REST 写回端点。
+- Outlook 写回当前仅覆盖日历日程；仓库没有 Microsoft To Do / Outlook 任务 provider，任务写回尚未实现。
 - 文件二进制下载 `items/{id}/download` 等流式下载不开放，只给元数据与搜索。
 - `/ops/*` 运维接口不开放。第三方限流/OAuth 不做（自家可信）。
 
@@ -3082,11 +3083,15 @@ async def get_version(-) -> Any: ...
 
 | 工具 | 方法 + 路径 | 主要参数 |
 |---|---|---|
-| `create_event` | `POST /api/v1/calendar/events` | calendarId,title,dtStart,dtEnd + 可选 description/location/rRule/attendees... |
-| `update_event` | `PUT /api/v1/calendar/events/{id}` | 同 create + query scope/recurrenceId/originalEventId |
-| `delete_event` | `DELETE /api/v1/calendar/events/{id}` | query scope/recurrenceId/originalEventId |
+| `create_event` | `POST /api/v1/calendar/events` | calendarId,title,dtStart,dtEnd + 可选 description/location/rRule/attendees...；query `clientOperationId`（UUID，幂等重试用） |
+| `update_event` | `PUT /api/v1/calendar/events/{id}` | 同 create + query scope/recurrenceId/originalEventId/clientOperationId/expectedEtag |
+| `delete_event` | `DELETE /api/v1/calendar/events/{id}` | query scope/recurrenceId/originalEventId/clientOperationId/expectedEtag |
 | `restore_event` | `POST /api/v1/calendar/events/{id}/restore` | restoreAsCopy? |
 | `batch_delete_events` | `POST /api/v1/calendar/events/batch-delete` | ids[] |
+
+> Outlook 绑定日历：上述 create/update/delete 会自动走受控写回（服务端判断，不新增工具）。写回结果带 `outlookEtag`、`clientOperationId`、`requiresConfirmation`、`undoAvailable` 与 `userMessage`；同一 `clientOperationId` 重放幂等，内容不一致返回 409；ETag 冲突返回 409 + `latestEvent`/`latestEtag`/`noChangesApplied`，不会静默覆盖。DELETE 成功也返回 `OutlookWriteResult`（含 `undoAvailable`、`clientOperationId`、`userMessage`、`noChangesApplied` 和按 scope 生成的提示），不再只返回字符串。MCP `tools/call` 会同时把这些可操作字段平铺到结果顶层，`details.data` 仍保留完整原始回执。重复事件 `scope=this` 会先解析并写入具体的 Graph occurrence/exception，找不到时拒绝请求，绝不回退到系列主事件；`originalEventId` 只允许用于展开 occurrence，服务端会校验它与 URL eventId、系列主事件和 recurrenceId 的对应关系，不一致返回 400，绝不写到另一条日程。单次删除不提供自动撤销；携带 RRule 的创建按 Graph 实际类型落为 seriesMaster，撤销时删除整个系列。撤销普通创建/更新/删除使用 `POST /api/v1/calendar/outlook/events/{clientOperationId}/undo`（API JWT）。`batch_delete_events` 仍只支持本地日程。
+
+> 失败按 Graph 状态分类，不再把所有错误都伪装成 provider unavailable：400/403/404 返回 400/403/404 的脱敏结构化回执（`GRAPH_BAD_REQUEST` / `GRAPH_FORBIDDEN` / `GRAPH_EVENT_NOT_FOUND`，`noChangesApplied=true`，不提供同 ID 重试指引）；409/412 返回 409 + 最新远端快照；429/5xx/网络/超时返回结构化 502（`noChangesApplied=false`，保留 `clientOperationId` 并提示同 ID 重试）。超时与调用方取消分开处理：超时返回 `PROVIDER_TIMEOUT`（`unknown`，可同 ID 重试或先核对），调用方取消只落账本后中止请求。若进程在 create/update 的 Graph 成功与本地提交之间中断，返回 `OPERATION_OUTCOME_UNKNOWN`（`unknown`，`noChangesApplied=false`，提示先到 Outlook 核对，不会盲目重放），不会落到丢失重试 ID 的通用 500。单次重复日程的 synthetic occurrence 预检若收到 malformed/partial 2xx（非法 JSON、缺字段、非法日期等），返回结构化 502 `GRAPH_INVALID_RESPONSE`（`noChangesApplied=true`），创建 failed batch 与 operation，且不写系列主事件。DELETE 不同：Graph DELETE 成功后，任何本地读库、occurrence 查找、构造、映射或保存失败都会收敛为 `LOCAL_STATE_PENDING`（`failed`，`noChangesApplied=false`）；同一 `clientOperationId` 重试只补做本地状态收敛，直接复用持久化的远端删除目标，不会再次调用 Graph DELETE。
 
 **Calendar 任务 14**
 

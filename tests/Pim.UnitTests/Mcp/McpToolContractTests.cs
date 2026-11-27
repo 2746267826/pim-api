@@ -133,6 +133,19 @@ public sealed class McpToolContractTests
         foreach (var name in new[] { "allDayStartDate", "allDayEndDateExclusive" })
             Assert.True(updateEvent.InputSchema.GetProperty("properties").TryGetProperty(name, out _));
 
+        foreach (var name in new[] { "create_event", "update_event", "delete_event" })
+        {
+            var property = byName[name].InputSchema.GetProperty("properties").GetProperty("clientOperationId");
+            Assert.Equal("string", property.GetProperty("anyOf").EnumerateArray().First().GetProperty("type").GetString());
+            Assert.Null(property.GetProperty("default").GetString());
+            Assert.Contains("clientOperationId", McpToolTable.TryGet(name)!.QueryParams);
+        }
+        foreach (var name in new[] { "update_event", "delete_event" })
+        {
+            Assert.True(byName[name].InputSchema.GetProperty("properties").TryGetProperty("expectedEtag", out _));
+            Assert.Contains("expectedEtag", McpToolTable.TryGet(name)!.QueryParams);
+        }
+
         // create_mobile_goal: limitSeconds required.
         var createGoal = byName["create_mobile_goal"];
         var goalRequired = createGoal.InputSchema.GetProperty("required").EnumerateArray().Select(e => e.GetString()).ToHashSet();

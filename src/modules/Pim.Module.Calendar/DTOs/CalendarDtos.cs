@@ -176,7 +176,12 @@ public record EventResponse(
     string? LocalEnd = null,
     string? DisplayTimeZoneId = null,
     string? DisplayLocalStart = null,
-    string? DisplayLocalEnd = null
+    string? DisplayLocalEnd = null,
+    Guid? ClientOperationId = null,
+    bool RequiresConfirmation = false,
+    bool UndoAvailable = false,
+    string? UserMessage = null,
+    bool Replayed = false
 );
 
 /// <summary>

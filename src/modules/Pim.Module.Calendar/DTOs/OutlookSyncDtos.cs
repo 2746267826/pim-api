@@ -69,7 +69,13 @@ public sealed record OutlookWriteResult(
     EventResponse? LatestEvent = null,
     string? LatestEtag = null,
     string? ErrorCode = null,
-    string? ErrorMessage = null);
+    string? ErrorMessage = null,
+    Guid? ClientOperationId = null,
+    bool RequiresConfirmation = false,
+    bool UndoAvailable = false,
+    string? UserMessage = null,
+    bool Replayed = false,
+    bool NoChangesApplied = false);
 
 public sealed record UpdateOutlookClientIdRequest(Guid ClientId);
 public sealed record OutlookAuthorizationSessionRequest(Guid SessionId);
