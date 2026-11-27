@@ -23,8 +23,10 @@ import {
   notificationApi,
   type NotificationDelivery,
   type NotificationItem,
+  type NotificationList,
   type NotificationPreferences,
 } from './api'
+import { notificationDeviceId } from './device'
 import { SseParser } from './sse'
 
 const DEFAULT_PREFERENCES: Omit<NotificationPreferences, 'updatedAt'> = {
@@ -48,18 +50,6 @@ const PREFERENCE_ROWS: Array<{
   { key: 'noteDerivedCompleted', title: '整理完成', description: '本设备接收完整记录与独立分析生成的推送' },
   { key: 'calendarReminder', title: '日历提醒', description: '本设备接收提醒到达预定时间的推送' },
 ]
-
-function deviceId(): string {
-  const key = 'pim.notificationDeviceId'
-  const existing = localStorage.getItem(key)
-  if (existing) return existing
-  const created =
-    typeof crypto !== 'undefined' && 'randomUUID' in crypto
-      ? crypto.randomUUID()
-      : `device-${Date.now()}-${Math.random().toString(16).slice(2)}`
-  localStorage.setItem(key, created)
-  return created
-}
 
 function base64UrlBytes(value: string): Uint8Array<ArrayBuffer> {
   const normalized = value.replace(/-/g, '+').replace(/_/g, '/')
@@ -93,7 +83,7 @@ function errorText(error: unknown, fallback: string): string {
 
 export function NotificationsSettingsPage() {
   const qc = useQueryClient()
-  const currentDeviceId = deviceId()
+  const currentDeviceId = notificationDeviceId()
   const capabilities = useQuery({
     queryKey: ['notifications', 'capabilities'],
     queryFn: notificationApi.capabilities,
@@ -195,7 +185,8 @@ export function NotificationsSettingsPage() {
     if (!sseActive) return
     const controller = new AbortController()
     let stopped = false
-    let lastCursor: number | null = null
+    let lastCursor: number | null =
+      qc.getQueryData<NotificationList>(['notifications', 'list'])?.items[0]?.cursor ?? null
     let refreshedOnConnect = false
     setSseStatus('connecting')
 

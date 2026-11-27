@@ -33,19 +33,52 @@ public sealed class NotificationPreferenceService(
         var userId = UserId;
         var normalizedDeviceId = NotificationDeviceId.NormalizeOptional(deviceId);
         var now = clock.GetUtcNow();
-        var entity = await db.NotificationPreferences
-            .SingleOrDefaultAsync(p => p.UserId == userId, ct);
-        if (entity is null)
+        if (db.Database.IsNpgsql())
         {
-            entity = new NotificationPreferenceEntity
-            {
-                UserId = userId,
-                DeviceOverridesJson = "{}",
-                CreatedAt = now
-            };
-            db.NotificationPreferences.Add(entity);
+            await using var transaction = await db.Database.BeginTransactionAsync(ct);
+            // 同一账号的偏好写入串行化：并发首插只创建一个账号行，设备级 JSON
+            // 合并也不会互相覆盖。锁随事务释放，不需要额外的锁表或重试。
+            await db.Database.ExecuteSqlInterpolatedAsync(
+                $"SELECT pg_advisory_xact_lock(hashtextextended({userId.ToString()}, 0))",
+                ct);
+
+            var entity = await db.NotificationPreferences
+                .SingleOrDefaultAsync(p => p.UserId == userId, ct)
+                ?? AddPreferenceEntity(userId, now);
+            ApplyUpdate(entity, request, normalizedDeviceId, now);
+            await db.SaveChangesAsync(ct);
+            await transaction.CommitAsync(ct);
+            return Map(entity, normalizedDeviceId, now);
         }
 
+        var unlockedEntity = await db.NotificationPreferences
+            .SingleOrDefaultAsync(p => p.UserId == userId, ct)
+            ?? AddPreferenceEntity(userId, now);
+        ApplyUpdate(unlockedEntity, request, normalizedDeviceId, now);
+        await db.SaveChangesAsync(ct);
+        return Map(unlockedEntity, normalizedDeviceId, now);
+    }
+
+    private NotificationPreferenceEntity AddPreferenceEntity(
+        Guid userId,
+        DateTimeOffset now)
+    {
+        var entity = new NotificationPreferenceEntity
+        {
+            UserId = userId,
+            DeviceOverridesJson = "{}",
+            CreatedAt = now
+        };
+        db.NotificationPreferences.Add(entity);
+        return entity;
+    }
+
+    private static void ApplyUpdate(
+        NotificationPreferenceEntity entity,
+        UpdateNotificationPreferencesRequest request,
+        string normalizedDeviceId,
+        DateTimeOffset now)
+    {
         if (normalizedDeviceId.Length == 0)
         {
             ApplyAccountPreferences(entity, request);
@@ -57,9 +90,6 @@ public sealed class NotificationPreferenceService(
         }
         entity.Version = Guid.NewGuid();
         entity.UpdatedAt = now;
-
-        await db.SaveChangesAsync(ct);
-        return Map(entity, normalizedDeviceId, now);
     }
 
     private static void ApplyAccountPreferences(
@@ -89,7 +119,12 @@ public sealed class NotificationPreferenceService(
 
         var current = overrides.GetValueOrDefault(deviceId)
                       ?? new NotificationDevicePreferenceOverride(
-                          true, true, true, true, true, now);
+                          entity.PushEnabled,
+                          entity.TaskCompleted,
+                          entity.NoteTranscriptionCompleted,
+                          entity.NoteDerivedCompleted,
+                          entity.CalendarReminder,
+                          now);
         overrides[deviceId] = current with
         {
             PushEnabled = request.PushEnabled ?? current.PushEnabled,

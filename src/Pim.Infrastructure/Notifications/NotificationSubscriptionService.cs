@@ -122,6 +122,16 @@ public sealed class NotificationSubscriptionService(
         DateTimeOffset now,
         CancellationToken ct)
     {
+        await using var transaction = db.Database.IsNpgsql()
+            ? await db.Database.BeginTransactionAsync(ct)
+            : null;
+        if (transaction is not null)
+        {
+            await db.Database.ExecuteSqlInterpolatedAsync(
+                $"SELECT pg_advisory_xact_lock(hashtextextended({endpointHash}, 0))",
+                ct);
+        }
+
         var existing = await db.NotificationSubscriptions
             .IgnoreQueryFilters()
             .SingleOrDefaultAsync(
@@ -205,6 +215,8 @@ public sealed class NotificationSubscriptionService(
         subscription.LastErrorMessage = null;
 
         await db.SaveChangesAsync(ct);
+        if (transaction is not null)
+            await transaction.CommitAsync(ct);
         return subscription;
     }
 
@@ -301,10 +313,101 @@ public sealed class NotificationSubscriptionService(
         return Map(subscription);
     }
 
-    public Task<NotificationSubscriptionRevokeResponse> RevokeCurrentAsync(
+    public async Task<NotificationSubscriptionRevokeResponse> RevokeCurrentAsync(
         RevokeCurrentNotificationSubscriptionRequest request,
-        CancellationToken ct) =>
-        Task.FromResult(new NotificationSubscriptionRevokeResponse(0));
+        CancellationToken ct)
+    {
+        var userId = UserId;
+        var deviceId = NotificationDeviceId.NormalizeOptional(request.DeviceId);
+        var endpointHash = NormalizeEndpointHash(request.Endpoint);
+        if (deviceId.Length == 0 && endpointHash is null)
+            throw new DomainException(40001, "缺少设备标识或推送地址");
+
+        var query = db.NotificationSubscriptions
+            .IgnoreQueryFilters()
+            .Where(s => s.UserId == userId &&
+                        s.Channel == NotificationChannels.WebPush &&
+                        s.Status == "Active");
+        if (deviceId.Length > 0)
+            query = query.Where(s => s.DeviceId == deviceId);
+        if (endpointHash is not null)
+            query = query.Where(s => s.EndpointHash == endpointHash);
+
+        var subscriptions = await query
+            .Select(s => s.Id)
+            .ToListAsync(ct);
+        if (subscriptions.Count == 0)
+            return new NotificationSubscriptionRevokeResponse(0);
+
+        var now = clock.GetUtcNow();
+        var revoked = 0;
+        if (db.Database.IsRelational())
+        {
+            foreach (var subscriptionId in subscriptions)
+            {
+                var version = Guid.NewGuid();
+                var updated = await db.NotificationSubscriptions
+                    .IgnoreQueryFilters()
+                    .Where(s => s.Id == subscriptionId &&
+                                s.UserId == userId &&
+                                s.Status == "Active")
+                    .ExecuteUpdateAsync(setters => setters
+                        .SetProperty(s => s.Status, "Revoked")
+                        .SetProperty(s => s.RevokedAt, now)
+                        .SetProperty(s => s.UpdatedAt, now)
+                        .SetProperty(s => s.Version, version), ct);
+                if (updated == 0) continue;
+
+                await SuppressPendingDeliveriesAsync(
+                    subscriptionId, "logout_revoked", ct);
+                revoked += updated;
+            }
+        }
+        else
+        {
+            var entities = await db.NotificationSubscriptions
+                .IgnoreQueryFilters()
+                .Where(s => subscriptions.Contains(s.Id) && s.Status == "Active")
+                .ToListAsync(ct);
+            foreach (var subscription in entities)
+            {
+                subscription.Status = "Revoked";
+                subscription.RevokedAt = now;
+                subscription.UpdatedAt = now;
+                subscription.Version = Guid.NewGuid();
+                await SuppressPendingDeliveriesAsync(
+                    subscription.Id, "logout_revoked", ct);
+                revoked += 1;
+            }
+            if (revoked > 0)
+                await db.SaveChangesAsync(ct);
+        }
+
+        if (revoked > 0)
+        {
+            logger.LogInformation(
+                "Revoked {Count} browser notification subscriptions for user {UserId} at logout",
+                revoked,
+                userId);
+        }
+        return new NotificationSubscriptionRevokeResponse(revoked);
+    }
+
+    private static string? NormalizeEndpointHash(string? endpoint)
+    {
+        if (string.IsNullOrWhiteSpace(endpoint))
+            return null;
+        if (endpoint.Length > 2048 ||
+            !Uri.TryCreate(endpoint.Trim(), UriKind.Absolute, out var parsed) ||
+            parsed.Scheme != Uri.UriSchemeHttps ||
+            !string.IsNullOrEmpty(parsed.UserInfo) ||
+            !string.IsNullOrEmpty(parsed.Fragment))
+        {
+            throw new DomainException(40001, "推送地址无效");
+        }
+
+        return HashEndpoint(parsed.AbsoluteUri);
+    }
 
     private async Task SuppressPendingDeliveriesAsync(
         Guid subscriptionId,

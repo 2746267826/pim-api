@@ -6,6 +6,7 @@ import type { UserInfo } from '@/api/types'
 import { detectHostChannel, type HostChannel } from '@/lib/host-channel'
 import { getHostSession, type HostHandshake, type HostStatus } from '@/lib/host-session'
 import { notifyError } from '@/lib/notify'
+import { revokeBrowserPushOnLogout } from '@/features/notifications/logout'
 
 interface AuthContextValue {
   user: UserInfo | null
@@ -223,6 +224,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       })
       return
     }
+    void revokeBrowserPushOnLogout()
     clearTokens()
     setUser(null)
   }, [hostChannel])

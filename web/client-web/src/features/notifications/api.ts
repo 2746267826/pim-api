@@ -1,4 +1,4 @@
-import { apiDelete, apiGet, apiPost, apiPut } from '@/api/client'
+import { apiDelete, apiGet, apiPost, apiPut, type FetchOptions } from '@/api/client'
 
 export interface NotificationPreferences {
   inAppEnabled: boolean
@@ -99,6 +99,15 @@ export const notificationApi = {
   }) => apiPost<NotificationSubscription>('/api/v1/notifications/subscriptions', body),
   revoke: (id: string) =>
     apiDelete<NotificationSubscription>(`/api/v1/notifications/subscriptions/${encodeURIComponent(id)}`),
+  revokeCurrent: (
+    body: { deviceId?: string; endpoint?: string },
+    options?: FetchOptions,
+  ) =>
+    apiPost<{ revoked: number }>(
+      '/api/v1/notifications/subscriptions/revoke-current',
+      body,
+      options,
+    ),
   list: (limit = 50) =>
     apiGet<NotificationList>(`/api/v1/notifications?limit=${limit}`),
   markRead: (id: string) =>

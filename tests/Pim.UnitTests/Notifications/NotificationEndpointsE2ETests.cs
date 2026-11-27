@@ -505,15 +505,16 @@ public sealed class NotificationEndpointsE2ETests
         using var __ = factory;
         var client = Authed(factory, Guid.NewGuid());
 
+        await ReadDataAsync(await client.PutAsync(
+            "/api/v1/notifications/preferences",
+            Json("""{"taskCompleted":false}""")));
         var initial = Enumerable.Range(0, 10).Select(index =>
             SendWithDeviceAsync(
                 client,
                 HttpMethod.Put,
                 "/api/v1/notifications/preferences",
                 $"browser-{index}",
-                index == 0
-                    ? """{"taskCompleted":false}"""
-                    : """{"calendarReminder":false}"""));
+                """{"calendarReminder":false}"""));
         var responses = await Task.WhenAll(initial);
         foreach (var response in responses)
         {
@@ -530,9 +531,11 @@ public sealed class NotificationEndpointsE2ETests
         using var document = JsonDocument.Parse(preferences.DeviceOverridesJson);
         for (var index = 0; index < 10; index++)
         {
+            var name = $"browser-{index}";
             Assert.True(
-                document.RootElement.TryGetProperty($"browser-{index}", out _),
-                $"device browser-{index} override was lost");
+                document.RootElement.TryGetProperty(name, out var device),
+                $"device {name} override was lost");
+            Assert.False(device.GetProperty("calendarReminder").GetBoolean());
         }
     }
 

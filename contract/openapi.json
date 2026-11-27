@@ -20451,6 +20451,44 @@
         ],
         "type": "object"
       },
+      "NotificationSubscriptionRevokeResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "revoked": {
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "revoked"
+        ],
+        "type": "object"
+      },
+      "NotificationSubscriptionRevokeResponseApiResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "data": {
+            "$ref": "#/components/schemas/NotificationSubscriptionRevokeResponse"
+          },
+          "message": {
+            "type": "string"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
+        "type": "object"
+      },
       "NotificationTestResponse": {
         "additionalProperties": false,
         "properties": {
@@ -23950,6 +23988,20 @@
           "retryId",
           "stepKeys"
         ],
+        "type": "object"
+      },
+      "RevokeCurrentNotificationSubscriptionRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "deviceId": {
+            "nullable": true,
+            "type": "string"
+          },
+          "endpoint": {
+            "nullable": true,
+            "type": "string"
+          }
+        },
         "type": "object"
       },
       "S2ThreeStateDistribution": {
@@ -48605,6 +48657,53 @@
               }
             },
             "description": "Conflict"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Pim.Api"
+        ]
+      }
+    },
+    "/api/v1/notifications/subscriptions/revoke-current": {
+      "post": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RevokeCurrentNotificationSubscriptionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotificationSubscriptionRevokeResponseApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
           }
         },
         "security": [

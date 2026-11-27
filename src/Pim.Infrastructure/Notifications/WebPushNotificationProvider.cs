@@ -147,28 +147,48 @@ public sealed class WebPushNotificationProvider : IWebPushTransport
     {
         if (address.IsIPv4MappedToIPv6)
             address = address.MapToIPv4();
-        if (IPAddress.IsLoopback(address)) return false;
-        if (address.Equals(IPAddress.Any) || address.Equals(IPAddress.IPv6Any)) return false;
-        if (address.AddressFamily == AddressFamily.InterNetworkV6)
-        {
-            var bytes = address.GetAddressBytes();
-            if ((bytes[0] & 0xfe) == 0xfc) return false;
-            if (bytes[0] == 0xfe && (bytes[1] & 0xc0) == 0x80) return false;
-            if (bytes[0] == 0xff) return false;
-            return true;
-        }
-
-        var v4 = address.GetAddressBytes();
-        return v4[0] switch
-        {
-            0 or 10 or 127 => false,
-            100 when v4[1] >= 64 && v4[1] <= 127 => false,
-            169 when v4[1] == 254 => false,
-            172 when v4[1] >= 16 && v4[1] <= 31 => false,
-            192 when v4[1] == 168 => false,
-            198 when v4[1] is 18 or 19 => false,
-            >= 224 => false,
-            _ => true
-        };
+        if (address.AddressFamily is not (AddressFamily.InterNetwork or AddressFamily.InterNetworkV6))
+            return false;
+        return !NonPublicNetworks.Any(network =>
+            network.BaseAddress.AddressFamily == address.AddressFamily &&
+            network.Contains(address));
     }
+
+    // RFC 6890 / RFC 9637 特殊用途前缀：任何命中项都不作为推送目标地址，
+    // 避免 loopback、私有网段、NAT64、benchmarking、documentation 等被当作公网出口。
+    private static readonly IPNetwork[] NonPublicNetworks =
+    [
+        IPNetwork.Parse("0.0.0.0/8"),
+        IPNetwork.Parse("10.0.0.0/8"),
+        IPNetwork.Parse("100.64.0.0/10"),
+        IPNetwork.Parse("127.0.0.0/8"),
+        IPNetwork.Parse("169.254.0.0/16"),
+        IPNetwork.Parse("172.16.0.0/12"),
+        IPNetwork.Parse("192.0.0.0/24"),
+        IPNetwork.Parse("192.0.2.0/24"),
+        IPNetwork.Parse("192.88.99.0/24"),
+        IPNetwork.Parse("192.168.0.0/16"),
+        IPNetwork.Parse("198.18.0.0/15"),
+        IPNetwork.Parse("198.51.100.0/24"),
+        IPNetwork.Parse("203.0.113.0/24"),
+        IPNetwork.Parse("224.0.0.0/4"),
+        IPNetwork.Parse("240.0.0.0/4"),
+        IPNetwork.Parse("::/128"),
+        IPNetwork.Parse("::1/128"),
+        IPNetwork.Parse("64:ff9b::/96"),
+        IPNetwork.Parse("64:ff9b:1::/48"),
+        IPNetwork.Parse("100::/64"),
+        IPNetwork.Parse("2001::/23"),
+        IPNetwork.Parse("2001:2::/48"),
+        IPNetwork.Parse("2001:db8::/32"),
+        IPNetwork.Parse("2001:10::/28"),
+        IPNetwork.Parse("2001:20::/28"),
+        IPNetwork.Parse("2002::/16"),
+        IPNetwork.Parse("3fff::/20"),
+        IPNetwork.Parse("5f00::/16"),
+        IPNetwork.Parse("fc00::/7"),
+        IPNetwork.Parse("fe80::/10"),
+        IPNetwork.Parse("fec0::/10"),
+        IPNetwork.Parse("ff00::/8")
+    ];
 }
