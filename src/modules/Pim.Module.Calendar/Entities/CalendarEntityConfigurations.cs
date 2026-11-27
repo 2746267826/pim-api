@@ -300,6 +300,28 @@ public sealed class OutlookOperationExecutionEntityConfiguration
     }
 }
 
+public sealed class OutlookWritebackOperationEntityConfiguration
+    : IEntityTypeConfiguration<OutlookWritebackOperationEntity>
+{
+    public void Configure(EntityTypeBuilder<OutlookWritebackOperationEntity> builder)
+    {
+        builder.Property(entity => entity.State).HasDefaultValue("processing");
+        builder.Property(entity => entity.UndoState).HasDefaultValue("unavailable");
+        builder.Property(entity => entity.AttemptCount).HasDefaultValue(1);
+        builder.Property(entity => entity.CreatedAt).HasDefaultValueSql("now()");
+        builder.Property(entity => entity.UpdatedAt).HasDefaultValueSql("now()");
+        builder.HasIndex(entity => new { entity.UserId, entity.ClientOperationId })
+            .IsUnique()
+            .HasDatabaseName("UX_outlook_writeback_operations_user_client_operation");
+        builder.HasIndex(entity => new { entity.UserId, entity.UndoOfOperationId })
+            .IsUnique()
+            .HasFilter("\"undo_of_operation_id\" IS NOT NULL")
+            .HasDatabaseName("UX_outlook_writeback_operations_user_undo_of");
+        builder.HasIndex(entity => new { entity.UserId, entity.EventId, entity.CreatedAt });
+        builder.HasIndex(entity => new { entity.State, entity.UpdatedAt });
+    }
+}
+
 public class SyncConflictEntityConfiguration : IEntityTypeConfiguration<SyncConflictEntity>
 {
     public void Configure(EntityTypeBuilder<SyncConflictEntity> builder)

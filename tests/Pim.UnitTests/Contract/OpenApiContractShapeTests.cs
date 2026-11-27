@@ -659,4 +659,48 @@ public sealed class OpenApiContractShapeTests
         Assert.Equal("integer", retryAfter!.Schema.Type);
         Assert.Equal(1m, retryAfter.Schema.Minimum!.Value);
     }
+
+    [Theory]
+    [InlineData("/api/v1/calendar/events", OperationType.Post)]
+    [InlineData("/api/v1/calendar/events/{id}", OperationType.Put)]
+    [InlineData("/api/v1/calendar/events/{id}", OperationType.Delete)]
+    [InlineData("/api/v1/calendar/outlook/events/writeback", OperationType.Post)]
+    [InlineData(
+        "/api/v1/calendar/outlook/events/{clientOperationId}/undo",
+        OperationType.Post)]
+    public void OutlookWriteback400_UsesOutlookWriteResultSchema(
+        string path, OperationType method)
+    {
+        var operation = Document.Paths[path].Operations[method];
+        Assert.True(
+            operation.Responses.TryGetValue("400", out var badRequest),
+            $"{method} {path} 必须声明 400");
+        Assert.NotNull(badRequest!.Content);
+        Assert.True(badRequest.Content!.TryGetValue("application/json", out var content));
+        Assert.Equal("OutlookWriteResultApiResponse", content!.Schema.Reference?.Id);
+    }
+
+    [Theory]
+    [InlineData("/api/v1/calendar/events/{id}", OperationType.Put)]
+    [InlineData("/api/v1/calendar/events/{id}", OperationType.Delete)]
+    [InlineData("/api/v1/calendar/outlook/events/writeback", OperationType.Post)]
+    [InlineData(
+        "/api/v1/calendar/outlook/events/{clientOperationId}/undo",
+        OperationType.Post)]
+    public void OutlookWritebackPreflightThrottleAndTimeout_UseOutlookWriteResultSchema(
+        string path, OperationType method)
+    {
+        var operation = Document.Paths[path].Operations[method];
+        foreach (var status in new[] { "429", "504" })
+        {
+            Assert.True(
+                operation.Responses.TryGetValue(status, out var response),
+                $"{method} {path} 必须声明 {status}");
+            Assert.NotNull(response!.Content);
+            Assert.True(
+                response.Content!.TryGetValue("application/json", out var content));
+            Assert.Equal(
+                "OutlookWriteResultApiResponse", content!.Schema.Reference?.Id);
+        }
+    }
 }

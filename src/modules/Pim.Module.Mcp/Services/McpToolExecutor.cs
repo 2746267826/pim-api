@@ -387,7 +387,9 @@ public sealed class McpToolExecutor
                 raw = retried.Value;
         }
 
-        var shaped = ShapeResponse(raw.Status, raw.Text, raw.ContentType, raw.Data, addAuthHint: _httpContext is null);
+        var shaped = ExposeCalendarWritebackError(
+            spec.Name,
+            ShapeResponse(raw.Status, raw.Text, raw.ContentType, raw.Data, addAuthHint: _httpContext is null));
         if (shaped is JsonObject shapedObject && redact)
         {
             if (shapedObject.TryGetPropertyValue("data", out var dataNode) && dataNode is not null)
@@ -396,6 +398,54 @@ public sealed class McpToolExecutor
                 shaped = Redact(shapedObject);
         }
         return PostProcess(McpToolResponseProjection.Apply(spec.Name, shaped), spec, args);
+    }
+
+    private static readonly HashSet<string> CalendarWritebackTools = new(StringComparer.Ordinal)
+    {
+        "create_event",
+        "update_event",
+        "delete_event"
+    };
+
+    private static readonly string[] CalendarWritebackErrorFields =
+    [
+        "status",
+        "latestEvent",
+        "latestEtag",
+        "noChangesApplied",
+        "errorCode",
+        "errorMessage",
+        "clientOperationId",
+        "requiresConfirmation",
+        "undoAvailable",
+        "userMessage",
+        "replayed"
+    ];
+
+    /// <summary>
+    /// The REST API returns 409/502 with an ApiResponse envelope whose actionable writeback
+    /// receipt lives under <c>data</c>. MCP keeps the full envelope in <c>details</c> for
+    /// compatibility, but calendar write tools must also expose the receipt fields directly:
+    /// clients need latestEvent/latestEtag/noChangesApplied without unwrapping a second layer.
+    /// </summary>
+    private static JsonNode? ExposeCalendarWritebackError(string toolName, JsonNode? shaped)
+    {
+        if (!CalendarWritebackTools.Contains(toolName)
+            || shaped is not JsonObject envelope
+            || !envelope.TryGetPropertyValue("details", out var detailsNode)
+            || detailsNode is not JsonObject details
+            || !details.TryGetPropertyValue("data", out var dataNode)
+            || dataNode is not JsonObject data)
+        {
+            return shaped;
+        }
+
+        foreach (var field in CalendarWritebackErrorFields)
+        {
+            if (data.TryGetPropertyValue(field, out var value) && value is not null)
+                envelope[field] = value.DeepClone();
+        }
+        return envelope;
     }
 
     /// <summary>Post-processes the shaped response: local pagination, >50KB truncation hint.</summary>

@@ -2702,7 +2702,7 @@
   },
   {
     "name": "create_event",
-    "description": "Create a calendar event. Requires write permission create_event. Returns the created EventResponse. All-day events must provide allDayStartDate and allDayEndDateExclusive; timed events must omit both. LOCAL EVENTS ONLY: Outlook-bound calendars/events require the existing confirmed Outlook writeback flow, which this MCP tool does NOT expose. Calendar canEdit does not imply event-write support. If all available calendars are Outlook-bound, this tool cannot perform the operation; do not retry with different credentials or bypass confirmation.",
+    "description": "Create a calendar event. Requires write permission create_event. Returns the created EventResponse including id, outlookEtag and clientOperationId. Outlook-bound calendars are transparently written through the controlled Outlook writeback path; no separate confirmation step is required. Pass an optional clientOperationId (UUID) to make retries idempotent; the same ID with different content is rejected with 409. All-day events must provide allDayStartDate and allDayEndDateExclusive; timed events must omit both.",
     "inputSchema": {
       "properties": {
         "calendarId": {
@@ -2949,6 +2949,18 @@
           ],
           "default": null,
           "title": "Externallink"
+        },
+        "clientOperationId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Clientoperationid"
         }
       },
       "required": [
@@ -2963,7 +2975,7 @@
   },
   {
     "name": "update_event",
-    "description": "Update a calendar event. scope=This/Series with recurrenceId updates repeating events. Requires write permission update_event. All-day writes validate allDayStartDate/allDayEndDateExclusive as a pair; timed events must omit both. LOCAL EVENTS ONLY: Outlook-bound calendars/events require the existing confirmed Outlook writeback flow, which this MCP tool does NOT expose. Calendar canEdit does not imply event-write support. If all available calendars are Outlook-bound, this tool cannot perform the operation; do not retry with different credentials or bypass confirmation.",
+    "description": "Update a calendar event. scope=This/Series with recurrenceId updates repeating events. Requires write permission update_event. Outlook-bound events are transparently written through the controlled Outlook writeback path using the latest known outlookEtag; pass expectedEtag to require an exact version. A stale ETag returns 409 with latestEvent and is never silently retried. Pass an optional clientOperationId (UUID) to make retries idempotent. All-day writes validate allDayStartDate/allDayEndDateExclusive as a pair; timed events must omit both.",
     "inputSchema": {
       "properties": {
         "eventId": {
@@ -3182,6 +3194,30 @@
           ],
           "default": null,
           "title": "Reminderminutesbeforestart"
+        },
+        "clientOperationId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Clientoperationid"
+        },
+        "expectedEtag": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Expectedetag"
         }
       },
       "required": [
@@ -3197,7 +3233,7 @@
   },
   {
     "name": "delete_event",
-    "description": "Delete a calendar event (moves to recycle bin). scope=This/Series for repeating events. Requires write permission delete_event. LOCAL EVENTS ONLY: Outlook-bound calendars/events require the existing confirmed Outlook writeback flow, which this MCP tool does NOT expose. Calendar canEdit does not imply event-write support. If all available calendars are Outlook-bound, this tool cannot perform the operation; do not retry with different credentials or bypass confirmation.",
+    "description": "Delete a calendar event (moves to recycle bin). scope=This/Series for repeating events. Requires write permission delete_event. Outlook-bound events are transparently deleted through the controlled Outlook writeback path using the latest known outlookEtag; pass expectedEtag to require an exact version. A stale ETag returns 409 with latestEvent and is never silently retried. Pass an optional clientOperationId (UUID) to make retries idempotent.",
     "inputSchema": {
       "properties": {
         "eventId": {
@@ -3239,6 +3275,30 @@
           ],
           "default": null,
           "title": "Originaleventid"
+        },
+        "clientOperationId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Clientoperationid"
+        },
+        "expectedEtag": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Expectedetag"
         }
       },
       "required": [
