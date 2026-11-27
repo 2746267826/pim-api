@@ -12,7 +12,8 @@ const fixture = vi.hoisted(() => ({
   api: { models: vi.fn(), settings: vi.fn(), connections: vi.fn(), createConnection: vi.fn(), updateConnection: vi.fn(),
     connectionUsageLimit: vi.fn(), saveConnectionUsageLimit: vi.fn(), connectionUsage: vi.fn(), usageReminders: vi.fn(),
     markUsageReminderRead: vi.fn(), saveModel: vi.fn(), removeModel: vi.fn(), saveSettings: vi.fn(),
-    call: vi.fn(), lookup: vi.fn(), history: vi.fn(), detail: vi.fn(), usage: vi.fn(), legacy: vi.fn(), asrPresets: vi.fn() },
+    call: vi.fn(), lookup: vi.fn(), history: vi.fn(), detail: vi.fn(), usage: vi.fn(), legacy: vi.fn(), asrPresets: vi.fn(),
+    testConnection: vi.fn(), connectionTestLatest: vi.fn(), connectionTests: vi.fn() },
 }))
 vi.mock('./api', () => ({ aiApi: fixture.api }))
 vi.mock('@/features/auth/auth-context', () => ({ useAuth: () => ({ user: fixture.user }) }))
@@ -67,6 +68,8 @@ beforeEach(() => {
     models = existing ? models.map((m) => m.id === existing ? value : m) : [...models, value]; return value
   })
   fixture.api.asrPresets.mockResolvedValue([preset])
+  fixture.api.connectionTests.mockResolvedValue([])
+  fixture.api.connectionTestLatest.mockResolvedValue(null)
   fixture.api.call.mockResolvedValue({ logId, status: 'Succeeded', responseText: '完整回复\n没有裁剪', errorMessage: null, replayed: false })
   fixture.api.lookup.mockResolvedValue({ logId, status: 'Cancelled', responseText: null, errorMessage: '用户取消', replayed: true })
   fixture.api.history.mockResolvedValue({ items: [], totalCount: 0, page: 1, pageSize: 20, totalPages: 0 })
@@ -223,6 +226,188 @@ describe('AI文字调用完整页面', () => {
 
     await userEvent.click(screen.getByText('统计', { exact: true }))
     expect(screen.getByTestId('location').textContent).toBe('/settings/ai?tab=usage')
+  })
+
+  it('saves explicit purpose defaults while preserving omitted fields', async () => {
+    const secondId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    models = [...models, { ...models[0], id: secondId, name: '第二文字模型' }]
+    settings = { ...settings, noteOrganizationModelId: id, noteTodoModelId: null, calendarPlanningModelId: null }
+    open()
+    await screen.findByRole('button', { name: '编辑 文字主模型' })
+
+    expect(screen.getByRole('combobox', { name: '笔记整理默认模型' }).textContent).toContain('文字主模型')
+    await userEvent.click(screen.getByRole('combobox', { name: '提取待办默认模型' }))
+    await userEvent.click(await screen.findByRole('option', { name: '第二文字模型' }))
+
+    await waitFor(() => expect(fixture.api.saveSettings).toHaveBeenCalledWith(expect.objectContaining({
+      expectedRevision: revision,
+      textModelId: id,
+      noteOrganizationModelId: id,
+      noteTodoModelId: secondId,
+      calendarPlanningModelId: null,
+    })))
+  })
+
+  it('tests a saved model only after explicit confirmation and shows a leak-free real-provider result', async () => {
+    const testLogId = '99999999-9999-4999-8999-999999999999'
+    fixture.api.testConnection.mockResolvedValue({
+      clientRequestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      modelId: id,
+      modelRevision: revision,
+      capability: 'Text',
+      status: 'Succeeded',
+      probe: 'text-minimal',
+      responsePreview: 'OK',
+      errorCode: null,
+      errorMessage: null,
+      logId: testLogId,
+      durationMs: 42,
+      replayed: false,
+      testedAt: '2026-11-26T00:00:00Z',
+      providerAttempted: true,
+    })
+    open()
+    await screen.findByRole('button', { name: '编辑 文字主模型' })
+    await userEvent.click(screen.getByRole('button', { name: '测试连接 文字主模型' }))
+    const dialog = screen.getByRole('dialog')
+    expect((within(dialog).getByRole('button', { name: '开始测试' }) as HTMLButtonElement).disabled).toBe(true)
+    expect(within(dialog).queryByDisplayValue(/fake-ui-key/)).toBeNull()
+
+    await userEvent.click(within(dialog).getByRole('checkbox', { name: /我已核对模型、地址与能力/ }))
+    await userEvent.click(within(dialog).getByRole('button', { name: '开始测试' }))
+
+    expect(await within(dialog).findByText('连接成功')).toBeTruthy()
+    expect(fixture.api.testConnection).toHaveBeenCalledWith(id, {
+      clientRequestId: expect.stringMatching(/^[0-9a-f-]{36}$/),
+      expectedRevision: revision,
+      capability: 'Text',
+    })
+    expect(within(dialog).getByText('服务商请求已实际发出。')).toBeTruthy()
+    expect(within(dialog).getByText('42 ms')).toBeTruthy()
+    expect(within(dialog).getByText(/调用记录 99999999/)).toBeTruthy()
+    expect(screen.queryByText(/fake-ui-key/)).toBeNull()
+  })
+
+  it('reopens the latest result for the saved revision and starts a new request only on explicit retest', async () => {
+    const testLogId = '99999999-9999-4999-8999-999999999999'
+    fixture.api.connectionTestLatest.mockResolvedValue({
+      clientRequestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      modelId: id,
+      modelRevision: revision,
+      capability: 'Text',
+      status: 'Succeeded',
+      probe: 'text-minimal',
+      responsePreview: 'OK',
+      errorCode: null,
+      errorMessage: null,
+      logId: testLogId,
+      durationMs: 42,
+      replayed: true,
+      testedAt: '2026-11-26T00:00:00Z',
+      providerAttempted: true,
+    })
+    open()
+    await screen.findByRole('button', { name: '编辑 文字主模型' })
+    await userEvent.click(screen.getByRole('button', { name: '测试连接 文字主模型' }))
+    const dialog = screen.getByRole('dialog')
+
+    expect(await within(dialog).findByText('连接成功')).toBeTruthy()
+    expect(within(dialog).getByText('· 已有记录')).toBeTruthy()
+    expect(fixture.api.testConnection).not.toHaveBeenCalled()
+    expect(fixture.api.connectionTestLatest).toHaveBeenCalledWith(id, revision, 'Text')
+
+    await userEvent.click(within(dialog).getByRole('button', { name: '重新测试（新请求）' }))
+    expect(within(dialog).queryByText('连接成功')).toBeNull()
+    expect((within(dialog).getByRole('button', { name: '开始测试' }) as HTMLButtonElement).disabled).toBe(true)
+    await userEvent.click(within(dialog).getByRole('checkbox', { name: /我已核对模型、地址与能力/ }))
+    fixture.api.testConnection.mockResolvedValue({
+      clientRequestId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      modelId: id,
+      modelRevision: revision,
+      capability: 'Text',
+      status: 'Blocked',
+      probe: 'text-minimal',
+      responsePreview: null,
+      errorCode: 'busy',
+      errorMessage: '并发已满',
+      logId: testLogId,
+      durationMs: 3,
+      replayed: false,
+      testedAt: '2026-11-26T00:01:00Z',
+      providerAttempted: false,
+    })
+    await userEvent.click(within(dialog).getByRole('button', { name: '开始测试' }))
+    expect(await within(dialog).findByText('未发送服务商')).toBeTruthy()
+    expect(fixture.api.testConnection).toHaveBeenCalledWith(id, expect.objectContaining({
+      capability: 'Text', expectedRevision: revision,
+    }))
+  })
+
+  it('POST失败后只按本次请求标识核对，旧成功记录不能冒充当前请求', async () => {
+    const oldRequestId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    const oldResult = {
+      clientRequestId: oldRequestId,
+      modelId: id,
+      modelRevision: revision,
+      capability: 'Text' as const,
+      status: 'Succeeded' as const,
+      probe: 'text-minimal',
+      responsePreview: 'OK',
+      errorCode: null,
+      errorMessage: null,
+      logId: '99999999-9999-4999-8999-999999999999',
+      durationMs: 42,
+      replayed: true,
+      testedAt: '2026-11-26T00:00:00Z',
+      providerAttempted: true,
+    }
+    fixture.api.connectionTestLatest.mockResolvedValueOnce(oldResult)
+    fixture.api.testConnection.mockRejectedValue(new Error('网络中断，结果未确认'))
+    open()
+    await screen.findByRole('button', { name: '编辑 文字主模型' })
+    await userEvent.click(screen.getByRole('button', { name: '测试连接 文字主模型' }))
+    const dialog = screen.getByRole('dialog')
+    expect(await within(dialog).findByText('连接成功')).toBeTruthy()
+
+    await userEvent.click(within(dialog).getByRole('button', { name: '重新测试（新请求）' }))
+    await userEvent.click(within(dialog).getByRole('checkbox', { name: /我已核对模型、地址与能力/ }))
+    await userEvent.click(within(dialog).getByRole('button', { name: '开始测试' }))
+    expect(await within(dialog).findByText(/测试请求标识已保留/)).toBeTruthy()
+    const currentRequestId = (fixture.api.testConnection.mock.calls[0]?.[1] as { clientRequestId: string }).clientRequestId
+    expect(currentRequestId).not.toBe(oldRequestId)
+
+    fixture.api.connectionTestLatest.mockResolvedValueOnce(oldResult)
+    await userEvent.click(within(dialog).getByRole('button', { name: '用同一标识核对' }))
+    expect(await within(dialog).findByText(/核对结果与本次请求标识不一致/)).toBeTruthy()
+    expect(within(dialog).queryByText('连接成功')).toBeNull()
+    expect(fixture.api.connectionTestLatest).toHaveBeenLastCalledWith(id, revision, 'Text', currentRequestId)
+
+    fixture.api.connectionTestLatest.mockResolvedValueOnce({
+      ...oldResult,
+      clientRequestId: currentRequestId,
+      status: 'Running',
+      responsePreview: null,
+      providerAttempted: false,
+    })
+    await userEvent.click(within(dialog).getByRole('button', { name: '用同一标识核对' }))
+    expect(await within(dialog).findByText('测试进行中')).toBeTruthy()
+    expect(fixture.api.connectionTestLatest).toHaveBeenLastCalledWith(id, revision, 'Text', currentRequestId)
+  })
+
+  it('marks a pass from an older revision as requiring retest in the model list', async () => {
+    fixture.api.connectionTests.mockResolvedValue([{
+      modelId: id,
+      modelRevision: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+      capability: 'Text',
+      status: 'Succeeded',
+      testedAt: '2026-11-25T00:00:00Z',
+      providerAttempted: true,
+      logId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+    }])
+    open()
+
+    expect(await screen.findByText('连接成功（旧修订，需重测）')).toBeTruthy()
+    expect(fixture.api.connectionTests).toHaveBeenCalledOnce()
   })
 
   it('统计页展示连接级限制、周期用量与提醒入口', async () => {

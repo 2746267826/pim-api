@@ -179,7 +179,18 @@
 
 ## AI（Admin）
 
-### GET /api/v1/ai/status
+> 2026-11-26 更新：`GET /api/v1/ai/status`、`POST /api/v1/ai/test`、`POST /api/v1/ai/health-check` 已随 J05 移除；以下对应小节仅作历史参考，不能再作为 Web/客户端依赖。唯一权威契约是 `contract/openapi.json`。
+>
+> 当前 AI 管理路径：
+> - 模型：`GET/POST /api/v1/ai/models`、`PUT/DELETE /api/v1/ai/models/{id}`；响应只含 `hasApiKey`，不含密钥。
+> - 默认：`GET/PUT /api/v1/ai/model-settings`；支持文本/视觉/转写类型默认及 `noteOrganizationModelId`、`noteTodoModelId`、`calendarPlanningModelId` 用途默认。
+> - 连接：`GET /api/v1/ai/connections`；`POST /api/v1/ai/models/{id}/connection-test`；`GET /api/v1/ai/models/{id}/connection-tests/latest?revision&capability`；`GET /api/v1/ai/models/connection-tests/latest`。
+> - ASR：`GET /api/v1/ai/asr-presets`、`GET/PUT /api/v1/native-notes/asr-routing/config`、`GET /api/v1/native-notes/asr-routing/nodes`。
+> - 记录/统计：`GET /api/v1/ai/requests`、`GET /api/v1/ai/requests/{id}`、`GET /api/v1/ai/usage/summary`、`GET/PUT /api/v1/ai/connections/{id}/usage-limit`、`GET /api/v1/ai/connections/{id}/usage`、`GET /api/v1/ai/usage-reminders`。
+>
+> 连接测试请求体为 `{ clientRequestId, expectedRevision, capability: Text|Vision|Transcription }`；服务端只使用已保存 revision 的地址/模型/密钥，发送一次最小文本、32×32 PNG 视觉或内置 MP3 ASR 探测。HTTP 200 但正文不可解析或转写不匹配仍为失败；同一 `clientRequestId` 重放已有结果，旧 revision 返回 409。`Blocked/circuit_open` 表示本次未发送服务商。
+
+### GET /api/v1/ai/status（已移除，历史参考）
 - 用途：查看 AI 网关配置与健康概览。
 - 认证：Admin（ai 组整体 `Roles = "admin"`，AiEndpoints.cs:12-13）
 - Web 前端使用：是（AI 设置页 /settings/ai，AiSettingsPage 状态卡）
@@ -198,7 +209,7 @@
 - 来源：后端 `src/Pim.Api/Endpoints/AiEndpoints.cs:15`；前端 `src/client-web/src/api/ai.ts:32`（路径常量 ai.ts:5-12）、调用方 `src/client-web/src/pages/AiSettingsPage.tsx:27`
 - 备注：前端类型 `AiStatus`（types/index.ts:1291-1300）与后端一致。
 
-### POST /api/v1/ai/test
+### POST /api/v1/ai/test（已移除，历史参考）
 - 用途：向 AI 网关发送固定测试消息，验证连通性与响应格式。
 - 认证：Admin
 - Web 前端使用：是（AI 设置页 AiStatusPanel"测试"按钮）
@@ -344,7 +355,7 @@
 - 来源：后端 `src/Pim.Api/Endpoints/AiEndpoints.cs:67`；前端 `src/client-web/src/api/ai.ts:59`、调用方 `src/client-web/src/pages/AiSettingsPage.tsx:33`
 - 备注（前后端差异）：后端支持 from/to 过滤，前端 `getAiUsageSummary()` 未传任何参数（ai.ts:59-62），始终全量汇总；分组按组内条数降序（AiUsageService.cs:206）。byStatus 的 groupKey 是存储字符串（小写下划线），而 items[].status 是 PascalCase 枚举字符串。
 
-### POST /api/v1/ai/health-check
+### POST /api/v1/ai/health-check（已移除，历史参考）
 - 用途：立即触发一次 AI 提供方健康检查并返回最新状态。
 - 认证：Admin
 - Web 前端使用：是（AI 设置页 AiStatusPanel"健康检查"按钮）

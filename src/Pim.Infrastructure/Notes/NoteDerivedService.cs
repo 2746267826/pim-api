@@ -7,6 +7,7 @@ using Microsoft.Extensions.Options;
 using Pim.Core.Ai;
 using Pim.Core.Exceptions;
 using Pim.Core.Notes;
+using Pim.Infrastructure.Ai;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
 using Pim.Infrastructure.Secrets;
@@ -91,12 +92,17 @@ public sealed class NoteDerivedService(
         if (runtime is null || !runtime.Enabled)
             throw Conflict("AI 服务未启用，无法使用账号默认模型整理笔记");
         var hasImages = version.Upload.Files.Any(x => x.Kind is "Photo" or "InkPreview");
-        var modelId = hasImages ? runtime.VisionModelId ?? runtime.TextModelId : runtime.TextModelId;
+        var modelId = AiPurposeModelResolver.ResolveId(runtime, AiPurpose.NoteOrganization, hasImages);
         if (modelId is not { } selectedModelId)
-            throw Conflict("账号默认文本模型未配置，无法整理笔记");
+            throw Conflict("笔记整理默认模型未配置，无法整理笔记");
         var profile = await db.AiModelProfiles.AsNoTracking()
             .SingleOrDefaultAsync(x => x.Id == selectedModelId, ct)
-            ?? throw Conflict("账号默认文本模型不存在，无法整理笔记");
+            ?? throw Conflict("笔记整理默认模型不存在，无法整理笔记");
+        if (!AiModelCapabilityFlags.Has(profile.Capabilities, AiModelCapability.Text) ||
+            hasImages && !AiModelCapabilityFlags.Has(profile.Capabilities, AiModelCapability.Vision))
+            throw Conflict(hasImages
+                ? "笔记整理默认模型未声明视觉能力，无法处理含图片材料；请管理员调整用途默认模型"
+                : "笔记整理默认模型未声明文本能力，请管理员调整用途默认模型");
         var consent = new NoteDerivedGenerationConsent(profile.Id, profile.Revision,
             profile.BaseUrl, confirmed);
         await ValidateDestinationAsync(consent, hasImages, ct, requireConfirmed: false);
@@ -218,17 +224,21 @@ public sealed class NoteDerivedService(
         return await materials.ListAsrSourcesAsync(owner, offset, limit, ct, includeWithoutAudio: true);
     }
 
-    public async Task<NoteDerivedDestinationsDto> DestinationsAsync(CancellationToken ct)
+    public async Task<NoteDerivedDestinationsDto> DestinationsAsync(AiPurpose purpose, CancellationToken ct)
     {
         await RequireActiveOwnerAsync(ct);
         if (!await db.AiModelRuntime.AsNoTracking().AnyAsync(x => x.Enabled, ct))
-            return new(0, []);
+            return new(0, [], null, purpose);
+        var runtime = await db.AiModelRuntime.AsNoTracking().SingleOrDefaultAsync(ct);
         var profiles = await db.AiModelProfiles.AsNoTracking()
-            .Where(x => x.Enabled && x.Capabilities != 4 && (x.Capabilities & 1) != 0)
+            .Where(x => x.Enabled && (x.Capabilities & AiModelCapabilityFlags.Text) != 0)
             .OrderBy(x => x.Name).ThenBy(x => x.Id).ToListAsync(ct);
         var items = profiles.Select(TryDescribeDestination).Where(x => x is not null)
             .Cast<NoteDerivedDestinationDto>().ToArray();
-        return new(items.Length, items);
+        var defaultModelId = AiPurposeModelResolver.ResolveDestinationDefaultId(runtime, purpose);
+        if (defaultModelId is { } requestedDefault && items.All(x => x.ModelId != requestedDefault))
+            defaultModelId = null;
+        return new(items.Length, items, defaultModelId, purpose);
     }
 
     public async Task<IReadOnlyList<NoteDerivedArtifactDto>> ListArtifactsAsync(Guid noteId, CancellationToken ct)
@@ -534,8 +544,9 @@ public sealed class NoteDerivedService(
         if (consent is null || (requireConfirmed && !consent.Confirmed))
             throw Invalid("请核对本次固定材料、派生目标与实际地址，并明确同意发送");
         var profile = await db.AiModelProfiles.AsNoTracking().SingleOrDefaultAsync(x => x.Id == consent.ModelId, ct);
-        if (profile is null || !profile.Enabled || profile.Capabilities == 4 ||
-            (profile.Capabilities & 1) == 0 || hasImages && (profile.Capabilities & 2) == 0 ||
+        if (profile is null || !profile.Enabled ||
+            !AiModelCapabilityFlags.Has(profile.Capabilities, AiModelCapability.Text) ||
+            hasImages && !AiModelCapabilityFlags.Has(profile.Capabilities, AiModelCapability.Vision) ||
             !await db.AiModelRuntime.AsNoTracking().AnyAsync(x => x.Enabled, ct))
             throw Conflict("派生模型未启用、能力不足，或 SDK 当前不可用");
         if (consent.ModelRevision != profile.Revision ||
@@ -559,10 +570,10 @@ public sealed class NoteDerivedService(
     {
         try
         {
-            if (profile.Capabilities == 4 || (profile.Capabilities & 1) == 0 ||
+            if (!AiModelCapabilityFlags.Has(profile.Capabilities, AiModelCapability.Text) ||
                 !CredentialAvailable(profile.ApiKeySecret)) return null;
             var capabilities = Enum.GetValues<AiModelCapability>()
-                .Where(value => (profile.Capabilities & (1 << (int)value)) != 0)
+                .Where(value => AiModelCapabilityFlags.Has(profile.Capabilities, value))
                 .Select(value => value.ToString()).ToArray();
             return new(profile.Id, profile.Revision, profile.Name, profile.Model, profile.BaseUrl,
                 capabilities, BackgroundProcessingAvailable);

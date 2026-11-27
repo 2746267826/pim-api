@@ -138,8 +138,8 @@ export function NoteTaskSuggestionsPanel({
     queryFn: ({ signal }) => noteDerivedApi.version(artifactId, versionId, signal),
   })
   const destinations = useQuery({
-    queryKey: ['note-derived', userId, serverBinding, 'destinations'],
-    queryFn: ({ signal }) => noteDerivedApi.destinations(signal),
+    queryKey: ['note-derived', userId, serverBinding, 'destinations', 'NoteTodo'],
+    queryFn: ({ signal }) => noteDerivedApi.destinations('NoteTodo', signal),
   })
   const calendars = useQuery({
     queryKey: ['note-task-suggestions', userId, serverBinding, 'event-calendars'],
@@ -183,6 +183,12 @@ export function NoteTaskSuggestionsPanel({
     setNotice('')
     setError('')
   }, [userId, serverBinding, versionId])
+
+  useEffect(() => {
+    if (destinationId || !destinations.data?.defaultModelId) return
+    const preferred = textDestinations.find((item) => item.modelId === destinations.data?.defaultModelId)
+    if (preferred) setDestinationId(destinationKey(preferred))
+  }, [destinationId, destinations.data?.defaultModelId, textDestinations])
 
   useEffect(() => {
     if (!version.data) return

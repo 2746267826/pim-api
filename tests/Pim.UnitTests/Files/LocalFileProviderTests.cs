@@ -169,6 +169,7 @@ public sealed class LocalFileProviderTests : IDisposable
     [Fact]
     public async Task ProvisioningIsIdempotentAndCannotSaveTheCallersPendingEntities()
     {
+        PimDbContext.RegisterModuleAssembly(typeof(FileProviderEntity).Assembly);
         var options = new DbContextOptionsBuilder<PimDbContext>().UseInMemoryDatabase("local-provision-" + Guid.NewGuid()).Options;
         await using var caller = new PimDbContext(options);
         var pending = new FileProviderEntity { UserId = _user, Provider = "onedrive", AccountId = "not-yet-saved" };

@@ -27,8 +27,6 @@ FORBIDDEN = [
     '/files/search',
     '/files/shares',
     '/mobile/devices/',
-    '/ai/test',
-    '/ai/health-check',
     '/data-reliability/inspection/refresh',
     '/endpoints/',             # 心跳/上报
     '/daemon/',

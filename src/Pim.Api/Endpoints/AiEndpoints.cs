@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
 using Pim.Core.Ai;
 using Pim.Core.Common;
 using Pim.Infrastructure.Ai;
@@ -15,34 +16,6 @@ public static class AiEndpoints
             .RequireAuthorization(new AuthorizeAttribute { Roles = "admin" })
             .RequireCurrentActiveAdmin();
 
-        group.MapGet("/status", async (IAiUsageService usage, CancellationToken ct) =>
-            Results.Ok(ApiResponse<AiStatusDto>.Ok(await usage.GetStatusAsync(ct))))
-        .Produces<ApiResponse<AiStatusDto>>(200)
-        .Produces(401)
-        .Produces(403)
-        .Produces<ApiResponse<string>>(500);
-
-        group.MapPost("/test", async (IAiGateway gateway, CancellationToken ct) =>
-        {
-            var result = await gateway.CompleteAsync(new AiGatewayRequest(
-                Module: "system",
-                Purpose: "ai.test",
-                SourceObjectType: "system",
-                SourceObjectId: "ai-test",
-                Messages: [new AiMessage(AiMessageRole.User, "Reply with the word ok.")],
-                Model: null,
-                SchemaName: null,
-                SchemaVersion: null,
-                MaxOutputTokens: 32,
-                MaxAttempts: 1,
-                Metadata: new Dictionary<string, string> { ["endpoint"] = "/api/v1/ai/test" }), ct);
-            return Results.Ok(ApiResponse<AiResult>.Ok(result));
-        })
-        .Produces<ApiResponse<AiResult>>(200)
-        .Produces(401)
-        .Produces(403)
-        .Produces<ApiResponse<string>>(500);
-
         group.MapGet("/requests", async (
             DateTimeOffset? from,
             DateTimeOffset? to,
@@ -55,7 +28,7 @@ public static class AiEndpoints
             Guid? userId,
             int? page,
             int? pageSize,
-            IAiUsageService usage,
+            [FromServices] IAiUsageService usage,
             CancellationToken ct) =>
         {
             if (!TryParseStatus(status, out var parsedStatus))
@@ -72,7 +45,7 @@ public static class AiEndpoints
         .Produces<ApiResponse<string>>(400)
         .Produces<ApiResponse<string>>(500);
 
-        group.MapGet("/requests/{id:guid}", async (Guid id, IAiUsageService usage, CancellationToken ct) =>
+        group.MapGet("/requests/{id:guid}", async (Guid id, [FromServices] IAiUsageService usage, CancellationToken ct) =>
         {
             var detail = await usage.GetRequestDetailAsync(id, ct);
             return detail is null
@@ -85,7 +58,7 @@ public static class AiEndpoints
         .Produces<ApiResponse<string>>(404)
         .Produces<ApiResponse<string>>(500);
 
-        group.MapGet("/usage/summary", async (DateTimeOffset? from, DateTimeOffset? to, IAiUsageService usage, CancellationToken ct) =>
+        group.MapGet("/usage/summary", async (DateTimeOffset? from, DateTimeOffset? to, [FromServices] IAiUsageService usage, CancellationToken ct) =>
             Results.Ok(ApiResponse<AiUsageSummaryDto>.Ok(await usage.GetUsageSummaryAsync(from, to, ct))))
         .Produces<ApiResponse<AiUsageSummaryDto>>(200)
         .Produces(401)
@@ -93,15 +66,6 @@ public static class AiEndpoints
         .Produces<ApiResponse<string>>(400)
         .Produces<ApiResponse<string>>(500);
 
-        group.MapPost("/health-check", async (IAiProviderHealthService health, IAiUsageService usage, CancellationToken ct) =>
-        {
-            await health.CheckAsync(ct);
-            return Results.Ok(ApiResponse<AiStatusDto>.Ok(await usage.GetStatusAsync(ct)));
-        })
-        .Produces<ApiResponse<AiStatusDto>>(200)
-        .Produces(401)
-        .Produces(403)
-        .Produces<ApiResponse<string>>(500);
     }
 
     public static bool TryParseStatus(string? value, out AiRequestStatus? status)

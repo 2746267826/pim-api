@@ -126,7 +126,7 @@ function Workspace({ ownerId, serverBinding, role }: { ownerId: string; serverBi
   const [taskId, setTaskId] = useState('')
   const [message, setMessage] = useState('')
   const sources = useQuery({ queryKey: ['note-derived', ownerId, serverBinding, 'sources', sourcePage], queryFn: ({ signal }) => noteDerivedApi.sources(sourcePage, signal) })
-  const destinations = useQuery({ queryKey: ['note-derived', ownerId, serverBinding, 'destinations'], queryFn: ({ signal }) => noteDerivedApi.destinations(signal) })
+  const destinations = useQuery({ queryKey: ['note-derived', ownerId, serverBinding, 'destinations', 'NoteOrganization'], queryFn: ({ signal }) => noteDerivedApi.destinations('NoteOrganization', signal) })
   const limits = useQuery({ queryKey: ['note-derived', ownerId, serverBinding, 'limits'], queryFn: ({ signal }) => noteDerivedApi.limits(signal) })
   const requestedNoteId = searchParams.get('noteId') ?? ''
   const requestedAction = searchParams.get('action')
@@ -320,7 +320,8 @@ function Workspace({ ownerId, serverBinding, role }: { ownerId: string; serverBi
               : '仅使用当前内容已成功的转写。若转写仍在处理中，可稍后返回；本页不会自动启动生成。若账号已开启自动笔记处理，材料完成事件可能已按持续授权创建任务，可在处理状态中核对。'}
           </p>}
           <StartTaskCard key={source.versionId} ownerId={ownerId} serverBinding={serverBinding} role={role} source={source}
-          destinations={destinations.data?.items ?? []} destinationsError={destinations.isError
+          destinations={destinations.data?.items ?? []} defaultModelId={destinations.data?.defaultModelId ?? null}
+          destinationsError={destinations.isError
             ? failureText(destinations.error, canViewVersions, '暂时无法读取安全目标，请刷新核对。')
             : ''}
           asrTasks={asrTasks.data ?? []} selectedAsrTaskId={selectedAsrTaskId} asrSelectionRevision={asrSelectionRevision} asrLoading={asrTasks.isPending} limits={limits.data}
@@ -372,12 +373,13 @@ function Workspace({ ownerId, serverBinding, role }: { ownerId: string; serverBi
   </div>
 }
 
-function StartTaskCard({ ownerId, serverBinding, role, source, destinations, destinationsError, asrTasks, selectedAsrTaskId, asrSelectionRevision, asrLoading, limits, onCreated }: {
+function StartTaskCard({ ownerId, serverBinding, role, source, destinations, defaultModelId, destinationsError, asrTasks, selectedAsrTaskId, asrSelectionRevision, asrLoading, limits, onCreated }: {
   ownerId: string
   serverBinding: string
   role?: string
   source: NoteDerivedSource
   destinations: NoteDerivedDestination[]
+  defaultModelId: string | null
   destinationsError: string
   asrTasks: NoteAsrTask[]
   selectedAsrTaskId: string
@@ -402,6 +404,11 @@ function StartTaskCard({ ownerId, serverBinding, role, source, destinations, des
   const approvalWithSelection = `${approval}/${asrSelectionRevision}`
   const ready = Boolean(destination) && (!needsAsr || Boolean(completedAsr)) && !stored.pending
   const pending = stored.pending
+  useEffect(() => {
+    if (destinationId || !defaultModelId) return
+    const preferred = destinations.find((item) => item.modelId === defaultModelId)
+    if (preferred) setDestinationId(destinationKey(preferred))
+  }, [defaultModelId, destinationId, destinations])
 
   async function persistIntent(intentId: string, body: StartNoteDerived) {
     const reserved = reserveAndPersistIntent(stored, 'create', intentId, {}, JSON.stringify(body))

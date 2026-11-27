@@ -18,20 +18,25 @@ namespace Pim.UnitTests.Api;
 public sealed class AiModelEndpointFixture : IDisposable
 {
     private readonly string _root = Path.Combine(Path.GetTempPath(), "pim-ai-model-http", Guid.NewGuid().ToString("N"));
+    private readonly JsonProvider _provider = new();
     public WebApplicationFactory<Program> Factory { get; }
+    public int ProviderCalls => _provider.Calls;
     public AiModelEndpointFixture() => Factory = AuthRegistrationTestHost.Create(AuthRegistrationTestHost.NewDbName("ai-model-http"))
         .WithWebHostBuilder(builder =>
         {
             builder.UseEnvironment("Test").UseSetting("DataProtection:KeysPath", Path.Combine(_root, "keys"))
                 .UseSetting("ManagedStorage:Root", Path.Combine(_root, "storage"));
             builder.ConfigureServices(services => services.AddHttpClient(AiProfileChatClientFactory.ClientName)
-                .ConfigurePrimaryHttpMessageHandler(() => new JsonProvider()));
+                .ConfigurePrimaryHttpMessageHandler(() => _provider));
         });
     public void Dispose() { Factory.Dispose(); if (Directory.Exists(_root)) Directory.Delete(_root, true); }
     private sealed class JsonProvider : HttpMessageHandler
     {
+        public int Calls;
+
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
         {
+            Interlocked.Increment(ref Calls);
             Assert.Equal("/v1/chat/completions", request.RequestUri!.AbsolutePath);
             using var input = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(ct));
             var prompt = input.RootElement.GetProperty("messages").EnumerateArray().Last().GetProperty("content").GetString();
@@ -126,6 +131,82 @@ public sealed class AiModelEndpointsE2ETests(AiModelEndpointFixture host) : ICla
         Assert.Equal(HttpStatusCode.OK, (await client.DeleteAsync($"/api/v1/ai/models/{model.Id}?revision={model.Revision}")).StatusCode);
         Assert.Equal(result.ResponseText, (await Data<AiRequestLogDetailDto>(await client.GetAsync($"/api/v1/ai/requests/{result.LogId}"))).ResponseText);
         Assert.True((await Data<AiTextCallResultDto>(await client.GetAsync($"/api/v1/ai/text-calls/{request.ClientRequestId}"))).Replayed);
+    }
+
+    [Fact]
+    public async Task SavedModelConnectionTestUsesTheRealSdkAndReplaysTheSameAuditedRequest()
+    {
+        var owner = await AuthRegistrationTestHost.SeedAndLoginAsync(host.Factory,
+            "ai-connection-" + Guid.NewGuid().ToString("N"), "admin");
+        using var client = AuthRegistrationTestHost.Authed(host.Factory, owner.AccessToken);
+        var model = await Data<AiModelDto>(await client.PostAsJsonAsync("/api/v1/ai/models",
+            new SaveAiModelRequest("连接测试模型" + Guid.NewGuid(), "http://provider.fixture/v1",
+                "http-model", true, [AiModelCapability.Text], 5, 64, "connection-e2e-credential")));
+        var settings = await Data<AiModelSettingsDto>(await client.GetAsync("/api/v1/ai/model-settings"));
+        await Data<AiModelSettingsDto>(await client.PutAsJsonAsync("/api/v1/ai/model-settings",
+            new SaveAiModelSettingsRequest(settings.Revision, true, model.Id, null, null)));
+        var request = new AiConnectionTestRequest(Guid.NewGuid(), model.Revision, AiModelCapability.Text);
+        var before = host.ProviderCalls;
+
+        var response = await client.PostAsJsonAsync($"/api/v1/ai/models/{model.Id}/connection-test", request);
+        var result = await Data<AiConnectionTestResultDto>(response);
+
+        Assert.Equal(AiConnectionTestStatus.Succeeded, result.Status);
+        Assert.True(result.ProviderAttempted);
+        Assert.Equal(before + 1, host.ProviderCalls);
+        Assert.DoesNotContain("connection-e2e-credential", JsonSerializer.Serialize(result));
+        var replay = await Data<AiConnectionTestResultDto>(await client.PostAsJsonAsync(
+            $"/api/v1/ai/models/{model.Id}/connection-test", request));
+        Assert.True(replay.Replayed);
+        Assert.Equal(result.LogId, replay.LogId);
+        Assert.Equal(before + 1, host.ProviderCalls);
+        var log = await Data<AiRequestLogDetailDto>(await client.GetAsync($"/api/v1/ai/requests/{result.LogId}"));
+        Assert.Equal("ai.connection-test", log.Purpose);
+        Assert.Equal(AiRequestStatus.Succeeded, log.Status);
+        Assert.Equal(model.Id, log.ModelProfileId);
+        Assert.DoesNotContain("connection-e2e-credential", JsonSerializer.Serialize(log));
+
+        var latest = await Data<AiConnectionTestResultDto>(await client.GetAsync(
+            $"/api/v1/ai/models/{model.Id}/connection-tests/latest?revision={model.Revision}&capability=Text"));
+        Assert.Equal(result.LogId, latest.LogId);
+        Assert.True(latest.Replayed);
+        var summaries = await Data<List<AiConnectionTestSummaryDto>>(
+            await client.GetAsync("/api/v1/ai/models/connection-tests/latest"));
+        Assert.Contains(summaries, x => x.ModelId == model.Id && x.ModelRevision == model.Revision &&
+            x.Capability == AiModelCapability.Text && x.Status == AiConnectionTestStatus.Succeeded);
+        var missingRevision = await client.GetAsync(
+            $"/api/v1/ai/models/{model.Id}/connection-tests/latest?revision={Guid.NewGuid()}&capability=Text");
+        Assert.Equal(HttpStatusCode.NotFound, missingRevision.StatusCode);
+    }
+
+    [Fact]
+    public async Task ConnectionTestRequiresAdminAndRejectsAStaleRevisionBeforeSending()
+    {
+        var owner = await AuthRegistrationTestHost.SeedAndLoginAsync(host.Factory,
+            "ai-connection-revision-" + Guid.NewGuid().ToString("N"), "admin");
+        using var admin = AuthRegistrationTestHost.Authed(host.Factory, owner.AccessToken);
+        var model = await Data<AiModelDto>(await admin.PostAsJsonAsync("/api/v1/ai/models",
+            new SaveAiModelRequest("连接版本模型" + Guid.NewGuid(), "http://provider.fixture/v1",
+                "http-model", true, [AiModelCapability.Text], 5, 64, "revision-e2e-credential")));
+        var settings = await Data<AiModelSettingsDto>(await admin.GetAsync("/api/v1/ai/model-settings"));
+        await Data<AiModelSettingsDto>(await admin.PutAsJsonAsync("/api/v1/ai/model-settings",
+            new SaveAiModelSettingsRequest(settings.Revision, true, model.Id, null, null)));
+        var before = host.ProviderCalls;
+
+        var stale = await admin.PostAsJsonAsync($"/api/v1/ai/models/{model.Id}/connection-test",
+            new AiConnectionTestRequest(Guid.NewGuid(), Guid.NewGuid(), AiModelCapability.Text));
+
+        Assert.Equal(HttpStatusCode.Conflict, stale.StatusCode);
+        Assert.Equal(before, host.ProviderCalls);
+
+        var user = await AuthRegistrationTestHost.SeedAndLoginAsync(host.Factory,
+            "ai-connection-user-" + Guid.NewGuid().ToString("N"));
+        using var ordinary = AuthRegistrationTestHost.Authed(host.Factory, user.AccessToken);
+        var forbidden = await ordinary.PostAsJsonAsync($"/api/v1/ai/models/{model.Id}/connection-test",
+            new AiConnectionTestRequest(Guid.NewGuid(), model.Revision, AiModelCapability.Text));
+
+        Assert.Equal(HttpStatusCode.Forbidden, forbidden.StatusCode);
+        Assert.Equal(before, host.ProviderCalls);
     }
 
     [Fact]

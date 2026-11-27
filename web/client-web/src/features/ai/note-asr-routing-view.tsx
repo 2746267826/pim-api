@@ -127,6 +127,12 @@ export function NoteAsrRoutingView({ userId }: { userId: string }) {
         localModelRevision: config.data.localModelRevision ?? null,
         cloudConfigured: config.data.cloudConfigured,
         cloudModelId: config.data.cloudModelId ?? null,
+        effectiveCloudModelId: config.data.effectiveCloudModelId ?? null,
+        effectiveCloudModelName: config.data.effectiveCloudModelName ?? null,
+        effectiveCloudRoute: config.data.effectiveCloudRoute ?? null,
+        globalCloudModelId: config.data.globalCloudModelId,
+        globalCloudModelName: config.data.globalCloudModelName,
+        globalCloudRoute: config.data.globalCloudRoute,
         consentVersion: config.data.consentVersion,
         updatedAtLabel: dateTime(config.data.updatedAt),
       }}

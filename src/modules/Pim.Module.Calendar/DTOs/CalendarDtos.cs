@@ -493,7 +493,8 @@ public record AiPlanPlaceholderViewDto(
 
 public record GenerateAiPlanResponse(
     string Source,
-    IReadOnlyList<AiPlanPlaceholderViewDto> Placeholders);
+    IReadOnlyList<AiPlanPlaceholderViewDto> Placeholders,
+    string? FallbackReason = null);
 
 public record CalendarLayerQuery(
     DateTimeOffset Start,

@@ -270,4 +270,6 @@ public sealed record NoteDerivedDestinationDto(
 
 public sealed record NoteDerivedDestinationsDto(
     int Total,
-    IReadOnlyList<NoteDerivedDestinationDto> Items);
+    IReadOnlyList<NoteDerivedDestinationDto> Items,
+    Guid? DefaultModelId = null,
+    Pim.Core.Ai.AiPurpose? Purpose = null);

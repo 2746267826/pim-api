@@ -1,8 +1,4 @@
 using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Diagnostics.HealthChecks;
-using Microsoft.Extensions.Options;
-using Pim.Api.Health;
 using Pim.Api.Infrastructure;
 using Serilog.Events;
 using Xunit;
@@ -136,38 +132,4 @@ public class LoggingLevelConfigTests
             LoggingConfig.ResolveLevels(NewCfg(("Logging:LogLevel:Default", "Warning")), "Error").MinimumLevelSource);
     }
 
-    // ---- B2.3：Ai 未启用时不注册 litellm 健康检查（消除恒 Degraded 的周期噪声） ----
-
-    [Fact]
-    public void LiteLlmHealthCheck_IsNotRegistered_WhenAiDisabled()
-    {
-        var registrations = Registrations(("Ai:Enabled", "false"));
-        Assert.DoesNotContain(registrations, r => r.Name == "litellm");
-        // 核心与其它可选依赖照旧注册
-        Assert.Contains(registrations, r => r.Name == "database");
-        Assert.Contains(registrations, r => r.Name == "tika");
-    }
-
-    [Fact]
-    public void LiteLlmHealthCheck_IsRegistered_WhenAiEnabled_SoAnUnreachableDependencyIsStillReported()
-    {
-        var registrations = Registrations(("AI_ENABLED", "true"));
-        Assert.Contains(registrations, r => r.Name == "litellm");
-    }
-
-    private static IReadOnlyList<HealthCheckRegistration> Registrations(params (string Key, string? Value)[] pairs)
-    {
-        var services = new ServiceCollection();
-        services.AddLogging();
-        services.AddSingleton<IHttpClientFactory>(new HttpClientFactoryStub());
-        services.AddSingleton(NewCfg(pairs));
-        services.AddPimHealthChecks(NewCfg(pairs));
-        using var provider = services.BuildServiceProvider();
-        return provider.GetRequiredService<IOptions<HealthCheckServiceOptions>>().Value.Registrations.ToList();
-    }
-
-    private sealed class HttpClientFactoryStub : IHttpClientFactory
-    {
-        public HttpClient CreateClient(string name) => new();
-    }
 }

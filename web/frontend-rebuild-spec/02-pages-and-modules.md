@@ -296,9 +296,13 @@
 
 | 模块 | 形式 | 调用接口 | 前端处理 |
 |---|---|---|---|
-| AI 状态面板 | 提供方状态面板（含测试/健康检查按钮） | GET /api/v1/ai/status；POST /api/v1/ai/test；POST /api/v1/ai/health-check | 轮询 |
-| 用量概览 | 用量统计瓦片 | GET /api/v1/ai/usage/summary | 轮询 |
-| 请求日志区 | 可折叠区：分页数据表格（行选择）+ 详情面板（键值/JSON 分区） | GET /api/v1/ai/requests?module&purpose&model&status&page&pageSize；GET /api/v1/ai/requests/{id} | 服务端过滤+分页；轮询 |
+| 模型设置 | 类型默认 + 笔记整理/提取待办/日历排程用途默认；模型卡片显示能力、凭据是否已保存、revision 与最近连接测试 | GET/POST/PUT/DELETE `/api/v1/ai/models`；GET/PUT `/api/v1/ai/model-settings`；GET `/api/v1/ai/connections` | 保存后刷新；用途未选时沿用类型默认；不自动发起模型调用 |
+| 连接测试 | 对话框选择文本/视觉/语音转写，明确确认可能产生费用；展示状态、探测类型、耗时、是否实际发送、错误与记录链接；支持幂等重放和“重新测试（新请求）” | POST `/api/v1/ai/models/{id}/connection-test`；GET `/api/v1/ai/models/{id}/connection-tests/latest?revision&capability`；GET `/api/v1/ai/models/connection-tests/latest` | 旧 revision 显示“旧修订，需重测”；保存新密钥后旧 revision 测试 409 |
+| ASR 配置 | 预设模型、独立凭据、默认转写模型、本地/云路由；云模型未指定时显示“跟随全局默认”与实际生效模型 | GET `/api/v1/ai/asr-presets`；GET/PUT `/api/v1/native-notes/asr-routing/config`；GET `/api/v1/native-notes/asr-routing/nodes` | 显示服务端解析的 effectiveCloudModelId/Name 与 route；旧路由只读兼容 |
+| 用量概览 | 连接级日/月 Token/费用限额、提醒与用量统计瓦片 | GET `/api/v1/ai/usage/summary`；GET/PUT `/api/v1/ai/connections/{id}/usage-limit`；GET `/api/v1/ai/connections/{id}/usage`；GET `/api/v1/ai/usage-reminders` | 超限/未知用量在发送前阻断并提示 |
+| 请求日志区 | 可折叠区：分页数据表格（行选择）+ 详情面板（键值/JSON 分区） | GET `/api/v1/ai/requests?module&purpose&model&status&page&pageSize`；GET `/api/v1/ai/requests/{id}` | 服务端过滤+分页；不渲染密钥 |
+
+> 旧 `/api/v1/ai/status`、`/api/v1/ai/test`、`/api/v1/ai/health-check` 已随 J05 移除，不再作为前端依赖。唯一契约以 `contract/openapi.json` 为准。
 
 ## /settings/mcp MCP 设置
 

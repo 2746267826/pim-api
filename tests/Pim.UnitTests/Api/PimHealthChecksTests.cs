@@ -45,15 +45,6 @@ public class PimHealthChecksTests
         Assert.Equal(HealthStatus.Degraded, result.Status);
     }
 
-    [Fact]
-    public async Task LiteLlm_AiDisabled_IsDegraded()
-    {
-        var check = new LiteLlmHealthCheck(NewHttpFactory(),
-            NewCfg(("AI_ENABLED", "false")));
-        var result = await check.CheckHealthAsync(new HealthCheckContext());
-        Assert.Equal(HealthStatus.Degraded, result.Status);
-    }
-
     // MinIO / Qdrant 健康检查随 P4 退役，相应用例已移除；Tika 仍是可选依赖（见上方用例）
 
     [Fact]

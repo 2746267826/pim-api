@@ -55,7 +55,7 @@ public sealed class McpToolExecutor
         _httpContext = httpContext;
     }
 
-    /// <summary>Loaded 151-tool contract (name/description/inputSchema) from the embedded JSON.</summary>
+    /// <summary>Loaded 148-tool contract (name/description/inputSchema) from the embedded JSON.</summary>
     public static IReadOnlyList<McpToolContract> ToolContract => Contract.Value;
 
     /// <summary>Read-only snapshot of recent tool calls, newest first.</summary>

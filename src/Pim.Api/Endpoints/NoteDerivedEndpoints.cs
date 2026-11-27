@@ -1,6 +1,8 @@
 using Microsoft.AspNetCore.Mvc;
+using Pim.Core.Ai;
 using Pim.Core.Common;
 using Pim.Core.Notes;
+using Pim.Infrastructure.Ai;
 using Pim.Infrastructure.Notes;
 
 namespace Pim.Api.Endpoints;
@@ -14,9 +16,16 @@ public static class NoteDerivedEndpoints
         tasks.MapGet("/limits", (NoteDerivedService service) =>
             Results.Ok(ApiResponse<NoteDerivedLimitsDto>.Ok(service.Limits)))
             .Produces<ApiResponse<NoteDerivedLimitsDto>>().Produces(401);
-        tasks.MapGet("/destinations", async (NoteDerivedService service, CancellationToken ct) =>
-            Results.Ok(ApiResponse<NoteDerivedDestinationsDto>.Ok(await service.DestinationsAsync(ct))))
-            .Produces<ApiResponse<NoteDerivedDestinationsDto>>().Produces(401).Produces(403);
+        tasks.MapGet("/destinations", async (string? purpose, NoteDerivedService service, CancellationToken ct) =>
+        {
+            var resolved = AiPurpose.NoteOrganization;
+            if (purpose is not null && !AiPurposeModelResolver.TryParse(purpose, out resolved))
+                return Results.BadRequest(ApiResponse<string>.Error(40001,
+                    "purpose 参数无效，仅支持 NoteOrganization、NoteTodo、CalendarPlanning"));
+            return Results.Ok(ApiResponse<NoteDerivedDestinationsDto>.Ok(
+                await service.DestinationsAsync(resolved, ct)));
+        })
+            .Produces<ApiResponse<NoteDerivedDestinationsDto>>().Produces(400).Produces(401).Produces(403);
         tasks.MapGet("/sources", async (NoteDerivedService service, CancellationToken ct,
             int offset = 0, int limit = 20) =>
             Results.Ok(ApiResponse<NoteAsrSourcesDto>.Ok(await service.SourcesAsync(offset, limit, ct))))

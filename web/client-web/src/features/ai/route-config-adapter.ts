@@ -45,6 +45,15 @@ export function toRouteConfigSave(
   let defaultRoute: string
   if (intent.defaultRouteId !== 'cloud') {
     defaultRoute = ActualNoteAsrRoutes.local
+  } else if (!cloudModelId) {
+    // effective* still describes the persisted override during this draft. Only the explicit
+    // global route (or a response that already had no override) describes following global.
+    const globalRoute = currentConfig.globalCloudRoute !== undefined
+      ? currentConfig.globalCloudRoute
+      : currentConfig.cloudModelId == null ? currentConfig.effectiveCloudRoute : null
+    defaultRoute = isActualCloudRoute(globalRoute ?? '')
+      ? globalRoute!
+      : ActualNoteAsrRoutes.cloudAsr
   } else if (cloudModelId && cloudModelId === currentConfig.cloudModelId && isActualCloudRoute(currentConfig.defaultRoute)) {
     defaultRoute = currentConfig.defaultRoute
   } else if (cloudModelId && selectedCloud?.id === cloudModelId) {

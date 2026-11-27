@@ -180,6 +180,22 @@ it('loads ordinary sources without version controls and never calls admin model 
   expect(screen.getByText('隐私与处理说明').closest('details')?.textContent).toContain('普通账号只能使用管理员启用的共享目标')
 })
 
+it('preselects the NoteOrganization purpose default returned by the server', async () => {
+  derived.destinations.mockResolvedValue({
+    total: 1,
+    items: [destination],
+    defaultModelId: destinationId,
+    purpose: 'NoteOrganization',
+  })
+  page()
+  await chooseSource()
+
+  await waitFor(() => expect(
+    screen.getByRole('combobox', { name: '本次生成目标' }).textContent,
+  ).toContain('合成共享目标'))
+  expect(derived.destinations).toHaveBeenCalledWith('NoteOrganization', expect.any(AbortSignal))
+})
+
 it('renders an ordinary processing page from note and action context without version controls', async () => {
   auth.user.role = 'user'
   window.history.replaceState({}, '', `/native-notes/processing?noteId=${noteId}&version=${sourceVersionId}&action=organize`)

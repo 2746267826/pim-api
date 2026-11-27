@@ -54,7 +54,7 @@ public enum McpToolKind
 }
 
 /// <summary>
-/// HTTP mapping for one of the 151 MCP tools. This table is the in-process twin of the
+/// HTTP mapping for one of the 148 MCP tools. This table is the in-process twin of the
 /// Python tool bodies: it decides which arguments go to the query string, which go to the
 /// JSON body, which are path segments, and which extra behaviors apply.
 /// </summary>
@@ -101,7 +101,7 @@ public sealed record McpToolSpec
 }
 
 /// <summary>
-/// Static table of all 151 MCP tools (101 read + 50 write). Source of truth for the
+/// Static table of all 148 MCP tools (99 read + 49 write). Source of truth for the
 /// executor's HTTP mapping; the wire contract (name/description/inputSchema) lives in
 /// the embedded <c>mcp-tools.json</c> dumped from the Python reference.
 /// </summary>
@@ -207,7 +207,7 @@ public static class McpToolTable
             S("get_quick_note", "GET", "/api/v1/quick-notes/{noteId}", req: R("noteId")),
             S("get_quick_note_attachment_meta", "GET", "/api/v1/quick-notes/attachments/{attachmentId}/download", req: R("attachmentId"), kind: McpToolKind.AttachmentMeta),
 
-            // ===================== Files reads (8) =====================
+            // ===================== Files reads (7) =====================
             S("get_file_providers", "GET", "/api/v1/files/providers"),
             S("get_files", "GET", "/api/v1/files/items", Q("folderId=path", "page", "pageSize"), redact: true),
             S("get_file", "GET", "/api/v1/files/items/{fileId}", req: R("fileId")),
@@ -216,14 +216,13 @@ public static class McpToolTable
             S("get_file_suggestions", "GET", "/api/v1/files/suggestions", Q("page", "pageSize")),
             S("get_file_open_link", "GET", "/api/v1/files/items/{fileId}/open-link", req: R("fileId"), kind: McpToolKind.FileOpenLink),
 
-            // ===================== Core/Infra reads (14) =====================
+            // ===================== Core/Infra reads (13) =====================
             S("get_today_sections", "GET", "/api/v1/today/sections", Q("date", "timezone")),
             S("get_today_section", "GET", "/api/v1/today/sections/{sectionId}", Q("date")),
             S("search_pim", "GET", "/api/v1/search", Q("q", "type", "limit")),
             S("get_system_status", "GET", "/api/v1/status"),
             S("get_system_health", "GET", "/health", kind: McpToolKind.Health),
             S("get_status_summary", "GET", "/api/v1/status/summary"),
-            S("get_ai_status", "GET", "/api/v1/ai/status"),
             S("get_ai_requests", "GET", "/api/v1/ai/requests", Q("fromTime=from", "to", "module", "status", "page", "pageSize")),
             S("get_ai_usage_summary", "GET", "/api/v1/ai/usage/summary", Q("fromTime=from", "to"), req: R("fromTime")),
             S("get_audit_timeline", "GET", "/api/v1/operations/audit/{objectType}/{objectId}"),
@@ -278,7 +277,7 @@ public static class McpToolTable
             W("upload_quick_note_attachment", "POST", "/api/v1/quick-notes/attachments", req: R("fileContentBase64", "fileName"), multipart: true),
             W("delete_quick_note_attachment", "DELETE", "/api/v1/quick-notes/attachments/{attachmentId}", req: R("attachmentId")),
 
-            // ===================== Files writes (6) =====================
+            // ===================== Files writes (5) =====================
             W("upload_file", "POST", "/api/v1/files/items/upload", req: R("providerId", "path", "fileContentBase64", "fileName"), multipart: true),
             W("move_file", "POST", "/api/v1/files/items/{fileId}/move", req: R("fileId", "destinationPath")),
             W("rename_file", "POST", "/api/v1/files/items/{fileId}/rename", req: R("fileId", "name")),
