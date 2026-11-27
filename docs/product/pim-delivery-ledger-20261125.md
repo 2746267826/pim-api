@@ -6,18 +6,18 @@
 
 | 项 | 当前快照 |
 | --- | --- |
-| 盘点时间 | 2026-11-25 初始；2026-11-27 复核（Asia/Shanghai）。本轮只读 GitHub 与本地仓库，不访问 `pim_prod`，不运行 `dotnet test Pim.sln`。 |
+| 盘点时间 | 2026-11-25 初始；2026-11-27 16:20 CST（08:20Z）整合六组只读审计（各组观测于 15:52–16:14 CST），16:28 CST（08:28Z）重新读取 #620 实时状态。只读 GitHub、PR 工具与本地仓库；不访问 `pim_prod`，不运行构建或测试。 |
 | 交付包 | `PIM功能确认-最终交付-20261122.zip`，SHA-256 `b488a01e6f317a2735f387a918787204791fb32a38ad9ce064a07166f4b8a864` |
 | 台账文件 | 实际文件为 `docs/product/pim-delivery-ledger-20261125.md`；任务文字中的 `docs/product/pim-delivery-ledger-20251125.md` 是 `20261125` 的笔误，仓库不新增、不引用该文件。 |
 | pim-api | `origin/master@4123f73fd03aa63503e618e6ad155bbbdf0f7f77`（CI 闸门修复 PR #619 合并；#597 Z01 隐私/授权收口为 squash merge `c47542e1`；#594 D04 Web merge `1dd3032d`；#600 Q08 merge `a4919618`；#589 I03/I04 merge `05552e84`；#585 J09、#588 R01、#601/#603/#604 版本与发布安全已落地）；当前契约 `contract/openapi.json` SHA-256 `5f5bffc67f26d70a15507d093d526c62c27270f4627a5feaba97b79be6eb73e7`（1,309,674 B，未变化）；master CI `45832602693` success（#619 合并后；修复 shard `PIPESTATUS` 退出码假绿）；#606 仍 OPEN（head `047563cc`），其 docs-only tree 已由 master 落地 |
 | pim-android | `origin/master@b23fbe89007db6f5a47ad7522286858b567a3dba`（PR #100 I03/I04 于 2026-11-25T18:07:03Z squash merge；#97 D04 merge `c7ff54f7`；#89/#91/#94 已合并）；契约快照 SHA-256 `cf04f50ff799ff51021c4842eb18f2039fbf7a844965fbbd935dc6c0fb106ddc`（1,301,488 B），来源 `pim-api@05552e84`，已落后当前 API master；合并后 master CI `45671814150` **failure**：`Contract freshness` 失败（运行时上游 `pim-api@1dd3032d` 契约 `31ebcf4c…`/1,309,035 B），其余 build/shell/connected/codegen success；契约同步 PR #93 OPEN（head `63ce05dd`，CI `45793789400` failure：`ApiService.kt:431 search` 返回类型仍为 `SearchResultPagedResultApiResponse`，契约要求 `GlobalSearchResultApiResponse`） |
 | pim-windows | `origin/master@70b735a5c7067be1a277cd19e18aa45ff50dc1c4`（PR #59 M06 工作台/载荷收口；#58 M05、#57 R04、#52 D04 鼠标手写、#53 M06 热键子项已合并）；契约快照 SHA-256 `893af01abbecd4bab0cd46600e1c6a7a3ee6777e5a9cbef33a3a9a6bc05fe318`（1,300,373 B），来源 `pim-api@b0f92b16`，已落后当前 API master；master CI `45652799869` success（含 `release`）；契约同步 PR #60 OPEN（head `7bf52b7a`，CI `45793795936` failure：`test-client-core` CS9035 `NoteTaskSuggestionDto.Kind` 测试夹具缺必填字段，需先合入 #62 的夹具修复）；#61/#62/#63 仍 OPEN |
 | 状态口径 | `PASS`：当前 head 且适用平台完整验收；`FAIL`：确认缺口仍存在或实现未合并；`NOT-VERIFIED`：实现存在但当前 head 无完整验收；`BLOCKED`：缺产品裁决/外部前提；`APPROVED-EXCEPTION`：交付包明确跳过或替代。不使用 `PARTIAL`；部分实现或未完成边界写入事实列。历史行中的“部分实现”是当时审计用词，不是当前状态值。 |
-| 本轮 PASS | **0**。2026-11-27 10:22 CST（02:22Z）复核：pim-api master `4123f73f`（PR #619 CI 闸门修复）；#590/#596/#602/#607/#609/#610/#611/#612/#613/#614/#615/#616/#617/#620 仍未合并，代码存在或 CI 绿不能记 PASS。Q06 当前 head `e5de6753985f4b79161fd193945d27d4cc5f26d4` 的 run `45926319904` success（`CI Gate`、`build-api / build`、6 个 test shard、`web-build`、`build-docker / build` success；`build-mcp`/契约通知/`release` skipped），上一 head `1e1bc034`/`45923273062` success（同类产品 job 全绿）仅为历史；Q06 仍因产品缺口保持 FAIL。Z02 #620 当前 head `6b8f5b5c9f39e19aeb5e00f475e31cf3b49007f9` 的 run `45923880411` success（2026-11-27 09:54 CST / 01:54Z 观测：`CI Gate`、`build-api / build`、6 个 test shard、`web-build`、`build-docker / build` success；`build-mcp`/契约通知/`release` skipped）；CI 全绿不改变 Z02 的 NOT-VERIFIED，真实 provider/Hangfire/真实浏览器/Android/Windows 换端仍未验。Q03、R03、R05、H03、J05/J06/J08、J09、C12、R02、Q05、P05 仍 FAIL；Q01/Q07 仍 BLOCKED；B15/C14/C21/E03/O04/Q02 仍 APPROVED-EXCEPTION；S01 单独 NOT-VERIFIED；A–R、Z 160 项合计 `0 PASS / 83 FAIL / 69 NOT-VERIFIED / 2 BLOCKED / 6 APPROVED-EXCEPTION`，加 S01 为 161 项。CI、WPF/AVD、组件测试不能替代真实设备、真实 provider、真实浏览器或生产/发布证据。 |
+| 本轮 PASS | **0**。六组只读审计没有建议任何 PASS。A–R、Z 核心 160 项合计 `0 PASS / 103 FAIL / 49 NOT-VERIFIED / 2 BLOCKED / 6 APPROVED-EXCEPTION`；S01 为独立补充项 `NOT-VERIFIED`，不计入 160 项。分组为 A–C `0/32/13/0/3`、D–F `0/12/9/0/1`、G–H `0/18/6/0/0`、I–J `0/11/2/0/0`、K–M `0/12/12/0/0`、N–R/Z `0/18/7/2/2`。Q01/Q07 仍 `BLOCKED`；R05-AC05 另有永久墓碑容量策略阻塞。B15/C14/C21/E03/O04/Q02 六项批准例外不变。pim-api master 仍为 `4123f73f`，当前契约 `5f5bffc6…`；Android master `b23fbe89` 的 CI 仍因契约 freshness 红，Windows master `70b735a5` 的契约仍落后；#93/#60 均不是当前契约兼容证据。Z02 #620 已再次移动：2026-11-27 16:28 CST（08:28Z）读取到的 head 为 `225834fa7fcdf3ce943290c8a3348ee01e5742df`，run `45965628196` 尚在运行（`resolve-version`/`changes` success，其余 pending）；上一 head `3235ec37` 的 run `45963742316` 已为 failure（`shard-5`、`CI Gate`），旧 head `6b8f5b5c`/run `45923880411` success 仅作历史；真实 provider/Hangfire/浏览器/Android/Windows 换端仍未验，Z02 保持 `NOT-VERIFIED`。CI 绿、合并代码、CLEAN、模拟器、jsdom 与组件测试均不等于真实用户流程 PASS。 |
 
-> 关键防回归规则：不把旧 PR head、旧 CI、demo、历史源码审计或客户端契约快照当作当前 head 的 PASS；`NOT-VERIFIED` 不是通过；**代码合并 ≠ PASS**。原始状态以 2026-11-05 `PIM功能表.md` 为准（64 `[x] ✅` / 57 `[~] 🟡` / 39 `[ ] ❌`）；H03/R04/Z02 三处旧台账漂移在本文件纠正，历史文件不改写。本台账对 Android 只认远端 `origin/master@b23fbe89007db6f5a47ad7522286858b567a3dba` 及已核实的 PR 状态；对 Windows 只认 `origin/master@70b735a5c7067be1a277cd19e18aa45ff50dc1c4`。Android master 当前 CI 因契约 freshness 为红，Android/Windows 契约同步 PR #93/#60 也分别为红；在契约刷新完成前，不得把客户端 CI 旧绿或已合并 PR 当作当前契约兼容证据。`api-v26.11.1174`/`api-v26.11.1182` 都是 pre-release，不是正式发布或生产部署证据。#606 仍 OPEN，但其 docs-only tree 已由 master 落地，本台账只记该事实，不关闭 PR。
+> 关键防回归规则：不把旧 PR head、旧 CI、demo、历史源码审计或客户端契约快照当作当前 head 的 PASS；`NOT-VERIFIED` 不是通过；**代码合并 ≠ PASS**。原始状态以 2026-11-05 `PIM功能表.md` 为准（64 `[x] ✅` / 57 `[~] 🟡` / 39 `[ ] ❌`），该基线保持不可变。本台账对 Android 只认远端 `origin/master@b23fbe89007db6f5a47ad7522286858b567a3dba` 及已核实的 PR 状态；对 Windows 只认 `origin/master@70b735a5c7067be1a277cd19e18aa45ff50dc1c4`。Android master 当前 CI 因契约 freshness 为红，Android/Windows 契约同步 PR #93/#60 也分别为红；#102/#101 与 #62 的绿 run 只对各自旧 pin 成立。在 #596/#614/#617/#620 等会改变契约的 PR 合入并重新导出前，不得把客户端旧绿当作当前契约兼容证据。`api-v26.11.1174`/`1182`/`1273` 都是 pre-release，不是正式发布或生产部署证据。#606 仍 OPEN，但其 docs-only tree 已由 master 落地，本台账只记该事实，不关闭 PR。
 
-### 2026-11-26 20:38 CST 仓库与契约基线
+### 2026-11-27 16:20 CST 仓库与契约基线
 
 本轮以 GitHub 只读查询、三个仓库 `origin/master` 和 `contract/openapi.json` 为准；不访问 `pim_prod`，不修改 workflow。代码合并、CI、真实设备、真实 provider、真实浏览器、生产/发布证据分栏记录。
 
@@ -34,7 +34,7 @@
 | pim-android #93 契约刷新至 `pim-api@c47542e` | `63ce05dd5c11339c1d6173aed0035c542c35af50` | `45793789400` failure | `:core:verifyContractEndpoints`：`ApiService.kt:431 search` 返回 `SearchResultPagedResultApiResponse`，契约要求 `GlobalSearchResultApiResponse` | 先合入 #101/#102 中的 search 类型适配，再刷新并重跑 #93 |
 | pim-windows #60 契约刷新至 `pim-api@c47542e` | `7bf52b7abcde9db096b0f4f93ee277a4c000615d` | `45793795936` failure | `test-client-core` CS9035：`NoteTaskSuggestionServiceTests.cs` 的 `NoteTaskSuggestionDto.Kind` 必填字段未赋值 | 先合入 #62 的测试夹具修复，再刷新并重跑 #60 |
 
-### 已合并 PR（2026-11-26 20:38 CST 复核）
+### 已合并 PR（2026-11-27 16:20 CST 复核）
 
 | PR | head | merge | required CI / 合并后 CI | 判定与边界 |
 | --- | --- | --- | --- | --- |
@@ -66,7 +66,8 @@
 | pim-api #615 | R03 | `9d7af01d` | `45867495126` success | `CI Gate`、`build-api / build`、6 个 test shard、`web-build`、`build-docker / build` success；6 shard 原始日志合计 `Passed 6906 / Failed 0 / Skipped 103` | CLEAN；reviews=0 | R03 仍 FAIL：PR OPEN，真实 Microsoft Graph/OAuth、外部独立 MCP、真实进程崩溃恢复、真实 PG 连接中断未验 |
 | pim-api #616 | Q06 | `e5de6753985f4b79161fd193945d27d4cc5f26d4`（2026-11-27T02:22Z 观测） | `45926319904` success：`CI Gate`、`build-api / build`、6 个 test shard、`web-build`、`build-docker / build` success；`build-mcp`/契约通知/`release` skipped。历史：`1e1bc034`/`45923273062` success（同类产品 job 全绿）、`33a40dc`/`45919652577` success（6 shard `Passed 6861 / Failed 0 / Skipped 103`）、`0c1a4db`/`45918846595` failure（6 个 test shard 均 `CS0103: NotificationDeliveryStatuses` 编译失败）、`0370232f`/`45914995572` success、`5ce7801a`/`45913522617` failure、`bde84ea7`/`45770689873` success、`e8ad2154`/`45768852328` failure | 当前 run 已结束且全绿，但 Q06 产品验收仍失败；此前成功/失败 run 均作为历史，不能替代当前产品结论 | CLEAN / MERGEABLE；reviews=0 | Q06 仍 FAIL：PR OPEN，CI 绿不改变产品缺口；精确 categoryKey、设备级 dismiss/click/vendor message id/90 天保留、时区/DND、Android FCM/Windows WNS、真实浏览器 Web Push 未实现或未验 |
 | pim-api #617 | J05 / J06 / J08 | `95568663` | `45835093386` success | `CI Gate`、`build-api / build`、6 个 test shard、`web-build`、`build-mcp` SDK 1.x/2.x/package、`build-docker / build` success；6 shard 原始日志合计 `Passed 6846 / Failed 0 / Skipped 100` | CLEAN；reviews=0 | J05/J06/J08 仍 FAIL：PR OPEN，真实第三方 provider、管理员浏览器、无 LiteLLM 生产部署、Batch 连接测试、音频理解、诊断 ZIP、Android/Windows 原生闭环未验；MCP .NET 148 与退役 Python 147 的等价性仍 PARTIAL/NOT-VERIFIED |
-| pim-api #620 | Z02 / WO-Z02-CONSENT + WO-Z02-SINGLE-ENTRY | `6b8f5b5c9f39e19aeb5e00f475e31cf3b49007f9`（2026-11-27T01:54Z 观测） | `45923880411` success：`CI Gate`、`build-api / build`、6 个 test shard、`web-build`、`build-docker / build` success；`build-mcp`/契约通知/`release` skipped。历史：`a0d0ed4f`/`45922322745` 已于 `2026-11-27T01:38:08Z` 完成并为 `failure`（`web-build` failure、`build-api / build` success、`build-docker` skipped），`f9185246`/`45922104446` cancelled | 当前 run 已结束且全绿；`a0d0ed4f` 的最终 failure 与 `f9185246` 均只作历史，不代表当前 run | CLEAN / MERGEABLE；reviews=0 | Z02 仍 NOT-VERIFIED：PR OPEN，当前 CI 绿不改变真实 provider/Hangfire/真实浏览器/Android/Windows 换端未验 |
+| pim-api #620 | Z02 / WO-Z02-CONSENT + WO-Z02-SINGLE-ENTRY | `225834fa7fcdf3ce943290c8a3348ee01e5742df`（2026-11-27T08:28Z 读取；head 已再次移动） | 当前 run `45965628196` **pending**：`resolve-version`、`changes` success；`web-build`、`build-api / build` 与 shard-1/2/3/4/5/6 pending；`build-mcp` skipped。上一 head `3235ec3745671302c2f2a6728dfa035d71222d23`/run `45963742316` **failure**（`build-api / test-shard (shard-5)`、`CI Gate`；shard-1/2/3/4/6、`build-api / build`、`web-build`、`build-docker / build` success，`release` skipped）；更早 `6b8f5b5c9f39e19aeb5e00f475e31cf3b49007f9`/run `45923880411` success（6 shard `6835 passed / 0 failed / 103 skipped`，Web 87 files / 790 tests）仅作历史；`a0d0ed4f`/`45922322745` 为最终 failure，`f9185246`/`45922104446` cancelled | 当前 run 未结束，不能写 success；behind 0、mergeable、reviews=0（required checks 未完成，不写 CLEAN） | Z02 仍 NOT-VERIFIED：PR OPEN，仅 API/Web 持续授权与单链，真实 provider、Hangfire、浏览器、Android/Windows 换端未验；新 API CI 不是产品验收 |
+| pim-api #621 | R05 AC-05 / AC-06 | `493a052291aa9915a5f4904879b1c48c0e82ba38` | 无 master 目标 PR checks；手动 `workflow_dispatch` run `45940234593` **failure**：shard-6 有 2 个失败，`CI Gate` 未形成 PR 关联结论 | 堆叠在 #613 分支；当前 AC-05 永久身份墓碑容量策略 `BLOCKED`，AC-06 当前 head PR `CI Gate` `BLOCKED` | 不并入 #613 当前证据；手动 run 不是 PR required check | R05 仍 FAIL；#621 不能作为已收口证据 |
 | pim-api #606 | S01/Release 台账内容 | `047563cc` | `45647847443` success | docs-only：`CI Gate` success；`build-api`/`web-build`/`build-mcp`/`build-docker`/契约通知/`release` skipped | DIRTY；reviews=0 | docs-only，不是当前产品证据；其内容已由 master `b928dd92` 落地，PR 仍 OPEN |
 | pim-api #599 | 台账当前事实（历史） | `054f0426` | `45561551688` success | docs-only：`CI Gate` success；产品 job skipped | DIRTY；reviews=0 | 历史台账 PR；只证明当时文档可构建，不作产品证据 |
 | pim-api #618 | WO-LEDGER-01 台账刷新 | 本 PR 最终 docs-only head/run 以 PR 正文的实时快照为准（本文件不自指本次提交 SHA） | 本 PR 当前 docs-only CI 的 `CI Gate` 与 `summarize` 结果以 PR 正文为准；历史 run 另有明确标注 | docs-only：产品构建与 release 按路径过滤 skipped；当前 head/run 以 PR 正文为准 | CLEAN；reviews=0 | 本 PR；只改日期台账 `docs/product/pim-delivery-ledger-20261125.md`（任务文字 `20251125` 为笔误，不新增该文件）；最终 head/run 与观测时间见 PR body |
@@ -133,7 +134,7 @@
 | J09 | #585 已合并；#590 待合并；依赖真实 provider 用量与管理员浏览器 | #590 当前 head `0e6262f2`，run `45848909302` success；6 shard 原始日志 `Passed 6943 / Failed 0 / Skipped 29`；费用上限已产品性降级为 Token-only；PR OPEN，真实 provider Token/费用、管理员浏览器、真实部署、崩溃恢复 NOT-VERIFIED；历史 `f669f9bc`/`45816213564` job success 但 shard-5 `Failed: 1`，为无效证据 | FAIL |
 | R02 | #598 已合并；#610 待合并；R02-AC12 依赖 R03 #615 | #610 当前 head `fd7b7c7a`，run `45752009493` success；6 shard 原始日志 `Passed 6824 / Failed 0 / Skipped 103`；REST/MCP 显式偏移、IANA-only、unknown、查询窗口 UTC、DST fold 已实现；PR OPEN，真实 Microsoft Graph、真实浏览器→API→PostgreSQL NOT-VERIFIED；R02-AC12 依赖 R03 | FAIL |
 | R03 | #615 待合并；依赖真实 Microsoft Graph 与故障注入 | #615 当前 head `9d7af01d`，run `45867495126` success；6 shard 原始日志 `Passed 6906 / Failed 0 / Skipped 103`；Outlook 写回账本/ETag/幂等/撤销/MCP 409/502 回执已实现；PR OPEN，真实 Microsoft Graph/OAuth、外部独立 MCP、真实崩溃与连接中断未验 | FAIL |
-| R05 | #613 当前 head CI 已绿、待合并；依赖外部独立 MCP 客户端 | #613 当前 head `add843e9`，run `45881012067` success；6 shard 原始日志 `Passed 6866 / Failed 0 / Skipped 103`；19 个 native-note 工具、fail-closed 读权限、operationId/CAS/整包已实现；PR OPEN，正文 create/update、文件夹/标签、discard/永久删除、ASR 片段重试、按板块采用未包含；外部独立 MCP NOT-VERIFIED | FAIL |
+| R05 | #613 当前 head CI 已绿、待合并；#621 堆叠在其上但无 master 目标 PR CI；依赖外部独立 MCP 客户端和 AC-05 容量裁决 | #613 当前 head `add843e9`，run `45881012067` success；6 shard 原始日志 `Passed 6866 / Failed 0 / Skipped 103`；19 个 native-note 工具、fail-closed 读权限、operationId/CAS/整包已实现；PR OPEN，正文 create/update、文件夹/标签、discard/永久删除、ASR 片段重试、按板块采用未包含；#621 手动 run `45940234593` shard-6 有 2 个失败，AC-05 容量策略 BLOCKED；外部独立 MCP NOT-VERIFIED | FAIL |
 | Q03 | #614 CI 绿、待合并；Android/Windows 原生回收站未实现 | #614 当前 head `e1c15b99`，run `45863519886` success；6 shard 原始日志 `Passed 6872 / Failed 0 / Skipped 103`；API/Web 四域回收站、operationId 幂等、租约 fencing、409/CAS 回读已实现；PR OPEN，Android/Windows 原生回收站、真实浏览器/跨端流程 NOT-VERIFIED | FAIL |
 | Q04 | #607 + Android #101 + Windows #63 三仓同批；真实公网 TLS 最后验 | API #607 当前 head `cfd4f573`（基于 master `4123f73f`）run `45841606243` success；六片原始日志 Passed 6890 / Failed 0 / Skipped 103 / Total 6993；指定核验 run `45838362637`（head `83738876`，base `4123f73f`）completed failure（`CI Gate` failure；六片 Passed 6889 / Failed 1 / Skipped 103，shard-5 唯一失败 `OneDriveCreateFolderRealHttpTests.CreateFolder_UsesChildrenEndpointForm`）；前序 `e019b39a`/`45835250661` cancelled（六片均 cancelled、`CI Gate` failure），`0c8f7a1a`/`45831709378` success；Q04-10 契约/生成类型 PASS，Q04-5 仅隔离拓扑 PASS，Q04-3 客户端例外整体未闭环，Q04-9 NOT-VERIFIED；mergeStateStatus=`CLEAN`、mergeable=`MERGEABLE`、reviews=[]，无正式 review；Android #101/Windows #63 仍 OPEN，客户端契约快照陈旧；真实证书/反代/生产入口 NOT-VERIFIED | FAIL |
 | Q05 | #609 待合并；依赖 Android/Windows 诊断上报与生产部署 | #609 当前 head `bee3d45c`，run `45747061871` success；API/Web 诊断事件/概览/ZIP 导出/脱敏/限额已实现；PR OPEN，真实 Android/Windows 客户端、生产部署与真实浏览器未验 | FAIL |
@@ -147,33 +148,213 @@
 | Q07 | 产品语义冲突 | `Uploaded`/`Conflict` 清理与本机原件保留冲突；#611 当前 head `9787ae26`/run `45798579871` success 仅清理 Web 临时缓存并保护草稿，明确未改 Android/Windows Conflict 语义，不裁决 Conflict 清理 | BLOCKED |
 | M06 | Windows 原生工作台已收口；通知/深链/本地编辑器/旧壳退役未完成 | #59 已合并但 M06-UMBRELLA 自评 FAIL；真实桌面/安装升级未验 | FAIL |
 
-### 2026-11-27 当前逐项证据回填
+### 2026-11-27 16:20 CST 六组只读审计逐项回填
 
-本表把本轮复核到的当前 head/run 回填到具体编号；未列出的编号仍按状态汇总和逐项历史验收文本处理，不因本轮未重查而升级状态。
+本节是当前状态的权威回填。六组审计分别覆盖 A–C、D–F、G–H、I–J、K–M、N–R/Z 与 S01，均只读 GitHub、PR 与源码；没有一组建议 `PASS`。下方全量逐项表的“历史/既有验收文本”列和 2026-11-05 原始状态列保持不可变，状态列按本节刷新。CI 绿、已合并、`CLEAN`、Android 模拟器、Windows WPF、Web jsdom 或组件测试都不能替代真实用户流程验收。
 
-| 编号 | 当前状态 | 当前 PR/head | 当前 run | 当前证据与边界 |
-| --- | --- | --- | --- | --- |
-| Q01 | BLOCKED | 无 PR | — | `PIM功能表.md` 原始 `[x] ✅` 只表示 API/客户端已有登录与多用户基线；三端平台范围与验收口径未确认，仍不能执行完整注册/登录/续期/管理员/停用验收 |
-| Q03 | FAIL | #614 `e1c15b99` | `45863519886` success | 6 shard `6872/0/103`；API/Web 四域回收站、operationId 幂等、租约 fencing、409/CAS 回读；PR OPEN，Android/Windows 原生回收站未交付 |
-| Q04 | FAIL | #607 `cfd4f573`；Android #101 `539f4231`；Windows #63 `4636dca6` | `45841606243` success；历史 `45838362637` failure | 6 shard `6890/0/103`；API/Web 传输门禁/反代/契约；PR OPEN，真实公网 TLS/生产反代未验；历史失败 run 不得写成 PASS |
-| Q05 | FAIL | #609 `bee3d45c` | `45747061871` success | 诊断事件/概览/ZIP/脱敏/限额；PR OPEN，真实 Android/Windows 客户端和生产部署未验 |
-| Q06 | FAIL | #616 `1e1bc034` | `45923273062` success（`CI Gate`、6 个 test shard、`build-api / build`、`web-build`、`build-docker / build` success；本轮未展开 shard 原始计数）；历史 `33a40dc`/`45919652577` success（6 shard `6861/0/103`）、`45918846595` failure（CS0103 编译失败）、`45914995572` success、`45913522617` failure、`45770689873` success、`45768852328` failure | 偏好/订阅/站内通知/SSE/outbox/重试/死信/测试通知；PR OPEN，当前 CI 绿不改变 Q06 FAIL；精确 categoryKey、设备 dismiss/click、时区/DND、FCM/WNS、真实 Web Push 未验；历史失败/成功 run 仅作历史 |
-| Q07 | BLOCKED | #611 `9787ae26` | `45798579871` success | 仅 Web 临时缓存清理与草稿保护；不裁决 `Conflict` 终态，不实现 Android/Windows 清理 |
-| R02 | FAIL | #610 `fd7b7c7a` | `45752009493` success | 6 shard `6824/0/103`；REST/MCP 显式偏移、IANA、unknown、UTC 查询、DST fold；PR OPEN，真实 Graph/浏览器未验；AC12 依赖 R03 |
-| R03 | FAIL | #615 `9d7af01d` | `45867495126` success | 6 shard `6906/0/103`；Outlook 写回账本/ETag/幂等/撤销/MCP 回执；PR OPEN，真实 Graph/OAuth/外部 MCP/崩溃恢复未验 |
-| R04 | NOT-VERIFIED | #576/#57/#94 merged | 历史 run `45412194523` / `45511045329` / `45515208111` | REST/MCP/Web/Windows/Android 实现已合并；真实 Windows 桌面、Android 实机/OEM、外部独立 MCP 未验；原始状态 `[x] ✅` 仅指 #446 非法值 400 |
-| R05 | FAIL | #613 `add843e9` | `45881012067` success | 6 shard `6866/0/103`；19 个 native-note 工具的服务器/Web 切片；PR OPEN，完整 R05 闭环与外部 MCP 未验 |
-| H03 | FAIL | #612 `f12c4c23` | `45857319607` success | 6 shard `6924/0/103`；长音频分批/预算/并发/失败恢复/汇总；PR OPEN，真实多模态 provider、Hangfire 多进程、真实 PG 行锁、三端真机未验；原始状态 `[ ] ❌` |
-| J05 | FAIL | #617 `95568663` | `45835093386` success | 6 shard `6846/0/100`；LiteLLM 运行路径退场、MCP 148 与退役 Python 147 差异如实保留；PR OPEN，无 LiteLLM 生产部署未验 |
-| J06 | FAIL | #617 `95568663` | `45835093386` success | 6 shard `6846/0/100`；按用途默认模型、ASR 跟随全局显式字段；PR OPEN，真实浏览器/provider 未验 |
-| J08 | FAIL | #617 `95568663` | `45835093386` success | 6 shard `6846/0/100`；按 revision 连接测试、clientRequestId 核对、MiMo `connection_failed`、熔断；PR OPEN，真实第三方 provider/管理员浏览器未验 |
-| J09 | FAIL | #590 `0e6262f2` | `45848909302` success | 6 shard `6943/0/29`；Batch 审计归属、修复退避、未绑定模型 fail-closed、Token-only 限额；PR OPEN，真实 provider/管理员浏览器/部署/崩溃恢复未验 |
-| C12 | FAIL | #596 `3594289e` | `45850989877` success | 6 shard `6935/0/65`；仅服务端 Ogg Opus 材料/WAV 兜底；Android 15 秒分片、Windows 分片未实现；真实 FFmpeg 两用例 skip |
-| C14 | APPROVED-EXCEPTION | #596 `3594289e` | `45850989877` success | 客户端直接采集 Opus/Ogg 的原决议未改变；服务端材料支持不构成客户端交付，保留例外 |
-| P05 | FAIL | #602 `65d1d2b5` | `45856428856` success | 6 shard `6879/0/103`；API/Web 纠正/排除/补点/合并/CAS/游标；PR OPEN，真实浏览器 E2E 与客户端只读消费未验 |
-| B15 / C21 / E03 / O04 / Q02 | APPROVED-EXCEPTION | 无当前产品 PR | — | 交付包原决议不变：B15 不做长笔记性能验收；C21 实时转写暂缓；E03 通用文档附件不做；O04 OPPO 动画/字体跳过；Q02 全量备份/导出不做 |
-| S01 | NOT-VERIFIED | #601/#603/#604 merged；Windows #61 `ee730075` OPEN | `45630816563` / `45653708869` success | API 双轨版本/提升守卫；真实 release dispatch、并发重跑、`/releases/latest` 收敛、生产部署未验；pre-release 不是正式发布 |
-| Z02 | NOT-VERIFIED | #572/#50/#82 merged | 历史自动化/CI | API/客户端高层编排已合并；真实 provider、Hangfire 多进程、浏览器、Android/Windows 换端未验；原始状态 `[ ] ❌` |
+| 分组 | 项数 | PASS | FAIL | NOT-VERIFIED | BLOCKED | APPROVED-EXCEPTION |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| A–C | 48 | 0 | 32 | 13 | 0 | 3 |
+| D–F | 22 | 0 | 12 | 9 | 0 | 1 |
+| G–H | 24 | 0 | 18 | 6 | 0 | 0 |
+| I–J | 13 | 0 | 11 | 2 | 0 | 0 |
+| K–M | 24 | 0 | 12 | 12 | 0 | 0 |
+| N–R/Z | 29 | 0 | 18 | 7 | 2 | 2 |
+| **核心合计** | **160** | **0** | **103** | **49** | **2** | **6** |
+| S01 补充项 | 1 | 0 | 0 | 1 | 0 | 0 |
+
+#### A–C 笔记、编辑器、录音
+
+| 编号 | 状态 | 当前证据 | 下一工单 / 边界 |
+| --- | --- | --- | --- |
+| A01 | FAIL | Android #96 已合并，但只覆盖权限门禁、新建进编辑页、录音归属选择；完整离线新篇、重接连同身份发布、双端冲突、进程死亡和 OPPO 真机未交付；A01 文案与“新建后手动开录”不一致 | WO-A01-FULL |
+| A02 | FAIL | 三端列表仍缺累计录音时长与逐篇上传/转写/整理统一状态；Android #102 仅部分改善且仍 OPEN | WO-A02-LIBRARY |
+| A03 | FAIL | Android #102 OPEN；A03-07 正文同步写入受当前契约阻塞，OPPO/平板/断网/多窗口未验 | WO-A03-BODY-SYNC |
+| A04 | FAIL | API #600 已合并 API/Web 全文搜索；Android/Windows 未消费，字段级定位和真实浏览器双账号未验 | WO-A04-CLIENTS |
+| A05 | FAIL | 契约无笔记 folder/tag/folderId，三端无文件夹/分类/标签模型与入口；Windows 应用知识与分类不能替代 | WO-A05-A06-ORG |
+| A06 | FAIL | 契约无 pinned/favorite/pinnedAt，三端无置顶/收藏入口 | WO-A05-A06-ORG |
+| A07 | FAIL | #614 仅 API/Web 四域回收站且 OPEN；Android/Windows 原生回收站、恢复/永久清理未交付 | WO-A07-Q03 |
+| A08 | FAIL | Android 平板仍单页编辑；三端均缺“可收起列表 + 共享材料侧栏 + 可调栏宽/偏好”完整实现 | WO-A08-A09-WORKSPACE |
+| A09 | FAIL | 三端无笔记多选、批量删除/移动；依赖 A05/A07 | WO-A08-A09-WORKSPACE |
+| A10 | NOT-VERIFIED | 空态/加载/错误界面基本存在；Android 读取失败无重试，Windows 空库/错误态较简陋，真实三端状态矩阵未验 | WO-A10-ACCEPT |
+| B01 | NOT-VERIFIED | Android 分段 Tiptap、Web 分段文本框、Windows 单 Markdown 文本框；Markdown 往返和混排测试存在，真实浏览器/设备连续文档未验 | WO-B01-04-ACCEPT |
+| B02 | NOT-VERIFIED | Android 全屏编辑、Windows 三栏、Web 右侧编辑区存在；真实平板/窄窗/分屏正文占比未验 | WO-B01-04-ACCEPT |
+| B03 | NOT-VERIFIED | Android 顶栏无“PIM 笔记”，Web/Windows 标题语义存在；真实 UI 验收未做 | WO-B01-04-ACCEPT |
+| B04 | NOT-VERIFIED | Android 右上悬浮“结束”+确认；Web 仅“保存笔记”；Windows 工具栏“开始录音/停止并保存”；平台适用范围需验收明确 | WO-B01-04-ACCEPT |
+| B05 | FAIL | Android 光标处插入；Web 拍照/相册只追加末尾；Windows 无拍照、只能选文件 | WO-B05-B06-MEDIA |
+| B06 | FAIL | Android 一次只能选 1 张；Web 多选但只追加末尾；Windows 进材料列表而非正文光标 | WO-B05-B06-MEDIA |
+| B07 | FAIL | Android 无大图/删除/裁剪/缩放；Web 只能删未保存新图；Windows 双击系统看图；复制/剪切/粘贴缺失 | WO-B07-IMAGE |
+| B08 | FAIL | Android 有格式工具条；Web/Windows 无同等格式工具栏，只能手打 Markdown | WO-B08-B09-B16-EDITOR |
+| B09 | FAIL | Android 有叶块+整篇两层但不统一覆盖材料；Web/Windows 仅文本框 Ctrl+Z | WO-B08-B09-B16-EDITOR |
+| B10 | NOT-VERIFIED | Android 原子写、Windows 700ms 自动保存、Web 内存草稿+离开提示；真实崩溃/刷新恢复未验 | WO-B10-12-ACCEPT |
+| B11 | NOT-VERIFIED | Android 有 IME 组字/回写保护；OPPO 真机输入法、Web/Windows 中文输入未验 | WO-B10-12-ACCEPT |
+| B12 | NOT-VERIFIED | Android/Windows 本机离线，Web 按决议页面缓存+联网保存；真实断网/恢复未验 | WO-B10-12-ACCEPT |
+| B13 | FAIL | Web `note-material-editor.tsx` 的 `editable = !busy` 在保存/上传期间锁整页编辑，与要求不符 | WO-B13-WEB-UPLOAD |
+| B14 | NOT-VERIFIED | Android 有 IME 避让/底部 dock；Web/Windows 无同等 dock；OPPO 真机与桌面布局未验 | WO-B14-ACCEPT |
+| B15 | APPROVED-EXCEPTION | 交付包原决议不做 100 分钟长笔记性能验收，仅登记性能风险 | 不排期 |
+| B16 | FAIL | Android 分段 Tiptap/ProseMirror；Web/Windows 仍是普通文本框，未接成熟编辑器核心 | WO-B08-B09-B16-EDITOR |
+| C01 | NOT-VERIFIED | Android/Windows 手动开始/停止存在，Web 只查看；真实设备开始/结束未验 | WO-C-ACCEPT |
+| C02 | FAIL | Windows 录音服务只有 StartAsync/StopAsync，无暂停/继续；Android 有，交付包确认 Windows 必须补齐 | WO-C-WIN-REC |
+| C03 | NOT-VERIFIED | Android 前台服务+唤醒锁；Windows 进程内单例/最小化继续；OPPO/ColorOS、划除任务、睡眠恢复未验 | WO-C-ACCEPT |
+| C04 | NOT-VERIFIED | Android #89 已合并，但 Android 16 QPR1+ 实况胶囊、锁屏隐私、拒绝权限未真机验 | WO-C-ACCEPT |
+| C05 | FAIL | Android 通知有暂停/继续/结束；Windows 托盘只有开始/停止，无暂停/继续/直接结束 | WO-C-WIN-REC |
+| C06 | FAIL | Android 真实 PCM 波形；Windows 仅累计峰值文字、无波形绘制 | WO-C-WIN-REC |
+| C07 | FAIL | Android 左下悬浮条/宽屏右上/5 秒收起；Windows 仍在顶部工具栏，无悬浮控件 | WO-C-WIN-REC |
+| C08 | FAIL | Android 有“录音 N”分组；Windows 多次录音仍平铺 WAV，无会话身份/录音 N/统一状态 | WO-C-WIN-REC |
+| C09 | FAIL | Android 3 小时内部段；Windows 单 WAV 无上限；服务端未按 `(recordingId, segment)` 累计校验 | WO-C-WIN-REC |
+| C10 | FAIL | Android 到 3 小时自动续段；Windows 无自动续段；服务端无同段累计校验 | WO-C-WIN-REC |
+| C11 | FAIL | Android 按样本计时；Windows 无暂停，Stopwatch 墙上时间无法实现暂停冻结 | WO-C-WIN-REC |
+| C12 | FAIL | #596 仅服务端 Ogg Opus；Android `RecordingModels.kt` 仍 60 秒 WAV 分片，Windows 单 WAV，无客户端 Opus 采集；真实 FFmpeg 用例 skip | WO-C-FORMAT |
+| C13 | FAIL | Android `START_NOT_STICKY`，无等待麦克风恢复/通话状态/自动重开状态机；Windows 无中断恢复 | WO-C-WIN-REC |
+| C14 | APPROVED-EXCEPTION | 保留交付包决议：由 C12 直接采集 Opus/Ogg 取代“结束后合成”，随 C12 验收，不单独立项 | 随 C12 |
+| C15 | NOT-VERIFIED | Android 结束后可补录；Windows 可再次录音；云端恢复例外、真实设备流程未验 | WO-C-ACCEPT |
+| C16 | FAIL | Android 逐 WAV 播放/停止，无暂停/拖动/倍速；Windows 交系统播放器；Web 无笔记播放器 | WO-C-PLAYBACK |
+| C17 | FAIL | Android 转写片段仅显示时间，点击不跳播；Web 无播放器；Windows 无同等定位 | WO-C-PLAYBACK |
+| C18 | FAIL | Android #96 已补麦克风/通知/渠道/设置入口；Windows 仍无麦克风隐私预检和“打开隐私设置”入口 | WO-C-WIN-REC |
+| C19 | FAIL | Android 开始 64 MiB 门禁，但录音中每 1 秒检查 16 MiB，与“只开始前检查一次”不符；Windows 开始前无空间检查 | WO-C19-STORAGE |
+| C20 | FAIL | 契约无 marker/bookmark 字段，无标记 API/通知/托盘入口/时间轴列表 | WO-C-PLAYBACK |
+| C21 | APPROVED-EXCEPTION | 保留交付包决议：实时转写暂缓，仅保留本地小模型定义勘误 | 不排期 |
+| C22 | FAIL | Android 打开笔记可扫描/修复 WAV 并标中断；Windows 无重启扫描/恢复，列表无中断标识 | WO-C-WIN-REC |
+
+#### D–F 手写、材料、上传
+
+| 编号 | 状态 | 当前证据 | 下一工单 / 边界 |
+| --- | --- | --- | --- |
+| D01 | NOT-VERIFIED | Android 正文内手写块已有；Web 仍追加末尾；Windows 进材料列表；三端端到端未验 | WO-D01-WEB-WIN-INLINE |
+| D02 | NOT-VERIFIED | Android 尺寸拖拽/缩放保护；Web 固定 320×240；Windows 固定窗口；真实触摸/笔未验 | WO-D02-RESIZE |
+| D03 | NOT-VERIFIED | Android #97 已进 master，发布包在合并后生成；未安装 APK、未在真机确认手写入口 | WO-D03-RELEASE-APK |
+| D04 | FAIL | #594/#97 已合并；Windows 只有画笔/选择/撤销/粘贴/删除/清除，无颜色/粗细/橡皮；Web 已保存 `sha256` 块不可再编辑 | WO-D04-WINDOWS-TOOLS、WO-D04-WEB-REEDIT、WO-D04-CROSS-END-E2E |
+| D05 | FAIL | Android 存压力但绘制只用固定 `stroke.width`，仅手动 stylusOnly；Web 只存压力；Windows 依赖 InkCanvas 默认 | WO-D05-PRESSURE-PALM |
+| D06 | NOT-VERIFIED | Android/Windows 可重开并编辑原始笔迹；Web 已保存手写块不可编辑，与 D04 同根因 | WO-D06-WEB-REEDIT |
+| D07 | NOT-VERIFIED | API 已把手写 PNG 作为 `InkPreview` 进入视觉批次；真实视觉 provider 质量/费用/失败恢复未验 | WO-D07-VISION-PROVIDER |
+| D08 | NOT-VERIFIED | Windows #52 已合并鼠标绘制/选择/整组移动/撤销重做/复制粘贴/删除；真实桌面、DPI、多屏、托盘未验 | WO-D08-WINDOWS-DESKTOP |
+| E01 | FAIL | 笔记二进制用 `ManagedBinaryStore.NoteParts` 分块，ZIP 下载时组装；没有稳定成员路径的完整 ZIP 持久化和在线成员写 API | WO-E01-NOTE-FS-ZIP |
+| E02 | FAIL | Android 笔记库仍内联 `NoteUploadJobs`；#102 才把完整上传记录收进“更多”，尚未合并且契约陈旧 | WO-E02-MERGE-102 |
+| E03 | APPROVED-EXCEPTION | 用户明确不做 PDF/通用文档附件，只保留 Markdown、照片、手写、录音 | 不排期 |
+| F01 | FAIL | 新确认要求在线成员同步 + 封口 Ogg 自动上传；当前 API 只有固定版本上传，Android 仍整版冻结+旧持续授权，Windows 手动上传 | WO-F01-F02-ONLINE-MEMBERS |
+| F02 | FAIL | F02 已并入 F01/C12；Android 仍是可撤销的整版自动提交，Windows 无自动队列，不是封口 Ogg 自动上传 | WO-F01-F02-ONLINE-MEMBERS |
+| F03 | FAIL | 上传成功不清理本机；Android 仍写“暂无自动清理”；Windows 保留全部材料；Web 无持久副本；Conflict 终态待 Q07 | WO-F03-CLEANUP-UPLOADED、WO-Q07-CONFLICT-DECISION |
+| F04 | FAIL | Android 有 9 次退避/暂停后手动继续，但队列单位仍是整版；Windows 无自动队列；Ogg 断网续传未接入 | WO-F04-OFFLINE-QUEUE |
+| F05 | NOT-VERIFIED | 服务端 1 MiB 分块/断点续传，三端跳过已收块已有实现；真实大文件/弱网/重启续传未验 | WO-F05-TRANSFER-E2E |
+| F06 | FAIL | #82 已在材料版本页接入服务器 ASR/整理状态；Android 笔记库仍 `showProcessingStatuses=false`，无单篇三状态；#102 未合并 | WO-F06-STATUS-UX |
+| F07 | FAIL | Android WorkManager 可离开页面；Windows 上传在窗口内等待；Web 用 AbortController 中断，关闭/离开不保留队列 | WO-F07-BACKGROUND-UPLOAD |
+| F08 | FAIL | Android 打开云端笔记会下载成本机副本；Windows 服务器来源只读；Web 笔记页无 Ogg 播放器 | WO-F08-ONLINE-SAME-NOTE |
+| F09 | FAIL | 版本级冲突选择已具备：Android 冲突面板、Web 比较、Windows 设为云端当前版本；文字块级合并、不同 ID 材料自动合并、媒体冲突选择仍缺 | WO-F09-BLOCK-MERGE |
+| F10 | NOT-VERIFIED | 用户已确认不做 Wi-Fi-only；Android 上传约束为 CONNECTED；自动 Ogg 队列未闭环，信息性流量估算 UI 未做 | WO-F10-NETWORK-COPY |
+| F11 | NOT-VERIFIED | 三端已有失败原因与重试；确认的后台汇总通知 `uploads.attention_digest` 未实现，依赖 Q06 扩展通知类别 | WO-F11-ATTENTION-NOTIFY |
+
+#### G–H ASR、整理
+
+| 编号 | 状态 | 当前证据 | 下一工单 / 边界 |
+| --- | --- | --- | --- |
+| G01 | NOT-VERIFIED | master 已有材料完成后自动触发和补偿扫描，含录音时整理仍 `waitForAsr`；真实 provider、Hangfire 与客户端状态闭环未验，#620 持续授权待决 | WO-G01-AUTO-PROCESSING-E2E |
+| G02 | FAIL | Web 平铺“第 N 片”、每页 10 片；Android 按录音分组但组内仍是内部片卡片；Windows 无逐段转写视图 | WO-G02-H-G-UX |
+| G03 | NOT-VERIFIED | 后端有 ASR 预设注册表和 MiMo ASR/多模态预设；Web 可选内置预设，新增厂商仍需写 C# 并注册；真实 MiMo 未验 | WO-G03-G05-PROVIDER |
+| G04 | FAIL | `AllowUnverifiedAudioBatch` 默认 false，`NoteAsrBatchService` 提交前直接拒绝；真实 Batch 上游、24 小时窗口、计费/失败恢复未验 | WO-G03-G05-PROVIDER |
+| G05 | NOT-VERIFIED | Web 已有 ASR 配置、默认模型、执行位置、Batch 监控和本机节点入口；真实 Test API + provider 保存/调用/错误恢复未验 | WO-G03-G05-PROVIDER |
+| G06 | FAIL | 只有进程级固定闸门普通 4、视觉 2、ASR 2；模型 DTO、Web 编辑器、Windows 节点均无 provider 级并发配置或跨实例共享配额 | WO-G06-PROVIDER-CONCURRENCY |
+| G07 | FAIL | 重试接口拒绝 Succeeded/Running，只恢复失败/未知/排队片；没有成功片质量重试、费用确认和修订幂等 | WO-G07-QUALITY-RETRY |
+| G08 | FAIL | 未找到“标为无内容/课间”“撤销标记”的字段、接口或三端按钮；空文字仍按失败/未完成处理 | WO-G08-NO-CONTENT |
+| G09 | FAIL | `NoteAsrSegmentDto` 只有片级偏移和整段 Transcript，没有句级时间戳；Web 诊断解析不等于正式转写时间轴 | WO-G09-G10-TRANSCRIPT-DTO |
+| G10 | FAIL | 正式 ASR DTO 无 speaker 字段，无跨片说话人身份、改名或合并；miMo-asr 预设未启用说话人分离 | WO-G09-G10-TRANSCRIPT-DTO |
+| G11 | NOT-VERIFIED | 单片失败可恢复，Web/Android 有失败片选择和恢复回执；单片失败会停住后续片，Windows 片段级恢复缺失，真实 provider 失败未验 | WO-G11-RECOVERY-E2E |
+| G12 | FAIL | 转写 API 无修改文字接口，Web/Android 只读展示；可编辑的是后续整理结果，不是转写稿 | WO-G12-TRANSCRIPT-EDIT |
+| G13 | FAIL | 服务端仍约 60 秒逻辑片、自适应最多 6 层/31 次调用；#596 只增加 Ogg Opus 服务端边界，未隐藏内部片，真实 Opus 解码 skip | WO-C-FORMAT、WO-G13-CONTINUOUS |
+| H01 | NOT-VERIFIED | master 派生计划生成“完整记录 + 独立分析”，自动处理会创建整理任务，有录音时先等 ASR；真实模型、自动完成、结果可见性未验，#620 待决 | WO-H01-AUTO-DERIVED-E2E |
+| H02 | FAIL | 未发现速览图、思维导图或类似可视化 artifact/UI；结果仍是 Markdown 文本 | WO-H02-VISUAL-SUMMARY |
+| H03 | FAIL | #583 已合并最小原始音频上下文，默认白名单为空；长音频分批/预算/失败恢复只在 OPEN 的 #612；真实多模态、Hangfire、PG 行锁、三端未验 | WO-H03-LONG-AUDIO |
+| H04 | FAIL | 正文/照片/手写预览参与整理，但仅 PNG/JPEG；单图 ≤4 MiB、每批 ≤4 张/8 MiB、总量 ≤32 张/8 批；无 WebP 转码/方向校正 | WO-H04-IMAGE-ADAPT |
+| H05 | FAIL | 提示词没有生成/应用标题要求；标题只作为输入，结果不更新笔记标题 | WO-H05-TITLE |
+| H06 | NOT-VERIFIED | 有人工修订、版本选择、head 和“再次生成作为候选追加”基础；首次结果不自动成 head，真实三端修改/重生成未验 | WO-H06-DERIVED-PROVENANCE |
+| H07 | FAIL | 没有“读取最新确认稿并创建本次更新整理”的统一入口；Android“重新生成”仍用旧材料版本 | WO-H07-UPDATE-DERIVED |
+| H08 | FAIL | Web 运行中每 5 秒刷新，Android 主要手动，Windows 明确刷新；#616 仅提供通知基础且 OPEN，FCM/WNS 未实现 | WO-H08-NOTIFY |
+| H09 | FAIL | 整理提示词硬编码“教材笔记”，请求无课堂/会议模板或整理偏好参数 | WO-H09-TEMPLATES |
+| H10 | FAIL | 三端都无整理结果导出/分享；Android/Windows 的“导出”只导出材料/文档包 | WO-H10-EXPORT |
+| H11 | FAIL | 后端会读所选固定版本的全部录音/全文/图片，但转写绑定材料版本，不能跨版本复用；Android 重新生成仍用旧版本 | WO-H11-LATEST-CONTEXT |
+
+#### I–J 任务建议、AI 配置与调用
+
+| 编号 | 状态 | 当前证据 | 下一工单 / 边界 |
+| --- | --- | --- | --- |
+| I01 | FAIL | 当前是独立文本模型提取，最多 10 条，来源为整理结果而非 H02 要求的多模态总结推荐卡；拆成另一次调用并放在独立面板 | WO-I01-INLINE-SUGGESTION |
+| I02 | NOT-VERIFIED | API/Web 已有编辑、确认回执、任务创建、来源幂等；Android #100 已合入但 master 契约红，Windows #62 未合并；真实三端未验 | WO-I02-I04-CLIENTS |
+| I03 | FAIL | API/Web 已有 Event、start/end、IANA 时区、默认日历、eventId 回执与重放；Android #100 编译受 #93 search 类型阻断，Windows #62 OPEN | WO-I03-I04-CLIENTS |
+| I04 | FAIL | API 有 note 级锁、确认幂等、已确认重放、同版本提取去重和对象指纹；未覆盖可靠同事项/可能重复/关联已有/另建完整交互，客户端未绿 | WO-I03-I04-CLIENTS |
+| J01 | FAIL | 文字/视觉/普通 ASR 已走 MEAI + OpenAI .NET SDK；MiMo 多模态和 Batch 仍手拼 JSON/自建 HttpClient；#617 未迁移这两条路径 | WO-J01-SDK-ADAPTER |
+| J02 | NOT-VERIFIED | master 有 Web AI 设置、Text/Vision/Transcription 默认、能力声明、最多 64 个模型、ASR 预设和管理员权限；真实管理员浏览器未验 | WO-J02-ADMIN-BROWSER |
+| J03 | FAIL | 多数文字/视觉/ASR 调用保存实际请求与回复；MiMo Batch 不写通用 `ai_request_logs`；#590 只增 Batch 父级审计，无逐项/原始批次/保留期清理 | WO-J03-BATCH-AUDIT |
+| J04 | FAIL | `AiUsageService` 只查 `AiRequestLogs`；Web 不传时间范围，Batch 未逐项纳入，blocked 计入记录数，成功率/平均耗时混合口径，跨币种直接求和；#590 未改统计 | WO-J04-USAGE-STATS |
+| J05 | FAIL | master 仍有 AiGateway、旧 AiChatClientFactory/ProviderHealth、`/api/v1/ai/test`、`/health-check`、开发和生产 compose 的 LiteLLM 配置；#617 清理但 OPEN | WO-J05-LITELLM-REMOVAL |
+| J06 | FAIL | master 只有 Text/Vision/Transcription 默认；#617 新增用途默认但 OPEN；#620 已再次移动到 head `225834fa`，run `45965628196` 尚在运行；上一 head `3235ec37`/`45963742316` 为 failure（shard-5、`CI Gate`），且与 #617 重叠；真实自动处理默认未验 | WO-J06-PURPOSE-DEFAULTS、WO-Z02-CONSENT-E2E |
+| J07 | FAIL | 已有 DataProtection、hasApiKey、密码框不回显、主地址变更重填；Batch 地址变更不要求重填 Key，Batch 结果/异常未统一遮盖，ASR 原始正文可绕过遮盖，远端 HTTP 仍允许 | WO-J07-SECRET-BOUNDARY |
+| J08 | FAIL | master 只有旧 `/api/v1/ai/test` 和 `/health-check`，没有按已保存 revision 的测试入口；#617 新增但 OPEN，仍无 Batch/音频理解探测和真实 provider/管理员浏览器 | WO-J08-CONNECTION-TEST |
+| J09 | FAIL | #585 已合并连接级 Token 累计/周期/提醒/已读；#590 将费用上限降级为 unsupported，只保留 Token 上限，无可信实际/估算费用来源 | WO-J09-USAGE-COST |
+
+#### K–M 文件、Android、Windows
+
+| 编号 | 状态 | 当前证据 | 下一工单 / 边界 |
+| --- | --- | --- | --- |
+| K01 | NOT-VERIFIED | 有内置服务器存储、云盘回退、默认云盘、20 GiB/10 万对象和 Web 文件页；当前 head 无真实浏览器+隔离 PG 完整 E2E | WO-K01-FILES-E2E |
+| K02 | FAIL | OneDrive 设备码、Google OAuth 代码存在；正式生产 compose 未传 Google client ID/secret，默认回调仍是 `home.hsww.party:15858`；真实 OAuth 未验 | WO-K02-CLOUD-OAUTH-CONFIG |
+| K03 | FAIL | Web 文件页完整；Android 无“文件”导航和文件 API，Windows 无文件窗口 | WO-K03-FILES-CLIENTS |
+| K04 | FAIL | 无容量/占用接口或 DTO；OneDrive quota 读取后被丢弃，Web 无数字，内置存储只在写入超限时报错 | WO-K04-STORAGE-USAGE |
+| L01 | FAIL | `client-shell-android` 和构建 workflow 仍在，最新 release 仍发 `pim-shell-android-*.apk`，README 仍写旧壳待退役 | WO-L01-SHELL-RETIRE |
+| L02 | NOT-VERIFIED | Android 采集/笔记/录音同包，Windows 同 `Pim.Client.App.exe`；无真实安装入口验收 | WO-L02-DEVICE-SINGLE-ENTRY |
+| L03 | NOT-VERIFIED | 原生今日页和待传/拒绝/死信芯片已存在；任务仍只取前 100 条，真机边界未验 | WO-L03-DEVICE-TODAY |
+| L04 | NOT-VERIFIED | 原生任务页支持搜索/新建/编辑/删除/任务本/完成/计时；仍只取 100 条、无翻页，真机未验 | WO-L04-DEVICE-TASKS |
+| L05 | NOT-VERIFIED | #91 已合并日/周/月、导航、totalPages、时区/DST/重复；master CI 红是契约 freshness，#88 仍 DIRTY，真机未验 | WO-L05-ANDROID-CALENDAR |
+| L06 | NOT-VERIFIED | 工作台有提醒页，可延后/忽略；卡片仍直接显示 status/riskLevel/ISO/objectType/objectId，未翻成人话 | WO-L06-DEVICE-REMINDERS |
+| L07 | FAIL | 无“文件”目的地、文件 provider 或文件系统端点；只有笔记材料 `files/{fileIndex}` | WO-L07-ANDROID-FILES |
+| L08 | FAIL | 设置页有服务器/登录/采集/日志/诊断，但无 AI 设置、无笔记上传/同步设置；“仅限非流量网络”不控制笔记上传 | WO-L08-ANDROID-SETTINGS |
+| L09 | NOT-VERIFIED | 设置页可填 API 地址、保存、测试连接、登录/退出；无首次启动引导，真机未验 | WO-L09-DEVICE-LOGIN |
+| L10 | FAIL | Manifest 无 AppWidget、shortcuts、TileService；用量统计中的 SHORTCUT_INVOCATION 不是 PIM 快捷方式 | WO-L10-ANDROID-LAUNCH |
+| L11 | FAIL | `PimTheme` 的 `darkTheme` 默认 false，注释明确系统深色是另一项变更；笔记页仍强制浅色状态栏图标 | WO-L11-ANDROID-DARK |
+| L12 | NOT-VERIFIED | 设置页有检查更新并进页自动查，下载跳浏览器；最新 release 仍停在 `c7ff54f7`，落后 master，真机更新未验 | WO-L12-DEVICE-UPDATE |
+| L13 | FAIL | 今日/轨迹仍保留“打开旧版”WebView，`PimShellActivity` 仍注册；高风险管理详情/离线仍走旧壳 | WO-L13-ANDROID-WEBVIEW-RETIRE |
+| L14 | NOT-VERIFIED | Release 构建有 CI 签名配置和 APK；release 落后 master #100，无真机安装/升级验收 | WO-L14-DEVICE-RELEASE |
+| M01 | NOT-VERIFIED | 托盘可开始/停止笔记录音；原生笔记支持 Markdown、录音、照片、鼠标手写、导入音频、手动上传；真实桌面未验 | WO-M01-DEVICE-RECORDING |
+| M02 | FAIL | 原生笔记库有列表/搜索/编辑；服务器来源笔记仍整体只读，正文仍是 Consolas TextBox，不渲染 Markdown | WO-M02-WINDOWS-NOTES |
+| M03 | FAIL | 16 kHz 单声道 16 位整段 WAV；无暂停、分片、时长上限、波形，崩溃恢复未实现 | WO-M03-WINDOWS-RECORDING |
+| M04 | NOT-VERIFIED | 托盘、Tracker、浏览器桥、KeyStats、心跳仍在同一 `Pim.Client.App.exe`；真实桌面未验 | WO-M04-DEVICE-TRAY |
+| M05 | NOT-VERIFIED | #58 已合入原生今日窗口、托盘“原生今日”和工作台入口，支持读取/快速新建/完成/刷新；真实 Windows 交互未验 | WO-M05-WINDOWS-TODAY |
+| M06 | FAIL | #59 已合入原生工作台/托盘和 WebView2 移除，但无 ToastContentBuilder/系统通知/协议深链，旧壳仍独立发布，无 Tauri 工程，#60 契约红 | WO-M06-WINDOWS-SHELL |
+
+#### N–R、Z 与 S01
+
+| 编号 | 状态 | 当前证据 | 下一工单 / 边界 |
+| --- | --- | --- | --- |
+| N01 | FAIL | Web 有列表、打开、编辑、追加材料；无笔记录音播放器，正文仍是分段 Textarea，已有照片/手写不能删除/替换，保存确认默认不勾且必填 | WO-N01-WEB-NOTES |
+| N02 | FAIL | `/native-notes/processing` 和 5 秒轮询存在，但 `NativeNoteSummaryDto` 只有 noteId/title/currentVersionId/hasConflict，列表无处理状态；真实浏览器未验 | WO-N02-WEB-STATUS |
+| N03 | FAIL | 设置已有笔记处理、管理员 AI/ASR、MCP、数据/回收站；无“外观”入口，无个人完整调用记录与保留清理 | WO-N03-WEB-SETTINGS |
+| O01 | NOT-VERIFIED | Web 主色 `#2563eb`，Android `#1D63D8`，未完全对齐；旧壳通知主题缺口仍在，无跨端视觉验收 | WO-VISUAL-FINISH |
+| O02 | FAIL | 颜色和基础组件仍有分散定义及裸 hex，三端无共享来源 | WO-VISUAL-FINISH |
+| O03 | FAIL | Android Material 3、Compose Animation、Adaptive、Coil、Lottie 未完整接入，无收口 PR | WO-VISUAL-FINISH |
+| O04 | APPROVED-EXCEPTION | 交付包明确跳过 OPPO 笔记动画和字体采用 | 不排期 |
+| O05 | FAIL | 三端仍暴露版本、材料、CAS、TaskId 等工程文案，与 Z01 重叠 | WO-Z01-USER-FACING、WO-VISUAL-FINISH |
+| O06 | FAIL | Web 有统一空状态、骨架屏和错误组件；Android/Windows 仍不完整 | WO-VISUAL-FINISH |
+| P01 | FAIL | Android 定位主要依赖精度门限与重复合并，未覆盖速度、模拟定位、高铁/飞机等场景 | WO-P01-LOCATION-QUALITY |
+| P02 | NOT-VERIFIED | 手机使用记录基线存在，无当前版本真实流程验收 | WO-P02-PHONE-USAGE-E2E |
+| P03 | NOT-VERIFIED | Windows 守护程序和浏览器扩展链路存在，无真实扩展/桌面环境验收 | WO-P03-EXTENSION-E2E |
+| P04 | NOT-VERIFIED | Android #95 head `8d95efae` CI success 但未合并；真实 OEM 设置返回、电池豁免、Doze 未验，Windows/API/Web 不在该 PR | WO-P04-PERMISSIONS-E2E |
+| P05 | FAIL | #602 OPEN/CLEAN，CI `45856428856` success；真实浏览器 E2E、真实 HTTP+PostgreSQL、Android/Windows 只读消费未验 | WO-P05-LOCATION-CORRECTION-E2E |
+| Q01 | BLOCKED | API 有注册/登录/refresh/管理员建号/角色/停用基础；三端平台范围与验收口径未确认，真实登录/续期/管理员流程未执行 | WO-Q01-AUTH-SCOPE |
+| Q02 | APPROVED-EXCEPTION | 保留原决议：全量备份/导出不做，Kopia 仅保留为早期文件基础能力 | 不排期 |
+| Q03 | FAIL | #614 OPEN/CLEAN，API/Web 四域回收站已实现；Android/Windows 原生回收站未交付，真实跨端流程未验 | WO-Q03-Q08-E2E |
+| Q04 | FAIL | #607 API/Web TLS 门禁 OPEN；Android #101、Windows #63 OPEN；真实公网 TLS、1Panel/OpenResty/证书链未验 | WO-Q04-PUBLIC-TLS |
+| Q05 | FAIL | #609 OPEN/DIRTY，API/Web 诊断事件/概览/ZIP/脱敏/限额已实现；真实 Android/Windows 客户端、生产诊断导出未验 | WO-Q05-DIAGNOSTICS-E2E |
+| Q06 | FAIL | #616 OPEN/CLEAN，CI `45926319904` success；精确 categoryKey、设备 dismiss/click/vendor message id/90 天保留、时区/DND、FCM/WNS、真实 Web Push 未实现或未验 | WO-Q06-PUSH-E2E |
+| Q07 | BLOCKED | #611 只清理 Web 查询缓存/缩略图/播放器/传输历史并保护草稿；不裁决 Conflict 终态，不改 Android/Windows；Android 仍保留双方材料 | WO-Q07-UPLOAD-RETENTION |
+| Q08 | FAIL | #600 已合并，head `a3b6b568`，merge `a4919618`；真实浏览器双账号、持久索引/重建/离线缓存、字段级定位未验 | WO-Q08-SEARCH-E2E |
+| R01 | NOT-VERIFIED | #588 已合并，14 个 snake_case 别名移除、149 工具不变、旧名 400；外部独立 MCP 客户端未验 | WO-R01-EXTERNAL-MCP |
+| R02 | FAIL | #610 OPEN/DIRTY，REST/MCP 显式偏移、IANA、unknown、UTC 查询、DST fold 已实现；真实 Graph、真实浏览器→API→PostgreSQL、AC12 未验 | WO-R02-R03-GRAPH |
+| R03 | FAIL | #615 OPEN/CLEAN，fake Graph + 真实 PostgreSQL/TestServer 通过；真实 Graph/OAuth、外部 MCP、真实崩溃/连接中断未验 | WO-R02-R03-GRAPH |
+| R04 | NOT-VERIFIED | #576、Windows #57、Android #94 已合并；真实 Windows 桌面、Android OEM、外部独立 MCP 未验 | WO-R04-CLIENTS-EXTERNAL |
+| R05 | FAIL | #613 OPEN，19 个 native-note 工具；正文 create/update、文件夹/标签、discard/永久删除、ASR 片段级重试、按板块采用未交付；#621 无 master 目标 PR CI，AC-05 容量策略缺失，AC-06 BLOCKED | WO-R05-COMPLETE-MCP、WO-R05-AC05-CAPACITY |
+| Z01 | FAIL | #597 已合并，Web 版本历史仅管理员、数据中心/审计 RequireAdmin、普通冲突不显示版本 ID；Android/Windows 仍有材料版本/恢复/设为云端当前版本，协议与诊断例外仍在 | WO-Z01-USER-FACING |
+| Z02 | NOT-VERIFIED | #572/#50/#82 已合并高层编排；#620 已再次移动到 head `225834fa`，run `45965628196` 尚在运行（上一 `3235ec37`/`45963742316` failure），只覆盖 API/Web 持续授权与单链；真实 provider/Hangfire/浏览器/Android/Windows 换端未验 | WO-Z02-CONSENT-E2E、WO-Z02-CROSS-DEVICE |
+| S01 | NOT-VERIFIED | #601/#603/#604 已合并；正式版仍是 `api-v26.11.1157` target `f79cc3e8`，`1182`/`1273` 为 pre-release；#604 后无真实 bump/promote dispatch，Windows #61 OPEN，生产 `:latest` 未验 | WO-RELEASE-REAL-PROMOTION |
+
+> 审计限制：六组均未运行构建/测试，未连接 `pim_prod`，未执行真实 Android OEM、Windows 交互桌面、真实浏览器、真实 provider、Microsoft Graph、外部独立 MCP、FCM/WNS/Web Push 或生产发布。报告中的 CI/单测/组件测试/模拟器只证明自动化和代码切片，不证明用户流程。
 
 ### 代码合并 ≠ PASS / Merge is not acceptance
 
@@ -247,8 +428,8 @@
 | 状态 | 数量 | 编号 |
 | --- | ---: | --- |
 | PASS | 0 | 无 |
-| FAIL | 83 | A01 A02 A03 A04 A05 A06 A07 A08 A09 B07 C12 C13 C16 C17 C18 C19 C20 D04 D05 E01 E02 F02 F03 F04 F06 F08 F09 F10 G01 G02 G04 G06 G07 G08 G09 G10 G12 G13 H01 H02 H03 H04 H05 H07 H08 H09 H10 H11 I03 I04 J01 J05 J06 J08 J09 K02 K03 K04 L01 L07 L08 L10 L11 L13 M02 M03 M06 N01 O02 O03 O05 O06 P01 P05 Q03 Q04 Q05 Q06 Q08 R02 R03 R05 Z01 |
-| NOT-VERIFIED | 69 | A10 B01 B02 B03 B04 B05 B06 B08 B09 B10 B11 B12 B13 B14 B16 C01 C02 C03 C04 C05 C06 C07 C08 C09 C10 C11 C15 C22 D01 D02 D03 D06 D07 D08 F01 F05 F07 F11 G03 G05 G11 H06 I01 I02 J02 J03 J04 J07 K01 L02 L03 L04 L05 L06 L09 L12 L14 M01 M04 M05 N02 N03 O01 P02 P03 P04 R01 R04 Z02 |
+| FAIL | 103 | A01 A02 A03 A04 A05 A06 A07 A08 A09 B05 B06 B07 B08 B09 B13 B16 C02 C05 C06 C07 C08 C09 C10 C11 C12 C13 C16 C17 C18 C19 C20 C22 D04 D05 E01 E02 F01 F02 F03 F04 F06 F07 F08 F09 G02 G04 G06 G07 G08 G09 G10 G12 G13 H02 H03 H04 H05 H07 H08 H09 H10 H11 I01 I03 I04 J01 J03 J04 J05 J06 J07 J08 J09 K02 K03 K04 L01 L07 L08 L10 L11 L13 M02 M03 M06 N01 N02 N03 O02 O03 O05 O06 P01 P05 Q03 Q04 Q05 Q06 Q08 R02 R03 R05 Z01 |
+| NOT-VERIFIED | 49 | A10 B01 B02 B03 B04 B10 B11 B12 B14 C01 C03 C04 C15 D01 D02 D03 D06 D07 D08 F05 F10 F11 G01 G03 G05 G11 H01 H06 I02 J02 K01 L02 L03 L04 L05 L06 L09 L12 L14 M01 M04 M05 O01 P02 P03 P04 R01 R04 Z02 |
 | BLOCKED | 2 | Q01 Q07 |
 | APPROVED-EXCEPTION | 6 | B15 C14 C21 E03 O04 Q02 |
 | **合计** | **160** | A–R、Z（不含 S01） |
@@ -256,33 +437,33 @@
 | 分组 | PASS | FAIL | NOT-VERIFIED | BLOCKED | APPROVED-EXCEPTION |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | A 笔记列表与组织 | 0 | 9 | 1 | 0 | 0 |
-| B 编辑器 | 0 | 1 | 14 | 0 | 1 |
-| C 录音 | 0 | 7 | 13 | 0 | 2 |
+| B 编辑器 | 0 | 7 | 8 | 0 | 1 |
+| C 录音 | 0 | 16 | 4 | 0 | 2 |
 | D 手写 | 0 | 2 | 6 | 0 | 0 |
 | E 材料与文件输入 | 0 | 2 | 0 | 0 | 1 |
-| F 上传与同步 | 0 | 7 | 4 | 0 | 0 |
-| G ASR 与转写 | 0 | 10 | 3 | 0 | 0 |
-| H 多模态整理 | 0 | 10 | 1 | 0 | 0 |
-| I 任务与日程建议 | 0 | 2 | 2 | 0 | 0 |
-| J AI 配置与调用 | 0 | 5 | 4 | 0 | 0 |
+| F 上传与同步 | 0 | 8 | 3 | 0 | 0 |
+| G ASR 与转写 | 0 | 9 | 4 | 0 | 0 |
+| H 多模态整理 | 0 | 9 | 2 | 0 | 0 |
+| I 任务与日程建议 | 0 | 3 | 1 | 0 | 0 |
+| J AI 配置与调用 | 0 | 8 | 1 | 0 | 0 |
 | K 文件与云盘 | 0 | 3 | 1 | 0 | 0 |
 | L Android 原生客户端 | 0 | 6 | 8 | 0 | 0 |
 | M Windows 原生客户端 | 0 | 3 | 3 | 0 | 0 |
-| N Web 客户端 | 0 | 1 | 2 | 0 | 0 |
+| N Web 客户端 | 0 | 3 | 0 | 0 | 0 |
 | O 视觉与体验 | 0 | 4 | 1 | 0 | 1 |
 | P 采集与定位 | 0 | 2 | 3 | 0 | 0 |
 | Q 基础服务 | 0 | 5 | 0 | 2 | 1 |
 | R MCP / API | 0 | 3 | 2 | 0 | 0 |
 | Z 反向要求 | 0 | 1 | 1 | 0 | 0 |
-| **合计** | **0** | **83** | **69** | **2** | **6** |
+| **合计** | **0** | **103** | **49** | **2** | **6** |
 
 ### S01 补充项（Release / 版本与发布安全，不计入 A–R、Z 160 项）
 
 | 编号 | 状态 | 当前证据 | 边界 |
 | --- | --- | --- | --- |
-| S01 | NOT-VERIFIED | #601（merge `f79cc3e8`）、#603（merge `b0f92b16`）、#604（head `033f3a5f`，merge `fa60b58e`）已落地；#604 required CI `45630816563` success；#589 合并后 master CI `45653708869` success（含 `release`）；pre-release `api-v26.11.1174` target `fa60b58e`、`api-v26.11.1182` target `05552e84`；Windows #61 当前 head `ee730075` 仍 OPEN | 真实 `release.yml` dispatch（正常 bump 与 `promote_tag`）、并发调度/旧 run 重跑、`/releases/latest` 收敛与生产从 `:latest` 拉取部署均未执行；pre-release 不是正式发布或生产部署证据。 |
+| S01 | NOT-VERIFIED | #601（merge `f79cc3e8`）、#603（merge `b0f92b16`）、#604（head `033f3a5f`，merge `fa60b58e`）已落地；#604 required CI `45630816563` success；#589 合并后 master CI `45653708869` success（含 `release`）；正式版仍为 `api-v26.11.1157` target `f79cc3e8`，`api-v26.11.1174`/`1182`/`1273` 均为 pre-release；Windows #61 当前 head `ee730075` 仍 OPEN | 真实 `release.yml` dispatch（正常 bump 与 `promote_tag`）、并发调度/旧 run 重跑、`/releases/latest` 收敛与生产从 `:latest` 拉取部署均未执行；pre-release 不是正式发布或生产部署证据。 |
 
-> 2026-11-27 09:50 CST（01:50Z）复核：A–R、Z 原始 160 项按当前状态重算为 `PASS 0 / FAIL 83 / NOT-VERIFIED 69 / BLOCKED 2 / APPROVED-EXCEPTION 6`；S01 单独为 `NOT-VERIFIED`。合计 161 = 160 + S01。Q08/Z01/D04/I03/I04 等已合并但真实验收未完成的项仍按 FAIL 处理；#616 Q06 当前 head `1e1bc034` / run `45923273062` success（`CI Gate`、6 个 test shard、`build-api / build`、`web-build`、`build-docker / build` success；本轮未展开 shard 原始计数），但产品缺口未闭合，Q06 仍 FAIL；`33a40dc`/`45919652577` success（6 shard `Passed 6861 / Failed 0 / Skipped 103`）、`0c1a4db`/`45918846595` failure（CS0103 编译失败）与 `0370232f`/`45914995572` success 仅作历史。Q01/Q07 保持 BLOCKED；六个例外仍为 B15、C14、C21、E03、O04、Q02。
+> 2026-11-27 16:20 CST（08:20Z）审计汇总、16:28 CST（08:28Z）重新读取 #620：A–R、Z 原始 160 项按六组审计的当前状态重算为 `PASS 0 / FAIL 103 / NOT-VERIFIED 49 / BLOCKED 2 / APPROVED-EXCEPTION 6`；S01 单独为 `NOT-VERIFIED`，合计 161 = 160 + S01。Q08/Z01/D04/I03/I04/H03/R05 等已合并或 CI 绿但真实验收未完成的项仍按 FAIL 处理。Q01/Q07 保持 BLOCKED；R05-AC05 的永久身份墓碑容量策略另记 BLOCKED；六个例外仍为 B15、C14、C21、E03、O04、Q02。#620 head 已再次移动到 `225834fa`，run `45965628196` 尚在运行；上一 head `3235ec37`/run `45963742316` 为 failure（shard-5、`CI Gate`），旧 run `45923880411` 仅作历史；Z02 仍 NOT-VERIFIED。
 
 ## 明确阻塞
 
@@ -290,6 +471,7 @@
 | --- | --- | --- | --- |
 | Q01 | 需求确认缺口 | API 已有登录、续期、管理员账号与用户隔离；Android L-P-Q 盘点明确不能按跳过处理，三端平台范围与验收尚未确认 | 用户补齐 Q01 平台范围和验收口径，再执行真实注册/登录/续期/管理员/停用流程 |
 | Q07 | 产品语义冲突 | Q07 要求 `Uploaded` 与 `Conflict` 都清理本机持久副本；Android 冲突保护要求保留双方完整材料与本机原件 | 用户裁决 Conflict 终态是否清理；决定前不实现 Android 清理，不销项 |
+| R05 AC-05 | 产品/运营容量策略未批准 | #613 的 19 个 native-note 工具仍 OPEN；后续 #621 将 `(owner, requestId)` 永久身份写入 PostgreSQL，方案只在 30 天/每 owner 最近 200 条范围内尽力清理响应，永久墓碑仍无上限、无归档/告警；#621 当前无 master 目标 PR `CI Gate`，且手动 run `45940234593` 在 shard-6 有 2 个失败 | 产品/运营确认永久墓碑保留期限、容量上限与告警/归档策略；修 #621 两个失败测试、rebase #613、改为 master 目标并取得当前 head 绿色 `CI Gate`；完成前 R05 不销项 |
 | H03-AC10 | 真实验收缺口 | #612 已实现长音频自动分批、总预算/批数/并发上限、失败批次恢复与汇总不重放音频；当前 head `f12c4c23` / run `45857319607` success（6 shard `Passed 6924 / Failed 0 / Skipped 103`）；旧 head `0f367b49` / run `45750782446` 仅作历史。PR 仍 OPEN，真实多模态 provider 的质量/费用、Hangfire 多进程/多实例恢复、Web/Android/Windows 真机流程未验 | 合并 #612；用真实多模态 provider 执行长音频分批/汇总/失败恢复；记录 Hangfire 多实例与三端真机环境 |
 | R04 | 真实 Windows 桌面、Android 实机/OEM 与外部 MCP 未验 | REST 重复 `status`、MCP `statuses`、Web 多选、Windows PR #57 原生复选多选和 Android PR #94 原生多状态 chips 均已合并，required CI 全绿；但真实 Windows 桌面人工操作、Android 实机/OEM、外部独立 MCP 客户端仍未执行 | 在真实 Windows 桌面操作多选；在 Android 实机/OEM 验证筛选与恢复；外部 MCP 复验，并记录客户端版本与请求日志 |
 | Z01 | 真实浏览器与跨端验收缺口 | PR #597 已 squash merge `c47542e1`：API 对普通用户隐藏派生诊断与 `audit-version`，Web 保留普通用户导航/路由守卫，真实管理端点要求当前有效管理员；但材料/同步协议 ID、ASR segment 与 processing 诊断仍是显式例外，真实浏览器普通/管理员走查、Android/Windows 呈现未验 | 在真实浏览器和 Android/Windows 完成普通/管理员对照走查；逐项确认协议例外仍不向普通用户 UI 暴露；未完成前 Z01 保持 FAIL |
@@ -297,6 +479,8 @@
 | M05 | 真实桌面验收缺口 | PR #58 已合并原生 `NativeTodayWindow`，托盘「原生今日」和工作台「今日」已接入，原生日历/任务入口保留，「今日（Web 兼容）」入口保留；#58 未扩大 M06（后续 #59 单独推进 M06，但伞项仍 FAIL）。真实 Windows 交互式登录、托盘点击、刷新、新建与完成任务仍未执行 | 在真实 Windows 桌面执行登录、托盘点击、刷新、新建和完成任务验收，并记录环境与步骤 |
 
 ## 下一批可派工
+
+审计后的 P0 顺序：`WO-CLIENT-CONTRACT-SYNC`（Android #93/Windows #60 解阻）→ `WO-R05-COMPLETE-MCP` + `WO-R05-AC05-CAPACITY`（#613/#621）→ `WO-Z02-CONSENT-E2E`（#620 新 head 与真实 provider/Hangfire/浏览器）→ `WO-RELEASE-REAL-PROMOTION`（正式 bump/promote 与生产 `:latest`）→ `WO-Z01-USER-FACING`。以下旧表继续有效，但不得用旧 head/run 直接销项。
 
 | 顺序 | 工单 | 仓库/PR | 目标 | 完成判据 |
 | ---: | --- | --- | --- | --- |
@@ -321,7 +505,7 @@
 
 ## 全量逐项台账（历史/既有验收文本 + 当前证据回填）
 
-列说明：`验收条件` 为确认记录摘要；完整规则见交付包对应记录。**本节的“历史/既有验收文本（基线 2026-11-25，含后续回填）”列保留历史实现/验收描述及少量后续回填，不是 2026-11-27 的当前实现；Q08、Z01、D04、I03/I04、J09、R02、R03、R05、Q03、Q04、Q05、P05、H03、J05、J06、J08、C12、C14、S01 的当前 PR/head/CI/依赖/状态以文首“功能项依赖与当前状态”“开放 PR 当前证据”和“2026-11-27 当前逐项证据回填”为准。** 旧行中的“待创建”“当前 head 未发现变更”“仍 OPEN”不得再当作当前事实；`证据` 只列当时实际查到的证据，不把 demo 或旧 CI 写成当前 PASS。S01 是 Release/版本与发布安全补充项，不计入交付包原 160 项。
+列说明：`验收条件` 为确认记录摘要；完整规则见交付包对应记录。**本节的“历史/既有验收文本（基线 2026-11-25，含后续回填）”列保留历史实现/验收描述，不是 2026-11-27 的当前实现；`状态` 列已按 2026-11-27 16:20 CST 六组审计刷新，当前事实与工单以“六组只读审计逐项回填”“开放 PR 当前证据”和“功能项依赖与当前状态”为准。** 旧行中的“待创建”“当前 head 未发现变更”“仍 OPEN”不得再当作当前事实；`证据` 只列当时实际查到的证据，不把 demo、旧 CI 或组件测试写成当前 PASS。S01 是 Release/版本与发布安全补充项，不计入交付包原 160 项。
 
 ### A 笔记列表与组织
 
@@ -346,34 +530,34 @@
 | B02 | Android；Windows；Web | 按交付包 B02 的最终确认完成「编辑页是记录中最大的页面，正文占主空间」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：安卓编辑是单独的全屏页，没有底部导航，只留顶栏约 72dp 和底部悬浮条约 88dp，中间正文列最宽 760dp；录音控制只是左下一个小胶囊。Windows 编辑区在三栏中间；Web 编辑区约占右侧 2/3；当前 head 未发现该编号的完成变更。 | 离线编辑器、Markdown/材料模型、三端编辑壳 | Android/Windows/Web Agent | 待创建 | 交付包无 B02 专属讨论记录，使用 01-讨论记录/README.md 与 00-交付说明/原始输入/PIM功能表.md；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | NOT-VERIFIED | 在当前 head 重跑端到端验收；旧 CI/旧 PR head 不计 PASS。 |
 | B03 | Android；Windows；Web | 按交付包 B03 的最终确认完成「顶部不一直显示「PIM 笔记」」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：安卓编辑页顶栏只有返回、保存状态（如「已保存本机」）、预览、更多和「结束」，没有「PIM 笔记」，页面用无标题栏主题；Web 编辑区标题是「新建笔记」或「继续写这篇笔记」；Windows 窗口标题是「笔记库」，「PIM 笔记」只出现在弹窗标题上；当前 head 未发现该编号的完成变更。 | 离线编辑器、Markdown/材料模型、三端编辑壳 | Android/Windows/Web Agent | 待创建 | 交付包无 B03 专属讨论记录，使用 01-讨论记录/README.md 与 00-交付说明/原始输入/PIM功能表.md；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | NOT-VERIFIED | 在当前 head 重跑端到端验收；旧 CI/旧 PR head 不计 PASS。 |
 | B04 | Android；Windows；Web | 按交付包 B04 的最终确认完成「「结束」按钮悬浮在右上角」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：安卓「结束」是顶栏最右侧的圆角带阴影按钮，顶栏固定不随正文滚动，点了先弹「结束这次记录？」确认。Web 没有「结束」，只有「保存笔记」；Windows 是工具栏上的「开始录音 / 停止并保存」；当前 head 未发现该编号的完成变更。 | 离线编辑器、Markdown/材料模型、三端编辑壳 | Android/Windows/Web Agent | 待创建 | 交付包无 B04 专属讨论记录，使用 01-讨论记录/README.md 与 00-交付说明/原始输入/PIM功能表.md；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | NOT-VERIFIED | 在当前 head 重跑端到端验收；旧 CI/旧 PR head 不计 PASS。 |
-| B05 | Android；Windows；Web | 按交付包 B05 的最终确认完成「拍照直接插入正文」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：安卓点右下「+」再点「拍照」直接调系统相机，拍完插到光标处（所在段一分为二），取消拍照什么都不插。Web「拍照加入」只能追加到正文末尾；Windows 没有拍照，只能选图片文件；当前 head 未发现该编号的完成变更。 | 离线编辑器、Markdown/材料模型、三端编辑壳 | Android/Windows/Web Agent | 待创建 | 交付包无 B05 专属讨论记录，使用 01-讨论记录/README.md 与 00-交付说明/原始输入/PIM功能表.md；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | NOT-VERIFIED | 在当前 head 重跑端到端验收；旧 CI/旧 PR head 不计 PASS。 |
-| B06 | Android；Windows；Web | 按交付包 B06 的最终确认完成「从相册选图插入」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：安卓「+」再点「从相册选择」插到光标处；但一次只能选 1 张，只收 JPEG/PNG/WebP、单张 ≤32 MB，相机若存成 HEIF/HEIC 会导入失败（需实测 OPPO 相机格式）。Web 可多选但只追加到末尾；Windows 可多选 PNG/JPG，进材料列表；当前 head 未发现该编号的完成变更。 | 离线编辑器、Markdown/材料模型、三端编辑壳 | Android/Windows/Web Agent | 待创建 | 交付包无 B06 专属讨论记录，使用 01-讨论记录/README.md 与 00-交付说明/原始输入/PIM功能表.md；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | NOT-VERIFIED | 在当前 head 重跑端到端验收；旧 CI/旧 PR head 不计 PASS。 |
+| B05 | Android；Windows；Web | 按交付包 B05 的最终确认完成「拍照直接插入正文」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：安卓点右下「+」再点「拍照」直接调系统相机，拍完插到光标处（所在段一分为二），取消拍照什么都不插。Web「拍照加入」只能追加到正文末尾；Windows 没有拍照，只能选图片文件；当前 head 未发现该编号的完成变更。 | 离线编辑器、Markdown/材料模型、三端编辑壳 | Android/Windows/Web Agent | 待创建 | 交付包无 B05 专属讨论记录，使用 01-讨论记录/README.md 与 00-交付说明/原始输入/PIM功能表.md；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | FAIL | WO-B05-B06-MEDIA：Web 光标处插入、Windows 拍照、Android 多选/HEIC；取消不产生材料。 |
+| B06 | Android；Windows；Web | 按交付包 B06 的最终确认完成「从相册选图插入」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：安卓「+」再点「从相册选择」插到光标处；但一次只能选 1 张，只收 JPEG/PNG/WebP、单张 ≤32 MB，相机若存成 HEIF/HEIC 会导入失败（需实测 OPPO 相机格式）。Web 可多选但只追加到末尾；Windows 可多选 PNG/JPG，进材料列表；当前 head 未发现该编号的完成变更。 | 离线编辑器、Markdown/材料模型、三端编辑壳 | Android/Windows/Web Agent | 待创建 | 交付包无 B06 专属讨论记录，使用 01-讨论记录/README.md 与 00-交付说明/原始输入/PIM功能表.md；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | FAIL | WO-B05-B06-MEDIA：三端拍照/相册插入位置正确、取消不产生材料。 |
 | B07 | Android；Windows；Web | 图片可看大图、删除、调整并支持复制/剪切/粘贴；图片移动按原决议不验收。 | 历史基线：安卓 ❌：照片块只是一张最高 360dp 的静态图，点了不出大图，不能删，不能缩放或裁剪；笔记数据也没有「删除某一块」的操作，只能靠整篇撤销去掉。Web 只能删本次新加、还没保存的照片，已保存的不能删，也没有大图；Windows 双击用系统看图软件打开，不能删；当前 head 未发现该编号的完成变更。 | 离线编辑器、Markdown/材料模型、三端编辑壳 | Android/Windows/Web Agent | 待创建 | 交付包 B07 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | FAIL | 实现大图、已存图片删除/调整与复制/剪切/粘贴；移动不排期。 |
-| B08 | Android；Windows；Web | 按交付包 B08 的最终确认完成「常用格式工具栏（标题、列表、待办勾选、加粗、引用）」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：安卓光标在文字段里时，键盘上方浮出格式条：加粗、斜体、标题、列表、待办、引用、代码、表格、撤销、重做，直接调 Tiptap 命令，待办能勾选；不足是标题固定二级，没有有序列表，某段退回源码模式时格式条不出现。Web 和 Windows 没有格式工具栏，要手打 Markdown；当前 head 未发现该编号的完成变更。 | 离线编辑器、Markdown/材料模型、三端编辑壳 | Android/Windows/Web Agent | 待创建 | 交付包 B08 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | NOT-VERIFIED | 在当前 head 重跑端到端验收；旧 CI/旧 PR head 不计 PASS。 |
-| B09 | Android；Windows；Web | 按交付包 B09 的最终确认完成「撤销/重做」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：安卓有两层：格式条上的撤销/重做管当前这段文字；顶栏「更多」里有「撤销/重做整篇操作」，最多 60 步，1.2 秒内的连续输入算一步，存盘后重启还在；单篇超过 8 MiB 时不提供整篇撤销。Web 和 Windows 只有浏览器或系统文本框自带的 Ctrl+Z；当前 head 未发现该编号的完成变更。 | 离线编辑器、Markdown/材料模型、三端编辑壳 | Android/Windows/Web Agent | 待创建 | 交付包 01-讨论记录/B08-B16-编辑器基础能力.md；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | NOT-VERIFIED | 在当前 head 重跑端到端验收；旧 CI/旧 PR head 不计 PASS。 |
+| B08 | Android；Windows；Web | 按交付包 B08 的最终确认完成「常用格式工具栏（标题、列表、待办勾选、加粗、引用）」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：安卓光标在文字段里时，键盘上方浮出格式条：加粗、斜体、标题、列表、待办、引用、代码、表格、撤销、重做，直接调 Tiptap 命令，待办能勾选；不足是标题固定二级，没有有序列表，某段退回源码模式时格式条不出现。Web 和 Windows 没有格式工具栏，要手打 Markdown；当前 head 未发现该编号的完成变更。 | 离线编辑器、Markdown/材料模型、三端编辑壳 | Android/Windows/Web Agent | 待创建 | 交付包 B08 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | FAIL | WO-B08-B09-B16-EDITOR：Web/Windows 格式工具栏与 Android 连续整篇编辑。 |
+| B09 | Android；Windows；Web | 按交付包 B09 的最终确认完成「撤销/重做」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：安卓有两层：格式条上的撤销/重做管当前这段文字；顶栏「更多」里有「撤销/重做整篇操作」，最多 60 步，1.2 秒内的连续输入算一步，存盘后重启还在；单篇超过 8 MiB 时不提供整篇撤销。Web 和 Windows 只有浏览器或系统文本框自带的 Ctrl+Z；当前 head 未发现该编号的完成变更。 | 离线编辑器、Markdown/材料模型、三端编辑壳 | Android/Windows/Web Agent | 待创建 | 交付包 01-讨论记录/B08-B16-编辑器基础能力.md；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | FAIL | WO-B08-B09-B16-EDITOR：统一跨材料撤销边界。 |
 | B10 | Android；Windows；Web | 按交付包 B10 的最终确认完成「自动保存，崩溃或被杀后不丢字」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：安卓每次改动都立刻在后台写盘（原子写加 fsync），保存由应用级单例负责，页面销毁也不中断；切到后台前先收齐编辑器里的字；编辑器渲染进程崩溃时保留最后收到的原文并要求核对；漏洞是还没上屏的拼音和被杀前最后一瞬的按键可能丢（需实测）。Windows 停顿 700 ms 自动保存；Web ❌，草稿只在页面内存里，刷新或关闭就没了；当前 head 未发现该编号的完成变更。 | 离线编辑器、Markdown/材料模型、三端编辑壳 | Android/Windows/Web Agent | 待创建 | 交付包 01-讨论记录/B08-B16-编辑器基础能力.md；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | NOT-VERIFIED | 在当前 head 重跑端到端验收；旧 CI/旧 PR head 不计 PASS。 |
 | B11 | Android；Windows；Web | 按交付包 B11 的最终确认完成「中文输入法输入稳定（不吞字、不跳光标）」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：需实测。安卓正文编辑器专门处理了输入法：拼音组字期间不回传，上屏后才同步；原生回写带序号，防止旧内容盖掉正在输入的字；结束或离开前最多等 3 秒让组字完成。自动化测试只模拟了组字，没在 OPPO 真机输入法上验证；标题框是 Compose 文本框，值来自异步状态流，快速输入时有吞字、跳光标的风险；当前 head 未发现该编号的完成变更。 | 离线编辑器、Markdown/材料模型、三端编辑壳 | Android/Windows/Web Agent | 待创建 | 交付包 01-讨论记录/B08-B16-编辑器基础能力.md；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | NOT-VERIFIED | 在当前 head 重跑端到端验收；旧 CI/旧 PR head 不计 PASS。 |
 | B12 | Android；Windows；Web | 按交付包 B12 的最终确认完成「记录时不需要联网，离线可用」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：安卓笔记、照片、手写、录音都存在本机私有目录，新建和编辑不需要登录或联网；编辑器页面打包在 APK 里，WebView 禁止联网，CSP 禁止外连。Windows 同样存本机；Web 必须连服务器才能保存；当前 head 未发现该编号的完成变更。 | 离线编辑器、Markdown/材料模型、三端编辑壳 | Android/Windows/Web Agent | 待创建 | 交付包 01-讨论记录/B08-B16-编辑器基础能力.md；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | NOT-VERIFIED | 在当前 head 重跑端到端验收；旧 CI/旧 PR head 不计 PASS。 |
-| B13 | Android；Windows；Web | 按交付包 B13 的最终确认完成「处理期间照常编辑，不锁编辑器」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：安卓只在点「结束」做本机定稿那一下锁住编辑（最多等录音停止 10 秒，再写一份材料清单）；之后的材料整理在后台 WorkManager 做，上传、转写、整理都不锁编辑器，可以接着写、接着补录。Web 在「保存笔记」上传期间整页锁定，转写和整理在另一个页面；Windows 上传时不锁；当前 head 未发现该编号的完成变更。 | 离线编辑器、Markdown/材料模型、三端编辑壳 | Android/Windows/Web Agent | 待创建 | 交付包 01-讨论记录/B08-B16-编辑器基础能力.md；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | NOT-VERIFIED | 在当前 head 重跑端到端验收；旧 CI/旧 PR head 不计 PASS。 |
+| B13 | Android；Windows；Web | 按交付包 B13 的最终确认完成「处理期间照常编辑，不锁编辑器」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：安卓只在点「结束」做本机定稿那一下锁住编辑（最多等录音停止 10 秒，再写一份材料清单）；之后的材料整理在后台 WorkManager 做，上传、转写、整理都不锁编辑器，可以接着写、接着补录。Web 在「保存笔记」上传期间整页锁定，转写和整理在另一个页面；Windows 上传时不锁；当前 head 未发现该编号的完成变更。 | 离线编辑器、Markdown/材料模型、三端编辑壳 | Android/Windows/Web Agent | 待创建 | 交付包 01-讨论记录/B08-B16-编辑器基础能力.md；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | FAIL | WO-B13-WEB-UPLOAD：`editable = !busy` 需解除，保存/上传期间可继续编辑。 |
 | B14 | Android；Windows；Web | 按交付包 B14 的最终确认完成「软键盘弹出时悬浮条和工具栏不被挡住」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：需实测。安卓编辑页用 adjustResize 加 imePadding，键盘弹出时底部悬浮条整体上移到键盘上方，格式条再叠在悬浮条之上；光标位置换算成原生坐标，被键盘或工具条挡住时自动滚动；有键盘弹出时光标可见的自动化测试，但没有 OPPO 机型验收；当前 head 未发现该编号的完成变更。 | 离线编辑器、Markdown/材料模型、三端编辑壳 | Android/Windows/Web Agent | 待创建 | 交付包 01-讨论记录/B08-B16-编辑器基础能力.md；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | NOT-VERIFIED | 在当前 head 重跑端到端验收；旧 CI/旧 PR head 不计 PASS。 |
 | B15 | Android；Windows；Web | 原决议：不做 100 分钟长笔记性能验收；仅登记性能风险。 | 历史基线：需实测。编辑器 README 自己写明「多块性能测试、100/180 分钟录音验收」没做。代码上的风险点：每次正文改动都在主线程把整份撤销历史（最多 60 份快照、约 12 MiB）重新编码一遍来算大小，后台每次再把整篇和整份历史各写盘一遍；JS 端每改一下要把当前段序列化 3 遍；单段超过 8192 像素高后改成框内滚动。中文输入是上屏一次才回传一次，会缓和一些；当前 head 未发现该编号的完成变更。 | 离线编辑器、Markdown/材料模型、三端编辑壳 | Android/Windows/Web Agent | 待创建 | 交付包 01-讨论记录/B08-B16-编辑器基础能力.md（B15 明确“用户决定不做此项”）；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | APPROVED-EXCEPTION | 保留范围决议，不排期。 |
-| B16 | Android；Windows；Web | 按交付包 B16 的最终确认完成「编辑核心用离线打包的成熟开源编辑器（Tiptap/ProseMirror），不自己造」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：安卓正文用 Tiptap 3.31.3（ProseMirror）加官方 Markdown、待办、表格扩展，构建时用 esbuild 打包进 APK，运行完全离线；源码模式退回成熟的 Markwon。不足是每个文字段各起一个 Tiptap 实例，不是整篇一个编辑器。Web 和 Windows 没用 Tiptap，是普通文本框；当前 head 未发现该编号的完成变更。 | 离线编辑器、Markdown/材料模型、三端编辑壳 | Android/Windows/Web Agent | 待创建 | 交付包 B16 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | NOT-VERIFIED | 在当前 head 重跑端到端验收；旧 CI/旧 PR head 不计 PASS。 |
+| B16 | Android；Windows；Web | 按交付包 B16 的最终确认完成「编辑核心用离线打包的成熟开源编辑器（Tiptap/ProseMirror），不自己造」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：安卓正文用 Tiptap 3.31.3（ProseMirror）加官方 Markdown、待办、表格扩展，构建时用 esbuild 打包进 APK，运行完全离线；源码模式退回成熟的 Markwon。不足是每个文字段各起一个 Tiptap 实例，不是整篇一个编辑器。Web 和 Windows 没用 Tiptap，是普通文本框；当前 head 未发现该编号的完成变更。 | 离线编辑器、Markdown/材料模型、三端编辑壳 | Android/Windows/Web Agent | 待创建 | 交付包 B16 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | FAIL | WO-B08-B09-B16-EDITOR：Web/Windows 接成熟编辑器核心。 |
 
 ### C 录音
 
 | 编号 | 平台 | 验收条件（摘要） | 历史/既有验收文本（基线 2026-11-25，含后续回填） | 依赖 | 负责 Agent | PR/HEAD | 证据 | 状态 | 下一批/阻塞 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | C01 | Android；Windows（Web 仅查看/回放） | 按交付包 C01 的最终确认完成「手动开始、结束录音」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：安卓编辑页左下角「开始录音」开始；「本篇录音」面板「停止这次录音」、通知「结束录音」、右上角「结束」都能停。Windows 笔记窗口有开始/停止按钮；Web 不能录音。；当前 head 未发现该编号的完成变更。 | Android/Windows 录音服务、Opus/Ogg 编解码、设备权限 | Android/Windows Agent | 待创建 | 交付包 C01 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | NOT-VERIFIED | 在当前 head 重跑端到端验收；旧 CI/旧 PR head 不计 PASS。 |
-| C02 | Android；Windows（Web 仅查看/回放） | 按交付包 C02 的最终确认完成「暂停/继续」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：安卓悬浮条、通知、录音面板都能暂停/继续，暂停时真的停麦并释放唤醒锁。Windows 录音服务只有开始/停止，没有暂停；Web 无录音。；当前 head 未发现该编号的完成变更。 | Android/Windows 录音服务、Opus/Ogg 编解码、设备权限 | Android/Windows Agent | 待创建 | 交付包 C02 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | NOT-VERIFIED | 在当前 head 重跑端到端验收；旧 CI/旧 PR head 不计 PASS。 |
+| C02 | Android；Windows（Web 仅查看/回放） | 按交付包 C02 的最终确认完成「暂停/继续」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：安卓悬浮条、通知、录音面板都能暂停/继续，暂停时真的停麦并释放唤醒锁。Windows 录音服务只有开始/停止，没有暂停；Web 无录音。；当前 head 未发现该编号的完成变更。 | Android/Windows 录音服务、Opus/Ogg 编解码、设备权限 | Android/Windows Agent | 待创建 | 交付包 C02 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | FAIL | WO-C-WIN-REC：Windows 补暂停/继续与计时冻结。 |
 | C03 | Android；Windows（Web 仅查看/回放） | 按交付包 C03 的最终确认完成「锁屏、切换应用后继续录音（前台服务）」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：录音是 microphone 类型前台服务，从最近任务划掉也不停（stopWithTask=false），录音时持有 CPU 唤醒锁，离开编辑页不停。OPPO/ColorOS 后台会不会杀，需实测。；当前 head 未发现该编号的完成变更。 | Android/Windows 录音服务、Opus/Ogg 编解码、设备权限 | Android/Windows Agent | 待创建 | 交付包 C03 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | NOT-VERIFIED | 在当前 head 重跑端到端验收；旧 CI/旧 PR head 不计 PASS。 |
 | C04 | Android；Windows（Web 仅查看/回放） | Android 后台录音持续显示状态；Android 16 支持时显示实况胶囊；锁屏不泄露笔记标题/ID；停止/暂停仍绑定原录音会话。 | Android 8–15 保持低优先级静默常驻通知；PR #89 已合并，Android 16 QPR1+ 且系统允许时增加 promoted ongoing 实况胶囊，锁屏公开版本只显示通用状态、时长和段号，不暴露笔记标题/ID、session ID、token 或 GraphEventId；停止/暂停/结束仍绑定原录音会话。 | Android/Windows 录音服务、Opus/Ogg 编解码、设备权限 | Android/Windows Agent | pim-android #89（merged，head `a0a980c0`，merge `629e4c5`） | PR #89 最终 head required CI `45500141959` 全绿；合并后 master CI `45502883654` 全绿；JVM/emulator 自动化不证明 Android 16 QPR1+ 实机策略、胶囊视觉、锁屏渲染与通知拒绝权限。 | NOT-VERIFIED | 在 Android 16 QPR1+ 真机验证实况胶囊、锁屏隐私与拒绝权限；自动化 CI 不得写成真机 PASS。 |
-| C05 | Android；Windows（Web 仅查看/回放） | 按交付包 C05 的最终确认完成「通知里可暂停/停止」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：通知里有「暂停/继续」和「结束录音」两个按钮，按录音 ID 绑定，旧通知的按钮控制不了后来的录音。；当前 head 未发现该编号的完成变更。 | Android/Windows 录音服务、Opus/Ogg 编解码、设备权限 | Android/Windows Agent | 待创建 | 交付包 C05 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | NOT-VERIFIED | 在当前 head 重跑端到端验收；旧 CI/旧 PR head 不计 PASS。 |
-| C06 | Android；Windows（Web 仅查看/回放） | 按交付包 C06 的最终确认完成「实时波形，由真实音频驱动」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：波形用麦克风每次读到的真实 PCM 峰值，保留最近 32 个值画 12 根柱（32×20dp），暂停时清空。按线性幅度画，小声说话柱子可能很矮，观感需实测。Windows 只有「实际输入峰值 xx%」文字；Web 无。；当前 head 未发现该编号的完成变更。 | Android/Windows 录音服务、Opus/Ogg 编解码、设备权限 | Android/Windows Agent | 待创建 | 交付包 C06 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | NOT-VERIFIED | 在当前 head 重跑端到端验收；旧 CI/旧 PR head 不计 PASS。 |
-| C07 | Android；Windows（Web 仅查看/回放） | 按交付包 C07 的最终确认完成「录音控制缩小成左下角悬浮条，不占大位置」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：录音时左下角是小胶囊（波形 + 时长 + 段号 + 暂停键），右边是插入按钮，正文底部留 88dp 不被挡；没在录音时同一位置是「开始录音」小胶囊。；当前 head 未发现该编号的完成变更。 | Android/Windows 录音服务、Opus/Ogg 编解码、设备权限 | Android/Windows Agent | 待创建 | 交付包 C07 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | NOT-VERIFIED | 在当前 head 重跑端到端验收；旧 CI/旧 PR head 不计 PASS。 |
-| C08 | Android；Windows（Web 仅查看/回放） | 按交付包 C08 的最终确认完成「一篇笔记支持多段录音」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：每次开始都新建一次录音并绑定笔记 ID，「本篇录音」面板按「录音 1、录音 2…」列出，点「结束」时全部录音一起进材料版本。；当前 head 未发现该编号的完成变更。 | Android/Windows 录音服务、Opus/Ogg 编解码、设备权限 | Android/Windows Agent | 待创建 | 交付包 C08 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | NOT-VERIFIED | 在当前 head 重跑端到端验收；旧 CI/旧 PR head 不计 PASS。 |
-| C09 | Android；Windows（Web 仅查看/回放） | 按交付包 C09 的最终确认完成「每段录音 3 小时上限」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：每段上限 16000×3×60×60 = 172,800,000 个样本，正好 3 小时，服务端校验同一个数。Windows 一次录音只有一个 WAV，没有 3 小时上限。；当前 head 未发现该编号的完成变更。 | Android/Windows 录音服务、Opus/Ogg 编解码、设备权限 | Android/Windows Agent | 待创建 | 交付包 C09 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | NOT-VERIFIED | 在当前 head 重跑端到端验收；旧 CI/旧 PR head 不计 PASS。 |
-| C10 | Android；Windows（Web 仅查看/回放） | 按交付包 C10 的最终确认完成「到 3 小时自动保存并续下一段」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：满 3 小时时关闭当前 WAV、写清单，段号加 1 后接着录，麦克风不停、不断档；界面写明「单段录音满 3 小时自动接续下一段」。3 小时长录需实测。；当前 head 未发现该编号的完成变更。 | Android/Windows 录音服务、Opus/Ogg 编解码、设备权限 | Android/Windows Agent | 待创建 | 交付包 C10 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | NOT-VERIFIED | 在当前 head 重跑端到端验收；旧 CI/旧 PR head 不计 PASS。 |
-| C11 | Android；Windows（Web 仅查看/回放） | 按交付包 C11 的最终确认完成「暂停不计入录音时长」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：时长按实际写入的样本数算（样本数×1000/16000）；暂停时停麦、不写样本，所以不计时。面板也写明「暂停时间不计入时长」。；当前 head 未发现该编号的完成变更。 | Android/Windows 录音服务、Opus/Ogg 编解码、设备权限 | Android/Windows Agent | 待创建 | 交付包 C11 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | NOT-VERIFIED | 在当前 head 重跑端到端验收；旧 CI/旧 PR head 不计 PASS。 |
+| C05 | Android；Windows（Web 仅查看/回放） | 按交付包 C05 的最终确认完成「通知里可暂停/停止」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：通知里有「暂停/继续」和「结束录音」两个按钮，按录音 ID 绑定，旧通知的按钮控制不了后来的录音。；当前 head 未发现该编号的完成变更。 | Android/Windows 录音服务、Opus/Ogg 编解码、设备权限 | Android/Windows Agent | 待创建 | 交付包 C05 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | FAIL | WO-C-WIN-REC：Windows 托盘/通知补暂停、继续与结束。 |
+| C06 | Android；Windows（Web 仅查看/回放） | 按交付包 C06 的最终确认完成「实时波形，由真实音频驱动」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：波形用麦克风每次读到的真实 PCM 峰值，保留最近 32 个值画 12 根柱（32×20dp），暂停时清空。按线性幅度画，小声说话柱子可能很矮，观感需实测。Windows 只有「实际输入峰值 xx%」文字；Web 无。；当前 head 未发现该编号的完成变更。 | Android/Windows 录音服务、Opus/Ogg 编解码、设备权限 | Android/Windows Agent | 待创建 | 交付包 C06 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | FAIL | WO-C-WIN-REC：Windows 补 12 柱真实 PCM 波形。 |
+| C07 | Android；Windows（Web 仅查看/回放） | 按交付包 C07 的最终确认完成「录音控制缩小成左下角悬浮条，不占大位置」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：录音时左下角是小胶囊（波形 + 时长 + 段号 + 暂停键），右边是插入按钮，正文底部留 88dp 不被挡；没在录音时同一位置是「开始录音」小胶囊。；当前 head 未发现该编号的完成变更。 | Android/Windows 录音服务、Opus/Ogg 编解码、设备权限 | Android/Windows Agent | 待创建 | 交付包 C07 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | FAIL | WO-C-WIN-REC：Windows 录音控制改为左下悬浮布局。 |
+| C08 | Android；Windows（Web 仅查看/回放） | 按交付包 C08 的最终确认完成「一篇笔记支持多段录音」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：每次开始都新建一次录音并绑定笔记 ID，「本篇录音」面板按「录音 1、录音 2…」列出，点「结束」时全部录音一起进材料版本。；当前 head 未发现该编号的完成变更。 | Android/Windows 录音服务、Opus/Ogg 编解码、设备权限 | Android/Windows Agent | 待创建 | 交付包 C08 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | FAIL | WO-C-WIN-REC：Windows 多段录音需有会话身份与“录音 N”。 |
+| C09 | Android；Windows（Web 仅查看/回放） | 按交付包 C09 的最终确认完成「每段录音 3 小时上限」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：每段上限 16000×3×60×60 = 172,800,000 个样本，正好 3 小时，服务端校验同一个数。Windows 一次录音只有一个 WAV，没有 3 小时上限。；当前 head 未发现该编号的完成变更。 | Android/Windows 录音服务、Opus/Ogg 编解码、设备权限 | Android/Windows Agent | 待创建 | 交付包 C09 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | FAIL | WO-C-WIN-REC：Windows 分段与 3 小时上限，服务端累计校验。 |
+| C10 | Android；Windows（Web 仅查看/回放） | 按交付包 C10 的最终确认完成「到 3 小时自动保存并续下一段」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：满 3 小时时关闭当前 WAV、写清单，段号加 1 后接着录，麦克风不停、不断档；界面写明「单段录音满 3 小时自动接续下一段」。3 小时长录需实测。；当前 head 未发现该编号的完成变更。 | Android/Windows 录音服务、Opus/Ogg 编解码、设备权限 | Android/Windows Agent | 待创建 | 交付包 C10 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | FAIL | WO-C-WIN-REC：Windows 自动续段。 |
+| C11 | Android；Windows（Web 仅查看/回放） | 按交付包 C11 的最终确认完成「暂停不计入录音时长」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：时长按实际写入的样本数算（样本数×1000/16000）；暂停时停麦、不写样本，所以不计时。面板也写明「暂停时间不计入时长」。；当前 head 未发现该编号的完成变更。 | Android/Windows 录音服务、Opus/Ogg 编解码、设备权限 | Android/Windows Agent | 待创建 | 交付包 C11 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | FAIL | WO-C-WIN-REC：Windows 暂停计时冻结。 |
 | C12 | Android；Windows（Web 仅查看/回放） | 按交付包 C12 的最终确认完成「每 15 秒一个 WAV 分片（当前 60 秒）」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：分片机制有，但常量仍是 16000×60，即 60 秒一片，没改成 15 秒。服务端按样本数切 ASR，每个版本允许 2 万个文件，改成 15 秒不用动服务端。Windows 整次录音一个 WAV，不分片。；当前 head 未发现该编号的完成变更。 | Android/Windows 录音服务、Opus/Ogg 编解码、设备权限 | Android/Windows Agent | 待创建 | 交付包 C12 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | FAIL | 补齐确认缺口后新建 PR，并在当前 head 做端到端复验。 |
 | C13 | Android；Windows（Web 仅查看/回放） | 按交付包 C13 的最终确认完成「被打断（来电、被杀、出错）自动继续录制」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：来电或别的应用抢麦（被系统静音）、权限被收回、空间不足、麦克风 5 秒没数据，都会直接结束并标「已中断」。服务是 START_NOT_STICKY，进程被杀后不会重启；也没有音频焦点和通话状态处理。界面原话「上次录音已中断，没有自动重新开启麦克风」，用户只能手动再点开始，算作新的一次录音。；当前 head 未发现该编号的完成变更。 | Android/Windows 录音服务、Opus/Ogg 编解码、设备权限 | Android/Windows Agent | 待创建 | 交付包 C13 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | FAIL | 补齐确认缺口后新建 PR，并在当前 head 做端到端复验。 |
 | C14 | Android；Windows | 原决议：由 C12 直接采集 Opus/Ogg 取代“结束后 WAV 合成 Opus 再删除”；随 C12 验收。 | 历史基线：三个仓库都没有 OPUS 编码（搜不到 opus、MediaCodec、Concentus、ffmpeg）。点「结束」时每个 60 秒 WAV 原样逐个上传，服务端和云端恢复也只认 .wav。录音 WAV 从不自动删除，材料面板原话「暂无自动清理」。；当前 head 未发现该编号的完成变更。 | Android/Windows 录音服务、Opus/Ogg 编解码、设备权限 | Android/Windows Agent | 待创建 | 交付包 01-讨论记录/C12-压缩录音格式与处理链路.md（README 标注“并入 C12，无独立讨论”）；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | APPROVED-EXCEPTION | 保留范围决议，不排期。 |
@@ -384,7 +568,7 @@
 | C19 | Android；Windows（Web 仅查看/回放） | 按交付包 C19 的最终确认完成「存储空间不足时提前提醒」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：只有硬门槛：剩余不足 64 MiB（约 35 分钟录音）不让开始；录音中每秒检查一次，不足 16 MiB（约 9 分钟）直接中止。没有「还能录多久」的提前提醒，拒绝开始时文案是「本地写入失败…请检查存储空间」，没直说空间不够。点「结束」时还要再复制一份同样大的 WAV，空间不够会准备失败，事先也不提醒。；当前 head 未发现该编号的完成变更。 | Android/Windows 录音服务、Opus/Ogg 编解码、设备权限 | Android/Windows Agent | 待创建 | 交付包 C19 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | FAIL | 补齐确认缺口后新建 PR，并在当前 head 做端到端复验。 |
 | C20 | Android；Windows（Web 仅查看/回放） | 按交付包 C20 的最终确认完成「录音中打时间点标记」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：录音数据结构里没有时间点标记字段，悬浮条和录音面板也没有打标记的按钮。；当前 head 未发现该编号的完成变更。 | Android/Windows 录音服务、Opus/Ogg 编解码、设备权限 | Android/Windows Agent | 待创建 | 交付包 C20 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | FAIL | 补齐确认缺口后新建 PR，并在当前 head 做端到端复验。 |
 | C21 | Android | 原决议：实时转写暂缓；仅保留“本地小模型、不联网、不上传音频”的定义勘误。 | 历史基线：没有实时转写。转写要等上传后由服务端按 60 秒一片逐片做（用户说过不紧急）。；当前 head 未发现该编号的完成变更。 | Android/Windows 录音服务、Opus/Ogg 编解码、设备权限 | Android/Windows Agent | 待创建 | 交付包 C21 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | APPROVED-EXCEPTION | 保留范围决议，不排期。 |
-| C22 | Android；Windows（Web 仅查看/回放） | 按交付包 C22 的最终确认完成「App 被杀/重启后能找回已录内容，并标明中断」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：下次打开笔记时扫描录音文件夹，按 WAV 实际长度修好文件头，标为「已中断」并显示「上次录音已中断，没有自动重新开启麦克风」；已录部分能回放，也能随「结束」提交。文件头和清单每 1 秒落盘一次。缺点是只在这篇笔记里显示，进程被杀后没有通知，列表也不标。需实测。；当前 head 未发现该编号的完成变更。 | Android/Windows 录音服务、Opus/Ogg 编解码、设备权限 | Android/Windows Agent | 待创建 | 交付包 C22 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | NOT-VERIFIED | 在当前 head 重跑端到端验收；旧 CI/旧 PR head 不计 PASS。 |
+| C22 | Android；Windows（Web 仅查看/回放） | 按交付包 C22 的最终确认完成「App 被杀/重启后能找回已录内容，并标明中断」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：下次打开笔记时扫描录音文件夹，按 WAV 实际长度修好文件头，标为「已中断」并显示「上次录音已中断，没有自动重新开启麦克风」；已录部分能回放，也能随「结束」提交。文件头和清单每 1 秒落盘一次。缺点是只在这篇笔记里显示，进程被杀后没有通知，列表也不标。需实测。；当前 head 未发现该编号的完成变更。 | Android/Windows 录音服务、Opus/Ogg 编解码、设备权限 | Android/Windows Agent | 待创建 | 交付包 C22 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | FAIL | WO-C-WIN-REC：Windows 重启扫描/恢复与三端列表中断标识。 |
 
 ### D 手写
 
@@ -411,23 +595,23 @@
 
 | 编号 | 平台 | 验收条件（摘要） | 历史/既有验收文本（基线 2026-11-25，含后续回填） | 依赖 | 负责 Agent | PR/HEAD | 证据 | 状态 | 下一批/阻塞 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| F01 | API；Android；Windows；Web | 按交付包 F01 的最终确认完成「结束后整篇笔记和录音上传云端」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：安卓点「结束」固定一个版本，含 note.json、document.md、照片原图、手写 PNG 和全部录音 WAV 分片，可整包上传到服务器；默认要在「材料版本」里勾选同意再加入队列；Windows 点「上传当前版本」整包上传；Web 没有录音，保存即写到服务器；当前 head 未发现该编号的完成变更。 | 逐项/逐分块回执、持久队列、断点续传、服务器版本 | API/Web + Android/Windows Agent | 待创建 | 交付包 F01 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | NOT-VERIFIED | 在当前 head 重跑端到端验收；旧 CI/旧 PR head 不计 PASS。 |
+| F01 | API；Android；Windows；Web | 按交付包 F01 的最终确认完成「结束后整篇笔记和录音上传云端」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：安卓点「结束」固定一个版本，含 note.json、document.md、照片原图、手写 PNG 和全部录音 WAV 分片，可整包上传到服务器；默认要在「材料版本」里勾选同意再加入队列；Windows 点「上传当前版本」整包上传；Web 没有录音，保存即写到服务器；当前 head 未发现该编号的完成变更。 | 逐项/逐分块回执、持久队列、断点续传、服务器版本 | API/Web + Android/Windows Agent | 待创建 | 交付包 F01 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | FAIL | WO-F01-F02-ONLINE-MEMBERS：在线成员同步、封口 Ogg 自动上传，依赖 C12。 |
 | F02 | API；Android；Windows；Web | 按交付包 F02 的最终确认完成「结束后自动上传，进入上传队列」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：安卓有后台上传队列和「持续授权」，开了之后「结束」会自动排队上传；但默认关闭，开关藏在笔记库底部折叠的「高级同步设置」里；没开时「结束」只提示「完整材料已保存在本机；未自动上传」；Windows 没有自动上传，只能手动点；当前 head 未发现该编号的完成变更。 | 逐项/逐分块回执、持久队列、断点续传、服务器版本 | API/Web + Android/Windows Agent | 待创建 | 交付包 F02 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | FAIL | 补齐确认缺口后新建 PR，并在当前 head 做端到端复验。 |
 | F03 | API；Android；Windows；Web | 按交付包 F03 的最终确认完成「确认上传成功后变成纯云端（本机清理）」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：上传成功后只把任务标为「服务器已接收完整材料」，本机笔记、照片、WAV 全部留着；代码里没有上传后清理本机的逻辑（连删除笔记都没有），材料版本页直接写着「暂无自动清理」；当前 head 未发现该编号的完成变更。 | 逐项/逐分块回执、持久队列、断点续传、服务器版本 | API/Web + Android/Windows Agent | 待创建 | 交付包 F03 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | FAIL | 补齐确认缺口后新建 PR，并在当前 head 做端到端复验。 |
 | F04 | API；Android；Windows；Web | 按交付包 F04 的最终确认完成「没网显示「已保存，待上传」，有网自动续传」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：开了持续授权时，没网任务显示「等待网络上传」，任务带「需联网」条件，联网后系统自动续传；没开授权就不进队列；服务器连不上（有网但 VPN 没开等）时从 15 秒起指数退避，连续失败 9 次（约 1 小时）就转成「上传未完成」，之后重启 App 也不再自动重试，要手动点「核对此版本并继续」；编辑页标题下只有「材料已备好 · 未上传」，传完也不变；当前 head 未发现该编号的完成变更。 | 逐项/逐分块回执、持久队列、断点续传、服务器版本 | API/Web + Android/Windows Agent | 待创建 | 交付包 F04 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | FAIL | 补齐确认缺口后新建 PR，并在当前 head 做端到端复验。 |
 | F05 | API；Android；Windows；Web | 按交付包 F05 的最终确认完成「大文件分片、断点续传」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：服务器按 1 MiB 分块收，单版本上限 4 GiB、每账号 20 GiB，未完成的上传保留 168 小时；安卓每传完一块就落盘记进度，续传时先问服务器已收到哪些块再补剩下的，每轮最多 32 块或 120 秒后自动接着排队；Web 和 Windows 同样跳过已收到的块（Windows 要手动再点一次）；当前 head 未发现该编号的完成变更。 | 逐项/逐分块回执、持久队列、断点续传、服务器版本 | API/Web + Android/Windows Agent | 待创建 | 交付包 F05 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | NOT-VERIFIED | 在当前 head 重跑端到端验收；旧 CI/旧 PR head 不计 PASS。 |
 | F06 | API；Android；Windows；Web | 按交付包 F06 的最终确认完成「上传、转写、整理三个状态分开显示」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：Web 处理页把「转写」「整理」分成两步分别显示进度；安卓三件事散在三处：上传在笔记库和材料版本，转写在笔记库「更多功能 → 逐段转写任务」，整理只能从转写任务详情进；笔记列表和编辑页都看不到某篇的转写/整理状态；编辑页标题下的状态从不读上传结果，传完仍显示「材料已备好 · 未上传」；平板宽屏侧栏还写死「云端处理尚未接入」；当前 head 未发现该编号的完成变更。 | 逐项/逐分块回执、持久队列、断点续传、服务器版本 | API/Web + Android/Windows Agent | 待创建 | 交付包 01-讨论记录/F06-上传转写整理状态.md、F06-状态分开显示.md；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | FAIL | 补齐确认缺口后新建 PR，并在当前 head 做端到端复验。 |
-| F07 | API；Android；Windows；Web | 按交付包 F07 的最终确认完成「不用等上传完就能离开」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：安卓材料准备和上传都交给系统后台任务（WorkManager），离开编辑页或退出 App 都继续，完成面板也写了「你可以离开页面」；Windows 上传要在笔记窗口里等它跑完；Web 在页面内上传，离开即中止；当前 head 未发现该编号的完成变更。 | 逐项/逐分块回执、持久队列、断点续传、服务器版本 | API/Web + Android/Windows Agent | 待创建 | 交付包 F07 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | NOT-VERIFIED | 在当前 head 重跑端到端验收；旧 CI/旧 PR head 不计 PASS。 |
+| F07 | API；Android；Windows；Web | 按交付包 F07 的最终确认完成「不用等上传完就能离开」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：安卓材料准备和上传都交给系统后台任务（WorkManager），离开编辑页或退出 App 都继续，完成面板也写了「你可以离开页面」；Windows 上传要在笔记窗口里等它跑完；Web 在页面内上传，离开即中止；当前 head 未发现该编号的完成变更。 | 逐项/逐分块回执、持久队列、断点续传、服务器版本 | API/Web + Android/Windows Agent | 待创建 | 交付包 F07 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | FAIL | WO-F07-BACKGROUND-UPLOAD：Windows/Web 后台上传与退出续传。 |
 | F08 | API；Android；Windows；Web | 按交付包 F08 的最终确认完成「其他设备（平板、电脑、Web）打开同一篇笔记」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：Web 能列出并打开所有云端笔记，可续写正文、追加照片和手写，但没有录音播放；安卓/平板在笔记库「云端笔记」点开会下载到本机，正文、照片、手写可用，录音只放进只读归档，不能播放也不能编辑；单篇总量超过 192 MiB（约 105 分钟 16kHz WAV）安卓直接拒绝恢复，一节 100 分钟的课（约 183 MiB）加几张照片就会超；Windows 从服务器打开的笔记标题、正文、照片、手写、录音全部只读；当前 head 未发现该编号的完成变更。 | 逐项/逐分块回执、持久队列、断点续传、服务器版本 | API/Web + Android/Windows Agent | 待创建 | 交付包 F08 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | FAIL | 补齐确认缺口后新建 PR，并在当前 head 做端到端复验。 |
 | F09 | API；Android；Windows；Web | 按交付包 F09 的最终确认完成「多端冲突先保留两份，不默认覆盖」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：服务器在提交时比较「基于哪一版」和当前版，不一致就标成「冲突候选」，两份都留，不覆盖；Web 和 Windows 有「设为当前版本」可以选；安卓只显示一句「冲突比较与选择尚未开放」，没有入口；安卓从云端恢复的笔记不记来源版本号，编辑后再上传必然算冲突，而且新版本很可能不带原录音（需实测）；当前 head 未发现该编号的完成变更。 | 逐项/逐分块回执、持久队列、断点续传、服务器版本 | API/Web + Android/Windows Agent | 待创建 | 交付包 F09 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | FAIL | 补齐确认缺口后新建 PR，并在当前 head 做端到端复验。 |
-| F10 | API；Android；Windows；Web | 按交付包 F10 的最终确认完成「仅 Wi‑Fi 上传选项 / 流量提醒」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：没有「仅 Wi‑Fi 上传」开关，也没有流量提醒；上传任务只要求「有网络」，流量下照传；录音是未压缩 WAV，每分钟约 1.83 MiB，一节 100 分钟的课约 183 MiB 全走流量；当前 head 未发现该编号的完成变更。 | 逐项/逐分块回执、持久队列、断点续传、服务器版本 | API/Web + Android/Windows Agent | 待创建 | 交付包 01-讨论记录/F10-网络可用时上传与流量提示.md、F10-非计量网络方案-已被替代.md；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | FAIL | 补齐确认缺口后新建 PR，并在当前 head 做端到端复验。 |
+| F10 | API；Android；Windows；Web | 按交付包 F10 的最终确认完成「仅 Wi‑Fi 上传选项 / 流量提醒」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：没有「仅 Wi‑Fi 上传」开关，也没有流量提醒；上传任务只要求「有网络」，流量下照传；录音是未压缩 WAV，每分钟约 1.83 MiB，一节 100 分钟的课约 183 MiB 全走流量；当前 head 未发现该编号的完成变更。 | 逐项/逐分块回执、持久队列、断点续传、服务器版本 | API/Web + Android/Windows Agent | 待创建 | 交付包 01-讨论记录/F10-网络可用时上传与流量提示.md、F10-非计量网络方案-已被替代.md；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | NOT-VERIFIED | WO-F10-NETWORK-COPY：用户已确认不做 Wi‑Fi-only，补自动 Ogg 队列与信息性流量估算。 |
 | F11 | API；Android；Windows；Web | 按交付包 F11 的最终确认完成「上传失败显示原因并可重试」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：安卓按失败类型显示中文原因（登录失效、服务器容量满、版本冲突、服务器要求等待、网络未确认），并有「核对此版本并继续」重试按钮，网络类失败自动重试；不过原因只在笔记库和材料版本面板里看得到，没有系统通知，编辑页仍只写「未上传」；Windows 弹窗显示异常原文，再点上传即重试；Web 提示「可在本页重试」；当前 head 未发现该编号的完成变更。 | 逐项/逐分块回执、持久队列、断点续传、服务器版本 | API/Web + Android/Windows Agent | 待创建 | 交付包 F11 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | NOT-VERIFIED | 在当前 head 重跑端到端验收；旧 CI/旧 PR head 不计 PASS。 |
 
 ### G ASR 与转写
 
 | 编号 | 平台 | 验收条件（摘要） | 历史/既有验收文本（基线 2026-11-25，含后续回填） | 依赖 | 负责 Agent | PR/HEAD | 证据 | 状态 | 下一批/阻塞 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| G01 | API；Web；Android；Windows | 按交付包 G01 的最终确认完成「服务器收到录音后交给 ASR 处理」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：服务器转写链路是通的，但上传完不会自动开始：要客户端手动点「逐段转写」、选目标、勾同意才跑。按「上传后全由 API 负责」的设计，应改为 API 收齐材料后自动排队转写，客户端只显示进度；当前 head 未发现该编号的完成变更。 | ASR provider、服务端任务编排、转写/时间轴 DTO | API/Web + Android/Windows Agent | 待创建 | 交付包 G01 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | FAIL | 补齐确认缺口后新建 PR，并在当前 head 做端到端复验。 |
+| G01 | API；Web；Android；Windows | 按交付包 G01 的最终确认完成「服务器收到录音后交给 ASR 处理」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：服务器转写链路是通的，但上传完不会自动开始：要客户端手动点「逐段转写」、选目标、勾同意才跑。按「上传后全由 API 负责」的设计，应改为 API 收齐材料后自动排队转写，客户端只显示进度；当前 head 未发现该编号的完成变更。 | ASR provider、服务端任务编排、转写/时间轴 DTO | API/Web + Android/Windows Agent | 待创建 | 交付包 G01 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | NOT-VERIFIED | WO-G01-AUTO-PROCESSING-E2E：master 已有自动触发/补偿，补真实 provider、Hangfire 与客户端状态闭环。 |
 | G02 | API；Web；Android；Windows | 按交付包 G02 的最终确认完成「每段录音的转写可以单独查看」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：安卓能按「录音 1、录音 2」分组分开看，但每组下面是一张张 60 秒的「内部片」卡片（带样本数、分块号、尝试次数），不是一段连续文字，要进 ASR 任务详情再点「加载逐段结果」才出现，笔记正文里看不到；Web 是不分组的「第 N 片」平铺列表，每页 10 片，还折叠在「更多：转写任务与恢复」里；Windows 没有逐段转写视图。；当前 head 未发现该编号的完成变更。 | ASR provider、服务端任务编排、转写/时间轴 DTO | API/Web + Android/Windows Agent | 待创建 | 交付包 G02 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | FAIL | 补齐确认缺口后新建 PR，并在当前 head 做端到端复验。 |
 | G03 | API；Web；Android；Windows | 按交付包 G03 的最终确认完成「ASR 厂商做成可添加的预设模板，先放 mimo」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：后端有 IAiAsrPreset 策略接口和注册表，内置两个预设：「MiMo 语音识别」mimo-asr（模型 mimo-v2.5-asr，wav/mp3，单片≤4 MiB）和「MiMo 多模态」mimo-multimodal（v2.6-flash/pro，5 种格式，≤50 MiB）；Web「添加 ASR 配置」选预设后自动带出地址和模型；加新厂商要写一个 C# 预设类并在 DI 注册一行，界面上不能新建模板。；当前 head 未发现该编号的完成变更。 | ASR provider、服务端任务编排、转写/时间轴 DTO | API/Web + Android/Windows Agent | 待创建 | 交付包 G03 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | NOT-VERIFIED | 在当前 head 重跑端到端验收；旧 CI/旧 PR head 不计 PASS。 |
 | G04 | API；Web；Android；Windows | 按交付包 G04 的最终确认完成「mimo 批量推理 provider（#516）」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：后端和 Web 设置都写了，但开关 AllowUnverifiedAudioBatch 默认 false，仓库配置都没打开，提交一律被拒（40901）；Web 发起后被拒的任务会一直挂在排队里。客户端不需要接 Batch，由 API 按配置选用；当前 head 未发现该编号的完成变更。 | ASR provider、服务端任务编排、转写/时间轴 DTO | API/Web + Android/Windows Agent | 待创建 | 交付包 G04 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | FAIL | 补齐确认缺口后新建 PR，并在当前 head 做端到端复验。 |
@@ -445,7 +629,7 @@
 
 | 编号 | 平台 | 验收条件（摘要） | 历史/既有验收文本（基线 2026-11-25，含后续回填） | 依赖 | 负责 Agent | PR/HEAD | 证据 | 状态 | 下一批/阻塞 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| H01 | API；Web；Android；Windows | 按交付包 H01 的最终确认完成「输出一份完整记录 + 一份分析」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：后端会生成完整记录 + 独立分析两份，但不会在转写完成后自动开始，要在客户端手动发起（安卓入口藏在转写任务详情里，有空片就不出现）。按设计应由 API 转写完自动整理，客户端只呈现；当前 head 未发现该编号的完成变更。 | 多模态 provider、固定材料快照、整理/建议 DTO | API/Web + Android/Windows Agent | 待创建 | 交付包 H01 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | FAIL | 补齐确认缺口后新建 PR，并在当前 head 做端到端复验。 |
+| H01 | API；Web；Android；Windows | 按交付包 H01 的最终确认完成「输出一份完整记录 + 一份分析」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：后端会生成完整记录 + 独立分析两份，但不会在转写完成后自动开始，要在客户端手动发起（安卓入口藏在转写任务详情里，有空片就不出现）。按设计应由 API 转写完自动整理，客户端只呈现；当前 head 未发现该编号的完成变更。 | 多模态 provider、固定材料快照、整理/建议 DTO | API/Web + Android/Windows Agent | 待创建 | 交付包 H01 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | NOT-VERIFIED | WO-H01-AUTO-DERIVED-E2E：master 已有自动整理入口，补真实模型、自动完成与结果可见性。 |
 | H02 | API；Web；Android；Windows | 按交付包 H02 的最终确认完成「参考 OPPO「笔记速览图」做可视化速览」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：没有速览图、思维导图或任何可视化。两份结果都是纯 Markdown 文字，提示词没要求出图；三个仓库搜「速览/思维导图/mindmap」无相关实现。；当前 head 未发现该编号的完成变更。 | 多模态 provider、固定材料快照、整理/建议 DTO | API/Web + Android/Windows Agent | 待创建 | 交付包 01-讨论记录/H02-笔记概览.md、H02-I01-I04-结构化产出与推荐事项.md；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | FAIL | 补齐确认缺口后新建 PR，并在当前 head 做端到端复验。 |
 | H03 | API；Web；Android；Windows | 固定材料原始录音可进入整理上下文；长音频按确认规则自动分批并汇总；默认模型不支持音频时保留 ASR 等待/阻断。 | PR #583 已合并最小切片 `103b6d89`；#612 当前 head `f12c4c23` 已实现长音频自动分批、总预算/批数/并发上限、失败批次恢复与汇总不重放音频；PR OPEN，真实多模态 provider、Hangfire 多进程、真实 PostgreSQL 行锁竞争、三端真机 NOT-VERIFIED。 | 多模态 provider、固定材料快照、整理/建议 DTO | API/Web + Android/Windows Agent | pim-api #583（merged `103b6d89`）；#612（open；head `f12c4c23`） | #612 当前 run `45857319607` success：`CI Gate`、`build-api`、6 个 test shard、`web-build`、`build-docker` success；6 shard 原始日志合计 `Passed 6924 / Failed 0 / Skipped 103`；旧 head `0f367b49`/`45750782446` 仅历史；真实 provider/Hangfire/真机未验。 | FAIL | 合并 #612；用真实多模态 provider 验证分批/汇总/失败恢复，并记录 Hangfire 多实例与三端真机环境。 |
 | H04 | API；Web；Android；Windows | 按交付包 H04 的最终确认完成「手动笔记、照片、手写图片一起参与分析」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：正文、照片、手写预览图都参与：图片先按批交给视觉模型提取文字，再并入记录和分析，所选模型必须带视觉能力。限制很硬：只收 PNG/JPEG，单张 ≤4 MiB，每批 ≤4 张且 ≤8 MiB，总共 ≤32 张、≤8 批。安卓照片原样保存（允许 WebP、最大 32 MiB、不压缩），只要一张不合规，整个整理任务在创建时就被阻断，不会跳过该图。大照片是否常超 4 MiB 需实测。；当前 head 未发现该编号的完成变更。 | 多模态 provider、固定材料快照、整理/建议 DTO | API/Web + Android/Windows Agent | 待创建 | 交付包 H04 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | FAIL | 补齐确认缺口后新建 PR，并在当前 head 做端到端复验。 |
@@ -461,7 +645,7 @@
 
 | 编号 | 平台 | 验收条件（摘要） | 历史/既有验收文本（基线 2026-11-25，含后续回填） | 依赖 | 负责 Agent | PR/HEAD | 证据 | 状态 | 下一批/阻塞 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| I01 | API；Web；Android；Windows | 按交付包 I01 的最终确认完成「AI 从笔记提取待办」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：安卓/Web/Windows 都能在整理结果上点「从此版本提取任务建议」，AI 最多给 10 条（标题、说明、优先级 1/5/9、截止时间）。来源是整理后的记录/分析，不是原始笔记；每次需手动确认费用，单次上限 18 万字符。；当前 head 未发现该编号的完成变更。 | 整理建议、任务/日程创建、幂等身份 | API/Web + Android/Windows Agent | 待创建 | 交付包 I01 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | NOT-VERIFIED | 在当前 head 重跑端到端验收；旧 CI/旧 PR head 不计 PASS。 |
+| I01 | API；Web；Android；Windows | 按交付包 I01 的最终确认完成「AI 从笔记提取待办」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：安卓/Web/Windows 都能在整理结果上点「从此版本提取任务建议」，AI 最多给 10 条（标题、说明、优先级 1/5/9、截止时间）。来源是整理后的记录/分析，不是原始笔记；每次需手动确认费用，单次上限 18 万字符。；当前 head 未发现该编号的完成变更。 | 整理建议、任务/日程创建、幂等身份 | API/Web + Android/Windows Agent | 待创建 | 交付包 I01 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | FAIL | WO-I01-INLINE-SUGGESTION：按 H02 将推荐事项并入多模态总结推荐卡，移除独立文本模型调用。 |
 | I02 | API；Web；Android；Windows | 按交付包 I02 的最终确认完成「待办可修改后一键加入「任务」」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：三端都能改标题、说明、优先级、截止时间，点「确认创建」直接在任务模块建任务（来源标记 note-task-suggestion）。安卓改过后要先「保存到服务器」再确认，实际 2-3 步；安卓界面不能选任务本/日历。；当前 head 未发现该编号的完成变更。 | 整理建议、任务/日程创建、幂等身份 | API/Web + Android/Windows Agent | 待创建 | 交付包 01-讨论记录/H02-I01-I04-结构化产出与推荐事项.md；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | NOT-VERIFIED | 在当前 head 重跑端到端验收；旧 CI/旧 PR head 不计 PASS。 |
 | I03 | API；Web；Android；Windows | 按交付包 I03 的最终确认完成「提取日程，加入日历」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | pim-api #589 已合并（head `743a77ac`，merge `05552e84`）：API/Web 支持 Event 建议提取、`start`/`end`/`timeZoneId`、默认日历解析、确认回执 `eventId` 与已确认重放。Android #100 已合并（head `d7fb9052`，merge `b23fbe89`，PR CI `45664901880` success）；但 Android master CI `45671814150` 因契约 freshness 红，#93 契约刷新又因 search 返回类型失败。Windows #62 仍 OPEN（head `e7be0936`，CI `45746423130` success，契约仍为 `1dd3032`）。真实浏览器/Android/Windows 三端闭环 NOT-VERIFIED。 | 整理建议、任务/日程创建、幂等身份 | API/Web + Android/Windows Agent | pim-api #589（merged `05552e84`；head `743a77ac`）；pim-android #100（merged `b23fbe89`；head `d7fb9052`）；pim-windows #62（open；head `e7be0936`） | 需求记录见交付包 01-讨论记录/H02-I01-I04-结构化产出与推荐事项.md；#589 PR CI `45640493402` success，合并后 master `45653708869` success；#100 PR CI `45664901880` success，合并后 master `45671814150` failure（contract freshness）；#62 CI `45746423130` success 但契约陈旧；Android #93/Windows #60 契约刷新分别因 search 类型/`Kind` 夹具失败。 | FAIL | 先合 #101/#102 并让 Android #93 绿；合 #62 并让 Windows #60 绿；再做三端真实用户流程与异常/恢复验收。 |
 | I04 | API；Web；Android；Windows | 按交付包 I04 的最终确认完成「重复点击不重复创建」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | pim-api #589 已合并：API/Web 覆盖同版本重复提取去重、提取/确认/编辑/放弃共用 noteId 锁、已确认重放、replacement 指纹与确认失败回滚。Android #100 已合并（head `d7fb9052`，merge `b23fbe89`，PR CI `45664901880` success）；Android master 契约 freshness 仍红，#93 未绿。Windows #62 仍 OPEN（head `e7be0936`，CI `45746423130` success，契约陈旧）。跨端 DTO 兼容、真实浏览器与设备闭环 NOT-VERIFIED。 | 整理建议、任务/日程创建、幂等身份 | API/Web + Android/Windows Agent | pim-api #589（merged `05552e84`；head `743a77ac`）；pim-android #100（merged `b23fbe89`；head `d7fb9052`）；pim-windows #62（open；head `e7be0936`） | #589 PR CI `45640493402` shard-5 `957 passed/74 skipped/0 failed`，合并后 master `45653708869` success；#100 PR CI `45664901880` success，合并后 master `45671814150` failure；#62 CI `45746423130` success 但契约仍 `1dd3032`。 | FAIL | 合 #101/#102 并让 Android #93 绿；合 #62 并让 Windows #60 绿；再验证重复点击、并发、重启、删除原对象和回执缺失分支。 |
@@ -472,11 +656,11 @@
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | J01 | API；Web | 按交付包 J01 的最终确认完成「不自己写调用协议，用成熟开源组件（MEAI + OpenAI .NET SDK）」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：文字、图片调用和「MiMo 语音识别」预设走 MEAI + OpenAI .NET SDK（Microsoft.Extensions.AI.OpenAI 10.6.0）；但长录音推荐用的「MiMo 多模态」预设（mimo-v2.6-flash，单段上限 50 MiB，SDK 那条只有 4 MiB）和 MiMo Batch 批量转写都是自己拼 JSON、自己发 HTTP，分别直连 chat/completions、/…；当前 head 未发现该编号的完成变更。 | AI 模型/连接配置、provider 调用、审计与统计 | API/Web Agent | 待创建 | 交付包 J01 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | FAIL | 补齐确认缺口后新建 PR，并在当前 head 做端到端复验。 |
 | J02 | API；Web | 按交付包 J02 的最终确认完成「按类型设置模型（文本、视觉、ASR）」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：Web「AI 设置」可分别选默认文本、视觉、语音转写模型；ASR 另有独立配置页和厂商预设；每个模型配置自己声明能力，最多存 64 个。只有 Web 管理员能设，安卓/Windows 没有这个设置；当前 head 未发现该编号的完成变更。 | AI 模型/连接配置、provider 调用、审计与统计 | API/Web Agent | 待创建 | 交付包 J02 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | NOT-VERIFIED | 在当前 head 重跑端到端验收；旧 CI/旧 PR head 不计 PASS。 |
-| J03 | API；Web | 按交付包 J03 的最终确认完成「调用记录保留实际提示词和回复」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：文字、图片、实时转写每次调用都写一条记录，存实际发出的请求体和服务商原始回复（回复超过 4 MiB 记为失败，不悄悄截断）；Web「调用记录」详情能看到「实际请求消息／上下文」和「实际回复」，密钥会被遮盖。缺口：MiMo Batch 批量转写不写这张记录表；当前 head 未发现该编号的完成变更。 | AI 模型/连接配置、provider 调用、审计与统计 | API/Web Agent | 待创建 | 交付包 J03 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | NOT-VERIFIED | 在当前 head 重跑端到端验收；旧 CI/旧 PR head 不计 PASS。 |
-| J04 | API；Web | 按交付包 J04 的最终确认完成「调用统计（次数、成功率、耗时、Token）」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：Web「统计」页显示记录数、成功率、输入/输出/总 Token、平均耗时，并按模型分组。不足：页面只看全部历史（后端支持起止时间，前端没传），Batch 转写不计入；当前 head 未发现该编号的完成变更。 | AI 模型/连接配置、provider 调用、审计与统计 | API/Web Agent | 待创建 | 交付包 J04 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | NOT-VERIFIED | 在当前 head 重跑端到端验收；旧 CI/旧 PR head 不计 PASS。 |
+| J03 | API；Web | 按交付包 J03 的最终确认完成「调用记录保留实际提示词和回复」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：文字、图片、实时转写每次调用都写一条记录，存实际发出的请求体和服务商原始回复（回复超过 4 MiB 记为失败，不悄悄截断）；Web「调用记录」详情能看到「实际请求消息／上下文」和「实际回复」，密钥会被遮盖。缺口：MiMo Batch 批量转写不写这张记录表；当前 head 未发现该编号的完成变更。 | AI 模型/连接配置、provider 调用、审计与统计 | API/Web Agent | 待创建 | 交付包 J03 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | FAIL | WO-J03-BATCH-AUDIT：Batch 逐项/原始响应、控制请求、保留期与脱敏。 |
+| J04 | API；Web | 按交付包 J04 的最终确认完成「调用统计（次数、成功率、耗时、Token）」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：Web「统计」页显示记录数、成功率、输入/输出/总 Token、平均耗时，并按模型分组。不足：页面只看全部历史（后端支持起止时间，前端没传），Batch 转写不计入；当前 head 未发现该编号的完成变更。 | AI 模型/连接配置、provider 调用、审计与统计 | API/Web Agent | 待创建 | 交付包 J04 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | FAIL | WO-J04-USAGE-STATS：时间筛选、Batch 逐项、分类成功率/分阶段耗时、多币种与未知覆盖。 |
 | J05 | API；Web | 按交付包 J05 的最终确认完成「稳定后移除 LiteLLM」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：没移除干净。新功能（笔记整理、提取待办、转写）已不走 LiteLLM，正式部署 compose 也不再起 LiteLLM 容器；但开发 compose 仍启动 litellm 容器和建库容器，pim-api 启动依赖它；旧 AI 网关仍在代码里注册，默认地址 http://litellm:4000、默认模型 pim-default；Web 工作台「AI 智能排程建议·一键生成」和 /api/v1/ai/test 仍…；当前 head 未发现该编号的完成变更。 | AI 模型/连接配置、provider 调用、审计与统计 | API/Web Agent | 待创建 | 交付包 J05 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | FAIL | 补齐确认缺口后新建 PR，并在当前 head 做端到端复验。 |
 | J06 | API；Web | 按交付包 J06 的最终确认完成「每种用途选默认模型」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：只能按「文本/视觉/语音转写」三类各选一个默认，不能按用途（整理、标题、待办、排程）分别选。更大的问题：笔记整理在 Web 和安卓都不用这个默认，每次都要从列表手动选「生成目标」，不选就点不了开始；转写另有一套默认路由（cloudModelId）；提取待办强制用默认文本模型；日历排程仍用 LiteLLM 的环境变量；当前 head 未发现该编号的完成变更。 | AI 模型/连接配置、provider 调用、审计与统计 | API/Web Agent | 待创建 | 交付包 J06 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | FAIL | 补齐确认缺口后新建 PR，并在当前 head 做端到端复验。 |
-| J07 | API；Web | 按交付包 J07 的最终确认完成「API Key 安全保存，界面不回显明文」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：API Key 用 ASP.NET DataProtection 加密后存库；接口只返回「是否已保存」，不返回密钥；Web 用密码框输入，保存后不回显；改了 API 地址必须重填 Key，地址里也不许夹带 Key；调用记录里出现的 Key 会被遮盖；设置接口只有管理员能用；当前 head 未发现该编号的完成变更。 | AI 模型/连接配置、provider 调用、审计与统计 | API/Web Agent | 待创建 | 交付包 J07 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | NOT-VERIFIED | 在当前 head 重跑端到端验收；旧 CI/旧 PR head 不计 PASS。 |
+| J07 | API；Web | 按交付包 J07 的最终确认完成「API Key 安全保存，界面不回显明文」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：API Key 用 ASP.NET DataProtection 加密后存库；接口只返回「是否已保存」，不返回密钥；Web 用密码框输入，保存后不回显；改了 API 地址必须重填 Key，地址里也不许夹带 Key；调用记录里出现的 Key 会被遮盖；设置接口只有管理员能用；当前 head 未发现该编号的完成变更。 | AI 模型/连接配置、provider 调用、审计与统计 | API/Web Agent | 待创建 | 交付包 J07 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | FAIL | WO-J07-SECRET-BOUNDARY：Batch 地址/凭据、ASR 原文、异常与远端 HTTP 统一收口。 |
 | J08 | API；Web | 按交付包 J08 的最终确认完成「「测试连接」按钮」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：AI 模型没有「测试连接」按钮。后端的 /api/v1/ai/test 和 /api/v1/ai/health-check 只测旧 LiteLLM 那条路，Web 也没调用；新加的模型只能在「文字调用」或「音频转写」面板手动发一次真实调用来验证，可能产生费用。Web 上唯一的「测试连接」是服务器地址的；当前 head 未发现该编号的完成变更。 | AI 模型/连接配置、provider 调用、审计与统计 | API/Web Agent | 待创建 | 交付包 J08 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | FAIL | 补齐确认缺口后新建 PR，并在当前 head 做端到端复验。 |
 | J09 | API；Web | 按 AI 服务连接累计 Token/费用；日/月周期、提醒阈值、管理员已读、超限/未知用量阻断（费用上限当前不可用）；Batch/实时调用纳入同一连接租约、provider 标记与审计；终态 Batch 审计写入失败最终收敛；真实 PostgreSQL 与 provider 验证。 | PR #585 已合并（head `4212668`，merge `65ed0935`）：连接级 Token 用量累计与日/月周期门禁、连接时区、提醒阈值、管理员已读、超限/未知用量阻断；文字、视觉、同步/URL ASR 与异步 ASR 共用租约，迁移回填连接与请求日志，Web 增加连接管理/用量/提醒，模型编辑器可绑定连接。#590 补收口仍 OPEN，当前 head `0e6262f2`（旧 `3f498b66` 仅追加台账文档，已作历史）：Batch 提交纳入 `AiTextCallGate`/`AiUsageLimitService`/`AiProviderAttemptMarker`/`ai_request_logs`，终态按条目 usage 汇总 Token；终态 job 的 audit 写入失败由 `NoteAsrBatchPollJob` 有界后台扫描重投影，修复窗口按 `usage_limit_unknown` fail-closed，收敛后按真实 Token 判定 `usage_limit_reached`；费用上限因无可信 `EstimatedCost`/`Currency` 来源降级为不可用（保存返回 40001，历史费用仅展示）；旧 `AiGateway`/`PlanningModelService`（LiteLLM 环境链路）明确不在 J09 范围，归 J05 退场。 | AI 模型/连接配置、provider 调用、审计与统计 | API/Web Agent | pim-api #585 已合并；#590 open（head `0e6262f2`） | #585 required CI run `45503982162`：`CI Gate`、`build-api`、`web-build`、`build-docker` 成功（`build-api` 在真实 PostgreSQL service container 执行迁移全链路）。#590 当前 head `0e6262f2` run `45848909302` success：`CI Gate`、`build-api`、6 个 API shard、`web-build`、`build-docker` success（`build-mcp`/契约通知/`release` skipped）；6 个 shard 原始日志逐一核对为 `Failed: 0`，合计 `Passed: 6943, Skipped: 29`。旧 head `3f498b66`/`45822090687`、`790a1a7b`/`45819200983` 仅作历史。更早 head `f669f9bc` run `45816213564` 虽然 job 显示 success，但 shard-5 原始日志为 `Failed: 1, Passed: 1084, Skipped: 0`（`tee` 掩盖），为无效证据，不得写成 CI success。`Audit_write_failure_after_terminal_import_is_repaired_and_fails_closed` 用真实 PostgreSQL 触发器验证 audit 写入失败后先 `usage_limit_unknown`、后台零 provider 请求收敛 24 Token、TokenLimit=10 后 `usage_limit_reached`；`TryBegin_TerminalBatchJobWithRunningAuditFailsClosed` 覆盖 running audit 缺 Token 的 fail-closed。Web 仅有 Vitest Web 单测（node 环境），未运行真实浏览器/Chromium E2E。真实第三方 provider Token、管理员浏览器闭环、真实部署、真实 DB 断连/进程崩溃 NOT-VERIFIED；旧 LiteLLM 路径未纳管。 | FAIL | 合并 #590；按真实 provider 做 Batch/实时调用 Token 记账与 Web 限制管理验收；跟踪 J05 移除旧网关。 |
 
@@ -524,8 +708,8 @@
 | 编号 | 平台 | 验收条件（摘要） | 历史/既有验收文本（基线 2026-11-25，含后续回填） | 依赖 | 负责 Agent | PR/HEAD | 证据 | 状态 | 下一批/阻塞 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | N01 | Web；API | 按交付包 N01 的最终确认完成「Web 保留，可查看编辑笔记」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：Web「笔记」能看列表、按标题搜、打开当前版、改标题和正文、加照片/拍照/手写并保存到服务器。缺：笔记相关页面都没有录音播放器（全站只有 AI 设置的测试页有 <audio>），录音听不了；正文是分段纯文本框，不渲染 Markdown（Tiptap 只用在旧快速记录）；已有照片/手写不能删也不能换；保存前必须先勾「确认保存到当前服务器」（默认不勾）；当前 head 未发现该编号的完成变更。 | Web 路由、native-note API、Web 生成契约 | API/Web Agent | 待创建 | 交付包 N01 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | FAIL | 补齐确认缺口后新建 PR，并在当前 head 做端到端复验。 |
-| N02 | Web；API | 按交付包 N02 的最终确认完成「Web 处理状态页」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：有处理页 /native-notes/processing：从笔记点「转写录音」或「整理笔记」进入，分「先完成录音转写 → 整理并生成」两步，任务进行中每 5 秒自动刷新，显示阶段、每步尝试次数和错误，可重试。缺口：笔记列表本身不显示处理状态；步骤里直接露出 step key、errorCode、调用 ID 等工程字段；当前 head 未发现该编号的完成变更。 | Web 路由、native-note API、Web 生成契约 | API/Web Agent | 待创建 | 交付包 N02 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | NOT-VERIFIED | 在当前 head 重跑端到端验收；旧 CI/旧 PR head 不计 PASS。 |
-| N03 | Web；API | 按交付包 N03 的最终确认完成「Web 设置齐全（AI、ASR、文件、同步）」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：Web 设置覆盖：AI 与 ASR（模型、ASR 预设与默认模型、调用记录、统计，仅管理员可见）、Microsoft（Outlook 日历同步 + OneDrive）、Google Drive、服务器、账号、MCP、回收站；文件存储（本地/OneDrive/Google）在文件页设默认。没有单独的「笔记同步/上传」设置；当前 head 未发现该编号的完成变更。 | Web 路由、native-note API、Web 生成契约 | API/Web Agent | 待创建 | 交付包 N03 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | NOT-VERIFIED | 在当前 head 重跑端到端验收；旧 CI/旧 PR head 不计 PASS。 |
+| N02 | Web；API | 按交付包 N02 的最终确认完成「Web 处理状态页」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：有处理页 /native-notes/processing：从笔记点「转写录音」或「整理笔记」进入，分「先完成录音转写 → 整理并生成」两步，任务进行中每 5 秒自动刷新，显示阶段、每步尝试次数和错误，可重试。缺口：笔记列表本身不显示处理状态；步骤里直接露出 step key、errorCode、调用 ID 等工程字段；当前 head 未发现该编号的完成变更。 | Web 路由、native-note API、Web 生成契约 | API/Web Agent | 待创建 | 交付包 N02 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | FAIL | WO-N02-WEB-STATUS：列表 DTO 增加处理状态并真实浏览器验收。 |
+| N03 | Web；API | 按交付包 N03 的最终确认完成「Web 设置齐全（AI、ASR、文件、同步）」；覆盖正常、错误/重试、权限/冲突、恢复分支。 | 历史基线：Web 设置覆盖：AI 与 ASR（模型、ASR 预设与默认模型、调用记录、统计，仅管理员可见）、Microsoft（Outlook 日历同步 + OneDrive）、Google Drive、服务器、账号、MCP、回收站；文件存储（本地/OneDrive/Google）在文件页设默认。没有单独的「笔记同步/上传」设置；当前 head 未发现该编号的完成变更。 | Web 路由、native-note API、Web 生成契约 | API/Web Agent | 待创建 | 交付包 N03 讨论记录；历史源码审计（e1eccd55）；当前 head 未执行该项完整验收。 | FAIL | WO-N03-WEB-SETTINGS：补外观入口、个人完整调用记录与保留清理。 |
 
 ### O 视觉与体验
 
