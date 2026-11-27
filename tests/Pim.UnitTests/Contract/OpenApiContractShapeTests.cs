@@ -607,4 +607,38 @@ public sealed class OpenApiContractShapeTests
             Assert.Contains("UTC", parameter.Description, StringComparison.Ordinal);
         }
     }
+
+    [Fact]
+    public void EventWriteContracts_RequireInstantsAndDocumentNullTimezoneAndDateOnlyFields()
+    {
+        foreach (var name in new[] { "CreateEventRequest", "UpdateEventRequest" })
+        {
+            var schema = Schema(name);
+            Assert.Contains("dtStart", RequiredOf(schema));
+            Assert.Contains("dtEnd", RequiredOf(schema));
+            Assert.Contains("缺失", Resolve(schema.Properties["dtStart"]).Description, StringComparison.Ordinal);
+            Assert.Contains("缺失", Resolve(schema.Properties["dtEnd"]).Description, StringComparison.Ordinal);
+
+            var allDayStart = Resolve(schema.Properties["allDayStartDate"]);
+            var allDayEnd = Resolve(schema.Properties["allDayEndDateExclusive"]);
+            Assert.Equal("date", allDayStart.Format);
+            Assert.Equal("date", allDayEnd.Format);
+            Assert.Contains("全天", allDayStart.Description, StringComparison.Ordinal);
+            Assert.Contains("全天", allDayEnd.Description, StringComparison.Ordinal);
+
+            var recurrenceId = Resolve(schema.Properties["recurrenceId"]);
+            Assert.Equal("date-time", recurrenceId.Format);
+            Assert.Contains("原始发生", recurrenceId.Description, StringComparison.Ordinal);
+        }
+
+        var updateTimeZone = Resolve(Schema("UpdateEventRequest").Properties["timeZoneId"]);
+        Assert.Equal("string", updateTimeZone.Type);
+        Assert.True(updateTimeZone.Nullable);
+        Assert.Contains("省略", updateTimeZone.Description, StringComparison.Ordinal);
+        Assert.Contains("显式 null", updateTimeZone.Description, StringComparison.Ordinal);
+        Assert.Contains("unknown", updateTimeZone.Description, StringComparison.Ordinal);
+
+        var createTimeZone = Resolve(Schema("CreateEventRequest").Properties["timeZoneId"]);
+        Assert.Contains("省略或显式 null", createTimeZone.Description, StringComparison.Ordinal);
+    }
 }

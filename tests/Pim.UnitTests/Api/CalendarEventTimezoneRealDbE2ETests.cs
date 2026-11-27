@@ -312,4 +312,88 @@ public sealed class CalendarEventTimezoneRealDbE2ETests
         var otherPage = await Success(await otherClient.GetAsync(Query("2026-11-10", "2026-11-13", prefix)));
         Assert.Equal(0, otherPage.GetProperty("totalCount").GetInt32());
     }
+
+    [SkippableFact]
+    public async Task MissingStartsAreRejectedBeforePersistenceAndExplicitNullTimezoneClears()
+    {
+        var connectionString = RealDbTestConnection.Require();
+        using var factory = CreateFactory(connectionString);
+        var owner = await AuthRegistrationTestHost.RegisterOkAsync(
+            factory, $"r02tz_{Guid.NewGuid():N}"[..20]);
+        using var client = AuthRegistrationTestHost.Authed(factory, owner.AccessToken);
+        var calendarId = await CreateCalendarAsync(client, "R02 missing start real db");
+        var prefix = $"r02tz-null-{Guid.NewGuid():N}";
+
+        foreach (var body in new object[]
+                 {
+                     new
+                     {
+                         calendarId,
+                         title = $"{prefix}-missing-start",
+                         dtEnd = "2026-11-20T10:00:00Z",
+                     },
+                     new
+                     {
+                         calendarId,
+                         title = $"{prefix}-missing-end",
+                         dtStart = "2026-11-20T09:00:00Z",
+                     },
+                 })
+        {
+            var rejected = await client.PostAsJsonAsync("/api/v1/calendar/events", body);
+            Assert.Equal(HttpStatusCode.BadRequest, rejected.StatusCode);
+        }
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
+            Assert.Equal(0, await db.Set<EventEntity>()
+                .CountAsync(item => item.Title.StartsWith(prefix)));
+        }
+
+        var created = await Success(await client.PostAsJsonAsync("/api/v1/calendar/events", new
+        {
+            calendarId,
+            title = $"{prefix}-original",
+            dtStart = "2026-11-20T09:00:00+08:00",
+            dtEnd = "2026-11-20T10:00:00+08:00",
+            timeZoneId = "China Standard Time",
+        }));
+        var eventId = created.GetProperty("id").GetGuid();
+
+        var rejectedPut = await client.PutAsJsonAsync($"/api/v1/calendar/events/{eventId}", new
+        {
+            calendarId,
+            title = $"{prefix}-changed",
+            dtEnd = "2026-11-20T10:00:00+08:00",
+        });
+        Assert.Equal(HttpStatusCode.BadRequest, rejectedPut.StatusCode);
+
+        var unchanged = await Success(await client.GetAsync($"/api/v1/calendar/events/{eventId}"));
+        Assert.Equal($"{prefix}-original", unchanged.GetProperty("title").GetString());
+        Assert.Equal("Asia/Shanghai", unchanged.GetProperty("timeZoneId").GetString());
+
+        var kept = await Success(await client.PutAsJsonAsync($"/api/v1/calendar/events/{eventId}", new
+        {
+            calendarId,
+            title = $"{prefix}-omitted",
+            dtStart = "2026-11-20T09:00:00+08:00",
+            dtEnd = "2026-11-20T10:00:00+08:00",
+        }));
+        Assert.Equal("Asia/Shanghai", kept.GetProperty("timeZoneId").GetString());
+        Assert.Equal("China Standard Time", kept.GetProperty("sourceTimeZoneId").GetString());
+
+        var cleared = await Success(await client.PutAsJsonAsync($"/api/v1/calendar/events/{eventId}", new
+        {
+            calendarId,
+            title = $"{prefix}-cleared",
+            dtStart = "2026-11-20T09:00:00+08:00",
+            dtEnd = "2026-11-20T10:00:00+08:00",
+            timeZoneId = (string?)null,
+        }));
+        Assert.Null(cleared.GetProperty("timeZoneId").GetString());
+        Assert.Null(cleared.GetProperty("sourceTimeZoneId").GetString());
+        Assert.Equal("unknown", cleared.GetProperty("timeZoneResolution").GetString());
+        Assert.Null(cleared.GetProperty("localStart").GetString());
+    }
 }

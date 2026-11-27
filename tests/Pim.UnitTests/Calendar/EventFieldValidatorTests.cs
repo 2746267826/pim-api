@@ -117,6 +117,36 @@ public sealed class EventFieldValidatorTests
         Assert.Null(normalized.TimeZoneId);
     }
 
+    [Theory]
+    [InlineData("2026-01-12T10:00:00Z", "2026-01-12T10:00:00.0000000+00:00")]
+    [InlineData("2026-01-12T18:00:00+08:00", "2026-01-12T18:00:00.0000000+08:00")]
+    public void RecurrenceId_IsNormalizedToRoundTripInstant(string raw, string expected)
+    {
+        var create = new CreateEventRequest(
+            Guid.NewGuid(), "Exception", null, null, Start, End, null,
+            RecurrenceId: raw);
+        var update = new UpdateEventRequest(
+            Guid.NewGuid(), "Exception", null, null, Start, End, null,
+            RecurrenceId: raw);
+
+        Assert.Equal(expected, EventFieldValidator.ValidateAndNormalize(create).RecurrenceId);
+        Assert.Equal(expected, EventFieldValidator.ValidateAndNormalize(update).RecurrenceId);
+    }
+
+    [Fact]
+    public void RecurrenceId_UnparseableValueIsRejected()
+    {
+        var request = new CreateEventRequest(
+            Guid.NewGuid(), "Exception", null, null, Start, End, null,
+            RecurrenceId: "not-a-time");
+
+        var exception = Assert.Throws<DomainException>(() =>
+            EventFieldValidator.ValidateAndNormalize(request));
+
+        Assert.Equal(02009, exception.ErrorCode);
+        Assert.Contains("RecurrenceId", exception.Message);
+    }
+
     [Fact]
     public void OutlookDraftRejectsAllDayFieldsForTimedEvent()
     {

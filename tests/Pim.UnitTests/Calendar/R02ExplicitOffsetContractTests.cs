@@ -68,6 +68,77 @@ public sealed class R02ExplicitOffsetContractTests
     }
 
     [Theory]
+    [InlineData(typeof(CreateEventRequest))]
+    [InlineData(typeof(UpdateEventRequest))]
+    public void EventWrites_RejectMissingStartOrEndAtJsonBoundary(Type contractType)
+    {
+        var missingStart = $$"""
+            {
+              "calendarId": "{{CalendarId}}",
+              "title": "Missing start",
+              "dtEnd": "2026-09-01T10:00:00Z"
+            }
+            """;
+        var missingEnd = $$"""
+            {
+              "calendarId": "{{CalendarId}}",
+              "title": "Missing end",
+              "dtStart": "2026-09-01T09:00:00Z"
+            }
+            """;
+
+        Assert.IsType<JsonException>(
+            Record.Exception(() => JsonSerializer.Deserialize(missingStart, contractType, WebJson)));
+        Assert.IsType<JsonException>(
+            Record.Exception(() => JsonSerializer.Deserialize(missingEnd, contractType, WebJson)));
+    }
+
+    [Fact]
+    public void UpdateEventJson_DistinguishesMissingAndExplicitNullTimeZone()
+    {
+        var missing = JsonSerializer.Deserialize<UpdateEventRequest>(MinimalUpdateJson(), WebJson)!;
+        var explicitNull = JsonSerializer.Deserialize<UpdateEventRequest>(
+            MinimalUpdateJson("\"timeZoneId\": null"), WebJson)!;
+        var value = JsonSerializer.Deserialize<UpdateEventRequest>(
+            MinimalUpdateJson("\"timeZoneId\": \"Asia/Shanghai\""), WebJson)!;
+
+        Assert.False(missing.TimeZoneIdProvided);
+        Assert.Null(missing.TimeZoneId);
+
+        Assert.True(explicitNull.TimeZoneIdProvided);
+        Assert.Null(explicitNull.TimeZoneId);
+
+        Assert.True(value.TimeZoneIdProvided);
+        Assert.Equal("Asia/Shanghai", value.TimeZoneId);
+    }
+
+    [Fact]
+    public void UpdateEventValidator_PreservesExplicitNullTimeZonePresence()
+    {
+        var request = JsonSerializer.Deserialize<UpdateEventRequest>(
+            MinimalUpdateJson("\"timeZoneId\": null"), WebJson)!;
+
+        var normalized = EventFieldValidator.ValidateAndNormalize(request);
+
+        Assert.True(normalized.TimeZoneIdProvided);
+        Assert.Null(normalized.TimeZoneId);
+    }
+
+    [Fact]
+    public void UpdateEventValidator_RejectsMinValueStart()
+    {
+        var request = new UpdateEventRequest(
+            CalendarId, "Missing start", null, null, default,
+            DateTimeOffset.Parse("2026-09-01T10:00:00Z"), null);
+
+        var exception = Assert.Throws<DomainException>(() =>
+            EventFieldValidator.ValidateAndNormalize(request));
+
+        Assert.Equal(02009, exception.ErrorCode);
+        Assert.Contains("dtStart", exception.Message);
+    }
+
+    [Theory]
     [InlineData("2026-09-01", "2026-09-02", "2026-09-01T00:00:00Z", "2026-09-02T00:00:00Z")]
     [InlineData("2026-09-01T08:00:00", "2026-09-01T10:00:00", "2026-09-01T08:00:00Z", "2026-09-01T10:00:00Z")]
     [InlineData("2026-09-01T16:00:00+08:00", "2026-09-01T18:00:00+08:00", "2026-09-01T08:00:00Z", "2026-09-01T10:00:00Z")]
@@ -139,4 +210,14 @@ public sealed class R02ExplicitOffsetContractTests
         return JsonSerializer.Deserialize<CreateEventRequest>(json, WebJson)
             ?? throw new InvalidOperationException("CreateEventRequest did not deserialize");
     }
+
+    private static string MinimalUpdateJson(string? extraProperty = null)
+        => $$"""
+            {
+              "calendarId": "{{CalendarId}}",
+              "title": "Update contract",
+              "dtStart": "2026-09-01T09:00:00Z",
+              "dtEnd": "2026-09-01T10:00:00Z"{{(extraProperty is null ? string.Empty : "," + extraProperty)}}
+            }
+            """;
 }

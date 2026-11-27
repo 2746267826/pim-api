@@ -163,8 +163,8 @@ public static class McpToolCatalog
         var tools = new List<McpToolInfo>();
 
         // Calendar 事件 5
-        AddW(tools, "calendar.events", "create_event", "Create a local calendar event. dtStart/dtEnd require an explicit UTC offset; timeZoneId must be a valid IANA id or omitted when unknown. Outlook-bound calendars require confirmed writeback, which this MCP tool does not expose; canEdit is not event-write capability.");
-        AddW(tools, "calendar.events", "update_event", "Update a local event (scope/recurrenceId for series). dtStart/dtEnd require an explicit UTC offset; timeZoneId must be a valid IANA id or omitted when unknown. Outlook-bound events/calendars require confirmed writeback, not supported by this tool.");
+        AddW(tools, "calendar.events", "create_event", "Create a local calendar event. dtStart/dtEnd require an explicit UTC offset; timeZoneId must be a valid IANA id, or omitted/null when unknown. Outlook-bound calendars require confirmed writeback, which this MCP tool does not expose; canEdit is not event-write capability.");
+        AddW(tools, "calendar.events", "update_event", "Update a local event (scope/recurrenceId for series). dtStart/dtEnd require an explicit UTC offset; timeZoneId must be a valid IANA id, or omitted to preserve the existing source zone; null clears it to unknown. Outlook-bound events/calendars require confirmed writeback, not supported by this tool.");
         AddW(tools, "calendar.events", "delete_event", "Delete a local event. Outlook-bound events/calendars require confirmed writeback, not supported by this tool.");
         AddW(tools, "calendar.events", "restore_event", "Restore a deleted event from recycle bin.");
         AddW(tools, "calendar.events", "batch_delete_events", "Batch delete local events. Outlook-bound events require confirmed writeback, not supported by this tool.");

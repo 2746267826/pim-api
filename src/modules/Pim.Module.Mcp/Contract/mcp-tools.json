@@ -2702,7 +2702,7 @@
   },
   {
     "name": "create_event",
-    "description": "Create a calendar event. Requires write permission create_event. Returns the created EventResponse. dtStart/dtEnd must be ISO 8601 strings with an explicit UTC offset or Z (for example 2026-09-01T09:00:00Z or 2026-09-01T17:00:00+08:00); date-only and offset-less values are rejected because MCP never guesses a server or device timezone for writes. timeZoneId is source metadata, must be a valid IANA id when supplied (UTC/GMT/Etc/UTC are accepted), and should be omitted when unknown; Windows ids are not accepted. All-day events must provide allDayStartDate and allDayEndDateExclusive as the sole date source; timed events must omit both. LOCAL EVENTS ONLY: Outlook-bound calendars/events require the existing confirmed Outlook writeback flow, which this MCP tool does NOT expose. Calendar canEdit does not imply event-write support. If all available calendars are Outlook-bound, this tool cannot perform the operation; do not retry with different credentials or bypass confirmation.",
+    "description": "Create a calendar event. Requires write permission create_event. Returns the created EventResponse. dtStart/dtEnd must be ISO 8601 strings with an explicit UTC offset or Z (for example 2026-09-01T09:00:00Z or 2026-09-01T17:00:00+08:00); date-only and offset-less values are rejected because MCP never guesses a server or device timezone for writes. timeZoneId is source metadata, must be a valid IANA id when supplied (UTC/GMT/Etc/UTC are accepted); omit it or send null when unknown, and Windows ids are not accepted. All-day events must provide allDayStartDate and allDayEndDateExclusive as the sole date source; timed events must omit both. LOCAL EVENTS ONLY: Outlook-bound calendars/events require the existing confirmed Outlook writeback flow, which this MCP tool does NOT expose. Calendar canEdit does not imply event-write support. If all available calendars are Outlook-bound, this tool cannot perform the operation; do not retry with different credentials or bypass confirmation.",
     "inputSchema": {
       "properties": {
         "calendarId": {
@@ -2813,7 +2813,7 @@
           ],
           "default": null,
           "title": "Timezoneid",
-          "description": "Event source timezone as a valid IANA id (for example Asia/Shanghai; UTC/GMT/Etc/UTC accepted). Omit when unknown. Windows ids are rejected; null means unknown, not UTC."
+          "description": "Event source timezone as a valid IANA id (for example Asia/Shanghai; UTC/GMT/Etc/UTC accepted). Omit or send null when unknown. Windows ids are rejected; null means unknown, not UTC."
         },
         "showAs": {
           "anyOf": [
@@ -2966,7 +2966,7 @@
   },
   {
     "name": "update_event",
-    "description": "Update a calendar event. scope=This/Series with recurrenceId updates repeating events. Requires write permission update_event. dtStart/dtEnd must be ISO 8601 strings with an explicit UTC offset or Z; date-only and offset-less values are rejected because MCP never guesses a server or device timezone for writes. timeZoneId is source metadata, must be a valid IANA id when supplied (UTC/GMT/Etc/UTC are accepted), and should be omitted when unknown; Windows ids are not accepted. All-day writes validate allDayStartDate/allDayEndDateExclusive as the sole date source and timed events must omit both. LOCAL EVENTS ONLY: Outlook-bound calendars/events require the existing confirmed Outlook writeback flow, which this MCP tool does NOT expose. Calendar canEdit does not imply event-write support. If all available calendars are Outlook-bound, this tool cannot perform the operation; do not retry with different credentials or bypass confirmation.",
+    "description": "Update a calendar event. scope=This/Series with recurrenceId updates repeating events. Requires write permission update_event. dtStart/dtEnd must be ISO 8601 strings with an explicit UTC offset or Z; date-only and offset-less values are rejected because MCP never guesses a server or device timezone for writes. timeZoneId is source metadata and must be a valid IANA id when supplied (UTC/GMT/Etc/UTC are accepted); omit it to preserve the existing source zone, or send null to clear it to unknown. Windows ids are not accepted. All-day writes validate allDayStartDate/allDayEndDateExclusive as the sole date source and timed events must omit both. LOCAL EVENTS ONLY: Outlook-bound calendars/events require the existing confirmed Outlook writeback flow, which this MCP tool does NOT expose. Calendar canEdit does not imply event-write support. If all available calendars are Outlook-bound, this tool cannot perform the operation; do not retry with different credentials or bypass confirmation.",
     "inputSchema": {
       "properties": {
         "eventId": {
@@ -3112,7 +3112,7 @@
           ],
           "default": null,
           "title": "Timezoneid",
-          "description": "Event source timezone as a valid IANA id (for example Asia/Shanghai; UTC/GMT/Etc/UTC accepted). Omit when unknown. Windows ids are rejected; null means unknown, not UTC."
+          "description": "Event source timezone as a valid IANA id (for example Asia/Shanghai; UTC/GMT/Etc/UTC accepted). Omit to preserve the existing source zone; send null to clear it to unknown. Windows ids are rejected; null means unknown, not UTC."
         },
         "showAs": {
           "anyOf": [

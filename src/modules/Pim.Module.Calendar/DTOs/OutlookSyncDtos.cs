@@ -34,8 +34,10 @@ public sealed record OutlookEventDraft(
     string? Description,
     string? DescriptionFormat,
     string? Location,
+    [property: JsonRequired]
     [property: JsonConverter(typeof(ExplicitOffsetDateTimeOffsetConverter))]
     DateTimeOffset DtStart,
+    [property: JsonRequired]
     [property: JsonConverter(typeof(ExplicitOffsetDateTimeOffsetConverter))]
     DateTimeOffset DtEnd,
     bool IsAllDay,
