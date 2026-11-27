@@ -44,6 +44,12 @@ namespace Pim.Infrastructure.Data.Migrations
                 table: "note_processing_preferences",
                 type: "uuid",
                 nullable: true);
+
+            migrationBuilder.AddColumn<Guid>(
+                name: "standing_authorization_target_revision",
+                table: "note_processing_preferences",
+                type: "uuid",
+                nullable: true);
         }
 
         /// <inheritdoc />
@@ -67,6 +73,10 @@ namespace Pim.Infrastructure.Data.Migrations
 
             migrationBuilder.DropColumn(
                 name: "standing_authorization_revision",
+                table: "note_processing_preferences");
+
+            migrationBuilder.DropColumn(
+                name: "standing_authorization_target_revision",
                 table: "note_processing_preferences");
         }
     }

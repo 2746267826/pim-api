@@ -12,7 +12,7 @@ using Pim.Infrastructure.Data;
 namespace Pim.Infrastructure.Data.Migrations
 {
     [DbContext(typeof(PimDbContext))]
-    [Migration("20261127001144_AddNoteProcessingStandingAuthorization")]
+    [Migration("20261127160158_AddNoteProcessingStandingAuthorization")]
     partial class AddNoteProcessingStandingAuthorization
     {
         /// <inheritdoc />
@@ -612,9 +612,21 @@ namespace Pim.Infrastructure.Data.Migrations
                         .HasColumnType("character varying(16)")
                         .HasColumnName("id");
 
+                    b.Property<Guid?>("CalendarPlanningModelId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("calendar_planning_model_id");
+
                     b.Property<bool>("Enabled")
                         .HasColumnType("boolean")
                         .HasColumnName("enabled");
+
+                    b.Property<Guid?>("NoteOrganizationModelId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("note_organization_model_id");
+
+                    b.Property<Guid?>("NoteTodoModelId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("note_todo_model_id");
 
                     b.Property<Guid>("Revision")
                         .IsConcurrencyToken()
@@ -634,6 +646,12 @@ namespace Pim.Infrastructure.Data.Migrations
                         .HasColumnName("vision_model_id");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("CalendarPlanningModelId");
+
+                    b.HasIndex("NoteOrganizationModelId");
+
+                    b.HasIndex("NoteTodoModelId");
 
                     b.HasIndex("TextModelId");
 
@@ -2300,6 +2318,10 @@ namespace Pim.Infrastructure.Data.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("standing_authorization_revision");
 
+                    b.Property<Guid?>("StandingAuthorizationTargetRevision")
+                        .HasColumnType("uuid")
+                        .HasColumnName("standing_authorization_target_revision");
+
                     b.Property<DateTimeOffset>("UpdatedAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at");
@@ -3963,6 +3985,143 @@ namespace Pim.Infrastructure.Data.Migrations
                     b.HasIndex("UserId", "Provider", "StartedAt");
 
                     b.ToTable("outlook_sync_batches");
+                });
+
+            modelBuilder.Entity("Pim.Module.Calendar.Entities.OutlookWritebackOperationEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<int>("AttemptCount")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(1)
+                        .HasColumnName("attempt_count");
+
+                    b.Property<Guid>("CalendarBindingId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("calendar_binding_id");
+
+                    b.Property<Guid>("ClientOperationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("client_operation_id");
+
+                    b.Property<DateTimeOffset?>("CompletedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("completed_at");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<string>("ErrorCode")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("error_code");
+
+                    b.Property<string>("ErrorMessage")
+                        .HasMaxLength(512)
+                        .HasColumnType("character varying(512)")
+                        .HasColumnName("error_message");
+
+                    b.Property<Guid?>("EventId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("event_id");
+
+                    b.Property<string>("Operation")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("operation");
+
+                    b.Property<string>("PayloadHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("payload_hash");
+
+                    b.Property<string>("PreviousDraftJson")
+                        .HasColumnType("jsonb")
+                        .HasColumnName("previous_draft_json");
+
+                    b.Property<Guid?>("RequestEventId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("request_event_id");
+
+                    b.Property<string>("RequestHash")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("request_hash");
+
+                    b.Property<Guid?>("ResultEventId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("result_event_id");
+
+                    b.Property<string>("ResultJson")
+                        .HasColumnType("jsonb")
+                        .HasColumnName("result_json");
+
+                    b.Property<string>("ResultStatus")
+                        .HasMaxLength(24)
+                        .HasColumnType("character varying(24)")
+                        .HasColumnName("result_status");
+
+                    b.Property<string>("Scope")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("scope");
+
+                    b.Property<string>("State")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(24)
+                        .HasColumnType("character varying(24)")
+                        .HasDefaultValue("processing")
+                        .HasColumnName("state");
+
+                    b.Property<Guid?>("UndoOfOperationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("undo_of_operation_id");
+
+                    b.Property<string>("UndoState")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(24)
+                        .HasColumnType("character varying(24)")
+                        .HasDefaultValue("unavailable")
+                        .HasColumnName("undo_state");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("State", "UpdatedAt");
+
+                    b.HasIndex("UserId", "ClientOperationId")
+                        .IsUnique()
+                        .HasDatabaseName("UX_outlook_writeback_operations_user_client_operation");
+
+                    b.HasIndex("UserId", "UndoOfOperationId")
+                        .IsUnique()
+                        .HasDatabaseName("UX_outlook_writeback_operations_user_undo_of")
+                        .HasFilter("\"undo_of_operation_id\" IS NOT NULL");
+
+                    b.HasIndex("UserId", "EventId", "CreatedAt");
+
+                    b.ToTable("outlook_writeback_operations");
                 });
 
             modelBuilder.Entity("Pim.Module.Calendar.Entities.PendingConfirmationEntity", b =>
@@ -9123,6 +9282,21 @@ namespace Pim.Infrastructure.Data.Migrations
 
             modelBuilder.Entity("Pim.Infrastructure.Data.Entities.AiModelRuntimeEntity", b =>
                 {
+                    b.HasOne("Pim.Infrastructure.Data.Entities.AiModelProfileEntity", null)
+                        .WithMany()
+                        .HasForeignKey("CalendarPlanningModelId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("Pim.Infrastructure.Data.Entities.AiModelProfileEntity", null)
+                        .WithMany()
+                        .HasForeignKey("NoteOrganizationModelId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("Pim.Infrastructure.Data.Entities.AiModelProfileEntity", null)
+                        .WithMany()
+                        .HasForeignKey("NoteTodoModelId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
                     b.HasOne("Pim.Infrastructure.Data.Entities.AiModelProfileEntity", null)
                         .WithMany()
                         .HasForeignKey("TextModelId")
