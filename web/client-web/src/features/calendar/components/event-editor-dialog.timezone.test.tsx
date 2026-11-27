@@ -4,6 +4,31 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import type { CalendarBook, EventResponse } from '../types'
 import { EventEditorDialog } from './event-editor-dialog'
 
+// Radix Select 在 jsdom 里不会响应 fireEvent.change；这里只替换 Select 的呈现层，
+// 让测试仍走组件真实的 fold 状态与提交逻辑。
+vi.mock('@/components/ui/select', () => ({
+  Select: ({
+    id,
+    value,
+    onValueChange,
+    options,
+    placeholder,
+  }: {
+    id?: string
+    value?: string
+    onValueChange: (value: string) => void
+    options: Array<{ value: string; label: string }>
+    placeholder?: string
+  }) => (
+    <select id={id} value={value ?? ''} onChange={(event) => onValueChange(event.target.value)}>
+      {value === '' && placeholder ? <option value="">{placeholder}</option> : null}
+      {options.map((option) => (
+        <option key={option.value} value={option.value}>{option.label}</option>
+      ))}
+    </select>
+  ),
+}))
+
 type SaveEventInput = {
   id?: string
   body: Record<string, unknown>
@@ -164,6 +189,21 @@ describe('日程编辑器时区', () => {
     await settle()
     expect(saveMock).not.toHaveBeenCalled()
     expect(screen.getByText('请选择回拨时段中实际发生的开始和结束时刻。')).toBeTruthy()
+  })
+
+  it('回拨时段选择第二个 fold 时提交对应的绝对时刻', async () => {
+    render(<EventEditorDialog open onOpenChange={vi.fn()} calendars={CALENDARS} event={existingEvent()} />)
+
+    fireEvent.change(screen.getByLabelText<HTMLSelectElement>('开始时刻'), {
+      target: { value: '2026-11-01T06:30:00.000Z' },
+    })
+    save()
+    await settle()
+
+    expect(saveMock).toHaveBeenCalledTimes(1)
+    const body = saveMock.mock.calls[0][0].body
+    expect(body.dtStart).toBe('2026-11-01T06:30:00.000Z')
+    expect(body.dtEnd).toBe('2026-11-01T07:30:00.000Z')
   })
 
   it('不从绝对时刻推断全天日期，并拒绝非法日期', async () => {

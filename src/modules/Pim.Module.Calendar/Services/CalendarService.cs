@@ -682,10 +682,13 @@ public class CalendarService
             && (request.AllDayStartDate is not null || request.AllDayEndDateExclusive is not null))
             throw new DomainException(02009, "非全天事件不能提供 allDayStartDate/allDayEndDateExclusive。");
 
-        var effectiveTimeZone = request.TimeZoneId
-            ?? entity.TimeZoneId
-            ?? entity.SourceTimeZoneId
-            ?? entity.OriginalStartTimeZone;
+        var timeZoneProvided = request.TimeZoneIdProvided;
+        var requestedTimeZoneId = request.TimeZoneId;
+        var effectiveTimeZone = timeZoneProvided
+            ? requestedTimeZoneId
+            : entity.TimeZoneId
+              ?? entity.SourceTimeZoneId
+              ?? entity.OriginalStartTimeZone;
         var (normalizedStart, normalizedEnd, allDayStart, allDayEnd) = NormalizeEventTimes(
             requestedIsAllDay,
             request.DtStart,
@@ -694,11 +697,11 @@ public class CalendarService
             request.AllDayEndDateExclusive,
             effectiveTimeZone,
             entity);
-        var normalizedTimeZone = request.TimeZoneId is null
-            ? NormalizeEventTimeZone(
+        var normalizedTimeZone = timeZoneProvided
+            ? NormalizeEventTimeZone(requestedTimeZoneId, requestedTimeZoneId)
+            : NormalizeEventTimeZone(
                 entity.TimeZoneId,
-                entity.SourceTimeZoneId ?? entity.OriginalStartTimeZone)
-            : NormalizeEventTimeZone(request.TimeZoneId, request.TimeZoneId);
+                entity.SourceTimeZoneId ?? entity.OriginalStartTimeZone);
 
         var isHtml = string.Equals(request.DescriptionFormat, "html", StringComparison.OrdinalIgnoreCase);
         if (isHtml)
@@ -846,10 +849,10 @@ public class CalendarService
             masterEntity.Description = request.Description;
             masterEntity.Location = request.Location;
 
-            var sourceTimeZoneChanged = request.TimeZoneId is not null
-                && !SameResolvedTimeZone(request.TimeZoneId, entity);
+            var sourceTimeZoneChanged = timeZoneProvided
+                && !SameResolvedTimeZone(requestedTimeZoneId, entity);
             var seriesTimeZone = sourceTimeZoneChanged
-                ? NormalizeEventTimeZone(request.TimeZoneId, request.TimeZoneId)
+                ? NormalizeEventTimeZone(requestedTimeZoneId, requestedTimeZoneId)
                 : NormalizeEventTimeZone(
                     masterEntity.TimeZoneId,
                     masterEntity.SourceTimeZoneId ?? masterEntity.OriginalStartTimeZone);

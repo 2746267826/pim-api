@@ -5,6 +5,7 @@ import {
   calendarAxisToInstant,
   chooseWallTimeCandidate,
   formatInstantInZone,
+  isValidTimeZoneId,
   resolveWallTime,
   toCalendarAxisValue,
 } from './event-timezone'
@@ -34,6 +35,14 @@ describe('calendar event timezone rules', () => {
     ])
     expect(chooseWallTimeCandidate(result, null)).toBeNull()
     expect(chooseWallTimeCandidate(result, result.candidates[1].instant)).toEqual(result.candidates[1])
+  })
+
+  it('accepts IANA ids and rejects Windows ids as event timezones', () => {
+    expect(isValidTimeZoneId('Asia/Shanghai')).toBe(true)
+    expect(isValidTimeZoneId('America/New_York')).toBe(true)
+    expect(isValidTimeZoneId('UTC')).toBe(true)
+    expect(isValidTimeZoneId('Eastern Standard Time')).toBe(false)
+    expect(isValidTimeZoneId('Mars/Olympus')).toBe(false)
   })
 
   it('uses independent inclusive and exclusive all-day dates', () => {

@@ -70,6 +70,7 @@ public class R02EventTimezoneTests
         Assert.Null(json.GetProperty("timeZoneId").GetString());
         Assert.Equal("Outlook Custom Zone", json.GetProperty("sourceTimeZoneId").GetString());
         Assert.Equal("sourceOnly", json.GetProperty("timeZoneResolution").GetString());
+        Assert.Equal("unknown", json.GetProperty("timeZoneSourceType").GetString());
         Assert.Null(json.GetProperty("localStart").GetString());
         Assert.Equal("Asia/Shanghai", json.GetProperty("displayTimeZoneId").GetString());
         Assert.Equal("2026-10-19T10:00:00", json.GetProperty("displayLocalStart").GetString());
@@ -94,6 +95,7 @@ public class R02EventTimezoneTests
         Assert.Null(json.GetProperty("timeZoneId").GetString());
         Assert.Null(json.GetProperty("sourceTimeZoneId").GetString());
         Assert.Equal("unknown", json.GetProperty("timeZoneResolution").GetString());
+        Assert.Equal("unknown", json.GetProperty("timeZoneSourceType").GetString());
         Assert.Null(json.GetProperty("localStart").GetString());
         Assert.Equal("Asia/Shanghai", json.GetProperty("displayTimeZoneId").GetString());
         Assert.Equal("2026-10-19T10:00:00", json.GetProperty("displayLocalStart").GetString());
@@ -406,6 +408,52 @@ public class R02EventTimezoneTests
         Assert.Equal(new DateTimeOffset(2026, 7, 12, 15, 0, 0, TimeSpan.Zero), updated.DtEnd);
         Assert.Equal("Asia/Tokyo", updated.TimeZoneId);
         Assert.Equal("Asia/Tokyo", updated.SourceTimeZoneId);
+    }
+
+    [Fact]
+    public async Task UpdatingTimeZone_OmittedPreservesAndExplicitNullClearsToUnknown()
+    {
+        await using var db = CreateDb();
+        var calendar = new CalendarEntity { UserId = UserId, Name = "Default", IsDefault = true };
+        var start = new DateTimeOffset(2026, 7, 12, 1, 0, 0, TimeSpan.Zero);
+        var end = new DateTimeOffset(2026, 7, 12, 2, 0, 0, TimeSpan.Zero);
+        var entity = new EventEntity
+        {
+            Calendar = calendar,
+            CalendarId = calendar.Id,
+            Uid = "timezone-null@example.com",
+            Title = "Before",
+            DtStart = start,
+            DtEnd = end,
+            TimeZoneId = "Asia/Shanghai",
+            SourceTimeZoneId = "China Standard Time"
+        };
+        db.Add(calendar);
+        db.Add(entity);
+        await db.SaveChangesAsync();
+
+        var service = CreateService(db);
+        var preserved = await service.UpdateEventAsync(
+            entity.Id,
+            new UpdateEventRequest(calendar.Id, "Preserve", null, null, start, end, null),
+            CancellationToken.None);
+
+        Assert.Equal("Asia/Shanghai", preserved.TimeZoneId);
+        Assert.Equal("China Standard Time", preserved.SourceTimeZoneId);
+        Assert.Equal("resolved", preserved.TimeZoneResolution);
+
+        var cleared = await service.UpdateEventAsync(
+            entity.Id,
+            new UpdateEventRequest(calendar.Id, "Clear", null, null, start, end, null)
+            {
+                TimeZoneIdProvided = true
+            },
+            CancellationToken.None);
+
+        Assert.Null(cleared.TimeZoneId);
+        Assert.Null(cleared.SourceTimeZoneId);
+        Assert.Equal("unknown", cleared.TimeZoneResolution);
+        Assert.Null(cleared.LocalStart);
     }
 
     [Fact]

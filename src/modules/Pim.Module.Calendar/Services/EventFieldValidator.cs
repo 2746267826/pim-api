@@ -1,3 +1,4 @@
+using System.Globalization;
 using Pim.Core.Exceptions;
 using Pim.Module.Calendar.DTOs;
 
@@ -18,6 +19,7 @@ public static class EventFieldValidator
         bool requireAllDayDates = true)
     {
         request = NormalizeEnumStrings(request);
+        ValidateRequiredEventTimes(request.DtStart, request.DtEnd);
         ValidateEnumField(request.DescriptionFormat, ValidDescriptionFormats, "DescriptionFormat");
         ValidateEnumField(request.ShowAs, ValidShowAs, "ShowAs");
         ValidateEnumField(request.Importance, ValidImportance, "Importance");
@@ -45,6 +47,7 @@ public static class EventFieldValidator
     public static UpdateEventRequest ValidateAndNormalize(UpdateEventRequest request)
     {
         request = NormalizeEnumStrings(request);
+        ValidateRequiredEventTimes(request.DtStart, request.DtEnd);
         ValidateEnumField(request.DescriptionFormat, ValidDescriptionFormats, "DescriptionFormat");
         ValidateEnumField(request.ShowAs, ValidShowAs, "ShowAs");
         ValidateEnumField(request.Importance, ValidImportance, "Importance");
@@ -65,6 +68,7 @@ public static class EventFieldValidator
     public static OutlookEventDraft ValidateAndNormalize(OutlookEventDraft draft)
     {
         draft = NormalizeEnumStrings(draft);
+        ValidateRequiredEventTimes(draft.DtStart, draft.DtEnd);
         ValidateEnumField(draft.DescriptionFormat, ValidDescriptionFormats, "DescriptionFormat");
         ValidateEnumField(draft.ShowAs, ValidShowAs, "ShowAs");
         ValidateEnumField(draft.Importance, ValidImportance, "Importance");
@@ -94,12 +98,18 @@ public static class EventFieldValidator
             OnlineMeetingUrl = NormalizeString(request.OnlineMeetingUrl),
             ExternalLink = NormalizeString(request.ExternalLink),
             TimeZoneId = NormalizeTimeZoneId(request.TimeZoneId),
+            RecurrenceId = NormalizeRecurrenceId(request.RecurrenceId),
             Organizer = NormalizeOrganizer(request.Organizer),
         };
     }
 
     private static UpdateEventRequest NormalizeEnumStrings(UpdateEventRequest request)
     {
+        var timeZoneIdProvided = request.TimeZoneIdProvided || request.TimeZoneId is not null;
+        var timeZoneId = timeZoneIdProvided
+            ? NormalizeTimeZoneId(ExplicitNullStringConverter.ToValue(request.TimeZoneId))
+            : null;
+
         return request with
         {
             DescriptionFormat = NormalizeString(request.DescriptionFormat),
@@ -109,7 +119,9 @@ public static class EventFieldValidator
             OnlineMeetingProvider = NormalizeString(request.OnlineMeetingProvider),
             OnlineMeetingUrl = NormalizeString(request.OnlineMeetingUrl),
             ExternalLink = NormalizeString(request.ExternalLink),
-            TimeZoneId = NormalizeTimeZoneId(request.TimeZoneId),
+            TimeZoneId = timeZoneId,
+            TimeZoneIdProvided = timeZoneIdProvided,
+            RecurrenceId = NormalizeRecurrenceId(request.RecurrenceId),
             Organizer = NormalizeOrganizer(request.Organizer),
         };
     }
@@ -136,6 +148,35 @@ public static class EventFieldValidator
             return null;
         var trimmed = value.Trim();
         return trimmed.Length == 0 ? null : trimmed;
+    }
+
+    private static void ValidateRequiredEventTimes(DateTimeOffset start, DateTimeOffset end)
+    {
+        if (start == DateTimeOffset.MinValue)
+            throw new DomainException(02009, "dtStart 必填：事件开始时间不能缺失。");
+        if (end == DateTimeOffset.MinValue)
+            throw new DomainException(02009, "dtEnd 必填：事件结束时间不能缺失。");
+    }
+
+    private static string? NormalizeRecurrenceId(string? value)
+    {
+        var normalized = NormalizeString(value);
+        if (normalized is null)
+            return null;
+
+        if (normalized.Length > 255)
+            throw new DomainException(02009, "RecurrenceId 长度不能超过 255 个字符。");
+
+        if (!DateTimeOffset.TryParse(
+                normalized,
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.AllowWhiteSpaces | DateTimeStyles.AdjustToUniversal,
+                out var parsed))
+        {
+            throw new DomainException(02009, "RecurrenceId 必须是原始发生时刻的 ISO-8601 值。");
+        }
+
+        return parsed.ToString("O");
     }
 
     private static EventPersonDto? NormalizeOrganizer(EventPersonDto? organizer)
@@ -212,8 +253,17 @@ public static class EventFieldValidator
         if (string.IsNullOrWhiteSpace(value))
             return null;
 
-        if (value.Length > 100)
+        var trimmed = value.Trim();
+        if (trimmed.Length > 100)
             throw new DomainException(02009, "TimeZoneId 长度不能超过 100 个字符。");
+
+        // R02：写入边界只接受可解析的 IANA/Windows 时区。未知来源可以省略该字段，
+        // 由响应显式标成 unknown；但把无法解析的值静默保存成“来源”会让调用方
+        // 误以为自己设置了时区。
+        if (!EventTimeZoneResolver.TryResolveIana(trimmed, out _, out _, out _))
+            throw new DomainException(
+                02009,
+                $"TimeZoneId 无法解析为有效时区：{trimmed}；未知来源请省略该字段。");
 
         return value;
     }

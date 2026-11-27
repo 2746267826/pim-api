@@ -49,8 +49,14 @@ public record CreateEventRequest(
     [property:Required][property:MaxLength(255)] string Title,
     string? Description,
     [property:MaxLength(500)] string? Location,
-    [property:Required] DateTimeOffset DtStart,
-    [property:Required] DateTimeOffset DtEnd,
+    [property:Required]
+    [property:JsonRequired]
+    [property:JsonConverter(typeof(ExplicitOffsetDateTimeOffsetConverter))]
+    DateTimeOffset DtStart,
+    [property:Required]
+    [property:JsonRequired]
+    [property:JsonConverter(typeof(ExplicitOffsetDateTimeOffsetConverter))]
+    DateTimeOffset DtEnd,
     string? RRule,
     string? Uid = null,
     bool IsAllDay = false,
@@ -92,11 +98,18 @@ public record UpdateEventRequest(
     [property:Required][property:MaxLength(255)] string Title,
     string? Description,
     [property:MaxLength(500)] string? Location,
-    [property:Required] DateTimeOffset DtStart,
-    [property:Required] DateTimeOffset DtEnd,
+    [property:Required]
+    [property:JsonRequired]
+    [property:JsonConverter(typeof(ExplicitOffsetDateTimeOffsetConverter))]
+    DateTimeOffset DtStart,
+    [property:Required]
+    [property:JsonRequired]
+    [property:JsonConverter(typeof(ExplicitOffsetDateTimeOffsetConverter))]
+    DateTimeOffset DtEnd,
     string? RRule,
     string? Uid = null,
     bool? IsAllDay = null,
+    [property:JsonConverter(typeof(ExplicitNullStringConverter))]
     string? TimeZoneId = null,
     string? DescriptionFormat = null,
     string? ShowAs = null,
@@ -122,7 +135,15 @@ public record UpdateEventRequest(
     DateOnly? AllDayStartDate = null,
     /// <summary>R02：全天日期唯一来源，排他结束日期；省略时保留既有值。</summary>
     DateOnly? AllDayEndDateExclusive = null
-);
+)
+{
+    /// <summary>
+    /// JSON presence for <see cref="TimeZoneId"/>: omitted means “keep the existing
+    /// source timezone”, explicit JSON null means “clear it to unknown”.
+    /// </summary>
+    [JsonIgnore]
+    public bool TimeZoneIdProvided { get; init; } = TimeZoneId is not null;
+}
 
 public record EventResponse(
     Guid Id, Guid CalendarId, string Uid, string Title,

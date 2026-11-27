@@ -112,6 +112,94 @@ public sealed class McpBugBoundaryTests
         Assert.Equal(400, McpToolInputPolicy.Apply("get_events", args)!["code"]!.GetValue<int>());
     }
 
+    [Theory]
+    [InlineData("create_event")]
+    [InlineData("update_event")]
+    public void EventWrites_RequireAnExplicitUtcOffsetAndDoNotGuessTheDeviceZone(string tool)
+    {
+        foreach (var start in new[] { "2026-09-01", "2026-09-01T09:00:00" })
+        {
+            var args = new JsonObject
+            {
+                ["dtStart"] = start,
+                ["dtEnd"] = "2026-09-01T10:00:00Z",
+            };
+
+            var error = McpToolInputPolicy.Apply(tool, args);
+
+            Assert.Equal(400, error!["code"]!.GetValue<int>());
+            Assert.Contains("explicit UTC offset", error["error"]!.GetValue<string>());
+        }
+    }
+
+    [Theory]
+    [InlineData("create_event")]
+    [InlineData("update_event")]
+    public void EventWrites_RejectWindowsOrUnknownTimeZoneIds(string tool)
+    {
+        foreach (var zone in new[] { "Eastern Standard Time", "Mars/Olympus", " " })
+        {
+            var args = new JsonObject
+            {
+                ["dtStart"] = "2026-09-01T09:00:00Z",
+                ["dtEnd"] = "2026-09-01T10:00:00Z",
+                ["timeZoneId"] = zone,
+            };
+
+            var error = McpToolInputPolicy.Apply(tool, args);
+
+            Assert.Equal(400, error!["code"]!.GetValue<int>());
+            Assert.Contains("IANA", error["error"]!.GetValue<string>());
+        }
+    }
+
+    [Theory]
+    [InlineData("create_event")]
+    [InlineData("update_event")]
+    public void EventWrites_NormalizeExplicitOffsetsAndKeepIanaMetadata(string tool)
+    {
+        var args = new JsonObject
+        {
+            ["dtStart"] = "2026-09-01T17:00:00+08:00",
+            ["dtEnd"] = "2026-09-01T18:00:00+08:00",
+            ["timeZoneId"] = " Asia/Shanghai ",
+        };
+
+        Assert.Null(McpToolInputPolicy.Apply(tool, args));
+        Assert.Equal("2026-09-01T09:00:00Z", args["dtStart"]!.GetValue<string>());
+        Assert.Equal("2026-09-01T10:00:00Z", args["dtEnd"]!.GetValue<string>());
+        Assert.Equal("Asia/Shanghai", args["timeZoneId"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public void EventWrites_AllowOmittingAnUnknownTimeZone()
+    {
+        var args = new JsonObject
+        {
+            ["dtStart"] = "2026-09-01T09:00:00Z",
+            ["dtEnd"] = "2026-09-01T10:00:00Z",
+        };
+
+        Assert.Null(McpToolInputPolicy.Apply("create_event", args));
+        Assert.False(args.ContainsKey("timeZoneId"));
+    }
+
+    [Fact]
+    public void EventWrites_TreatExplicitNullTimeZoneAsUnknown()
+    {
+        var args = JsonNode.Parse("""
+            {
+              "dtStart": "2026-09-01T09:00:00Z",
+              "dtEnd": "2026-09-01T10:00:00Z",
+              "timeZoneId": null
+            }
+            """)!.AsObject();
+
+        Assert.Null(McpToolInputPolicy.Apply("create_event", args));
+        Assert.True(args.ContainsKey("timeZoneId"));
+        Assert.Null(args["timeZoneId"]);
+    }
+
     [Fact]
     public void SearchEvents_OmittedRangeIsFilledWithLegal366DayWindow()
     {

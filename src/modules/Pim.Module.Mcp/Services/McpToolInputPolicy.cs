@@ -100,6 +100,10 @@ public static class McpToolInputPolicy
             && NormalizeSearchEventWindow(args, DateTimeOffset.UtcNow) is { } searchWindowError)
             return searchWindowError;
 
+        if (toolName is "create_event" or "update_event"
+            && NormalizeEventWriteArgs(args) is { } eventWriteError)
+            return eventWriteError;
+
         if (toolName == "get_today_sections" && args.ContainsKey("sectionId"))
             return Error("get_today_sections lists section metadata; use get_today_section(sectionId=...) to read one section");
 
@@ -160,6 +164,58 @@ public static class McpToolInputPolicy
         args["start"] = McpTimeRange.ToUtcQueryValue(start.Value);
         args["end"] = McpTimeRange.ToUtcQueryValue(end.Value);
         return null;
+    }
+
+    private static JsonObject? NormalizeEventWriteArgs(JsonObject args)
+    {
+        foreach (var name in new[] { "dtStart", "dtEnd" })
+        {
+            if (args[name] is not { } node)
+                return Error($"{name} is required as an ISO 8601 string with an explicit UTC offset");
+            if (node.GetValueKind() != JsonValueKind.String)
+                return Error($"{name} must be an ISO 8601 string with an explicit UTC offset");
+
+            var raw = node.GetValue<string>();
+            if (!McpTimeRange.HasExplicitOffset(raw))
+            {
+                return Error(
+                    $"{name} must include an explicit UTC offset or Z (for example 2026-09-01T09:00:00Z or 2026-09-01T17:00:00+08:00); "
+                    + "MCP does not guess the server or device timezone for writes");
+            }
+
+            if (!McpTimeRange.TryParse(raw, out var parsed, out var parseError))
+                return Error($"{name} must be an ISO 8601 date/time: {parseError}");
+
+            args[name] = McpTimeRange.ToUtcQueryValue(parsed);
+        }
+
+        if (args["timeZoneId"] is { } zoneNode)
+        {
+            if (zoneNode.GetValueKind() != JsonValueKind.String)
+                return Error("timeZoneId must be a valid IANA time zone string");
+
+            var zone = zoneNode.GetValue<string>().Trim();
+            if (zone.Length == 0 || zone.Length > 100 || !IsIanaTimeZone(zone))
+            {
+                return Error(
+                    "timeZoneId must be a valid IANA time zone (for example Asia/Shanghai); "
+                    + "omit it when the source zone is unknown");
+            }
+
+            args["timeZoneId"] = zone;
+        }
+
+        return null;
+    }
+
+    private static bool IsIanaTimeZone(string value)
+    {
+        if (value is "UTC" or "Etc/UTC" or "GMT")
+            return true;
+        if (!value.Contains('/', StringComparison.Ordinal))
+            return false;
+
+        return TimeZoneInfo.TryFindSystemTimeZoneById(value, out _);
     }
 
     /// <summary>
