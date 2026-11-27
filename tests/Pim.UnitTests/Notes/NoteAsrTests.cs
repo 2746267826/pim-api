@@ -206,9 +206,8 @@ public sealed class NoteAsrTests : IAsyncLifetime
             _model.Model, true, _model.Capabilities, 30, 123, ExpectedRevision: _model.Revision, AsrPresetId: "mimo-asr")));
         await Run(task.TaskId); Assert.Equal(0, _calls); Assert.True((await Get(task.TaskId)).StopRequested);
         Assert.Equal(HttpStatusCode.OK, (await _client.PostAsJsonAsync(Route, request)).StatusCode);
-        var legacyRandomReplay = await Data<NoteAsrTaskDto>(await _client.PostAsJsonAsync(Route,
-            request with { TaskId = Guid.NewGuid() }));
-        Assert.Equal(task.TaskId, legacyRandomReplay.TaskId);
+        Assert.Equal(HttpStatusCode.Conflict, (await _client.PostAsJsonAsync(Route,
+            request with { TaskId = Guid.NewGuid() })).StatusCode);
         Assert.Equal(0, _calls);
     }
 
