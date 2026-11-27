@@ -64,8 +64,8 @@ it('does not enable automatic paid processing without an explicit standing autho
   await userEvent.click(toggle)
 
   expect(await screen.findByRole('heading', { name: '确认持续授权' })).toBeTruthy()
-  expect(screen.getByText(/合成转写模型/)).toBeTruthy()
-  expect(screen.getByText(/mimo-asr\/1/)).toBeTruthy()
+  expect(screen.getAllByText(/合成转写模型/).length).toBeGreaterThan(0)
+  expect(screen.getAllByText(/mimo-asr\/1/).length).toBeGreaterThan(0)
   expect(screen.getAllByText(new RegExp(targetRevision)).length).toBeGreaterThan(0)
   expect(api.savePreferences).not.toHaveBeenCalled()
   const confirm = screen.getByRole('button', { name: '确认并开启自动处理' }) as HTMLButtonElement
