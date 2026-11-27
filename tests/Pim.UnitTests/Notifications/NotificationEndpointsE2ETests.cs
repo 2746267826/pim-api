@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Pim.Core.Notifications;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
 using Pim.Infrastructure.Notifications;
