@@ -28,7 +28,8 @@ beforeEach(() => {
   task = { taskId: id, revision: version, noteId: id, versionId: version, inputSha256: 'a'.repeat(64), manifestSha256: 'b'.repeat(64), phase: 'NeedsAttention', language: 'auto',
     destination: { modelId: id, modelRevision: version, endpoint: model.baseUrl + preset.operationPath, presetId: preset.id, presetVersion: '1', confirmed: true },
     createdAt: '2026-10-28T00:00:00Z', updatedAt: '2026-10-28T00:00:00Z', totalSegments: 2, completedSegments: 1, failedSegments: 1,
-    totalSamples: 1920000, completedSamples: 960000, sampleRate: 16000, stopRequested: false, backgroundProcessingAvailable: true }
+    totalSamples: 1920000, completedSamples: 960000, sampleRate: 16000, stopRequested: false, isCanonicalInitial: true,
+    backgroundProcessingAvailable: true }
   api.asrPresets.mockResolvedValue([preset]); api.noteAsrTasks.mockResolvedValue([])
   api.noteAsrSources.mockResolvedValue({ total: 1, offset: 0, items: [{ noteId: id, versionId: version, title: '课堂材料', createdAt: task.createdAt, isCurrent: true, hasConflict: false, recordings: 1, totalSamples: 1920000, sampleRate: 16000 }] })
   api.noteAsrTask.mockResolvedValue(task); api.noteAsrStart.mockResolvedValue(task); api.noteAsrRetry.mockResolvedValue(task)
@@ -107,23 +108,23 @@ it('retries a nullable local task with null consent and no cloud target', async 
 it('shows immutable history for the chosen version and opens old results without sending', async () => {
   api.noteAsrTasks.mockResolvedValue([task])
   page(); await choose()
-  await screen.findByText(/该版本已有 1 个转写任务/)
+  await screen.findByText(/该版本已有 1 条转写记录/)
   await userEvent.click(screen.getByRole('button', { name: /历史任务/ }))
   await screen.findByLabelText('第1片转写')
   expect(api.noteAsrStart).not.toHaveBeenCalled()
 })
 
-it('rerun for a version with history needs explicit consent and creates a new task without touching history', async () => {
+it('rerun for a version with history needs explicit consent and converges without touching history', async () => {
   api.noteAsrTasks.mockResolvedValue([task])
   page(); await choose()
-  await screen.findByText(/再次开始会新建任务/)
+  await screen.findByText(/历史重复的初始任务不会自动派发/)
   expect((screen.getByRole('button', { name: '开始后台转写' }) as HTMLButtonElement).disabled).toBe(true)
   await userEvent.click(screen.getByRole('checkbox', { name: '确认将该固定版本的全部录音发送至上述模型' }))
   await userEvent.click(screen.getByRole('button', { name: '开始后台转写' }))
   await waitFor(() => expect(api.noteAsrStart).toHaveBeenCalledOnce())
   expect(api.noteAsrStart.mock.calls[0]?.[0].versionId).toBe(version)
   expect(api.noteAsrStart.mock.calls[0]?.[0].consent).toEqual(task.destination)
-  await screen.findByText(/该版本已有 1 个转写任务/)
+  await screen.findByText(/该版本已有 1 条转写记录/)
 })
 
 it('hides the service endpoint and internal execution identity from ordinary task detail', async () => {

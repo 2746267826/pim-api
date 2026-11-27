@@ -21,10 +21,12 @@ vi.mock('@/lib/notify', () => ({
 
 const revision = '22222222-2222-4222-8222-222222222222'
 const standingRevision = '33333333-3333-4333-8333-333333333333'
+const targetRevision = '66666666-6666-4666-8666-666666666666'
 const preferences: NoteProcessingPreferences = {
   revision,
   autoProcessingEnabled: false,
   standingAuthorizationRevision: null,
+  standingAuthorizationTargetRevision: null,
   purpose: 'native-note-processing',
   purposeText: '生成当前固定版本的转写与整理结果',
   materialScope: 'FullVersion',
@@ -32,6 +34,11 @@ const preferences: NoteProcessingPreferences = {
   costNotice: '当前固定版本的全部材料会按账号默认目标处理；云端转写与多模态整理可能按服务商用量产生费用。',
   possibleChargeAcknowledged: false,
   standingAuthorizationValid: false,
+  currentDefaultTargetRevision: targetRevision,
+  defaultTargets: [
+    '转写：cloud-asr；合成转写模型 (synthetic-asr) revision 99999999-9999-4999-8999-999999999999；preset mimo-asr/1；endpoint 已纳入目标策略',
+    '纯文本整理：合成整理模型 (synthetic-text) revision bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb；endpoint 已纳入目标策略',
+  ],
 }
 
 function page() {
@@ -57,6 +64,9 @@ it('does not enable automatic paid processing without an explicit standing autho
   await userEvent.click(toggle)
 
   expect(await screen.findByRole('heading', { name: '确认持续授权' })).toBeTruthy()
+  expect(screen.getByText(/合成转写模型/)).toBeTruthy()
+  expect(screen.getByText(/mimo-asr\/1/)).toBeTruthy()
+  expect(screen.getAllByText(new RegExp(targetRevision)).length).toBeGreaterThan(0)
   expect(api.savePreferences).not.toHaveBeenCalled()
   const confirm = screen.getByRole('button', { name: '确认并开启自动处理' }) as HTMLButtonElement
   expect(confirm.disabled).toBe(true)
@@ -68,6 +78,7 @@ it('does not enable automatic paid processing without an explicit standing autho
     revision: '44444444-4444-4444-8444-444444444444',
     autoProcessingEnabled: true,
     standingAuthorizationRevision: standingRevision,
+    standingAuthorizationTargetRevision: targetRevision,
     possibleChargeAcknowledged: true,
     standingAuthorizationValid: true,
   })
@@ -78,6 +89,7 @@ it('does not enable automatic paid processing without an explicit standing autho
     autoProcessingEnabled: true,
     confirmStandingAuthorization: true,
     acknowledgePossibleCharge: true,
+    defaultTargetRevision: targetRevision,
   })
 })
 
@@ -86,6 +98,7 @@ it('clears the standing authorization when automatic processing is turned off', 
     ...preferences,
     autoProcessingEnabled: true,
     standingAuthorizationRevision: standingRevision,
+    standingAuthorizationTargetRevision: targetRevision,
     possibleChargeAcknowledged: true,
     standingAuthorizationValid: true,
   })

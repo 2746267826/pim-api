@@ -5,6 +5,7 @@ import { Button, Card, Checkbox, InlineAlert, PageHeader, Skeleton, Switch } fro
 import { useAuth } from '@/features/auth/auth-context'
 import { notifyError, notifySuccess } from '@/lib/notify'
 import { noteProcessingApi } from './api'
+import type { NoteProcessingPreferences } from './api'
 
 export function NoteProcessingSettingsPage() {
   const { user } = useAuth()
@@ -30,6 +31,9 @@ export function NoteProcessingSettingsPage() {
         autoProcessingEnabled,
         confirmStandingAuthorization: confirmStanding,
         acknowledgePossibleCharge: confirmStanding,
+        ...(autoProcessingEnabled
+          ? { defaultTargetRevision: preferences.data.currentDefaultTargetRevision }
+          : {}),
       })
       queryClient.setQueryData(queryKey, saved)
       setAuthorizing(false)
@@ -110,9 +114,13 @@ export function NoteProcessingSettingsPage() {
           </Button>
         </InlineAlert>}
       <div className="space-y-1 rounded-ctl border border-border bg-bg p-3 text-xs leading-5 text-text-2">
-        <p><span className="font-medium text-text-1">处理目标：</span>{preferences.data.purposeText}</p>
+        <DefaultTargets preferences={preferences.data} />
+        <p><span className="font-medium text-text-1">处理目的：</span>{preferences.data.purposeText}</p>
         <p><span className="font-medium text-text-1">材料范围：</span>{preferences.data.materialScopeText}</p>
         <p className="text-warn">{preferences.data.costNotice}</p>
+        <p className="break-all font-mono text-[11px] text-text-3">当前目标策略 revision：{preferences.data.currentDefaultTargetRevision}</p>
+        {preferences.data.standingAuthorizationTargetRevision &&
+          <p className="break-all font-mono text-[11px] text-text-3">持续授权目标 revision：{preferences.data.standingAuthorizationTargetRevision}</p>}
         {preferences.data.standingAuthorizationRevision
           ? <p className="break-all font-mono text-[11px] text-text-3">持续授权 revision：{preferences.data.standingAuthorizationRevision}</p>
           : <p className="text-text-3">持续授权 revision：未建立</p>}
@@ -123,13 +131,15 @@ export function NoteProcessingSettingsPage() {
       <div>
         <h2 className="text-sm font-semibold text-text-1">确认持续授权</h2>
         <p className="mt-1 text-xs leading-5 text-text-3">
-          确认后才会保存账号级持续授权。后续每篇材料仍会生成独立计划并冻结实际目标；处理目的、材料范围或费用提示变化时，需要重新确认。
+          确认后才会保存账号级持续授权。后续每篇材料仍会生成独立计划并冻结实际目标；处理目的、材料范围、费用提示，或账号默认模型、预设、路由、端点配置变化时，授权会失效并要求重新确认。
         </p>
       </div>
       <div className="space-y-1 rounded-ctl border border-border bg-bg p-3 text-xs leading-5 text-text-2">
-        <p><span className="font-medium text-text-1">处理目标：</span>{preferences.data.purposeText}</p>
+        <DefaultTargets preferences={preferences.data} />
+        <p><span className="font-medium text-text-1">处理目的：</span>{preferences.data.purposeText}</p>
         <p><span className="font-medium text-text-1">材料范围：</span>{preferences.data.materialScopeText}</p>
         <p className="text-warn">{preferences.data.costNotice}</p>
+        <p className="break-all font-mono text-[11px] text-text-3">目标策略 revision：{preferences.data.currentDefaultTargetRevision}</p>
       </div>
       <label className="flex items-start gap-2 text-xs leading-5 text-text-2">
         <Checkbox checked={authorizationConfirmed}
@@ -149,5 +159,16 @@ export function NoteProcessingSettingsPage() {
         }}>取消</Button>
       </div>
     </Card>}
+  </div>
+}
+
+function DefaultTargets({ preferences }: { preferences: NoteProcessingPreferences }) {
+  return <div className="space-y-1">
+    <p className="font-medium text-text-1">账号默认处理目标：</p>
+    {preferences.defaultTargets.length > 0
+      ? <ul className="list-disc space-y-1 pl-5">
+        {preferences.defaultTargets.map((target) => <li key={target} className="break-words">{target}</li>)}
+      </ul>
+      : <p className="text-text-3">账号默认模型尚未配置；自动处理会保持待发起。</p>}
   </div>
 }

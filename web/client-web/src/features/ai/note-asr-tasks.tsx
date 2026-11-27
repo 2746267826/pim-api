@@ -60,11 +60,12 @@ export function NoteAsrTasks({ userId, models, settings, showDetail }: { userId:
             onValueChange={(value) => { setVersionId(value); setApproved('') }} />
             {source && <p className="text-xs text-text-3">{source.recordings} 次录音 · 有效录音 {time(source.totalSamples, source.sampleRate)} · 暂停不计时。全部原录音保留。</p>}</>}
       {versionId && versionTasks.length > 0 && <div className="space-y-2 rounded-ctl border border-border p-3">
-        <p className="text-xs font-medium text-text-2">该版本已有 {versionTasks.length} 个转写任务，历史任务与结果保留。</p>
+        <p className="text-xs font-medium text-text-2">该版本已有 {versionTasks.length} 条转写记录，历史任务与结果保留。</p>
         {versionTasks.map((task) => <button key={task.taskId} type="button"
           className="flex w-full flex-wrap items-center justify-between gap-2 rounded-ctl bg-surface px-3 py-2 text-left text-xs" onClick={() => setSelected(task.taskId)}>
-          <span>历史任务 {formatTime(task.createdAt)} · {task.completedSegments}/{task.totalSegments} 片</span><State value={task.phase} /></button>)}
-        <p className="text-xs text-text-3">再次开始会新建任务并可能产生服务商费用；不会覆盖或修改历史结果。</p>
+          <span>历史任务 {formatTime(task.createdAt)} · {task.completedSegments}/{task.totalSegments} 片
+            {!task.isCanonicalInitial && ' · 非当前链头，不自动派发'}</span><State value={task.phase} /></button>)}
+        <p className="text-xs text-text-3">同一初始任务会收敛到链头；历史重复的初始任务不会自动派发。显式重处理仍可能产生服务商费用，且不会覆盖历史结果。</p>
       </div>}
       {sources.data && sources.data.total > 20 && <div className="flex gap-2"><Button size="sm" disabled={sourcePage === 0 || busy || !!intent} onClick={() => { setSourcePage((p) => p - 20); setVersionId('') }}>上一页材料</Button>
         <Button size="sm" disabled={sourcePage + 20 >= sources.data.total || busy || !!intent} onClick={() => { setSourcePage((p) => p + 20); setVersionId('') }}>下一页材料</Button></div>}
@@ -88,7 +89,8 @@ export function NoteAsrTasks({ userId, models, settings, showDetail }: { userId:
     <Card className="space-y-3 p-5"><div className="flex items-center justify-between gap-3"><h2 className="text-sm font-semibold text-text-1">已保存的转写任务</h2><Button size="sm" variant="ghost" onClick={() => void qc.invalidateQueries({ queryKey: prefix })}>刷新任务</Button></div>
       {tasks.isPending ? <Skeleton className="h-20" /> : tasks.isError ? <p role="alert">任务加载失败，请刷新核对。</p> : !tasks.data?.length ? <p className="text-sm text-text-3">还没有转写任务。</p>
         : <div className="space-y-2">{tasks.data.map((task) => <button key={task.taskId} type="button" className="flex w-full flex-wrap items-center justify-between gap-2 rounded-ctl border border-border p-3 text-left text-sm" onClick={() => setSelected(task.taskId)}>
-          <span>{formatTime(task.createdAt)} · {task.completedSegments}/{task.totalSegments} 片</span><State value={task.phase} /></button>)}</div>}
+          <span>{formatTime(task.createdAt)} · {task.completedSegments}/{task.totalSegments} 片
+            {!task.isCanonicalInitial && ' · 非当前链头'}</span><State value={task.phase} /></button>)}</div>}
     </Card>
     {selected && <TaskDetail key={selected} id={selected} userId={userId} serverBinding={canonicalServerBinding()} prefix={prefix} showDetail={showDetail} />}
   </div>

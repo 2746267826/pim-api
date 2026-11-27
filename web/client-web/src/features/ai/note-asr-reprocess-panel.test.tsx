@@ -34,7 +34,8 @@ const task: NoteAsrTask = {
   },
   createdAt: '2026-10-31T10:00:00Z', updatedAt: '2026-10-31T10:10:00Z',
   totalSegments: 3, completedSegments: 1, failedSegments: 2, totalSamples: 48000, completedSamples: 16000,
-  sampleRate: 16000, stopRequested: false, backgroundProcessingAvailable: true, route: 'cloud-multimodal',
+  sampleRate: 16000, stopRequested: false, isCanonicalInitial: true,
+  backgroundProcessingAvailable: true, route: 'cloud-multimodal',
   attemptId: '77777777-7777-4777-8777-777777777777', routeConfigRevision: '88888888-8888-4888-8888-888888888888',
   routeConsentVersion: 'consent-v1', executionMode: 'realtime',
 }
