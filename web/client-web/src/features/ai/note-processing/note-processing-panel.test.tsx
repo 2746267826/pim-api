@@ -4,10 +4,11 @@ import { cleanup, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { NoteProcessingPanel } from './note-processing-panel'
-import type { NoteProcessingStatus } from './api'
+import type { NoteProcessingPlan, NoteProcessingStatus } from './api'
 
 const api = vi.hoisted(() => ({
   status: vi.fn(),
+  plan: vi.fn(),
   start: vi.fn(),
 }))
 vi.mock('./api', () => ({ noteProcessingApi: api }))
@@ -60,6 +61,51 @@ const processing: NoteProcessingStatus = {
   scope: 'FullVersion',
 }
 
+const plan: NoteProcessingPlan = {
+  noteId,
+  versionId,
+  purpose: 'native-note-processing',
+  purposeText: '生成当前固定版本的转写与整理结果',
+  materialScope: 'FullVersion',
+  materialScopeText: '当前固定版本的全部材料（正文、图片、手写与录音）',
+  costNotice: '当前固定版本的全部材料会按账号默认目标处理；云端转写与多模态整理可能按服务商用量产生费用。',
+  possibleCharge: true,
+  authorizationRevision: '77777777-7777-4777-8777-777777777777',
+  standingAuthorizationRevision: null,
+  standingAuthorizationValid: false,
+  asrRequired: true,
+  targets: [
+    {
+      kind: 'Asr',
+      required: true,
+      paid: true,
+      modelId: '88888888-8888-4888-8888-888888888888',
+      modelRevision: '99999999-9999-4999-8999-999999999999',
+      modelName: '合成转写模型',
+      model: 'synthetic-asr',
+      endpoint: 'https://private-asr.invalid/v1/chat/completions',
+      route: 'cloud-asr',
+      executionMode: 'Realtime',
+      presetId: 'mimo-asr',
+      presetVersion: '1',
+    },
+    {
+      kind: 'Derived',
+      required: true,
+      paid: true,
+      modelId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      modelRevision: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      modelName: '合成整理模型',
+      model: 'synthetic-text',
+      endpoint: 'https://private-derived.invalid/v1/',
+      route: 'cloud',
+      executionMode: 'Realtime',
+      presetId: null,
+      presetVersion: null,
+    },
+  ],
+}
+
 function page(showVersionDetails = false) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 }, mutations: { retry: false } } })
   return render(<QueryClientProvider client={client}>
@@ -72,6 +118,7 @@ beforeEach(() => {
   cleanup()
   vi.clearAllMocks()
   api.status.mockResolvedValue(processing)
+  api.plan.mockResolvedValue(plan)
 })
 
 it('hides raw processing state, backend reasons and diagnostics from ordinary users', async () => {
@@ -87,6 +134,8 @@ it('hides raw processing state, backend reasons and diagnostics from ordinary us
   expect(screen.queryByText(/provider/)).toBeNull()
   expect(screen.queryByText(/Vendor/)).toBeNull()
   expect(screen.queryByText(/backend issue diagnostic/)).toBeNull()
+  expect(screen.queryByText(/private-asr\.invalid/)).toBeNull()
+  expect(screen.queryByText(/private-derived\.invalid/)).toBeNull()
 })
 
 it('keeps raw processing state, backend reasons and diagnostics for admins', async () => {
@@ -99,19 +148,94 @@ it('keeps raw processing state, backend reasons and diagnostics for admins', asy
   expect(screen.getByText('MiMo provider derived wait')).toBeTruthy()
   expect(screen.getByText('MiMo raw ASR error')).toBeTruthy()
   expect(screen.getByText('backend issue diagnostic')).toBeTruthy()
+  expect(screen.getByText(/private-asr\.invalid/)).toBeTruthy()
+  expect(screen.getByText(/private-derived\.invalid/)).toBeTruthy()
 })
 
 it('uses a generic action failure for ordinary users and keeps the backend error for admins', async () => {
   api.start.mockRejectedValue(new Error('MiMo provider start failure'))
   const ordinary = page(false)
 
-  await userEvent.click(await screen.findByRole('button', { name: '使用账号默认模型发起' }))
+  const ordinaryButton = await screen.findByRole('button', { name: '使用账号默认模型发起' })
+  expect((ordinaryButton as HTMLButtonElement).disabled).toBe(true)
+  await userEvent.click(screen.getByRole('checkbox', { name: /我已核对以上处理目标/ }))
+  await userEvent.click(ordinaryButton)
   expect(await screen.findByText(/发起未确认，请刷新核对/)).toBeTruthy()
   expect(screen.queryByText(/MiMo provider start failure/)).toBeNull()
   ordinary.unmount()
 
   const admin = page(true)
-  await userEvent.click(await screen.findByRole('button', { name: '使用账号默认模型发起' }))
+  const adminButton = await screen.findByRole('button', { name: '使用账号默认模型发起' })
+  await userEvent.click(await screen.findByRole('checkbox', { name: /我已核对以上处理目标/ }))
+  await userEvent.click(adminButton)
   expect(await screen.findByText(/MiMo provider start failure/)).toBeTruthy()
   admin.unmount()
+})
+
+it('shows the target, scope, cost and revision before sending the exact consent snapshot', async () => {
+  api.start.mockResolvedValue(processing)
+  page(false)
+
+  expect(await screen.findByText('发起前处理计划')).toBeTruthy()
+  expect(screen.getByText(/材料范围：当前固定版本的全部材料/)).toBeTruthy()
+  expect(screen.getAllByText(/可能按服务商用量产生费用/).length).toBeGreaterThan(0)
+  expect(screen.getByText(new RegExp(plan.authorizationRevision))).toBeTruthy()
+  expect(screen.getByText(/合成转写模型/)).toBeTruthy()
+  expect(screen.getByText(/合成整理模型/)).toBeTruthy()
+
+  const button = screen.getByRole('button', { name: '使用账号默认模型发起' }) as HTMLButtonElement
+  expect(button.disabled).toBe(true)
+  expect(api.start).not.toHaveBeenCalled()
+
+  await userEvent.click(screen.getByRole('checkbox', { name: /我已核对以上处理目标/ }))
+  expect(button.disabled).toBe(false)
+  await userEvent.click(button)
+
+  expect(api.start).toHaveBeenCalledOnce()
+  expect(api.start).toHaveBeenCalledWith({
+    noteId,
+    versionId,
+    consent: {
+      purpose: plan.purpose,
+      materialScope: plan.materialScope,
+      costNotice: plan.costNotice,
+      possibleChargeAcknowledged: true,
+      confirmed: true,
+      authorizationRevision: plan.authorizationRevision,
+      standingAuthorizationRevision: null,
+    },
+  })
+})
+
+it('shows the persisted authorization snapshot for automatic processing', async () => {
+  api.status.mockResolvedValue({
+    ...processing,
+    autoStarted: true,
+    manualStartAvailable: false,
+    pendingReason: null,
+    authorization: {
+      purpose: plan.purpose,
+      purposeText: plan.purposeText,
+      materialScope: plan.materialScope,
+      materialScopeText: plan.materialScopeText,
+      costNotice: plan.costNotice,
+      possibleCharge: plan.possibleCharge,
+      confirmed: true,
+      possibleChargeAcknowledged: true,
+      authorizationRevision: plan.authorizationRevision,
+      standingAuthorizationRevision: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+      source: 'standing',
+      targets: plan.targets,
+    },
+  } satisfies NoteProcessingStatus)
+  page(false)
+
+  expect(await screen.findByRole('heading', { name: '已持久化的处理授权' })).toBeTruthy()
+  expect(screen.getByText(/来源：账号持续授权/)).toBeTruthy()
+  expect(screen.getByText(/材料范围：当前固定版本的全部材料/)).toBeTruthy()
+  expect(screen.getByText(new RegExp(plan.authorizationRevision))).toBeTruthy()
+  expect(screen.getByText(/合成转写模型/)).toBeTruthy()
+  expect(screen.getByText(/合成整理模型/)).toBeTruthy()
+  expect(screen.queryByText(/private-asr\.invalid/)).toBeNull()
+  expect(screen.queryByText(/private-derived\.invalid/)).toBeNull()
 })

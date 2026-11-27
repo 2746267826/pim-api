@@ -34,13 +34,110 @@ public enum NoteProcessingTaskKind
     Derived
 }
 
-public sealed record StartNoteProcessingRequest(Guid NoteId, Guid VersionId);
+public static class NoteProcessingAuthorizationPurpose
+{
+    public const string NativeNoteProcessing = "native-note-processing";
+    public const string PurposeText = "生成当前固定版本的转写与整理结果";
+    public const string MaterialScope = "FullVersion";
+    public const string MaterialScopeText = "当前固定版本的全部材料（正文、图片、手写与录音）";
+}
 
-public sealed record NoteProcessingPreferencesDto(Guid Revision, bool AutoProcessingEnabled);
+public static class NoteProcessingAuthorizationSource
+{
+    public const string Manual = "manual";
+    public const string Standing = "standing";
+}
+
+public static class NoteProcessingAuthorizationRules
+{
+    public const string CostNotice =
+        "当前固定版本的全部材料会按账号默认目标处理；云端转写与多模态整理可能按服务商用量产生费用。";
+
+    public static bool IsStandingAuthorizationValid(Guid? revision, string? purpose,
+        string? materialScope, string? costNotice, bool possibleChargeAcknowledged) =>
+        revision is { } value && value != Guid.Empty &&
+        string.Equals(purpose, NoteProcessingAuthorizationPurpose.NativeNoteProcessing,
+            StringComparison.Ordinal) &&
+        string.Equals(materialScope, NoteProcessingAuthorizationPurpose.MaterialScope,
+            StringComparison.Ordinal) &&
+        string.Equals(costNotice, CostNotice, StringComparison.Ordinal) &&
+        possibleChargeAcknowledged;
+}
+
+public sealed record NoteProcessingTargetDto(
+    NoteProcessingTaskKind Kind,
+    bool Required,
+    bool Paid,
+    Guid? ModelId,
+    Guid? ModelRevision,
+    string? ModelName,
+    string? Model,
+    string? Endpoint,
+    string? Route,
+    string? ExecutionMode,
+    string? PresetId,
+    string? PresetVersion);
+
+public sealed record NoteProcessingAuthorizationDto(
+    string Purpose,
+    string PurposeText,
+    string MaterialScope,
+    string MaterialScopeText,
+    string CostNotice,
+    bool PossibleCharge,
+    bool Confirmed,
+    bool PossibleChargeAcknowledged,
+    Guid AuthorizationRevision,
+    Guid? StandingAuthorizationRevision,
+    string Source,
+    IReadOnlyList<NoteProcessingTargetDto> Targets);
+
+public sealed record NoteProcessingPlanDto(
+    Guid NoteId,
+    Guid VersionId,
+    string Purpose,
+    string PurposeText,
+    string MaterialScope,
+    string MaterialScopeText,
+    string CostNotice,
+    bool PossibleCharge,
+    Guid AuthorizationRevision,
+    Guid? StandingAuthorizationRevision,
+    bool StandingAuthorizationValid,
+    bool AsrRequired,
+    IReadOnlyList<NoteProcessingTargetDto> Targets);
+
+public sealed record NoteProcessingConsent(
+    string Purpose,
+    string MaterialScope,
+    string CostNotice,
+    bool PossibleChargeAcknowledged,
+    bool Confirmed,
+    Guid AuthorizationRevision,
+    Guid? StandingAuthorizationRevision = null);
+
+public sealed record StartNoteProcessingRequest(
+    Guid NoteId,
+    Guid VersionId,
+    NoteProcessingConsent? Consent = null);
+
+public sealed record NoteProcessingPreferencesDto(
+    Guid Revision,
+    bool AutoProcessingEnabled,
+    Guid? StandingAuthorizationRevision,
+    string Purpose,
+    string PurposeText,
+    string MaterialScope,
+    string MaterialScopeText,
+    string CostNotice,
+    bool PossibleChargeAcknowledged,
+    bool StandingAuthorizationValid);
 
 public sealed record SaveNoteProcessingPreferencesRequest(
     Guid ExpectedRevision,
-    bool AutoProcessingEnabled);
+    bool AutoProcessingEnabled,
+    bool ConfirmStandingAuthorization = false,
+    bool AcknowledgePossibleCharge = false);
 
 public sealed record NoteProcessingIssueDto(
     string Code,
@@ -82,4 +179,5 @@ public sealed record NoteProcessingStatusDto(
     IReadOnlyList<NoteProcessingArtifactDto> Artifacts,
     IReadOnlyList<NoteProcessingIssueDto> Issues,
     DateTimeOffset CreatedAt,
-    DateTimeOffset UpdatedAt);
+    DateTimeOffset UpdatedAt,
+    NoteProcessingAuthorizationDto? Authorization = null);

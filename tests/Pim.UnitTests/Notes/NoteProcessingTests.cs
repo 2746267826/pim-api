@@ -116,9 +116,7 @@ public sealed class NoteProcessingTests(NoteProcessingFixture host)
         Assert.Equal(0, TaskCounts(owner).Asr);
         Assert.Equal(0, TaskCounts(owner).Derived);
 
-        var first = await Data<NoteProcessingStatusDto>(await client.PostAsJsonAsync(
-            Processing + "/start", new StartNoteProcessingRequest(material.NoteId,
-                material.VersionId)));
+        var first = await StartAsync(client, material);
         Assert.Equal(NoteProcessingState.Processing, first.State);
         Assert.True(first.ManualStartAvailable == false);
         Assert.True(first.Asr.TaskCreated);
@@ -129,9 +127,7 @@ public sealed class NoteProcessingTests(NoteProcessingFixture host)
             NoteProcessingTaskKind.Derived), first.Derived.TaskId);
         Assert.Equal((Asr: 1, Derived: 1), TaskCounts(owner));
 
-        var replay = await Data<NoteProcessingStatusDto>(await client.PostAsJsonAsync(
-            Processing + "/start", new StartNoteProcessingRequest(material.NoteId,
-                material.VersionId)));
+        var replay = await StartAsync(client, material);
         Assert.Equal(first.Asr.TaskId, replay.Asr.TaskId);
         Assert.Equal(first.Derived.TaskId, replay.Derived.TaskId);
         Assert.Equal((Asr: 1, Derived: 1), TaskCounts(owner));
@@ -167,6 +163,331 @@ public sealed class NoteProcessingTests(NoteProcessingFixture host)
         Assert.Equal(asrBefore.Revision, asrAfter.Revision);
         Assert.Equal(derivedBefore.Revision, derivedAfter.Revision);
         Assert.Equal(0, await AiCallCountAsync(owner.UserId));
+        Assert.Equal(0, host.Models.Calls);
+    }
+
+    [Fact]
+    public async Task EnablingAutoProcessingRequiresStandingAuthorizationAndChargeAcknowledgement()
+    {
+        var owner = await OwnerAsync("standing-ack");
+        using var client = AuthRegistrationTestHost.Authed(host.Factory, owner.AccessToken);
+        var initial = await Data<NoteProcessingPreferencesDto>(
+            await client.GetAsync(Processing + "/preferences"));
+
+        var rejected = await client.PutAsJsonAsync(Processing + "/preferences",
+            new SaveNoteProcessingPreferencesRequest(initial.Revision, true));
+        Assert.Equal(HttpStatusCode.BadRequest, rejected.StatusCode);
+        var unchanged = await Data<NoteProcessingPreferencesDto>(
+            await client.GetAsync(Processing + "/preferences"));
+        Assert.False(unchanged.AutoProcessingEnabled);
+        Assert.False(unchanged.StandingAuthorizationValid);
+        Assert.Null(unchanged.StandingAuthorizationRevision);
+
+        var saved = await Data<NoteProcessingPreferencesDto>(await client.PutAsJsonAsync(
+            Processing + "/preferences",
+            new SaveNoteProcessingPreferencesRequest(initial.Revision, true,
+                ConfirmStandingAuthorization: true, AcknowledgePossibleCharge: true)));
+        Assert.True(saved.AutoProcessingEnabled);
+        Assert.True(saved.StandingAuthorizationValid);
+        Assert.True(saved.PossibleChargeAcknowledged);
+        Assert.NotNull(saved.StandingAuthorizationRevision);
+        Assert.Equal(NoteProcessingAuthorizationPurpose.NativeNoteProcessing, saved.Purpose);
+        Assert.Equal(NoteProcessingAuthorizationPurpose.MaterialScope, saved.MaterialScope);
+        Assert.Equal(NoteProcessingAuthorizationRules.CostNotice, saved.CostNotice);
+
+        var persisted = await Data<NoteProcessingPreferencesDto>(
+            await client.GetAsync(Processing + "/preferences"));
+        Assert.Equal(saved.Revision, persisted.Revision);
+        Assert.Equal(saved.StandingAuthorizationRevision,
+            persisted.StandingAuthorizationRevision);
+        Assert.True(persisted.StandingAuthorizationValid);
+
+        var disabled = await Data<NoteProcessingPreferencesDto>(await client.PutAsJsonAsync(
+            Processing + "/preferences",
+            new SaveNoteProcessingPreferencesRequest(persisted.Revision, false)));
+        Assert.False(disabled.AutoProcessingEnabled);
+        Assert.False(disabled.StandingAuthorizationValid);
+        Assert.Null(disabled.StandingAuthorizationRevision);
+        Assert.False(disabled.PossibleChargeAcknowledged);
+    }
+
+    [Fact]
+    public async Task LegacyAutoEnabledSettingWithoutStandingAuthorizationStaysPending()
+    {
+        var owner = await OwnerAsync("standing-missing");
+        using var client = AuthRegistrationTestHost.Authed(host.Factory, owner.AccessToken);
+        _ = await ConfigureAsync(client, auto: true);
+        using (var scope = host.Factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
+            var config = await db.NoteProcessingPreferences.SingleAsync(x =>
+                x.OwnerId == owner.UserId);
+            config.StandingAuthorizationRevision = null;
+            config.StandingAuthorizationPurpose = null;
+            config.StandingAuthorizationMaterialScope = null;
+            config.StandingAuthorizationCostNotice = null;
+            config.StandingAuthorizationPossibleChargeAcknowledged = false;
+            await db.SaveChangesAsync();
+        }
+        host.Models.Reset();
+
+        var material = await CompleteMaterialAsync(owner, client, withAudio: true);
+        var pending = await StatusAsync(client, material.NoteId, material.VersionId);
+
+        Assert.Equal(NoteProcessingState.PendingProcessing, pending.State);
+        Assert.True(pending.AutoProcessingEnabled);
+        Assert.False(pending.AutoStarted);
+        Assert.Contains("持续授权", pending.PendingReason);
+        Assert.False(pending.Asr.TaskCreated);
+        Assert.False(pending.Derived.TaskCreated);
+        Assert.Equal((Asr: 0, Derived: 0), TaskCounts(owner));
+        Assert.Equal(0, host.Models.Calls);
+        Assert.Equal(0, await AiCallCountAsync(owner.UserId));
+
+        var manual = await StartAsync(client, material);
+        Assert.Equal(NoteProcessingAuthorizationSource.Manual, manual.Authorization?.Source);
+        Assert.Equal((Asr: 1, Derived: 1), TaskCounts(owner));
+        Assert.Equal(0, host.Models.Calls);
+    }
+
+    [Fact]
+    public async Task PlanIsVisibleBeforeStartAndConsentRevisionIsEnforced()
+    {
+        var owner = await OwnerAsync("plan-consent");
+        using var client = AuthRegistrationTestHost.Authed(host.Factory, owner.AccessToken);
+        _ = await ConfigureAsync(client, auto: false);
+        var material = await CompleteMaterialAsync(owner, client, withAudio: true);
+
+        var missingConsent = await client.PostAsJsonAsync(Processing + "/start",
+            new StartNoteProcessingRequest(material.NoteId, material.VersionId));
+        Assert.Equal(HttpStatusCode.BadRequest, missingConsent.StatusCode);
+        Assert.Equal((Asr: 0, Derived: 0), TaskCounts(owner));
+
+        var plan = await PlanAsync(client, material);
+        Assert.Equal(NoteProcessingAuthorizationPurpose.NativeNoteProcessing, plan.Purpose);
+        Assert.Equal(NoteProcessingAuthorizationPurpose.MaterialScope, plan.MaterialScope);
+        Assert.Equal(NoteProcessingAuthorizationRules.CostNotice, plan.CostNotice);
+        Assert.True(plan.PossibleCharge);
+        Assert.True(plan.AsrRequired);
+        Assert.NotEqual(Guid.Empty, plan.AuthorizationRevision);
+        Assert.False(plan.StandingAuthorizationValid);
+        Assert.Equal(2, plan.Targets.Count);
+        Assert.Contains(plan.Targets, target =>
+            target.Kind == NoteProcessingTaskKind.Asr && target.Required && target.Paid);
+        Assert.Contains(plan.Targets, target =>
+            target.Kind == NoteProcessingTaskKind.Derived && target.Required && target.Paid);
+        Assert.All(plan.Targets, target =>
+        {
+            Assert.False(string.IsNullOrWhiteSpace(target.ModelName));
+            Assert.False(string.IsNullOrWhiteSpace(target.Endpoint));
+        });
+        Assert.Equal((Asr: 0, Derived: 0), TaskCounts(owner));
+        Assert.Equal(0, host.Models.Calls);
+
+        var stale = Consent(plan) with { AuthorizationRevision = Guid.NewGuid() };
+        var rejected = await client.PostAsJsonAsync(Processing + "/start",
+            new StartNoteProcessingRequest(material.NoteId, material.VersionId, stale));
+        Assert.Equal(HttpStatusCode.Conflict, rejected.StatusCode);
+        Assert.Equal((Asr: 0, Derived: 0), TaskCounts(owner));
+
+        var invalidStanding = Consent(plan) with
+        {
+            StandingAuthorizationRevision = Guid.NewGuid()
+        };
+        var rejectedStanding = await client.PostAsJsonAsync(Processing + "/start",
+            new StartNoteProcessingRequest(material.NoteId, material.VersionId,
+                invalidStanding));
+        Assert.Equal(HttpStatusCode.Conflict, rejectedStanding.StatusCode);
+        Assert.Equal((Asr: 0, Derived: 0), TaskCounts(owner));
+
+        var started = await StartAsync(client, material);
+        Assert.NotNull(started.Authorization);
+        Assert.True(started.Authorization!.Confirmed);
+        Assert.True(started.Authorization.PossibleChargeAcknowledged);
+        Assert.Equal(NoteProcessingAuthorizationSource.Manual, started.Authorization.Source);
+        Assert.Equal(plan.AuthorizationRevision,
+            started.Authorization.AuthorizationRevision);
+        Assert.Equal(2, started.Authorization.Targets.Count);
+        Assert.Equal(plan.Targets, started.Authorization.Targets);
+        Assert.Equal(plan.PurposeText, started.Authorization.PurposeText);
+        Assert.Equal(plan.MaterialScopeText, started.Authorization.MaterialScopeText);
+        Assert.Equal((Asr: 1, Derived: 1), TaskCounts(owner));
+
+        var persisted = await StatusAsync(client, material.NoteId, material.VersionId);
+        Assert.Equal(started.Authorization.AuthorizationRevision,
+            persisted.Authorization?.AuthorizationRevision);
+        Assert.Equal(0, host.Models.Calls);
+    }
+
+    [Fact]
+    public async Task LegacyRandomRequestIdsConvergeAndConflictingTargetsReturn409()
+    {
+        var owner = await OwnerAsync("legacy-chain");
+        using var client = AuthRegistrationTestHost.Authed(host.Factory, owner.AccessToken);
+        var defaults = await ConfigureAsync(client, auto: false);
+        var material = await CompleteMaterialAsync(owner, client, withAudio: true);
+        var started = await StartAsync(client, material);
+        Assert.NotNull(started.Asr.TaskId);
+        Assert.NotNull(started.Derived.TaskId);
+
+        using var scope = host.Factory.Services.CreateScope();
+        var materials = scope.ServiceProvider.GetRequiredService<NoteMaterialUploadStore>();
+        var asrService = scope.ServiceProvider.GetRequiredService<NoteAsrService>();
+        var version = await materials.GetAsync(owner.UserId, material.VersionId,
+            CancellationToken.None);
+        var asrTemplate = await asrService.BuildDefaultRequestForProcessingAsync(owner.UserId,
+            version, confirmed: true, CancellationToken.None);
+        var asrRequests = Enumerable.Range(0, 3)
+            .Select(_ => asrTemplate with { TaskId = Guid.NewGuid() })
+            .ToArray();
+        var asrResponses = await Task.WhenAll(asrRequests.Select(request =>
+            client.PostAsJsonAsync("/api/v1/native-notes/asr-tasks", request)));
+        var asrTasks = new List<NoteAsrTaskDto>();
+        foreach (var response in asrResponses)
+            asrTasks.Add(await Data<NoteAsrTaskDto>(response));
+        Assert.All(asrTasks, task => Assert.Equal(started.Asr.TaskId, task.TaskId));
+        Assert.Equal((Asr: 1, Derived: 1), TaskCounts(owner));
+
+        var derivedState = await DerivedTaskAsync(owner.UserId, started.Derived.TaskId.Value);
+        var derivedRequests = Enumerable.Range(0, 3).Select(_ =>
+            derivedState.Request with { TaskId = Guid.NewGuid() }).ToArray();
+        var derivedResponses = await Task.WhenAll(derivedRequests.Select(request =>
+            client.PostAsJsonAsync("/api/v1/native-notes/derived-tasks", request)));
+        var derivedTasks = new List<NoteDerivedTaskDto>();
+        foreach (var response in derivedResponses)
+            derivedTasks.Add(await Data<NoteDerivedTaskDto>(response));
+        Assert.All(derivedTasks, task => Assert.Equal(started.Derived.TaskId, task.TaskId));
+        Assert.Equal((Asr: 1, Derived: 1), TaskCounts(owner));
+
+        var otherAsr = await Data<AiModelDto>(await client.PostAsJsonAsync("/api/v1/ai/models",
+            new SaveAiModelRequest("Other ASR " + Guid.NewGuid().ToString("N"),
+                "http://other-asr.invalid/v1/", "mimo-v2.5-asr", true,
+                [AiModelCapability.Transcription], 30, 1024, "other-asr-key",
+                AsrPresetId: "mimo-asr")));
+        var asrDestination = (await Data<NoteAsrDestinationsDto>(
+                await client.GetAsync("/api/v1/native-notes/asr-tasks/destinations")))
+            .Items.Single(item => item.ModelId == otherAsr.Id);
+        var conflictingAsr = asrTemplate with
+        {
+            TaskId = Guid.NewGuid(),
+            Consent = new AiAsrDestinationConsent(asrDestination.ModelId,
+                asrDestination.ModelRevision, asrDestination.Endpoint,
+                asrDestination.PresetId, asrDestination.PresetVersion, true)
+        };
+        Assert.Equal(HttpStatusCode.Conflict, (await client.PostAsJsonAsync(
+            "/api/v1/native-notes/asr-tasks", conflictingAsr)).StatusCode);
+
+        var otherDerived = await Data<AiModelDto>(await client.PostAsJsonAsync("/api/v1/ai/models",
+            new SaveAiModelRequest("Other derived " + Guid.NewGuid().ToString("N"),
+                "http://other-derived.invalid/v1/", "synthetic-other-text", true,
+                [AiModelCapability.Text, AiModelCapability.Vision], 30, 4096,
+                "other-derived-key")));
+        Assert.NotEqual(defaults.Derived.Id, otherDerived.Id);
+        var conflictingDerived = derivedState.Request with
+        {
+            TaskId = Guid.NewGuid(),
+            Consent = new NoteDerivedGenerationConsent(otherDerived.Id,
+                otherDerived.Revision, otherDerived.BaseUrl, true)
+        };
+        Assert.Equal(HttpStatusCode.Conflict, (await client.PostAsJsonAsync(
+            "/api/v1/native-notes/derived-tasks", conflictingDerived)).StatusCode);
+        Assert.Equal((Asr: 1, Derived: 1), TaskCounts(owner));
+        Assert.Equal(0, host.Models.Calls);
+        Assert.Equal(0, await AiCallCountAsync(owner.UserId));
+    }
+
+    [Fact]
+    public async Task LegacyAsrStartCannotForgeAChainParent()
+    {
+        var owner = await OwnerAsync("legacy-parent-forge");
+        using var client = AuthRegistrationTestHost.Authed(host.Factory, owner.AccessToken);
+        _ = await ConfigureAsync(client, auto: false);
+        var material = await CompleteMaterialAsync(owner, client, withAudio: true);
+
+        using var scope = host.Factory.Services.CreateScope();
+        var materials = scope.ServiceProvider.GetRequiredService<NoteMaterialUploadStore>();
+        var asrService = scope.ServiceProvider.GetRequiredService<NoteAsrService>();
+        var version = await materials.GetAsync(owner.UserId, material.VersionId,
+            CancellationToken.None);
+        var template = await asrService.BuildDefaultRequestForProcessingAsync(owner.UserId,
+            version, confirmed: true, CancellationToken.None);
+        var forged = template with
+        {
+            TaskId = Guid.NewGuid(),
+            ParentTaskId = Guid.NewGuid(),
+            ReprocessReason = "forged"
+        };
+
+        var response = await client.PostAsJsonAsync("/api/v1/native-notes/asr-tasks", forged);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal((Asr: 0, Derived: 0), TaskCounts(owner));
+        Assert.Equal(0, host.Models.Calls);
+    }
+
+    [Fact]
+    public async Task HighLevelStartAdoptsAnExistingLegacyRandomAsrChain()
+    {
+        var owner = await OwnerAsync("legacy-first");
+        using var client = AuthRegistrationTestHost.Authed(host.Factory, owner.AccessToken);
+        _ = await ConfigureAsync(client, auto: false);
+        var material = await CompleteMaterialAsync(owner, client, withAudio: true);
+
+        using var scope = host.Factory.Services.CreateScope();
+        var materials = scope.ServiceProvider.GetRequiredService<NoteMaterialUploadStore>();
+        var asrService = scope.ServiceProvider.GetRequiredService<NoteAsrService>();
+        var version = await materials.GetAsync(owner.UserId, material.VersionId,
+            CancellationToken.None);
+        var legacyRequest = await asrService.BuildDefaultRequestForProcessingAsync(owner.UserId,
+            version, confirmed: true, CancellationToken.None) with { TaskId = Guid.NewGuid() };
+        var legacy = await Data<NoteAsrTaskDto>(await client.PostAsJsonAsync(
+            "/api/v1/native-notes/asr-tasks", legacyRequest));
+
+        var started = await StartAsync(client, material);
+        Assert.Equal(legacy.TaskId, started.Asr.TaskId);
+        var derived = await DerivedTaskAsync(owner.UserId, started.Derived.TaskId!.Value);
+        Assert.Equal(legacy.TaskId, derived.Request.AsrTaskId);
+        Assert.Equal((Asr: 1, Derived: 1), TaskCounts(owner));
+        Assert.Equal(0, host.Models.Calls);
+    }
+
+    [Fact]
+    public async Task HighLevelStartRejectsPartialLegacyChainAfterTheAsrTargetChanges()
+    {
+        var owner = await OwnerAsync("legacy-target-change");
+        using var client = AuthRegistrationTestHost.Authed(host.Factory, owner.AccessToken);
+        _ = await ConfigureAsync(client, auto: false);
+        var material = await CompleteMaterialAsync(owner, client, withAudio: true);
+
+        using var scope = host.Factory.Services.CreateScope();
+        var materials = scope.ServiceProvider.GetRequiredService<NoteMaterialUploadStore>();
+        var asrService = scope.ServiceProvider.GetRequiredService<NoteAsrService>();
+        var version = await materials.GetAsync(owner.UserId, material.VersionId,
+            CancellationToken.None);
+        var legacyRequest = await asrService.BuildDefaultRequestForProcessingAsync(owner.UserId,
+            version, confirmed: true, CancellationToken.None) with { TaskId = Guid.NewGuid() };
+        _ = await Data<NoteAsrTaskDto>(await client.PostAsJsonAsync(
+            "/api/v1/native-notes/asr-tasks", legacyRequest));
+
+        var otherAsr = await Data<AiModelDto>(await client.PostAsJsonAsync("/api/v1/ai/models",
+            new SaveAiModelRequest("Changed ASR " + Guid.NewGuid().ToString("N"),
+                "http://changed-asr.invalid/v1/", "mimo-v2.5-asr", true,
+                [AiModelCapability.Transcription], 30, 1024, "changed-asr-key",
+                AsrPresetId: "mimo-asr")));
+        var settings = await Data<AiModelSettingsDto>(
+            await client.GetAsync("/api/v1/ai/model-settings"));
+        _ = await Data<AiModelSettingsDto>(await client.PutAsJsonAsync(
+            "/api/v1/ai/model-settings",
+            new SaveAiModelSettingsRequest(settings.Revision, settings.Enabled,
+                settings.TextModelId, settings.VisionModelId, otherAsr.Id)));
+
+        var plan = await PlanAsync(client, material);
+        var rejected = await client.PostAsJsonAsync(Processing + "/start",
+            new StartNoteProcessingRequest(material.NoteId, material.VersionId,
+                Consent(plan)));
+
+        Assert.Equal(HttpStatusCode.Conflict, rejected.StatusCode);
+        Assert.Equal((Asr: 1, Derived: 0), TaskCounts(owner));
         Assert.Equal(0, host.Models.Calls);
     }
 
@@ -295,6 +616,10 @@ public sealed class NoteProcessingTests(NoteProcessingFixture host)
         var derivedId = status.Derived.TaskId!.Value;
         var derivedJob = host.Factory.Services.GetRequiredService<NoteDerivedJob>();
 
+        Assert.Equal(NoteProcessingAuthorizationSource.Standing,
+            status.Authorization?.Source);
+        Assert.NotNull(status.Authorization?.StandingAuthorizationRevision);
+        Assert.NotNull(status.Authorization?.AuthorizationRevision);
         Assert.Equal(NoteProcessingChainState.WaitingForAsr, status.Derived.State);
         Assert.Equal(NoteProcessingState.Processing, status.State);
         var pending = await DerivedTaskAsync(owner.UserId, derivedId);
@@ -457,9 +782,7 @@ public sealed class NoteProcessingTests(NoteProcessingFixture host)
         var stopped = await StatusAsync(client, material.NoteId, material.VersionId);
         Assert.Equal(NoteProcessingChainState.Stopped, stopped.Derived.State);
         Assert.Equal(NoteProcessingState.NeedsAttention, stopped.State);
-        var replay = await Data<NoteProcessingStatusDto>(await client.PostAsJsonAsync(
-            Processing + "/start", new StartNoteProcessingRequest(material.NoteId,
-                material.VersionId)));
+        var replay = await StartAsync(client, material);
         Assert.Equal(started.Derived.TaskId, replay.Derived.TaskId);
         Assert.Equal((Asr: 1, Derived: 1), TaskCounts(owner));
     }
@@ -481,7 +804,7 @@ public sealed class NoteProcessingTests(NoteProcessingFixture host)
         var version = await materials.GetAsync(owner.UserId, material.VersionId,
             CancellationToken.None);
         var request = await asrService.BuildDefaultRequestForProcessingAsync(owner.UserId,
-            version, CancellationToken.None);
+            version, confirmed: true, CancellationToken.None);
         Assert.NotNull(request.Route);
         _ = await asrStore.CreateAsync(owner.UserId, request, version,
             NoteAsrPlan.Build(version), request.Route, request.Route.ExecutionMode,
@@ -543,7 +866,7 @@ public sealed class NoteProcessingTests(NoteProcessingFixture host)
         var version = await materials.GetAsync(owner.UserId, material.VersionId,
             CancellationToken.None);
         var request = await asrService.BuildDefaultRequestForProcessingAsync(owner.UserId,
-            version, CancellationToken.None);
+            version, confirmed: true, CancellationToken.None);
         var created = await asrStore.CreateAsync(owner.UserId, request, version,
             NoteAsrPlan.Build(version), request.Route, request.Route?.ExecutionMode,
             NoteAsrPlan.SamplesPerCall, CancellationToken.None);
@@ -583,7 +906,7 @@ public sealed class NoteProcessingTests(NoteProcessingFixture host)
         var version = await materials.GetAsync(owner.UserId, material.VersionId,
             CancellationToken.None);
         var request = await asrService.BuildDefaultRequestForProcessingAsync(owner.UserId,
-            version, CancellationToken.None);
+            version, confirmed: true, CancellationToken.None);
         var started = await asrService.StartForOwnerAsync(owner.UserId, request,
             CancellationToken.None);
         Assert.NotNull(started.AttemptId);
@@ -627,7 +950,7 @@ public sealed class NoteProcessingTests(NoteProcessingFixture host)
         var version = await materials.GetAsync(owner.UserId, material.VersionId,
             CancellationToken.None);
         var request = await asrService.BuildDefaultRequestForProcessingAsync(owner.UserId,
-            version, CancellationToken.None);
+            version, confirmed: true, CancellationToken.None);
         var started = await asrService.StartForOwnerAsync(owner.UserId, request,
             CancellationToken.None);
         var attempt = await db.NoteAsrAttempts.SingleAsync(x =>
@@ -666,7 +989,7 @@ public sealed class NoteProcessingTests(NoteProcessingFixture host)
         var version = await materials.GetAsync(owner.UserId, material.VersionId,
             CancellationToken.None);
         var request = await asrService.BuildDefaultRequestForProcessingAsync(owner.UserId,
-            version, CancellationToken.None);
+            version, confirmed: true, CancellationToken.None);
         var started = await asrService.StartForOwnerAsync(owner.UserId, request,
             CancellationToken.None);
         var attemptId = Assert.IsType<Guid>(started.AttemptId);
@@ -705,7 +1028,7 @@ public sealed class NoteProcessingTests(NoteProcessingFixture host)
         var version = await materials.GetAsync(owner.UserId, material.VersionId,
             CancellationToken.None);
         var request = await asrService.BuildDefaultRequestForProcessingAsync(owner.UserId,
-            version, CancellationToken.None);
+            version, confirmed: true, CancellationToken.None);
         await asrStore.CreateAsync(owner.UserId, request, version,
             NoteAsrPlan.Build(version), request.Route, request.Route?.ExecutionMode,
             NoteAsrPlan.SamplesPerCall, CancellationToken.None);
@@ -930,7 +1253,8 @@ public sealed class NoteProcessingTests(NoteProcessingFixture host)
             await client.GetAsync(Processing + "/preferences"));
         var saved = await Data<NoteProcessingPreferencesDto>(await client.PutAsJsonAsync(
             Processing + "/preferences",
-            new SaveNoteProcessingPreferencesRequest(preferences.Revision, true)));
+            new SaveNoteProcessingPreferencesRequest(preferences.Revision, true,
+                ConfirmStandingAuthorization: true, AcknowledgePossibleCharge: true)));
         Assert.True(saved.AutoProcessingEnabled);
         Assert.Equal(HttpStatusCode.Conflict, (await client.PutAsJsonAsync(
             Processing + "/preferences",
@@ -1000,10 +1324,32 @@ public sealed class NoteProcessingTests(NoteProcessingFixture host)
     {
         var current = await Data<NoteProcessingPreferencesDto>(
             await client.GetAsync(Processing + "/preferences"));
+        var confirm = enabled && !current.StandingAuthorizationValid;
         return await Data<NoteProcessingPreferencesDto>(await client.PutAsJsonAsync(
             Processing + "/preferences",
-            new SaveNoteProcessingPreferencesRequest(current.Revision, enabled)));
+            new SaveNoteProcessingPreferencesRequest(current.Revision, enabled,
+                ConfirmStandingAuthorization: confirm,
+                AcknowledgePossibleCharge: confirm)));
     }
+
+    private static async Task<NoteProcessingStatusDto> StartAsync(HttpClient client,
+        NoteDerivedFixture.Material material)
+    {
+        var plan = await PlanAsync(client, material);
+        return await Data<NoteProcessingStatusDto>(await client.PostAsJsonAsync(
+            Processing + "/start", new StartNoteProcessingRequest(material.NoteId,
+                material.VersionId, Consent(plan))));
+    }
+
+    private static async Task<NoteProcessingPlanDto> PlanAsync(HttpClient client,
+        NoteDerivedFixture.Material material) =>
+        await Data<NoteProcessingPlanDto>(await client.GetAsync(
+            $"{Processing}/plan?noteId={material.NoteId}&versionId={material.VersionId}"));
+
+    private static NoteProcessingConsent Consent(NoteProcessingPlanDto plan) =>
+        new(plan.Purpose, plan.MaterialScope, plan.CostNotice,
+            PossibleChargeAcknowledged: true, Confirmed: true,
+            plan.AuthorizationRevision, plan.StandingAuthorizationRevision);
 
     private async Task<NoteDerivedFixture.Material> CompleteMaterialAsync(
         AuthRegistrationTestHost.Session owner, HttpClient client, bool withAudio,

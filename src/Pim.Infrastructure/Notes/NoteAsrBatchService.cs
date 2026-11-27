@@ -302,11 +302,11 @@ public sealed class NoteAsrBatchService(PimDbContext db, ICurrentUserService use
             if (existing.Fingerprint != NoteMaterialManifestValidator.Hash(JsonSerializer.Serialize(start,
                     new JsonSerializerOptions(JsonSerializerDefaults.Web))))
                 throw new DomainException(40901, "Batch 客户端任务标识已绑定另一输入");
-            await managedNoteAsr.StartAsync(start, ct);
+            await managedNoteAsr.StartChainedForOwnerAsync(owner, start, ct);
         }
         catch (DomainException error) when (error.ErrorCode == 40401)
         {
-            await managedNoteAsr.StartAsync(start, ct);
+            await managedNoteAsr.StartChainedForOwnerAsync(owner, start, ct);
         }
         var state = await tasks.ReadAsync(owner, clientTaskId, ct);
         if (state.ParentTaskId != source.Request.TaskId || state.Request.ParentTaskId != source.Request.TaskId ||

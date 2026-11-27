@@ -2272,6 +2272,31 @@ namespace Pim.Infrastructure.Data.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("revision");
 
+                    b.Property<string>("StandingAuthorizationCostNotice")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("standing_authorization_cost_notice");
+
+                    b.Property<string>("StandingAuthorizationMaterialScope")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("standing_authorization_material_scope");
+
+                    b.Property<bool>("StandingAuthorizationPossibleChargeAcknowledged")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false)
+                        .HasColumnName("standing_authorization_possible_charge_acknowledged");
+
+                    b.Property<string>("StandingAuthorizationPurpose")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("standing_authorization_purpose");
+
+                    b.Property<Guid?>("StandingAuthorizationRevision")
+                        .HasColumnType("uuid")
+                        .HasColumnName("standing_authorization_revision");
+
                     b.Property<DateTimeOffset>("UpdatedAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at");

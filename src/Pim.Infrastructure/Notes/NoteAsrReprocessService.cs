@@ -40,7 +40,7 @@ public sealed class NoteAsrReprocessService(
         if (existing is not null)
         {
             await EnsureReplayMatchesAsync(existing, sourceTaskId, reason, request, ct);
-            var replayed = await noteAsr.StartAsync(existing.Request, ct);
+            var replayed = await noteAsr.StartChainedForOwnerAsync(owner, existing.Request, ct);
             return new(replayed, sourceTaskId, reason);
         }
 
@@ -92,7 +92,7 @@ public sealed class NoteAsrReprocessService(
             sourceTaskId,
             reason);
 
-        var task = await noteAsr.StartAsync(start, ct);
+        var task = await noteAsr.StartChainedForOwnerAsync(owner, start, ct);
         var created = await tasks.ReadAsync(owner, request.ClientTaskId, ct);
         if (created.ParentTaskId != sourceTaskId || created.Request.ParentTaskId != sourceTaskId ||
             !string.Equals(created.ReprocessReason, reason, StringComparison.Ordinal) ||

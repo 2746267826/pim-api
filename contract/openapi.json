@@ -19095,6 +19095,67 @@
         ],
         "type": "object"
       },
+      "NoteProcessingAuthorizationDto": {
+        "additionalProperties": false,
+        "properties": {
+          "authorizationRevision": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "confirmed": {
+            "type": "boolean"
+          },
+          "costNotice": {
+            "type": "string"
+          },
+          "materialScope": {
+            "type": "string"
+          },
+          "materialScopeText": {
+            "type": "string"
+          },
+          "possibleCharge": {
+            "type": "boolean"
+          },
+          "possibleChargeAcknowledged": {
+            "type": "boolean"
+          },
+          "purpose": {
+            "type": "string"
+          },
+          "purposeText": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "standingAuthorizationRevision": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          },
+          "targets": {
+            "items": {
+              "$ref": "#/components/schemas/NoteProcessingTargetDto"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "authorizationRevision",
+          "confirmed",
+          "costNotice",
+          "materialScope",
+          "materialScopeText",
+          "possibleCharge",
+          "possibleChargeAcknowledged",
+          "purpose",
+          "purposeText",
+          "source",
+          "targets"
+        ],
+        "type": "object"
+      },
       "NoteProcessingChainDto": {
         "additionalProperties": false,
         "properties": {
@@ -19173,6 +19234,44 @@
         ],
         "type": "string"
       },
+      "NoteProcessingConsent": {
+        "additionalProperties": false,
+        "properties": {
+          "authorizationRevision": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "confirmed": {
+            "type": "boolean"
+          },
+          "costNotice": {
+            "type": "string"
+          },
+          "materialScope": {
+            "type": "string"
+          },
+          "possibleChargeAcknowledged": {
+            "type": "boolean"
+          },
+          "purpose": {
+            "type": "string"
+          },
+          "standingAuthorizationRevision": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "required": [
+          "authorizationRevision",
+          "confirmed",
+          "costNotice",
+          "materialScope",
+          "possibleChargeAcknowledged",
+          "purpose"
+        ],
+        "type": "object"
+      },
       "NoteProcessingIssueDto": {
         "additionalProperties": false,
         "properties": {
@@ -19192,20 +19291,145 @@
         ],
         "type": "object"
       },
+      "NoteProcessingPlanDto": {
+        "additionalProperties": false,
+        "properties": {
+          "asrRequired": {
+            "type": "boolean"
+          },
+          "authorizationRevision": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "costNotice": {
+            "type": "string"
+          },
+          "materialScope": {
+            "type": "string"
+          },
+          "materialScopeText": {
+            "type": "string"
+          },
+          "noteId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "possibleCharge": {
+            "type": "boolean"
+          },
+          "purpose": {
+            "type": "string"
+          },
+          "purposeText": {
+            "type": "string"
+          },
+          "standingAuthorizationRevision": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          },
+          "standingAuthorizationValid": {
+            "type": "boolean"
+          },
+          "targets": {
+            "items": {
+              "$ref": "#/components/schemas/NoteProcessingTargetDto"
+            },
+            "type": "array"
+          },
+          "versionId": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "asrRequired",
+          "authorizationRevision",
+          "costNotice",
+          "materialScope",
+          "materialScopeText",
+          "noteId",
+          "possibleCharge",
+          "purpose",
+          "purposeText",
+          "standingAuthorizationValid",
+          "targets",
+          "versionId"
+        ],
+        "type": "object"
+      },
+      "NoteProcessingPlanDtoApiResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "data": {
+            "$ref": "#/components/schemas/NoteProcessingPlanDto"
+          },
+          "message": {
+            "type": "string"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
+        "type": "object"
+      },
       "NoteProcessingPreferencesDto": {
         "additionalProperties": false,
         "properties": {
           "autoProcessingEnabled": {
             "type": "boolean"
           },
+          "costNotice": {
+            "type": "string"
+          },
+          "materialScope": {
+            "type": "string"
+          },
+          "materialScopeText": {
+            "type": "string"
+          },
+          "possibleChargeAcknowledged": {
+            "type": "boolean"
+          },
+          "purpose": {
+            "type": "string"
+          },
+          "purposeText": {
+            "type": "string"
+          },
           "revision": {
             "format": "uuid",
             "type": "string"
+          },
+          "standingAuthorizationRevision": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          },
+          "standingAuthorizationValid": {
+            "type": "boolean"
           }
         },
         "required": [
           "autoProcessingEnabled",
-          "revision"
+          "costNotice",
+          "materialScope",
+          "materialScopeText",
+          "possibleChargeAcknowledged",
+          "purpose",
+          "purposeText",
+          "revision",
+          "standingAuthorizationValid"
         ],
         "type": "object"
       },
@@ -19256,6 +19480,15 @@
           },
           "asr": {
             "$ref": "#/components/schemas/NoteProcessingChainDto"
+          },
+          "authorization": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/NoteProcessingAuthorizationDto"
+              }
+            ],
+            "nullable": true,
+            "type": "object"
           },
           "autoProcessingEnabled": {
             "type": "boolean"
@@ -19350,6 +19583,64 @@
           "code",
           "message",
           "timestamp"
+        ],
+        "type": "object"
+      },
+      "NoteProcessingTargetDto": {
+        "additionalProperties": false,
+        "properties": {
+          "endpoint": {
+            "nullable": true,
+            "type": "string"
+          },
+          "executionMode": {
+            "nullable": true,
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/NoteProcessingTaskKind"
+          },
+          "model": {
+            "nullable": true,
+            "type": "string"
+          },
+          "modelId": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          },
+          "modelName": {
+            "nullable": true,
+            "type": "string"
+          },
+          "modelRevision": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          },
+          "paid": {
+            "type": "boolean"
+          },
+          "presetId": {
+            "nullable": true,
+            "type": "string"
+          },
+          "presetVersion": {
+            "nullable": true,
+            "type": "string"
+          },
+          "required": {
+            "type": "boolean"
+          },
+          "route": {
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "paid",
+          "required"
         ],
         "type": "object"
       },
@@ -23586,7 +23877,13 @@
       "SaveNoteProcessingPreferencesRequest": {
         "additionalProperties": false,
         "properties": {
+          "acknowledgePossibleCharge": {
+            "type": "boolean"
+          },
           "autoProcessingEnabled": {
+            "type": "boolean"
+          },
+          "confirmStandingAuthorization": {
             "type": "boolean"
           },
           "expectedRevision": {
@@ -24442,6 +24739,15 @@
       "StartNoteProcessingRequest": {
         "additionalProperties": false,
         "properties": {
+          "consent": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/NoteProcessingConsent"
+              }
+            ],
+            "nullable": true,
+            "type": "object"
+          },
           "noteId": {
             "format": "uuid",
             "type": "string"
@@ -45345,6 +45651,65 @@
           },
           "404": {
             "description": "Not Found"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Native note processing"
+        ]
+      }
+    },
+    "/api/v1/native-notes/processing/plan": {
+      "get": {
+        "parameters": [
+          {
+            "in": "query",
+            "name": "noteId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "versionId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NoteProcessingPlanDtoApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "409": {
+            "description": "Conflict"
           }
         },
         "security": [

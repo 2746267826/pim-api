@@ -77,7 +77,7 @@ public sealed class NoteDerivedService(
     }
 
     internal async Task<NoteDerivedGenerationConsent> ResolveDefaultConsentForProcessingAsync(
-        Guid owner, NoteMaterialVersionDto version, CancellationToken ct)
+        Guid owner, NoteMaterialVersionDto version, bool confirmed, CancellationToken ct)
     {
         var runtime = await db.AiModelRuntime.AsNoTracking().SingleOrDefaultAsync(ct);
         if (runtime is null || !runtime.Enabled)
@@ -90,8 +90,8 @@ public sealed class NoteDerivedService(
             .SingleOrDefaultAsync(x => x.Id == selectedModelId, ct)
             ?? throw Conflict("账号默认文本模型不存在，无法整理笔记");
         var consent = new NoteDerivedGenerationConsent(profile.Id, profile.Revision,
-            profile.BaseUrl, true);
-        await ValidateDestinationAsync(consent, hasImages, ct);
+            profile.BaseUrl, confirmed);
+        await ValidateDestinationAsync(consent, hasImages, ct, requireConfirmed: false);
         return consent;
     }
 
@@ -521,9 +521,9 @@ public sealed class NoteDerivedService(
     }
 
     private async Task ValidateDestinationAsync(NoteDerivedGenerationConsent? consent, bool hasImages,
-        CancellationToken ct)
+        CancellationToken ct, bool requireConfirmed = true)
     {
-        if (consent?.Confirmed != true)
+        if (consent is null || (requireConfirmed && !consent.Confirmed))
             throw Invalid("请核对本次固定材料、派生目标与实际地址，并明确同意发送");
         var profile = await db.AiModelProfiles.AsNoTracking().SingleOrDefaultAsync(x => x.Id == consent.ModelId, ct);
         if (profile is null || !profile.Enabled || profile.Capabilities == 4 ||

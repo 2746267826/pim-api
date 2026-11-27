@@ -25,14 +25,29 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
     private NoteAsrTaskDto Describe(NoteAsrState state) => NoteAsrTaskStore.Describe(state) with
     { BackgroundProcessingAvailable = BackgroundProcessingAvailable };
     public Task<NoteAsrTaskDto> StartAsync(StartNoteAsrRequest request, CancellationToken ct) =>
-        StartForOwnerAsync(Owner, request, ct);
+        StartCoreAsync(Owner, request, allowChain: false, ct);
 
-    internal async Task<NoteAsrTaskDto> StartForOwnerAsync(Guid owner,
-        StartNoteAsrRequest request, CancellationToken ct)
+    internal Task<NoteAsrTaskDto> StartForOwnerAsync(Guid owner,
+        StartNoteAsrRequest request, CancellationToken ct) =>
+        StartCoreAsync(owner, request, allowChain: false, ct);
+
+    /// <summary>
+    /// Starts a task that is already bound to a trusted server-side parent. Only the reprocess and
+    /// batch pipelines may use this; the public ASR start endpoint must never choose a parent chain.
+    /// </summary>
+    internal Task<NoteAsrTaskDto> StartChainedForOwnerAsync(Guid owner,
+        StartNoteAsrRequest request, CancellationToken ct) =>
+        StartCoreAsync(owner, request, allowChain: true, ct);
+
+    private async Task<NoteAsrTaskDto> StartCoreAsync(Guid owner, StartNoteAsrRequest request,
+        bool allowChain, CancellationToken ct)
     {
         await RequireActiveOwnerAsync(owner, ct);
         if (request.ExpectedUserId != owner) throw new DomainException(40301, "账号已改变，请重新核对材料和目标");
         if (request.TaskId == Guid.Empty || request.VersionId == Guid.Empty) throw new DomainException(40001, "任务或版本标识无效");
+        if (!allowChain && (request.ParentTaskId is not null ||
+                            !string.IsNullOrWhiteSpace(request.ReprocessReason)))
+            throw new DomainException(40001, "任务链来源只能由服务端重处理或批量流程提交");
         if ((request.ParentTaskId is null) != string.IsNullOrWhiteSpace(request.ReprocessReason) ||
             request.ReprocessReason is { Length: > 240 })
             throw new DomainException(40001, "重跑来源和原因必须同时提供，原因最多240字");
@@ -53,7 +68,7 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
         var state = await tasks.CreateAsync(owner, request, version, NoteAsrPlan.Build(version, samplesPerCall),
             resolved?.Consent, resolved?.ExecutionMode, samplesPerCall, ct);
         await EnsureAttemptAsync(owner, state, ct);
-        return Describe(await tasks.ReadAsync(owner, request.TaskId, ct));
+        return Describe(await tasks.ReadAsync(owner, state.Request.TaskId, ct));
     }
 
     /// <summary>
@@ -63,7 +78,7 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
     /// before any child task is persisted.
     /// </summary>
     internal async Task<StartNoteAsrRequest> BuildDefaultRequestForProcessingAsync(Guid owner,
-        NoteMaterialVersionDto version, CancellationToken ct)
+        NoteMaterialVersionDto version, bool confirmed, CancellationToken ct)
     {
         var taskId = NoteProcessingIdentity.Task(owner, version.Upload.VersionId,
             NoteProcessingTaskKind.Asr);
@@ -71,7 +86,8 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
             .SingleOrDefaultAsync(x => x.OwnerId == owner, ct);
         if (config is null)
         {
-            var (consent, _) = await DefaultCloudConsentAsync(owner, preferredModelId: null, ct);
+            var (consent, _) = await DefaultCloudConsentAsync(owner, preferredModelId: null,
+                confirmed, ct);
             return new(taskId, owner, version.Upload.VersionId, consent);
         }
 
@@ -79,7 +95,7 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
         if (!NoteAsrRoute.Known(route))
             throw new DomainException(40901, "账号当前转写路由无效，材料保持待发起");
         var routeConsent = new NoteAsrRouteConsent(route, config.Revision,
-            config.ConsentVersion, true, NoteAsrExecutionMode.Realtime);
+            config.ConsentVersion, confirmed, NoteAsrExecutionMode.Realtime);
         if (route == NoteAsrRoute.Local)
         {
             if (string.IsNullOrWhiteSpace(config.LocalModelId))
@@ -87,7 +103,8 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
             return new(taskId, owner, version.Upload.VersionId, null, "auto", routeConsent);
         }
 
-        var (cloudConsent, descriptor) = await DefaultCloudConsentAsync(owner, config.CloudModelId, ct);
+        var (cloudConsent, descriptor) = await DefaultCloudConsentAsync(owner, config.CloudModelId,
+            confirmed, ct);
         var isMultimodal = descriptor.Id == MimoMultimodalPreset.PresetId;
         if (route == NoteAsrRoute.CloudMultimodal && !isMultimodal)
             throw new DomainException(40901,
@@ -728,7 +745,8 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
     }
 
     private async Task<(AiAsrDestinationConsent Consent, AiAsrPresetDto Descriptor)>
-        DefaultCloudConsentAsync(Guid owner, Guid? preferredModelId, CancellationToken ct)
+        DefaultCloudConsentAsync(Guid owner, Guid? preferredModelId, bool confirmed,
+            CancellationToken ct)
     {
         var runtime = await db.AiModelRuntime.AsNoTracking().SingleOrDefaultAsync(ct);
         if (runtime is null || !runtime.Enabled)
@@ -745,14 +763,16 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
         var endpoint = AiAsrPresetRegistry.OperationEndpoint(
             preset.NormalizeEndpoint(model.BaseUrl), descriptor);
         var consent = new AiAsrDestinationConsent(model.Id, model.Revision, endpoint,
-            descriptor.Id, descriptor.Version, true);
-        _ = await ValidateDestinationAsync(consent, "auto", ct);
+            descriptor.Id, descriptor.Version, confirmed);
+        _ = await ValidateDestinationAsync(consent, "auto", ct, requireConfirmed: false);
         return (consent, descriptor);
     }
 
-    private async Task<AiAsrPresetDto> ValidateDestinationAsync(AiAsrDestinationConsent? consent, string language, CancellationToken ct)
+    private async Task<AiAsrPresetDto> ValidateDestinationAsync(AiAsrDestinationConsent? consent,
+        string language, CancellationToken ct, bool requireConfirmed = true)
     {
-        if (consent?.Confirmed != true) throw new DomainException(40001, "请明确同意将全部录音分片发送至所示ASR目标");
+        if (consent is null || (requireConfirmed && !consent.Confirmed))
+            throw new DomainException(40001, "请明确同意将全部录音分片发送至所示ASR目标");
         var model = await db.AiModelProfiles.AsNoTracking().SingleOrDefaultAsync(x => x.Id == consent.ModelId, ct);
         if (model is null || !model.Enabled ||
             (model.Capabilities & AiModelCapabilityFlags.Transcription) == 0 ||

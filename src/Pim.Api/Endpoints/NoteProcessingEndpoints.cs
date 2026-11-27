@@ -25,6 +25,12 @@ public static class NoteProcessingEndpoints
                 await service.SaveAsync(request, ct))))
             .Produces<ApiResponse<NoteProcessingPreferencesDto>>().Produces(400).Produces(401)
             .Produces(403).Produces(409);
+        group.MapGet("/plan", async ([FromQuery] Guid noteId, [FromQuery] Guid versionId,
+            [FromServices] NoteProcessingService service, CancellationToken ct) =>
+            Results.Ok(ApiResponse<NoteProcessingPlanDto>.Ok(
+                await service.PlanAsync(noteId, versionId, ct))))
+            .Produces<ApiResponse<NoteProcessingPlanDto>>().Produces(400).Produces(401)
+            .Produces(403).Produces(404).Produces(409);
         group.MapPost("/start", async (StartNoteProcessingRequest request,
             [FromServices] NoteProcessingService service, CancellationToken ct) =>
             Results.Ok(ApiResponse<NoteProcessingStatusDto>.Ok(
