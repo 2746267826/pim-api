@@ -134,6 +134,7 @@ it('hides raw processing state, backend reasons and diagnostics from ordinary us
   expect(screen.queryByText(/provider/)).toBeNull()
   expect(screen.queryByText(/Vendor/)).toBeNull()
   expect(screen.queryByText(/backend issue diagnostic/)).toBeNull()
+  expect(await screen.findByText('发起前处理计划')).toBeTruthy()
   expect(screen.queryByText(/private-asr\.invalid/)).toBeNull()
   expect(screen.queryByText(/private-derived\.invalid/)).toBeNull()
 })
@@ -148,7 +149,7 @@ it('keeps raw processing state, backend reasons and diagnostics for admins', asy
   expect(screen.getByText('MiMo provider derived wait')).toBeTruthy()
   expect(screen.getByText('MiMo raw ASR error')).toBeTruthy()
   expect(screen.getByText('backend issue diagnostic')).toBeTruthy()
-  expect(screen.getByText(/private-asr\.invalid/)).toBeTruthy()
+  expect(await screen.findByText(/private-asr\.invalid/)).toBeTruthy()
   expect(screen.getByText(/private-derived\.invalid/)).toBeTruthy()
 })
 
@@ -158,7 +159,7 @@ it('uses a generic action failure for ordinary users and keeps the backend error
 
   const ordinaryButton = await screen.findByRole('button', { name: '使用账号默认模型发起' })
   expect((ordinaryButton as HTMLButtonElement).disabled).toBe(true)
-  await userEvent.click(screen.getByRole('checkbox', { name: /我已核对以上处理目标/ }))
+  await userEvent.click(await screen.findByRole('checkbox', { name: /我已核对以上处理目标/ }))
   await userEvent.click(ordinaryButton)
   expect(await screen.findByText(/发起未确认，请刷新核对/)).toBeTruthy()
   expect(screen.queryByText(/MiMo provider start failure/)).toBeNull()
@@ -177,7 +178,7 @@ it('shows the target, scope, cost and revision before sending the exact consent 
   page(false)
 
   expect(await screen.findByText('发起前处理计划')).toBeTruthy()
-  expect(screen.getByText(/材料范围：当前固定版本的全部材料/)).toBeTruthy()
+  expect(screen.getByText(plan.materialScopeText)).toBeTruthy()
   expect(screen.getAllByText(/可能按服务商用量产生费用/).length).toBeGreaterThan(0)
   expect(screen.getByText(new RegExp(plan.authorizationRevision))).toBeTruthy()
   expect(screen.getByText(/合成转写模型/)).toBeTruthy()
@@ -232,7 +233,7 @@ it('shows the persisted authorization snapshot for automatic processing', async 
 
   expect(await screen.findByRole('heading', { name: '已持久化的处理授权' })).toBeTruthy()
   expect(screen.getByText(/来源：账号持续授权/)).toBeTruthy()
-  expect(screen.getByText(/材料范围：当前固定版本的全部材料/)).toBeTruthy()
+  expect(screen.getByText(plan.materialScopeText)).toBeTruthy()
   expect(screen.getByText(new RegExp(plan.authorizationRevision))).toBeTruthy()
   expect(screen.getByText(/合成转写模型/)).toBeTruthy()
   expect(screen.getByText(/合成整理模型/)).toBeTruthy()
