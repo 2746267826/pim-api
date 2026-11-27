@@ -1,3 +1,5 @@
+using System.Net;
+using System.Text;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
@@ -90,6 +92,53 @@ public sealed class NoteAsrCanonicalBatchTests
     }
 
     [SkippableFact]
+    public async Task Batch_route_consent_drift_at_freeze_creates_no_job_or_provider_call()
+    {
+        await using var seeded = await SeedAsync();
+        seeded.Service.BeforeFreezeForTests = ct => DriftConsentAsync(seeded, ct);
+
+        var error = await Assert.ThrowsAsync<DomainException>(() =>
+            StartCanonicalBatchAsync(seeded));
+
+        Assert.Equal(40901, error.ErrorCode);
+        await seeded.AssertNoSubmissionAsync();
+    }
+
+    [SkippableFact]
+    public async Task Batch_route_consent_drift_before_upload_never_uploads_or_creates()
+    {
+        await using var seeded = await SeedAsync(syntheticUpload: true);
+        seeded.Service.BeforeUploadForTests = ct => DriftConsentAsync(seeded, ct);
+
+        var job = await StartCanonicalBatchAsync(seeded);
+
+        Assert.Equal("Failed", job.Status);
+        Assert.Equal("batch_route_consent_drift", job.LastErrorCode);
+        Assert.Null(job.BatchId);
+        Assert.Null(job.InputFileId);
+        Assert.Equal(0, seeded.Factory.UploadCalls);
+        Assert.Equal(0, seeded.Factory.CreateCalls);
+        await seeded.AssertRevokedAsync(expectUpload: false);
+    }
+
+    [SkippableFact]
+    public async Task Batch_route_consent_drift_before_create_never_creates_paid_batch()
+    {
+        await using var seeded = await SeedAsync(syntheticUpload: true);
+        seeded.Service.BeforeCreateForTests = ct => DriftConsentAsync(seeded, ct);
+
+        var job = await StartCanonicalBatchAsync(seeded);
+
+        Assert.Equal("Failed", job.Status);
+        Assert.Equal("batch_route_consent_drift", job.LastErrorCode);
+        Assert.Null(job.BatchId);
+        Assert.Equal("file-in-1", job.InputFileId);
+        Assert.Equal(1, seeded.Factory.UploadCalls);
+        Assert.Equal(0, seeded.Factory.CreateCalls);
+        await seeded.AssertRevokedAsync(expectUpload: true);
+    }
+
+    [SkippableFact]
     public async Task Batch_initial_submit_rejects_task_attempt_binding_mismatch_without_job_or_provider()
     {
         await using var seeded = await SeedAsync();
@@ -115,7 +164,29 @@ public sealed class NoteAsrCanonicalBatchTests
                 Confirmed: true, BatchScopeConfirmed: true),
             new NoteAsrReprocessReason(NoteAsrReprocessReasonKind.Manual, "canonical batch proof"));
 
-    private static async Task<Seeded> SeedAsync(bool includeDuplicateAttempt = true)
+    private static async Task<NoteAsrBatchJobDto> StartCanonicalBatchAsync(Seeded seeded,
+        CancellationToken ct = default)
+    {
+        await using var jsonl = await NoteAsrBatchJsonlReader.GenerateFromPlanAsync(seeded.Owner,
+            seeded.VersionId, seeded.Steps, NoteAsrPlan.SamplesPerCall, "zh", seeded.Model,
+            seeded.PromptText, seeded.Materials, 128 * 1024 * 1024,
+            Enumerable.Range(0, seeded.Steps.Count).Select(NoteAsrBatchJsonlReader.CustomId).ToArray(),
+            Enumerable.Range(0, seeded.Steps.Count).ToArray(), 8192, ct);
+        return await seeded.Service.StartAsync(new StartNoteAsrBatchRequest(seeded.CanonicalTaskId,
+                seeded.CanonicalAttemptId, seeded.ProfileId, seeded.ConsentVersion, true),
+            jsonl.Content, jsonl.Length, "pim-canonical.jsonl", ct);
+    }
+
+    private static async Task DriftConsentAsync(Seeded seeded, CancellationToken ct)
+    {
+        await using var db = seeded.NewDb();
+        var config = await db.NoteAsrRouteConfigs.SingleAsync(x => x.OwnerId == seeded.Owner, ct);
+        config.ConsentVersion = "consent-v2";
+        await db.SaveChangesAsync(ct);
+    }
+
+    private static async Task<Seeded> SeedAsync(bool includeDuplicateAttempt = true,
+        bool syntheticUpload = false)
     {
         var temp = await TempMigrationDatabase.CreateAsync("test_note_asr_canonical_batch");
         await temp.MigrateAsync();
@@ -173,7 +244,7 @@ public sealed class NoteAsrCanonicalBatchTests
             material.Request.VersionId, inputSha, manifestSha, steps, configRevision,
             consentVersion, consent, route, attemptId: duplicateAttemptId, now.AddMinutes(-1));
 
-        var factory = new ThrowingFactory();
+        CountingFactory factory = syntheticUpload ? new UploadOnlyFactory() : new ThrowingFactory();
         var user = new FixedUser(owner);
         await using (var seedDb = NewDb(temp.ConnectionString, owner))
         {
@@ -360,7 +431,7 @@ public sealed class NoteAsrCanonicalBatchTests
         public Guid ConfigRevision { get; }
         public string ConsentVersion { get; }
         public string Model { get; }
-        public ThrowingFactory Factory { get; }
+        public CountingFactory Factory { get; }
         public NoteAsrBatchService Service { get; }
 
         public Seeded(TempMigrationDatabase temp, string storageRoot, Guid owner, Guid profileId,
@@ -368,7 +439,7 @@ public sealed class NoteAsrCanonicalBatchTests
             NoteMaterialUploadStore materials, Guid duplicateTaskId, Guid duplicateAttemptId,
             Guid canonicalTaskId, Guid canonicalAttemptId, NoteAsrState canonicalState,
             NoteAsrState duplicateState, bool hasDuplicateAttempt, Guid configRevision,
-            string consentVersion, string model, ThrowingFactory factory,
+            string consentVersion, string model, CountingFactory factory,
             NoteAsrBatchService service, PimDbContext serviceDb)
         {
             _temp = temp;
@@ -435,6 +506,28 @@ public sealed class NoteAsrCanonicalBatchTests
                 (await tasks.ReadAsync(Owner, DuplicateTaskId, CancellationToken.None)).Revision);
         }
 
+        public async Task AssertRevokedAsync(bool expectUpload)
+        {
+            await using var check = NewDb();
+            var attempt = await check.NoteAsrAttempts.AsNoTracking()
+                .SingleAsync(x => x.Id == CanonicalAttemptId);
+            Assert.Equal("Failed", attempt.State);
+            Assert.True(attempt.StopRequested);
+            Assert.Equal("route_consent_drift", attempt.LastErrorCode);
+            var job = await check.NoteAsrBatchJobs.AsNoTracking()
+                .SingleAsync(x => x.OwnerId == Owner && x.AttemptId == CanonicalAttemptId);
+            Assert.Equal("Failed", job.Status);
+            Assert.Null(job.BatchId);
+            Assert.Equal(expectUpload ? "file-in-1" : null, job.InputFileId);
+            var tasks = new NoteAsrTaskStore(Options.Create(new NoteMaterialUploadOptions
+            {
+                StorageRoot = _storageRoot
+            }));
+            var state = await tasks.ReadAsync(Owner, CanonicalTaskId, CancellationToken.None);
+            Assert.True(state.StopRequested);
+            Assert.All(state.Steps, step => Assert.Equal("Blocked", step.Current.Status));
+        }
+
         public async ValueTask DisposeAsync()
         {
             _serviceDb.Dispose();
@@ -444,14 +537,73 @@ public sealed class NoteAsrCanonicalBatchTests
         }
     }
 
-    private sealed class ThrowingFactory : IMimoBatchClientFactory
+    private abstract class CountingFactory : IMimoBatchClientFactory
     {
         private int _calls;
         public int Calls => Volatile.Read(ref _calls);
-        public IMimoBatchClientLease Create(Uri baseAddress, string apiKey)
+        public abstract int UploadCalls { get; }
+        public abstract int CreateCalls { get; }
+        protected void CountCall() => Interlocked.Increment(ref _calls);
+        public abstract IMimoBatchClientLease Create(Uri baseAddress, string apiKey);
+    }
+
+    private sealed class ThrowingFactory : CountingFactory
+    {
+        public override int UploadCalls => 0;
+        public override int CreateCalls => 0;
+        public override IMimoBatchClientLease Create(Uri baseAddress, string apiKey)
         {
-            Interlocked.Increment(ref _calls);
+            CountCall();
             throw new InvalidOperationException("Batch provider must not be called");
+        }
+    }
+
+    private sealed class UploadOnlyFactory : CountingFactory
+    {
+        private int _uploads;
+        private int _creates;
+        public override int UploadCalls => Volatile.Read(ref _uploads);
+        public override int CreateCalls => Volatile.Read(ref _creates);
+
+        public override IMimoBatchClientLease Create(Uri baseAddress, string apiKey)
+        {
+            CountCall();
+            var http = new HttpClient(new Handler(this))
+            {
+                BaseAddress = baseAddress,
+                Timeout = Timeout.InfiniteTimeSpan
+            };
+            return new Lease(http, new MimoBatchClient(http,
+                new MimoBatchClientOptions(baseAddress, TimeSpan.FromSeconds(2),
+                    AudioBatchEnabled: true)));
+        }
+
+        private sealed class Lease(HttpClient http, MimoBatchClient client) : IMimoBatchClientLease
+        {
+            public HttpClient Http { get; } = http;
+            public MimoBatchClient Client { get; } = client;
+            public void Dispose() => Http.Dispose();
+        }
+
+        private sealed class Handler(UploadOnlyFactory owner) : HttpMessageHandler
+        {
+            protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,
+                CancellationToken cancellationToken)
+            {
+                if (request.Method == HttpMethod.Post &&
+                    request.RequestUri?.AbsolutePath.EndsWith("/v1/files", StringComparison.Ordinal) == true)
+                {
+                    Interlocked.Increment(ref owner._uploads);
+                    return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new StringContent(
+                            "{\"id\":\"file-in-1\",\"purpose\":\"batch\",\"filename\":\"input.jsonl\",\"expire_at\":1780000000}",
+                            Encoding.UTF8, "application/json")
+                    });
+                }
+                Interlocked.Increment(ref owner._creates);
+                throw new InvalidOperationException("Batch create must not be called after consent drift");
+            }
         }
     }
 

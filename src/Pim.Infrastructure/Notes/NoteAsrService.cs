@@ -231,6 +231,26 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
             return Describe(updated, canonicalId);
         }, ct);
     }
+
+    /// <summary>
+    /// A non-canonical local task whose lease was issued before canonical enforcement is still
+    /// executable by the device. Dispatch must revoke that lease and stop the duplicate before it
+    /// skips the task, otherwise the node could keep renewing/reading/acking the old chain.
+    /// </summary>
+    internal async Task RevokeNonCanonicalLeaseAsync(Guid owner, NoteAsrState state,
+        CancellationToken ct)
+    {
+        if (state.AttemptId is not { } attemptId) return;
+        var hasActiveLease = await db.NoteAsrLeases.AsNoTracking().AnyAsync(x =>
+            x.OwnerId == owner && x.AttemptId == attemptId && x.Status == "Active", ct);
+        if (!hasActiveLease) return;
+        await NoteAsrRouteConsentGuard.RevokeAttemptAsync(db, owner, attemptId,
+            NoteAsrRouteConsentGuard.NonCanonicalCode,
+            NoteAsrRouteConsentGuard.NonCanonicalMessage, ct);
+        await NoteAsrRouteConsentGuard.StopTaskAsync(tasks, owner, state.Request.TaskId,
+            attemptId, NoteAsrRouteConsentGuard.NonCanonicalMessage, ct);
+    }
+
     public async Task<NoteAsrTaskDto> RetryAsync(Guid id, RetryNoteAsrRequest request, CancellationToken ct)
     {
         var owner = await RequireActiveOwnerAsync(ct);
@@ -249,6 +269,20 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
             return true;
         }, ct);
         var before = await ReconcileAsync(owner, id, ct);
+        // A route-config edit after the attempt was frozen must not replay the old consent. Reject
+        // before any retry mutation and revoke the stale snapshot so it can never reach a provider.
+        if (before.Route is { } frozenRoute && NoteAsrRoute.IsCloud(frozenRoute) &&
+            !await NoteAsrRouteConsentGuard.IsCurrentAsync(db, owner,
+                before.RouteConfigRevision, before.RouteConsentVersion, ct))
+        {
+            if (before.AttemptId is { } driftedAttemptId)
+                await NoteAsrRouteConsentGuard.RevokeAttemptAsync(db, owner, driftedAttemptId,
+                    NoteAsrRouteConsentGuard.RouteDriftCode,
+                    NoteAsrRouteConsentGuard.RouteDriftMessage, ct);
+            await BlockAttemptRecoveryAsync(owner, before,
+                NoteAsrRouteConsentGuard.RouteDriftMessage, ct, stop: true);
+            throw new DomainException(40901, NoteAsrRouteConsentGuard.RouteDriftMessage);
+        }
         if (before.Route == NoteAsrRoute.Local && request.Consent is not null)
             throw new DomainException(40901, "本机重跑不涉及云端外发，不需要云端确认");
         if (before.Route != NoteAsrRoute.Local &&
@@ -587,6 +621,21 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
             !NoteAsrTaskStore.Active(state))
             return state;
 
+        if (NoteAsrRoute.IsCloud(existing.Route) && CanExecuteAttempt(existing))
+        {
+            try
+            {
+                await NoteAsrRouteConsentGuard.RequireCurrentForCloudAttemptAsync(
+                    db, owner, existing, ct);
+            }
+            catch (DomainException)
+            {
+                await BlockAttemptRecoveryAsync(owner, state,
+                    NoteAsrRouteConsentGuard.RouteDriftMessage, ct, stop: true);
+                throw;
+            }
+        }
+
         if (!AttemptMatches(state, existing))
         {
             await BlockAttemptRecoveryAsync(owner, state,
@@ -714,15 +763,17 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
         !attempt.StopRequested && attempt.State is ("Queued" or "Running" or "Leased");
 
     private async Task BlockAttemptRecoveryAsync(Guid owner, NoteAsrState state, string message,
-        CancellationToken ct)
+        CancellationToken ct, bool stop = false)
     {
         var current = await tasks.ReadAsync(owner, state.Request.TaskId, ct);
         if (current.Revision != state.Revision || !SameTaskIdentity(current, state)) return;
-        if (!current.Steps.Any(step =>
-                step.Current.Status is "Queued" or "Running" or "Unknown"))
+        var hasRecoverableSteps = current.Steps.Any(step =>
+            step.Current.Status is "Queued" or "Running" or "Unknown");
+        if (!hasRecoverableSteps && (!stop || current.StopRequested))
             return;
         await tasks.UpdateLockedAsync(owner, state.Request.TaskId, currentState =>
         {
+            if (stop) currentState.StopRequested = true;
             foreach (var step in currentState.Steps.Where(step =>
                          step.Current.Status is "Queued" or "Running" or "Unknown"))
             {

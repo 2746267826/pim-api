@@ -595,6 +595,8 @@ public sealed class NoteAsrRoutingService(PimDbContext db, ICurrentUserService u
         var attempt = await db.NoteAsrAttempts.AsNoTracking().SingleOrDefaultAsync(x => x.Id == lease.AttemptId &&
             x.OwnerId == owner && x.State == "Leased" && x.FencingToken == fencingToken && !x.StopRequested, ct)
             ?? throw new DomainException(40901, "attempt 已不接受固定输入读取");
+        if (attempt.Route == NoteAsrRoute.Local)
+            await RequireCanonicalLocalAttemptAsync(owner, attempt, ct);
         var state = await legacyTasks.ReadAsync(owner, attempt.TaskId, ct);
         if (state.Request.VersionId != attempt.VersionId ||
             state.InputSha256 != attempt.InputSha256 ||
@@ -757,6 +759,20 @@ public sealed class NoteAsrRoutingService(PimDbContext db, ICurrentUserService u
     public async Task<NoteAsrLeaseDto> RenewLeaseAsync(Guid leaseId, NoteAsrLeaseHeartbeatRequest request, CancellationToken ct)
     {
         var owner = await RequireActiveOwnerAsync(ct);
+        // A lease claimed before this code was deployed can belong to a duplicate task that is no
+        // longer canonical. Validate the credential-bearing request first, then revoke before the
+        // expiry extension so no further audio or acknowledgement path stays alive.
+        var observedLease = await db.NoteAsrLeases.AsNoTracking()
+            .SingleOrDefaultAsync(x => x.Id == leaseId && x.OwnerId == owner, ct)
+            ?? throw new DomainException(40401, "租约不存在");
+        if (observedLease.LeaseToken != request.LeaseToken ||
+            observedLease.FencingToken != request.FencingToken)
+            throw new DomainException(40901, "租约、attempt 或 fence 不匹配");
+        var observedAttempt = await db.NoteAsrAttempts.AsNoTracking()
+            .SingleOrDefaultAsync(x => x.Id == observedLease.AttemptId && x.OwnerId == owner, ct)
+            ?? throw new DomainException(40901, "租约绑定的执行快照不存在");
+        if (observedAttempt.Route == NoteAsrRoute.Local)
+            await RequireCanonicalLocalAttemptAsync(owner, observedAttempt, ct);
         return await ExecuteDbTransactionAsync(async token =>
         {
             var lease = await db.NoteAsrLeases.AsNoTracking()
@@ -794,6 +810,18 @@ public sealed class NoteAsrRoutingService(PimDbContext db, ICurrentUserService u
         if (request.Kind == "segment" && request.Result == "Succeeded" &&
             (string.IsNullOrWhiteSpace(request.ProviderHandle) || string.IsNullOrWhiteSpace(request.ResultText)))
             throw new DomainException(40001, "成功分片必须同时提交受鉴权文本和 provider handle");
+        // Only an authenticated lease/attempt/fence request may revoke a duplicate task. A malformed
+        // acknowledgement must not be able to stop a legitimate canonical worker.
+        var pendingLease = await db.NoteAsrLeases.AsNoTracking().SingleOrDefaultAsync(x =>
+            x.Id == request.LeaseId && x.OwnerId == owner && x.AttemptId == attemptId, ct);
+        var pendingAttempt = await db.NoteAsrAttempts.AsNoTracking().SingleOrDefaultAsync(x =>
+            x.Id == attemptId && x.OwnerId == owner, ct);
+        if (pendingLease is not null && pendingAttempt is not null &&
+            pendingLease.LeaseToken == request.LeaseToken &&
+            pendingLease.FencingToken == request.FencingToken &&
+            pendingAttempt.FencingToken == request.FencingToken &&
+            pendingAttempt.Route == NoteAsrRoute.Local)
+            await RequireCanonicalLocalAttemptAsync(owner, pendingAttempt, ct);
         AckOutcome outcome;
         try
         {
@@ -1307,6 +1335,39 @@ public sealed class NoteAsrRoutingService(PimDbContext db, ICurrentUserService u
         if (lease.LeaseToken != token || lease.FencingToken != fencing || lease.Status != "Active" || lease.ExpiresAt <= DateTimeOffset.UtcNow)
             throw new DomainException(40901, "租约已失效");
         return lease;
+    }
+
+    /// <summary>
+    /// A local lease issued before canonical-chain enforcement may point at a duplicate task. The
+    /// chain head is authoritative, so renew/read/ack must stop such an attempt before it can keep
+    /// spending local work or produce more evidence.
+    /// </summary>
+    private async Task RequireCanonicalLocalAttemptAsync(Guid owner, NoteAsrAttemptEntity attempt,
+        CancellationToken ct)
+    {
+        try
+        {
+            var canonical = await legacyTasks.WithLockAsync(owner, async lockedCt =>
+            {
+                var state = await legacyTasks.ReadAsync(owner, attempt.TaskId, lockedCt);
+                if (state.Request.VersionId != attempt.VersionId) return false;
+                return state.Request.ParentTaskId is not null ||
+                    await legacyTasks.IsCanonicalInitialUnlockedAsync(owner, attempt.TaskId,
+                        attempt.VersionId, lockedCt);
+            }, ct);
+            if (canonical) return;
+        }
+        catch (Exception error) when (error is DomainException { ErrorCode: 40401 } or
+            JsonException or InvalidDataException)
+        {
+        }
+
+        await NoteAsrRouteConsentGuard.RevokeAttemptAsync(db, owner, attempt.Id,
+            NoteAsrRouteConsentGuard.NonCanonicalCode,
+            NoteAsrRouteConsentGuard.NonCanonicalMessage, ct);
+        await NoteAsrRouteConsentGuard.StopTaskAsync(legacyTasks, owner, attempt.TaskId,
+            attempt.Id, NoteAsrRouteConsentGuard.NonCanonicalMessage, ct);
+        throw new DomainException(40901, NoteAsrRouteConsentGuard.NonCanonicalMessage);
     }
 
     /// <summary>Shared cloud destinations reuse the existing ASR checks: enabled, transcription flag, credential and preset.</summary>

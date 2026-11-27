@@ -28,6 +28,9 @@ public sealed class NoteAsrBatchService(PimDbContext db, ICurrentUserService use
     private static readonly TimeSpan ResultImportLease = TimeSpan.FromMinutes(2);
 
     private Guid Owner => user.UserId ?? throw new DomainException(40101, "请先登录");
+    internal Func<CancellationToken, Task>? BeforeFreezeForTests { get; set; }
+    internal Func<CancellationToken, Task>? BeforeUploadForTests { get; set; }
+    internal Func<CancellationToken, Task>? BeforeCreateForTests { get; set; }
 
     public async Task<NoteAsrBatchJobDto> StartAsync(StartNoteAsrBatchRequest request, Stream jsonl, long length,
         string filename, CancellationToken ct)
@@ -461,14 +464,9 @@ public sealed class NoteAsrBatchService(PimDbContext db, ICurrentUserService use
     }
 
     private async Task RequireCurrentRouteConsentAsync(Guid owner, Guid configRevision,
-        string? consentVersion, CancellationToken ct)
-    {
-        var config = await db.NoteAsrRouteConfigs.AsNoTracking()
-            .SingleOrDefaultAsync(x => x.OwnerId == owner, ct);
-        if (config is null || config.Revision != configRevision ||
-            !string.Equals(config.ConsentVersion, consentVersion, StringComparison.Ordinal))
-            throw new DomainException(40901, "路由配置已变化，请刷新后重新确认");
-    }
+        string? consentVersion, CancellationToken ct) =>
+        await NoteAsrRouteConsentGuard.RequireCurrentAsync(db, owner, configRevision,
+            consentVersion, ct);
 
     /// <summary>
     /// Audio Batch is NOT-VERIFIED upstream. The single capability gate runs before any submission
@@ -523,11 +521,17 @@ public sealed class NoteAsrBatchService(PimDbContext db, ICurrentUserService use
         // The retrying execution strategy wraps only the DB-only freeze unit. It may replay this
         // delegate after a transient/unknown commit, so every attempt rebuilds the tracked entity
         // and relies on the owner/task unique key for exactly-once submission.
+        if (BeforeFreezeForTests is { } beforeFreeze) await beforeFreeze(ct);
         var frozen = await db.Database.CreateExecutionStrategy().ExecuteAsync(async () =>
         {
             db.ChangeTracker.Clear();
             var candidate = NewJob();
             await using var tx = await db.Database.BeginTransactionAsync(ct);
+            // Last-moment check inside the durable freeze unit: JSONL generation and a concurrent
+            // route edit must not slip between the earlier consent check and this reservation.
+            if (!await NoteAsrRouteConsentGuard.IsCurrentAsync(db, owner, attempt.ConfigRevision,
+                    attempt.ConsentVersion, ct))
+                throw new DomainException(40901, NoteAsrRouteConsentGuard.RouteDriftMessage);
             var claimedAt = DateTimeOffset.UtcNow;
             var won = await db.NoteAsrAttempts
                 .Where(x => x.Id == attempt.Id && x.OwnerId == owner && x.TaskId == request.TaskId &&
@@ -574,6 +578,9 @@ public sealed class NoteAsrBatchService(PimDbContext db, ICurrentUserService use
         var job = frozen.Job;
         if (!frozen.Created) return Describe(job);
 
+        if (BeforeUploadForTests is { } beforeUpload) await beforeUpload(ct);
+        if (!await RecheckBatchRouteConsentAsync(owner, attempt, job, ct)) return Describe(job);
+
         try
         {
             using var uploadHttp = clients.Create(baseUri, apiKey);
@@ -601,6 +608,9 @@ public sealed class NoteAsrBatchService(PimDbContext db, ICurrentUserService use
                 "输入文件上传结果未确认；不得自动重复提交");
             return Describe(job);
         }
+
+        if (BeforeCreateForTests is { } beforeCreate) await beforeCreate(ct);
+        if (!await RecheckBatchRouteConsentAsync(owner, attempt, job, ct)) return Describe(job);
 
         try
         {
@@ -645,6 +655,26 @@ public sealed class NoteAsrBatchService(PimDbContext db, ICurrentUserService use
     }
 
     private sealed record FrozenSubmission(NoteAsrBatchJobEntity Job, bool Created);
+
+    /// <summary>
+    /// A frozen Batch placeholder must never cross a route-consent edit into a paid upload or
+    /// provider Batch. Drift revokes the attempt, stops the task, and leaves the placeholder Failed
+    /// without a batch id so it can never be mistaken for a live submission.
+    /// </summary>
+    private async Task<bool> RecheckBatchRouteConsentAsync(Guid owner, NoteAsrAttemptEntity attempt,
+        NoteAsrBatchJobEntity job, CancellationToken ct)
+    {
+        if (await NoteAsrRouteConsentGuard.IsCurrentAsync(db, owner, attempt.ConfigRevision,
+                attempt.ConsentVersion, ct))
+            return true;
+        await NoteAsrRouteConsentGuard.RevokeAttemptAsync(db, owner, attempt.Id,
+            NoteAsrRouteConsentGuard.RouteDriftCode, NoteAsrRouteConsentGuard.RouteDriftMessage, ct);
+        await NoteAsrRouteConsentGuard.StopTaskAsync(tasks, owner, attempt.TaskId, attempt.Id,
+            NoteAsrRouteConsentGuard.RouteDriftMessage, ct);
+        await PersistFailedAsync(job, "batch_route_consent_drift",
+            "Batch 提交期间路由配置或同意版本已变化；未继续上传或创建付费任务，请刷新后重新确认");
+        return false;
+    }
 
     public async Task<IReadOnlyList<NoteAsrBatchJobDto>> ListAsync(CancellationToken ct)
     {

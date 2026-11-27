@@ -1427,6 +1427,106 @@ public sealed class NoteProcessingTests(NoteProcessingFixture host)
     }
 
     [Fact]
+    public async Task CloudRouteConsentDriftRejectsExistingAttemptAndRetryWithoutProvider()
+    {
+        var owner = await OwnerAsync("asr-route-drift-existing");
+        using var client = AuthRegistrationTestHost.Authed(host.Factory, owner.AccessToken);
+        var models = await ConfigureAsync(client, auto: false);
+        _ = await ConfigureCloudRouteAsync(client, models.Asr.Id);
+        var material = await CompleteMaterialAsync(owner, client, withAudio: true);
+        host.Models.Reset();
+
+        using var scope = host.Factory.Services.CreateScope();
+        var asrService = scope.ServiceProvider.GetRequiredService<NoteAsrService>();
+        var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
+        var started = await StartAsync(client, material);
+        var taskId = started.Asr.TaskId!.Value;
+        var before = await AsrTaskAsync(owner.UserId, taskId);
+        var attemptId = Assert.IsType<Guid>(before.AttemptId);
+
+        using (var configScope = host.Factory.Services.CreateScope())
+        {
+            var configDb = configScope.ServiceProvider.GetRequiredService<PimDbContext>();
+            var config = await configDb.NoteAsrRouteConfigs.SingleAsync(x =>
+                x.OwnerId == owner.UserId);
+            config.ConsentVersion = "synthetic-cloud-consent-v2";
+            await configDb.SaveChangesAsync();
+        }
+
+        var error = await Assert.ThrowsAsync<DomainException>(() =>
+            asrService.EnsureAttemptForOwnerAsync(owner.UserId, taskId,
+                before.Request.VersionId, CancellationToken.None));
+        Assert.Equal(40901, error.ErrorCode);
+
+        var revoked = await db.NoteAsrAttempts.AsNoTracking().SingleAsync(x => x.Id == attemptId);
+        Assert.Equal("Failed", revoked.State);
+        Assert.True(revoked.StopRequested);
+        Assert.Equal("route_consent_drift", revoked.LastErrorCode);
+        var afterEnsure = await AsrTaskAsync(owner.UserId, taskId);
+        Assert.True(afterEnsure.StopRequested);
+        Assert.All(afterEnsure.Steps, step => Assert.Equal("Blocked", step.Current.Status));
+
+        var rejected = await Assert.ThrowsAsync<DomainException>(() => asrService.RetryAsync(taskId,
+            new RetryNoteAsrRequest(Guid.NewGuid(), owner.UserId, afterEnsure.Revision, [0],
+                afterEnsure.Request.Consent, true), CancellationToken.None));
+        Assert.Equal(40901, rejected.ErrorCode);
+        var afterRetry = await AsrTaskAsync(owner.UserId, taskId);
+        Assert.Equal(afterEnsure.Revision, afterRetry.Revision);
+        Assert.Empty(afterRetry.Retries);
+        Assert.Empty(afterRetry.RetryIntents);
+        Assert.Equal(0, host.Models.Calls);
+        Assert.Equal(0, await AiCallCountAsync(owner.UserId));
+    }
+
+    [Fact]
+    public async Task CloudRouteConsentDriftAfterJobEntryStopsBeforeProviderCall()
+    {
+        var owner = await OwnerAsync("asr-route-drift-job");
+        using var client = AuthRegistrationTestHost.Authed(host.Factory, owner.AccessToken);
+        var models = await ConfigureAsync(client, auto: false);
+        _ = await ConfigureCloudRouteAsync(client, models.Asr.Id);
+        var material = await CompleteMaterialAsync(owner, client, withAudio: true);
+        host.Models.Reset();
+        var started = await StartAsync(client, material);
+        var taskId = started.Asr.TaskId!.Value;
+        var before = await AsrTaskAsync(owner.UserId, taskId);
+        var attemptId = Assert.IsType<Guid>(before.AttemptId);
+
+        using var scope = host.Factory.Services.CreateScope();
+        var job = scope.ServiceProvider.GetRequiredService<NoteAsrJob>();
+        job.BeforeProviderCallForTests = async ct =>
+        {
+            using var configScope = host.Factory.Services.CreateScope();
+            var configDb = configScope.ServiceProvider.GetRequiredService<PimDbContext>();
+            var config = await configDb.NoteAsrRouteConfigs.SingleAsync(x =>
+                x.OwnerId == owner.UserId, ct);
+            config.ConsentVersion = "synthetic-cloud-consent-v2";
+            await configDb.SaveChangesAsync(ct);
+        };
+        try
+        {
+            await job.RunAsync(owner.UserId, taskId, CancellationToken.None);
+        }
+        finally
+        {
+            job.BeforeProviderCallForTests = null;
+        }
+
+        Assert.Equal(0, host.Models.Calls);
+        Assert.Equal(0, await AiCallCountAsync(owner.UserId));
+        using var verifyScope = host.Factory.Services.CreateScope();
+        var db = verifyScope.ServiceProvider.GetRequiredService<PimDbContext>();
+        var attempt = await db.NoteAsrAttempts.AsNoTracking()
+            .SingleAsync(x => x.Id == attemptId);
+        Assert.Equal("Failed", attempt.State);
+        Assert.True(attempt.StopRequested);
+        Assert.Equal("route_consent_drift", attempt.LastErrorCode);
+        var task = await AsrTaskAsync(owner.UserId, taskId);
+        Assert.True(task.StopRequested);
+        Assert.Equal("Blocked", task.Steps[0].Current.Status);
+    }
+
+    [Fact]
     public async Task StoppingTaskAlsoStopsAnUnboundQueuedAttempt()
     {
         var owner = await OwnerAsync("asr-stop-orphan");
