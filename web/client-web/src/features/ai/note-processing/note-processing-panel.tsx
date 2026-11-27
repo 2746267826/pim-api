@@ -139,7 +139,7 @@ function ProcessingPlan({ plan, showVersionDetails, confirmed, onConfirmedChange
     </p>
     <label className="flex items-start gap-2 text-xs leading-5 text-text-2">
       <Checkbox checked={confirmed} onCheckedChange={onConfirmedChange}
-        ariaLabel="我已核对处理目标、材料范围与费用提示" className="mt-0.5" />
+        ariaLabel="我已核对以上处理目标、材料范围与费用提示" className="mt-0.5" />
       <span>我已核对以上处理目标、材料范围与费用提示；本次确认会随任务一起持久化。</span>
     </label>
   </section>
