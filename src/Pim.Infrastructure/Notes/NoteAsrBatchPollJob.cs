@@ -103,9 +103,7 @@ public sealed class NoteAsrBatchPollJob(
                                (a.Status != "succeeded" && a.Status != "failed" &&
                                 a.Status != "incomplete" && a.Status != "timed_out" &&
                                 a.Status != "cancelled" ||
-                                job.OutputImportedAt != null && job.Status == "Completed" &&
-                                (a.Status == "incomplete" ||
-                                 a.Status == "succeeded" && a.TotalTokens == null)))))
+                                a.Status != "succeeded" || a.TotalTokens == null))))
             .OrderBy(job => job.LastPolledAt ?? DateTimeOffset.MinValue)
             .ThenBy(job => job.OutputImportedAt ?? job.UpdatedAt)
             .ThenBy(job => job.Id)

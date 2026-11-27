@@ -21,21 +21,39 @@ public static class AiAsrJobRecovery
             x.ExecutionExpiresAt != null && x.ExecutionExpiresAt < now);
         if (!db.Database.IsRelational())
         {
-            var rows = await expired.ToListAsync(ct);
-            if (rows.Count == 0) return;
-            foreach (var row in rows)
+            var ids = await expired.AsNoTracking().Select(x => x.Id).Take(200).ToListAsync(ct);
+            foreach (var id in ids)
             {
-                Apply(row, now);
-                var log = await db.AiRequestLogs.SingleOrDefaultAsync(x => x.Id == row.LogId, ct);
-                if (log is not null)
+                AiAsrJobEntity? row = null;
+                AiRequestLogEntity? log = null;
+                try
                 {
-                    if (log.Status is not ("preparing" or "running" or "cancelling" or "incomplete"))
-                        throw new InvalidOperationException(
-                            "ASR recovery found an audit row with an unexpected terminal state");
-                    ApplyLog(row, log, now);
+                    row = await db.AiAsrJobs.SingleOrDefaultAsync(x => x.Id == id, ct);
+                    if (row is null || !IsExpired(row, now)) continue;
+                    log = await db.AiRequestLogs.SingleOrDefaultAsync(x => x.Id == row.LogId, ct);
+                    // A single row closed by another recovery path must not abort the whole scan.
+                    if (log is not null && !CanOverwriteAudit(log.Status)) continue;
+                    Apply(row, now);
+                    if (log is not null) ApplyLog(row, log, now);
+                    await db.SaveChangesAsync(ct);
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch
+                {
+                    // Recovery is best-effort per row; one malformed or conflicted row must not
+                    // starve every later expired job.
+                }
+                finally
+                {
+                    if (row is not null)
+                        db.Entry(row).State = EntityState.Detached;
+                    if (log is not null)
+                        db.Entry(log).State = EntityState.Detached;
                 }
             }
-            await db.SaveChangesAsync(ct);
             return;
         }
 
@@ -43,56 +61,61 @@ public static class AiAsrJobRecovery
             .Select(x => new { x.Id, x.OwnerId, x.LogId })
             .Take(200).ToListAsync(ct);
         if (candidates.Count == 0) return;
-        var candidateIds = candidates.Select(x => x.Id).ToArray();
         var strategy = db.Database.CreateExecutionStrategy();
-        await strategy.ExecuteAsync(async () =>
+        foreach (var candidate in candidates)
         {
-            // Keep the conditional update and its audit update in one transaction. The UPDATE's
-            // RETURNING rows are the exact jobs recovered in this attempt; no second candidate
-            // read can race between selection and mutation. A completion or cancel that wins the
-            // row lock first therefore cannot leave the job and audit row split.
-            await using var transaction = await db.Database.BeginTransactionAsync(ct);
-            var affected = await db.AiAsrJobs.FromSqlInterpolated($"""
-                UPDATE ai_asr_jobs
-                SET status = CASE
-                        WHEN status = 'preparing' THEN 'failed'
-                        WHEN status = 'cancelling' THEN 'cancelled'
-                        ELSE 'incomplete'
-                    END,
-                    abort_source = CASE
-                        WHEN status = 'preparing' THEN 'preparation_interrupted'
-                        WHEN status = 'cancelling' THEN 'user_cancel_worker_lost'
-                        ELSE 'worker_lost'
-                    END,
-                    outcome_known = (status = 'preparing'),
-                    provider_attempted = CASE WHEN status = 'preparing' THEN false ELSE true END,
-                    response_body_complete = false,
-                    error_code = CASE
-                        WHEN status = 'preparing' THEN 'preparation_interrupted'
-                        WHEN status = 'cancelling' THEN 'user_cancel_outcome_unknown'
-                        ELSE 'worker_lost_outcome_unknown'
-                    END,
-                    error_message = CASE
-                        WHEN status = 'preparing' THEN 'ASR任务在接受过程中中断，未发送服务商'
-                        WHEN status = 'cancelling' THEN {WorkerLostMessage}
-                        ELSE {WorkerLostMessage}
-                    END,
-                    next_action = CASE
-                        WHEN status = 'preparing' THEN '重新选择原始音频后明确新建请求'
-                        ELSE '核对调用记录；如需再次调用，请明确新建请求'
-                    END,
-                    finished_at = {now},
-                    execution_expires_at = NULL
-                WHERE id = ANY({candidateIds})
-                  AND status IN ('preparing', 'running', 'cancelling')
-                  AND execution_expires_at IS NOT NULL
-                  AND execution_expires_at < {now}
-                RETURNING *
-                """).AsNoTracking().ToListAsync(ct);
-            if (affected.Count > 0)
+            try
             {
-                foreach (var row in affected)
+                await strategy.ExecuteAsync(async () =>
                 {
+                    // Keep each job and its audit row in one transaction, but do not let one
+                    // conflicted row abort the whole recovery batch. A missing or already-terminal
+                    // audit row rolls back only that candidate.
+                    await using var transaction = await db.Database.BeginTransactionAsync(ct);
+                    var affected = await db.AiAsrJobs.FromSqlInterpolated($"""
+                        UPDATE ai_asr_jobs
+                        SET status = CASE
+                                WHEN status = 'preparing' THEN 'failed'
+                                WHEN status = 'cancelling' THEN 'cancelled'
+                                ELSE 'incomplete'
+                            END,
+                            abort_source = CASE
+                                WHEN status = 'preparing' THEN 'preparation_interrupted'
+                                WHEN status = 'cancelling' THEN 'user_cancel_worker_lost'
+                                ELSE 'worker_lost'
+                            END,
+                            outcome_known = (status = 'preparing'),
+                            provider_attempted = CASE WHEN status = 'preparing' THEN false ELSE true END,
+                            response_body_complete = false,
+                            error_code = CASE
+                                WHEN status = 'preparing' THEN 'preparation_interrupted'
+                                WHEN status = 'cancelling' THEN 'user_cancel_outcome_unknown'
+                                ELSE 'worker_lost_outcome_unknown'
+                            END,
+                            error_message = CASE
+                                WHEN status = 'preparing' THEN 'ASR任务在接受过程中中断，未发送服务商'
+                                WHEN status = 'cancelling' THEN {WorkerLostMessage}
+                                ELSE {WorkerLostMessage}
+                            END,
+                            next_action = CASE
+                                WHEN status = 'preparing' THEN '重新选择原始音频后明确新建请求'
+                                ELSE '核对调用记录；如需再次调用，请明确新建请求'
+                            END,
+                            finished_at = {now},
+                            execution_expires_at = NULL
+                        WHERE id = {candidate.Id}
+                          AND owner_id = {candidate.OwnerId}
+                          AND status IN ('preparing', 'running', 'cancelling')
+                          AND execution_expires_at IS NOT NULL
+                          AND execution_expires_at < {now}
+                        RETURNING *
+                        """).AsNoTracking().ToListAsync(ct);
+                    if (affected.Count != 1)
+                    {
+                        await transaction.RollbackAsync(ct);
+                        return;
+                    }
+                    var row = affected[0];
                     var updated = await db.Database.ExecuteSqlInterpolatedAsync($"""
                         UPDATE ai_request_logs
                         SET status = {row.Status},
@@ -114,13 +137,31 @@ public static class AiAsrJobRecovery
                           AND status IN ('preparing', 'running', 'cancelling', 'incomplete')
                         """, ct);
                     if (updated != 1)
-                        throw new InvalidOperationException(
-                            "ASR recovery lost its owner-bound audit row; refusing a split state");
-                }
+                    {
+                        await transaction.RollbackAsync(ct);
+                        return;
+                    }
+                    await transaction.CommitAsync(ct);
+                });
             }
-            await transaction.CommitAsync(ct);
-        });
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch
+            {
+                // Continue with the remaining expired jobs. The candidate transaction above
+                // rolls back independently, so no job/audit split is committed.
+            }
+        }
     }
+
+    private static bool IsExpired(AiAsrJobEntity row, DateTimeOffset now) =>
+        row.Status is "preparing" or "running" or "cancelling" &&
+        row.ExecutionExpiresAt is { } expires && expires < now;
+
+    private static bool CanOverwriteAudit(string status) =>
+        status is "preparing" or "running" or "cancelling" or "incomplete";
 
     private static void Apply(AiAsrJobEntity row, DateTimeOffset now)
     {

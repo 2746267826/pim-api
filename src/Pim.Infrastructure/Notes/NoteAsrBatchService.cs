@@ -800,7 +800,17 @@ public sealed class NoteAsrBatchService(PimDbContext db, ICurrentUserService use
         }
 
         if (audit.Status == "blocked") return;
-        if (IsTerminalAuditStatus(audit.Status) && status == "running") return;
+        if (IsTerminalAuditStatus(audit.Status) && status == "running")
+        {
+            var active = job.Status is "Creating" or "Validating" or "InProgress" or "Cancelling";
+            if (!active || job.OutputImportedAt is not null || TerminalState(job))
+                return;
+            // A verified handle can move from Unknown back to InProgress. The terminal audit
+            // projection must follow the authoritative job row, otherwise it stays incomplete
+            // and keeps the connection in usage_limit_unknown while the Batch is still running.
+            audit.FinishedAt = null;
+            audit.DurationMs = null;
+        }
         if (audit.ProviderConnectionId is null && job.ProfileRevision != Guid.Empty)
         {
             var profile = await db.AiModelProfiles.AsNoTracking()
@@ -1001,14 +1011,20 @@ public sealed class NoteAsrBatchService(PimDbContext db, ICurrentUserService use
         if (audit is not null && IsTerminalAuditStatus(audit.Status))
         {
             if (audit.Status == "blocked") return false;
-            // A generic recovery path may have closed the audit row before the Batch poller
-            // projected the final import. Only a completed, imported job has the durable usage
-            // evidence needed to replace a terminal audit row, and only when that evidence can
-            // actually produce tokens.
-            if (job.Status != "Completed" || job.OutputImportedAt is null) return false;
-            if (audit.Status is not ("succeeded" or "incomplete")) return false;
-            if (audit.Status == "succeeded" && audit.TotalTokens is not null) return false;
-            if (SumBatchUsage(job.ResultJson) is null) return false;
+            // A generic recovery path or an older projection may have closed the audit row with
+            // a different terminal status. The job row is authoritative; re-project whenever the
+            // persisted job, usage or provider marker differs so legacy failed/timed_out/cancelled
+            // rows cannot remain token-less and let the connection usage check fail open.
+            var expectedStatus = AuditStatusForJob(job.Status);
+            var usage = SumBatchUsage(job.ResultJson);
+            var usageMatches = usage is null
+                ? audit.TotalTokens is null
+                : audit.TotalTokens == usage.Total && audit.PromptTokens == usage.Prompt &&
+                  audit.CompletionTokens == usage.Completion;
+            var expectedAttempt = ProviderAttemptedForAudit(job, audit.MetadataJson);
+            var actualAttempt = AiAsrJobService.ProviderAttemptedMetadata(audit.MetadataJson);
+            if (audit.Status == expectedStatus && usageMatches && actualAttempt == expectedAttempt)
+                return false;
         }
         await SyncAuditFromJobAsync(job, ct);
         return true;

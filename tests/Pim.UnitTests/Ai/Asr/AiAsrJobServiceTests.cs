@@ -842,6 +842,94 @@ public sealed class AiAsrJobServiceTests
 
     [SkippableFact]
     [Trait("DataSource", "RealDb")]
+    public async Task Postgres_recovery_isolates_a_terminal_audit_from_the_rest_of_the_batch()
+    {
+        await using var database = await TempMigrationDatabase.CreateAsync(
+            "test_ai_asr_job_recovery_isolation");
+        await database.MigrateAsync();
+        var owner = new Owner();
+        ISecretProtector secrets =
+            new DataProtectionSecretProtector(new EphemeralDataProtectionProvider());
+        var profile = await SeedPostgresAsync(database.Db, owner, secrets);
+        var now = DateTimeOffset.UtcNow;
+
+        var goodLog = NewRecoveryLog(owner, profile, "running", now);
+        var goodJob = NewRecoveryJob(owner, profile, goodLog, "running", now);
+        var terminalLog = NewRecoveryLog(owner, profile, "succeeded", now);
+        terminalLog.TotalTokens = 7;
+        var terminalJob = NewRecoveryJob(owner, profile, terminalLog, "running", now);
+        database.Db.AiRequestLogs.AddRange(goodLog, terminalLog);
+        database.Db.AiAsrJobs.AddRange(goodJob, terminalJob);
+        await database.Db.SaveChangesAsync();
+
+        await AiAsrJobRecovery.RecoverExpiredAsync(database.Db, CancellationToken.None);
+
+        database.Db.ChangeTracker.Clear();
+        var recoveredJob = await database.Db.AiAsrJobs.AsNoTracking()
+            .SingleAsync(x => x.Id == goodJob.Id);
+        var recoveredLog = await database.Db.AiRequestLogs.AsNoTracking()
+            .SingleAsync(x => x.Id == goodLog.Id);
+        Assert.Equal("incomplete", recoveredJob.Status);
+        Assert.Equal("incomplete", recoveredLog.Status);
+        Assert.Equal("worker_lost", recoveredJob.AbortSource);
+
+        // The already-terminal audit row cannot be overwritten, but it must not roll back the
+        // recovery of later/earlier candidates in the same scan.
+        var skippedJob = await database.Db.AiAsrJobs.AsNoTracking()
+            .SingleAsync(x => x.Id == terminalJob.Id);
+        var skippedLog = await database.Db.AiRequestLogs.AsNoTracking()
+            .SingleAsync(x => x.Id == terminalLog.Id);
+        Assert.Equal("running", skippedJob.Status);
+        Assert.Equal("succeeded", skippedLog.Status);
+        Assert.Equal(7, skippedLog.TotalTokens);
+    }
+
+    private static AiRequestLogEntity NewRecoveryLog(Owner owner, AiModelProfileEntity profile,
+        string status, DateTimeOffset now) => new()
+    {
+        UserId = owner.UserId,
+        ClientRequestId = Guid.NewGuid(),
+        InputHash = "synthetic",
+        Module = "system",
+        Purpose = AiAsrJobService.AuditPurpose,
+        SourceObjectType = "ai-model",
+        SourceObjectId = profile.Id.ToString("D"),
+        Provider = ScriptedPreset.PresetId,
+        Model = profile.Model,
+        ModelProfileId = profile.Id,
+        ModelRevision = profile.Revision,
+        CorrelationId = Guid.NewGuid().ToString("N"),
+        Status = status,
+        AttemptNumber = 1,
+        MaxAttempts = 1,
+        StartedAt = now.AddMinutes(-10),
+        InitiatedAt = now.AddMinutes(-10),
+        FinishedAt = status == "running" ? null : now.AddMinutes(-2),
+        ExecutionExpiresAt = now.AddMinutes(-1),
+        MetadataJson = """{"providerAttempted":true}"""
+    };
+
+    private static AiAsrJobEntity NewRecoveryJob(Owner owner, AiModelProfileEntity profile,
+        AiRequestLogEntity log, string status, DateTimeOffset now) => new()
+    {
+        OwnerId = owner.UserId!.Value,
+        ClientRequestId = log.ClientRequestId!.Value,
+        LogId = log.Id,
+        Status = status,
+        ModelProfileId = profile.Id,
+        ModelRevision = profile.Revision,
+        PresetId = ScriptedPreset.PresetId,
+        PresetVersion = ScriptedPreset.Dto.Version,
+        Model = profile.Model,
+        Endpoint = AiAsrPresetRegistry.OperationEndpoint(profile.BaseUrl, ScriptedPreset.Dto),
+        ProviderAttempted = true,
+        CreatedAt = now.AddMinutes(-10),
+        StartedAt = now.AddMinutes(-9),
+        ExecutionExpiresAt = now.AddMinutes(-1)
+    };
+
+    [SkippableFact]
+    [Trait("DataSource", "RealDb")]
     public async Task Postgres_generic_recovery_closes_an_orphaned_asr_audit_without_a_job()
     {
         await using var database = await TempMigrationDatabase.CreateAsync(

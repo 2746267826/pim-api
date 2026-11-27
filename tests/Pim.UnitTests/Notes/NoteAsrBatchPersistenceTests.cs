@@ -1487,6 +1487,111 @@ public sealed class NoteAsrBatchPersistenceTests
     }
 
     [SkippableFact]
+    public async Task Unknown_to_in_progress_reopens_the_audit_instead_of_leaving_it_incomplete()
+    {
+        Skip.If(string.IsNullOrWhiteSpace(ConnectionString), "PIM_ASR516_PG is not configured");
+        var seed = await SeedAsync();
+        var polls = 0;
+        var factory = new SyntheticFactory((request, _) =>
+        {
+            if (request.Method == HttpMethod.Post && request.Path.EndsWith("/v1/files", StringComparison.Ordinal))
+                return Task.FromResult(UploadOk());
+            if (request.Method == HttpMethod.Post && request.Path.EndsWith("/v1/batches", StringComparison.Ordinal))
+                return Task.FromResult(BatchOk("batch-unknown-in-progress"));
+            if (request.Method == HttpMethod.Get && request.Path == "/v1/batches/batch-unknown-in-progress")
+            {
+                return Task.FromResult(Interlocked.Increment(ref polls) switch
+                {
+                    1 => BatchOk("batch-unknown-in-progress", "unknown", total: 2, completed: 0),
+                    2 => BatchOk("batch-unknown-in-progress", "in_progress", total: 2, completed: 0),
+                    _ => BatchOk("batch-unknown-in-progress", "completed", "file-out", null, 2, 2, 0)
+                });
+            }
+            if (request.Method == HttpMethod.Get && request.Path == "/v1/files/file-out/content")
+                return Task.FromResult(FileContent(SuccessJsonl("seg-0", "seg-1")));
+            throw new InvalidOperationException("unexpected synthetic request " + request.Path);
+        });
+
+        NoteAsrBatchJobDto started;
+        await using (var db = NewDb(seed.Owner))
+        {
+            started = await StartAsync(NewService(db, seed.Owner, factory), seed);
+            Assert.Equal("Validating", started.Status);
+        }
+        Assert.Equal("running", await AuditStatusAsync(seed.Owner, started.Id));
+
+        await using (var db = NewDb(seed.Owner))
+        {
+            var unknown = await NewService(db, seed.Owner, factory)
+                .PollAsync(started.Id, CancellationToken.None);
+            Assert.Equal("Unknown", unknown.Status);
+        }
+        Assert.Equal("incomplete", await AuditStatusAsync(seed.Owner, started.Id));
+
+        await using (var db = NewDb(seed.Owner))
+        {
+            var running = await NewService(db, seed.Owner, factory)
+                .PollAsync(started.Id, CancellationToken.None);
+            Assert.Equal("InProgress", running.Status);
+        }
+        // An expired/unknown audit must not pin the connection to usage_limit_unknown after the
+        // verified handle reports in_progress again.
+        Assert.Equal("running", await AuditStatusAsync(seed.Owner, started.Id));
+
+        await using (var db = NewDb(seed.Owner))
+        {
+            var completed = await NewService(db, seed.Owner, factory)
+                .PollAsync(started.Id, CancellationToken.None);
+            Assert.Equal("Completed", completed.Status);
+        }
+        Assert.Equal("succeeded", await AuditStatusAsync(seed.Owner, started.Id));
+        Assert.Equal(24, (await AuditTotalTokensAsync(seed.Owner, started.Id)) ?? -1);
+        await CleanupAsync(seed.Owner);
+    }
+
+    [SkippableFact]
+    public async Task Repair_reprojects_legacy_terminal_audit_without_tokens_instead_of_failing_open()
+    {
+        Skip.If(string.IsNullOrWhiteSpace(ConnectionString), "PIM_ASR516_PG is not configured");
+        var seed = await SeedAsync();
+        var jobId = await SeedTerminalAuditJobAsync(seed, "batch-legacy-terminal-audit",
+            DateTimeOffset.UtcNow.AddMinutes(-1), auditStatus: "failed");
+        await using (var db = NewDb(seed.Owner))
+        {
+            var audit = await db.AiRequestLogs.SingleAsync(x =>
+                x.UserId == seed.Owner && x.ClientRequestId == jobId &&
+                x.Purpose == NoteAsrBatchService.AuditPurpose);
+            audit.MetadataJson = """{"providerAttempted":false}""";
+            audit.PromptTokens = null;
+            audit.CompletionTokens = null;
+            audit.TotalTokens = null;
+            await db.SaveChangesAsync();
+        }
+
+        var settings = new NoteAsrBatchPollOptions
+        {
+            PageSize = 25, PerJobTimeout = TimeSpan.FromSeconds(10), AuditRepairBackoff = TimeSpan.Zero
+        };
+        await using (var db = NewDb(seed.Owner))
+        {
+            var pollJob = NewPollJob(NewService(db, seed.Owner, new SyntheticFactory((_, _) =>
+                throw new InvalidOperationException("repair must not call the provider"))), db, settings);
+            Assert.Equal(1, await pollJob.RepairTerminalAuditsAsync(settings, CancellationToken.None));
+        }
+        Assert.Equal("succeeded", await AuditStatusAsync(seed.Owner, jobId));
+        Assert.Equal(24, (await AuditTotalTokensAsync(seed.Owner, jobId)) ?? -1);
+        await using (var db = NewDb(seed.Owner))
+        {
+            var audit = await db.AiRequestLogs.AsNoTracking().SingleAsync(x =>
+                x.UserId == seed.Owner && x.ClientRequestId == jobId &&
+                x.Purpose == NoteAsrBatchService.AuditPurpose);
+            using var metadata = JsonDocument.Parse(audit.MetadataJson);
+            Assert.True(metadata.RootElement.GetProperty("providerAttempted").GetBoolean());
+        }
+        await CleanupAsync(seed.Owner);
+    }
+
+    [SkippableFact]
     public async Task Repair_scan_backs_off_a_failed_candidate_and_reaches_the_next_job()
     {
         Skip.If(string.IsNullOrWhiteSpace(ConnectionString), "PIM_ASR516_PG is not configured");

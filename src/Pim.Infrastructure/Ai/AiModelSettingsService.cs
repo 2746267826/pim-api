@@ -66,8 +66,12 @@ public sealed class AiModelSettingsService(PimDbContext db, ISecretProtector sec
         if (row.AsrPresetId is not null && capabilities != AiModelCapabilityFlags.Transcription)
             throw Invalid("ASR独立配置不可改为文本/视觉配置，请另建模型以隔离凭据");
         var isAsr = capabilities == AiModelCapabilityFlags.Transcription;
+        var wasAsr = id is not null &&
+            (row.Capabilities == AiModelCapabilityFlags.Transcription || row.AsrPresetId is not null);
         if (isAsr && presetId is null) presetId = row.AsrPresetId;
-        if (isAsr && id is null && presetId is null) throw Invalid("新建ASR配置需要选择接入预设");
+        if (isAsr && presetId is null) throw Invalid("ASR配置需要选择接入预设");
+        if (isAsr && id is not null && !wasAsr && key is null)
+            throw Invalid("把现有模型转换为ASR配置需要重新填写API Key，不能沿用原模型凭据");
         if (batchBaseUrl is not null)
         {
             if (!isAsr || presetId != MimoMultimodalPreset.PresetId)
@@ -110,7 +114,7 @@ public sealed class AiModelSettingsService(PimDbContext db, ISecretProtector sec
         }
         row.AsrPresetId = presetId;
         row.AsrBatchBaseUrl = batchBaseUrl;
-        if (capabilities != 4 || presetId != MimoMultimodalPreset.PresetId)
+        if (!isAsr || presetId != MimoMultimodalPreset.PresetId)
         {
             // A custom prompt is only meaningful for the MiMo multimodal preset. Switching to
             // another preset (or away from ASR) must not resurrect the old custom instructions.

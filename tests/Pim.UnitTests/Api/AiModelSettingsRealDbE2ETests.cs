@@ -71,6 +71,32 @@ public sealed class AiModelSettingsRealDbE2ETests
             var multimodal = Assert.Single(presets, x => x.Id == "mimo-multimodal");
             var legacy = Assert.Single(presets, x => x.Id == "mimo-asr");
 
+            var withoutPreset = await client.PutAsJsonAsync($"/api/v1/ai/models/{text.Id}",
+                new SaveAiModelRequest(text.Name, legacy.DefaultBaseUrl, legacy.DefaultModel, true,
+                    [AiModelCapability.Transcription], 30, 123, ApiKey: "",
+                    ExpectedRevision: blankKey.Revision));
+            Assert.Equal(HttpStatusCode.BadRequest, withoutPreset.StatusCode);
+            var withoutPresetError = await withoutPreset.Content
+                .ReadFromJsonAsync<ApiResponse<AiModelDto>>();
+            Assert.Equal(40001, withoutPresetError!.Code);
+            Assert.Contains("ASR配置", withoutPresetError.Message);
+
+            var reusedKey = await client.PutAsJsonAsync($"/api/v1/ai/models/{text.Id}",
+                new SaveAiModelRequest(text.Name, legacy.DefaultBaseUrl, legacy.DefaultModel, true,
+                    [AiModelCapability.Transcription], 30, 123, ApiKey: "",
+                    ExpectedRevision: blankKey.Revision, AsrPresetId: legacy.Id));
+            Assert.Equal(HttpStatusCode.BadRequest, reusedKey.StatusCode);
+            var reusedKeyError = await reusedKey.Content
+                .ReadFromJsonAsync<ApiResponse<AiModelDto>>();
+            Assert.Equal(40001, reusedKeyError!.Code);
+            Assert.Contains("重新填写API Key", reusedKeyError.Message);
+            temp.Db.ChangeTracker.Clear();
+            var unconverted = await temp.Db.AiModelProfiles.AsNoTracking()
+                .SingleAsync(x => x.Id == text.Id);
+            Assert.Equal(AiModelCapabilityFlags.Text, unconverted.Capabilities);
+            Assert.Null(unconverted.AsrPresetId);
+            Assert.Equal(originalSecret, unconverted.ApiKeySecret);
+
             var asr = await Data<AiModelDto>(await client.PostAsJsonAsync("/api/v1/ai/models",
                 new SaveAiModelRequest("MiMo提示词-" + suffix, multimodal.DefaultBaseUrl,
                     multimodal.DefaultModel, true, [AiModelCapability.Transcription], 30, 123,
