@@ -485,6 +485,181 @@ public sealed class NativeNoteMcpRealDbTests
     }
 
     [SkippableFact]
+    public async Task ExpiredReplayThroughMcpReturnsActionableConflict()
+    {
+        await using var host = await McpHost.CreateAsync();
+        var noteId = Guid.NewGuid();
+        var fixture = NoteMaterialUploadStoreTests.Fixture.Create(noteId: noteId);
+        var package = Package(fixture);
+        var requestId = Guid.NewGuid().ToString("D");
+        var uploadArgs = new
+        {
+            noteId,
+            requestId,
+            packageBase64 = Convert.ToBase64String(package),
+            promote = true,
+        };
+
+        var uploaded = await host.CallAsync(host.McpBWrite,
+            "upload_native_note_package", uploadArgs);
+        Assert.False(uploaded.IsError, uploaded.Payload.GetRawText());
+
+        await using (var scope = host.Factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
+            var row = await db.NoteMcpOperations.SingleAsync(x =>
+                x.OwnerId == host.UserB && x.RequestId == Guid.Parse(requestId));
+            row.CompletedAt = DateTimeOffset.UtcNow - TimeSpan.FromDays(31);
+            await db.SaveChangesAsync();
+        }
+
+        var lookup = await host.CallAsync(host.McpBRead, "get_native_note_operation",
+            new { noteId, requestId });
+        Assert.False(lookup.IsError, lookup.Payload.GetRawText());
+        var status = lookup.Payload.GetProperty("data");
+        Assert.Equal("succeeded", status.GetProperty("state").GetString());
+        var receipt = status.GetProperty("receipt");
+        Assert.Equal("applied", receipt.GetProperty("status").GetString());
+        Assert.Contains("超过保留期", receipt.GetProperty("message").GetString());
+        Assert.DoesNotContain(requestId, lookup.Payload.GetRawText(), StringComparison.Ordinal);
+
+        var replay = await host.CallAsync(host.McpBWrite,
+            "upload_native_note_package", uploadArgs);
+        Assert.True(replay.IsError, replay.Payload.GetRawText());
+        Assert.Equal(409, replay.Payload.GetProperty("code").GetInt32());
+        var details = replay.Payload.GetProperty("details");
+        Assert.Equal(40901, details.GetProperty("code").GetInt32());
+        var message = details.GetProperty("message").GetString();
+        Assert.Contains("保留期", message);
+        Assert.Contains("请求标识", message);
+        Assert.DoesNotContain("requestId", details.GetRawText(), StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(requestId, replay.Payload.GetRawText(), StringComparison.Ordinal);
+
+        await using var verifyScope = host.Factory.Services.CreateAsyncScope();
+        var verifyDb = verifyScope.ServiceProvider.GetRequiredService<PimDbContext>();
+        var expired = await verifyDb.NoteMcpOperations.AsNoTracking().SingleAsync(x =>
+            x.OwnerId == host.UserB && x.RequestId == Guid.Parse(requestId));
+        Assert.Equal("completed", expired.State);
+        Assert.Null(expired.ResponseJson);
+        Assert.NotNull(expired.ResponsePurgedAt);
+    }
+
+    [SkippableFact]
+    public async Task CapacityEvictedResponseReplayThroughMcpReturnsActionableConflict()
+    {
+        await using var host = await McpHost.CreateAsync();
+        var noteId = Guid.NewGuid();
+        var fixture = NoteMaterialUploadStoreTests.Fixture.Create(noteId: noteId);
+        var package = Package(fixture);
+        var requestId = Guid.NewGuid().ToString("D");
+        var uploadArgs = new
+        {
+            noteId,
+            requestId,
+            packageBase64 = Convert.ToBase64String(package),
+            promote = true,
+        };
+
+        var uploaded = await host.CallAsync(host.McpBWrite,
+            "upload_native_note_package", uploadArgs);
+        Assert.False(uploaded.IsError, uploaded.Payload.GetRawText());
+
+        await using (var scope = host.Factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
+            var row = await db.NoteMcpOperations.SingleAsync(x =>
+                x.OwnerId == host.UserB && x.RequestId == Guid.Parse(requestId));
+            row.ResponseJson = null;
+            row.ResponsePurgedAt = DateTimeOffset.UtcNow;
+            await db.SaveChangesAsync();
+        }
+
+        var lookup = await host.CallAsync(host.McpBRead, "get_native_note_operation",
+            new { noteId, requestId });
+        Assert.False(lookup.IsError, lookup.Payload.GetRawText());
+        var status = lookup.Payload.GetProperty("data");
+        Assert.Equal("succeeded", status.GetProperty("state").GetString());
+        var receipt = status.GetProperty("receipt");
+        Assert.Equal("applied", receipt.GetProperty("status").GetString());
+        Assert.Contains("不再保留", receipt.GetProperty("message").GetString());
+        Assert.DoesNotContain(requestId, lookup.Payload.GetRawText(), StringComparison.Ordinal);
+
+        var replay = await host.CallAsync(host.McpBWrite,
+            "upload_native_note_package", uploadArgs);
+        Assert.True(replay.IsError, replay.Payload.GetRawText());
+        Assert.Equal(409, replay.Payload.GetProperty("code").GetInt32());
+        var details = replay.Payload.GetProperty("details");
+        Assert.Equal(40901, details.GetProperty("code").GetInt32());
+        var message = details.GetProperty("message").GetString();
+        Assert.Contains("不再保留", message);
+        Assert.Contains("新的请求标识", message);
+        Assert.DoesNotContain("requestId", details.GetRawText(), StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(requestId, replay.Payload.GetRawText(), StringComparison.Ordinal);
+        var replayReceipt = details.GetProperty("data").GetProperty("receipt");
+        Assert.Equal("applied", replayReceipt.GetProperty("status").GetString());
+        Assert.Equal(40901, replayReceipt.GetProperty("errorCode").GetInt32());
+    }
+
+    [SkippableFact]
+    public async Task OwnerCapacityExhaustionFailsClosedThroughMcpAndKeepsExistingReplay()
+    {
+        await using var host = await McpHost.CreateAsync(maxIdentityRowsPerOwner: 1);
+        var noteId = Guid.NewGuid();
+        var fixture = NoteMaterialUploadStoreTests.Fixture.Create(noteId: noteId);
+        var package = Package(fixture);
+        var firstRequestId = Guid.NewGuid();
+        var firstArgs = new
+        {
+            noteId,
+            requestId = firstRequestId.ToString("D"),
+            packageBase64 = Convert.ToBase64String(package),
+            promote = true,
+        };
+
+        var first = await host.CallAsync(host.McpAWrite, "upload_native_note_package", firstArgs);
+        Assert.False(first.IsError, first.Payload.GetRawText());
+
+        var replay = await host.CallAsync(host.McpAWrite, "upload_native_note_package", firstArgs);
+        Assert.False(replay.IsError, replay.Payload.GetRawText());
+        Assert.True(replay.Payload.GetProperty("data").GetProperty("receipt")
+            .GetProperty("replayed").GetBoolean());
+
+        var secondRequestId = Guid.NewGuid();
+        var rejected = await host.CallAsync(host.McpAWrite, "upload_native_note_package", new
+        {
+            noteId,
+            requestId = secondRequestId.ToString("D"),
+            packageBase64 = Convert.ToBase64String(package),
+            promote = false,
+        });
+        Assert.True(rejected.IsError, rejected.Payload.GetRawText());
+        Assert.Equal(409, rejected.Payload.GetProperty("code").GetInt32());
+        var details = rejected.Payload.GetProperty("details");
+        Assert.Equal(40901, details.GetProperty("code").GetInt32());
+        var message = details.GetProperty("message").GetString();
+        Assert.Contains("容量上限", message);
+        Assert.Contains("重试", message);
+        Assert.DoesNotContain("requestId", rejected.Payload.GetRawText(),
+            StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(secondRequestId.ToString("D"), rejected.Payload.GetRawText(),
+            StringComparison.Ordinal);
+
+        await using var scope = host.Factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
+        Assert.Equal(1, await db.NoteMcpOperations.CountAsync(x => x.OwnerId == host.UserA));
+        Assert.False(await db.NoteMcpOperations.AsNoTracking()
+            .AnyAsync(x => x.OwnerId == host.UserA && x.RequestId == secondRequestId));
+
+        var lookup = await host.CallAsync(host.McpARead, "get_native_note_operation",
+            new { noteId, requestId = firstRequestId.ToString("D") });
+        Assert.False(lookup.IsError, lookup.Payload.GetRawText());
+        Assert.Equal("succeeded", lookup.Payload.GetProperty("data").GetProperty("state")
+            .GetString());
+        Assert.Equal(1, (await host.CallAsync(host.McpARead, "get_native_notes", new { }))
+            .Payload.GetProperty("data").GetProperty("total").GetInt32());
+    }
+
+    [SkippableFact]
     public async Task ConflictCandidatesCanBePromoted_AndLifecycleBlocksThenRestoresMutations()
     {
         await using var host = await McpHost.CreateAsync();
@@ -1372,30 +1547,38 @@ public sealed class NativeNoteMcpRealDbTests
         public NoteMaterialUploadStore Store => Factory.Services.GetRequiredService<NoteMaterialUploadStore>();
         public NoteDerivedStore DerivedStore => Factory.Services.GetRequiredService<NoteDerivedStore>();
 
-        public static async Task<McpHost> CreateAsync()
+        public static async Task<McpHost> CreateAsync(int? maxIdentityRowsPerOwner = null)
         {
             var database = await TempMigrationDatabase.CreateAsync("test_native_note_mcp");
             await database.MigrateAsync();
             var root = Path.Combine(Path.GetTempPath(), "pim-native-note-mcp-pg",
                 Guid.NewGuid().ToString("N"));
+            var settings = new Dictionary<string, string?>
+            {
+                ["DisableHangfire"] = "true",
+                ["Database:Migrations:FailFast"] = "false",
+                ["GitHub:Repo"] = "invalid/invalid-test-repo-xyz",
+                ["ConnectionStrings:DefaultConnection"] = database.ConnectionString,
+                ["NativeNotes:StorageRoot"] = Path.Combine(root, "materials"),
+                ["ManagedStorage:Root"] = Path.Combine(root, "binary"),
+                ["DataProtection:KeysPath"] = Path.Combine(root, "keys"),
+            };
+            if (maxIdentityRowsPerOwner is { } maxIdentityRows)
+                settings["NativeNotes:McpIdempotency:MaxIdentityRowsPerOwner"] =
+                    maxIdentityRows.ToString(System.Globalization.CultureInfo.InvariantCulture);
             var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
             {
-                builder.UseEnvironment("Test")
-                    .UseSetting("DisableHangfire", "true")
-                    .UseSetting("Database:Migrations:FailFast", "false")
-                    .UseSetting("GitHub:Repo", "invalid/invalid-test-repo-xyz")
-                    .UseSetting("ConnectionStrings:DefaultConnection", database.ConnectionString)
-                    .UseSetting("NativeNotes:StorageRoot", Path.Combine(root, "materials"))
-                    .UseSetting("ManagedStorage:Root", Path.Combine(root, "binary"))
-                    .UseSetting("DataProtection:KeysPath", Path.Combine(root, "keys"))
-                    .ConfigureServices(services =>
-                    {
-                        var descriptor = services.SingleOrDefault(d =>
-                            d.ServiceType == typeof(DbContextOptions<PimDbContext>));
-                        if (descriptor is not null) services.Remove(descriptor);
-                        services.AddDbContext<PimDbContext>(options =>
-                            options.UseNpgsql(database.ConnectionString));
-                    });
+                builder.UseEnvironment("Test");
+                foreach (var setting in settings)
+                    builder.UseSetting(setting.Key, setting.Value);
+                builder.ConfigureServices(services =>
+                {
+                    var descriptor = services.SingleOrDefault(d =>
+                        d.ServiceType == typeof(DbContextOptions<PimDbContext>));
+                    if (descriptor is not null) services.Remove(descriptor);
+                    services.AddDbContext<PimDbContext>(options =>
+                        options.UseNpgsql(database.ConnectionString));
+                });
             });
 
             var sessionA = await AuthRegistrationTestHost.SeedAndLoginAsync(factory,

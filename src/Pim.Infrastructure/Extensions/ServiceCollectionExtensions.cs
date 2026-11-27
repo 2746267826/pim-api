@@ -35,6 +35,16 @@ public static class ServiceCollectionExtensions
             // 使「外部传入带偏移的时间参数 → 500」这类缺陷在结构上不可能再出现
             // （#313 修在调用点、#352 又漏出六个端点，散点修复会持续漏）。
             .AddInterceptors(new UtcDateTimeOffsetParameterInterceptor()));
+        // Native-note MCP request-id identities are shared through PostgreSQL, not a
+        // process-local file, so concurrent API instances and restarts agree on replay/conflict.
+        services.AddOptions<Pim.Infrastructure.Notes.NoteMcpOperationOptions>()
+            .Bind(configuration.GetSection("NativeNotes:McpIdempotency"))
+            .Validate(options => options.IsValid(),
+                "NativeNotes MCP idempotency capacity configuration is invalid")
+            .ValidateOnStart();
+        services.AddScoped<Pim.Infrastructure.Notes.INoteMcpOperationLedger,
+            Pim.Infrastructure.Notes.PostgresNoteMcpOperationLedger>();
+        services.AddScoped(sp => Pim.Infrastructure.Notes.NoteMcpOperationStore.Create(sp));
         services.AddScoped<PimMigrationAdoptionService>();
         services.AddScoped<IAuditLogService, AuditLogService>();
         services.AddScoped<AuditVersionService>();

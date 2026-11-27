@@ -139,7 +139,6 @@ builder.Services.AddOptions<Pim.Infrastructure.Notes.NoteDerivedAudioContextOpti
     .Validate(options => options.IsValid(), "NativeNotes audio-context allowlist is invalid")
     .ValidateOnStart();
 builder.Services.AddSingleton<Pim.Infrastructure.Notes.NoteMaterialUploadStore>();
-builder.Services.AddSingleton<Pim.Infrastructure.Notes.NoteMcpOperationStore>();
 builder.Services.AddSingleton<Pim.Infrastructure.Notes.NoteAsrTaskStore>();
 builder.Services.AddSingleton<Pim.Infrastructure.Notes.NoteDerivedStore>();
 builder.Services.AddScoped<Pim.Core.Modules.ISearchProvider, Pim.Infrastructure.Notes.NoteSearchProvider>();
