@@ -2254,6 +2254,90 @@ namespace Pim.Infrastructure.Data.Migrations
                     b.ToTable("note_asr_segment_evidence");
                 });
 
+            modelBuilder.Entity("Pim.Infrastructure.Data.Entities.NoteMcpOperationEntity", b =>
+                {
+                    b.Property<Guid>("OwnerId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("owner_id");
+
+                    b.Property<Guid>("RequestId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("request_id");
+
+                    b.Property<DateTimeOffset?>("CompletedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("completed_at");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<int?>("ErrorCode")
+                        .HasColumnType("integer")
+                        .HasColumnName("error_code");
+
+                    b.Property<string>("ErrorMessage")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("error_message");
+
+                    b.Property<string>("Fingerprint")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("fingerprint");
+
+                    b.Property<string>("Message")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("message");
+
+                    b.Property<Guid>("NoteId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("note_id");
+
+                    b.Property<string>("Operation")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("operation");
+
+                    b.Property<string>("OperationId")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("operation_id");
+
+                    b.Property<string>("ReceiptStatus")
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("receipt_status");
+
+                    b.Property<string>("ResponseJson")
+                        .HasColumnType("text")
+                        .HasColumnName("response_json");
+
+                    b.Property<DateTimeOffset?>("ResponsePurgedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("response_purged_at");
+
+                    b.Property<Guid?>("Revision")
+                        .HasColumnType("uuid")
+                        .HasColumnName("revision");
+
+                    b.Property<string>("State")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("state");
+
+                    b.HasKey("OwnerId", "RequestId");
+
+                    b.HasIndex("OwnerId", "State", "CompletedAt");
+
+                    b.ToTable("note_mcp_operations");
+                });
+
             modelBuilder.Entity("Pim.Infrastructure.Data.Entities.NoteProcessingPreferenceEntity", b =>
                 {
                     b.Property<Guid>("OwnerId")

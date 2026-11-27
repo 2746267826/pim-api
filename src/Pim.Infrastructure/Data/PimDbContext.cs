@@ -87,6 +87,7 @@ public class PimDbContext : DbContext
     public DbSet<NoteAsrAckReceiptEntity> NoteAsrAckReceipts => Set<NoteAsrAckReceiptEntity>();
     public DbSet<NoteAsrSegmentEvidenceEntity> NoteAsrSegmentEvidence => Set<NoteAsrSegmentEvidenceEntity>();
     public DbSet<NoteAsrBatchJobEntity> NoteAsrBatchJobs => Set<NoteAsrBatchJobEntity>();
+    public DbSet<NoteMcpOperationEntity> NoteMcpOperations => Set<NoteMcpOperationEntity>();
 
     public override int SaveChanges()
     {
@@ -310,6 +311,20 @@ public class PimDbContext : DbContext
             e.HasKey(x => x.OwnerId);
             e.Property(x => x.Revision).IsConcurrencyToken();
             e.Property(x => x.AutoNoteProcessingEnabled).HasDefaultValue(false);
+        });
+        modelBuilder.Entity<NoteMcpOperationEntity>(e =>
+        {
+            // The identity row is permanent: response bodies may be purged, but
+            // (owner_id, request_id) and the bound fingerprint must survive every cleanup.
+            e.HasKey(x => new { x.OwnerId, x.RequestId });
+            e.Property(x => x.Operation).HasMaxLength(128);
+            e.Property(x => x.OperationId).HasMaxLength(64);
+            e.Property(x => x.Fingerprint).HasMaxLength(64);
+            e.Property(x => x.State).HasMaxLength(16);
+            e.Property(x => x.ReceiptStatus).HasMaxLength(16);
+            e.Property(x => x.Message).HasMaxLength(500);
+            e.Property(x => x.ErrorMessage).HasMaxLength(500);
+            e.HasIndex(x => new { x.OwnerId, x.State, x.CompletedAt });
         });
 
         modelBuilder.Entity<NoteAsrNodeEntity>(e =>

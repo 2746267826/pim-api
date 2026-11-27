@@ -1,7 +1,8 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
-using Microsoft.Extensions.Options;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Pim.Core.Exceptions;
 using Pim.Core.Notes;
 
@@ -12,22 +13,36 @@ namespace Pim.Infrastructure.Notes;
 /// to the operation and a canonical fingerprint of the effective arguments; replaying it returns
 /// the original response (with <c>Replayed=true</c>) and never runs the mutation twice. A reused
 /// request id with different arguments is rejected with 409 instead of silently overwriting.
-/// A pending marker is persisted before the mutation. If the process stops after the mutation
-/// but before the result is written, the next call reports an unconfirmed outcome instead of
-/// executing the same mutation again. Failures and unknown outcomes are returned as structured
-/// receipts keyed by a stable external operation id.
+///
+/// <para>
+/// The binding is stored in PostgreSQL, so every API instance and every restart observes the
+/// same identity. A pending marker is committed before the mutation starts. If the process stops
+/// after the mutation but before the result is written, the next call reports an unconfirmed
+/// outcome instead of executing the same mutation again. Completed/failed/unknown identities and
+/// fingerprints are never pruned; retention only removes the replay response body, after which an
+/// old request id fails closed with an explicit expired-result conflict.
+/// </para>
 /// </summary>
-public sealed class NoteMcpOperationStore(IOptions<NoteMaterialUploadOptions> options, TimeProvider? clock = null)
+public sealed class NoteMcpOperationStore
 {
-    private const int MaxRetainedRequests = 200;
-    private static readonly TimeSpan Retention = TimeSpan.FromDays(30);
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
-    private const string PendingState = "pending";
-    private const string CompletedState = "completed";
-    private const string FailedState = "failed";
-    private const string UnknownState = "unknown";
-    private readonly TimeProvider _clock = clock ?? TimeProvider.System;
-    private string Root => Path.Combine(Path.GetFullPath(options.Value.StorageRoot), "mcp-operations");
+    private readonly INoteMcpOperationLedger _ledger;
+    private readonly TimeProvider _clock;
+    private readonly ILogger<NoteMcpOperationStore>? _logger;
+
+    internal NoteMcpOperationStore(INoteMcpOperationLedger ledger, TimeProvider? clock = null,
+        ILogger<NoteMcpOperationStore>? logger = null)
+    {
+        _ledger = ledger;
+        _clock = clock ?? TimeProvider.System;
+        _logger = logger;
+    }
+
+    /// <summary>DI factory: the ledger is scoped, while the public type stays injectable.</summary>
+    public static NoteMcpOperationStore Create(IServiceProvider services)
+        => new(services.GetRequiredService<INoteMcpOperationLedger>(),
+            services.GetService<TimeProvider>(),
+            services.GetService<ILogger<NoteMcpOperationStore>>());
 
     public async Task<NativeNoteMcpOperationResultDto<T>> RunAsync<T>(Guid owner, Guid requestId,
         Guid noteId, string operation, object fingerprintInput,
@@ -40,74 +55,21 @@ public sealed class NoteMcpOperationStore(IOptions<NoteMaterialUploadOptions> op
         if (string.IsNullOrWhiteSpace(operation)) throw new DomainException(40001, "operation 不能为空");
         var operationId = BuildOperationId(owner, operation, requestId);
         var fingerprint = Fingerprint(operation, fingerprintInput);
-
-        await using var lease = await LockAsync(owner, ct);
-        var ledger = await LoadAsync(owner, ct);
-        Prune(ledger);
-        if (ledger.Operations.TryGetValue(Key(requestId), out var existing))
-        {
-            if (existing.NoteId != Guid.Empty && existing.NoteId != noteId)
-                throw new DomainException(40401,
-                    "该 requestId 没有对应当前笔记的操作记录");
-            var storedOperationId = existing.OperationId.Length > 0
-                ? existing.OperationId
-                : BuildOperationId(owner, existing.Operation, requestId);
-            if (!string.Equals(existing.Operation, operation, StringComparison.Ordinal) ||
-                !string.Equals(existing.Fingerprint, fingerprint, StringComparison.Ordinal))
-            {
-                var conflictReceipt = StoredReceipt(existing, noteId, storedOperationId, "failed",
-                    _clock.GetUtcNow(), replayed: false,
-                    "requestId 已经绑定另一组参数或另一项操作，请换一个新的 requestId；原结果保留",
-                    40901);
-                throw new NativeNoteMcpOperationException(40901, conflictReceipt.Message,
-                    conflictReceipt);
-            }
-            if (existing.State == FailedState)
-            {
-                var code = existing.ErrorCode ?? 40901;
-                var failedMessage = existing.ErrorMessage
-                    ?? "该 requestId 的上一次执行没有产生可重放结果，请先重新读取最新状态";
-                var failedReceipt = StoredReceipt(existing, noteId, storedOperationId, "failed",
-                    _clock.GetUtcNow(), replayed: false, failedMessage, code);
-                throw new NativeNoteMcpOperationException(code, failedMessage, failedReceipt);
-            }
-            if (existing.State != CompletedState || existing.ResponseJson is null)
-            {
-                const string message =
-                    "该 requestId 的执行结果尚未确认（可能已写入但未完成记账）。请先重新读取最新状态，确认后用新的 requestId 继续";
-                var unknownReceipt = StoredReceipt(existing, noteId, storedOperationId, "unknown",
-                    _clock.GetUtcNow(), replayed: false, message, 40901);
-                throw new NativeNoteMcpOperationException(40901, message, unknownReceipt);
-            }
-            var replayed = JsonSerializer.Deserialize<NativeNoteMcpOperationResultDto<T>>(
-                existing.ResponseJson, Json)
-                ?? throw new InvalidDataException("MCP operation replay payload is invalid");
-            return replayed with
-            {
-                Receipt = replayed.Receipt with
-                {
-                    OperationId = operationId,
-                    Replayed = true,
-                    Message = replayed.Receipt.Message + "（已幂等重放，未再次执行）",
-                },
-            };
-        }
-
-        var operationKey = Key(requestId);
         var now = _clock.GetUtcNow();
-        var pending = new StoredMcpOperation
+        var pending = new NoteMcpOperationRow(owner, requestId, noteId, operation, operationId,
+            fingerprint, NoteMcpOperationStates.Pending, null, now, null, null, null, null, null,
+            null, null);
+
+        // The INSERT is the cross-instance single-winner claim. A process crash after this
+        // commit leaves a pending tombstone, which all later retries must fail closed on.
+        if (!await _ledger.TryInsertAsync(pending, ct))
         {
-            Operation = operation,
-            OperationId = operationId,
-            NoteId = noteId,
-            Fingerprint = fingerprint,
-            State = PendingState,
-            CreatedAt = now,
-        };
-        ledger.Operations[operationKey] = pending;
-        // The marker must be durable before the mutation starts; otherwise a crash after the
-        // mutation but before the result write would execute the same request again.
-        await SaveAsync(owner, ledger, ct);
+            var existing = await _ledger.FindAsync(owner, requestId, ct)
+                ?? throw new DomainException(40901,
+                    "该 requestId 的幂等记录正在建立，请稍后重试，不会重复执行变更");
+            return ReplayOrReject<T>(existing, owner, requestId, noteId, operation, fingerprint,
+                operationId);
+        }
 
         NativeNoteMcpOperationResultDto<T> result;
         try
@@ -126,8 +88,8 @@ public sealed class NoteMcpOperationStore(IOptions<NoteMaterialUploadOptions> op
         }
         catch (DomainException error)
         {
-            await MarkFailedAsync(owner, ledger, operationKey, pending, FailedState,
-                error.ErrorCode, error.Message, ct);
+            await MarkFailedAsync(pending, NoteMcpOperationStates.Failed, error.ErrorCode,
+                error.Message, ct);
             var receipt = StoredReceipt(pending, noteId, operationId, "failed",
                 _clock.GetUtcNow(), replayed: false, error.Message, error.ErrorCode);
             throw new NativeNoteMcpOperationException(error.ErrorCode, error.Message, receipt);
@@ -136,23 +98,30 @@ public sealed class NoteMcpOperationStore(IOptions<NoteMaterialUploadOptions> op
         {
             const string message =
                 "该 requestId 的上一次执行结果未确认；请先重新读取最新状态，确认后用新的 requestId 继续";
-            await MarkFailedAsync(owner, ledger, operationKey, pending, UnknownState,
-                40901, message, ct);
+            await MarkFailedAsync(pending, NoteMcpOperationStates.Unknown, 40901, message, ct);
             var receipt = StoredReceipt(pending, noteId, operationId, "unknown",
                 _clock.GetUtcNow(), replayed: false, message, 40901);
             throw new NativeNoteMcpOperationException(40901, message, receipt);
         }
 
-        ledger.Operations[operationKey] = pending with
+        var completedAt = _clock.GetUtcNow();
+        var responseJson = JsonSerializer.Serialize(result, Json);
+        if (!await _ledger.CompleteAsync(owner, requestId, responseJson, result.Receipt.Status,
+                result.Receipt.Revision, Truncate(result.Receipt.Message, 500), completedAt, ct))
         {
-            State = CompletedState,
-            ResponseJson = JsonSerializer.Serialize(result, Json),
-            CompletedAt = _clock.GetUtcNow(),
-            ReceiptStatus = result.Receipt.Status,
-            Revision = result.Receipt.Revision,
-            Message = result.Receipt.Message,
-        };
-        await SaveAsync(owner, ledger, ct);
+            const string message =
+                "该 requestId 的变更已执行，但完成记账未确认；请先重新读取最新状态，确认后用新的 requestId 继续";
+            var unknown = pending with
+            {
+                State = NoteMcpOperationStates.Unknown,
+                CompletedAt = completedAt,
+            };
+            var receipt = StoredReceipt(unknown, noteId, operationId, "unknown", completedAt,
+                replayed: false, message, 40901);
+            throw new NativeNoteMcpOperationException(40901, message, receipt);
+        }
+
+        await PurgeResponsesBestEffortAsync(owner);
         return result;
     }
 
@@ -166,21 +135,16 @@ public sealed class NoteMcpOperationStore(IOptions<NoteMaterialUploadOptions> op
         if (owner == Guid.Empty) throw new DomainException(40101, "请先登录");
         if (noteId == Guid.Empty) throw new DomainException(40001, "笔记标识无效");
         if (requestId == Guid.Empty) throw new DomainException(40001, "requestId 不能为空");
-        await using var lease = await LockAsync(owner, ct);
-        var ledger = await LoadAsync(owner, ct);
-        Prune(ledger);
-        if (!ledger.Operations.TryGetValue(Key(requestId), out var stored))
-            throw new DomainException(40401, "该 requestId 没有对应的 native-note 操作记录");
+        var stored = await _ledger.FindAsync(owner, requestId, ct)
+            ?? throw new DomainException(40401, "该 requestId 没有对应的 native-note 操作记录");
         if (stored.NoteId != Guid.Empty && stored.NoteId != noteId)
             throw new DomainException(40401, "该 requestId 没有对应当前笔记的操作记录");
 
-        var operationId = stored.OperationId.Length > 0
-            ? stored.OperationId
-            : BuildOperationId(owner, stored.Operation, requestId);
+        var operationId = StoredOperationId(owner, requestId, stored);
         var state = stored.State switch
         {
-            CompletedState => "succeeded",
-            FailedState => "failed",
+            NoteMcpOperationStates.Completed => "succeeded",
+            NoteMcpOperationStates.Failed => "failed",
             _ => "unknown",
         };
         NativeNoteMcpReceiptDto receipt;
@@ -199,13 +163,26 @@ public sealed class NoteMcpOperationStore(IOptions<NoteMaterialUploadOptions> op
         }
         else
         {
-            var status = state == "failed" ? "failed" : "unknown";
-            var message = state == "failed"
-                ? stored.ErrorMessage ?? "该 requestId 的执行失败"
-                : "该 requestId 的执行结果尚未确认";
+            var status = state switch
+            {
+                "succeeded" => stored.ReceiptStatus ?? "succeeded",
+                "failed" => stored.ReceiptStatus ?? "failed",
+                _ => "unknown",
+            };
+            var message = state switch
+            {
+                "succeeded" => "该 requestId 已执行成功；原响应已超过保留期，仅保留操作身份",
+                "failed" => stored.ErrorMessage ?? "该 requestId 的执行失败",
+                _ => "该 requestId 的执行结果尚未确认",
+            };
             receipt = StoredReceipt(stored, noteId, operationId, status,
                 stored.CompletedAt ?? stored.CreatedAt, replayed: false, message,
-                state == "failed" ? stored.ErrorCode ?? 40901 : 40901);
+                state switch
+                {
+                    "succeeded" => null,
+                    "failed" => stored.ErrorCode ?? 40901,
+                    _ => 40901,
+                });
         }
         return new NativeNoteMcpOperationStatusDto(operationId, stored.Operation, noteId,
             state, receipt);
@@ -233,28 +210,83 @@ public sealed class NoteMcpOperationStore(IOptions<NoteMaterialUploadOptions> op
     internal static string Fingerprint(string operation, object fingerprintInput)
         => Hash(JsonSerializer.Serialize(new { operation, request = fingerprintInput }, Json));
 
-    private static NativeNoteMcpReceiptDto StoredReceipt(StoredMcpOperation stored, Guid noteId,
+    private NativeNoteMcpOperationResultDto<T> ReplayOrReject<T>(NoteMcpOperationRow existing,
+        Guid owner, Guid requestId, Guid noteId, string operation, string fingerprint,
+        string requestedOperationId)
+    {
+        if (existing.NoteId != Guid.Empty && existing.NoteId != noteId)
+            throw new DomainException(40401, "该 requestId 没有对应当前笔记的操作记录");
+        var storedOperationId = StoredOperationId(owner, requestId, existing);
+        if (!string.Equals(existing.Operation, operation, StringComparison.Ordinal) ||
+            !string.Equals(existing.Fingerprint, fingerprint, StringComparison.Ordinal))
+        {
+            const string message =
+                "requestId 已经绑定另一组参数或另一项操作，请换一个新的 requestId；原结果保留";
+            var conflictReceipt = StoredReceipt(existing, noteId, storedOperationId, "failed",
+                _clock.GetUtcNow(), replayed: false, message, 40901);
+            throw new NativeNoteMcpOperationException(40901, message, conflictReceipt);
+        }
+        if (existing.State == NoteMcpOperationStates.Failed)
+        {
+            var code = existing.ErrorCode ?? 40901;
+            var failedMessage = existing.ErrorMessage
+                ?? "该 requestId 的上一次执行没有产生可重放结果，请先重新读取最新状态";
+            var failedReceipt = StoredReceipt(existing, noteId, storedOperationId, "failed",
+                _clock.GetUtcNow(), replayed: false, failedMessage, code);
+            throw new NativeNoteMcpOperationException(code, failedMessage, failedReceipt);
+        }
+        if (existing.State != NoteMcpOperationStates.Completed)
+        {
+            const string message =
+                "该 requestId 的执行结果尚未确认（可能已写入但未完成记账）。请先重新读取最新状态，确认后用新的 requestId 继续";
+            var unknownReceipt = StoredReceipt(existing, noteId, storedOperationId, "unknown",
+                _clock.GetUtcNow(), replayed: false, message, 40901);
+            throw new NativeNoteMcpOperationException(40901, message, unknownReceipt);
+        }
+        if (existing.ResponseJson is null)
+        {
+            const string message =
+                "该 requestId 已执行成功，但原响应已超过保留期；操作身份与输入指纹仍保留。请先重新读取最新状态，确认后用新的 requestId 继续";
+            var expiredReceipt = StoredReceipt(existing, noteId, storedOperationId,
+                "failed", _clock.GetUtcNow(), replayed: false,
+                message, 40901);
+            throw new NativeNoteMcpOperationException(40901, message, expiredReceipt);
+        }
+
+        var replayed = JsonSerializer.Deserialize<NativeNoteMcpOperationResultDto<T>>(
+            existing.ResponseJson, Json)
+            ?? throw new InvalidDataException("MCP operation replay payload is invalid");
+        return replayed with
+        {
+            Receipt = replayed.Receipt with
+            {
+                OperationId = requestedOperationId,
+                Replayed = true,
+                Message = replayed.Receipt.Message + "（已幂等重放，未再次执行）",
+            },
+        };
+    }
+
+    private static string StoredOperationId(Guid owner, Guid requestId,
+        NoteMcpOperationRow stored)
+        => stored.OperationId.Length > 0
+            ? stored.OperationId
+            : BuildOperationId(owner, stored.Operation, requestId);
+
+    private static NativeNoteMcpReceiptDto StoredReceipt(NoteMcpOperationRow stored, Guid noteId,
         string operationId, string status, DateTimeOffset at, bool replayed, string message,
         int? errorCode)
         => new(operationId, stored.Operation, noteId == Guid.Empty ? stored.NoteId : noteId,
             stored.Revision, status, replayed, at, message, errorCode);
 
-    private async Task MarkFailedAsync(Guid owner, Ledger ledger, string operationKey,
-        StoredMcpOperation pending, string state, int errorCode, string errorMessage,
-        CancellationToken ct)
+    private async Task MarkFailedAsync(NoteMcpOperationRow pending, string state, int errorCode,
+        string errorMessage, CancellationToken ct)
     {
-        ledger.Operations[operationKey] = pending with
-        {
-            State = state,
-            ReceiptStatus = state,
-            ErrorCode = errorCode,
-            ErrorMessage = Truncate(errorMessage, 500),
-            Message = Truncate(errorMessage, 500),
-            CompletedAt = _clock.GetUtcNow(),
-        };
+        var message = Truncate(errorMessage, 500);
         try
         {
-            await SaveAsync(owner, ledger, ct);
+            await _ledger.FailAsync(pending.OwnerId, pending.RequestId, state, errorCode,
+                message, _clock.GetUtcNow(), ct);
         }
         catch (Exception) when (!ct.IsCancellationRequested)
         {
@@ -263,85 +295,19 @@ public sealed class NoteMcpOperationStore(IOptions<NoteMaterialUploadOptions> op
         }
     }
 
-    private void Prune(Ledger ledger)
+    private async Task PurgeResponsesBestEffortAsync(Guid owner)
     {
-        var cutoff = _clock.GetUtcNow() - Retention;
-        foreach (var key in ledger.Operations
-                     .Where(item => item.Value.CreatedAt < cutoff)
-                     .Select(item => item.Key)
-                     .ToArray())
-            ledger.Operations.Remove(key);
-        if (ledger.Operations.Count <= MaxRetainedRequests) return;
-        foreach (var key in ledger.Operations
-                     .OrderByDescending(item => item.Value.CreatedAt)
-                     .Skip(MaxRetainedRequests)
-                     .Select(item => item.Key)
-                     .ToArray())
-            ledger.Operations.Remove(key);
-    }
-
-    private async Task<Ledger> LoadAsync(Guid owner, CancellationToken ct)
-    {
-        var path = FilePath(owner);
-        if (!File.Exists(path)) return new Ledger { Owner = owner };
-        await using var stream = File.OpenRead(path);
-        var ledger = await JsonSerializer.DeserializeAsync<Ledger>(stream, Json, ct)
-            ?? throw new InvalidDataException("MCP operation journal is invalid");
-        if (ledger.SchemaVersion != 1 || ledger.Owner != owner)
-            throw new InvalidDataException("MCP operation journal identity is invalid");
-        return ledger;
-    }
-
-    private async Task SaveAsync(Guid owner, Ledger ledger, CancellationToken ct)
-    {
-        Directory.CreateDirectory(Root);
-        var path = FilePath(owner);
-        var temp = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
         try
         {
-            await using (var stream = new FileStream(temp, FileMode.CreateNew, FileAccess.Write,
-                             FileShare.None, 64 * 1024, FileOptions.Asynchronous))
-            {
-                await JsonSerializer.SerializeAsync(stream, ledger, Json, ct);
-                await stream.FlushAsync(ct);
-                stream.Flush(flushToDisk: true);
-            }
-            File.Move(temp, path, overwrite: true);
+            await _ledger.PurgeResponsesAsync(owner, _clock.GetUtcNow(), CancellationToken.None);
         }
-        finally
+        catch (Exception error)
         {
-            if (File.Exists(temp)) File.Delete(temp);
+            // Identity rows are already safe; failing to trim old response bodies must not turn
+            // a completed mutation into a client-visible failure.
+            _logger?.LogWarning(error,
+                "Failed to purge old native-note MCP replay responses for owner {Owner}", owner);
         }
-    }
-
-    private async Task<FileStream> LockAsync(Guid owner, CancellationToken ct)
-    {
-        Directory.CreateDirectory(Root);
-        var path = Path.Combine(Root, Key(owner) + ".lock");
-        for (var attempt = 0; ; attempt++)
-        {
-            ct.ThrowIfCancellationRequested();
-            try
-            {
-                return new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
-            }
-            catch (IOException) when (attempt < 100)
-            {
-                await Task.Delay(50, ct);
-            }
-            catch (IOException)
-            {
-                throw new DomainException(50301, "该账号的 MCP 笔记操作尚在进行，请稍后重试");
-            }
-        }
-    }
-
-    private string FilePath(Guid owner) => Path.Combine(Root, Key(owner) + ".json");
-
-    private static string Key(Guid id)
-    {
-        if (id == Guid.Empty) throw new DomainException(40001, "标识无效");
-        return id.ToString("D");
     }
 
     private static string Hash(string text)
@@ -349,28 +315,4 @@ public sealed class NoteMcpOperationStore(IOptions<NoteMaterialUploadOptions> op
 
     private static string Truncate(string value, int max)
         => value.Length <= max ? value : value[..max];
-
-    private sealed class Ledger
-    {
-        public int SchemaVersion { get; init; } = 1;
-        public Guid Owner { get; init; }
-        public Dictionary<string, StoredMcpOperation> Operations { get; init; } = new(StringComparer.Ordinal);
-    }
-
-    private sealed record StoredMcpOperation
-    {
-        public required string Operation { get; init; }
-        public string OperationId { get; init; } = string.Empty;
-        public Guid NoteId { get; init; }
-        public required string Fingerprint { get; init; }
-        public string? ResponseJson { get; init; }
-        public DateTimeOffset CreatedAt { get; init; }
-        public string State { get; init; } = CompletedState;
-        public DateTimeOffset? CompletedAt { get; init; }
-        public string? ReceiptStatus { get; init; }
-        public Guid? Revision { get; init; }
-        public string? Message { get; init; }
-        public int? ErrorCode { get; init; }
-        public string? ErrorMessage { get; init; }
-    }
 }
