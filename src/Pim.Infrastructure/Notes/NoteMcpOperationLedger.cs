@@ -65,6 +65,8 @@ internal interface INoteMcpOperationLedger
     /// deliberately excluded so an old request id can never be treated as a new mutation.
     /// </summary>
     Task PurgeResponsesAsync(Guid owner, DateTimeOffset now, CancellationToken ct);
+
+    Task PurgeResponseAsync(Guid owner, Guid requestId, DateTimeOffset now, CancellationToken ct);
 }
 
 /// <summary>
@@ -140,17 +142,8 @@ internal sealed class PostgresNoteMcpOperationLedger(DbContextOptions<PimDbConte
         var cutoff = now - NoteMcpOperationRetention.ResponseRetention;
         await using var db = new PimDbContext(options);
         await db.Database.ExecuteSqlInterpolatedAsync($"""
-            UPDATE "note_mcp_operations"
-            SET "response_json" = NULL, "response_purged_at" = {now}
-            WHERE "owner_id" = {owner}
-              AND "state" = 'completed'
-              AND "response_json" IS NOT NULL
-              AND "completed_at" < {cutoff}
-            """, ct);
-
-        await db.Database.ExecuteSqlInterpolatedAsync($"""
             WITH ranked AS (
-                SELECT "request_id",
+                SELECT "request_id", "completed_at",
                        row_number() OVER (
                            ORDER BY "completed_at" DESC NULLS LAST,
                                     "created_at" DESC,
@@ -165,8 +158,23 @@ internal sealed class PostgresNoteMcpOperationLedger(DbContextOptions<PimDbConte
             FROM ranked
             WHERE target."owner_id" = {owner}
               AND target."request_id" = ranked."request_id"
-              AND ranked."position" > {NoteMcpOperationRetention.MaxCompletedResponses}
+              AND (ranked."completed_at" < {cutoff}
+                   OR ranked."position" > {NoteMcpOperationRetention.MaxCompletedResponses})
             """, ct);
+    }
+
+    public async Task PurgeResponseAsync(Guid owner, Guid requestId, DateTimeOffset now,
+        CancellationToken ct)
+    {
+        var cutoff = now - NoteMcpOperationRetention.ResponseRetention;
+        await using var db = new PimDbContext(options);
+        await db.NoteMcpOperations
+            .Where(x => x.OwnerId == owner && x.RequestId == requestId &&
+                        x.State == NoteMcpOperationStates.Completed &&
+                        x.ResponseJson != null && x.CompletedAt < cutoff)
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(x => x.ResponseJson, (string?)null)
+                .SetProperty(x => x.ResponsePurgedAt, (DateTimeOffset?)now), ct);
     }
 
     private static NoteMcpOperationRow Map(NoteMcpOperationEntity entity)

@@ -199,6 +199,40 @@ public sealed class NoteMcpOperationStoreRealDbTests
     }
 
     [SkippableFact]
+    public async Task ExpiredGetReturnsSucceededReceiptWhenResponsePurgeFails()
+    {
+        await using var database = await TempMigrationDatabase.CreateAsync(
+            "test_mcp_idempotency_expired_get");
+        await database.MigrateAsync();
+        var options = Options(database.ConnectionString);
+        var clock = new ManualClock(new DateTimeOffset(2026, 11, 27, 0, 0, 0, TimeSpan.Zero));
+        var owner = Guid.NewGuid();
+        var noteId = Guid.NewGuid();
+        var requestId = Guid.NewGuid();
+        var writer = new NoteMcpOperationStore(new PostgresNoteMcpOperationLedger(options), clock);
+
+        await RunAsync(writer, owner, noteId, requestId, new { value = 1 }, _ =>
+            Task.FromResult(Result(owner, noteId, requestId, clock, "original")));
+
+        var completed = await database.Db.NoteMcpOperations.SingleAsync(x =>
+            x.OwnerId == owner && x.RequestId == requestId);
+        completed.CompletedAt = clock.GetUtcNow() - TimeSpan.FromDays(31);
+        await database.Db.SaveChangesAsync();
+
+        var reader = new NoteMcpOperationStore(
+            new PurgeFailingLedger(new PostgresNoteMcpOperationLedger(options)), clock);
+        var status = await reader.GetAsync(owner, noteId, requestId, default);
+
+        Assert.Equal("succeeded", status.State);
+        Assert.Equal("applied", status.Receipt.Status);
+        Assert.Contains("超过保留期", status.Receipt.Message);
+        var retained = await database.Db.NoteMcpOperations.AsNoTracking()
+            .SingleAsync(x => x.OwnerId == owner && x.RequestId == requestId);
+        Assert.NotNull(retained.ResponseJson);
+        Assert.Null(retained.ResponsePurgedAt);
+    }
+
+    [SkippableFact]
     public async Task ConcurrentInstancesRestartAndOwnerIsolationShareOneClaim()
     {
         await using var database = await TempMigrationDatabase.CreateAsync(
@@ -323,7 +357,7 @@ public sealed class NoteMcpOperationStoreRealDbTests
         {
             if (Interlocked.Increment(ref _arrivals) == participants)
                 _released.TrySetResult();
-            await _released.Task.WaitAsync(ct);
+            await _released.Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
         }
     }
 
@@ -350,6 +384,34 @@ public sealed class NoteMcpOperationStoreRealDbTests
 
         public Task PurgeResponsesAsync(Guid owner, DateTimeOffset now, CancellationToken ct)
             => inner.PurgeResponsesAsync(owner, now, ct);
+
+        public Task PurgeResponseAsync(Guid owner, Guid requestId, DateTimeOffset now,
+            CancellationToken ct) => inner.PurgeResponseAsync(owner, requestId, now, ct);
+    }
+
+    private sealed class PurgeFailingLedger(INoteMcpOperationLedger inner)
+        : INoteMcpOperationLedger
+    {
+        public Task<bool> TryInsertAsync(NoteMcpOperationRow row, CancellationToken ct)
+            => inner.TryInsertAsync(row, ct);
+
+        public Task<NoteMcpOperationRow?> FindAsync(Guid owner, Guid requestId,
+            CancellationToken ct) => inner.FindAsync(owner, requestId, ct);
+
+        public Task<bool> CompleteAsync(Guid owner, Guid requestId, string responseJson,
+            string receiptStatus, Guid? revision, string message, DateTimeOffset completedAt,
+            CancellationToken ct) => inner.CompleteAsync(owner, requestId, responseJson,
+            receiptStatus, revision, message, completedAt, ct);
+
+        public Task<bool> FailAsync(Guid owner, Guid requestId, string state, int errorCode,
+            string errorMessage, DateTimeOffset completedAt, CancellationToken ct)
+            => inner.FailAsync(owner, requestId, state, errorCode, errorMessage, completedAt, ct);
+
+        public Task PurgeResponsesAsync(Guid owner, DateTimeOffset now, CancellationToken ct)
+            => throw new InvalidOperationException("synthetic purge failure");
+
+        public Task PurgeResponseAsync(Guid owner, Guid requestId, DateTimeOffset now,
+            CancellationToken ct) => throw new InvalidOperationException("synthetic purge failure");
     }
 
     private static DbContextOptions<PimDbContext> Options(string connectionString)

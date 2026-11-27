@@ -513,6 +513,16 @@ public sealed class NativeNoteMcpRealDbTests
             await db.SaveChangesAsync();
         }
 
+        var lookup = await host.CallAsync(host.McpBRead, "get_native_note_operation",
+            new { noteId, requestId });
+        Assert.False(lookup.IsError, lookup.Payload.GetRawText());
+        var status = lookup.Payload.GetProperty("data");
+        Assert.Equal("succeeded", status.GetProperty("state").GetString());
+        var receipt = status.GetProperty("receipt");
+        Assert.Equal("applied", receipt.GetProperty("status").GetString());
+        Assert.Contains("超过保留期", receipt.GetProperty("message").GetString());
+        Assert.DoesNotContain(requestId, lookup.Payload.GetRawText(), StringComparison.Ordinal);
+
         var replay = await host.CallAsync(host.McpBWrite,
             "upload_native_note_package", uploadArgs);
         Assert.True(replay.IsError, replay.Payload.GetRawText());
@@ -523,6 +533,7 @@ public sealed class NativeNoteMcpRealDbTests
         Assert.Contains("保留期", message);
         Assert.Contains("请求标识", message);
         Assert.DoesNotContain("requestId", details.GetRawText(), StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(requestId, replay.Payload.GetRawText(), StringComparison.Ordinal);
 
         await using var verifyScope = host.Factory.Services.CreateAsyncScope();
         var verifyDb = verifyScope.ServiceProvider.GetRequiredService<PimDbContext>();

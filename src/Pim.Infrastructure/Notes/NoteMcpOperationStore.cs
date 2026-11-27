@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Pim.Core.Exceptions;
@@ -26,6 +27,9 @@ namespace Pim.Infrastructure.Notes;
 public sealed class NoteMcpOperationStore
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
+    private static readonly Regex InternalGuidPattern = new(
+        @"(?<![0-9A-Fa-f])(?:[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}|[0-9A-Fa-f]{32})(?![0-9A-Fa-f])",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
     private readonly INoteMcpOperationLedger _ledger;
     private readonly TimeProvider _clock;
     private readonly ILogger<NoteMcpOperationStore>? _logger;
@@ -64,12 +68,11 @@ public sealed class NoteMcpOperationStore
         // commit leaves a pending tombstone, which all later retries must fail closed on.
         if (!await _ledger.TryInsertAsync(pending, ct))
         {
-            await PurgeResponsesBestEffortAsync(owner);
             var existing = await _ledger.FindAsync(owner, requestId, ct)
                 ?? throw new DomainException(40901,
                     "该 requestId 的幂等记录正在建立，请稍后重试，不会重复执行变更");
-            return ReplayOrReject<T>(existing, owner, requestId, noteId, operation, fingerprint,
-                operationId);
+            return await ReplayOrRejectAsync<T>(existing, owner, requestId, noteId, operation,
+                fingerprint, operationId);
         }
 
         NativeNoteMcpOperationResultDto<T> result;
@@ -89,11 +92,12 @@ public sealed class NoteMcpOperationStore
         }
         catch (DomainException error)
         {
+            var safeMessage = SanitizeInternalIdentifiers(error.Message);
             await MarkFailedAsync(pending, NoteMcpOperationStates.Failed, error.ErrorCode,
-                error.Message, ct);
+                safeMessage, ct);
             var receipt = StoredReceipt(pending, noteId, operationId, "failed",
-                _clock.GetUtcNow(), replayed: false, error.Message, error.ErrorCode);
-            throw new NativeNoteMcpOperationException(error.ErrorCode, error.Message, receipt);
+                _clock.GetUtcNow(), replayed: false, safeMessage, error.ErrorCode);
+            throw new NativeNoteMcpOperationException(error.ErrorCode, safeMessage, receipt);
         }
         catch (Exception)
         {
@@ -136,11 +140,14 @@ public sealed class NoteMcpOperationStore
         if (owner == Guid.Empty) throw new DomainException(40101, "请先登录");
         if (noteId == Guid.Empty) throw new DomainException(40001, "笔记标识无效");
         if (requestId == Guid.Empty) throw new DomainException(40001, "requestId 不能为空");
-        await PurgeResponsesBestEffortAsync(owner);
         var stored = await _ledger.FindAsync(owner, requestId, ct)
             ?? throw new DomainException(40401, "该 requestId 没有对应的 native-note 操作记录");
         if (stored.NoteId != Guid.Empty && stored.NoteId != noteId)
             throw new DomainException(40401, "该 requestId 没有对应当前笔记的操作记录");
+
+        if (stored.State == NoteMcpOperationStates.Completed &&
+            stored.ResponseJson is not null && !HasRetainedResponse(stored, _clock.GetUtcNow()))
+            await PurgeResponseBestEffortAsync(owner, requestId);
 
         var operationId = StoredOperationId(owner, requestId, stored);
         var state = stored.State switch
@@ -173,8 +180,12 @@ public sealed class NoteMcpOperationStore
             };
             var message = state switch
             {
-                "succeeded" => "该 requestId 已执行成功；原响应已超过保留期，仅保留操作身份",
-                "failed" => stored.ErrorMessage ?? "该 requestId 的执行失败",
+                "succeeded" when stored.CompletedAt is { } completedAt &&
+                                  completedAt < _clock.GetUtcNow() - NoteMcpOperationRetention.ResponseRetention
+                    => "该请求已执行成功；原响应已超过保留期，仅保留操作身份",
+                "succeeded" => "该请求已执行成功；原响应已不再保留，仅保留操作身份",
+                "failed" => SanitizeInternalIdentifiers(stored.ErrorMessage
+                    ?? "该请求的执行失败"),
                 _ => "该 requestId 的执行结果尚未确认",
             };
             receipt = StoredReceipt(stored, noteId, operationId, status,
@@ -212,9 +223,9 @@ public sealed class NoteMcpOperationStore
     internal static string Fingerprint(string operation, object fingerprintInput)
         => Hash(JsonSerializer.Serialize(new { operation, request = fingerprintInput }, Json));
 
-    private NativeNoteMcpOperationResultDto<T> ReplayOrReject<T>(NoteMcpOperationRow existing,
-        Guid owner, Guid requestId, Guid noteId, string operation, string fingerprint,
-        string requestedOperationId)
+    private async Task<NativeNoteMcpOperationResultDto<T>> ReplayOrRejectAsync<T>(
+        NoteMcpOperationRow existing, Guid owner, Guid requestId, Guid noteId, string operation,
+        string fingerprint, string requestedOperationId)
     {
         if (existing.NoteId != Guid.Empty && existing.NoteId != noteId)
             throw new DomainException(40401, "该 requestId 没有对应当前笔记的操作记录");
@@ -231,8 +242,8 @@ public sealed class NoteMcpOperationStore
         if (existing.State == NoteMcpOperationStates.Failed)
         {
             var code = existing.ErrorCode ?? 40901;
-            var failedMessage = existing.ErrorMessage
-                ?? "该 requestId 的上一次执行没有产生可重放结果，请先重新读取最新状态";
+            var failedMessage = SanitizeInternalIdentifiers(existing.ErrorMessage
+                ?? "该 requestId 的上一次执行没有产生可重放结果，请先重新读取最新状态");
             var failedReceipt = StoredReceipt(existing, noteId, storedOperationId, "failed",
                 _clock.GetUtcNow(), replayed: false, failedMessage, code);
             throw new NativeNoteMcpOperationException(code, failedMessage, failedReceipt);
@@ -247,10 +258,15 @@ public sealed class NoteMcpOperationStore
         }
         if (!HasRetainedResponse(existing, _clock.GetUtcNow()))
         {
-            const string message =
-                "该 requestId 已执行成功，但原响应已超过保留期；操作身份与输入指纹仍保留。请先重新读取最新状态，确认后用新的 requestId 继续";
+            var expired = existing.CompletedAt is { } completedAt &&
+                          completedAt < _clock.GetUtcNow() - NoteMcpOperationRetention.ResponseRetention;
+            if (existing.ResponseJson is not null)
+                await PurgeResponseBestEffortAsync(owner, requestId);
+            var message = expired
+                ? "该 requestId 已执行成功，但原响应已超过保留期；操作身份与输入指纹仍保留。请先重新读取最新状态，确认后用新的 requestId 继续"
+                : "该 requestId 已执行成功，但原响应已不再保留；操作身份与输入指纹仍保留。请先重新读取最新状态，确认后用新的 requestId 继续";
             var expiredReceipt = StoredReceipt(existing, noteId, storedOperationId,
-                "failed", _clock.GetUtcNow(), replayed: false,
+                existing.ReceiptStatus ?? "applied", _clock.GetUtcNow(), replayed: false,
                 message, 40901);
             throw new NativeNoteMcpOperationException(40901, message, expiredReceipt);
         }
@@ -280,6 +296,9 @@ public sealed class NoteMcpOperationStore
            row.CompletedAt is { } completedAt &&
            completedAt >= now - NoteMcpOperationRetention.ResponseRetention;
 
+    private static string SanitizeInternalIdentifiers(string message)
+        => InternalGuidPattern.Replace(message, "[id]");
+
     private static NativeNoteMcpReceiptDto StoredReceipt(NoteMcpOperationRow stored, Guid noteId,
         string operationId, string status, DateTimeOffset at, bool replayed, string message,
         int? errorCode)
@@ -306,14 +325,28 @@ public sealed class NoteMcpOperationStore
     {
         try
         {
-            await _ledger.PurgeResponsesAsync(owner, _clock.GetUtcNow(), CancellationToken.None);
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+            await _ledger.PurgeResponsesAsync(owner, _clock.GetUtcNow(), timeout.Token);
         }
         catch (Exception error)
         {
-            // Identity rows are already safe; failing to trim old response bodies must not turn
-            // a completed mutation into a client-visible failure.
+            // Bulk cleanup is opportunistic and must not delay or fail a completed mutation.
             _logger?.LogWarning(error,
                 "Failed to purge old native-note MCP replay responses for owner {Owner}", owner);
+        }
+    }
+
+    private async Task PurgeResponseBestEffortAsync(Guid owner, Guid requestId)
+    {
+        try
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+            await _ledger.PurgeResponseAsync(owner, requestId, _clock.GetUtcNow(), timeout.Token);
+        }
+        catch (Exception error)
+        {
+            _logger?.LogWarning(error,
+                "Failed to purge an expired native-note MCP replay response for owner {Owner}", owner);
         }
     }
 

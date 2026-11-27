@@ -179,6 +179,28 @@ public sealed class NoteMcpOperationStoreTests
     }
 
     [Fact]
+    public async Task DomainFailureInternalIdentifiersAreRedactedFromReceiptAndLookup()
+    {
+        var store = Store();
+        var requestId = Guid.NewGuid();
+        var internalId = Guid.NewGuid();
+        var failure = await Assert.ThrowsAsync<NativeNoteMcpOperationException>(() =>
+            RunAsync(store, requestId, new { value = 1 }, _ =>
+                throw new DomainException(40901,
+                    $"Processing task {internalId:D} failed for attempt {internalId:N}")));
+
+        Assert.DoesNotContain(internalId.ToString("D"), failure.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(internalId.ToString("N"), failure.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(internalId.ToString("D"), failure.Receipt.Message,
+            StringComparison.Ordinal);
+        var status = await store.GetAsync(_owner, _noteId, requestId, default);
+        Assert.DoesNotContain(internalId.ToString("D"), status.Receipt.Message,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(internalId.ToString("N"), status.Receipt.Message,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task UnexpectedFailureIsRecordedAsUnknownAndQueryable()
     {
         var store = Store();
@@ -708,6 +730,22 @@ public sealed class NoteMcpOperationStoreTests
                         ResponsePurgedAt = now,
                     };
                 }
+            }
+        }
+
+        public async Task PurgeResponseAsync(Guid owner, Guid requestId, DateTimeOffset now,
+            CancellationToken ct)
+        {
+            if (FailPurge) throw new InvalidOperationException("synthetic purge failure");
+            await Task.Yield();
+            lock (_gate)
+            {
+                var key = (owner, requestId);
+                if (!_rows.TryGetValue(key, out var row) || row.State != "completed" ||
+                    row.ResponseJson is null || row.CompletedAt is not { } completedAt ||
+                    completedAt >= now - NoteMcpOperationRetention.ResponseRetention)
+                    return;
+                _rows[key] = row with { ResponseJson = null, ResponsePurgedAt = now };
             }
         }
 
