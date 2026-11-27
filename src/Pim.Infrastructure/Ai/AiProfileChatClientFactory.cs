@@ -3,6 +3,8 @@ using OpenAI;
 using OpenAI.Chat;
 using System.ClientModel;
 using System.ClientModel.Primitives;
+using System.Runtime.ExceptionServices;
+using System.Runtime.CompilerServices;
 using System.Text.Json.Nodes;
 using Pim.Core.Ai;
 
@@ -130,10 +132,75 @@ public sealed class AiProfileChatClientFactory(IHttpClientFactory http) : IAiPro
                 RetryPolicy = new ClientRetryPolicy(0),
                 NetworkTimeout = TimeSpan.FromSeconds(connection.TimeoutSeconds)
             };
-            var client = new ChatClient(connection.Model, new ApiKeyCredential(connection.ApiKey), options).AsIChatClient();
+            var client = new CallerScopeChatClient(
+                new ChatClient(connection.Model, new ApiKeyCredential(connection.ApiKey), options).AsIChatClient());
             return new(client, transport);
         }
         catch { transport.Dispose(); throw; }
+    }
+
+    private sealed class CallerScopeChatClient(IChatClient innerClient) : DelegatingChatClient(innerClient)
+    {
+        public override async Task<ChatResponse> GetResponseAsync(
+            IEnumerable<Microsoft.Extensions.AI.ChatMessage> messages, ChatOptions? options = null,
+            CancellationToken cancellationToken = default)
+        {
+            using var callerScope = AiProviderCircuitBreaker.EnterCallerScopeIfUnscoped(cancellationToken);
+            try
+            {
+                return await base.GetResponseAsync(messages, options, cancellationToken);
+            }
+            catch (Exception error) when (UnwrapTransport(error) is { } transport)
+            {
+                ExceptionDispatchInfo.Capture(transport).Throw();
+                throw;
+            }
+        }
+
+        public override async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
+            IEnumerable<Microsoft.Extensions.AI.ChatMessage> messages, ChatOptions? options = null,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            using var callerScope = AiProviderCircuitBreaker.EnterCallerScopeIfUnscoped(cancellationToken);
+            var stream = base.GetStreamingResponseAsync(messages, options, cancellationToken)
+                .GetAsyncEnumerator(cancellationToken);
+            try
+            {
+                while (true)
+                {
+                    ChatResponseUpdate update;
+                    try
+                    {
+                        if (!await stream.MoveNextAsync()) yield break;
+                        update = stream.Current;
+                    }
+                    catch (Exception error) when (UnwrapTransport(error) is { } transport)
+                    {
+                        ExceptionDispatchInfo.Capture(transport).Throw();
+                        throw;
+                    }
+                    yield return update;
+                }
+            }
+            finally
+            {
+                await stream.DisposeAsync();
+            }
+        }
+
+        /// <summary>
+        /// The OpenAI SDK wraps transport-level failures in <see cref="ClientResultException"/>.
+        /// Callers classify the circuit-open and connection failures themselves, so restore the
+        /// original exception instead of losing it inside a status-0 wrapper.
+        /// </summary>
+        private static Exception? UnwrapTransport(Exception error)
+        {
+            if (error is not ClientResultException { InnerException: { } inner }) return null;
+            if (inner is AiProviderCircuitOpenException) return inner;
+            return inner is HttpRequestException && error is ClientResultException { Status: <= 0 }
+                ? inner
+                : null;
+        }
     }
 }
 

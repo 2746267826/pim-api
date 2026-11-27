@@ -35,4 +35,7 @@ public sealed class AiModelRuntimeEntity
     [Column("text_model_id")] public Guid? TextModelId { get; set; }
     [Column("vision_model_id")] public Guid? VisionModelId { get; set; }
     [Column("transcription_model_id")] public Guid? TranscriptionModelId { get; set; }
+    [Column("note_organization_model_id")] public Guid? NoteOrganizationModelId { get; set; }
+    [Column("note_todo_model_id")] public Guid? NoteTodoModelId { get; set; }
+    [Column("calendar_planning_model_id")] public Guid? CalendarPlanningModelId { get; set; }
 }

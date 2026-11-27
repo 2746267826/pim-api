@@ -40,8 +40,7 @@ public sealed class NoteAsrRoutingService(PimDbContext db, ICurrentUserService u
     {
         var owner = await RequireActiveOwnerAsync(ct);
         var config = await db.NoteAsrRouteConfigs.AsNoTracking().SingleOrDefaultAsync(x => x.OwnerId == owner, ct);
-        return config is null ? new(Guid.Empty, NoteAsrRoute.Local, null, null, false, "", DateTimeOffset.MinValue, null)
-            : Describe(config);
+        return await DescribeAsync(config, ct);
     }
 
     public async Task<NoteAsrRouteConfigDto> UpdateConfigAsync(UpdateNoteAsrRouteConfigRequest request, CancellationToken ct)
@@ -51,10 +50,15 @@ public sealed class NoteAsrRoutingService(PimDbContext db, ICurrentUserService u
         if (request.LocalModelId is { Length: > 200 } || request.LocalModelRevision is { Length: > 128 })
             throw new DomainException(40001, "本机模型标识或版本过长");
         if (!NoteAsrRoute.Known(route) || route == NoteAsrRoute.Local && string.IsNullOrWhiteSpace(request.LocalModelId) ||
-            route != NoteAsrRoute.Local && request.CloudModelId is null)
+            route != NoteAsrRoute.Local && request.CloudModelId is null &&
+            await GlobalCloudProfileAsync(ct) is null)
             throw new DomainException(40001, "默认执行位置无效或未选择对应模型");
         if (request.ConsentVersion is { Length: > 64 }) throw new DomainException(40001, "同意版本过长");
         if (request.CloudModelId is { } cloudId) await ValidateCloudDestinationAsync(cloudId, ct);
+        var effectiveGlobal = request.CloudModelId is null ? await GlobalCloudProfileAsync(ct) : null;
+        if (route != NoteAsrRoute.Local && request.CloudModelId is null && effectiveGlobal is not null)
+            route = effectiveGlobal.AsrPresetId == "mimo-multimodal"
+                ? NoteAsrRoute.CloudMultimodal : NoteAsrRoute.CloudAsr;
         return await ExecuteDbTransactionAsync(async token =>
         {
             var current = await db.NoteAsrRouteConfigs.SingleOrDefaultAsync(x => x.OwnerId == owner, token);
@@ -74,7 +78,7 @@ public sealed class NoteAsrRoutingService(PimDbContext db, ICurrentUserService u
             catch (DbUpdateConcurrencyException) { throw new DomainException(40901, "路由配置已被并发修改，请刷新后重试"); }
             catch (DbUpdateException) when (db.Entry(current).State == EntityState.Added)
             { throw new DomainException(40901, "路由配置已被并发创建，请刷新后重试"); }
-            return Describe(current);
+            return await DescribeAsync(current, token);
         }, ct);
     }
 
@@ -1107,10 +1111,7 @@ public sealed class NoteAsrRoutingService(PimDbContext db, ICurrentUserService u
                 ? task.Request.Consent.ModelId : config?.CloudModelId;
             if (modelId is null && route == NoteAsrRoute.CloudAsr)
             {
-                var legacy = await db.AiModelProfiles.AsNoTracking().Where(x => x.Enabled &&
-                    (x.Capabilities & AiModelCapabilityFlags.Transcription) != 0)
-                    .OrderBy(x => x.CreatedAt).FirstOrDefaultAsync(ct);
-                modelId = legacy?.Id;
+                modelId = await GlobalCloudProfileIdAsync(ct);
             }
             if (modelId is not { } id) throw new DomainException(40901, "云端执行位置没有可用模型配置");
             var model = await db.AiModelProfiles.AsNoTracking().SingleOrDefaultAsync(x => x.Id == id && x.Enabled, ct)
@@ -1297,9 +1298,45 @@ public sealed class NoteAsrRoutingService(PimDbContext db, ICurrentUserService u
         catch (Exception error) when (error is System.Security.Cryptography.CryptographicException or FormatException) { return false; }
     }
 
-    private static NoteAsrRouteConfigDto Describe(NoteAsrRouteConfigEntity x) =>
-        new(x.Revision, x.DefaultRoute, x.LocalModelId, x.LocalModelRevision, x.CloudModelId is not null,
-            x.ConsentVersion, x.UpdatedAt, x.CloudModelId);
+    private async Task<NoteAsrRouteConfigDto> DescribeAsync(NoteAsrRouteConfigEntity? x, CancellationToken ct)
+    {
+        var global = await GlobalCloudProfileAsync(ct);
+        var effective = x?.CloudModelId is { } overrideId
+            ? await db.AiModelProfiles.AsNoTracking().SingleOrDefaultAsync(profile =>
+                profile.Id == overrideId && profile.Enabled &&
+                (profile.Capabilities & AiModelCapabilityFlags.Transcription) != 0, ct)
+            : global;
+        var effectiveRoute = RouteOf(effective);
+        var globalRoute = RouteOf(global);
+        var defaultRoute = x?.DefaultRoute ?? NoteAsrRoute.Local;
+        if (x?.CloudModelId is null && NoteAsrRoute.IsCloud(defaultRoute) && effectiveRoute is not null)
+            defaultRoute = effectiveRoute;
+        return new(x?.Revision ?? Guid.Empty, defaultRoute,
+            x?.LocalModelId, x?.LocalModelRevision, x?.CloudModelId is not null,
+            x?.ConsentVersion ?? "", x?.UpdatedAt ?? DateTimeOffset.MinValue, x?.CloudModelId,
+            effective?.Id, effective?.Name, effectiveRoute,
+            global?.Id, global?.Name, globalRoute);
+    }
+
+    private static string? RouteOf(AiModelProfileEntity? profile) =>
+        profile?.AsrPresetId == "mimo-multimodal"
+            ? NoteAsrRoute.CloudMultimodal
+            : profile is null ? null : NoteAsrRoute.CloudAsr;
+
+    private async Task<AiModelProfileEntity?> GlobalCloudProfileAsync(CancellationToken ct)
+    {
+        var modelId = await GlobalCloudProfileIdAsync(ct);
+        return modelId is not { } id ? null : await db.AiModelProfiles.AsNoTracking()
+            .SingleOrDefaultAsync(profile => profile.Id == id && profile.Enabled &&
+                (profile.Capabilities & AiModelCapabilityFlags.Transcription) != 0 &&
+                profile.AsrPresetId != null, ct);
+    }
+
+    private async Task<Guid?> GlobalCloudProfileIdAsync(CancellationToken ct)
+    {
+        var runtime = await db.AiModelRuntime.AsNoTracking().SingleOrDefaultAsync(ct);
+        return runtime is { Enabled: true, TranscriptionModelId: { } id } ? id : null;
+    }
 
     private NoteAsrNodeDto Describe(NoteAsrNodeEntity x, DateTimeOffset now)
     {

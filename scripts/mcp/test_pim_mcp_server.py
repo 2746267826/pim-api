@@ -34,8 +34,9 @@ def test_tool_inventory_counts():
     write = [t for t in tools if t["group"] == "write"]
     # WO-PC-BACKEND-20261001 REQ-6（#379）：get_pc_aw_heatmap 随遗留端点 pc/aw/heatmap 下线，
     # 149 → 148 工具 / 读 100 → 99。
-    assert len(tools) == 148
-    assert len(read) == 99
+    # J05：移除旧 LiteLLM 网关 `get_ai_status`（GET /ai/status），148 → 147 工具 / 读 99 → 98。
+    assert len(tools) == 147
+    assert len(read) == 98
     assert len(write) == 49
 
 

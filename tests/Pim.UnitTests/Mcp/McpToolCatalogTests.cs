@@ -7,13 +7,13 @@ namespace Pim.UnitTests.Mcp;
 public sealed class McpToolCatalogTests
 {
     [Fact]
-    public void Catalog_Has100ReadAnd49Write()
+    public void Catalog_Has99ReadAnd49Write()
     {
         // P4：read_file_text 加入读工具（OneDrive 文件模块 v2，设计 §12）
         // WO-ANDROID-KEEPALIVE-20260923 阶段一：get_mobile_liveness_summary 加入读工具（REQ-11）
         // WO-PC-BACKEND-20261001 REQ-6（#379）：get_pc_aw_heatmap 随遗留端点 pc/aw/heatmap 下线，
         // 读工具 101 → 100（AC-6.3：工具表必须与最终行为一致）。
-        Assert.Equal(100, McpToolCatalog.ReadTools.Count);
+        Assert.Equal(99, McpToolCatalog.ReadTools.Count);
         Assert.Equal(49, McpToolCatalog.WriteTools.Count);
     }
 
@@ -70,8 +70,9 @@ public sealed class McpToolCatalogTests
         var permissions = McpToolCatalog.DefaultPermissions();
         Assert.True(permissions["read"].All(kv => kv.Value));
         Assert.True(permissions["write"].All(kv => !kv.Value));
-        // WO-PC-BACKEND-20261001 REQ-6：读工具随 get_pc_aw_heatmap 下线变为 100。
-        Assert.Equal(100, permissions["read"].Count);
+        // WO-PC-BACKEND-20261001 REQ-6：读工具随 get_pc_aw_heatmap 下线变为 100；
+        // J05 移除 LiteLLM 状态工具后为 99。
+        Assert.Equal(99, permissions["read"].Count);
         Assert.Equal(49, permissions["write"].Count);
     }
 

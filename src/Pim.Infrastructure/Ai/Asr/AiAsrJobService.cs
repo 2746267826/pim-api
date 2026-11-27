@@ -442,9 +442,12 @@ public sealed class AiAsrJobService(
             wire.SetAsrAudit(body => preset.AuditRequest(body, connection, audio, audioRow.Id,
                     job.Language, prompt), RequestBudgetBytes(description.MaxAudioBytes));
             using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(job.TimeoutSeconds + 60));
-            using var execution = CancellationTokenSource.CreateLinkedTokenSource(ct, deadline.Token);
+            using var userCancel = new CancellationTokenSource();
+            using var execution = CancellationTokenSource.CreateLinkedTokenSource(ct, userCancel.Token, deadline.Token);
+            using var callerScope = AiProviderCircuitBreaker.EnterCallerScope(() =>
+                ct.IsCancellationRequested || userCancel.IsCancellationRequested);
             using var monitorStop = new CancellationTokenSource();
-            var monitor = MonitorCancellationAsync(owner, clientRequestId, execution, monitorStop.Token);
+            var monitor = MonitorCancellationAsync(owner, clientRequestId, userCancel, monitorStop.Token);
             string? parsedResponse = null;
             double? reportedSeconds = null;
             var providerPhase = false;
@@ -573,17 +576,27 @@ public sealed class AiAsrJobService(
                 {
                     var known = !ProviderAttempted();
                     await CompleteAsync(job, log, "failed", "provider_" + error.ErrorCode,
-                        Clip(error.Message, 2000), "provider_error", known,
+                        Safe(Clip(error.Message, 2000), key, out _), "provider_error", known,
                         known ? "修正请求或配置后明确新建请求" : "核对服务商记录后明确新建请求",
                         wire.ResponseBody, wire.ResponseTooLarge, ProviderAttempted(),
                         wire.ResponseBody is not null, reportedSeconds, CancellationToken.None);
                 }
                 return;
             }
+            catch (AiProviderCircuitOpenException error)
+            {
+                job.ProviderAttempted = false;
+                await CompleteAsync(job, log, "blocked", "circuit_open", error.Message,
+                    "circuit_breaker", true, "等待熔断窗口结束后明确重试；本次未发送服务商",
+                    wire.ResponseBody, wire.ResponseTooLarge, ProviderAttempted(),
+                    wire.ResponseBody is not null, reportedSeconds, CancellationToken.None,
+                    providerAttemptedOverride: false);
+                return;
+            }
             catch (Exception error)
             {
-                logger.LogWarning(error, "Durable ASR provider call failed for {ClientRequestId}",
-                    clientRequestId);
+                logger.LogWarning("Durable ASR provider call failed ({ErrorType}) for {ClientRequestId}",
+                    error.GetType().Name, clientRequestId);
                 await CompleteAsync(job, log, "failed", "provider_error",
                     wire.RequestRejected
                         ? "SDK请求与固定音频/模型/语言不一致，本次未发送"
@@ -951,7 +964,7 @@ public sealed class AiAsrJobService(
         string? errorCode, string? errorMessage, string abortSource, bool outcomeKnown,
         string? nextAction, string? responseBody, bool responseTooLarge,
         bool providerAttempted, bool responseBodyComplete, double? reportedSeconds,
-        CancellationToken ct, int? upstreamStatus = null)
+        CancellationToken ct, int? upstreamStatus = null, bool? providerAttemptedOverride = null)
     {
         var now = DateTimeOffset.UtcNow;
         void Prepare(AiAsrJobEntity current)
@@ -961,7 +974,8 @@ public sealed class AiAsrJobService(
             job.GatewayEvidenceSource = current.GatewayEvidenceSource ?? job.GatewayEvidenceSource;
             job.GatewayObservedAt = current.GatewayObservedAt ?? job.GatewayObservedAt;
             var cancelArrivedLate = current.Status == "cancelling" && status == "succeeded";
-            var attempted = current.ProviderAttempted || job.ProviderAttempted || providerAttempted;
+            var attempted = providerAttemptedOverride ??
+                (current.ProviderAttempted || job.ProviderAttempted || providerAttempted);
             job.Status = status;
             job.AbortSource = cancelArrivedLate ? "user_cancel_late" : abortSource;
             job.OutcomeKnown = outcomeKnown;

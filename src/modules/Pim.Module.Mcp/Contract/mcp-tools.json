@@ -2521,15 +2521,6 @@
     }
   },
   {
-    "name": "get_ai_status",
-    "description": "Get AI gateway status. Returns {enabled, model, health}. Maps to GET /ai/status.",
-    "inputSchema": {
-      "properties": {},
-      "title": "get_ai_statusArguments",
-      "type": "object"
-    }
-  },
-  {
     "name": "get_ai_requests",
     "description": "List AI requests with filters. Returns PagedResult<AiRequest>.",
     "inputSchema": {

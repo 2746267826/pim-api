@@ -43,7 +43,6 @@ try {
       if (path === '/api/v1/ai/models') return ok([model])
       if (path === '/api/v1/ai/model-settings') return ok({ revision, enabled: true, textModelId: null, visionModelId: null, transcriptionModelId: model.id })
       if (path === '/api/v1/ai/asr-presets') return ok([preset])
-      if (path === '/api/v1/ai/status') return ok({ enabled: false, provider: 'synthetic', baseUrl: '', defaultModel: '', lastError: null })
       if (path.endsWith('/asr-tasks/sources')) return ok({ total: hasSource ? 1 : 0, offset: 0, items: hasSource ? [{ noteId: version, versionId: version, title: '研究方法课堂 · 固定材料',
         createdAt: model.createdAt, isCurrent: true, hasConflict: false, recordings: 2, totalSamples: 1920000, sampleRate: 16000 }] : [] })
       if (path.endsWith('/asr-tasks')) {

@@ -11,9 +11,10 @@ DEPRECATED (2026-09-01): MCP Server 已集成进 Pim.Api（.NET 8）进程内（
 - 本脚本中 create_category 同步修正为调用 POST /api/v1/pc/app-category-rules，彻底避免废弃脚本
   误调时向树形分类入口写入脏数据。
 
-Exposes 148 tools: 99 read-only (Calendar / PcTracker / Mobile / QuickNotes / Files / Core/Infra)
+Exposes 147 tools: 98 read-only (Calendar / PcTracker / Mobile / QuickNotes / Files / Core/Infra)
 plus 49 write tools (Calendar 30 + QuickNotes 8 + Files 5 + PcTracker 4 + Mobile 2).
-（WO-PC-BACKEND-20261001 REQ-6：get_pc_aw_heatmap 随遗留端点 pc/aw/heatmap 下线，149 → 148 / 100 → 99。）
+（WO-PC-BACKEND-20261001 REQ-6：get_pc_aw_heatmap 随遗留端点 pc/aw/heatmap 下线，149 → 148 / 100 → 99；
+  J05：移除旧 LiteLLM 网关 get_ai_status，148 → 147 / 99 → 98。）
 
 Transports:
 - stdio (default, v2-compatible): Bearer pass-through. Client obtains JWT via
@@ -1614,7 +1615,7 @@ async def search_calendar_tasks(
     return res
 
 
-# ===================== PcTracker 27 =====================
+# ===================== PcTracker 26 =====================
 
 @mcp.tool()
 async def get_pc_summary(
@@ -2288,7 +2289,7 @@ async def get_quick_note_attachment_meta(attachment_id: str) -> Any:
         return {"error": f"request failed: {e}", "code": 500}
 
 
-# ===================== Files 8 =====================
+# ===================== Files 7 =====================
 
 @mcp.tool()
 async def get_file_providers() -> Any:
@@ -2368,7 +2369,7 @@ async def get_file_open_link(file_id: str) -> Any:
     return res
 
 
-# ===================== Core/Infra 14 =====================
+# ===================== Core/Infra 13 =====================
 
 @mcp.tool()
 async def get_today_sections(
@@ -2457,12 +2458,6 @@ async def get_system_health() -> Any:
 async def get_status_summary() -> Any:
     """Get status summary (counts). Returns SummaryResponse. Maps to GET /status/summary."""
     return await _call_api("GET", "/api/v1/status/summary")
-
-
-@mcp.tool()
-async def get_ai_status() -> Any:
-    """Get AI gateway status. Returns {enabled, model, health}. Maps to GET /ai/status."""
-    return await _call_api("GET", "/api/v1/ai/status")
 
 
 @mcp.tool()
@@ -3104,7 +3099,7 @@ async def delete_quick_note_attachment(attachmentId: str) -> Any:
     return await _call_api("DELETE", f"/api/v1/quick-notes/attachments/{attachmentId}")
 
 
-# ===================== Files Writes (6) =====================
+# ===================== Files Writes (5) =====================
 
 @mcp.tool()
 async def upload_file(providerId: str, path: str, fileContentBase64: str, fileName: str) -> Any:
@@ -3312,7 +3307,7 @@ def _build_http_app() -> Any:
 
 
 def _run_check() -> None:
-    """Self-check: verify tool inventory (99 read + 49 write) without starting a server."""
+    """Self-check: verify tool inventory (98 read + 49 write) without starting a server."""
     tools = _list_tools_meta()
     read = [t for t in tools if t["group"] == "read"]
     write = [t for t in tools if t["group"] == "write"]

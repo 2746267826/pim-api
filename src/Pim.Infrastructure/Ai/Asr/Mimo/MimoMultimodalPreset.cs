@@ -103,6 +103,7 @@ public sealed class MimoMultimodalPreset(Func<HttpMessageHandler?, HttpClient> i
             Content = new StringContent(payload, Encoding.UTF8, "application/json")
         };
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", connection.ApiKey);
+        using var callerScope = AiProviderCircuitBreaker.EnterCallerScopeIfUnscoped(ct);
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(TimeSpan.FromSeconds(connection.TimeoutSeconds));
         try
@@ -119,6 +120,10 @@ public sealed class MimoMultimodalPreset(Func<HttpMessageHandler?, HttpClient> i
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
             throw new DomainException(50401, "MiMo多模态请求超时，结果未确认，本次未自动重试");
+        }
+        catch (AiProviderCircuitOpenException)
+        {
+            throw;
         }
         catch (HttpRequestException)
         {

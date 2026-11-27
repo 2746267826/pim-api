@@ -731,15 +731,37 @@ if (/data-reliability\/rules\/[^/]+\/violations$/.test(path)) {
   ok(res, { ruleCode: 'S1', generatedAtUtc: new Date().toISOString(), totalCount: 3, truncated: false, items: [{ ruleCode: 'S1', id: 'v1', deviceId: 'ws-01', occurredAtUtc: at(10), fields: { app: 'Code.exe' } }] })
   return
 }
-if (path === '/api/v1/ai/status') { ok(res, { enabled: true, provider: 'litellm', baseUrl: 'http://127.0.0.1:4000', defaultModel: 'gpt-4o-mini', lastHealthCheckAt: at(10), lastError: null, recentSuccessfulCallAt: at(10, 5) }); return }
 if (path === '/api/v1/ai/usage/summary') { ok(res, { requestCount: 128, successCount: 121, failureCount: 7, totalTokens: 486123, estimatedCost: 1.2345 }); return }
+if (path === '/api/v1/ai/models/connection-tests/latest') { ok(res, []); return }
 if (path === '/api/v1/ai/requests') {
   const items = Array.from({ length: 8 }, (_, i) => ({ id: 'log-' + i, startedAt: at(10 - (i % 3), i * 5), module: ['calendar', 'files', 'pc'][i % 3], purpose: ['suggest', 'classify', 'summarize'][i % 3], model: 'gpt-4o-mini', status: i === 3 ? 'Failed' : 'Succeeded', totalTokens: 1200 + i * 130, estimatedCost: 0.0032, durationMs: 800 + i * 120 }))
   ok(res, { items, totalCount: 128, page: 1, pageSize: 20, totalPages: 7 })
   return
 }
 if (/ai\/requests\/[^/]+$/.test(path)) { ok(res, { id: 'log-1', module: 'calendar', purpose: 'suggest', model: 'gpt-4o-mini', status: 'Succeeded', requestMessagesJson: '[]', responseText: 'ok', totalTokens: 1200 }); return }
-if (/ai\/(test|health-check)$/.test(path)) { ok(res, { status: 'Succeeded', responseText: 'ok', userFacingError: null }); return }
+if (/^\/api\/v1\/ai\/models\/[^/]+\/connection-tests\/latest$/.test(path)) {
+  json(res, 404, { code: 40401, message: '当前修订尚无该能力的测试记录', data: null, timestamp: new Date().toISOString() })
+  return
+}
+if (/^\/api\/v1\/ai\/models\/[^/]+\/connection-test$/.test(path)) {
+  readBody((body) => ok(res, {
+    clientRequestId: body.clientRequestId ?? '00000000-0000-4000-8000-000000000098',
+    modelId: path.split('/')[5],
+    modelRevision: body.expectedRevision,
+    capability: body.capability ?? 'Text',
+    status: 'Blocked',
+    probe: body.capability === 'Vision' ? 'vision-32x32-png' : body.capability === 'Transcription' ? 'asr-speech-mp3' : 'text-minimal',
+    responsePreview: null,
+    errorCode: 'mock_only',
+    errorMessage: '本地 mock 未发送服务商；这不是真实 provider 成功证据。',
+    logId: '00000000-0000-4000-8000-000000000099',
+    durationMs: 0,
+    replayed: false,
+    testedAt: new Date().toISOString(),
+    providerAttempted: false,
+  }))
+  return
+}
 if (path === '/api/v1/mcp/clients') {
   ok(res, [{ id: 'mc-1', name: 'Claude Code', status: 'active', tokenPrefix: 'pim_mcp_ab12', permissions: { read: {}, write: {} }, createdAt: daysAgo(5), revokedAt: null, lastSeenAt: new Date(Date.now() - 120000).toISOString(), callCount: 342, writeCallCount: 12, lastTool: 'get_calendar_layers', online: true, createdByUsername: 'demo' }])
   return

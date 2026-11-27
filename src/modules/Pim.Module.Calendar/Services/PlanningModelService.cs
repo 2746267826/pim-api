@@ -5,6 +5,7 @@ using Pim.Core.Ai;
 using Pim.Core.Exceptions;
 using Pim.Core.Operations;
 using Pim.Core.Planning;
+using Pim.Infrastructure.Ai;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
 using Pim.Infrastructure.Operations;
@@ -41,7 +42,7 @@ public class PlanningModelService
     private readonly ICurrentUserService _currentUser;
     private readonly IOperationConfirmationService? _confirmationService;
     private readonly RecurrenceService _recurrence;
-    private readonly IAiGateway? _aiGateway;
+    private readonly IAiPurposeTextCallService? _aiTextCalls;
     private readonly TimeProvider _timeProvider;
 
     public PlanningModelService(
@@ -49,14 +50,14 @@ public class PlanningModelService
         ICurrentUserService currentUser,
         IOperationConfirmationService? confirmationService = null,
         RecurrenceService? recurrence = null,
-        IAiGateway? aiGateway = null,
+        IAiPurposeTextCallService? aiTextCalls = null,
         TimeProvider? timeProvider = null)
     {
         _db = db;
         _currentUser = currentUser;
         _confirmationService = confirmationService;
         _recurrence = recurrence ?? new RecurrenceService(NullLogger<RecurrenceService>.Instance);
-        _aiGateway = aiGateway;
+        _aiTextCalls = aiTextCalls;
         _timeProvider = timeProvider ?? TimeProvider.System;
     }
 
@@ -730,7 +731,7 @@ public class PlanningModelService
     }
 
     /// <summary>
-    /// 生成排程建议：优先调用 AI 网关（AI 关闭、调用失败或输出非法时回退规则引擎）。
+    /// 生成排程建议：优先使用「日历排程」用途默认模型（AI 关闭、调用失败或输出非法时回退规则引擎）。
     /// 建议一律为 Suggested 状态，经既有确认流写回日历——AI 只提建议，不碰核心事实。
     /// </summary>
     public async Task<GenerateAiPlanResponse> GenerateAiPlanAsync(
@@ -759,17 +760,21 @@ public class PlanningModelService
         if (tasks.Count == 0)
             return new GenerateAiPlanResponse("none", []);
 
-        if (_aiGateway is not null)
+        string? fallbackReason = null;
+        if (_aiTextCalls is not null)
         {
-            var aiResult = await TryGenerateWithAiAsync(userId, tasks, now, horizonEnd, ct);
-            if (aiResult is not null)
-                return aiResult;
+            var attempt = await TryGenerateWithAiAsync(userId, tasks, now, horizonEnd, ct);
+            if (attempt.Response is not null)
+                return attempt.Response;
+            fallbackReason = attempt.FallbackReason;
         }
+        else
+            fallbackReason = "服务端未注册日历排程AI调用服务";
 
-        return await GenerateWithEngineAsync(userId, tasks, ct);
+        return await GenerateWithEngineAsync(userId, tasks, fallbackReason, ct);
     }
 
-    private async Task<GenerateAiPlanResponse?> TryGenerateWithAiAsync(
+    private async Task<(GenerateAiPlanResponse? Response, string? FallbackReason)> TryGenerateWithAiAsync(
         Guid userId, List<TaskEntity> tasks, DateTimeOffset now, DateTimeOffset horizonEnd,
         CancellationToken ct)
     {
@@ -801,45 +806,39 @@ public class PlanningModelService
             busyEvents = events.Select(e => new { e.DtStart, e.DtEnd })
         };
 
-        AiResult result;
+        AiTextCallResultDto result;
         try
         {
-            result = await _aiGateway!.CompleteAsync(new AiGatewayRequest(
-                Module: "calendar",
-                Purpose: "calendar.ai_plan",
-                SourceObjectType: "user",
-                SourceObjectId: userId.ToString(),
-                Messages:
-                [
-                    new AiMessage(AiMessageRole.System,
-                        "你是排程助手。根据用户的待办任务、可用时段与已有日程，给出排程建议。"
-                        + "只输出一个 JSON 数组，不要输出其他任何文字。数组元素形如 "
-                        + "{\"title\":\"任务标题\",\"start\":\"ISO8601 开始\",\"end\":\"ISO8601 结束\",\"reason\":\"一句话理由\"}。"
-                        + "规则：start/end 必须在 now 与 horizonEnd 之间、避开 busyEvents、"
-                        + "若给了 availableWindows 则只能排在窗口内、end 必须晚于 start、最多 10 条。"),
-                    new AiMessage(AiMessageRole.User, JsonSerializer.Serialize(payload))
-                ],
-                Model: null,
-                SchemaName: null,
-                SchemaVersion: null,
-                MaxOutputTokens: 2000,
-                MaxAttempts: 2,
-                Metadata: new Dictionary<string, string> { ["endpoint"] = "calendar/ai-placeholders/generate" }), ct);
+            result = await _aiTextCalls!.CallForPurposeAsync(AiPurpose.CalendarPlanning,
+                new AiTextCallRequest(Guid.NewGuid(), userId, JsonSerializer.Serialize(payload),
+                    "你是排程助手。根据用户的待办任务、可用时段与已有日程，给出排程建议。"
+                    + "只输出一个 JSON 数组，不要输出其他任何文字。数组元素形如 "
+                    + "{\"title\":\"任务标题\",\"start\":\"ISO8601 开始\",\"end\":\"ISO8601 结束\",\"reason\":\"一句话理由\"}。"
+                    + "规则：start/end 必须在 now 与 horizonEnd 之间、避开 busyEvents、"
+                    + "若给了 availableWindows 则只能排在窗口内、end 必须晚于 start、最多 10 条。"), ct);
         }
-        catch
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
-            return null;
+            throw;
+        }
+        catch (Exception error)
+        {
+            return (null, error is DomainException domain
+                ? $"模型调用未成功：{domain.Message}"
+                : "模型调用未成功，请核对AI设置、服务商状态与调用记录");
         }
 
         if (result.Status != AiRequestStatus.Succeeded || string.IsNullOrWhiteSpace(result.ResponseText))
-            return null;
+            return (null, result.ErrorMessage is { Length: > 0 } error
+                ? $"模型调用未成功：{error}"
+                : "模型调用未返回可用内容");
 
         var items = ParseAiPlanJson(result.ResponseText, now, horizonEnd);
         if (items.Count == 0)
-            return null;
+            return (null, "模型返回的内容没有可采纳的有效排程建议");
 
         var created = await PersistPlaceholdersAsync(userId, items, "ai", ct);
-        return new GenerateAiPlanResponse("ai", created);
+        return (new GenerateAiPlanResponse("ai", created), null);
     }
 
     /// <summary>防御式解析 AI 输出：定位首个 [ 与末个 ]，逐条校验时间与条数。</summary>
@@ -891,20 +890,20 @@ public class PlanningModelService
     }
 
     private async Task<GenerateAiPlanResponse> GenerateWithEngineAsync(
-        Guid userId, List<TaskEntity> tasks, CancellationToken ct)
+        Guid userId, List<TaskEntity> tasks, string? fallbackReason, CancellationToken ct)
     {
         var engine = new SchedulingEngine(_db);
         var solutions = await engine.GeneratePlansAsync(userId, tasks.Select(t => t.Id).ToList(), ct);
         var solution = solutions.FirstOrDefault(s => s.AlgorithmName.Contains("greedy", StringComparison.OrdinalIgnoreCase))
                        ?? solutions.FirstOrDefault();
         if (solution is null || solution.Slots.Count == 0)
-            return new GenerateAiPlanResponse("none", []);
+            return new GenerateAiPlanResponse("none", [], fallbackReason);
 
         var items = solution.Slots.Take(10)
             .Select(s => new AiPlanItem(s.Title, s.Start, s.End, $"规则引擎建议（{solution.AlgorithmName}）"))
             .ToList();
         var created = await PersistPlaceholdersAsync(userId, items, "rule-engine", ct);
-        return new GenerateAiPlanResponse("rule-engine", created);
+        return new GenerateAiPlanResponse("rule-engine", created, fallbackReason);
     }
 
     private async Task<IReadOnlyList<AiPlanPlaceholderViewDto>> PersistPlaceholdersAsync(

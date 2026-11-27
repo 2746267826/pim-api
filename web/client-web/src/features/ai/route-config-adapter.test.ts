@@ -62,6 +62,46 @@ describe('toRouteConfigSave', () => {
       .toBe('cloud-asr')
   })
 
+  it('账号跟随全局默认时使用服务端报告的实际预设路由，不凭空猜测', () => {
+    const follow = {
+      ...config,
+      defaultRoute: 'local',
+      cloudModelId: null,
+      effectiveCloudModelId: '00000000-0000-4000-8000-00000000b009',
+      effectiveCloudRoute: 'cloud-multimodal',
+    }
+    expect(toRouteConfigSave(intent({ defaultRouteId: 'cloud', cloudModelId: null }), follow, null, local))
+      .toMatchObject({ defaultRoute: 'cloud-multimodal', cloudModelId: null })
+  })
+
+  it('清除显式覆盖时使用全局默认路由，而不是仍代表旧覆盖的effective路由', () => {
+    const overridden = {
+      ...config,
+      effectiveCloudModelId: config.cloudModelId,
+      effectiveCloudModelName: '账号覆盖 ASR',
+      effectiveCloudRoute: 'cloud-asr',
+      globalCloudModelId: '00000000-0000-4000-8000-00000000b009',
+      globalCloudModelName: '全局多模态 ASR',
+      globalCloudRoute: 'cloud-multimodal',
+    }
+    expect(toRouteConfigSave(intent({ defaultRouteId: 'cloud', cloudModelId: null }), overridden, null, local))
+      .toMatchObject({ defaultRoute: 'cloud-multimodal', cloudModelId: null })
+  })
+
+  it('清除显式覆盖且全局不存在时不沿用旧覆盖路由', () => {
+    const overridden = {
+      ...config,
+      effectiveCloudModelId: config.cloudModelId,
+      effectiveCloudModelName: '账号覆盖 ASR',
+      effectiveCloudRoute: 'cloud-multimodal',
+      globalCloudModelId: null,
+      globalCloudModelName: null,
+      globalCloudRoute: null,
+    }
+    expect(toRouteConfigSave(intent({ defaultRouteId: 'cloud', cloudModelId: null }), overridden, null, local))
+      .toMatchObject({ defaultRoute: 'cloud-asr', cloudModelId: null })
+  })
+
   it('显式null只清空目标字段，其他字段仍回填为完整值', () => {
     expect(toRouteConfigSave(intent({ cloudModelId: null }), config, cloud, local)).toMatchObject({
       localModelId: 'local-model-1', localModelRevision: 'local-rev-1', cloudModelId: null,
