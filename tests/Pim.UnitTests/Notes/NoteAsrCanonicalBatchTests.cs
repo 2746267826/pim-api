@@ -408,6 +408,8 @@ public sealed class NoteAsrCanonicalBatchTests
                 Assert.Equal(0, await check.NoteAsrBatchJobs.CountAsync(x => x.OwnerId == Owner));
                 Assert.Equal(0, await check.NoteAsrSegmentEvidence.CountAsync(x =>
                     x.OwnerId == Owner));
+                Assert.Equal(0, await check.NoteAsrLeases.CountAsync(x => x.OwnerId == Owner));
+                Assert.Equal(0, await check.AiRequestLogs.CountAsync(x => x.UserId == Owner));
                 var canonicalAttempt = await check.NoteAsrAttempts.AsNoTracking()
                     .SingleAsync(x => x.Id == CanonicalAttemptId);
                 Assert.Equal("Queued", canonicalAttempt.State);

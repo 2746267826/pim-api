@@ -427,13 +427,14 @@ public sealed class NoteProcessingService(
                 profile?.Name ?? (local ? routeConfig?.LocalModelId : null),
                 profile?.Model ?? (local ? routeConfig?.LocalModelId : null),
                 consent?.Endpoint, route, asrRequest.Route?.ExecutionMode,
-                consent?.PresetId, consent?.PresetVersion));
+                consent?.PresetId, consent?.PresetVersion,
+                asrRequest.Route?.ConfigRevision, asrRequest.Route?.ConsentVersion));
         }
         profiles.TryGetValue(derivedConsent.ModelId, out var derivedProfile);
         targets.Add(new(NoteProcessingTaskKind.Derived, true, true,
             derivedConsent.ModelId, derivedConsent.ModelRevision,
             derivedProfile?.Name, derivedProfile?.Model, derivedConsent.Endpoint,
-            "cloud", NoteAsrExecutionMode.Realtime, null, null));
+            "cloud", NoteAsrExecutionMode.Realtime, null, null, null, null));
 
         var possibleCharge = targets.Any(target => target.Paid);
         var materialScopeText = hasAudio

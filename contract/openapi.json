@@ -19670,6 +19670,15 @@
           "route": {
             "nullable": true,
             "type": "string"
+          },
+          "routeConfigRevision": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          },
+          "routeConsentVersion": {
+            "nullable": true,
+            "type": "string"
           }
         },
         "required": [
@@ -43807,6 +43816,9 @@
           },
           "404": {
             "description": "Not Found"
+          },
+          "409": {
+            "description": "Conflict"
           }
         },
         "security": [

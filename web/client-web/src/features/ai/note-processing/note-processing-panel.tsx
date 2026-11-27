@@ -105,6 +105,10 @@ function ProcessingTargets({ targets, showVersionDetails }: {
         {target.presetId ? ` · ${target.presetId}/${target.presetVersion ?? ''}` : ''}
         {target.executionMode ? ` · ${target.executionMode}` : ''}
       </span>}
+      {showVersionDetails && target.routeConfigRevision && <span className="mt-1 block break-all font-mono text-text-3">
+        路由配置 revision：{target.routeConfigRevision}
+        {target.routeConsentVersion ? ` · 同意版本：${target.routeConsentVersion}` : ''}
+      </span>}
       <span className="mt-1 block text-text-3">
         {target.paid ? '可能按服务商用量产生费用' : '本机执行，本次不产生云端费用'}
       </span>

@@ -234,6 +234,16 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
         if (request.RetryId == Guid.Empty || request.SegmentIndexes is not { Count: > 0 and <= 5_000 } ||
             request.SegmentIndexes.Distinct().Count() != request.SegmentIndexes.Count)
             throw new DomainException(40001, "请选择待恢复分片，核对原目标，并确认重试可能重复计费");
+        await tasks.WithLockAsync(owner, async lockedCt =>
+        {
+            var locked = await tasks.ReadAsync(owner, id, lockedCt);
+            if (locked.Request.ParentTaskId is null &&
+                !await tasks.IsCanonicalInitialUnlockedAsync(owner, id,
+                    locked.Request.VersionId, lockedCt))
+                throw new DomainException(40901,
+                    "该材料版本已有当前转写链；历史重复任务不会外发或重复计费");
+            return true;
+        }, ct);
         var before = await ReconcileAsync(owner, id, ct);
         if (before.Route == NoteAsrRoute.Local && request.Consent is not null)
             throw new DomainException(40901, "本机重跑不涉及云端外发，不需要云端确认");

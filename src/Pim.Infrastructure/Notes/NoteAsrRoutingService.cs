@@ -384,6 +384,7 @@ public sealed class NoteAsrRoutingService(PimDbContext db, ICurrentUserService u
                 (x.LocalModelId == null || x.LocalModelId == node.ModelId) &&
                 (x.LocalModelRevision == null || x.LocalModelRevision == node.ModelRevision))
             .OrderBy(x => x.CreatedAt).Take(Options.NodeScanLimit).ToListAsync(ct);
+        var rejected = false;
         foreach (var candidate in candidates)
         {
             var result = await legacyTasks.WithLockAsync(owner, async lockedCt =>
@@ -395,6 +396,18 @@ public sealed class NoteAsrRoutingService(PimDbContext db, ICurrentUserService u
                     await QuarantineClaimAsync(owner, candidate,
                         "task_binding_missing", "任务快照缺失，无法执行；需重新发起明确重跑", lockedCt);
                     return (null, null, "invalid");
+                }
+                if (state.Request.ParentTaskId is null &&
+                    !await legacyTasks.IsCanonicalInitialUnlockedAsync(owner, candidate.TaskId,
+                        state.Request.VersionId, lockedCt))
+                {
+                    rejected = true;
+                    return (null, null, "noncanonical");
+                }
+                if (state.AttemptId != candidate.Id)
+                {
+                    rejected = true;
+                    return (null, null, "binding_mismatch");
                 }
                 if (state.StopRequested)
                     return (null, null, "stopped");
@@ -451,6 +464,9 @@ public sealed class NoteAsrRoutingService(PimDbContext db, ICurrentUserService u
             }, ct);
             if (result.Item1 is not null) return result;
         }
+        if (rejected)
+            throw new DomainException(40901,
+                "存在历史重复或未绑定的执行快照；拒绝创建租约，请重新发起明确重跑");
         return (null, null, "empty");
     }
 
@@ -485,6 +501,10 @@ public sealed class NoteAsrRoutingService(PimDbContext db, ICurrentUserService u
                 NoteAsrState state;
                 try { state = await legacyTasks.ReadAsync(owner, candidate.TaskId, lockedCt); }
                 catch (DomainException error) when (error.ErrorCode == 40401) { return true; }
+                if (state.Request.ParentTaskId is null &&
+                    !await legacyTasks.IsCanonicalInitialUnlockedAsync(owner, candidate.TaskId,
+                        state.Request.VersionId, lockedCt))
+                    return true;
                 var intent = state.RetryIntents.Values.Where(x => x.AttemptId == candidate.Id)
                     .OrderByDescending(x => x.CreatedAt).FirstOrDefault();
                 if (state.AttemptId != candidate.Id || state.StopRequested || intent is null ||
@@ -533,7 +553,19 @@ public sealed class NoteAsrRoutingService(PimDbContext db, ICurrentUserService u
     private async Task<NoteAsrClaimDto> ClaimAsync(Guid owner, NoteAsrLeaseEntity lease, CancellationToken ct)
     {
         var attempt = await db.NoteAsrAttempts.AsNoTracking().SingleAsync(x => x.Id == lease.AttemptId && x.OwnerId == owner, ct);
-        var state = await legacyTasks.ReadAsync(owner, attempt.TaskId, ct);
+        var state = await legacyTasks.WithLockAsync(owner, async lockedCt =>
+        {
+            var locked = await legacyTasks.ReadAsync(owner, attempt.TaskId, lockedCt);
+            if (locked.AttemptId != attempt.Id)
+                throw new DomainException(40901,
+                    "任务绑定的执行快照与租约不一致，不能下发执行");
+            if (locked.Request.ParentTaskId is null &&
+                !await legacyTasks.IsCanonicalInitialUnlockedAsync(owner, attempt.TaskId,
+                    locked.Request.VersionId, lockedCt))
+                throw new DomainException(40901,
+                    "该材料版本已有当前转写链；历史重复任务不会外发或重复计费");
+            return locked;
+        }, ct);
         if (state.Request.VersionId != attempt.VersionId ||
             state.InputSha256 != attempt.InputSha256)
             throw new DomainException(40901, "attempt 固定材料与任务快照不一致，不能下发执行");
@@ -1048,11 +1080,63 @@ public sealed class NoteAsrRoutingService(PimDbContext db, ICurrentUserService u
             task.InputSha256 != inputSha || task.Steps.Count != expectedSegments ||
             !string.Equals(task.Request.Language, language, StringComparison.Ordinal))
             throw new DomainException(40901, "attempt 必须绑定当前账号已有任务的同版本、同材料、同分片数和语言");
-        if (await db.NoteAsrAttempts.AnyAsync(x => x.OwnerId == owner && x.TaskId == taskId, ct))
-            throw new DomainException(40901, "该任务已有执行快照；重跑须使用新任务标识");
-        var attempt = await CreateAttemptCoreAsync(owner, taskId, versionId, expectedSegments, language, routeConsent, ct);
+        var attempt = await legacyTasks.WithLockAsync(owner, async lockedCt =>
+        {
+            var locked = await legacyTasks.ReadAsync(owner, taskId, lockedCt);
+            if (locked.Request.VersionId != versionId ||
+                locked.InputSha256 != inputSha ||
+                locked.Steps.Count != expectedSegments ||
+                !string.Equals(locked.Request.Language, language, StringComparison.Ordinal))
+                throw new DomainException(40901,
+                    "attempt 必须绑定当前账号已有任务的同版本、同材料、同分片数和语言");
+            var frozenRoute = FrozenRouteConsent(locked);
+            if (frozenRoute is not null &&
+                (routeConsent is null ||
+                 !string.Equals(frozenRoute.Route, routeConsent.Route, StringComparison.Ordinal) ||
+                 frozenRoute.ConfigRevision != routeConsent.ConfigRevision ||
+                 !string.Equals(frozenRoute.ConsentVersion, routeConsent.ConsentVersion,
+                     StringComparison.Ordinal) ||
+                 !string.Equals(frozenRoute.ExecutionMode, routeConsent.ExecutionMode,
+                     StringComparison.Ordinal)))
+                throw new DomainException(40901,
+                    "attempt 必须使用任务创建时冻结的执行位置与同意版本，请刷新后重新确认");
+            if (locked.Request.ParentTaskId is null &&
+                !await legacyTasks.IsCanonicalInitialUnlockedAsync(owner, taskId, versionId, lockedCt))
+                throw new DomainException(40901,
+                    "该材料版本已有当前转写链；历史重复任务不会外发或重复计费");
+            var existing = await db.NoteAsrAttempts.AsNoTracking().SingleOrDefaultAsync(x =>
+                x.OwnerId == owner && x.TaskId == taskId, lockedCt);
+            if (existing is not null)
+            {
+                if (locked.AttemptId != existing.Id)
+                    throw new DomainException(40901,
+                        "任务绑定的执行快照与数据库记录不一致，不能创建新的执行快照");
+                throw new DomainException(40901, "该任务已有执行快照；重跑须使用新任务标识");
+            }
+            if (locked.AttemptId is not null)
+                throw new DomainException(40901,
+                    "任务绑定的执行快照与数据库记录不一致，不能创建新的执行快照");
+            var created = await CreateAttemptCoreAsync(owner, taskId, versionId, expectedSegments,
+                language, frozenRoute ?? routeConsent, lockedCt);
+            await legacyTasks.UpdateLockedAsync(owner, taskId, current =>
+            {
+                if (current.AttemptId is { } bound && bound != created.Id)
+                    throw new DomainException(40901,
+                        "任务已绑定另一执行快照，未覆盖");
+                current.AttemptId = created.Id;
+                current.ExecutionMode = created.ExecutionMode;
+            }, lockedCt);
+            return created;
+        }, ct);
         return DescribeAttempt(attempt);
     }
+
+    private static NoteAsrRouteConsent? FrozenRouteConsent(NoteAsrState state) =>
+        state.Request.Route ?? (state.Route is { } route && state.RouteConfigRevision != Guid.Empty
+            ? new NoteAsrRouteConsent(route, state.RouteConfigRevision, state.RouteConsentVersion,
+                true, state.ExecutionMode ?? NoteAsrExecutionMode.Realtime,
+                state.Request.Route?.BatchScopeConfirmed ?? false)
+            : null);
 
     internal async Task<NoteAsrAttemptEntity> CreateAttemptCoreAsync(Guid owner, Guid taskId, Guid versionId,
         int expectedSegments, string language, NoteAsrRouteConsent? routeConsent, CancellationToken ct)
@@ -1075,6 +1159,9 @@ public sealed class NoteAsrRoutingService(PimDbContext db, ICurrentUserService u
             throw new DomainException(40001, "请明确确认云端音频外发、长等待与可能计费");
         if (routeConsent is not null && NoteAsrRoute.IsCloud(route) && config is null)
             throw new DomainException(40901, "云端路由配置已变化，请刷新后重新确认");
+        if (routeConsent is not null && config is not null &&
+            !string.Equals(config.ConsentVersion, routeConsent.ConsentVersion, StringComparison.Ordinal))
+            throw new DomainException(40901, "路由配置已变化，请刷新后重新确认");
         var version = await materials.GetAsync(owner, versionId, ct);
         var task = await legacyTasks.ReadAsync(owner, taskId, ct);
         var inputSha = NoteMaterialManifestValidator.Hash(version.InputJson);
@@ -1142,6 +1229,7 @@ public sealed class NoteAsrRoutingService(PimDbContext db, ICurrentUserService u
             if (existing is null ||
                 existing.VersionId != versionId || existing.InputSha256 != attempt.InputSha256 ||
                 existing.Route != route || existing.ConfigRevision != attempt.ConfigRevision ||
+                !string.Equals(existing.ConsentVersion, attempt.ConsentVersion, StringComparison.Ordinal) ||
                 existing.ExecutionMode != executionMode ||
                 existing.ExpectedSegments != expectedSegments || existing.Language != language)
                 throw new DomainException(40901, "该任务已有不同执行快照，未覆盖");

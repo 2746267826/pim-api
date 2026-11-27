@@ -88,6 +88,8 @@ const plan: NoteProcessingPlan = {
       executionMode: 'Realtime',
       presetId: 'mimo-asr',
       presetVersion: '1',
+      routeConfigRevision: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+      routeConsentVersion: 'synthetic-cloud-consent-v1',
     },
     {
       kind: 'Derived',
@@ -102,6 +104,8 @@ const plan: NoteProcessingPlan = {
       executionMode: 'Realtime',
       presetId: null,
       presetVersion: null,
+      routeConfigRevision: null,
+      routeConsentVersion: null,
     },
   ],
 }
@@ -151,6 +155,8 @@ it('keeps raw processing state, backend reasons and diagnostics for admins', asy
   expect(screen.getByText('backend issue diagnostic')).toBeTruthy()
   expect(await screen.findByText(/private-asr\.invalid/)).toBeTruthy()
   expect(screen.getByText(/private-derived\.invalid/)).toBeTruthy()
+  expect(screen.getByText(/路由配置 revision/)).toBeTruthy()
+  expect(screen.getByText(/synthetic-cloud-consent-v1/)).toBeTruthy()
 })
 
 it('uses a generic action failure for ordinary users and keeps the backend error for admins', async () => {

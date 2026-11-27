@@ -79,7 +79,11 @@ public sealed record NoteProcessingTargetDto(
     string? Route,
     string? ExecutionMode,
     string? PresetId,
-    string? PresetVersion);
+    string? PresetVersion,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    Guid? RouteConfigRevision = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? RouteConsentVersion = null);
 
 public sealed record NoteProcessingAuthorizationDto(
     string Purpose,

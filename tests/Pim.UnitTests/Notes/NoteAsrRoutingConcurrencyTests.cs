@@ -1653,6 +1653,9 @@ public sealed class NoteAsrRoutingConcurrencyTests
         await using var check = NewDb(owner);
         Assert.Equal(hasExistingAttempt ? 1 : 0, await check.NoteAsrAttempts.CountAsync(x =>
             x.OwnerId == owner && x.TaskId == duplicateTaskId));
+        Assert.Equal(0, await check.NoteAsrLeases.CountAsync(x => x.OwnerId == owner));
+        Assert.Equal(0, await check.NoteAsrBatchJobs.CountAsync(x => x.OwnerId == owner));
+        Assert.Equal(0, await check.AiRequestLogs.CountAsync(x => x.UserId == owner));
         var after = await tasks.ReadAsync(owner, duplicateTaskId, CancellationToken.None);
         Assert.Equal(duplicate.Revision, after.Revision);
         await CleanupAsync(owner);
@@ -1705,6 +1708,9 @@ public sealed class NoteAsrRoutingConcurrencyTests
         await using var check = NewDb(owner);
         Assert.Equal(0, await check.NoteAsrAttempts.CountAsync(x =>
             x.OwnerId == owner && x.TaskId == taskId));
+        Assert.Equal(0, await check.NoteAsrLeases.CountAsync(x => x.OwnerId == owner));
+        Assert.Equal(0, await check.NoteAsrBatchJobs.CountAsync(x => x.OwnerId == owner));
+        Assert.Equal(0, await check.AiRequestLogs.CountAsync(x => x.UserId == owner));
         Assert.Equal(state.Revision,
             (await tasks.ReadAsync(owner, taskId, CancellationToken.None)).Revision);
         await CleanupAsync(owner);
@@ -1756,6 +1762,8 @@ public sealed class NoteAsrRoutingConcurrencyTests
         Assert.Equal(0, await check.NoteAsrLeases.CountAsync(x => x.OwnerId == owner));
         Assert.Equal(0, await check.NoteAsrAckReceipts.CountAsync(x =>
             x.OwnerId == owner && x.AttemptId == duplicateAttemptId));
+        Assert.Equal(0, await check.NoteAsrBatchJobs.CountAsync(x => x.OwnerId == owner));
+        Assert.Equal(0, await check.AiRequestLogs.CountAsync(x => x.UserId == owner));
         var attempt = await check.NoteAsrAttempts.AsNoTracking()
             .SingleAsync(x => x.Id == duplicateAttemptId);
         Assert.Equal("Queued", attempt.State);
@@ -1808,6 +1816,8 @@ public sealed class NoteAsrRoutingConcurrencyTests
         await using var check = NewDb(owner);
         Assert.Equal(0, await check.NoteAsrLeases.CountAsync(x => x.OwnerId == owner));
         Assert.Equal(0, await check.NoteAsrAckReceipts.CountAsync(x => x.OwnerId == owner));
+        Assert.Equal(0, await check.NoteAsrBatchJobs.CountAsync(x => x.OwnerId == owner));
+        Assert.Equal(0, await check.AiRequestLogs.CountAsync(x => x.UserId == owner));
         var attempt = await check.NoteAsrAttempts.AsNoTracking()
             .SingleAsync(x => x.Id == candidateAttemptId);
         Assert.Equal("Queued", attempt.State);
@@ -1874,6 +1884,9 @@ public sealed class NoteAsrRoutingConcurrencyTests
         await using var check = NewDb(owner);
         Assert.Equal(hasExistingAttempt ? 1 : 0, await check.NoteAsrAttempts.CountAsync(x =>
             x.OwnerId == owner && x.TaskId == duplicateTaskId));
+        Assert.Equal(0, await check.NoteAsrLeases.CountAsync(x => x.OwnerId == owner));
+        Assert.Equal(0, await check.NoteAsrBatchJobs.CountAsync(x => x.OwnerId == owner));
+        Assert.Equal(0, await check.AiRequestLogs.CountAsync(x => x.UserId == owner));
         if (hasExistingAttempt)
         {
             var attempt = await check.NoteAsrAttempts.AsNoTracking()

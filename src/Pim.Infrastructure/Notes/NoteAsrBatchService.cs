@@ -75,7 +75,7 @@ public sealed class NoteAsrBatchService(PimDbContext db, ICurrentUserService use
             attempt.PresetId != MimoMultimodalPreset.PresetId ||
             attempt.ConsentVersion != request.ConsentRef || attempt.StopRequested)
             throw new DomainException(40901, "Batch attempt、模型、同意或执行状态不匹配");
-        var frozenState = await tasks.ReadAsync(owner, request.TaskId, ct);
+        var frozenState = await RequireBatchAttemptAsync(owner, request.TaskId, attempt.Id, ct);
         if (frozenState.Request.TaskId != request.TaskId)
             throw new DomainException(40901, "Batch 任务快照与请求不一致");
         if (expectedCustomIds.Length is < 1 || expectedCustomIds.Length > attempt.ExpectedSegments)
@@ -93,6 +93,8 @@ public sealed class NoteAsrBatchService(PimDbContext db, ICurrentUserService use
             .OrderByDescending(x => x.CreatedAt).ThenBy(x => x.Id).FirstOrDefaultAsync(ct);
         if (existingJob is not null)
             return Describe(existingJob);
+        await RequireCurrentRouteConsentAsync(owner, attempt.ConfigRevision,
+            attempt.ConsentVersion, ct);
         if (attempt.State != "Queued")
             throw new DomainException(40901, "Batch attempt 已离开待提交状态");
 
@@ -132,9 +134,8 @@ public sealed class NoteAsrBatchService(PimDbContext db, ICurrentUserService use
             request.ExpectedUserId != owner)
             throw new DomainException(40001, "Batch 子任务或账号标识无效");
         ValidateSubmissionConsent(request.Route, request.Target, request.Reason);
-        var source = await tasks.ReadAsync(owner, request.SourceTaskId, ct);
-        if (source.Revision != request.ExpectedSourceRevision)
-            throw new DomainException(40901, "原任务已变化，请刷新后重新确认");
+        var source = await RequireCanonicalTaskAsync(owner, request.SourceTaskId,
+            attemptId: null, expectedRevision: request.ExpectedSourceRevision, ct);
         if (request.ClientTaskId == request.SourceTaskId)
         {
             // Initial submission: the caller already started this task in batch mode through the typed
@@ -191,7 +192,8 @@ public sealed class NoteAsrBatchService(PimDbContext db, ICurrentUserService use
         if (sourceAttempt.Model != sourceJob.Model || sourceAttempt.ModelRevision != sourceJob.ProfileRevision ||
             sourceAttempt.ConsentVersion != sourceJob.ConsentRef)
             throw new DomainException(40901, "原 Batch attempt 与 provider 快照不一致");
-        var sourceTask = await tasks.ReadAsync(owner, sourceJob.TaskId, ct);
+        var sourceTask = await RequireCanonicalTaskAsync(owner, sourceJob.TaskId,
+            sourceJob.AttemptId, expectedRevision: null, ct);
         var expected = JsonSerializer.Deserialize<string[]>(sourceJob.ExpectedCustomIdsJson) ?? [];
         if (expected.Length is < 1 || expected.Length > sourceAttempt.ExpectedSegments ||
             expected.Distinct(StringComparer.Ordinal).Count() != expected.Length)
@@ -309,6 +311,12 @@ public sealed class NoteAsrBatchService(PimDbContext db, ICurrentUserService use
             await managedNoteAsr.StartChainedForOwnerAsync(owner, start, ct);
         }
         var state = await tasks.ReadAsync(owner, clientTaskId, ct);
+        var attempt = await db.NoteAsrAttempts.AsNoTracking().SingleOrDefaultAsync(
+            x => x.OwnerId == owner && x.TaskId == clientTaskId && x.FencingToken == 0, ct)
+            ?? throw new DomainException(40901, "Batch 子任务 attempt 尚未冻结");
+        if (state.AttemptId != attempt.Id)
+            throw new DomainException(40901,
+                "Batch 子任务绑定的执行快照与数据库记录不一致");
         if (state.ParentTaskId != source.Request.TaskId || state.Request.ParentTaskId != source.Request.TaskId ||
             state.Route != NoteAsrRoute.CloudMultimodal || state.ExecutionMode != NoteAsrExecutionMode.Batch ||
             state.Request.VersionId != source.Request.VersionId || state.InputSha256 != source.InputSha256 ||
@@ -319,9 +327,6 @@ public sealed class NoteAsrBatchService(PimDbContext db, ICurrentUserService use
             for (var index = 0; index < source.Steps.Count; index++)
                 if (!SameStep(source.Steps[index], state.Steps[index]))
                     throw new DomainException(40901, "Batch 重试子任务固定分片与原任务不一致");
-        var attempt = await db.NoteAsrAttempts.AsNoTracking().SingleOrDefaultAsync(
-            x => x.OwnerId == owner && x.TaskId == clientTaskId && x.FencingToken == 0, ct)
-            ?? throw new DomainException(40901, "Batch 子任务 attempt 尚未冻结");
         return new(state, attempt);
     }
 
@@ -332,6 +337,16 @@ public sealed class NoteAsrBatchService(PimDbContext db, ICurrentUserService use
         var attempt = child.Attempt;
         if (attempt.ModelId is not { } modelId || attempt.ModelRevision is not { } modelRevision)
             throw new DomainException(40901, "Batch attempt 缺少固定模型修订");
+        var current = await RequireBatchAttemptAsync(owner, attempt.TaskId, attempt.Id, ct);
+        if (current.Request.TaskId != child.State.Request.TaskId ||
+            current.Revision != child.State.Revision)
+            child = child with { State = current };
+        var existingJob = await db.NoteAsrBatchJobs.AsNoTracking()
+            .Where(x => x.OwnerId == owner && x.TaskId == attempt.TaskId && x.AttemptId == attempt.Id)
+            .OrderByDescending(x => x.CreatedAt).ThenBy(x => x.Id).FirstOrDefaultAsync(ct);
+        if (existingJob is null)
+            await RequireCurrentRouteConsentAsync(owner, attempt.ConfigRevision,
+                attempt.ConsentVersion, ct);
         var (profile, _, _) = await AuthorizedProfileAsync(modelId, modelRevision, ct);
         await ImportInheritedEvidenceAsync(owner, attempt, child.State.Steps.Count, retryIndexes, ct);
         await using var generated = await NoteAsrBatchJsonlReader.GenerateFromPlanAsync(owner, attempt.VersionId,
@@ -406,6 +421,54 @@ public sealed class NoteAsrBatchService(PimDbContext db, ICurrentUserService use
 
     private static string[] ExpectedCustomIds(int count) =>
         Enumerable.Range(0, count).Select(NoteAsrBatchJsonlReader.CustomId).ToArray();
+
+    private async Task<NoteAsrState> RequireCanonicalTaskAsync(Guid owner, Guid taskId,
+        Guid? attemptId, Guid? expectedRevision, CancellationToken ct)
+    {
+        return await tasks.WithLockAsync(owner, async lockedCt =>
+        {
+            var state = await tasks.ReadAsync(owner, taskId, lockedCt);
+            if (attemptId is { } bound && state.AttemptId != bound)
+                throw new DomainException(40901,
+                    "任务绑定的执行快照与提交记录不一致，不能继续 Batch 操作");
+            if (expectedRevision is { } revision && state.Revision != revision)
+                throw new DomainException(40901, "原任务已变化，请刷新后重新确认");
+            if (state.Request.ParentTaskId is null &&
+                !await tasks.IsCanonicalInitialUnlockedAsync(owner, taskId,
+                    state.Request.VersionId, lockedCt))
+                throw new DomainException(40901,
+                    "该材料版本已有当前转写链；历史重复任务不会外发或重复计费");
+            return state;
+        }, ct);
+    }
+
+    private async Task<NoteAsrState> RequireBatchAttemptAsync(Guid owner, Guid taskId,
+        Guid attemptId, CancellationToken ct)
+    {
+        return await tasks.WithLockAsync(owner, async lockedCt =>
+        {
+            var state = await tasks.ReadAsync(owner, taskId, lockedCt);
+            if (state.AttemptId != attemptId)
+                throw new DomainException(40901,
+                    "任务绑定的执行快照与数据库记录不一致，不能提交 Batch");
+            if (state.Request.ParentTaskId is null &&
+                !await tasks.IsCanonicalInitialUnlockedAsync(owner, taskId,
+                    state.Request.VersionId, lockedCt))
+                throw new DomainException(40901,
+                    "该材料版本已有当前转写链；历史重复任务不会外发或重复计费");
+            return state;
+        }, ct);
+    }
+
+    private async Task RequireCurrentRouteConsentAsync(Guid owner, Guid configRevision,
+        string? consentVersion, CancellationToken ct)
+    {
+        var config = await db.NoteAsrRouteConfigs.AsNoTracking()
+            .SingleOrDefaultAsync(x => x.OwnerId == owner, ct);
+        if (config is null || config.Revision != configRevision ||
+            !string.Equals(config.ConsentVersion, consentVersion, StringComparison.Ordinal))
+            throw new DomainException(40901, "路由配置已变化，请刷新后重新确认");
+    }
 
     /// <summary>
     /// Audio Batch is NOT-VERIFIED upstream. The single capability gate runs before any submission
