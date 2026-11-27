@@ -257,6 +257,29 @@ public class CalendarRecurrenceServiceTests
         Assert.Equal("CANCELLED", updatedEx.Status);
     }
 
+    [Fact]
+    public async Task DeleteSingle_OffsetRecurrenceId_MatchesStoredUtcException()
+    {
+        await using var db = CreateDb();
+        var cal = SeedCal(db);
+        await db.SaveChangesAsync();
+        var svc = Svc(db);
+
+        var master = await svc.CreateEventAsync(new CreateEventRequest(
+            cal.Id, "Weekly", null, null, D(2026, 1, 5), D(2026, 1, 5).AddHours(1), "FREQ=WEEKLY;COUNT=4"), default);
+        var recId = D(2026, 1, 12).ToString("O");
+        var ex = await svc.CreateEventAsync(new CreateEventRequest(
+            cal.Id, "Ex", null, null, D(2026, 1, 12, 11), D(2026, 1, 12, 12), null,
+            IsException: true, SeriesMasterId: master.Id, RecurrenceId: recId), default);
+
+        await svc.DeleteEventAsync(master.Id, "this", "2026-01-12T18:00:00+08:00", default);
+
+        var updatedEx = await db.Set<EventEntity>().FirstAsync(e => e.Id == ex.Id);
+        Assert.Equal("CANCELLED", updatedEx.Status);
+        Assert.Equal(1, await db.Set<EventEntity>()
+            .CountAsync(e => e.IsException && e.SeriesMasterId == master.Id));
+    }
+
     // delete series -> soft-delete master + exceptions
     [Fact]
     public async Task DeleteSeries_SoftDeletesMasterAndExceptions()

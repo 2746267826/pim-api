@@ -1075,7 +1075,7 @@ public class CalendarService
         if (!string.IsNullOrEmpty(recurrenceId))
         {
             if (DateTimeOffset.TryParse(recurrenceId, out var parsed))
-                normalizedRecurrenceId = parsed.ToString("O");
+                normalizedRecurrenceId = parsed.ToUniversalTime().ToString("O");
             else
                 throw new DomainException(02009, "RecurrenceId 格式无效");
         }

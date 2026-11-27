@@ -6171,11 +6171,13 @@
         "additionalProperties": false,
         "properties": {
           "allDayEndDateExclusive": {
+            "description": "全天事件的独立排他结束日期（format=date），全天事件必填；定时事件必须省略。更新时省略表示保留既有值。 / All-day end date (exclusive); required for all-day events, omitted for timed events. Omission on update preserves the existing value.",
             "format": "date",
             "nullable": true,
             "type": "string"
           },
           "allDayStartDate": {
+            "description": "全天事件的独立开始日期（format=date），全天事件必填；定时事件必须省略。更新时省略表示保留既有值。 / All-day start date; required for all-day events, omitted for timed events. Omission on update preserves the existing value.",
             "format": "date",
             "nullable": true,
             "type": "string"
@@ -6214,12 +6216,12 @@
             "type": "string"
           },
           "dtEnd": {
-            "description": "ISO-8601 绝对结束时刻，必须携带显式 UTC 偏移；无偏移值会被 400 拒绝。 / ISO-8601 end with explicit UTC offset; offset-less values are rejected.",
+            "description": "ISO-8601 绝对结束时刻，必须携带显式 UTC 偏移且不能缺失；缺失、null 或无偏移值会被 400 拒绝。 / ISO-8601 end with an explicit UTC offset; missing, null, or offset-less values are rejected.",
             "format": "date-time",
             "type": "string"
           },
           "dtStart": {
-            "description": "ISO-8601 绝对开始时刻，必须携带显式 UTC 偏移；无偏移值会被 400 拒绝。 / ISO-8601 start with explicit UTC offset; offset-less values are rejected.",
+            "description": "ISO-8601 绝对开始时刻，必须携带显式 UTC 偏移且不能缺失；缺失、null 或无偏移值会被 400 拒绝。 / ISO-8601 start with an explicit UTC offset; missing, null, or offset-less values are rejected.",
             "format": "date-time",
             "type": "string"
           },
@@ -6275,6 +6277,8 @@
             "type": "string"
           },
           "recurrenceId": {
+            "description": "重复发生项对应原始发生时刻的 ISO-8601 值；省略或 null 表示不是例外。 / ISO-8601 original occurrence instant for exception rows; omitted or null when not an exception.",
+            "format": "date-time",
             "nullable": true,
             "type": "string"
           },
@@ -6297,7 +6301,7 @@
             "type": "string"
           },
           "timeZoneId": {
-            "description": "可解析的 IANA/Windows 时区 ID；响应会规范化为 IANA。未知来源请省略。 / Resolvable IANA/Windows id, normalized to IANA in responses; omit when unknown.",
+            "description": "可解析的 IANA/Windows 时区 ID；响应会规范化为 IANA。省略或显式 null 表示来源未知，不代表 UTC。 / Resolvable IANA/Windows id, normalized to IANA in responses; omitted or explicit null means unknown, not UTC.",
             "nullable": true,
             "type": "string"
           },
@@ -8935,6 +8939,7 @@
             "type": "string"
           },
           "recurrenceId": {
+            "description": "重复发生项对应原始发生时刻的 ISO-8601 值；仅例外行使用。 / ISO-8601 original occurrence instant for exception rows.",
             "nullable": true,
             "type": "string"
           },
@@ -26240,11 +26245,13 @@
         "additionalProperties": false,
         "properties": {
           "allDayEndDateExclusive": {
+            "description": "全天事件的独立排他结束日期（format=date），全天事件必填；定时事件必须省略。更新时省略表示保留既有值。 / All-day end date (exclusive); required for all-day events, omitted for timed events. Omission on update preserves the existing value.",
             "format": "date",
             "nullable": true,
             "type": "string"
           },
           "allDayStartDate": {
+            "description": "全天事件的独立开始日期（format=date），全天事件必填；定时事件必须省略。更新时省略表示保留既有值。 / All-day start date; required for all-day events, omitted for timed events. Omission on update preserves the existing value.",
             "format": "date",
             "nullable": true,
             "type": "string"
@@ -26283,12 +26290,12 @@
             "type": "string"
           },
           "dtEnd": {
-            "description": "ISO-8601 绝对结束时刻，必须携带显式 UTC 偏移；无偏移值会被 400 拒绝。 / ISO-8601 end with explicit UTC offset; offset-less values are rejected.",
+            "description": "ISO-8601 绝对结束时刻，必须携带显式 UTC 偏移且不能缺失；缺失、null 或无偏移值会被 400 拒绝。 / ISO-8601 end with an explicit UTC offset; missing, null, or offset-less values are rejected.",
             "format": "date-time",
             "type": "string"
           },
           "dtStart": {
-            "description": "ISO-8601 绝对开始时刻，必须携带显式 UTC 偏移；无偏移值会被 400 拒绝。 / ISO-8601 start with explicit UTC offset; offset-less values are rejected.",
+            "description": "ISO-8601 绝对开始时刻，必须携带显式 UTC 偏移且不能缺失；缺失、null 或无偏移值会被 400 拒绝。 / ISO-8601 start with an explicit UTC offset; missing, null, or offset-less values are rejected.",
             "format": "date-time",
             "type": "string"
           },
@@ -26345,6 +26352,8 @@
             "type": "string"
           },
           "recurrenceId": {
+            "description": "重复发生项对应原始发生时刻的 ISO-8601 值；省略或 null 表示不是例外。 / ISO-8601 original occurrence instant for exception rows; omitted or null when not an exception.",
+            "format": "date-time",
             "nullable": true,
             "type": "string"
           },
@@ -26367,7 +26376,7 @@
             "type": "string"
           },
           "timeZoneId": {
-            "description": "可解析的 IANA/Windows 时区 ID；响应会规范化为 IANA。未知来源请省略。 / Resolvable IANA/Windows id, normalized to IANA in responses; omit when unknown.",
+            "description": "可解析的 IANA/Windows 时区 ID；响应会规范化为 IANA。省略表示保留既有来源时区；显式 null 清空为 unknown，不代表 UTC。 / Resolvable IANA/Windows id; omitted preserves the existing source zone, explicit null clears it to unknown, not UTC.",
             "nullable": true,
             "type": "string"
           },

@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -75,7 +76,13 @@ public class RecurrenceService
         string Normalize(string? v)
         {
             if (string.IsNullOrEmpty(v)) return v ?? string.Empty;
-            return DateTimeOffset.TryParse(v, out var parsed) ? parsed.ToString("O") : v;
+            return DateTimeOffset.TryParse(
+                v,
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.AllowWhiteSpaces | DateTimeStyles.AdjustToUniversal,
+                out var parsed)
+                ? parsed.ToString("O")
+                : v;
         }
         var exceptionsByMaster = all
             .Where(e => e.IsException && e.SeriesMasterId.HasValue && !string.IsNullOrEmpty(e.RecurrenceId))

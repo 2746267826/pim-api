@@ -146,6 +146,50 @@ public class RecurrenceExceptionOverlayTests
     }
 
     [Fact]
+    public void ExceptionRecurrenceIdWithOffset_OverlaysUtcOccurrence()
+    {
+        var masterId = Guid.NewGuid();
+        var calendarId = Guid.NewGuid();
+        var masterStart = new DateTimeOffset(2026, 1, 5, 10, 0, 0, TimeSpan.Zero);
+        var master = new EventEntity
+        {
+            Id = masterId,
+            CalendarId = calendarId,
+            Uid = "offset-overlay",
+            Title = "Weekly",
+            DtStart = masterStart,
+            DtEnd = masterStart.AddHours(1),
+            RRule = "FREQ=WEEKLY;COUNT=2",
+            IsSeriesMaster = true,
+        };
+        var exception = new EventEntity
+        {
+            Id = Guid.NewGuid(),
+            CalendarId = calendarId,
+            Uid = "offset-overlay",
+            Title = "Moved with offset recurrence id",
+            DtStart = new DateTimeOffset(2026, 1, 12, 11, 0, 0, TimeSpan.Zero),
+            DtEnd = new DateTimeOffset(2026, 1, 12, 12, 0, 0, TimeSpan.Zero),
+            IsException = true,
+            SeriesMasterId = masterId,
+            RecurrenceId = "2026-01-12T18:00:00+08:00",
+            Status = "CONFIRMED",
+        };
+
+        var result = Service.ExpandEventsV2(
+            new[] { master, exception },
+            new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero),
+            new DateTimeOffset(2026, 2, 1, 0, 0, 0, TimeSpan.Zero));
+
+        Assert.Equal(2, result.Count);
+        var overlaid = Assert.Single(result, item => item.IsException);
+        Assert.Equal(exception.Id, overlaid.OccurrenceId);
+        Assert.Equal("2026-01-12T10:00:00.0000000+00:00", overlaid.RecurrenceId);
+        Assert.DoesNotContain(result, item => !item.IsException
+            && item.OccurrenceStart == new DateTimeOffset(2026, 1, 12, 10, 0, 0, TimeSpan.Zero));
+    }
+
+    [Fact]
     public void ExpandEvents_LegacyWrapper_DelegatesToV2()
     {
         var start = new DateTimeOffset(2026, 1, 1, 9, 0, 0, TimeSpan.Zero);

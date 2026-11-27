@@ -119,8 +119,9 @@ public sealed class EventFieldValidatorTests
 
     [Theory]
     [InlineData("2026-01-12T10:00:00Z", "2026-01-12T10:00:00.0000000+00:00")]
-    [InlineData("2026-01-12T18:00:00+08:00", "2026-01-12T18:00:00.0000000+08:00")]
-    public void RecurrenceId_IsNormalizedToRoundTripInstant(string raw, string expected)
+    [InlineData("2026-01-12T18:00:00+08:00", "2026-01-12T10:00:00.0000000+00:00")]
+    [InlineData("2026-01-12T05:00:00-05:00", "2026-01-12T10:00:00.0000000+00:00")]
+    public void RecurrenceId_IsNormalizedToUtcInstant(string raw, string expected)
     {
         var create = new CreateEventRequest(
             Guid.NewGuid(), "Exception", null, null, Start, End, null,

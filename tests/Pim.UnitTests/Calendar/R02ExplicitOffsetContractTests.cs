@@ -106,7 +106,7 @@ public sealed class R02ExplicitOffsetContractTests
         Assert.Null(missing.TimeZoneId);
 
         Assert.True(explicitNull.TimeZoneIdProvided);
-        Assert.Null(explicitNull.TimeZoneId);
+        Assert.True(ExplicitNullStringConverter.IsExplicitNull(explicitNull.TimeZoneId));
 
         Assert.True(value.TimeZoneIdProvided);
         Assert.Equal("Asia/Shanghai", value.TimeZoneId);
