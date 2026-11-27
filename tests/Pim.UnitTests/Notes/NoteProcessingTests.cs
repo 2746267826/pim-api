@@ -636,14 +636,18 @@ public sealed class NoteProcessingTests(NoteProcessingFixture host)
         var asrDispatch = new NoteAsrDispatchJob(AsrStore(), asrService, jobs,
             Microsoft.Extensions.Logging.Abstractions.NullLogger<NoteAsrDispatchJob>.Instance);
         await asrDispatch.RunAsync(CancellationToken.None);
-        var asrJob = Assert.Single(jobs.Items.Where(item => item.Type == typeof(NoteAsrJob)));
+        var asrJob = Assert.Single(jobs.Items.Where(item => item.Type == typeof(NoteAsrJob) &&
+            item.Args.Count >= 2 && Equals(item.Args[0], owner.UserId) &&
+            Equals(item.Args[1], asrId)));
         Assert.Equal(asrId, asrJob.Args[1]);
 
         jobs.Items.Clear();
         var derivedDispatch = new NoteDerivedDispatchJob(DerivedStore(), jobs,
             Microsoft.Extensions.Logging.Abstractions.NullLogger<NoteDerivedDispatchJob>.Instance);
         await derivedDispatch.RunAsync(CancellationToken.None);
-        var derivedJob = Assert.Single(jobs.Items.Where(item => item.Type == typeof(NoteDerivedJob)));
+        var derivedJob = Assert.Single(jobs.Items.Where(item => item.Type == typeof(NoteDerivedJob) &&
+            item.Args.Count >= 2 && Equals(item.Args[0], owner.UserId) &&
+            Equals(item.Args[1], derivedId)));
         Assert.Equal(derivedId, derivedJob.Args[1]);
 
         await host.Factory.Services.GetRequiredService<NoteAsrJob>().RunAsync(owner.UserId,
@@ -688,14 +692,18 @@ public sealed class NoteProcessingTests(NoteProcessingFixture host)
             host.Factory.Services.GetRequiredService<NoteAsrService>(), jobs,
             Microsoft.Extensions.Logging.Abstractions.NullLogger<NoteAsrDispatchJob>.Instance);
         await asrDispatch.RunAsync(CancellationToken.None);
-        var asrJob = Assert.Single(jobs.Items.Where(item => item.Type == typeof(NoteAsrJob)));
+        var asrJob = Assert.Single(jobs.Items.Where(item => item.Type == typeof(NoteAsrJob) &&
+            item.Args.Count >= 2 && Equals(item.Args[0], owner.UserId) &&
+            Equals(item.Args[1], asrId)));
         Assert.Equal(asrId, asrJob.Args[1]);
 
         jobs.Items.Clear();
         var derivedDispatch = new NoteDerivedDispatchJob(DerivedStore(), jobs,
             Microsoft.Extensions.Logging.Abstractions.NullLogger<NoteDerivedDispatchJob>.Instance);
         await derivedDispatch.RunAsync(CancellationToken.None);
-        var derivedJob = Assert.Single(jobs.Items.Where(item => item.Type == typeof(NoteDerivedJob)));
+        var derivedJob = Assert.Single(jobs.Items.Where(item => item.Type == typeof(NoteDerivedJob) &&
+            item.Args.Count >= 2 && Equals(item.Args[0], owner.UserId) &&
+            Equals(item.Args[1], derivedId)));
         Assert.Equal(derivedId, derivedJob.Args[1]);
 
         await host.Factory.Services.GetRequiredService<NoteAsrJob>().RunAsync(owner.UserId,
@@ -1459,8 +1467,7 @@ public sealed class NoteProcessingTests(NoteProcessingFixture host)
     {
         var owner = await OwnerAsync("legacy-derived-wait");
         using var client = AuthRegistrationTestHost.Authed(host.Factory, owner.AccessToken);
-        var models = await ConfigureAsync(client, auto: true);
-        _ = await ConfigureCloudRouteAsync(client, models.Asr.Id);
+        var models = await ConfigureAsync(client, auto: true, cloudRoute: true);
         host.Models.Reset();
         var material = await CompleteMaterialAsync(owner, client, withAudio: true);
         var started = await StatusAsync(client, material.NoteId, material.VersionId);
@@ -1491,8 +1498,7 @@ public sealed class NoteProcessingTests(NoteProcessingFixture host)
     {
         var owner = await OwnerAsync("legacy-derived-stopped");
         using var client = AuthRegistrationTestHost.Authed(host.Factory, owner.AccessToken);
-        var models = await ConfigureAsync(client, auto: true);
-        _ = await ConfigureCloudRouteAsync(client, models.Asr.Id);
+        var models = await ConfigureAsync(client, auto: true, cloudRoute: true);
         host.Models.Reset();
         var material = await CompleteMaterialAsync(owner, client, withAudio: true);
         var started = await StatusAsync(client, material.NoteId, material.VersionId);
@@ -1521,8 +1527,7 @@ public sealed class NoteProcessingTests(NoteProcessingFixture host)
     {
         var owner = await OwnerAsync("legacy-derived-no-plan");
         using var client = AuthRegistrationTestHost.Authed(host.Factory, owner.AccessToken);
-        var models = await ConfigureAsync(client, auto: true);
-        _ = await ConfigureCloudRouteAsync(client, models.Asr.Id);
+        var models = await ConfigureAsync(client, auto: true, cloudRoute: true);
         host.Models.Reset();
         var material = await CompleteMaterialAsync(owner, client, withAudio: true);
         var started = await StatusAsync(client, material.NoteId, material.VersionId);
@@ -1552,8 +1557,7 @@ public sealed class NoteProcessingTests(NoteProcessingFixture host)
     {
         var owner = await OwnerAsync("asr-stopped-block");
         using var client = AuthRegistrationTestHost.Authed(host.Factory, owner.AccessToken);
-        var models = await ConfigureAsync(client, auto: true);
-        _ = await ConfigureCloudRouteAsync(client, models.Asr.Id);
+        var models = await ConfigureAsync(client, auto: true, cloudRoute: true);
         host.Models.Reset();
         var material = await CompleteMaterialAsync(owner, client, withAudio: true);
         var started = await StatusAsync(client, material.NoteId, material.VersionId);
@@ -1592,8 +1596,7 @@ public sealed class NoteProcessingTests(NoteProcessingFixture host)
     {
         var owner = await OwnerAsync("asr-missing-receipt");
         using var client = AuthRegistrationTestHost.Authed(host.Factory, owner.AccessToken);
-        var models = await ConfigureAsync(client, auto: true);
-        _ = await ConfigureCloudRouteAsync(client, models.Asr.Id);
+        var models = await ConfigureAsync(client, auto: true, cloudRoute: true);
         host.Models.Reset();
         var material = await CompleteMaterialAsync(owner, client, withAudio: true);
         var started = await StatusAsync(client, material.NoteId, material.VersionId);
@@ -1626,8 +1629,7 @@ public sealed class NoteProcessingTests(NoteProcessingFixture host)
     {
         var owner = await OwnerAsync("asr-wrong-source");
         using var client = AuthRegistrationTestHost.Authed(host.Factory, owner.AccessToken);
-        var models = await ConfigureAsync(client, auto: true);
-        _ = await ConfigureCloudRouteAsync(client, models.Asr.Id);
+        var models = await ConfigureAsync(client, auto: true, cloudRoute: true);
         host.Models.Reset();
         var material = await CompleteMaterialAsync(owner, client, withAudio: true);
         var started = await StatusAsync(client, material.NoteId, material.VersionId);
@@ -1755,7 +1757,7 @@ public sealed class NoteProcessingTests(NoteProcessingFixture host)
             $"{prefix}-{Guid.NewGuid():N}", "admin");
 
     private async Task<(AiModelDto Asr, AiModelDto Derived)> ConfigureAsync(
-        HttpClient client, bool auto)
+        HttpClient client, bool auto, bool cloudRoute = false)
     {
         var models = await Data<IReadOnlyList<AiModelDto>>(
             await client.GetAsync("/api/v1/ai/models"));
@@ -1772,6 +1774,7 @@ public sealed class NoteProcessingTests(NoteProcessingFixture host)
             "/api/v1/ai/model-settings",
             new SaveAiModelSettingsRequest(settings.Revision, true, derived.Id, derived.Id,
                 asr.Id)));
+        if (cloudRoute) _ = await ConfigureCloudRouteAsync(client, asr.Id);
         _ = await SetAutoProcessingAsync(client, auto);
         return (asr, derived);
     }
