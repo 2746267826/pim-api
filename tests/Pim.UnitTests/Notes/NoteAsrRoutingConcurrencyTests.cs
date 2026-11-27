@@ -1878,7 +1878,7 @@ public sealed class NoteAsrRoutingConcurrencyTests
     }
 
     [SkippableFact]
-    public async Task Dispatch_revokes_predeployment_non_canonical_lease_without_enqueuing_job()
+    public async Task Dispatch_revokes_predeployment_non_canonical_lease_without_enqueuing_duplicate_job()
     {
         Skip.If(string.IsNullOrWhiteSpace(ConnectionString), "PIM_ASR516_PG is not configured");
         var owner = Guid.NewGuid();
@@ -1897,12 +1897,39 @@ public sealed class NoteAsrRoutingConcurrencyTests
             var dispatch = new NoteAsrDispatchJob(tasks, service, jobs,
                 Microsoft.Extensions.Logging.Abstractions.NullLogger<NoteAsrDispatchJob>.Instance);
             await dispatch.RunAsync(CancellationToken.None);
-            Assert.Empty(jobs.Items);
+            Assert.DoesNotContain(jobs.Items, item =>
+                item.Type == typeof(NoteAsrJob) &&
+                item.Args.Count >= 2 &&
+                Equals(item.Args[0], owner) &&
+                Equals(item.Args[1], seeded.TaskId));
         }
 
         await AssertNonCanonicalRevokedAsync(owner, seeded, storageRoot);
         await CleanupAsync(owner);
         if (Directory.Exists(storageRoot)) Directory.Delete(storageRoot, recursive: true);
+    }
+
+    [SkippableFact]
+    public async Task Job_revokes_predeployment_non_canonical_local_lease_before_execution()
+    {
+        Skip.If(string.IsNullOrWhiteSpace(ConnectionString), "PIM_ASR516_PG is not configured");
+        var owner = Guid.NewGuid();
+        var nodeId = Guid.NewGuid();
+        await CleanupAsync(owner);
+        var seeded = await SeedNonCanonicalLocalLeaseAsync(owner, nodeId);
+
+        await using (var db = NewDb(owner))
+        {
+            var options = Options.Create(new NoteMaterialUploadOptions { StorageRoot = StorageRoot });
+            var materials = new NoteMaterialUploadStore(options);
+            var tasks = new NoteAsrTaskStore(options);
+            // The provider must never be reached; a null call service proves the job exits first.
+            var job = new NoteAsrJob(tasks, materials, db, null!);
+            await job.RunAsync(owner, seeded.TaskId, CancellationToken.None);
+        }
+
+        await AssertNonCanonicalRevokedAsync(owner, seeded);
+        await CleanupAsync(owner);
     }
 
     [SkippableFact]
