@@ -12,7 +12,7 @@ using Pim.Infrastructure.Data;
 namespace Pim.Infrastructure.Data.Migrations
 {
     [DbContext(typeof(PimDbContext))]
-    [Migration("20261125063636_AddMobileLocationCorrection")]
+    [Migration("20261127121512_AddMobileLocationCorrection")]
     partial class AddMobileLocationCorrection
     {
         /// <inheritdoc />
@@ -612,9 +612,21 @@ namespace Pim.Infrastructure.Data.Migrations
                         .HasColumnType("character varying(16)")
                         .HasColumnName("id");
 
+                    b.Property<Guid?>("CalendarPlanningModelId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("calendar_planning_model_id");
+
                     b.Property<bool>("Enabled")
                         .HasColumnType("boolean")
                         .HasColumnName("enabled");
+
+                    b.Property<Guid?>("NoteOrganizationModelId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("note_organization_model_id");
+
+                    b.Property<Guid?>("NoteTodoModelId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("note_todo_model_id");
 
                     b.Property<Guid>("Revision")
                         .IsConcurrencyToken()
@@ -634,6 +646,12 @@ namespace Pim.Infrastructure.Data.Migrations
                         .HasColumnName("vision_model_id");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("CalendarPlanningModelId");
+
+                    b.HasIndex("NoteOrganizationModelId");
+
+                    b.HasIndex("NoteTodoModelId");
 
                     b.HasIndex("TextModelId");
 
@@ -9359,6 +9377,21 @@ namespace Pim.Infrastructure.Data.Migrations
 
             modelBuilder.Entity("Pim.Infrastructure.Data.Entities.AiModelRuntimeEntity", b =>
                 {
+                    b.HasOne("Pim.Infrastructure.Data.Entities.AiModelProfileEntity", null)
+                        .WithMany()
+                        .HasForeignKey("CalendarPlanningModelId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("Pim.Infrastructure.Data.Entities.AiModelProfileEntity", null)
+                        .WithMany()
+                        .HasForeignKey("NoteOrganizationModelId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("Pim.Infrastructure.Data.Entities.AiModelProfileEntity", null)
+                        .WithMany()
+                        .HasForeignKey("NoteTodoModelId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
                     b.HasOne("Pim.Infrastructure.Data.Entities.AiModelProfileEntity", null)
                         .WithMany()
                         .HasForeignKey("TextModelId")
