@@ -1390,7 +1390,7 @@ internal static class NoteAsrAcceptedEvidence
 
     internal static bool AdaptiveCoverageMatches(string? coverageJson, NoteAsrStep step)
     {
-        if (string.IsNullOrWhiteSpace(coverageJson) || step.ExecutionEpoch is not { } epoch)
+        if (string.IsNullOrWhiteSpace(coverageJson))
             return false;
         try
         {
@@ -1404,12 +1404,21 @@ internal static class NoteAsrAcceptedEvidence
                 request.ValueKind == JsonValueKind.String &&
                 Guid.TryParse(request.GetString(), out var requestId) &&
                 requestId == step.Current.RequestId &&
-                root.TryGetProperty("executionEpoch", out var epochNode) &&
-                epochNode.ValueKind == JsonValueKind.String &&
-                Guid.TryParse(epochNode.GetString(), out var executionEpoch) &&
-                executionEpoch == epoch;
+                MatchesEpoch(root, step.ExecutionEpoch);
         }
         catch (JsonException) { return false; }
+
+        // Steps created before executionEpoch existed can only be settled by a legacy row that also
+        // has no epoch; new steps always carry one, and a row without it is a failed-pre-upgrade
+        // leftover that must not be accepted into the new execution.
+        static bool MatchesEpoch(JsonElement root, Guid? epoch)
+        {
+            var hasEpoch = root.TryGetProperty("executionEpoch", out var node) &&
+                node.ValueKind != JsonValueKind.Null;
+            if (epoch is not { } expected) return !hasEpoch;
+            return hasEpoch && node.ValueKind == JsonValueKind.String &&
+                Guid.TryParse(node.GetString(), out var actual) && actual == expected;
+        }
     }
 
     internal static async Task<Dictionary<int, NoteAsrSegmentEvidenceEntity>> LoadAsync(PimDbContext db,
