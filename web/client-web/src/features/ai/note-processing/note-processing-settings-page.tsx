@@ -89,7 +89,7 @@ export function NoteProcessingSettingsPage() {
           checked={preferences.data.autoProcessingEnabled}
           disabled={busy}
           onCheckedChange={toggleAuto}
-          aria-label="结束后自动处理笔记"
+          ariaLabel="结束后自动处理笔记"
         />
       </div>
       <p className="text-xs leading-5 text-text-3">
