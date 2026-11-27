@@ -345,7 +345,10 @@ public sealed class NoteAsrBatchService(PimDbContext db, ICurrentUserService use
         var job = await StartCoreAsync(request, generated.Content, generated.Length,
             $"pim-{scope}.jsonl", generated.CustomIds, budget.Token);
         var completed = await tasks.ReadAsync(owner, child.State.Request.TaskId, ct);
-        return new(job, NoteAsrTaskStore.Describe(completed), parentTaskId, scope);
+        var canonical = await tasks.TryReadInitialForVersionAsync(owner,
+            completed.Request.VersionId, ct);
+        return new(job, NoteAsrTaskStore.Describe(completed, canonical?.Request.TaskId),
+            parentTaskId, scope);
     }
 
     private async Task ImportInheritedEvidenceAsync(Guid owner, NoteAsrAttemptEntity child, int totalSegments,

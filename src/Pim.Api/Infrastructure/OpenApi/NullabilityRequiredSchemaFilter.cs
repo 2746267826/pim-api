@@ -31,8 +31,6 @@ public sealed class NullabilityRequiredSchemaFilter : ISchemaFilter
             nameof(Pim.Core.Notes.NoteAsrTaskDto.Destination)),
         (typeof(Pim.Core.Notes.ReprocessNoteAsrRequest),
             nameof(Pim.Core.Notes.ReprocessNoteAsrRequest.Consent)),
-        (typeof(Pim.Core.Notes.StartNoteProcessingRequest),
-            nameof(Pim.Core.Notes.StartNoteProcessingRequest.Consent)),
         (typeof(Pim.Core.Notes.NoteProcessingStatusDto),
             nameof(Pim.Core.Notes.NoteProcessingStatusDto.Authorization))
     };

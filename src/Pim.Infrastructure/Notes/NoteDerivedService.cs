@@ -58,6 +58,14 @@ public sealed class NoteDerivedService(
             var existing = await store.ReadTaskAsync(owner, request.TaskId, ct);
             if (existing.Fingerprint != fingerprint)
                 throw Conflict("任务标识已经绑定另一份派生输入，原任务保留");
+            var canonical = await store.TryReadInitialForVersionAsync(owner,
+                existing.Request.VersionId, ct);
+            if (canonical is not null && canonical.Request.TaskId != existing.Request.TaskId)
+            {
+                if (!NoteDerivedStore.SameInitialRequest(canonical.Request, request))
+                    throw Conflict("同一材料版本已有另一条整理任务链；原任务保留");
+                return await DescribeAsync(canonical, ct);
+            }
             return await DescribeAsync(existing, ct);
         }
         catch (DomainException error) when (error.ErrorCode == 40401)
@@ -567,9 +575,13 @@ public sealed class NoteDerivedService(
 
     private async Task<NoteDerivedTaskDto> DescribeAsync(NoteDerivedTaskState state, CancellationToken ct)
     {
+        var canonical = await store.TryReadInitialForVersionAsync(state.Owner,
+            state.Request.VersionId, ct);
         var described = NoteDerivedStore.DescribeTask(state) with
         {
-            BackgroundProcessingAvailable = BackgroundProcessingAvailable
+            BackgroundProcessingAvailable = BackgroundProcessingAvailable,
+            IsCanonicalInitial = canonical?.Request.TaskId == state.Request.TaskId,
+            CanonicalInitialTaskId = canonical?.Request.TaskId
         };
         if (described.Coverage.Complete)
         {

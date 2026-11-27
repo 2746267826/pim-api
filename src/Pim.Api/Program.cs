@@ -157,6 +157,7 @@ builder.Services.AddSingleton<Pim.Infrastructure.Ai.Asr.Mimo.IMimoBatchClientFac
 builder.Services.AddScoped<Pim.Infrastructure.Notes.NoteDerivedService>();
 builder.Services.AddScoped<Pim.Infrastructure.Notes.NoteProcessingService>();
 builder.Services.AddScoped<Pim.Infrastructure.Notes.NoteProcessingPreferencesService>();
+builder.Services.AddScoped<Pim.Infrastructure.Notes.NoteProcessingTargetPolicyService>();
 builder.Services.AddScoped<Pim.Infrastructure.Notes.NoteProcessingDispatchJob>();
 builder.Services.AddScoped<Pim.Infrastructure.Notes.NoteAsrJob>();
 builder.Services.AddScoped<Pim.Infrastructure.Notes.NoteDerivedJob>();

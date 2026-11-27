@@ -2297,6 +2297,10 @@ namespace Pim.Infrastructure.Data.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("standing_authorization_revision");
 
+                    b.Property<Guid?>("StandingAuthorizationTargetRevision")
+                        .HasColumnType("uuid")
+                        .HasColumnName("standing_authorization_target_revision");
+
                     b.Property<DateTimeOffset>("UpdatedAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at");

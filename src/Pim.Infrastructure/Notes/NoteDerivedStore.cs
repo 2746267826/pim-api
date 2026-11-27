@@ -118,6 +118,13 @@ public sealed class NoteDerivedStore(IOptions<NoteMaterialUploadOptions> options
         return await TryReadInitialUnlockedAsync(owner, versionId, ct);
     }
 
+    internal async Task<bool> IsCanonicalInitialAsync(Guid owner, Guid taskId, Guid versionId,
+        CancellationToken ct)
+    {
+        var initial = await TryReadInitialForVersionAsync(owner, versionId, ct);
+        return initial?.Request.TaskId == taskId;
+    }
+
     private async Task<NoteDerivedTaskState?> TryReadInitialUnlockedAsync(Guid owner,
         Guid versionId, CancellationToken ct)
     {
@@ -140,14 +147,17 @@ public sealed class NoteDerivedStore(IOptions<NoteMaterialUploadOptions> options
                 continue;
             var state = await ReadTaskFileAsync(file, owner, id, ct);
             if (state.Request.VersionId != versionId) continue;
-            if (earliest is null || state.CreatedAt < earliest.CreatedAt) earliest = state;
+            if (earliest is null || state.CreatedAt < earliest.CreatedAt ||
+                state.CreatedAt == earliest.CreatedAt &&
+                state.Request.TaskId.CompareTo(earliest.Request.TaskId) < 0)
+                earliest = state;
         }
         if (earliest is null) return null;
         await WriteChainUnlockedAsync(owner, versionId, earliest.Request.TaskId, ct);
         return earliest;
     }
 
-    private static bool SameInitialRequest(StartNoteDerivedTaskRequest left,
+    internal static bool SameInitialRequest(StartNoteDerivedTaskRequest left,
         StartNoteDerivedTaskRequest right) =>
         left.VersionId == right.VersionId &&
         left.ExpectedUserId == right.ExpectedUserId &&
@@ -588,6 +598,7 @@ public sealed class NoteDerivedStore(IOptions<NoteMaterialUploadOptions> options
         state.CreatedAt,
         state.UpdatedAt,
         state.StopRequested,
+        IsCanonicalInitial: false,
         AwaitingAsr: state.AwaitingAsr);
 
     internal static NoteDerivedStepDto DescribeStep(NoteDerivedStepState step) => new(

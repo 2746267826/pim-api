@@ -171,6 +171,7 @@ public sealed class NoteProcessingTests(NoteProcessingFixture host)
     {
         var owner = await OwnerAsync("standing-ack");
         using var client = AuthRegistrationTestHost.Authed(host.Factory, owner.AccessToken);
+        _ = await ConfigureAsync(client, auto: false);
         var initial = await Data<NoteProcessingPreferencesDto>(
             await client.GetAsync(Processing + "/preferences"));
 
@@ -186,11 +187,15 @@ public sealed class NoteProcessingTests(NoteProcessingFixture host)
         var saved = await Data<NoteProcessingPreferencesDto>(await client.PutAsJsonAsync(
             Processing + "/preferences",
             new SaveNoteProcessingPreferencesRequest(initial.Revision, true,
-                ConfirmStandingAuthorization: true, AcknowledgePossibleCharge: true)));
+                ConfirmStandingAuthorization: true, AcknowledgePossibleCharge: true,
+                DefaultTargetRevision: initial.CurrentDefaultTargetRevision)));
         Assert.True(saved.AutoProcessingEnabled);
         Assert.True(saved.StandingAuthorizationValid);
         Assert.True(saved.PossibleChargeAcknowledged);
         Assert.NotNull(saved.StandingAuthorizationRevision);
+        Assert.Equal(saved.CurrentDefaultTargetRevision,
+            saved.StandingAuthorizationTargetRevision);
+        Assert.NotEmpty(saved.DefaultTargets);
         Assert.Equal(NoteProcessingAuthorizationPurpose.NativeNoteProcessing, saved.Purpose);
         Assert.Equal(NoteProcessingAuthorizationPurpose.MaterialScope, saved.MaterialScope);
         Assert.Equal(NoteProcessingAuthorizationRules.CostNotice, saved.CostNotice);
@@ -209,6 +214,134 @@ public sealed class NoteProcessingTests(NoteProcessingFixture host)
         Assert.False(disabled.StandingAuthorizationValid);
         Assert.Null(disabled.StandingAuthorizationRevision);
         Assert.False(disabled.PossibleChargeAcknowledged);
+    }
+
+    [Fact]
+    public async Task DefaultTargetChangesInvalidateStandingAuthorizationAndBlockAutoStart()
+    {
+        var owner = await OwnerAsync("standing-target-drift");
+        using var client = AuthRegistrationTestHost.Authed(host.Factory, owner.AccessToken);
+        var defaults = await ConfigureAsync(client, auto: false);
+        var initial = await Data<NoteProcessingPreferencesDto>(
+            await client.GetAsync(Processing + "/preferences"));
+        var enabled = await Data<NoteProcessingPreferencesDto>(await client.PutAsJsonAsync(
+            Processing + "/preferences",
+            new SaveNoteProcessingPreferencesRequest(initial.Revision, true,
+                ConfirmStandingAuthorization: true, AcknowledgePossibleCharge: true,
+                DefaultTargetRevision: initial.CurrentDefaultTargetRevision)));
+        Assert.True(enabled.StandingAuthorizationValid);
+        Assert.Contains(enabled.DefaultTargets,
+            value => value.Contains("mimo-v2.5-asr", StringComparison.Ordinal) &&
+                value.Contains("mimo-asr/1", StringComparison.Ordinal) &&
+                value.Contains("cloud-asr", StringComparison.Ordinal));
+        Assert.Contains(enabled.DefaultTargets,
+            value => value.Contains("synthetic-text", StringComparison.Ordinal) &&
+                value.Contains("endpoint 已纳入目标策略", StringComparison.Ordinal));
+
+        using (var scope = host.Factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
+            var profile = await db.AiModelProfiles.SingleAsync(x => x.Id == defaults.Derived.Id);
+            profile.Revision = Guid.NewGuid();
+            profile.Model += "-changed";
+            await db.SaveChangesAsync();
+        }
+
+        var changed = await Data<NoteProcessingPreferencesDto>(
+            await client.GetAsync(Processing + "/preferences"));
+        Assert.False(changed.StandingAuthorizationValid);
+        Assert.Null(changed.StandingAuthorizationRevision);
+        Assert.Null(changed.StandingAuthorizationTargetRevision);
+        Assert.NotEqual(enabled.CurrentDefaultTargetRevision,
+            changed.CurrentDefaultTargetRevision);
+        Assert.Contains(changed.DefaultTargets,
+            value => value.Contains("changed", StringComparison.Ordinal));
+        Assert.NotEqual(enabled.DefaultTargets, changed.DefaultTargets);
+
+        var material = await CompleteMaterialAsync(owner, client, withAudio: true);
+        var pending = await StatusAsync(client, material.NoteId, material.VersionId);
+        Assert.False(pending.AutoStarted);
+        Assert.False(pending.Asr.TaskCreated);
+        Assert.False(pending.Derived.TaskCreated);
+        Assert.Equal((Asr: 0, Derived: 0), TaskCounts(owner));
+
+        var reauthorized = await SetAutoProcessingAsync(client, true);
+        Assert.True(reauthorized.StandingAuthorizationValid);
+        Assert.Equal(reauthorized.CurrentDefaultTargetRevision,
+            reauthorized.StandingAuthorizationTargetRevision);
+        Assert.NotEqual(enabled.StandingAuthorizationRevision,
+            reauthorized.StandingAuthorizationRevision);
+
+        var dispatch = host.Factory.Services.GetRequiredService<NoteProcessingDispatchJob>();
+        await dispatch.RunAsync(CancellationToken.None);
+        var started = await StatusAsync(client, material.NoteId, material.VersionId);
+        Assert.True(started.AutoStarted);
+        Assert.True(started.Asr.TaskCreated);
+        Assert.True(started.Derived.TaskCreated);
+        Assert.Equal((Asr: 1, Derived: 1), TaskCounts(owner));
+    }
+
+    [Fact]
+    public async Task EndpointDriftInvalidatesStandingAuthorization()
+    {
+        var owner = await OwnerAsync("standing-endpoint-drift");
+        using var client = AuthRegistrationTestHost.Authed(host.Factory, owner.AccessToken);
+        var defaults = await ConfigureAsync(client, auto: false);
+        var initial = await Data<NoteProcessingPreferencesDto>(
+            await client.GetAsync(Processing + "/preferences"));
+        var enabled = await Data<NoteProcessingPreferencesDto>(await client.PutAsJsonAsync(
+            Processing + "/preferences",
+            new SaveNoteProcessingPreferencesRequest(initial.Revision, true,
+                ConfirmStandingAuthorization: true, AcknowledgePossibleCharge: true,
+                DefaultTargetRevision: initial.CurrentDefaultTargetRevision)));
+        Assert.True(enabled.StandingAuthorizationValid);
+
+        using (var scope = host.Factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
+            var profile = await db.AiModelProfiles.SingleAsync(x => x.Id == defaults.Derived.Id);
+            profile.BaseUrl += "changed/";
+            await db.SaveChangesAsync();
+        }
+
+        var changed = await Data<NoteProcessingPreferencesDto>(
+            await client.GetAsync(Processing + "/preferences"));
+        Assert.False(changed.StandingAuthorizationValid);
+        Assert.Null(changed.StandingAuthorizationRevision);
+        Assert.Null(changed.StandingAuthorizationTargetRevision);
+        Assert.NotEqual(enabled.CurrentDefaultTargetRevision,
+            changed.CurrentDefaultTargetRevision);
+    }
+
+    [Fact]
+    public async Task StandingAuthorizationRejectsAStaleDefaultTargetRevision()
+    {
+        var owner = await OwnerAsync("standing-target-stale");
+        using var client = AuthRegistrationTestHost.Authed(host.Factory, owner.AccessToken);
+        var defaults = await ConfigureAsync(client, auto: false);
+        var initial = await Data<NoteProcessingPreferencesDto>(
+            await client.GetAsync(Processing + "/preferences"));
+
+        using (var scope = host.Factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
+            var profile = await db.AiModelProfiles.SingleAsync(x => x.Id == defaults.Derived.Id);
+            profile.Revision = Guid.NewGuid();
+            profile.Model += "-changed";
+            await db.SaveChangesAsync();
+        }
+
+        var stale = await client.PutAsJsonAsync(Processing + "/preferences",
+            new SaveNoteProcessingPreferencesRequest(initial.Revision, true,
+                ConfirmStandingAuthorization: true, AcknowledgePossibleCharge: true,
+                DefaultTargetRevision: initial.CurrentDefaultTargetRevision));
+
+        Assert.Equal(HttpStatusCode.Conflict, stale.StatusCode);
+        var unchanged = await Data<NoteProcessingPreferencesDto>(
+            await client.GetAsync(Processing + "/preferences"));
+        Assert.False(unchanged.AutoProcessingEnabled);
+        Assert.False(unchanged.StandingAuthorizationValid);
+        Assert.Null(unchanged.StandingAuthorizationRevision);
     }
 
     [Fact]
@@ -259,7 +392,7 @@ public sealed class NoteProcessingTests(NoteProcessingFixture host)
         var material = await CompleteMaterialAsync(owner, client, withAudio: true);
 
         var missingConsent = await client.PostAsJsonAsync(Processing + "/start",
-            new StartNoteProcessingRequest(material.NoteId, material.VersionId));
+            new { noteId = material.NoteId, versionId = material.VersionId });
         Assert.Equal(HttpStatusCode.BadRequest, missingConsent.StatusCode);
         Assert.Equal((Asr: 0, Derived: 0), TaskCounts(owner));
 
@@ -394,6 +527,277 @@ public sealed class NoteProcessingTests(NoteProcessingFixture host)
         Assert.Equal((Asr: 1, Derived: 1), TaskCounts(owner));
         Assert.Equal(0, host.Models.Calls);
         Assert.Equal(0, await AiCallCountAsync(owner.UserId));
+    }
+
+    [Fact]
+    public async Task LegacyTasksWithoutAuthorizationRequireConsentAndCanPersistMatchingSnapshot()
+    {
+        var owner = await OwnerAsync("legacy-processing-snapshot");
+        using var client = AuthRegistrationTestHost.Authed(host.Factory, owner.AccessToken);
+        _ = await ConfigureAsync(client, auto: false);
+        var material = await CompleteMaterialAsync(owner, client, withAudio: true);
+        var started = await StartAsync(client, material);
+        var processingId = NoteProcessingIdentity.Processing(owner.UserId, material.VersionId);
+        var processingStore = host.Factory.Services.GetRequiredService<NoteProcessingStore>();
+        await processingStore.WithLockAsync(owner.UserId, async ct =>
+        {
+            var state = await processingStore.ReadAsync(owner.UserId, processingId, ct);
+            state.Authorization = null;
+            _ = await processingStore.SaveLockedAsync(state, ct);
+            return true;
+        }, CancellationToken.None);
+
+        var status = await StatusAsync(client, material.NoteId, material.VersionId);
+        Assert.False(status.ManualStartAvailable);
+        Assert.Null(status.Authorization);
+        var missingConsent = await client.PostAsJsonAsync(Processing + "/start",
+            new { noteId = material.NoteId, versionId = material.VersionId });
+        Assert.Equal(HttpStatusCode.BadRequest, missingConsent.StatusCode);
+
+        var replay = await StartAsync(client, material);
+        Assert.Equal(started.Asr.TaskId, replay.Asr.TaskId);
+        Assert.Equal(started.Derived.TaskId, replay.Derived.TaskId);
+        Assert.Equal(NoteProcessingAuthorizationSource.Manual, replay.Authorization?.Source);
+        Assert.NotNull(replay.Authorization);
+        var persisted = await processingStore.ReadAsync(owner.UserId, processingId,
+            CancellationToken.None);
+        Assert.NotNull(persisted.Authorization);
+        Assert.Equal((Asr: 1, Derived: 1), TaskCounts(owner));
+    }
+
+    [Fact]
+    public async Task ManualReplayWithChangedDefaultTargetReturns409ForExistingTaskPair()
+    {
+        var owner = await OwnerAsync("processing-target-drift");
+        using var client = AuthRegistrationTestHost.Authed(host.Factory, owner.AccessToken);
+        var defaults = await ConfigureAsync(client, auto: false);
+        var material = await CompleteMaterialAsync(owner, client, withAudio: true);
+        var started = await StartAsync(client, material);
+
+        using (var scope = host.Factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
+            var profile = await db.AiModelProfiles.SingleAsync(x => x.Id == defaults.Derived.Id);
+            profile.Revision = Guid.NewGuid();
+            profile.Model += "-changed";
+            await db.SaveChangesAsync();
+        }
+
+        var currentPlan = await PlanAsync(client, material);
+        var response = await client.PostAsJsonAsync(Processing + "/start",
+            new StartNoteProcessingRequest(material.NoteId, material.VersionId,
+                Consent(currentPlan)));
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+        var persisted = await host.Factory.Services.GetRequiredService<NoteProcessingStore>()
+            .ReadAsync(owner.UserId,
+                NoteProcessingIdentity.Processing(owner.UserId, material.VersionId),
+                CancellationToken.None);
+        Assert.Equal(started.Authorization?.AuthorizationRevision,
+            persisted.Authorization?.AuthorizationRevision);
+        Assert.Equal((Asr: 1, Derived: 1), TaskCounts(owner));
+    }
+
+    [Fact]
+    public async Task DispatchIgnoresDuplicateLegacyInitialTasksForOneMaterialVersion()
+    {
+        var owner = await OwnerAsync("legacy-duplicate-dispatch");
+        using var client = AuthRegistrationTestHost.Authed(host.Factory, owner.AccessToken);
+        _ = await ConfigureAsync(client, auto: false);
+        var material = await CompleteMaterialAsync(owner, client, withAudio: true);
+        var started = await StartAsync(client, material);
+        var asrId = started.Asr.TaskId!.Value;
+        var derivedId = started.Derived.TaskId!.Value;
+        var duplicateAsrId = Guid.NewGuid();
+        var duplicateDerivedId = Guid.NewGuid();
+        await AddLegacyDuplicateAsync(owner.UserId, asrId, duplicateAsrId,
+            material.VersionId, derived: false);
+        await AddLegacyDuplicateAsync(owner.UserId, derivedId, duplicateDerivedId,
+            material.VersionId, derived: true);
+
+        var duplicateAsrBefore = await AsrTaskAsync(owner.UserId, duplicateAsrId);
+        var duplicateDerivedBefore = await DerivedTaskAsync(owner.UserId, duplicateDerivedId);
+        var duplicateAsrView = await Data<NoteAsrTaskDto>(await client.GetAsync(
+            $"/api/v1/native-notes/asr-tasks/{duplicateAsrId}"));
+        var duplicateDerivedView = await Data<NoteDerivedTaskDto>(await client.GetAsync(
+            $"/api/v1/native-notes/derived-tasks/{duplicateDerivedId}"));
+        Assert.False(duplicateAsrView.IsCanonicalInitial);
+        Assert.Equal(asrId, duplicateAsrView.CanonicalInitialTaskId);
+        Assert.False(duplicateDerivedView.IsCanonicalInitial);
+        Assert.Equal(derivedId, duplicateDerivedView.CanonicalInitialTaskId);
+        var canonicalAsrView = await Data<NoteAsrTaskDto>(await client.GetAsync(
+            $"/api/v1/native-notes/asr-tasks/{asrId}"));
+        var canonicalDerivedView = await Data<NoteDerivedTaskDto>(await client.GetAsync(
+            $"/api/v1/native-notes/derived-tasks/{derivedId}"));
+        Assert.True(canonicalAsrView.IsCanonicalInitial);
+        Assert.True(canonicalDerivedView.IsCanonicalInitial);
+
+        var jobs = new RecordingJobs();
+        var asrService = host.Factory.Services.GetRequiredService<NoteAsrService>();
+        var asrDispatch = new NoteAsrDispatchJob(AsrStore(), asrService, jobs,
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<NoteAsrDispatchJob>.Instance);
+        await asrDispatch.RunAsync(CancellationToken.None);
+        var asrJob = Assert.Single(jobs.Items.Where(item => item.Type == typeof(NoteAsrJob)));
+        Assert.Equal(asrId, asrJob.Args[1]);
+
+        jobs.Items.Clear();
+        var derivedDispatch = new NoteDerivedDispatchJob(DerivedStore(), jobs,
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<NoteDerivedDispatchJob>.Instance);
+        await derivedDispatch.RunAsync(CancellationToken.None);
+        var derivedJob = Assert.Single(jobs.Items.Where(item => item.Type == typeof(NoteDerivedJob)));
+        Assert.Equal(derivedId, derivedJob.Args[1]);
+
+        await host.Factory.Services.GetRequiredService<NoteAsrJob>().RunAsync(owner.UserId,
+            duplicateAsrId, CancellationToken.None);
+        await host.Factory.Services.GetRequiredService<NoteDerivedJob>().RunAsync(owner.UserId,
+            duplicateDerivedId, CancellationToken.None);
+        var duplicateAsrAfter = await AsrTaskAsync(owner.UserId, duplicateAsrId);
+        var duplicateDerivedAfter = await DerivedTaskAsync(owner.UserId, duplicateDerivedId);
+        Assert.Equal(duplicateAsrBefore.Revision, duplicateAsrAfter.Revision);
+        Assert.Equal(duplicateDerivedBefore.Revision, duplicateDerivedAfter.Revision);
+        Assert.Equal(0, host.Models.Calls);
+    }
+
+    [Fact]
+    public async Task ChainIndexWinsOverEarlierLegacyDuplicateAndKeepsStatusAuditable()
+    {
+        var owner = await OwnerAsync("legacy-chain-precedence");
+        using var client = AuthRegistrationTestHost.Authed(host.Factory, owner.AccessToken);
+        _ = await ConfigureAsync(client, auto: false);
+        var material = await CompleteMaterialAsync(owner, client, withAudio: true);
+        var started = await StartAsync(client, material);
+        var asrId = started.Asr.TaskId!.Value;
+        var derivedId = started.Derived.TaskId!.Value;
+        var earlierAsrId = Guid.NewGuid();
+        var earlierDerivedId = Guid.NewGuid();
+        await AddLegacyDuplicateAsync(owner.UserId, asrId, earlierAsrId,
+            material.VersionId, derived: false, minuteOffset: -30, clearChain: false);
+        await AddLegacyDuplicateAsync(owner.UserId, derivedId, earlierDerivedId,
+            material.VersionId, derived: true, minuteOffset: -30, clearChain: false);
+
+        var duplicateAsr = await Data<NoteAsrTaskDto>(await client.GetAsync(
+            $"/api/v1/native-notes/asr-tasks/{earlierAsrId}"));
+        var duplicateDerived = await Data<NoteDerivedTaskDto>(await client.GetAsync(
+            $"/api/v1/native-notes/derived-tasks/{earlierDerivedId}"));
+        Assert.False(duplicateAsr.IsCanonicalInitial);
+        Assert.Equal(asrId, duplicateAsr.CanonicalInitialTaskId);
+        Assert.False(duplicateDerived.IsCanonicalInitial);
+        Assert.Equal(derivedId, duplicateDerived.CanonicalInitialTaskId);
+
+        var jobs = new RecordingJobs();
+        var asrDispatch = new NoteAsrDispatchJob(AsrStore(),
+            host.Factory.Services.GetRequiredService<NoteAsrService>(), jobs,
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<NoteAsrDispatchJob>.Instance);
+        await asrDispatch.RunAsync(CancellationToken.None);
+        var asrJob = Assert.Single(jobs.Items.Where(item => item.Type == typeof(NoteAsrJob)));
+        Assert.Equal(asrId, asrJob.Args[1]);
+
+        jobs.Items.Clear();
+        var derivedDispatch = new NoteDerivedDispatchJob(DerivedStore(), jobs,
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<NoteDerivedDispatchJob>.Instance);
+        await derivedDispatch.RunAsync(CancellationToken.None);
+        var derivedJob = Assert.Single(jobs.Items.Where(item => item.Type == typeof(NoteDerivedJob)));
+        Assert.Equal(derivedId, derivedJob.Args[1]);
+
+        await host.Factory.Services.GetRequiredService<NoteAsrJob>().RunAsync(owner.UserId,
+            earlierAsrId, CancellationToken.None);
+        await host.Factory.Services.GetRequiredService<NoteDerivedJob>().RunAsync(owner.UserId,
+            earlierDerivedId, CancellationToken.None);
+        Assert.Null((await AsrTaskAsync(owner.UserId, earlierAsrId)).AttemptId);
+        Assert.Equal((Asr: 2, Derived: 2), TaskCounts(owner));
+        Assert.Equal(0, host.Models.Calls);
+    }
+
+    [Fact]
+    public async Task ProcessingStatePointingAtLegacyDuplicatesFailsClosedToCanonicalHeads()
+    {
+        var owner = await OwnerAsync("legacy-state-duplicates");
+        using var client = AuthRegistrationTestHost.Authed(host.Factory, owner.AccessToken);
+        _ = await ConfigureAsync(client, auto: false);
+        var material = await CompleteMaterialAsync(owner, client, withAudio: true);
+        var started = await StartAsync(client, material);
+        var asrId = started.Asr.TaskId!.Value;
+        var derivedId = started.Derived.TaskId!.Value;
+        var duplicateAsrId = Guid.NewGuid();
+        var duplicateDerivedId = Guid.NewGuid();
+        await AddLegacyDuplicateAsync(owner.UserId, asrId, duplicateAsrId,
+            material.VersionId, derived: false);
+        await AddLegacyDuplicateAsync(owner.UserId, derivedId, duplicateDerivedId,
+            material.VersionId, derived: true);
+
+        var processingStore = host.Factory.Services.GetRequiredService<NoteProcessingStore>();
+        var processingId = NoteProcessingIdentity.Processing(owner.UserId, material.VersionId);
+        await processingStore.WithLockAsync(owner.UserId, async ct =>
+        {
+            var state = await processingStore.ReadAsync(owner.UserId, processingId, ct);
+            state.AsrTaskId = duplicateAsrId;
+            state.DerivedTaskId = duplicateDerivedId;
+            _ = await processingStore.SaveLockedAsync(state, ct);
+            return true;
+        }, CancellationToken.None);
+
+        var status = await StatusAsync(client, material.NoteId, material.VersionId);
+        Assert.Equal(asrId, status.Asr.TaskId);
+        Assert.Equal(derivedId, status.Derived.TaskId);
+        Assert.True(status.Asr.TaskCreated);
+        Assert.True(status.Derived.TaskCreated);
+        Assert.False(status.ManualStartAvailable);
+
+        var replay = await StartAsync(client, material);
+        Assert.Equal(asrId, replay.Asr.TaskId);
+        Assert.Equal(derivedId, replay.Derived.TaskId);
+        var persisted = await processingStore.ReadAsync(owner.UserId, processingId,
+            CancellationToken.None);
+        Assert.Equal(asrId, persisted.AsrTaskId);
+        Assert.Equal(derivedId, persisted.DerivedTaskId);
+        Assert.Equal((Asr: 2, Derived: 2), TaskCounts(owner));
+        Assert.Equal(0, host.Models.Calls);
+    }
+
+    [Fact]
+    public async Task AutoStartRevalidatesCurrentMaterialVersionInsideTheProcessingLock()
+    {
+        var owner = await OwnerAsync("auto-version-race");
+        using var client = AuthRegistrationTestHost.Authed(host.Factory, owner.AccessToken);
+        _ = await ConfigureAsync(client, auto: false);
+        var first = await CompleteMaterialAsync(owner, client, withAudio: true);
+        _ = await SetAutoProcessingAsync(client, true);
+        var next = CreateNextMaterial(first);
+        var processingStore = host.Factory.Services.GetRequiredService<NoteProcessingStore>();
+        var lockHeld = new TaskCompletionSource<bool>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource<bool>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var hold = Task.Run(() => processingStore.WithLockAsync(owner.UserId, async ct =>
+        {
+            lockHeld.SetResult(true);
+            await release.Task.WaitAsync(ct);
+            return true;
+        }, CancellationToken.None));
+        await lockHeld.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        var autoStart = Task.Run(() => host.Factory.Services
+            .GetRequiredService<NoteProcessingService>()
+            .TryAutoStartAfterCompletionAsync(owner.UserId, first.VersionId,
+                CancellationToken.None));
+        await Task.Delay(250);
+        Assert.False(autoStart.IsCompleted,
+            "自动启动必须先完成锁外预检，再等待 owner/processing 锁");
+
+        await NoteDerivedFixture.UploadAsync(
+            host.Factory.Services.GetRequiredService<NoteMaterialUploadStore>(),
+            owner.UserId, next);
+        release.SetResult(true);
+        await hold.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Null(await autoStart.WaitAsync(TimeSpan.FromSeconds(10)));
+        Assert.Equal((Asr: 0, Derived: 0), TaskCounts(owner));
+
+        await host.Factory.Services.GetRequiredService<NoteProcessingDispatchJob>()
+            .RunAsync(CancellationToken.None);
+        var current = await StatusAsync(client, next.NoteId, next.VersionId);
+        Assert.True(current.AutoStarted);
+        Assert.Equal(next.VersionId, current.VersionId);
+        Assert.Equal((Asr: 1, Derived: 1), TaskCounts(owner));
     }
 
     [Fact]
@@ -597,7 +1001,9 @@ public sealed class NoteProcessingTests(NoteProcessingFixture host)
             $"{Processing}?noteId={material.NoteId}&versionId={material.VersionId}")).StatusCode);
         Assert.Equal(HttpStatusCode.NotFound, (await otherClient.PostAsJsonAsync(
             Processing + "/start",
-            new StartNoteProcessingRequest(material.NoteId, material.VersionId))).StatusCode);
+            new StartNoteProcessingRequest(material.NoteId, material.VersionId,
+                new NoteProcessingConsent("native-note-processing", "FullVersion", "", true,
+                    true, Guid.NewGuid())))).StatusCode);
         Assert.Equal(HttpStatusCode.NotFound, (await otherClient.GetAsync(
             $"{Processing}/{status.ProcessingId}")).StatusCode);
         Assert.Equal((Asr: 1, Derived: 1), TaskCounts(owner));
@@ -1249,12 +1655,14 @@ public sealed class NoteProcessingTests(NoteProcessingFixture host)
         var admin = await AuthRegistrationTestHost.SeedAndLoginAsync(host.Factory,
             "revision-admin-" + Guid.NewGuid().ToString("N"), "admin");
         using var client = AuthRegistrationTestHost.Authed(host.Factory, admin.AccessToken);
+        _ = await ConfigureAsync(client, auto: false);
         var preferences = await Data<NoteProcessingPreferencesDto>(
             await client.GetAsync(Processing + "/preferences"));
         var saved = await Data<NoteProcessingPreferencesDto>(await client.PutAsJsonAsync(
             Processing + "/preferences",
             new SaveNoteProcessingPreferencesRequest(preferences.Revision, true,
-                ConfirmStandingAuthorization: true, AcknowledgePossibleCharge: true)));
+                ConfirmStandingAuthorization: true, AcknowledgePossibleCharge: true,
+                DefaultTargetRevision: preferences.CurrentDefaultTargetRevision)));
         Assert.True(saved.AutoProcessingEnabled);
         Assert.Equal(HttpStatusCode.Conflict, (await client.PutAsJsonAsync(
             Processing + "/preferences",
@@ -1280,6 +1688,30 @@ public sealed class NoteProcessingTests(NoteProcessingFixture host)
             error => Assert.DoesNotContain("private.example.invalid", error, StringComparison.Ordinal));
         Assert.All(failed.Asr.Errors,
             error => Assert.DoesNotContain("private-token", error, StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task OrdinaryUserPlanAndStatusHideTargetEndpointsWhileAdminKeepsDiagnostics()
+    {
+        var admin = await AuthRegistrationTestHost.SeedAndLoginAsync(host.Factory,
+            "endpoint-admin-" + Guid.NewGuid().ToString("N"), "admin");
+        using var adminClient = AuthRegistrationTestHost.Authed(host.Factory, admin.AccessToken);
+        _ = await ConfigureAsync(adminClient, auto: false);
+
+        var user = await AuthRegistrationTestHost.SeedAndLoginAsync(host.Factory,
+            "endpoint-user-" + Guid.NewGuid().ToString("N"), "user");
+        using var userClient = AuthRegistrationTestHost.Authed(host.Factory, user.AccessToken);
+        var userMaterial = await CompleteMaterialAsync(user, userClient, withAudio: true);
+        var userPlan = await PlanAsync(userClient, userMaterial);
+        Assert.NotEmpty(userPlan.Targets);
+        Assert.All(userPlan.Targets, target => Assert.Null(target.Endpoint));
+        var userStarted = await StartAsync(userClient, userMaterial);
+        Assert.NotNull(userStarted.Authorization);
+        Assert.All(userStarted.Authorization!.Targets, target => Assert.Null(target.Endpoint));
+
+        var adminMaterial = await CompleteMaterialAsync(admin, adminClient, withAudio: true);
+        var adminPlan = await PlanAsync(adminClient, adminMaterial);
+        Assert.Contains(adminPlan.Targets, target => !string.IsNullOrWhiteSpace(target.Endpoint));
     }
 
     private async Task<AuthRegistrationTestHost.Session> OwnerAsync(string prefix) =>
@@ -1329,7 +1761,10 @@ public sealed class NoteProcessingTests(NoteProcessingFixture host)
             Processing + "/preferences",
             new SaveNoteProcessingPreferencesRequest(current.Revision, enabled,
                 ConfirmStandingAuthorization: confirm,
-                AcknowledgePossibleCharge: confirm)));
+                AcknowledgePossibleCharge: confirm,
+                DefaultTargetRevision: enabled
+                    ? current.CurrentDefaultTargetRevision
+                    : null)));
     }
 
     private static async Task<NoteProcessingStatusDto> StartAsync(HttpClient client,
@@ -1384,6 +1819,45 @@ public sealed class NoteProcessingTests(NoteProcessingFixture host)
 
     private NoteDerivedStore DerivedStore() =>
         host.Factory.Services.GetRequiredService<NoteDerivedStore>();
+
+    private async Task AddLegacyDuplicateAsync(Guid owner, Guid sourceId, Guid duplicateId,
+        Guid versionId, bool derived, int minuteOffset = 5, bool clearChain = true)
+    {
+        var ownerFolder = Path.Combine(host.NativeNotesRoot,
+            derived ? "derived" : "asr-tasks", owner.ToString("D"));
+        var taskFolder = derived ? Path.Combine(ownerFolder, "tasks") : ownerFolder;
+        var sourcePath = Path.Combine(taskFolder, sourceId.ToString("D") + ".json");
+        var duplicatePath = Path.Combine(taskFolder, duplicateId.ToString("D") + ".json");
+        var duplicate = JsonNode.Parse(await File.ReadAllTextAsync(sourcePath))!.AsObject();
+        var createdAt = DateTimeOffset.Parse(duplicate["createdAt"]!.GetValue<string>());
+        duplicate["createdAt"] = createdAt.AddMinutes(minuteOffset).ToString("O");
+        duplicate["request"]!.AsObject()["taskId"] = duplicateId.ToString("D");
+        if (!derived) duplicate["attemptId"] = null;
+        await File.WriteAllTextAsync(duplicatePath, duplicate.ToJsonString(Json));
+
+        if (clearChain)
+        {
+            var chainPath = Path.Combine(ownerFolder, "chains", versionId.ToString("D") + ".json");
+            File.Delete(chainPath);
+        }
+    }
+
+    private static NoteDerivedFixture.Material CreateNextMaterial(
+        NoteDerivedFixture.Material source)
+    {
+        var versionId = Guid.NewGuid();
+        var input = JsonNode.Parse(source.Request.InputJson)!.AsObject();
+        input["id"] = versionId.ToString("D");
+        var inputJson = input.ToJsonString(Json);
+        var manifest = JsonNode.Parse(source.Request.ManifestJson)!.AsObject();
+        manifest["versionId"] = versionId.ToString("D");
+        manifest["inputSha256"] = Digest(Encoding.UTF8.GetBytes(inputJson));
+        var manifestJson = manifest.ToJsonString(Json);
+        return new(new BeginNoteMaterialUploadRequest(versionId, source.NoteId,
+                source.VersionId, inputJson, manifestJson, true),
+            source.Content.Select(bytes => bytes.ToArray()).ToList(), source.PhotoIndex,
+            source.InkIndex, versionId, source.NoteId, source.RecordingId, source.Markdown);
+    }
 
     private Task<NoteAsrState> AsrTaskAsync(Guid owner, Guid id) =>
         AsrStore().ReadAsync(owner, id, CancellationToken.None);

@@ -54,14 +54,17 @@ public static class NoteProcessingAuthorizationRules
         "当前固定版本的全部材料会按账号默认目标处理；云端转写与多模态整理可能按服务商用量产生费用。";
 
     public static bool IsStandingAuthorizationValid(Guid? revision, string? purpose,
-        string? materialScope, string? costNotice, bool possibleChargeAcknowledged) =>
+        string? materialScope, string? costNotice, bool possibleChargeAcknowledged,
+        Guid? authorizedTargetRevision, Guid currentTargetRevision) =>
         revision is { } value && value != Guid.Empty &&
         string.Equals(purpose, NoteProcessingAuthorizationPurpose.NativeNoteProcessing,
             StringComparison.Ordinal) &&
         string.Equals(materialScope, NoteProcessingAuthorizationPurpose.MaterialScope,
             StringComparison.Ordinal) &&
         string.Equals(costNotice, CostNotice, StringComparison.Ordinal) &&
-        possibleChargeAcknowledged;
+        possibleChargeAcknowledged &&
+        authorizedTargetRevision is { } target && target != Guid.Empty &&
+        target == currentTargetRevision;
 }
 
 public sealed record NoteProcessingTargetDto(
@@ -119,7 +122,7 @@ public sealed record NoteProcessingConsent(
 public sealed record StartNoteProcessingRequest(
     Guid NoteId,
     Guid VersionId,
-    NoteProcessingConsent? Consent = null);
+    NoteProcessingConsent Consent);
 
 public sealed record NoteProcessingPreferencesDto(
     Guid Revision,
@@ -131,13 +134,17 @@ public sealed record NoteProcessingPreferencesDto(
     string MaterialScopeText,
     string CostNotice,
     bool PossibleChargeAcknowledged,
-    bool StandingAuthorizationValid);
+    bool StandingAuthorizationValid,
+    Guid CurrentDefaultTargetRevision,
+    Guid? StandingAuthorizationTargetRevision,
+    IReadOnlyList<string> DefaultTargets);
 
 public sealed record SaveNoteProcessingPreferencesRequest(
     Guid ExpectedRevision,
     bool AutoProcessingEnabled,
     bool ConfirmStandingAuthorization = false,
-    bool AcknowledgePossibleCharge = false);
+    bool AcknowledgePossibleCharge = false,
+    Guid? DefaultTargetRevision = null);
 
 public sealed record NoteProcessingIssueDto(
     string Code,

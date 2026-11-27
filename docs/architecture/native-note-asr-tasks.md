@@ -1,6 +1,6 @@
 ﻿# 固定笔记材料的持久分段 ASR
 
-更新日期：2026-10-29。本片在已上传的不可变材料版本上实现任务、逐片进度与恢复，已随#520合并；普通账号授权与安全 destinations 已在#528合并到 API master `a3b35dc`，Release`api-v26.10.995`保留为#528历史；P0 API #529现已在`c5ff06fe`完成PR/master CI与Release[api-v26.10.997](https://github.com/2746267826/pim-api/releases/tag/api-v26.10.997)。GitHub Release不等于production，生产仍NOT-VERIFIED。Android #48另行接入存储上传；Android ASR PR[#51](https://github.com/2746267826/pim-android/pull/51)已普通MERGED exact head`8b1d091`→`93d934379b9a0e10318a9369e4d9d80a0c47e5e2`，tree`6294c2ab...`与test source相同；CI40874958748/master40877083407全SUCCESS，Release1123，QA FINAL33/33PASS0FAIL，App source`1eaa3c5`/sha`001546`不变，2024JVM同product lineage保留。Source组件3按同源R5 lineage另记，不拼成36 PASS。Windows bot #37 masterCI/Release成功；Android bot #49 Release`android-v26.10.1112`历史，P0#50 Release1116历史，current ASR Release1123。完整记录/独立分析、人工修订保护、P2 UI余项、流式和真实课堂质量仍未交付。准确提交和证据以各片PR及[唯一总路线图](../product/native-notes-roadmap.md)为准。
+更新日期：2026-10-29（2026-11-27 补充目标策略 revision、锁内材料版本复核与 legacy 链派发门禁）。本片在已上传的不可变材料版本上实现任务、逐片进度与恢复，已随#520合并；普通账号授权与安全 destinations 已在#528合并到 API master `a3b35dc`，Release`api-v26.10.995`保留为#528历史；P0 API #529现已在`c5ff06fe`完成PR/master CI与Release[api-v26.10.997](https://github.com/2746267826/pim-api/releases/tag/api-v26.10.997)。GitHub Release不等于production，生产仍NOT-VERIFIED。Android #48另行接入存储上传；Android ASR PR[#51](https://github.com/2746267826/pim-android/pull/51)已普通MERGED exact head`8b1d091`→`93d934379b9a0e10318a9369e4d9d80a0c47e5e2`，tree`6294c2ab...`与test source相同；CI40874958748/master40877083407全SUCCESS，Release1123，QA FINAL33/33PASS0FAIL，App source`1eaa3c5`/sha`001546`不变，2024JVM同product lineage保留。Source组件3按同源R5 lineage另记，不拼成36 PASS。Windows bot #37 masterCI/Release成功；Android bot #49 Release`android-v26.10.1112`历史，P0#50 Release1116历史，current ASR Release1123。完整记录/独立分析、人工修订保护、P2 UI余项、流式和真实课堂质量仍未交付。准确提交和证据以各片PR及[唯一总路线图](../product/native-notes-roadmap.md)为准。
 
 ## 使用入口与授权
 
@@ -9,6 +9,10 @@
 任务固定 owner、材料版本、输入/清单 SHA256、模型 ID/revision、厂商预设版本、实际操作地址和语言。后续编辑/新上传版本、默认模型切换均不把原任务改成另一份材料。配置修改或账号停用/失去权限会阻止后续发送；切换目标需要新建明确授权的任务。
 
 同一 owner 与材料版本只允许一条初始付费链：ASR 与整理任务分别在 `asr-tasks/{owner}/chains/{versionId}.json` 和 `derived/{owner}/chains/{versionId}.json` 记录链头。重复点击、并发请求、响应丢失和旧客户端随机 request id 会收敛到同一初始任务；处理目标冲突返回 409，不会静默追加第二条付费任务。显式 ASR 重处理只能由服务端以父任务链创建。
+
+持续授权绑定用户确认时的实际目标策略，而不是抽象的 `purpose`。目标策略 revision 由当前 ASR 路由、云端模型 profile 的 id/revision/model/baseUrl（含实际请求 endpoint）、厂商预设 id/version、默认文本/视觉模型、模型运行时 revision/enabled 和费用提示共同决定；本机路由还包含本机模型 id/revision。设置响应返回 `currentDefaultTargetRevision`、`standingAuthorizationTargetRevision` 和实际目标描述。默认模型、端点、预设、路由或策略 revision 漂移时，旧持续授权立即无效，必须重新核对并 consent；Web 展示模型、预设、路由和 revision。普通用户的 plan/status 响应会把 target `endpoint` 置空，端点 URL 只参与服务端 revision 绑定；管理员保留端点用于诊断。
+
+`POST /api/v1/native-notes/processing/start` 的 `consent` 现在是非空必填字段：缺少时返回 400，计划 revision、材料范围、费用提示或持续授权不匹配时返回 409。已有 ASR+整理双任务的手动重放也必须先完成计划、授权和 consent 校验，不会在双任务存在时提前返回；校验失败保留原授权快照与已有任务，不追加付费任务。该变更对不传 `consent` 的旧客户端是破坏性的。
 
 ## 分片和覆盖
 
@@ -23,6 +27,10 @@
 复用现有 Hangfire/PostgreSQL：每分钟扫描固定任务检查点，向既有后台队列派发工作。检查点位于 `NativeNotes:StorageRoot/asr-tasks/<owner>/<task>.json`，与材料共用持久卷。原子替换前 flush 到磁盘；账号状态锁保护创建/更新，独立文件执行锁跨进程排除同任务并跑。一次执行最多64片，后续扫描继续；不另建通用任务平台或工作流引擎。
 
 HTTP 请求只保存意图。前端丢失响应后保留同一任务标识，先查已有任务，或用原标识再次保存；变更输入不能复用原标识。后台身份直接来自持久化授权，不伪造 HTTP 登录上下文；使用内部 owner 方法复用原有 SDK、并发门限、原音频保存、实际请求/回复与用量记录。
+
+自动启动与补偿扫描先在锁外做快速筛选，再在 owner/processing 锁内重新读取材料 `Phase == Uploaded` 和 `IsCurrent`。promote、新上传版本或并发完成请求若在等待锁期间改变当前版本，旧版本不会再创建付费 ASR/整理任务；当前版本由后续扫描按自己的身份处理。
+
+链索引是唯一初始链的权威来源。索引不存在时按 `CreatedAt` 最早选择，时间相同用 `TaskId` 稳定排序，并写回链索引。非 canonical 的 legacy 初始任务仍可查询以保留审计信息，响应返回 `isCanonicalInitial=false` 和 `canonicalInitialTaskId`；ASR/整理派发器与后台执行器都会在启动前重新校验 canonical 身份，非 canonical 初始任务不会调用 provider 或重复计费。显式 ASR 重处理子任务带 `ParentTaskId`，不受初始链门禁影响。
 
 | 窗口 | 恢复行为 |
 | --- | --- |
@@ -41,6 +49,8 @@ HTTP 请求只保存意图。前端丢失响应后保留同一任务标识，先
 唯一契约包含 `/api/v1/native-notes/asr-tasks` 下的任务创建/列表、`sources` 固定版本选择、`destinations` 普通账号安全目标、单任务、分页 `segments`、`stop` 和 `retry`，与Web类型同片从实际Test API导出生成。#528把 contract SHA256 `eff87d962f5a935148c7f74ef1d73793d534719c4493397fd8a8247567d644c0` 合并进 `a3b35dc`；Android bot #49 merge `e629febe`、Windows bot #37 merge `94384c9e`，准确PR CI全SUCCESS。Android #48只启用四个材料存储operation；Android PR#51已包含 bot官方generated contract、source semantics fix与QA assets，不手写猜测接口；exact head`8b1d091`/sha`67f0`的CI40874958748全SUCCESS/CLEAN，并已普通MERGED`93d93437`。
 
 当前每账号最多200任务、10个创建时待处理任务；单任务最多5000片、50次恢复意图、每片最多10次尝试，分片每页最多20条。现有 SDK 总并发4、ASR并发2、单片时限/原音频默认文件来源容量仍生效。没有任何同篇产品录音时长新承诺；任务操作受当前资源限额约束。任务历史归档/删除与文件回收尚未提供产品入口，不自动删除用户记录来掩盖限额。
+
+`NoteProcessingPreferencesDto` 新增必填字段 `currentDefaultTargetRevision`、`defaultTargets`，以及可空 `standingAuthorizationTargetRevision`；保存请求新增可空 `defaultTargetRevision`。旧客户端可读取新增响应字段，但开启自动处理时若不提交当前目标 revision 会被服务端拒绝；`StartNoteProcessingRequest.consent` 由可空改为必填属于故意的前向破坏性契约变化。`contract/openapi.json` 与 `web/client-web/src/api/generated.ts` 必须由同一 Test API 导出和脚本生成，不能手工维护。
 
 后台未配置/显式停用时，任务可以保存，但页面明确显示后台调度不可用，不宣称正在执行。无队列客户端时不注册派发器，开发模式的容器启动校验仍须通过。当前标志反映配置而非实时工作节点健康；后台故障需结合现有系统状态排查。任务检查点、材料卷、AI调用/音频数据库及默认文件来源需一致备份。本批沿用单个持久本地文件系统的部署边界，不声称支持无共享卷多实例、分布式文件锁或真实断电恢复。
 

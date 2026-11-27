@@ -17377,6 +17377,11 @@
           "backgroundProcessingAvailable": {
             "type": "boolean"
           },
+          "canonicalInitialTaskId": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          },
           "completedSamples": {
             "format": "int64",
             "type": "integer"
@@ -17408,6 +17413,9 @@
           },
           "inputSha256": {
             "type": "string"
+          },
+          "isCanonicalInitial": {
+            "type": "boolean"
           },
           "language": {
             "type": "string"
@@ -17471,6 +17479,7 @@
           "createdAt",
           "failedSegments",
           "inputSha256",
+          "isCanonicalInitial",
           "language",
           "manifestSha256",
           "noteId",
@@ -18372,6 +18381,11 @@
           "backgroundProcessingAvailable": {
             "type": "boolean"
           },
+          "canonicalInitialTaskId": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          },
           "coverage": {
             "$ref": "#/components/schemas/NoteDerivedCoverageDto"
           },
@@ -18384,6 +18398,9 @@
           },
           "inputSha256": {
             "type": "string"
+          },
+          "isCanonicalInitial": {
+            "type": "boolean"
           },
           "issues": {
             "items": {
@@ -18436,6 +18453,7 @@
           "createdAt",
           "destination",
           "inputSha256",
+          "isCanonicalInitial",
           "issues",
           "manifestSha256",
           "noteId",
@@ -19392,6 +19410,16 @@
           "costNotice": {
             "type": "string"
           },
+          "currentDefaultTargetRevision": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "defaultTargets": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "materialScope": {
             "type": "string"
           },
@@ -19416,6 +19444,11 @@
             "nullable": true,
             "type": "string"
           },
+          "standingAuthorizationTargetRevision": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          },
           "standingAuthorizationValid": {
             "type": "boolean"
           }
@@ -19423,6 +19456,8 @@
         "required": [
           "autoProcessingEnabled",
           "costNotice",
+          "currentDefaultTargetRevision",
+          "defaultTargets",
           "materialScope",
           "materialScopeText",
           "possibleChargeAcknowledged",
@@ -23886,6 +23921,11 @@
           "confirmStandingAuthorization": {
             "type": "boolean"
           },
+          "defaultTargetRevision": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          },
           "expectedRevision": {
             "format": "uuid",
             "type": "string"
@@ -24740,13 +24780,7 @@
         "additionalProperties": false,
         "properties": {
           "consent": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/NoteProcessingConsent"
-              }
-            ],
-            "nullable": true,
-            "type": "object"
+            "$ref": "#/components/schemas/NoteProcessingConsent"
           },
           "noteId": {
             "format": "uuid",
@@ -24758,6 +24792,7 @@
           }
         },
         "required": [
+          "consent",
           "noteId",
           "versionId"
         ],

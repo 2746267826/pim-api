@@ -533,10 +533,10 @@ public sealed class OpenApiContractShapeTests
         var start = Schema("StartNoteProcessingRequest");
         Assert.Contains("noteId", RequiredOf(start));
         Assert.Contains("versionId", RequiredOf(start));
-        Assert.DoesNotContain("consent", RequiredOf(start));
+        Assert.Contains("consent", RequiredOf(start));
         var consent = start.Properties["consent"];
         Assert.Equal("NoteProcessingConsent", Assert.Single(consent.AllOf).Reference?.Id);
-        Assert.True(consent.Nullable);
+        Assert.False(consent.Nullable);
 
         var consentSchema = Schema("NoteProcessingConsent");
         foreach (var property in new[]
@@ -555,6 +555,17 @@ public sealed class OpenApiContractShapeTests
         Assert.True(authorization.Nullable);
         Assert.Contains("authorizationRevision", RequiredOf(
             Schema("NoteProcessingAuthorizationDto")));
+
+        var preferences = Schema("NoteProcessingPreferencesDto");
+        Assert.Contains("currentDefaultTargetRevision", RequiredOf(preferences));
+        Assert.Contains("defaultTargets", RequiredOf(preferences));
+        Assert.DoesNotContain("standingAuthorizationTargetRevision",
+            RequiredOf(preferences));
+
+        Assert.Contains("isCanonicalInitial", RequiredOf(Schema("NoteAsrTaskDto")));
+        Assert.DoesNotContain("canonicalInitialTaskId", RequiredOf(Schema("NoteAsrTaskDto")));
+        Assert.Contains("isCanonicalInitial", RequiredOf(Schema("NoteDerivedTaskDto")));
+        Assert.DoesNotContain("canonicalInitialTaskId", RequiredOf(Schema("NoteDerivedTaskDto")));
     }
 
     private static void AssertNullableConsentWrapper(OpenApiSchema property, string label)

@@ -27,6 +27,9 @@ public sealed class NoteAsrDispatchJob(NoteAsrTaskStore tasks, NoteAsrService as
             try
             {
                 var state = await tasks.ReadAsync(owner, id, ct);
+                if (state.Request.ParentTaskId is null &&
+                    !await tasks.IsCanonicalInitialAsync(owner, id, state.Request.VersionId, ct))
+                    continue;
                 if (state.Route is not null)
                     state = await asr.EnsureAttemptForOwnerAsync(owner, id,
                         state.Request.VersionId, ct);
@@ -54,6 +57,10 @@ public sealed class NoteAsrJob(NoteAsrTaskStore tasks, NoteMaterialUploadStore m
     {
         using var lease = tasks.TryRunLease(owner, id);
         if (lease is null) return;
+        var initial = await tasks.ReadAsync(owner, id, ct);
+        if (initial.Request.ParentTaskId is null &&
+            !await tasks.IsCanonicalInitialAsync(owner, id, initial.Request.VersionId, ct))
+            return;
         for (var processed = 0; processed < 64; processed++)
         {
             ct.ThrowIfCancellationRequested();

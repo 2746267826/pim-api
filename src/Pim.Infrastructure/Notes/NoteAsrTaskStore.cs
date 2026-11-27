@@ -99,6 +99,20 @@ public sealed class NoteAsrTaskStore(IOptions<NoteMaterialUploadOptions> options
         return await TryReadInitialUnlockedAsync(owner, versionId, ct);
     }
 
+    internal async Task<bool> IsCanonicalInitialAsync(Guid owner, Guid taskId, Guid versionId,
+        CancellationToken ct)
+    {
+        await using var lease = await LockAsync(owner, ct);
+        return await IsCanonicalInitialUnlockedAsync(owner, taskId, versionId, ct);
+    }
+
+    internal async Task<bool> IsCanonicalInitialUnlockedAsync(Guid owner, Guid taskId,
+        Guid versionId, CancellationToken ct)
+    {
+        var initial = await TryReadInitialUnlockedAsync(owner, versionId, ct);
+        return initial?.Request.TaskId == taskId;
+    }
+
     private async Task<NoteAsrState?> TryReadInitialUnlockedAsync(Guid owner, Guid versionId,
         CancellationToken ct)
     {
@@ -138,12 +152,14 @@ public sealed class NoteAsrTaskStore(IOptions<NoteMaterialUploadOptions> options
             var state = await ReadAsync(owner, id, ct);
             if (state.Request.VersionId != versionId || state.Request.ParentTaskId is not null)
                 continue;
-            if (earliest is null || state.CreatedAt < earliest.CreatedAt) earliest = state;
+            if (earliest is null || state.CreatedAt < earliest.CreatedAt ||
+                state.CreatedAt == earliest.CreatedAt && state.Request.TaskId.CompareTo(earliest.Request.TaskId) < 0)
+                earliest = state;
         }
         return earliest;
     }
 
-    private static bool SameInitialRequest(StartNoteAsrRequest left, StartNoteAsrRequest right) =>
+    internal static bool SameInitialRequest(StartNoteAsrRequest left, StartNoteAsrRequest right) =>
         left.VersionId == right.VersionId &&
         left.ExpectedUserId == right.ExpectedUserId &&
         string.Equals(left.Language, right.Language, StringComparison.Ordinal) &&
@@ -233,7 +249,8 @@ public sealed class NoteAsrTaskStore(IOptions<NoteMaterialUploadOptions> options
     internal static bool Active(NoteAsrState state) => CloudPipeline(state) &&
         (state.Route is null || state.AttemptId is not null) &&
         state.Steps.Any(x => x.Current.Status == "Running" || !state.StopRequested && x.Current.Status == "Queued");
-    internal static NoteAsrTaskDto Describe(NoteAsrState state)
+    internal static NoteAsrTaskDto Describe(NoteAsrState state,
+        Guid? canonicalInitialTaskId = null)
     {
         var done = state.Steps.Where(x => x.Current.Status == "Succeeded").ToArray();
         var failed = state.Steps.Count(x => x.Current.Status is not ("Queued" or "Running" or "Succeeded"));
@@ -245,9 +262,12 @@ public sealed class NoteAsrTaskStore(IOptions<NoteMaterialUploadOptions> options
         return new(state.Request.TaskId, state.Revision, state.NoteId, state.Request.VersionId, state.InputSha256,
             state.ManifestSha256, phase, state.Request.Language, state.Request.Consent, state.CreatedAt, state.UpdatedAt,
             state.Steps.Count, done.Length, failed, state.Steps.Sum(x => x.Samples), done.Sum(x => x.Samples),
-            NoteAsrPlan.SampleRate, state.StopRequested, Route: state.Route, AttemptId: state.AttemptId,
+            NoteAsrPlan.SampleRate, state.StopRequested,
+            IsCanonicalInitial: canonicalInitialTaskId == state.Request.TaskId,
+            Route: state.Route, AttemptId: state.AttemptId,
             RouteConfigRevision: state.RouteConfigRevision, RouteConsentVersion: state.RouteConsentVersion,
-            ExecutionMode: state.ExecutionMode);
+            ExecutionMode: state.ExecutionMode,
+            CanonicalInitialTaskId: canonicalInitialTaskId);
     }
     private async Task SaveAsync(NoteAsrState state, CancellationToken ct)
     {
