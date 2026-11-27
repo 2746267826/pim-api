@@ -1691,6 +1691,42 @@ public sealed class NoteProcessingTests(NoteProcessingFixture host)
     }
 
     [Fact]
+    public async Task TargetPolicyDriftBetweenPreferencesAndPlanAbortsBeforeCreatingPaidTasks()
+    {
+        var owner = await OwnerAsync("target-policy-plan-race");
+        using var client = AuthRegistrationTestHost.Authed(host.Factory, owner.AccessToken);
+        var defaults = await ConfigureAsync(client, auto: false);
+        var material = await CompleteMaterialAsync(owner, client, withAudio: true);
+        _ = await SetAutoProcessingAsync(client, true);
+
+        var service = host.Factory.Services.GetRequiredService<NoteProcessingService>();
+        service.BeforePlanResolutionForTests = async ct =>
+        {
+            using var scope = host.Factory.Services.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
+            var profile = await db.AiModelProfiles.SingleAsync(x => x.Id == defaults.Derived.Id, ct);
+            profile.Revision = Guid.NewGuid();
+            profile.Model += "-changed-during-plan";
+            await db.SaveChangesAsync(ct);
+        };
+        try
+        {
+            var status = await service.TryAutoStartAfterCompletionAsync(owner.UserId,
+                material.VersionId, CancellationToken.None);
+            Assert.NotNull(status);
+            Assert.False(status!.Asr.TaskCreated);
+            Assert.False(status.Derived.TaskCreated);
+            Assert.Contains("生成处理计划时发生变化", status.PendingReason);
+            Assert.Equal((Asr: 0, Derived: 0), TaskCounts(owner));
+            Assert.Equal(0, host.Models.Calls);
+        }
+        finally
+        {
+            service.BeforePlanResolutionForTests = null;
+        }
+    }
+
+    [Fact]
     public async Task OrdinaryUserPlanAndStatusHideTargetEndpointsWhileAdminKeepsDiagnostics()
     {
         var admin = await AuthRegistrationTestHost.SeedAndLoginAsync(host.Factory,

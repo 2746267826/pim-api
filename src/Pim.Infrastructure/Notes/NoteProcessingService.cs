@@ -28,6 +28,7 @@ public sealed class NoteProcessingService(
     ILogger<NoteProcessingService> logger)
 {
     internal const string FullVersionScope = "FullVersion";
+    internal Func<CancellationToken, Task>? BeforePlanResolutionForTests { get; set; }
     private Guid Owner => user.UserId ?? throw new DomainException(40101, "请先登录");
 
     public async Task<NoteProcessingStatusDto> StartAsync(StartNoteProcessingRequest request,
@@ -147,6 +148,7 @@ public sealed class NoteProcessingService(
             ResolvedProcessingPlan plan;
             try
             {
+                if (BeforePlanResolutionForTests is { } barrier) await barrier(lockedCt);
                 plan = await ResolvePlanAsync(owner, version, preferences, lockedCt);
             }
             catch (DomainException error)
