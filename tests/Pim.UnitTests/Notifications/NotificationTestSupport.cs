@@ -64,7 +64,8 @@ internal static class NotificationTestSupport
         IWebPushTransport transport,
         ManualTimeProvider clock,
         int maxAttempts = 3,
-        int baseDelaySeconds = 0)
+        int baseDelaySeconds = 0,
+        ISecretProtector? protector = null)
     {
         var options = Options.Create(new NotificationDispatcherOptions
         {
@@ -77,7 +78,7 @@ internal static class NotificationTestSupport
         return new NotificationDeliveryWorker(
             db,
             transport,
-            Protector,
+            protector ?? Protector,
             options,
             clock,
             NullLogger<NotificationDeliveryWorker>.Instance);

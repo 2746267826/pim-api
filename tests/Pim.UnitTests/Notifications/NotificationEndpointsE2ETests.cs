@@ -9,6 +9,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
 using Pim.Infrastructure.Notifications;
+using Pim.Infrastructure.Secrets;
 using Pim.UnitTests.Harness.RealDb;
 using Xunit;
 
@@ -122,6 +123,151 @@ public sealed class NotificationEndpointsE2ETests
         Assert.Equal("Revoked", revokedAgain.GetProperty("status").GetString());
 
         Assert.Equal(1, await CountSubscriptionsAsync(temp));
+    }
+
+    [SkippableFact]
+    public async Task CrossAccountEndpointConflict_Returns409_AndPreservesOwnerSubscriptionAndDeliveries()
+    {
+        var (temp, factory) = await NewHostAsync();
+        await using var _ = temp;
+        using var __ = factory;
+        var ownerId = Guid.NewGuid();
+        var owner = Authed(factory, ownerId);
+        var endpoint = $"https://fcm.googleapis.com/wp/{Guid.NewGuid():N}";
+        var (ownerP256Dh, ownerAuth) = NotificationTestSupport.SubscriptionKeys();
+        var ownerBody = JsonSerializer.Serialize(new
+        {
+            deviceId = "owner-browser",
+            channel = "WebPush",
+            endpoint,
+            keys = new { p256dh = ownerP256Dh, auth = ownerAuth }
+        });
+        var created = await ReadDataAsync(await owner.PostAsync(
+            "/api/v1/notifications/subscriptions", Json(ownerBody)));
+        var subscriptionId = created.GetProperty("id").GetGuid();
+
+        for (var index = 0; index < 3; index++)
+        {
+            await ReadDataAsync(await owner.PostAsync(
+                "/api/v1/notifications/test", Json("{}")));
+        }
+        using (var scope = factory.Services.CreateScope())
+        {
+            var worker = scope.ServiceProvider.GetRequiredService<NotificationDeliveryWorker>();
+            await worker.FanoutOnceAsync(CancellationToken.None);
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        await using (var db = NotificationTestSupport.NewDbContext(temp.ConnectionString))
+        {
+            var deliveries = await db.NotificationDeliveries
+                .IgnoreQueryFilters()
+                .Where(d => d.SubscriptionId == subscriptionId)
+                .OrderBy(d => d.Id)
+                .ToListAsync();
+            Assert.Equal(3, deliveries.Count);
+            deliveries[0].Status = NotificationDeliveryStatuses.Pending;
+            deliveries[0].NextAttemptAt = now.AddMinutes(-2);
+            deliveries[1].Status = NotificationDeliveryStatuses.Retrying;
+            deliveries[1].NextAttemptAt = now.AddMinutes(-1);
+            deliveries[2].Status = NotificationDeliveryStatuses.Processing;
+            deliveries[2].LockedUntil = now.AddMinutes(-1);
+            deliveries[2].LockedBy = "ownership-regression";
+            await db.SaveChangesAsync();
+        }
+
+        NotificationSubscriptionEntity before;
+        await using (var db = NotificationTestSupport.NewDbContext(temp.ConnectionString))
+        {
+            before = await db.NotificationSubscriptions
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .SingleAsync(s => s.Id == subscriptionId);
+        }
+
+        var strangerId = Guid.NewGuid();
+        var stranger = Authed(factory, strangerId);
+        var (strangerP256Dh, strangerAuth) = NotificationTestSupport.SubscriptionKeys();
+        var conflictBody = JsonSerializer.Serialize(new
+        {
+            deviceId = "stranger-browser",
+            channel = "WebPush",
+            endpoint,
+            keys = new { p256dh = strangerP256Dh, auth = strangerAuth }
+        });
+        var conflict = await stranger.PostAsync(
+            "/api/v1/notifications/subscriptions", Json(conflictBody));
+        Assert.Equal(HttpStatusCode.Conflict, conflict.StatusCode);
+        var raw = await conflict.Content.ReadAsStringAsync();
+        using (var document = JsonDocument.Parse(raw))
+        {
+            Assert.Equal(40906, document.RootElement.GetProperty("code").GetInt32());
+            Assert.Equal(JsonValueKind.Null, document.RootElement.GetProperty("data").ValueKind);
+        }
+        Assert.DoesNotContain(endpoint, raw, StringComparison.Ordinal);
+        Assert.DoesNotContain(ownerP256Dh, raw, StringComparison.Ordinal);
+        Assert.DoesNotContain(ownerAuth, raw, StringComparison.Ordinal);
+        Assert.DoesNotContain(strangerP256Dh, raw, StringComparison.Ordinal);
+        Assert.DoesNotContain(strangerAuth, raw, StringComparison.Ordinal);
+        Assert.DoesNotContain(ownerId.ToString("D"), raw, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(strangerId.ToString("D"), raw, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("owner-browser", raw, StringComparison.Ordinal);
+        Assert.DoesNotContain("fcm.googleapis.com", raw, StringComparison.OrdinalIgnoreCase);
+
+        await using (var db = NotificationTestSupport.NewDbContext(temp.ConnectionString))
+        {
+            var after = await db.NotificationSubscriptions
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .SingleAsync(s => s.Id == subscriptionId);
+            Assert.Equal(ownerId, after.UserId);
+            Assert.Equal(before.DeviceId, after.DeviceId);
+            Assert.Equal(before.EndpointCiphertext, after.EndpointCiphertext);
+            Assert.Equal(before.EndpointHash, after.EndpointHash);
+            Assert.Equal(before.EndpointHost, after.EndpointHost);
+            Assert.Equal(before.P256DhCiphertext, after.P256DhCiphertext);
+            Assert.Equal(before.AuthCiphertext, after.AuthCiphertext);
+            Assert.Equal(before.Status, after.Status);
+            Assert.Equal(before.Version, after.Version);
+            Assert.Equal(before.CreatedAt, after.CreatedAt);
+            Assert.Equal(before.UpdatedAt, after.UpdatedAt);
+            Assert.Equal(1, await db.NotificationSubscriptions
+                .IgnoreQueryFilters()
+                .CountAsync());
+
+            var statuses = await db.NotificationDeliveries
+                .IgnoreQueryFilters()
+                .Where(d => d.SubscriptionId == subscriptionId)
+                .Select(d => d.Status)
+                .ToListAsync();
+            Assert.Equal(3, statuses.Count);
+            Assert.DoesNotContain(NotificationDeliveryStatuses.Suppressed, statuses);
+            Assert.Contains(NotificationDeliveryStatuses.Pending, statuses);
+            Assert.Contains(NotificationDeliveryStatuses.Retrying, statuses);
+            Assert.Contains(NotificationDeliveryStatuses.Processing, statuses);
+        }
+
+        var fake = new FakePushTransport();
+        var clock = new ManualTimeProvider(now.AddMinutes(1));
+        var protector = factory.Services.GetRequiredService<ISecretProtector>();
+        await using (var db = NotificationTestSupport.NewDbContext(temp.ConnectionString))
+        {
+            var worker = NotificationTestSupport.NewWorker(
+                db, fake, clock, protector: protector);
+            await worker.DeliverOnceAsync(CancellationToken.None);
+        }
+
+        Assert.Equal(3, fake.Calls);
+        await using (var db = NotificationTestSupport.NewDbContext(temp.ConnectionString))
+        {
+            var statuses = await db.NotificationDeliveries
+                .IgnoreQueryFilters()
+                .Where(d => d.SubscriptionId == subscriptionId)
+                .Select(d => d.Status)
+                .ToListAsync();
+            Assert.All(statuses, status =>
+                Assert.Equal(NotificationDeliveryStatuses.Delivered, status));
+        }
     }
 
     [SkippableFact]

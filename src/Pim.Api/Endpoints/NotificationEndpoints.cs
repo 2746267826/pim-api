@@ -63,6 +63,7 @@ public static class NotificationEndpoints
         })
         .Produces<ApiResponse<NotificationSubscriptionDto>>(200)
         .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(409)
         .Produces(401);
 
         group.MapDelete("/subscriptions/{id:guid}", async (

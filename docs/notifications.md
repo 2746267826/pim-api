@@ -40,13 +40,17 @@ Notifications__WebPush__Subject=mailto:ops@example.com
 
 订阅端点和密钥在服务端使用 Data Protection 加密存储；接口只返回 endpoint 主机名，不返回 endpoint、`p256dh`、`auth` 或 provider secret。
 
+### 订阅所有权
+
+同一 `channel + endpoint_hash` 只归属一个账号。若该浏览器推送地址已绑定其他账号，`POST /api/v1/notifications/subscriptions` 返回 HTTP `409` / 业务码 `40906`，不会转移订阅、改写原账号的 `user_id`、密钥、`created_at` 或 `version`，也不会抑制原账号仍处于 `Pending` / `Retrying` / `Processing` 的投递。需要换绑时，先在原账号撤销该订阅。冲突响应只包含通用错误码和安全文案，不回显 endpoint、订阅密钥或原账号信息。
+
 ## 队列状态
 
 - 事件先写入 `notification_events`（站内通知与 outbox 同一行），再由后台 fanout 为每个活跃订阅写入 `notification_deliveries`。
 - 事件创建时快照当时符合偏好的订阅；之后才重新打开的设备、或关闭期间产生的事件不会补推。关闭类别期间的事件仍以抑制状态落库，用于幂等与去重。
 - `notification_deliveries` 唯一键 `(event_id, subscription_id)` 保证重复 fanout 不重复推送。
 - 可重试失败按指数退避进入 `Retrying`；达到上限进入 `DeadLetter`，设置页可见最近安全错误并允许手动重试。
-- 订阅撤销或转移会把未发送投递置为 `Suppressed`。
+- 订阅撤销会把未发送投递置为 `Suppressed`。
 - 400/401/403/413 等永久失败进入 `DeadLetter`，404/410 会撤销订阅。
 
 ## 历史数据与扫描边界

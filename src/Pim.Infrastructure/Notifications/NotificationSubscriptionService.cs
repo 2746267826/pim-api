@@ -112,9 +112,12 @@ public sealed class NotificationSubscriptionService(
             subscription = existing;
             if (subscription.UserId != userId)
             {
-                await SuppressPendingDeliveriesAsync(subscription.Id, "subscription_transferred", ct);
-                subscription.UserId = userId;
-                subscription.CreatedAt = now;
+                logger.LogWarning(
+                    "Notification subscription endpoint ownership conflict for user {UserId}",
+                    userId);
+                throw new DomainException(
+                    40906,
+                    "该推送地址已绑定其他账号，请先在原账号撤销订阅后再试");
             }
         }
 

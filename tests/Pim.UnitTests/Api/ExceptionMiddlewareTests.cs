@@ -87,15 +87,16 @@ public class ExceptionMiddlewareTests
 
     [Theory]
     [InlineData(40901)]
+    [InlineData(40906)]
     [InlineData(MobileSyncErrorCodes.PayloadConflict)]
     [InlineData(MobileSyncErrorCodes.RetryExhausted)]
     [InlineData(MobileSyncErrorCodes.LeaseLost)]
-    public async Task InvokeAsync_MapsMobileSyncConflictCodesTo409(int errorCode)
+    public async Task InvokeAsync_MapsConflictCodesTo409(int errorCode)
     {
         var context = new DefaultHttpContext();
         context.Response.Body = new MemoryStream();
         var middleware = new ExceptionMiddleware(
-            _ => throw new DomainException(errorCode, "Synthetic mobile sync conflict"),
+            _ => throw new DomainException(errorCode, "Synthetic conflict"),
             NullLogger<ExceptionMiddleware>.Instance);
 
         await middleware.InvokeAsync(context);
@@ -103,7 +104,7 @@ public class ExceptionMiddlewareTests
         Assert.Equal(StatusCodes.Status409Conflict, context.Response.StatusCode);
         var response = await ReadResponseAsync(context);
         Assert.Equal(errorCode, response.Code);
-        Assert.Equal("Synthetic mobile sync conflict", response.Message);
+        Assert.Equal("Synthetic conflict", response.Message);
     }
 
     /// <summary>
