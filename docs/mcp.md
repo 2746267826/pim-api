@@ -3136,7 +3136,7 @@ async def get_version(-) -> Any: ...
 
 > 原生笔记没有 archive/Archived 状态：文件夹用于日常归档，删除只进回收站。请求体上限：`/mcp` 为 96 MiB（覆盖 64 MB ZIP 的 base64 JSON-RPC），反向代理需同步放宽。所有写操作返回 `operationId`（`nop_...`）；失败/未知结果不猜测成功，可用 `get_native_note_operation` 按 requestId 对账。
 >
-> 写入 requestId 的身份与输入指纹持久保存在 PostgreSQL，按 owner + requestId 唯一，并由所有 API 实例共享。completed/failed/unknown 的身份和指纹不会因 30 天或 200 条清理消失；清理只移除已完成操作的重放响应体。重放过期 requestId 返回明确 409，不会把它当作新的 mutation 执行；pending/unknown 永远保留并继续 fail closed。
+> 写入 requestId 的身份与输入指纹持久保存在 PostgreSQL，按 owner + requestId 唯一，并由所有 API 实例共享。completed/failed/unknown 的身份和指纹不会因 30 天或 200 条清理消失；清理只移除已完成操作的重放响应体，并在成功写入、重放或 operation 查询时尽力执行。即使清理任务未运行，重放路径也会按完成时间拒绝超过 30 天的响应，返回明确 409，不会把它当作新的 mutation 执行；pending/unknown 永远保留并继续 fail closed。为保证旧 requestId 永不重新执行，身份墓碑没有行数上限，表规模随唯一写请求数增长；当前没有自动归档或删除策略，部署方需将其作为存储容量监控项。
 >
 > 本切片未包含：笔记正文 create/update、文件夹/标签管理、彻底删除/清空回收站、ASR 片段级重试、按板块采用。
 

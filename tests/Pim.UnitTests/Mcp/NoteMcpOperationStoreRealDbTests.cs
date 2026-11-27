@@ -156,6 +156,49 @@ public sealed class NoteMcpOperationStoreRealDbTests
     }
 
     [SkippableFact]
+    public async Task ExpiredResponseFailsClosedWithoutAnotherSuccessfulMutation()
+    {
+        await using var database = await TempMigrationDatabase.CreateAsync(
+            "test_mcp_idempotency_expired_read");
+        await database.MigrateAsync();
+        var options = Options(database.ConnectionString);
+        var clock = new ManualClock(new DateTimeOffset(2026, 11, 27, 0, 0, 0, TimeSpan.Zero));
+        var store = new NoteMcpOperationStore(new PostgresNoteMcpOperationLedger(options), clock);
+        var owner = Guid.NewGuid();
+        var noteId = Guid.NewGuid();
+        var requestId = Guid.NewGuid();
+        var calls = 0;
+
+        await RunAsync(store, owner, noteId, requestId, new { value = 1 }, _ =>
+        {
+            calls++;
+            return Task.FromResult(Result(owner, noteId, requestId, clock, "original"));
+        });
+
+        clock.Advance(TimeSpan.FromDays(31));
+        var replay = await Assert.ThrowsAsync<NativeNoteMcpOperationException>(() =>
+            RunAsync(store, owner, noteId, requestId, new { value = 1 }, _ =>
+            {
+                calls++;
+                return Task.FromResult(Result(owner, noteId, requestId, clock, "must not run"));
+            }));
+
+        Assert.Equal(40901, replay.ErrorCode);
+        Assert.Contains("保留期", replay.Message);
+        Assert.Equal(1, calls);
+        var expired = await database.Db.NoteMcpOperations.AsNoTracking()
+            .SingleAsync(x => x.OwnerId == owner && x.RequestId == requestId);
+        Assert.Equal("completed", expired.State);
+        Assert.Null(expired.ResponseJson);
+        Assert.NotNull(expired.ResponsePurgedAt);
+
+        var status = await store.GetAsync(owner, noteId, requestId, default);
+        Assert.Equal("succeeded", status.State);
+        Assert.Equal("applied", status.Receipt.Status);
+        Assert.Contains("超过保留期", status.Receipt.Message);
+    }
+
+    [SkippableFact]
     public async Task ConcurrentInstancesRestartAndOwnerIsolationShareOneClaim()
     {
         await using var database = await TempMigrationDatabase.CreateAsync(
@@ -218,6 +261,95 @@ public sealed class NoteMcpOperationStoreRealDbTests
         Assert.Equal(2, calls);
         Assert.Equal(2, await database.Db.NoteMcpOperations
             .CountAsync(x => x.RequestId == requestId));
+    }
+
+    [SkippableFact]
+    public async Task ConcurrentInstancesClaimTheSameNewRequestIdOnlyOnce()
+    {
+        await using var database = await TempMigrationDatabase.CreateAsync(
+            "test_mcp_idempotency_first_claim");
+        await database.MigrateAsync();
+        var options = Options(database.ConnectionString);
+        var clock = new ManualClock(new DateTimeOffset(2026, 11, 27, 0, 0, 0, TimeSpan.Zero));
+        var owner = Guid.NewGuid();
+        var noteId = Guid.NewGuid();
+        var requestId = Guid.NewGuid();
+        var calls = 0;
+        var insertBarrier = new InsertBarrier(2);
+        var firstStore = new NoteMcpOperationStore(
+            new InsertBarrierLedger(new PostgresNoteMcpOperationLedger(options), insertBarrier), clock);
+        var secondStore = new NoteMcpOperationStore(
+            new InsertBarrierLedger(new PostgresNoteMcpOperationLedger(options), insertBarrier), clock);
+
+        async Task<(NativeNoteMcpOperationResultDto<string>? Result,
+            NativeNoteMcpOperationException? Error)> CaptureAsync(
+            NoteMcpOperationStore store, string value)
+        {
+            try
+            {
+                var result = await RunAsync(store, owner, noteId, requestId,
+                    new { value = 1 }, _ =>
+                    {
+                        Interlocked.Increment(ref calls);
+                        return Task.FromResult(Result(owner, noteId, requestId, clock, value));
+                    });
+                return (result, null);
+            }
+            catch (NativeNoteMcpOperationException error)
+            {
+                return (null, error);
+            }
+        }
+
+        var first = CaptureAsync(firstStore, "first");
+        var second = CaptureAsync(secondStore, "second");
+        var outcomes = await Task.WhenAll(first, second);
+
+        Assert.Equal(1, calls);
+        Assert.Contains(outcomes, outcome => outcome.Result is not null);
+        Assert.All(outcomes, outcome =>
+            Assert.True(outcome.Result is not null || outcome.Error?.ErrorCode == 40901));
+        Assert.Equal(1, await database.Db.NoteMcpOperations
+            .CountAsync(x => x.OwnerId == owner && x.RequestId == requestId));
+    }
+
+    private sealed class InsertBarrier(int participants)
+    {
+        private readonly TaskCompletionSource _released = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _arrivals;
+
+        public async Task WaitAsync(CancellationToken ct)
+        {
+            if (Interlocked.Increment(ref _arrivals) == participants)
+                _released.TrySetResult();
+            await _released.Task.WaitAsync(ct);
+        }
+    }
+
+    private sealed class InsertBarrierLedger(INoteMcpOperationLedger inner,
+        InsertBarrier barrier) : INoteMcpOperationLedger
+    {
+        public async Task<bool> TryInsertAsync(NoteMcpOperationRow row, CancellationToken ct)
+        {
+            await barrier.WaitAsync(ct);
+            return await inner.TryInsertAsync(row, ct);
+        }
+
+        public Task<NoteMcpOperationRow?> FindAsync(Guid owner, Guid requestId,
+            CancellationToken ct) => inner.FindAsync(owner, requestId, ct);
+
+        public Task<bool> CompleteAsync(Guid owner, Guid requestId, string responseJson,
+            string receiptStatus, Guid? revision, string message, DateTimeOffset completedAt,
+            CancellationToken ct) => inner.CompleteAsync(owner, requestId, responseJson,
+            receiptStatus, revision, message, completedAt, ct);
+
+        public Task<bool> FailAsync(Guid owner, Guid requestId, string state, int errorCode,
+            string errorMessage, DateTimeOffset completedAt, CancellationToken ct)
+            => inner.FailAsync(owner, requestId, state, errorCode, errorMessage, completedAt, ct);
+
+        public Task PurgeResponsesAsync(Guid owner, DateTimeOffset now, CancellationToken ct)
+            => inner.PurgeResponsesAsync(owner, now, ct);
     }
 
     private static DbContextOptions<PimDbContext> Options(string connectionString)

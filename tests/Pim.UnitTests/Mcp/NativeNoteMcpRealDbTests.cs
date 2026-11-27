@@ -485,6 +485,55 @@ public sealed class NativeNoteMcpRealDbTests
     }
 
     [SkippableFact]
+    public async Task ExpiredReplayThroughMcpReturnsActionableConflict()
+    {
+        await using var host = await McpHost.CreateAsync();
+        var noteId = Guid.NewGuid();
+        var fixture = NoteMaterialUploadStoreTests.Fixture.Create(noteId: noteId);
+        var package = Package(fixture);
+        var requestId = Guid.NewGuid().ToString("D");
+        var uploadArgs = new
+        {
+            noteId,
+            requestId,
+            packageBase64 = Convert.ToBase64String(package),
+            promote = true,
+        };
+
+        var uploaded = await host.CallAsync(host.McpBWrite,
+            "upload_native_note_package", uploadArgs);
+        Assert.False(uploaded.IsError, uploaded.Payload.GetRawText());
+
+        await using (var scope = host.Factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
+            var row = await db.NoteMcpOperations.SingleAsync(x =>
+                x.OwnerId == host.UserB && x.RequestId == Guid.Parse(requestId));
+            row.CompletedAt = DateTimeOffset.UtcNow - TimeSpan.FromDays(31);
+            await db.SaveChangesAsync();
+        }
+
+        var replay = await host.CallAsync(host.McpBWrite,
+            "upload_native_note_package", uploadArgs);
+        Assert.True(replay.IsError, replay.Payload.GetRawText());
+        Assert.Equal(409, replay.Payload.GetProperty("code").GetInt32());
+        var details = replay.Payload.GetProperty("details");
+        Assert.Equal(40901, details.GetProperty("code").GetInt32());
+        var message = details.GetProperty("message").GetString();
+        Assert.Contains("保留期", message);
+        Assert.Contains("请求标识", message);
+        Assert.DoesNotContain("requestId", details.GetRawText(), StringComparison.OrdinalIgnoreCase);
+
+        await using var verifyScope = host.Factory.Services.CreateAsyncScope();
+        var verifyDb = verifyScope.ServiceProvider.GetRequiredService<PimDbContext>();
+        var expired = await verifyDb.NoteMcpOperations.AsNoTracking().SingleAsync(x =>
+            x.OwnerId == host.UserB && x.RequestId == Guid.Parse(requestId));
+        Assert.Equal("completed", expired.State);
+        Assert.Null(expired.ResponseJson);
+        Assert.NotNull(expired.ResponsePurgedAt);
+    }
+
+    [SkippableFact]
     public async Task ConflictCandidatesCanBePromoted_AndLifecycleBlocksThenRestoresMutations()
     {
         await using var host = await McpHost.CreateAsync();

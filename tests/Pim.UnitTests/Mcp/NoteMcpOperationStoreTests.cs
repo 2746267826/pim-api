@@ -121,6 +121,17 @@ public sealed class NoteMcpOperationStoreTests
         var status = await store.GetAsync(_owner, _noteId, requestId, default);
         Assert.Equal("succeeded", status.State);
         Assert.Equal("applied", status.Receipt.Status);
+
+        var crossNoteCalls = 0;
+        var crossNote = await Assert.ThrowsAsync<DomainException>(() =>
+            store.RunAsync(_owner, requestId, Guid.NewGuid(), "test_operation",
+                new { value = 1 }, _ =>
+                {
+                    crossNoteCalls++;
+                    return Task.FromResult(Result(requestId, "must not run"));
+                }, default));
+        Assert.Equal(40401, crossNote.ErrorCode);
+        Assert.Equal(0, crossNoteCalls);
     }
 
     [Fact]
@@ -342,6 +353,67 @@ public sealed class NoteMcpOperationStoreTests
     }
 
     [Fact]
+    public async Task CompletedResponseExpiresWithoutAnotherSuccessfulMutation()
+    {
+        var store = Store();
+        var requestId = Guid.NewGuid();
+        var calls = 0;
+
+        await RunAsync(store, requestId, new { value = 1 }, _ =>
+        {
+            calls++;
+            return Task.FromResult(Result(requestId, "original"));
+        });
+
+        _clock.Advance(TimeSpan.FromDays(31));
+        var replay = await Assert.ThrowsAsync<NativeNoteMcpOperationException>(() =>
+            RunAsync(store, requestId, new { value = 1 }, _ =>
+            {
+                calls++;
+                return Task.FromResult(Result(requestId, "must not run"));
+            }));
+
+        Assert.Equal(40901, replay.ErrorCode);
+        Assert.Contains("保留期", replay.Message);
+        Assert.Equal(1, calls);
+        var expired = _ledger.Require(_owner, requestId);
+        Assert.Equal("completed", expired.State);
+        Assert.Null(expired.ResponseJson);
+        Assert.NotNull(expired.ResponsePurgedAt);
+
+        var status = await store.GetAsync(_owner, _noteId, requestId, default);
+        Assert.Equal("succeeded", status.State);
+        Assert.Equal("applied", status.Receipt.Status);
+        Assert.Contains("超过保留期", status.Receipt.Message);
+    }
+
+    [Fact]
+    public async Task ExpiredReplayFailsClosedWhenResponsePurgeFails()
+    {
+        var store = Store();
+        var requestId = Guid.NewGuid();
+        var calls = 0;
+        await RunAsync(store, requestId, new { value = 1 }, _ =>
+        {
+            calls++;
+            return Task.FromResult(Result(requestId, "original"));
+        });
+
+        _clock.Advance(TimeSpan.FromDays(31));
+        _ledger.FailPurge = true;
+        var expired = await Assert.ThrowsAsync<NativeNoteMcpOperationException>(() =>
+            RunAsync(store, requestId, new { value = 1 }, _ =>
+            {
+                calls++;
+                return Task.FromResult(Result(requestId, "must not run"));
+            }));
+
+        Assert.Equal(40901, expired.ErrorCode);
+        Assert.Equal(1, calls);
+        Assert.NotNull(_ledger.Require(_owner, requestId).ResponseJson);
+    }
+
+    [Fact]
     public async Task OldPendingAndUnknownMarkersAreNeverPruned()
     {
         var store = Store();
@@ -530,6 +602,8 @@ public sealed class NoteMcpOperationStoreTests
         private readonly object _gate = new();
         private readonly Dictionary<(Guid Owner, Guid RequestId), NoteMcpOperationRow> _rows = new();
 
+        public bool FailPurge { get; set; }
+
         public async Task<bool> TryInsertAsync(NoteMcpOperationRow row, CancellationToken ct)
         {
             await Task.Yield();
@@ -597,6 +671,7 @@ public sealed class NoteMcpOperationStoreTests
 
         public async Task PurgeResponsesAsync(Guid owner, DateTimeOffset now, CancellationToken ct)
         {
+            if (FailPurge) throw new InvalidOperationException("synthetic purge failure");
             await Task.Yield();
             lock (_gate)
             {

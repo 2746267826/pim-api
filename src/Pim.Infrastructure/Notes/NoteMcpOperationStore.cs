@@ -64,6 +64,7 @@ public sealed class NoteMcpOperationStore
         // commit leaves a pending tombstone, which all later retries must fail closed on.
         if (!await _ledger.TryInsertAsync(pending, ct))
         {
+            await PurgeResponsesBestEffortAsync(owner);
             var existing = await _ledger.FindAsync(owner, requestId, ct)
                 ?? throw new DomainException(40901,
                     "该 requestId 的幂等记录正在建立，请稍后重试，不会重复执行变更");
@@ -135,6 +136,7 @@ public sealed class NoteMcpOperationStore
         if (owner == Guid.Empty) throw new DomainException(40101, "请先登录");
         if (noteId == Guid.Empty) throw new DomainException(40001, "笔记标识无效");
         if (requestId == Guid.Empty) throw new DomainException(40001, "requestId 不能为空");
+        await PurgeResponsesBestEffortAsync(owner);
         var stored = await _ledger.FindAsync(owner, requestId, ct)
             ?? throw new DomainException(40401, "该 requestId 没有对应的 native-note 操作记录");
         if (stored.NoteId != Guid.Empty && stored.NoteId != noteId)
@@ -148,9 +150,9 @@ public sealed class NoteMcpOperationStore
             _ => "unknown",
         };
         NativeNoteMcpReceiptDto receipt;
-        if (stored.ResponseJson is not null)
+        if (HasRetainedResponse(stored, _clock.GetUtcNow()))
         {
-            using var document = JsonDocument.Parse(stored.ResponseJson);
+            using var document = JsonDocument.Parse(stored.ResponseJson!);
             receipt = document.RootElement.GetProperty("receipt")
                 .Deserialize<NativeNoteMcpReceiptDto>(Json)
                 ?? throw new InvalidDataException("MCP operation receipt is invalid");
@@ -243,7 +245,7 @@ public sealed class NoteMcpOperationStore
                 _clock.GetUtcNow(), replayed: false, message, 40901);
             throw new NativeNoteMcpOperationException(40901, message, unknownReceipt);
         }
-        if (existing.ResponseJson is null)
+        if (!HasRetainedResponse(existing, _clock.GetUtcNow()))
         {
             const string message =
                 "该 requestId 已执行成功，但原响应已超过保留期；操作身份与输入指纹仍保留。请先重新读取最新状态，确认后用新的 requestId 继续";
@@ -254,7 +256,7 @@ public sealed class NoteMcpOperationStore
         }
 
         var replayed = JsonSerializer.Deserialize<NativeNoteMcpOperationResultDto<T>>(
-            existing.ResponseJson, Json)
+            existing.ResponseJson!, Json)
             ?? throw new InvalidDataException("MCP operation replay payload is invalid");
         return replayed with
         {
@@ -272,6 +274,11 @@ public sealed class NoteMcpOperationStore
         => stored.OperationId.Length > 0
             ? stored.OperationId
             : BuildOperationId(owner, stored.Operation, requestId);
+
+    private static bool HasRetainedResponse(NoteMcpOperationRow row, DateTimeOffset now)
+        => row.ResponseJson is not null &&
+           row.CompletedAt is { } completedAt &&
+           completedAt >= now - NoteMcpOperationRetention.ResponseRetention;
 
     private static NativeNoteMcpReceiptDto StoredReceipt(NoteMcpOperationRow stored, Guid noteId,
         string operationId, string status, DateTimeOffset at, bool replayed, string message,

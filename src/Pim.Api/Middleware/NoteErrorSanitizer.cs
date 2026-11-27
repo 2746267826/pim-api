@@ -29,8 +29,14 @@ public static class NoteErrorSanitizer
     public static bool IsNativeNotesPath(PathString path) =>
         path.StartsWithSegments("/api/v1/native-notes", StringComparison.OrdinalIgnoreCase);
 
-    public static string SanitizeDomainMessage(string message, int statusCode) =>
-        InternalPattern.IsMatch(message) ? FallbackMessage(statusCode) : message;
+    public static string SanitizeDomainMessage(string message, int statusCode)
+    {
+        if (statusCode == StatusCodes.Status409Conflict &&
+            message.Contains("响应已超过保留期", StringComparison.Ordinal))
+            return "该操作结果已超过保留期，请先读取最新状态，再使用新的请求标识继续";
+
+        return InternalPattern.IsMatch(message) ? FallbackMessage(statusCode) : message;
+    }
 
     public static string BadRequestMessage(string? rawDetail, bool includeDiagnostics) =>
         includeDiagnostics ? $"请求参数格式无效: {rawDetail}" : "请求参数格式无效";

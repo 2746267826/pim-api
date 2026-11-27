@@ -60,6 +60,18 @@ public class NoteErrorSanitizerTests
     }
 
     [Fact]
+    public void KeepsExpiredOperationConflictActionableWithoutEchoingRequestId()
+    {
+        const string message =
+            "该 requestId 已执行成功，但原响应已超过保留期；操作身份与输入指纹仍保留。";
+
+        var sanitized = NoteErrorSanitizer.SanitizeDomainMessage(message, 409);
+
+        Assert.Equal("该操作结果已超过保留期，请先读取最新状态，再使用新的请求标识继续", sanitized);
+        Assert.DoesNotContain("requestId", sanitized, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void BadRequestHidesParserDetailFromOrdinaryUsersOnly()
     {
         Assert.Equal("请求参数格式无效", NoteErrorSanitizer.BadRequestMessage("line 1", false));
