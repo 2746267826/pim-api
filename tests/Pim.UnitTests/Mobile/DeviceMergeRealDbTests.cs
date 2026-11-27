@@ -1,8 +1,14 @@
+using System.Data.Common;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.Extensions.Caching.Memory;
 using Npgsql;
+using Pim.Core.Caching;
+using Pim.Core.Exceptions;
 using Pim.Infrastructure.Data;
 using Pim.Infrastructure.Data.Entities;
 using Pim.Infrastructure.Endpoints;
+using Pim.Infrastructure.Operations;
 using Pim.Module.Mobile.DTOs;
 using Pim.Module.Mobile.Entities;
 using Pim.Module.Mobile.Services;
@@ -34,6 +40,8 @@ public sealed class DeviceMergeRealDbTests
         "mobile_usage_sessions",
         "mobile_usage_summaries",
         "mobile_location_points",
+        "mobile_location_point_revisions",
+        "mobile_location_segment_merges",
         "mobile_sync_batches",
         "mobile_timeline_blocks",
         "mobile_usage_aggregates",
@@ -122,17 +130,427 @@ public sealed class DeviceMergeRealDbTests
         }
     }
 
-    private static async Task CreateSchemaAsync(NpgsqlConnection conn, string schema)
+    [SkippableFact]
+    public async Task MergeAsync_OnPostgres_RemapsDuplicateNaturalKeyHistoryWithoutDanglingReferences()
     {
+        var connStr = RealDbTestConnection.Require();
+        MobileTestHelpers.RegisterMobileModule();
+
+        await using var admin = new NpgsqlConnection(connStr);
+        await admin.OpenAsync();
+
+        var schema = $"test_device_merge_history_{Guid.NewGuid():N}";
+        try
+        {
+            await CreateSchemaAsync(admin, schema);
+
+            var searchPathConn = new NpgsqlConnectionStringBuilder(connStr) { SearchPath = schema }.ConnectionString;
+            var options = new DbContextOptionsBuilder<PimDbContext>()
+                .UseNpgsql(searchPathConn, npgsql => npgsql.EnableRetryOnFailure(3))
+                .Options;
+
+            await using var db = new PimDbContext(options);
+            var recordedAt = Now.AddDays(-45);
+            var targetPoint = new MobileLocationPointEntity
+            {
+                UserId = UserId,
+                DeviceId = TargetDeviceId,
+                RecordedAtUtc = recordedAt,
+                Latitude = 31.2304m,
+                Longitude = 121.4737m,
+                HorizontalAccuracyMeters = 12.5m,
+                Provider = "fused",
+                Source = "android",
+            };
+            var sourcePoint = new MobileLocationPointEntity
+            {
+                UserId = UserId,
+                DeviceId = SourceDeviceA,
+                RecordedAtUtc = recordedAt,
+                Latitude = 31.2304m,
+                Longitude = 121.4737m,
+                HorizontalAccuracyMeters = 12.5m,
+                Provider = "fused",
+                Source = "android",
+            };
+            var targetMerge = new MobileLocationSegmentMergeEntity
+            {
+                UserId = UserId,
+                DeviceId = TargetDeviceId,
+                BeforePointId = targetPoint.Id,
+                AfterPointId = targetPoint.Id,
+                Kind = "stay",
+                ActorUserId = UserId,
+                CreatedAt = Now.AddDays(-3),
+            };
+            db.Set<MobileDeviceEntity>().AddRange(
+                Device(TargetDeviceId, Now),
+                Device(SourceDeviceA, Now.AddDays(-60)));
+            db.Set<MobileLocationPointEntity>().AddRange(targetPoint, sourcePoint);
+            db.Set<MobileLocationPointRevisionEntity>().Add(new MobileLocationPointRevisionEntity
+            {
+                UserId = UserId,
+                PointId = sourcePoint.Id,
+                DeviceId = SourceDeviceA,
+                Operation = "correct",
+                RevisionBefore = 0,
+                RevisionAfter = 1,
+                OriginalLatitude = sourcePoint.Latitude,
+                OriginalLongitude = sourcePoint.Longitude,
+                NewLatitude = 31.24m,
+                NewLongitude = 121.48m,
+                ActorUserId = UserId,
+                CreatedAt = Now.AddDays(-2),
+            });
+            db.Set<MobileLocationSegmentMergeEntity>().AddRange(
+                targetMerge,
+                new MobileLocationSegmentMergeEntity
+                {
+                    UserId = UserId,
+                    DeviceId = SourceDeviceA,
+                    BeforePointId = sourcePoint.Id,
+                    AfterPointId = sourcePoint.Id,
+                    Kind = "move",
+                    ActorUserId = UserId,
+                    CreatedAt = Now.AddDays(-1),
+                });
+            await db.SaveChangesAsync();
+
+            var service = new DeviceManagementService(
+                db, MobileTestHelpers.CurrentUser(UserId), MobileTestHelpers.Time(Now));
+
+            await service.MergeAsync([SourceDeviceA], TargetDeviceId, CancellationToken.None);
+
+            db.ChangeTracker.Clear();
+            var retainedPoint = Assert.Single(await db.Set<MobileLocationPointEntity>()
+                .IgnoreQueryFilters()
+                .ToListAsync());
+            Assert.Equal(targetPoint.Id, retainedPoint.Id);
+            Assert.Equal(TargetDeviceId, retainedPoint.DeviceId);
+
+            var revision = Assert.Single(await db.Set<MobileLocationPointRevisionEntity>().ToListAsync());
+            Assert.Equal(targetPoint.Id, revision.PointId);
+            Assert.Equal(TargetDeviceId, revision.DeviceId);
+
+            var merge = Assert.Single(await db.Set<MobileLocationSegmentMergeEntity>().ToListAsync());
+            Assert.Equal(targetMerge.Id, merge.Id);
+            Assert.Equal(TargetDeviceId, merge.DeviceId);
+            Assert.Equal(targetPoint.Id, merge.BeforePointId);
+            Assert.Equal(targetPoint.Id, merge.AfterPointId);
+            Assert.Equal("stay", merge.Kind);
+
+            // 直接按已删除源点 ID 做反查，确认两张历史表都没有可指向已不存在点的悬空引用。
+            Assert.False(await db.Set<MobileLocationPointRevisionEntity>()
+                .AnyAsync(row => row.PointId == sourcePoint.Id));
+            Assert.False(await db.Set<MobileLocationSegmentMergeEntity>()
+                .AnyAsync(row => row.BeforePointId == sourcePoint.Id || row.AfterPointId == sourcePoint.Id));
+        }
+        finally
+        {
+            await using var cleanup = new NpgsqlConnection(connStr);
+            await cleanup.OpenAsync();
+            await using var drop = new NpgsqlCommand($"DROP SCHEMA IF EXISTS \"{schema}\" CASCADE", cleanup);
+            await drop.ExecuteNonQueryAsync();
+        }
+    }
+
+    /// <summary>
+    /// 设备合并读取重复自然键快照后，人工纠正先提交（真实 200），随后合并才执行去重判断。
+    ///
+    /// <para>
+    /// 这里用 PostgreSQL 独立连接制造确定交错：合并的重复点 JOIN 查询已经执行完毕
+    /// （结果集按 READ COMMITTED 快照锁定），但尚未被 EF 消费；此时通过真实
+    /// <see cref="MobileLocationCorrectionService"/> 对源点或目标点提交坐标纠正。两者都会
+    /// 让“重复自然键”的快照判定过期：修复前合并会按旧 point ID 无条件删除源点，纠正返回
+    /// 200 却静默丢失；修复后源点 CAS 删除或目标点 CAS 复核发现 revision 已变化，整笔合并
+    /// 返回 6205 → HTTP 409，纠正与源设备都保留。随后重试合并必须成功，且纠正后的点作为
+    /// 非重复点迁到目标设备。
+    /// </para>
+    /// </summary>
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task MergeAsync_OnPostgres_DoesNotDeletePointCorrectedAfterDuplicateSnapshot(
+        bool correctTarget)
+    {
+        var connStr = RealDbTestConnection.Require();
+        MobileTestHelpers.RegisterMobileModule();
+
+        await using var admin = new NpgsqlConnection(connStr);
+        await admin.OpenAsync();
+
+        var schema = $"test_device_merge_correction_{Guid.NewGuid():N}";
+        try
+        {
+            await CreateSchemaAsync(admin, schema, "audit_logs", "mobile_saved_places");
+
+            var searchPathConn = new NpgsqlConnectionStringBuilder(connStr) { SearchPath = schema }.ConnectionString;
+            var readOptions = new DbContextOptionsBuilder<PimDbContext>()
+                .UseNpgsql(searchPathConn, npgsql => npgsql.EnableRetryOnFailure(3))
+                .Options;
+            var pause = new PauseAfterDuplicateLocationSnapshotInterceptor();
+            var mergeOptions = new DbContextOptionsBuilder<PimDbContext>()
+                .UseNpgsql(searchPathConn, npgsql => npgsql.EnableRetryOnFailure(3))
+                .AddInterceptors(pause)
+                .Options;
+
+            var recordedAt = Now.AddDays(-45);
+            var targetPoint = new MobileLocationPointEntity
+            {
+                UserId = UserId,
+                DeviceId = TargetDeviceId,
+                RecordedAtUtc = recordedAt,
+                Latitude = 31.2304m,
+                Longitude = 121.4737m,
+                HorizontalAccuracyMeters = 12.5m,
+                Provider = "fused",
+                Source = "android",
+            };
+            var sourcePoint = new MobileLocationPointEntity
+            {
+                UserId = UserId,
+                DeviceId = SourceDeviceA,
+                RecordedAtUtc = recordedAt,
+                Latitude = 31.2304m,
+                Longitude = 121.4737m,
+                HorizontalAccuracyMeters = 12.5m,
+                Provider = "fused",
+                Source = "android",
+            };
+            var sourceMerge = new MobileLocationSegmentMergeEntity
+            {
+                UserId = UserId,
+                DeviceId = SourceDeviceA,
+                BeforePointId = sourcePoint.Id,
+                AfterPointId = sourcePoint.Id,
+                Kind = "move",
+                ActorUserId = UserId,
+                CreatedAt = Now.AddDays(-1),
+            };
+
+            await using (var seedDb = new PimDbContext(readOptions))
+            {
+                seedDb.Set<MobileDeviceEntity>().AddRange(
+                    Device(TargetDeviceId, Now),
+                    Device(SourceDeviceA, Now.AddDays(-60)));
+                seedDb.Set<MobileLocationPointEntity>().AddRange(targetPoint, sourcePoint);
+                seedDb.Set<MobileLocationSegmentMergeEntity>().Add(sourceMerge);
+                await seedDb.SaveChangesAsync();
+            }
+
+            await using var mergeDb = new PimDbContext(mergeOptions);
+            var mergeTask = new DeviceManagementService(
+                    mergeDb,
+                    MobileTestHelpers.CurrentUser(UserId),
+                    MobileTestHelpers.Time(Now))
+                .MergeAsync([SourceDeviceA], TargetDeviceId, CancellationToken.None);
+            var paused = await Task.WhenAny(pause.Paused, mergeTask)
+                .WaitAsync(TimeSpan.FromSeconds(15));
+            if (paused != pause.Paused)
+            {
+                // 合并没走到重复点快照就失败时，把原始异常抛出来，而不是等暂停超时。
+                await mergeTask;
+                Assert.Fail("合并未在重复定位点快照处暂停。");
+            }
+
+            try
+            {
+                var correctedPointId = correctTarget ? targetPoint.Id : sourcePoint.Id;
+                await using var correctionDb = new PimDbContext(readOptions);
+                var corrected = await CreateCorrectionService(correctionDb).CorrectAsync(
+                    correctedPointId,
+                    new MobileLocationPointCorrectionRequest(
+                        Latitude: 31.2401234,
+                        Longitude: 121.4805678,
+                        Revision: 0,
+                        Excluded: false,
+                        Reason: "并发坐标纠正"),
+                    CancellationToken.None);
+                Assert.Equal(1, corrected.Point.Revision);
+                Assert.Equal(31.2401234, corrected.Point.Latitude, 7);
+                Assert.Equal(121.4805678, corrected.Point.Longitude, 7);
+            }
+            finally
+            {
+                pause.Release();
+            }
+
+            var conflict = await Assert.ThrowsAsync<DomainException>(
+                () => mergeTask.WaitAsync(TimeSpan.FromSeconds(15)));
+            Assert.Equal(6205, conflict.ErrorCode);
+
+            await using (var verifyDb = new PimDbContext(readOptions))
+            {
+                Assert.NotNull(await verifyDb.Set<MobileDeviceEntity>()
+                    .SingleOrDefaultAsync(device => device.UserId == UserId
+                        && device.DeviceId == SourceDeviceA));
+                var sourceAfterConflict = await verifyDb.Set<MobileLocationPointEntity>()
+                    .IgnoreQueryFilters()
+                    .SingleAsync(point => point.Id == sourcePoint.Id);
+                Assert.Equal(SourceDeviceA, sourceAfterConflict.DeviceId);
+
+                var targetAfterConflict = await verifyDb.Set<MobileLocationPointEntity>()
+                    .IgnoreQueryFilters()
+                    .SingleAsync(point => point.Id == targetPoint.Id);
+                Assert.Equal(TargetDeviceId, targetAfterConflict.DeviceId);
+
+                var correctedAfterConflict = correctTarget ? targetAfterConflict : sourceAfterConflict;
+                Assert.Equal(1, correctedAfterConflict.Revision);
+                Assert.Equal(31.2401234m, correctedAfterConflict.Latitude);
+                Assert.Equal(121.4805678m, correctedAfterConflict.Longitude);
+                var untouchedAfterConflict = correctTarget ? sourceAfterConflict : targetAfterConflict;
+                Assert.Equal(0, untouchedAfterConflict.Revision);
+                Assert.Equal(31.2304m, untouchedAfterConflict.Latitude);
+                Assert.Equal(121.4737m, untouchedAfterConflict.Longitude);
+
+                var correctedPointId = correctTarget ? targetPoint.Id : sourcePoint.Id;
+                var revision = Assert.Single(await verifyDb.Set<MobileLocationPointRevisionEntity>()
+                    .Where(row => row.PointId == correctedPointId)
+                    .ToListAsync());
+                Assert.Equal(correctTarget ? TargetDeviceId : SourceDeviceA, revision.DeviceId);
+                var mergeRow = Assert.Single(await verifyDb.Set<MobileLocationSegmentMergeEntity>()
+                    .Where(row => row.Id == sourceMerge.Id)
+                    .ToListAsync());
+                Assert.Equal(SourceDeviceA, mergeRow.DeviceId);
+            }
+
+            await using (var retryDb = new PimDbContext(readOptions))
+            {
+                await new DeviceManagementService(
+                        retryDb,
+                        MobileTestHelpers.CurrentUser(UserId),
+                        MobileTestHelpers.Time(Now))
+                    .MergeAsync([SourceDeviceA], TargetDeviceId, CancellationToken.None);
+            }
+
+            await using (var verifyDb = new PimDbContext(readOptions))
+            {
+                Assert.Empty(await verifyDb.Set<MobileDeviceEntity>()
+                    .Where(device => device.DeviceId == SourceDeviceA)
+                    .ToListAsync());
+                var points = await verifyDb.Set<MobileLocationPointEntity>()
+                    .IgnoreQueryFilters()
+                    .ToListAsync();
+                Assert.Equal(2, points.Count);
+                Assert.All(points, point => Assert.Equal(TargetDeviceId, point.DeviceId));
+
+                var correctedPointId = correctTarget ? targetPoint.Id : sourcePoint.Id;
+                var correctedAfterRetry = Assert.Single(points, point => point.Id == correctedPointId);
+                Assert.Equal(1, correctedAfterRetry.Revision);
+                Assert.Equal(31.2401234m, correctedAfterRetry.Latitude);
+                Assert.Equal(121.4805678m, correctedAfterRetry.Longitude);
+                var untouchedPointId = correctTarget ? sourcePoint.Id : targetPoint.Id;
+                var untouchedAfterRetry = Assert.Single(points, point => point.Id == untouchedPointId);
+                Assert.Equal(0, untouchedAfterRetry.Revision);
+                Assert.Equal(31.2304m, untouchedAfterRetry.Latitude);
+                Assert.Equal(121.4737m, untouchedAfterRetry.Longitude);
+
+                var revision = Assert.Single(await verifyDb.Set<MobileLocationPointRevisionEntity>()
+                    .Where(row => row.PointId == correctedPointId)
+                    .ToListAsync());
+                Assert.Equal(TargetDeviceId, revision.DeviceId);
+                var mergeRow = Assert.Single(await verifyDb.Set<MobileLocationSegmentMergeEntity>()
+                    .Where(row => row.Id == sourceMerge.Id)
+                    .ToListAsync());
+                Assert.Equal(TargetDeviceId, mergeRow.DeviceId);
+                Assert.Equal(sourcePoint.Id, mergeRow.BeforePointId);
+                Assert.Equal(sourcePoint.Id, mergeRow.AfterPointId);
+            }
+        }
+        finally
+        {
+            await using var cleanup = new NpgsqlConnection(connStr);
+            await cleanup.OpenAsync();
+            await using var drop = new NpgsqlCommand($"DROP SCHEMA IF EXISTS \"{schema}\" CASCADE", cleanup);
+            await drop.ExecuteNonQueryAsync();
+        }
+    }
+
+    private static MobileLocationCorrectionService CreateCorrectionService(PimDbContext db)
+    {
+        var user = MobileTestHelpers.CurrentUser(UserId);
+        var time = MobileTestHelpers.Time(Now);
+        var query = new MobileLocationQueryService(time);
+        var aggregation = new MobileLocationAggregationService(db, user, query, time);
+        var frequentPlaces = new MobileFrequentPlaceService(db, user, query);
+        var recalculation = new MobileLocationRecalculationService(aggregation, frequentPlaces, time);
+        var cache = new MemoryAggregateResultCache(new MemoryCache(new MemoryCacheOptions()), time);
+        return new MobileLocationCorrectionService(
+            db,
+            user,
+            query,
+            aggregation,
+            recalculation,
+            new AuditLogService(db),
+            cache,
+            time);
+    }
+
+    private sealed class PauseAfterDuplicateLocationSnapshotInterceptor : DbCommandInterceptor
+    {
+        private readonly TaskCompletionSource _paused = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _triggered;
+
+        public Task Paused => _paused.Task;
+
+        public void Release() => _release.TrySetResult();
+
+        public override async ValueTask<DbDataReader> ReaderExecutedAsync(
+            DbCommand command,
+            CommandExecutedEventData eventData,
+            DbDataReader result,
+            CancellationToken cancellationToken = default)
+        {
+            if (Volatile.Read(ref _triggered) == 0
+                && IsDuplicateLocationSnapshotQuery(command.CommandText)
+                && Interlocked.CompareExchange(ref _triggered, 1, 0) == 0)
+            {
+                _paused.TrySetResult();
+                await _release.Task.WaitAsync(cancellationToken);
+            }
+
+            return result;
+        }
+
+        /// <summary>合并中的重复自然键读取是唯一把 mobile_location_points 自连接的 SELECT。</summary>
+        private static bool IsDuplicateLocationSnapshotQuery(string sql)
+            => sql.TrimStart().StartsWith("SELECT", StringComparison.OrdinalIgnoreCase)
+                && sql.Contains("JOIN", StringComparison.OrdinalIgnoreCase)
+                && CountOccurrences(sql, "mobile_location_points") >= 2;
+
+        private static int CountOccurrences(string value, string needle)
+        {
+            var count = 0;
+            var offset = 0;
+            while ((offset = value.IndexOf(needle, offset, StringComparison.OrdinalIgnoreCase)) >= 0)
+            {
+                count++;
+                offset += needle.Length;
+            }
+
+            return count;
+        }
+    }
+
+    private static async Task CreateSchemaAsync(
+        NpgsqlConnection conn,
+        string schema,
+        params string[] extraTables)
+    {
+        var tables = DeviceScopedTables
+            .Concat(extraTables)
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
         // 先显式确认目标库里有可借用的表结构；「缺表」说明这台机器没有可用的真库数据
         // （例如 CI），按 Skip 处理；其余异常（权限、磁盘、SQL 形状错误）必须让用例失败。
         await using (var probe = new NpgsqlCommand(
             "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace " +
             "WHERE n.nspname = 'public' AND c.relname = ANY(@tables)", conn))
         {
-            probe.Parameters.AddWithValue("tables", DeviceScopedTables);
+            probe.Parameters.AddWithValue("tables", tables);
             var found = Convert.ToInt64(await probe.ExecuteScalarAsync() ?? 0L);
-            Skip.If(found < DeviceScopedTables.Length,
+            Skip.If(found < tables.Length,
                 "RealDb 缺少移动端表结构（未指向已迁移的库），跳过测试。");
         }
 
@@ -140,7 +558,7 @@ public sealed class DeviceMergeRealDbTests
             await create.ExecuteNonQueryAsync();
 
         // 借用 pim 库里已存在的表结构，测试库不写 public。
-        foreach (var table in DeviceScopedTables)
+        foreach (var table in tables)
         {
             await using var copy = new NpgsqlCommand(
                 $"CREATE TABLE \"{schema}\".\"{table}\" (LIKE public.\"{table}\" INCLUDING ALL)", conn);

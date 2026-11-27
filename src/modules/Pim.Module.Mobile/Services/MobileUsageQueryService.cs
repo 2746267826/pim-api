@@ -423,7 +423,7 @@ public sealed class MobileUsageQueryService
     {
         var points = _db.Set<MobileLocationPointEntity>()
             .AsNoTracking()
-            .Where(p => p.UserId == userId);
+            .Where(p => p.UserId == userId && !p.IsExcluded);
         if (!string.IsNullOrWhiteSpace(query.DeviceId))
             points = points.Where(p => p.DeviceId == query.DeviceId);
         if (query.RangeStartUtc is not null)

@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Pim.Core.Exceptions;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
 using Pim.Module.Mobile.DTOs;
@@ -41,6 +42,7 @@ public sealed class MobileLocationAggregationService
     {
         var context = _queryService.Normalize(request);
         var rawPoints = await LoadRawPointsAsync(context, ct);
+        var segmentMerges = await LoadSegmentMergesAsync(context, ct);
         var usablePoints = rawPoints.Where(point => IsUsable(point, context)).ToList();
         var gaps = CountLargeGaps(usablePoints);
         var qualityFlags = QualityFlags(rawPoints, usablePoints, context, gaps).ToList();
@@ -59,9 +61,9 @@ public sealed class MobileLocationAggregationService
             usablePoints.Count,
             rejectedCount,
             Math.Max(0, activeSpanSeconds),
-            Math.Round(TotalDistanceMetersByDevice(usablePoints), 1),
-            CountStaySegments(usablePoints),
-            LongestStaySeconds(usablePoints),
+            Math.Round(TotalDistanceMetersByDevice(usablePoints, segmentMerges), 1),
+            CountStaySegments(usablePoints, segmentMerges),
+            LongestStaySeconds(usablePoints, segmentMerges),
             Math.Round(AverageAccuracyMeters(usablePoints), 1),
             rejectedCount + gaps,
             qualityFlags);
@@ -73,7 +75,8 @@ public sealed class MobileLocationAggregationService
     {
         var context = _queryService.Normalize(request);
         var points = await LoadTrackPointsAsync(context, ct);
-        return BuildTracks(points, context);
+        var segmentMerges = await LoadSegmentMergesAsync(context, ct);
+        return BuildTracks(points, context, segmentMerges);
     }
 
     /// <summary>
@@ -115,36 +118,61 @@ public sealed class MobileLocationAggregationService
         MobileLocationQueryRequest request,
         CancellationToken ct = default)
     {
+        var userId = MobileUserContext.RequireUserId(_currentUser);
         var context = _queryService.Normalize(request);
-        var segment = await GetSegmentAsync(segmentId, request, ct);
-        if (segment is null)
+        if (string.IsNullOrWhiteSpace(segmentId))
             return new MobileLocationSegmentPointPageDto([], null, false);
 
-        var segmentPointIds = segment.Path
-            .Select(point => Guid.Parse(point.Id))
-            .ToHashSet();
-        var points = await LoadRawPointsAsync(context, ct);
-        var segmentPoints = points
-            .Where(point => segmentPointIds.Contains(point.Id))
-            .OrderBy(point => point.RecordedAtUtc)
-            .ThenBy(point => point.Id)
-            .ToList();
+        var boundary = await MobileLocationSegmentBoundaries.ResolveAsync(
+            _db,
+            userId,
+            segmentId.Trim(),
+            context,
+            ct);
+        if (boundary is null)
+            return new MobileLocationSegmentPointPageDto([], null, false);
 
-        var startIndex = 0;
-        if (Guid.TryParse(context.Cursor, out var cursorId))
+        var cursor = string.IsNullOrWhiteSpace(context.Cursor)
+            ? (MobileLocationCursorValue?)null
+            : MobileLocationCursor.Parse(context.Cursor);
+        if (cursor is { Kind: MobileLocationCursorKind.LegacyPointId } legacy)
         {
-            var cursorIndex = segmentPoints.FindIndex(point => point.Id == cursorId);
-            if (cursorIndex >= 0)
-                startIndex = cursorIndex + 1;
+            var recordedAtUtc = await _db.Set<MobileLocationPointEntity>()
+                .AsNoTracking()
+                .Where(point => point.UserId == userId && point.Id == legacy.Id)
+                .Select(point => (DateTimeOffset?)point.RecordedAtUtc)
+                .SingleOrDefaultAsync(ct);
+            if (recordedAtUtc is null)
+                throw new DomainException(6208, "分页游标已失效。");
+            cursor = legacy with { Kind = MobileLocationCursorKind.Encoded, RecordedAtUtc = recordedAtUtc.Value };
         }
 
-        var page = segmentPoints
-            .Skip(startIndex)
-            .Take(context.PageSize)
-            .ToList();
-        var hasMore = startIndex + page.Count < segmentPoints.Count;
+        var query = _db.Set<MobileLocationPointEntity>()
+            .AsNoTracking()
+            .Where(point => point.UserId == userId
+                && !point.IsExcluded
+                && point.RecordedAtUtc >= context.Range.RangeStartUtc
+                && point.RecordedAtUtc < context.Range.RangeEndUtc);
+        if (!string.IsNullOrWhiteSpace(context.DeviceId))
+            query = query.Where(point => point.DeviceId == context.DeviceId);
+        query = MobileLocationSegmentBoundaries.Apply(
+            query,
+            boundary,
+            context.MaxAccuracyMeters,
+            context.IncludeRejected);
+        if (cursor is { Kind: MobileLocationCursorKind.Encoded } encoded)
+            query = MobileLocationCursor.Apply(query, encoded);
+
+        var page = await query
+            .OrderBy(point => point.RecordedAtUtc)
+            .ThenBy(point => point.Id)
+            .Take(context.PageSize + 1)
+            .ToListAsync(ct);
+        var hasMore = page.Count > context.PageSize;
+        if (hasMore)
+            page.RemoveAt(page.Count - 1);
         var nextCursor = hasMore && page.Count > 0
-            ? page[^1].Id.ToString()
+            ? MobileLocationCursor.Encode(page[^1].RecordedAtUtc, page[^1].Id)
             : null;
 
         return new MobileLocationSegmentPointPageDto(page.Select(MapPoint).ToList(), nextCursor, hasMore);
@@ -158,6 +186,7 @@ public sealed class MobileLocationAggregationService
         var query = _db.Set<MobileLocationPointEntity>()
             .AsNoTracking()
             .Where(point => point.UserId == userId
+                && !point.IsExcluded
                 && point.RecordedAtUtc >= context.Range.RangeStartUtc
                 && point.RecordedAtUtc < context.Range.RangeEndUtc);
 
@@ -176,13 +205,35 @@ public sealed class MobileLocationAggregationService
     {
         var points = await LoadRawPointsAsync(context, ct);
         return points
-            .Where(point => context.IncludeRejected || IsUsable(point, context))
+            .Where(point => !point.IsExcluded && (context.IncludeRejected || IsUsable(point, context)))
             .ToList();
+    }
+
+    /// <summary>
+    /// 分段合并覆盖很小，按用户/设备一次取回后在内存里按边界匹配；
+    /// 轨迹、停留统计和里程都复用同一份覆盖，避免地图与指标口径分叉。
+    /// </summary>
+    private async Task<IReadOnlyDictionary<(Guid Before, Guid After), string>> LoadSegmentMergesAsync(
+        MobileLocationQueryContext context,
+        CancellationToken ct)
+    {
+        var userId = MobileUserContext.RequireUserId(_currentUser);
+        var query = _db.Set<MobileLocationSegmentMergeEntity>()
+            .AsNoTracking()
+            .Where(merge => merge.UserId == userId);
+        if (!string.IsNullOrWhiteSpace(context.DeviceId))
+            query = query.Where(merge => merge.DeviceId == context.DeviceId);
+
+        var merges = await query.ToListAsync(ct);
+        return merges.ToDictionary(
+            merge => (merge.BeforePointId, merge.AfterPointId),
+            merge => merge.Kind);
     }
 
     private static IReadOnlyList<MobileLocationTrackDto> BuildTracks(
         List<MobileLocationPointEntity> points,
-        MobileLocationQueryContext context)
+        MobileLocationQueryContext context,
+        IReadOnlyDictionary<(Guid Before, Guid After), string>? segmentMerges = null)
     {
         if (points.Count == 0)
             return [];
@@ -195,7 +246,7 @@ public sealed class MobileLocationAggregationService
             {
                 if (current.Count > 0 && point.RecordedAtUtc - current[^1].RecordedAtUtc > TrackGapThreshold)
                 {
-                    tracks.Add(BuildTrack(current, context));
+                    tracks.Add(BuildTrack(current, context, segmentMerges));
                     current = [];
                 }
 
@@ -203,7 +254,7 @@ public sealed class MobileLocationAggregationService
             }
 
             if (current.Count > 0)
-                tracks.Add(BuildTrack(current, context));
+                tracks.Add(BuildTrack(current, context, segmentMerges));
         }
 
         return tracks;
@@ -211,12 +262,13 @@ public sealed class MobileLocationAggregationService
 
     private static MobileLocationTrackDto BuildTrack(
         List<MobileLocationPointEntity> points,
-        MobileLocationQueryContext context)
+        MobileLocationQueryContext context,
+        IReadOnlyDictionary<(Guid Before, Guid After), string>? segmentMerges)
     {
         var first = points[0];
         var last = points[^1];
         var trackId = StableId("track", first.Id, last.Id);
-        var segments = BuildSegments(points, context, trackId);
+        var segments = BuildSegments(points, context, trackId, segmentMerges);
         var bounds = Bounds(points);
         var flags = segments.SelectMany(segment => segment.QualityFlags).Distinct(StringComparer.Ordinal).ToList();
 
@@ -237,7 +289,8 @@ public sealed class MobileLocationAggregationService
     private static IReadOnlyList<MobileLocationSegmentDto> BuildSegments(
         List<MobileLocationPointEntity> points,
         MobileLocationQueryContext context,
-        string trackId)
+        string trackId,
+        IReadOnlyDictionary<(Guid Before, Guid After), string>? segmentMerges)
     {
         if (points.Count <= 1)
             return [BuildSegment(points, "stay", new HashSet<Guid>(), context, trackId)];
@@ -267,7 +320,59 @@ public sealed class MobileLocationAggregationService
         }
 
         segments.Add(BuildSegment(current, KindOf(currentEvidence), jumpPointIds, context, trackId));
-        return segments;
+        return ApplySegmentMerges(segments, points, context, trackId, jumpPointIds, segmentMerges);
+    }
+
+    /// <summary>
+    /// P05 分段合并：相邻分段共享边界点。只合并人工明确指定的边界，
+    /// 合并后的段用指定类型重新计算里程/速度/质量标记，而不是仅改显示。
+    /// </summary>
+    private static IReadOnlyList<MobileLocationSegmentDto> ApplySegmentMerges(
+        List<MobileLocationSegmentDto> segments,
+        List<MobileLocationPointEntity> points,
+        MobileLocationQueryContext context,
+        string trackId,
+        IReadOnlySet<Guid> jumpPointIds,
+        IReadOnlyDictionary<(Guid Before, Guid After), string>? segmentMerges)
+    {
+        if (segmentMerges is null || segmentMerges.Count == 0 || segments.Count < 2)
+            return segments;
+
+        var pointsById = points.ToDictionary(point => point.Id);
+        var merged = new List<MobileLocationSegmentDto>();
+        foreach (var segment in segments)
+        {
+            if (merged.Count == 0)
+            {
+                merged.Add(segment);
+                continue;
+            }
+
+            var previous = merged[^1];
+            var boundary = previous.Path[^1].Id;
+            var nextStart = segment.Path[0].Id;
+            if (!string.Equals(boundary, nextStart, StringComparison.Ordinal)
+                || !Guid.TryParse(boundary, out var boundaryId)
+                || !segmentMerges.TryGetValue((boundaryId, boundaryId), out var mergedKind))
+            {
+                merged.Add(segment);
+                continue;
+            }
+
+            var combined = previous.Path
+                .Select(point => Guid.Parse(point.Id))
+                .Concat(segment.Path.Skip(1).Select(point => Guid.Parse(point.Id)))
+                .Select(id => pointsById[id])
+                .ToList();
+            merged[^1] = BuildSegment(
+                combined,
+                string.Equals(mergedKind, "stay", StringComparison.OrdinalIgnoreCase) ? "stay" : "move",
+                jumpPointIds,
+                context,
+                trackId);
+        }
+
+        return merged;
     }
 
     private static MobileLocationSegmentDto BuildSegment(
@@ -502,21 +607,27 @@ public sealed class MobileLocationAggregationService
         return gaps;
     }
 
-    private static int CountStaySegments(List<MobileLocationPointEntity> points)
-        => BuildTracks(points, DefaultSegmentContext())
+    private static int CountStaySegments(
+        List<MobileLocationPointEntity> points,
+        IReadOnlyDictionary<(Guid Before, Guid After), string>? segmentMerges)
+        => BuildTracks(points, DefaultSegmentContext(), segmentMerges)
             .SelectMany(track => track.Segments)
             .Count(segment => segment.Kind == "stay");
 
-    private static long LongestStaySeconds(List<MobileLocationPointEntity> points)
-        => BuildTracks(points, DefaultSegmentContext())
+    private static long LongestStaySeconds(
+        List<MobileLocationPointEntity> points,
+        IReadOnlyDictionary<(Guid Before, Guid After), string>? segmentMerges)
+        => BuildTracks(points, DefaultSegmentContext(), segmentMerges)
             .SelectMany(track => track.Segments)
             .Where(segment => segment.Kind == "stay")
             .Select(segment => segment.DurationSeconds)
             .DefaultIfEmpty(0)
             .Max();
 
-    private static double TotalDistanceMetersByDevice(List<MobileLocationPointEntity> points)
-        => BuildTracks(points, DefaultSegmentContext())
+    private static double TotalDistanceMetersByDevice(
+        List<MobileLocationPointEntity> points,
+        IReadOnlyDictionary<(Guid Before, Guid After), string>? segmentMerges)
+        => BuildTracks(points, DefaultSegmentContext(), segmentMerges)
             .Sum(track => track.DistanceMeters);
 
     private static MobileLocationQueryContext DefaultSegmentContext()
@@ -572,7 +683,8 @@ public sealed class MobileLocationAggregationService
             point.RawJson);
 
     private static bool IsUsable(MobileLocationPointEntity point, MobileLocationQueryContext context)
-        => !string.Equals(point.Quality, "rejected", StringComparison.OrdinalIgnoreCase)
+        => !point.IsExcluded
+            && !string.Equals(point.Quality, "rejected", StringComparison.OrdinalIgnoreCase)
             && AccuracyMeters(point) < context.MaxAccuracyMeters;
 
     private static long DurationSeconds(DateTimeOffset start, DateTimeOffset end)

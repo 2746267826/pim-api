@@ -1,5 +1,7 @@
+using System.Data.Common;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.EntityFrameworkCore.Storage;
 using Pim.Core.Exceptions;
 using Pim.Infrastructure.Data;
@@ -22,14 +24,16 @@ namespace Pim.UnitTests.Mobile;
 /// </summary>
 internal static class DeviceManagementTestDb
 {
-    public static async Task<SqliteContext> CreateAsync()
+    public static async Task<SqliteContext> CreateAsync(IInterceptor? interceptor = null)
     {
         MobileTestHelpers.RegisterMobileModule();
         var connection = new SqliteConnection("DataSource=:memory:");
         await connection.OpenAsync();
-        var options = new DbContextOptionsBuilder<PimDbContext>()
-            .UseSqlite(connection, o => o.ExecutionStrategy(d => new DeclaredRetryingExecutionStrategy(d)))
-            .Options;
+        var builder = new DbContextOptionsBuilder<PimDbContext>()
+            .UseSqlite(connection, o => o.ExecutionStrategy(d => new DeclaredRetryingExecutionStrategy(d)));
+        if (interceptor is not null)
+            builder.AddInterceptors(interceptor);
+        var options = builder.Options;
         var db = new MobileSqliteDbContext(options);
         await db.Database.EnsureCreatedAsync();
         return new SqliteContext(db, connection);
@@ -382,6 +386,307 @@ public sealed class DeviceManagementServiceTests
     }
 
     [Fact]
+    public async Task MergeAsync_KeepsTargetSegmentMergeWhenSourceRepeatsTheBoundary()
+    {
+        await using var ctx = await DeviceManagementTestDb.CreateAsync();
+        var db = ctx.Db;
+        SeedDevice(db, TargetDeviceId, Now);
+        SeedDevice(db, SourceDeviceA, Now.AddDays(-60));
+        var sharedBoundary = Guid.NewGuid();
+        var targetMerge = new MobileLocationSegmentMergeEntity
+        {
+            UserId = MobileTestHelpers.UserId,
+            DeviceId = TargetDeviceId,
+            BeforePointId = sharedBoundary,
+            AfterPointId = sharedBoundary,
+            Kind = "stay",
+            ActorUserId = MobileTestHelpers.UserId,
+            CreatedAt = Now.AddDays(-2)
+        };
+        db.Set<MobileLocationSegmentMergeEntity>().AddRange(
+            targetMerge,
+            new MobileLocationSegmentMergeEntity
+            {
+                UserId = MobileTestHelpers.UserId,
+                DeviceId = SourceDeviceA,
+                BeforePointId = sharedBoundary,
+                AfterPointId = sharedBoundary,
+                Kind = "move",
+                ActorUserId = MobileTestHelpers.UserId,
+                CreatedAt = Now.AddDays(-1)
+            },
+            new MobileLocationSegmentMergeEntity
+            {
+                UserId = MobileTestHelpers.UserId,
+                DeviceId = SourceDeviceA,
+                BeforePointId = Guid.NewGuid(),
+                AfterPointId = Guid.NewGuid(),
+                Kind = "move",
+                ActorUserId = MobileTestHelpers.UserId,
+                CreatedAt = Now.AddDays(-1)
+            });
+        await db.SaveChangesAsync();
+        var service = CreateService(db);
+
+        await service.MergeAsync([SourceDeviceA], TargetDeviceId, CancellationToken.None);
+
+        db.ChangeTracker.Clear();
+        var merges = await db.Set<MobileLocationSegmentMergeEntity>()
+            .Where(row => row.UserId == MobileTestHelpers.UserId)
+            .ToListAsync();
+        Assert.Equal(2, merges.Count);
+        Assert.DoesNotContain(merges, row => row.DeviceId == SourceDeviceA);
+        var retained = Assert.Single(merges, row =>
+            row.BeforePointId == sharedBoundary && row.AfterPointId == sharedBoundary);
+        Assert.Equal(targetMerge.Id, retained.Id);
+        Assert.Equal("stay", retained.Kind);
+        Assert.Single(merges, row => row.Id != targetMerge.Id && row.DeviceId == TargetDeviceId);
+    }
+
+    [Fact]
+    public async Task MergeAsync_RemapsCorrectionHistoryBeforeDeletingDuplicateNaturalKeySourcePoint()
+    {
+        await using var ctx = await DeviceManagementTestDb.CreateAsync();
+        var db = ctx.Db;
+        SeedDevice(db, TargetDeviceId, Now);
+        SeedDevice(db, SourceDeviceA, Now.AddDays(-60));
+        var recordedAt = Now.AddDays(-45);
+        var targetPoint = SeedLocationPoint(db, TargetDeviceId, recordedAt);
+        var sourcePoint = SeedLocationPoint(db, SourceDeviceA, recordedAt);
+        var targetMerge = new MobileLocationSegmentMergeEntity
+        {
+            UserId = MobileTestHelpers.UserId,
+            DeviceId = TargetDeviceId,
+            BeforePointId = targetPoint.Id,
+            AfterPointId = targetPoint.Id,
+            Kind = "stay",
+            ActorUserId = MobileTestHelpers.UserId,
+            CreatedAt = Now.AddDays(-3)
+        };
+        db.Set<MobileLocationPointRevisionEntity>().Add(new MobileLocationPointRevisionEntity
+        {
+            UserId = MobileTestHelpers.UserId,
+            PointId = sourcePoint.Id,
+            DeviceId = SourceDeviceA,
+            Operation = "correct",
+            RevisionBefore = 0,
+            RevisionAfter = 1,
+            OriginalLatitude = sourcePoint.Latitude,
+            OriginalLongitude = sourcePoint.Longitude,
+            NewLatitude = 31.24m,
+            NewLongitude = 121.48m,
+            ActorUserId = MobileTestHelpers.UserId,
+            CreatedAt = Now.AddDays(-2)
+        });
+        db.Set<MobileLocationSegmentMergeEntity>().AddRange(
+            targetMerge,
+            new MobileLocationSegmentMergeEntity
+            {
+                UserId = MobileTestHelpers.UserId,
+                DeviceId = SourceDeviceA,
+                BeforePointId = sourcePoint.Id,
+                AfterPointId = sourcePoint.Id,
+                Kind = "move",
+                ActorUserId = MobileTestHelpers.UserId,
+                CreatedAt = Now.AddDays(-1)
+            });
+        await db.SaveChangesAsync();
+        var service = CreateService(db);
+
+        await service.MergeAsync([SourceDeviceA], TargetDeviceId, CancellationToken.None);
+
+        db.ChangeTracker.Clear();
+        var points = await db.Set<MobileLocationPointEntity>()
+            .IgnoreQueryFilters()
+            .ToListAsync();
+        var retainedPoint = Assert.Single(points);
+        Assert.Equal(targetPoint.Id, retainedPoint.Id);
+        Assert.Equal(TargetDeviceId, retainedPoint.DeviceId);
+        Assert.Null(retainedPoint.DeletedAtUtc);
+
+        // 源点被删除后，任何历史都不能再引用它；修订重映射到同自然键的目标点。
+        var revision = Assert.Single(await db.Set<MobileLocationPointRevisionEntity>().ToListAsync());
+        Assert.Equal(targetPoint.Id, revision.PointId);
+        Assert.Equal(TargetDeviceId, revision.DeviceId);
+
+        var merge = Assert.Single(await db.Set<MobileLocationSegmentMergeEntity>().ToListAsync());
+        Assert.Equal(targetMerge.Id, merge.Id);
+        Assert.Equal(TargetDeviceId, merge.DeviceId);
+        Assert.Equal(targetPoint.Id, merge.BeforePointId);
+        Assert.Equal(targetPoint.Id, merge.AfterPointId);
+        Assert.Equal("stay", merge.Kind);
+        Assert.DoesNotContain(
+            await db.Set<MobileLocationPointRevisionEntity>().Select(row => row.PointId).ToListAsync(),
+            pointId => pointId == sourcePoint.Id);
+        Assert.DoesNotContain(
+            await db.Set<MobileLocationSegmentMergeEntity>()
+                .Select(row => new { row.BeforePointId, row.AfterPointId })
+                .ToListAsync(),
+            row => row.BeforePointId == sourcePoint.Id || row.AfterPointId == sourcePoint.Id);
+    }
+
+    [Fact]
+    public async Task MergeAsync_PurgesDuplicateSourceHistoryWhenTargetPointIsAlreadyDeleted()
+    {
+        await using var ctx = await DeviceManagementTestDb.CreateAsync();
+        var db = ctx.Db;
+        SeedDevice(db, TargetDeviceId, Now);
+        SeedDevice(db, SourceDeviceA, Now.AddDays(-60));
+        var recordedAt = Now.AddDays(-45);
+        var targetPoint = SeedLocationPoint(
+            db,
+            TargetDeviceId,
+            recordedAt,
+            deletedAtUtc: Now.AddDays(-10));
+        var sourcePoint = SeedLocationPoint(db, SourceDeviceA, recordedAt);
+        db.Set<MobileLocationPointRevisionEntity>().Add(new MobileLocationPointRevisionEntity
+        {
+            UserId = MobileTestHelpers.UserId,
+            PointId = sourcePoint.Id,
+            DeviceId = SourceDeviceA,
+            Operation = "exclude",
+            RevisionBefore = 0,
+            RevisionAfter = 1,
+            ActorUserId = MobileTestHelpers.UserId,
+            CreatedAt = Now.AddDays(-2)
+        });
+        db.Set<MobileLocationSegmentMergeEntity>().Add(new MobileLocationSegmentMergeEntity
+        {
+            UserId = MobileTestHelpers.UserId,
+            DeviceId = SourceDeviceA,
+            BeforePointId = sourcePoint.Id,
+            AfterPointId = sourcePoint.Id,
+            Kind = "move",
+            ActorUserId = MobileTestHelpers.UserId,
+            CreatedAt = Now.AddDays(-1)
+        });
+        await db.SaveChangesAsync();
+        var service = CreateService(db);
+
+        await service.MergeAsync([SourceDeviceA], TargetDeviceId, CancellationToken.None);
+
+        db.ChangeTracker.Clear();
+        var retained = Assert.Single(await db.Set<MobileLocationPointEntity>()
+            .IgnoreQueryFilters()
+            .ToListAsync());
+        Assert.Equal(targetPoint.Id, retained.Id);
+        Assert.NotNull(retained.DeletedAtUtc);
+        // 永久删除是用户可见终态；保留目标墓碑，源设备的迟到历史不能把它“复活”。
+        Assert.Empty(await db.Set<MobileLocationPointRevisionEntity>().ToListAsync());
+        Assert.Empty(await db.Set<MobileLocationSegmentMergeEntity>().ToListAsync());
+    }
+
+    [Fact]
+    public async Task MergeAsync_AbortsWhenADuplicatePointRevisionChangesBeforeTheCasDelete()
+    {
+        var interceptor = new BumpRevisionBeforeDuplicateLocationDeleteInterceptor();
+        await using var ctx = await DeviceManagementTestDb.CreateAsync(interceptor);
+        var db = ctx.Db;
+        SeedDevice(db, TargetDeviceId, Now);
+        SeedDevice(db, SourceDeviceA, Now.AddDays(-60));
+        var recordedAt = Now.AddDays(-45);
+        var targetPoint = SeedLocationPoint(db, TargetDeviceId, recordedAt);
+        var sourcePoint = SeedLocationPoint(db, SourceDeviceA, recordedAt);
+        var sourceMerge = new MobileLocationSegmentMergeEntity
+        {
+            UserId = MobileTestHelpers.UserId,
+            DeviceId = SourceDeviceA,
+            BeforePointId = sourcePoint.Id,
+            AfterPointId = sourcePoint.Id,
+            Kind = "move",
+            ActorUserId = MobileTestHelpers.UserId,
+            CreatedAt = Now.AddDays(-1)
+        };
+        db.Set<MobileLocationSegmentMergeEntity>().Add(sourceMerge);
+        await db.SaveChangesAsync();
+        interceptor.PointId = sourcePoint.Id;
+        var service = CreateService(db);
+
+        var error = await Assert.ThrowsAsync<DomainException>(
+            () => service.MergeAsync([SourceDeviceA], TargetDeviceId, CancellationToken.None));
+
+        Assert.Equal(6205, error.ErrorCode);
+        db.ChangeTracker.Clear();
+        Assert.NotNull(await db.Set<MobileDeviceEntity>()
+            .SingleOrDefaultAsync(device => device.UserId == MobileTestHelpers.UserId
+                && device.DeviceId == SourceDeviceA));
+        var points = await db.Set<MobileLocationPointEntity>()
+            .IgnoreQueryFilters()
+            .OrderBy(point => point.DeviceId)
+            .ToListAsync();
+        Assert.Equal(2, points.Count);
+        Assert.Contains(points, point => point.Id == targetPoint.Id && point.DeviceId == TargetDeviceId);
+        Assert.Contains(points, point => point.Id == sourcePoint.Id && point.DeviceId == SourceDeviceA);
+        var retainedSource = Assert.Single(points, point => point.Id == sourcePoint.Id);
+        Assert.Equal(0, retainedSource.Revision);
+        Assert.Equal(31.2304m, retainedSource.Latitude);
+        Assert.Equal(121.4737m, retainedSource.Longitude);
+
+        // CAS 冲突必须回滚整笔合并：源设备的历史不能先被迁到目标点上。
+        var retainedMerge = Assert.Single(await db.Set<MobileLocationSegmentMergeEntity>().ToListAsync());
+        Assert.Equal(sourceMerge.Id, retainedMerge.Id);
+        Assert.Equal(SourceDeviceA, retainedMerge.DeviceId);
+        Assert.Equal(sourcePoint.Id, retainedMerge.BeforePointId);
+        Assert.Equal(sourcePoint.Id, retainedMerge.AfterPointId);
+    }
+
+    [Fact]
+    public async Task MergeAsync_AbortsWhenADuplicateTargetRevisionChangesBeforeTheCasCheck()
+    {
+        var interceptor = new BumpRevisionBeforeDuplicateTargetCasInterceptor();
+        await using var ctx = await DeviceManagementTestDb.CreateAsync(interceptor);
+        var db = ctx.Db;
+        SeedDevice(db, TargetDeviceId, Now);
+        SeedDevice(db, SourceDeviceA, Now.AddDays(-60));
+        var recordedAt = Now.AddDays(-45);
+        var targetPoint = SeedLocationPoint(db, TargetDeviceId, recordedAt);
+        var sourcePoint = SeedLocationPoint(db, SourceDeviceA, recordedAt);
+        var sourceMerge = new MobileLocationSegmentMergeEntity
+        {
+            UserId = MobileTestHelpers.UserId,
+            DeviceId = SourceDeviceA,
+            BeforePointId = sourcePoint.Id,
+            AfterPointId = sourcePoint.Id,
+            Kind = "move",
+            ActorUserId = MobileTestHelpers.UserId,
+            CreatedAt = Now.AddDays(-1)
+        };
+        db.Set<MobileLocationSegmentMergeEntity>().Add(sourceMerge);
+        await db.SaveChangesAsync();
+        interceptor.PointId = targetPoint.Id;
+        var service = CreateService(db);
+
+        var error = await Assert.ThrowsAsync<DomainException>(
+            () => service.MergeAsync([SourceDeviceA], TargetDeviceId, CancellationToken.None));
+
+        Assert.Equal(6205, error.ErrorCode);
+        db.ChangeTracker.Clear();
+        Assert.NotNull(await db.Set<MobileDeviceEntity>()
+            .SingleOrDefaultAsync(device => device.UserId == MobileTestHelpers.UserId
+                && device.DeviceId == SourceDeviceA));
+        var points = await db.Set<MobileLocationPointEntity>()
+            .IgnoreQueryFilters()
+            .OrderBy(point => point.DeviceId)
+            .ToListAsync();
+        Assert.Equal(2, points.Count);
+        var retainedSource = Assert.Single(points, point => point.Id == sourcePoint.Id);
+        Assert.Equal(SourceDeviceA, retainedSource.DeviceId);
+        Assert.Equal(0, retainedSource.Revision);
+        var retainedTarget = Assert.Single(points, point => point.Id == targetPoint.Id);
+        Assert.Equal(TargetDeviceId, retainedTarget.DeviceId);
+        // 目标点的并发纠正同样必须整笔回滚，不能在删除源点时按过期自然键判定重复。
+        Assert.Equal(0, retainedTarget.Revision);
+        Assert.Equal(31.2304m, retainedTarget.Latitude);
+        Assert.Equal(121.4737m, retainedTarget.Longitude);
+
+        var retainedMerge = Assert.Single(await db.Set<MobileLocationSegmentMergeEntity>().ToListAsync());
+        Assert.Equal(sourceMerge.Id, retainedMerge.Id);
+        Assert.Equal(SourceDeviceA, retainedMerge.DeviceId);
+        Assert.Equal(sourcePoint.Id, retainedMerge.BeforePointId);
+        Assert.Equal(sourcePoint.Id, retainedMerge.AfterPointId);
+    }
+
+    [Fact]
     public async Task PreviewMergeAsync_RejectsAnEmptyOrNullSourceList()
     {
         await using var ctx = await DeviceManagementTestDb.CreateAsync();
@@ -538,6 +843,103 @@ public sealed class DeviceManagementServiceTests
     private static DeviceManagementService CreateService(PimDbContext db)
         => new(db, MobileTestHelpers.CurrentUser(), MobileTestHelpers.Time(Now));
 
+    /// <summary>
+    /// 在本事务内、源点 CAS 删除即将执行前，模拟并发纠正已经递增了 <c>revision</c> 并改写坐标。
+    /// SQLite 内存库无法让第二个连接同时提交写事务，因此这里用同一事务证明删除谓词确实带了
+    /// revision；整笔合并回滚后该模拟修改也一起消失。
+    /// 真实“纠正先提交 200、合并随后 409”的交错由 <see cref="DeviceMergeRealDbTests"/> 在
+    /// 独立 PostgreSQL 连接上覆盖。
+    /// </summary>
+    private sealed class BumpRevisionBeforeDuplicateLocationDeleteInterceptor : DbCommandInterceptor
+    {
+        private int _triggered;
+
+        public Guid PointId { get; set; }
+
+        public override async ValueTask<InterceptionResult<int>> NonQueryExecutingAsync(
+            DbCommand command,
+            CommandEventData eventData,
+            InterceptionResult<int> result,
+            CancellationToken cancellationToken = default)
+        {
+            if (Volatile.Read(ref _triggered) != 0
+                || !command.CommandText.TrimStart().StartsWith("DELETE", StringComparison.OrdinalIgnoreCase)
+                || !command.CommandText.Contains("mobile_location_points", StringComparison.OrdinalIgnoreCase)
+                || Interlocked.Exchange(ref _triggered, 1) != 0)
+            {
+                return result;
+            }
+
+            await using var update = command.Connection!.CreateCommand();
+            update.Transaction = command.Transaction;
+            update.CommandText =
+                "UPDATE mobile_location_points " +
+                "SET revision = revision + 1, latitude = @latitude, longitude = @longitude " +
+                "WHERE id = @id";
+            var id = update.CreateParameter();
+            id.ParameterName = "@id";
+            id.Value = PointId;
+            update.Parameters.Add(id);
+            var latitude = update.CreateParameter();
+            latitude.ParameterName = "@latitude";
+            latitude.Value = 31.2401234m;
+            update.Parameters.Add(latitude);
+            var longitude = update.CreateParameter();
+            longitude.ParameterName = "@longitude";
+            longitude.Value = 121.4805678m;
+            update.Parameters.Add(longitude);
+            await update.ExecuteNonQueryAsync(cancellationToken);
+            return result;
+        }
+    }
+
+    /// <summary>
+    /// 合并对目标点做 CAS 复核前，在同一事务内改掉目标点 revision/坐标，
+    /// 模拟快照之后提交的并发纠正；合并必须整笔回滚。
+    /// </summary>
+    private sealed class BumpRevisionBeforeDuplicateTargetCasInterceptor : DbCommandInterceptor
+    {
+        private int _triggered;
+
+        public Guid PointId { get; set; }
+
+        public override async ValueTask<InterceptionResult<int>> NonQueryExecutingAsync(
+            DbCommand command,
+            CommandEventData eventData,
+            InterceptionResult<int> result,
+            CancellationToken cancellationToken = default)
+        {
+            if (Volatile.Read(ref _triggered) != 0
+                || !command.CommandText.TrimStart().StartsWith("UPDATE", StringComparison.OrdinalIgnoreCase)
+                || !command.CommandText.Contains("mobile_location_points", StringComparison.OrdinalIgnoreCase)
+                || Interlocked.Exchange(ref _triggered, 1) != 0)
+            {
+                return result;
+            }
+
+            await using var update = command.Connection!.CreateCommand();
+            update.Transaction = command.Transaction;
+            update.CommandText =
+                "UPDATE mobile_location_points " +
+                "SET revision = revision + 1, latitude = @latitude, longitude = @longitude " +
+                "WHERE id = @id";
+            var id = update.CreateParameter();
+            id.ParameterName = "@id";
+            id.Value = PointId;
+            update.Parameters.Add(id);
+            var latitude = update.CreateParameter();
+            latitude.ParameterName = "@latitude";
+            latitude.Value = 31.2456789m;
+            update.Parameters.Add(latitude);
+            var longitude = update.CreateParameter();
+            longitude.ParameterName = "@longitude";
+            longitude.Value = 121.4856789m;
+            update.Parameters.Add(longitude);
+            await update.ExecuteNonQueryAsync(cancellationToken);
+            return result;
+        }
+    }
+
     private static async Task<List<string>> RowsStillOwnedByAsync(PimDbContext db, string deviceId)
     {
         var hits = new List<string>();
@@ -545,6 +947,8 @@ public sealed class DeviceManagementServiceTests
         if (await db.Set<MobileUsageSessionEntity>().AnyAsync(e => e.DeviceId == deviceId)) hits.Add("sessions");
         if (await db.Set<MobileUsageSummaryEntity>().AnyAsync(e => e.DeviceId == deviceId)) hits.Add("summaries");
         if (await db.Set<MobileLocationPointEntity>().AnyAsync(e => e.DeviceId == deviceId)) hits.Add("locations");
+        if (await db.Set<MobileLocationPointRevisionEntity>().AnyAsync(e => e.DeviceId == deviceId)) hits.Add("location-revisions");
+        if (await db.Set<MobileLocationSegmentMergeEntity>().AnyAsync(e => e.DeviceId == deviceId)) hits.Add("segment-merges");
         if (await db.Set<MobileSyncBatchEntity>().AnyAsync(e => e.DeviceId == deviceId)) hits.Add("batches");
         if (await db.Set<MobileTimelineBlockEntity>().AnyAsync(e => e.DeviceId == deviceId)) hits.Add("timeline");
         if (await db.Set<MobileUsageAggregateEntity>().AnyAsync(e => e.DeviceId == deviceId)) hits.Add("aggregates");
@@ -662,6 +1066,29 @@ public sealed class DeviceManagementServiceTests
             Provider = "fused",
             Source = "android",
         });
+
+    private static MobileLocationPointEntity SeedLocationPoint(
+        PimDbContext db,
+        string deviceId,
+        DateTimeOffset recordedAt,
+        DateTimeOffset? deletedAtUtc = null)
+    {
+        var point = new MobileLocationPointEntity
+        {
+            UserId = MobileTestHelpers.UserId,
+            DeviceId = deviceId,
+            RecordedAtUtc = recordedAt,
+            Latitude = 31.2304m,
+            Longitude = 121.4737m,
+            HorizontalAccuracyMeters = 12.5m,
+            Provider = "fused",
+            Source = "android",
+            DeletedAtUtc = deletedAtUtc,
+            DeletedByUserId = deletedAtUtc is null ? null : MobileTestHelpers.UserId,
+        };
+        db.Set<MobileLocationPointEntity>().Add(point);
+        return point;
+    }
 
     private static void SeedBatch(PimDbContext db, string deviceId, string batchId, DateTimeOffset windowStart)
         => db.Set<MobileSyncBatchEntity>().Add(new MobileSyncBatchEntity

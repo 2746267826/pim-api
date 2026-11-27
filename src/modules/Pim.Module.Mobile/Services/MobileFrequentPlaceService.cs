@@ -40,9 +40,15 @@ public sealed class MobileFrequentPlaceService
         MobileLocationQueryRequest request,
         CancellationToken ct = default)
     {
+        var userId = MobileUserContext.RequireUserId(_currentUser);
         var context = _queryService.Normalize(request);
         var points = await LoadUsablePointsAsync(context, ct);
-        var places = BuildPlaces(points, context);
+        // 稳定地点名称跨日期/设备复用，因此只按用户读取，不跟当前查询范围走。
+        var savedPlaces = await _db.Set<MobileSavedPlaceEntity>()
+            .AsNoTracking()
+            .Where(place => place.UserId == userId && place.IsEnabled)
+            .ToListAsync(ct);
+        var places = BuildPlaces(points, context, savedPlaces);
         return new MobileFrequentPlacesResponse(
             places.FirstOrDefault(place => place.IsHome),
             places);
@@ -58,6 +64,7 @@ public sealed class MobileFrequentPlaceService
             .Where(point => point.UserId == userId
                 && point.RecordedAtUtc >= context.Range.RangeStartUtc
                 && point.RecordedAtUtc < context.Range.RangeEndUtc
+                && !point.IsExcluded
                 && (point.Quality == null || point.Quality.ToLower() != "rejected")
                 && point.HorizontalAccuracyMeters <= (decimal)MaxAccuracyMeters);
 
@@ -72,7 +79,8 @@ public sealed class MobileFrequentPlaceService
 
     private List<MobileFrequentPlaceDto> BuildPlaces(
         List<MobileLocationPointEntity> points,
-        MobileLocationQueryContext context)
+        MobileLocationQueryContext context,
+        IReadOnlyList<MobileSavedPlaceEntity> savedPlaces)
     {
         if (points.Count < MinPoints)
             return [];
@@ -105,13 +113,18 @@ public sealed class MobileFrequentPlaceService
                 .Distinct()
                 .Count();
 
+            var savedPlace = MatchSavedPlace(savedPlaces, latitude, longitude);
             places.Add(new MobileFrequentPlaceDto(
                 latitude,
                 longitude,
                 Math.Round(radiusMeters, 1),
                 members.Count,
                 visitDayCount,
-                false));
+                false,
+                savedPlace?.Id,
+                savedPlace?.Name,
+                savedPlace?.PlaceType,
+                savedPlace?.Revision));
             nightCounts.Add(members.Count(point => IsNightPoint(point, timeZone)));
         }
 
@@ -130,6 +143,40 @@ public sealed class MobileFrequentPlaceService
             .OrderByDescending(place => place.PointCount)
             .ThenBy(place => place.CenterLatitude)
             .ToList();
+    }
+
+    private static MobileSavedPlaceEntity? MatchSavedPlace(
+        IReadOnlyList<MobileSavedPlaceEntity> savedPlaces,
+        double latitude,
+        double longitude)
+    {
+        MobileSavedPlaceEntity? best = null;
+        var bestDistance = double.MaxValue;
+        foreach (var place in savedPlaces)
+        {
+            var distance = HaversineMeters(
+                latitude,
+                longitude,
+                Convert.ToDouble(place.CenterLatitude),
+                Convert.ToDouble(place.CenterLongitude));
+            if (distance > Convert.ToDouble(place.RadiusMeters) || distance >= bestDistance)
+                continue;
+
+            best = place;
+            bestDistance = distance;
+        }
+
+        return best;
+    }
+
+    private static double HaversineMeters(double lat1, double lon1, double lat2, double lon2)
+    {
+        var dLat = DegreesToRadians(lat2 - lat1);
+        var dLon = DegreesToRadians(lon2 - lon1);
+        var a = Math.Sin(dLat / 2) * Math.Sin(dLat / 2)
+            + Math.Cos(DegreesToRadians(lat1)) * Math.Cos(DegreesToRadians(lat2))
+            * Math.Sin(dLon / 2) * Math.Sin(dLon / 2);
+        return 2 * EarthRadiusMeters * Math.Atan2(Math.Sqrt(a), Math.Sqrt(1 - a));
     }
 
     private static (double X, double Y) Centroid(

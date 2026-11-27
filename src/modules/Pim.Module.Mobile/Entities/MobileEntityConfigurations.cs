@@ -109,6 +109,8 @@ public sealed class MobileLocationPointEntityConfiguration : IEntityTypeConfigur
     {
         builder.Property(e => e.Latitude).HasPrecision(10, 7);
         builder.Property(e => e.Longitude).HasPrecision(10, 7);
+        builder.Property(e => e.OriginalLatitude).HasPrecision(10, 7);
+        builder.Property(e => e.OriginalLongitude).HasPrecision(10, 7);
         builder.Property(e => e.HorizontalAccuracyMeters).HasPrecision(9, 2);
         builder.Property(e => e.AltitudeMeters).HasPrecision(10, 2);
         builder.Property(e => e.VerticalAccuracyMeters).HasPrecision(9, 2);
@@ -119,11 +121,76 @@ public sealed class MobileLocationPointEntityConfiguration : IEntityTypeConfigur
         builder.Property(e => e.Quality).HasDefaultValue("usable");
         builder.Property(e => e.RawJson).HasDefaultValue("{}");
         builder.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
+        builder.Property(e => e.Revision).HasDefaultValue(0);
+        // 人工修订号是并发令牌：旧页面携带旧 revision 保存时由 EF 拒绝，而不是覆盖别人的修改。
+        builder.Property(e => e.Revision).IsConcurrencyToken();
+        // 永久删除是用户可见语义；数据库保留行用于审计，但所有历史位置查询都不再返回它。
+        builder.HasQueryFilter(e => e.DeletedAtUtc == null);
         // 天然键（#246）：同一设备、同一时刻、同一坐标只允许一行。
         // 否则客户端重试/批量补传会静默叠加重复点，污染停留判定、里程与常去地点。
         builder.HasIndex(e => new { e.UserId, e.DeviceId, e.RecordedAtUtc, e.Latitude, e.Longitude }).IsUnique();
         builder.HasIndex(e => new { e.UserId, e.DeviceId, e.RecordedAtUtc });
         builder.HasIndex(e => new { e.UserId, e.Quality, e.RecordedAtUtc });
+        builder.HasIndex(e => new { e.UserId, e.IsExcluded, e.RecordedAtUtc });
+    }
+}
+
+public sealed class MobileLocationPointRevisionEntityConfiguration
+    : IEntityTypeConfiguration<MobileLocationPointRevisionEntity>
+{
+    public void Configure(EntityTypeBuilder<MobileLocationPointRevisionEntity> builder)
+    {
+        builder.Property(e => e.OriginalLatitude).HasPrecision(10, 7);
+        builder.Property(e => e.OriginalLongitude).HasPrecision(10, 7);
+        builder.Property(e => e.NewLatitude).HasPrecision(10, 7);
+        builder.Property(e => e.NewLongitude).HasPrecision(10, 7);
+        builder.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
+        builder.HasIndex(e => new { e.UserId, e.PointId, e.CreatedAt });
+        builder.HasIndex(e => new { e.UserId, e.CreatedAt });
+    }
+}
+
+public sealed class MobileSavedPlaceEntityConfiguration
+    : IEntityTypeConfiguration<MobileSavedPlaceEntity>
+{
+    public void Configure(EntityTypeBuilder<MobileSavedPlaceEntity> builder)
+    {
+        builder.Property(e => e.CenterLatitude).HasPrecision(10, 7);
+        builder.Property(e => e.CenterLongitude).HasPrecision(10, 7);
+        builder.Property(e => e.RadiusMeters).HasPrecision(9, 2);
+        builder.Property(e => e.PlaceType).HasDefaultValue("other");
+        builder.Property(e => e.IsEnabled).HasDefaultValue(true);
+        builder.Property(e => e.Revision).HasDefaultValue(1);
+        builder.Property(e => e.Revision).IsConcurrencyToken();
+        builder.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
+        builder.Property(e => e.UpdatedAt).HasDefaultValueSql("now()");
+        // 重复保存同一地点（网络重试/双击）必须返回同一条记录，而不是叠加行。
+        // 服务层先查后插；唯一索引负责并发请求下的最后一道幂等保证。
+        builder.HasIndex(e => new
+            {
+                e.UserId,
+                e.Name,
+                e.PlaceType,
+                e.CenterLatitude,
+                e.CenterLongitude,
+                e.RadiusMeters
+            })
+            .IsUnique()
+            .HasDatabaseName("IX_mobile_saved_places_user_id_content");
+        builder.HasIndex(e => new { e.UserId, e.IsEnabled });
+        builder.HasIndex(e => new { e.UserId, e.CenterLatitude, e.CenterLongitude });
+    }
+}
+
+public sealed class MobileLocationSegmentMergeEntityConfiguration
+    : IEntityTypeConfiguration<MobileLocationSegmentMergeEntity>
+{
+    public void Configure(EntityTypeBuilder<MobileLocationSegmentMergeEntity> builder)
+    {
+        builder.Property(e => e.Kind).HasDefaultValue("move");
+        builder.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
+        builder.HasIndex(e => new { e.UserId, e.DeviceId, e.BeforePointId, e.AfterPointId }).IsUnique();
+        builder.HasIndex(e => new { e.UserId, e.DeviceId });
     }
 }
 

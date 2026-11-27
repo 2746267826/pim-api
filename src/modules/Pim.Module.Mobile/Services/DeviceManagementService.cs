@@ -187,8 +187,8 @@ public sealed class DeviceManagementService
     /// <summary>
     /// 删除源设备上与目标设备唯一键重复的行，使接下来的整体改写不会撞唯一索引。
     ///
-    /// 覆盖 events / summaries / sync_batches / forensic / location_points 五张
-    /// 唯一索引含 device_id 的表。其余会被改写的移动端表不会冲突：sessions 没有唯一索引；
+    /// 覆盖 events / summaries / sync_batches / forensic / location_points /
+    /// location_segment_merges 这些唯一索引含 device_id 的表。其余会被改写的移动端表不会冲突：sessions 没有唯一索引；
     /// dropped_reason_daily 走"相加"合并、app_catalog 走"保留最新一份"，
     /// 两者都在各自的方法里做冲突消解。派生表（timeline_blocks / usage_aggregates /
     /// analytics_materializations）虽然有同类唯一索引，但合并策略是**删除而不是改写**，
@@ -243,14 +243,257 @@ public sealed class DeviceManagementService
         // 两台设备就会持有相同天然键；不先消解，整体改写会撞唯一索引让合并在生产上 500。
         // 与其它表同一条规则：保留目标设备已有的那一份。
         var locations = _db.Set<MobileLocationPointEntity>();
-        await locations
+        var duplicateLocationPairs = await locations
+            .IgnoreQueryFilters()
             .Where(p => p.UserId == userId && p.DeviceId == sourceDeviceId)
-            .Where(p => locations.Any(t => t.UserId == userId && t.DeviceId == targetDeviceId
-                && t.RecordedAtUtc == p.RecordedAtUtc
-                && t.Latitude == p.Latitude
-                && t.Longitude == p.Longitude))
+            .Join(
+                locations.IgnoreQueryFilters()
+                    .Where(t => t.UserId == userId && t.DeviceId == targetDeviceId),
+                p => new { p.RecordedAtUtc, p.Latitude, p.Longitude },
+                t => new { t.RecordedAtUtc, t.Latitude, t.Longitude },
+                (p, t) => new
+                {
+                    SourcePointId = p.Id,
+                    SourceRevision = p.Revision,
+                    TargetPointId = t.Id,
+                    TargetRevision = t.Revision,
+                    TargetDeleted = t.DeletedAtUtc != null
+                })
+            .ToListAsync(ct);
+
+        if (duplicateLocationPairs.Count > 0)
+        {
+            var pairs = duplicateLocationPairs
+                .Select(pair => new DuplicateLocationPair(
+                    pair.SourcePointId,
+                    pair.TargetPointId,
+                    pair.TargetDeleted,
+                    pair.SourceRevision,
+                    pair.TargetRevision))
+                .ToList();
+
+            // 先按快照里的 revision 做 CAS 删除，再迁移历史。顺序不能反：如果先迁历史，
+            // 并发的坐标纠正可能已经提交，它的修订行会被挂到目标点，随后源点又按旧 ID
+            // 被无条件删掉——纠正返回 200 却静默消失，目标 revision 也不会递增。
+            // revision 是 MobileLocationPointEntity 的并发令牌，纠正/排除/恢复/删除都会
+            // 原子递增它；源点与目标点任一侧 CAS 失败都说明重复自然键的判定已过期，
+            // 整笔合并回滚并让调用方刷新后重试。
+            await EnsureDuplicateLocationTargetsUnchangedAsync(userId, targetDeviceId, pairs, ct);
+            await DeleteDuplicateLocationPointsAsync(userId, sourceDeviceId, pairs, ct);
+
+            // 点行被删除后，修订行与依赖该边界点的分段合并覆盖不能再指向已经不存在的 ID。
+            // 目标设备保留的是同一自然键的点，因此这些历史语义上属于目标点。
+            await RemapDuplicateLocationHistoryAsync(
+                userId,
+                targetDeviceId,
+                pairs,
+                ct);
+        }
+
+        // 分段合并的人工覆盖以 (user, device, before_point_id, after_point_id) 唯一。
+        // 重装前后两台设备可能对同一轨迹边界各保存过一次合并，直接改写 device_id 会撞唯一索引。
+        // 与其它表一致：保留目标设备已有的选择，删除源设备上的重复覆盖。
+        var segmentMerges = _db.Set<MobileLocationSegmentMergeEntity>();
+        await segmentMerges
+            .Where(m => m.UserId == userId && m.DeviceId == sourceDeviceId)
+            .Where(m => segmentMerges.Any(t => t.UserId == userId && t.DeviceId == targetDeviceId
+                && t.BeforePointId == m.BeforePointId
+                && t.AfterPointId == m.AfterPointId))
             .ExecuteDeleteAsync(ct);
     }
+
+    /// <summary>
+    /// 复核重复自然键快照中的目标点在读取之后没有被改写，并把这些行锁到事务提交。
+    ///
+    /// <para>
+    /// 自然键包含经纬度：目标点一旦被并发纠正，源点就不再是它的重复点，按旧快照删除源点
+    /// 会丢掉一个仍然有效的定位点。这里用自赋值的 <c>UPDATE</c> 对目标行做 CAS 并加写锁：
+    /// 若另一事务已提交纠正，<c>revision</c> 条件不再命中，受影响行数少于快照数，抛 6205；
+    /// 若纠正尚未提交，本事务会等它结束后重新判断。锁保持到合并事务结束，后续源点删除与
+    /// 历史迁移期间目标点不会再变化。
+    /// </para>
+    /// </summary>
+    private async Task EnsureDuplicateLocationTargetsUnchangedAsync(
+        Guid userId,
+        string targetDeviceId,
+        IReadOnlyCollection<DuplicateLocationPair> duplicateLocationPairs,
+        CancellationToken ct)
+    {
+        var locations = _db.Set<MobileLocationPointEntity>();
+        foreach (var revisionGroup in duplicateLocationPairs.GroupBy(pair => pair.TargetRevision))
+        {
+            var pointIds = revisionGroup
+                .Select(pair => pair.TargetPointId)
+                .Distinct()
+                .ToList();
+            var unchanged = await locations
+                .IgnoreQueryFilters()
+                .Where(point => point.UserId == userId
+                    && point.DeviceId == targetDeviceId
+                    && pointIds.Contains(point.Id)
+                    && point.Revision == revisionGroup.Key)
+                // 自赋值不是无用写：它让目标行在锁等待结束后重新校验 revision，并持锁到提交。
+                .ExecuteUpdateAsync(
+                    setters => setters.SetProperty(point => point.Revision, point => point.Revision),
+                    ct);
+            if (unchanged != pointIds.Count)
+            {
+                throw new DomainException(
+                    6205,
+                    "设备合并期间有定位点被其他修改更新，请刷新后重试。");
+            }
+        }
+    }
+
+    /// <summary>
+    /// 以读取重复自然键时的 <c>revision</c> 为快照，对源点做 compare-and-delete。
+    ///
+    /// <para>
+    /// 定位点的 <c>revision</c> 是数据库并发令牌：人工纠正、排除/恢复和永久删除都会在同一
+    /// 事务里递增它。因此这里按 <c>(id, revision)</c> 删除，等价于同时复核了自然键未被改写。
+    /// 只要有一个点已被别的请求修改，受影响行数就会少于快照数，必须抛 6205（HTTP 409）
+    /// 让整笔合并回滚；不能把已返回 200 的纠正连同源点一起静默删掉。
+    /// </para>
+    /// </summary>
+    private async Task DeleteDuplicateLocationPointsAsync(
+        Guid userId,
+        string sourceDeviceId,
+        IReadOnlyCollection<DuplicateLocationPair> duplicateLocationPairs,
+        CancellationToken ct)
+    {
+        var locations = _db.Set<MobileLocationPointEntity>();
+        foreach (var revisionGroup in duplicateLocationPairs.GroupBy(pair => pair.SourceRevision))
+        {
+            var pointIds = revisionGroup
+                .Select(pair => pair.SourcePointId)
+                .Distinct()
+                .ToList();
+            var deleted = await locations
+                .IgnoreQueryFilters()
+                .Where(point => point.UserId == userId
+                    && point.DeviceId == sourceDeviceId
+                    && pointIds.Contains(point.Id)
+                    && point.Revision == revisionGroup.Key)
+                .ExecuteDeleteAsync(ct);
+            if (deleted != pointIds.Count)
+            {
+                throw new DomainException(
+                    6205,
+                    "设备合并期间有定位点被其他修改更新，请刷新后重试。");
+            }
+        }
+    }
+
+    /// <summary>
+    /// 重复自然键的源定位点 CAS 删除后，把引用它的历史迁移到保留下来的目标点上。
+    ///
+    /// <para>
+    /// 目标点仍有效时，修订行没有唯一键，直接改 <c>PointId</c> 即可；分段合并覆盖以
+    /// <c>(user, device, before_point_id, after_point_id)</c> 唯一，重映射后可能与目标设备已有
+    /// 覆盖或另一台源设备的覆盖收敛到同一键，因此还必须按边界去重。取舍顺序与设备合并一致：
+    /// 目标设备已有的覆盖优先，其次保留最近一次人工选择（<c>CreatedAt</c> 最大）。
+    /// 目标点是永久删除墓碑时不能把源历史挂到一个用户已不可见的点上：源历史按删除点同样清理，
+    /// 保留目标墓碑，避免旧设备把用户已删除的点“复活”。
+    /// </para>
+    /// </summary>
+    private async Task RemapDuplicateLocationHistoryAsync(
+        Guid userId,
+        string targetDeviceId,
+        IReadOnlyCollection<DuplicateLocationPair> duplicateLocationPairs,
+        CancellationToken ct)
+    {
+        var targetBySource = duplicateLocationPairs
+            .GroupBy(pair => pair.SourcePointId)
+            .ToDictionary(
+                group => group.Key,
+                group => new DuplicateLocationTarget(
+                    group.First().TargetPointId,
+                    group.First().TargetDeleted));
+        var duplicatePointIds = targetBySource.Keys.ToList();
+        var deletedTargetSourceIds = targetBySource
+            .Where(pair => pair.Value.TargetDeleted)
+            .Select(pair => pair.Key)
+            .ToHashSet();
+
+        var revisions = await _db.Set<MobileLocationPointRevisionEntity>()
+            .Where(revision => revision.UserId == userId
+                && duplicatePointIds.Contains(revision.PointId))
+            .ToListAsync(ct);
+        foreach (var revision in revisions)
+        {
+            if (deletedTargetSourceIds.Contains(revision.PointId))
+            {
+                _db.Set<MobileLocationPointRevisionEntity>().Remove(revision);
+                continue;
+            }
+
+            revision.PointId = targetBySource[revision.PointId].PointId;
+            revision.DeviceId = targetDeviceId;
+        }
+
+        var merges = await _db.Set<MobileLocationSegmentMergeEntity>()
+            .Where(merge => merge.UserId == userId
+                && (duplicatePointIds.Contains(merge.BeforePointId)
+                    || duplicatePointIds.Contains(merge.AfterPointId)))
+            .ToListAsync(ct);
+        var mergeWasOnTarget = merges.ToDictionary(merge => merge.Id, merge => merge.DeviceId == targetDeviceId);
+        var removedMergeIds = new HashSet<Guid>();
+        foreach (var merge in merges)
+        {
+            // 任一边界点映射到删除墓碑，整条合并覆盖都不再成立；保留它会让轨迹读路径
+            // 继续尝试合并一个用户已经删除的点。
+            if (deletedTargetSourceIds.Contains(merge.BeforePointId)
+                || deletedTargetSourceIds.Contains(merge.AfterPointId))
+            {
+                _db.Set<MobileLocationSegmentMergeEntity>().Remove(merge);
+                removedMergeIds.Add(merge.Id);
+                continue;
+            }
+
+            merge.BeforePointId = RemapPointId(merge.BeforePointId, targetBySource);
+            merge.AfterPointId = RemapPointId(merge.AfterPointId, targetBySource);
+            merge.DeviceId = targetDeviceId;
+        }
+
+        // 重映射后查询完整的目标设备覆盖集合，避免只比较本次加载的源行而漏掉目标已有行。
+        var targetMerges = await _db.Set<MobileLocationSegmentMergeEntity>()
+            .Where(merge => merge.UserId == userId && merge.DeviceId == targetDeviceId)
+            .ToListAsync(ct);
+        targetMerges.RemoveAll(merge => removedMergeIds.Contains(merge.Id));
+        foreach (var targetMerge in targetMerges)
+            mergeWasOnTarget.TryAdd(targetMerge.Id, true);
+
+        var candidates = targetMerges
+            .Concat(merges.Where(merge => !removedMergeIds.Contains(merge.Id)))
+            .DistinctBy(merge => merge.Id)
+            .ToList();
+        var winnerIds = candidates
+            .GroupBy(merge => (merge.BeforePointId, merge.AfterPointId))
+            .Select(group => group
+                .OrderByDescending(merge => mergeWasOnTarget.GetValueOrDefault(merge.Id))
+                .ThenByDescending(merge => merge.CreatedAt)
+                .ThenBy(merge => merge.Id)
+                .First().Id)
+            .ToHashSet();
+        _db.Set<MobileLocationSegmentMergeEntity>().RemoveRange(
+            candidates.Where(merge => !winnerIds.Contains(merge.Id)));
+
+        await _db.SaveChangesAsync(ct);
+    }
+
+    private static Guid RemapPointId(
+        Guid pointId,
+        IReadOnlyDictionary<Guid, DuplicateLocationTarget> targetBySource)
+        => targetBySource.TryGetValue(pointId, out var target) ? target.PointId : pointId;
+
+    private sealed record DuplicateLocationPair(
+        Guid SourcePointId,
+        Guid TargetPointId,
+        bool TargetDeleted,
+        int SourceRevision,
+        int TargetRevision);
+
+    private sealed record DuplicateLocationTarget(Guid PointId, bool TargetDeleted);
 
     private async Task MoveDeviceRowsAsync(
         Guid userId,
@@ -261,7 +504,16 @@ public sealed class DeviceManagementService
         await _db.Set<MobileUsageEventEntity>().Where(e => e.UserId == userId && e.DeviceId == sourceDeviceId).ExecuteUpdateAsync(s => s.SetProperty(e => e.DeviceId, targetDeviceId), ct);
         await _db.Set<MobileUsageSessionEntity>().Where(e => e.UserId == userId && e.DeviceId == sourceDeviceId).ExecuteUpdateAsync(s => s.SetProperty(e => e.DeviceId, targetDeviceId), ct);
         await _db.Set<MobileUsageSummaryEntity>().Where(e => e.UserId == userId && e.DeviceId == sourceDeviceId).ExecuteUpdateAsync(s => s.SetProperty(e => e.DeviceId, targetDeviceId), ct);
-        await _db.Set<MobileLocationPointEntity>().Where(e => e.UserId == userId && e.DeviceId == sourceDeviceId).ExecuteUpdateAsync(s => s.SetProperty(e => e.DeviceId, targetDeviceId), ct);
+        await _db.Set<MobileLocationPointEntity>()
+            .IgnoreQueryFilters()
+            .Where(e => e.UserId == userId && e.DeviceId == sourceDeviceId)
+            .ExecuteUpdateAsync(s => s.SetProperty(e => e.DeviceId, targetDeviceId), ct);
+        await _db.Set<MobileLocationPointRevisionEntity>()
+            .Where(e => e.UserId == userId && e.DeviceId == sourceDeviceId)
+            .ExecuteUpdateAsync(s => s.SetProperty(e => e.DeviceId, targetDeviceId), ct);
+        await _db.Set<MobileLocationSegmentMergeEntity>()
+            .Where(e => e.UserId == userId && e.DeviceId == sourceDeviceId)
+            .ExecuteUpdateAsync(s => s.SetProperty(e => e.DeviceId, targetDeviceId), ct);
         await _db.Set<MobileSyncBatchEntity>().Where(e => e.UserId == userId && e.DeviceId == sourceDeviceId).ExecuteUpdateAsync(s => s.SetProperty(e => e.DeviceId, targetDeviceId), ct);
         // 取证事件（REQ-1~REQ-4）与丢弃原因统计（REQ-9）随设备一起并入：
         // 它们是"这台设备当时活着/死了"的原始证据，丢掉就等于把合并前的死因取证抹掉。
@@ -701,6 +953,8 @@ public sealed class DeviceManagementService
         var sessions = _db.Set<MobileUsageSessionEntity>();
         var summaries = _db.Set<MobileUsageSummaryEntity>();
         var locations = _db.Set<MobileLocationPointEntity>();
+        var locationRevisions = _db.Set<MobileLocationPointRevisionEntity>();
+        var segmentMerges = _db.Set<MobileLocationSegmentMergeEntity>();
         var batches = _db.Set<MobileSyncBatchEntity>();
         var forensic = _db.Set<MobileForensicEventEntity>();
         var droppedReasons = _db.Set<MobileDroppedReasonDailyEntity>();
@@ -724,8 +978,15 @@ public sealed class DeviceManagementService
                 ct => summaries.CountAsync(e => e.UserId == userId && deviceIds.Contains(e.DeviceId), ct),
                 ct => summaries.Where(e => e.UserId == userId && deviceIds.Contains(e.DeviceId)).ExecuteDeleteAsync(ct)),
             new(DeviceScopedTables.LocationPoints,
-                ct => locations.CountAsync(e => e.UserId == userId && deviceIds.Contains(e.DeviceId), ct),
-                ct => locations.Where(e => e.UserId == userId && deviceIds.Contains(e.DeviceId)).ExecuteDeleteAsync(ct)),
+                // 软删除点仍留在库中；删设备时必须一并清掉，否则会成为永远不可见的孤儿行。
+                ct => locations.IgnoreQueryFilters().CountAsync(e => e.UserId == userId && deviceIds.Contains(e.DeviceId), ct),
+                ct => locations.IgnoreQueryFilters().Where(e => e.UserId == userId && deviceIds.Contains(e.DeviceId)).ExecuteDeleteAsync(ct)),
+            new(DeviceScopedTables.LocationPointRevisions,
+                ct => locationRevisions.CountAsync(e => e.UserId == userId && deviceIds.Contains(e.DeviceId), ct),
+                ct => locationRevisions.Where(e => e.UserId == userId && deviceIds.Contains(e.DeviceId)).ExecuteDeleteAsync(ct)),
+            new(DeviceScopedTables.LocationSegmentMerges,
+                ct => segmentMerges.CountAsync(e => e.UserId == userId && deviceIds.Contains(e.DeviceId), ct),
+                ct => segmentMerges.Where(e => e.UserId == userId && deviceIds.Contains(e.DeviceId)).ExecuteDeleteAsync(ct)),
             new(DeviceScopedTables.SyncBatches,
                 ct => batches.CountAsync(e => e.UserId == userId && deviceIds.Contains(e.DeviceId), ct),
                 ct => batches.Where(e => e.UserId == userId && deviceIds.Contains(e.DeviceId)).ExecuteDeleteAsync(ct)),
@@ -955,6 +1216,8 @@ internal static class DeviceScopedTables{
     public const string UsageSessions = "mobile_usage_sessions";
     public const string UsageSummaries = "mobile_usage_summaries";
     public const string LocationPoints = "mobile_location_points";
+    public const string LocationPointRevisions = "mobile_location_point_revisions";
+    public const string LocationSegmentMerges = "mobile_location_segment_merges";
     public const string SyncBatches = "mobile_sync_batches";
     public const string ForensicEvents = "mobile_forensic_events";
     public const string DroppedReasonDaily = "mobile_dropped_reason_daily";

@@ -13,6 +13,8 @@ export const mobileKeys = {
   tracks: (params: Record<string, unknown>) => ['mobile', 'tracks', params] as const,
   places: (params: Record<string, unknown>) => ['mobile', 'places', params] as const,
   movement: (params: Record<string, unknown>) => ['mobile', 'movement', params] as const,
+  points: (params: Record<string, unknown>) => ['mobile', 'loc-points', params] as const,
+  savedPlaces: () => ['mobile', 'saved-places'] as const,
 }
 
 export function useMobileOverview(params: Record<string, unknown>) {
@@ -93,6 +95,22 @@ export function useMovementStats(params: Record<string, unknown>) {
   })
 }
 
+export function useManagedLocationPoints(params: Record<string, unknown>, enabled = true) {
+  return useQuery({
+    queryKey: mobileKeys.points(params),
+    queryFn: () => mobileApi.managedPoints(params),
+    enabled,
+    placeholderData: (prev) => prev,
+  })
+}
+
+export function useSavedPlaces() {
+  return useQuery({
+    queryKey: mobileKeys.savedPlaces(),
+    queryFn: () => mobileApi.savedPlaces(),
+  })
+}
+
 export function useDeviceActions() {
   const qc = useQueryClient()
   const invalidate = () => void qc.invalidateQueries({ queryKey: ['mobile'] })
@@ -102,5 +120,48 @@ export function useDeviceActions() {
     delete: useMutation({ mutationFn: (id: string) => mobileApi.deleteDevice(id), onSuccess: invalidate }),
     mergePreview: useMutation({ mutationFn: mobileApi.mergePreview }),
     merge: useMutation({ mutationFn: mobileApi.merge, onSuccess: invalidate }),
+  }
+}
+
+export function useLocationPointActions() {
+  const qc = useQueryClient()
+  const invalidate = () => void qc.invalidateQueries({ queryKey: ['mobile'] })
+  return {
+    correct: useMutation({
+      mutationFn: ({ pointId, body }: { pointId: string; body: Parameters<typeof mobileApi.correctPoint>[1] }) =>
+        mobileApi.correctPoint(pointId, body),
+      onSuccess: invalidate,
+    }),
+    restore: useMutation({
+      mutationFn: ({ pointId, body }: { pointId: string; body: Parameters<typeof mobileApi.restorePoint>[1] }) =>
+        mobileApi.restorePoint(pointId, body),
+      onSuccess: invalidate,
+    }),
+    exclude: useMutation({
+      mutationFn: (body: Parameters<typeof mobileApi.setPointExclusions>[0]) => mobileApi.setPointExclusions(body),
+      onSuccess: invalidate,
+    }),
+    remove: useMutation({
+      mutationFn: ({ pointId, revision }: { pointId: string; revision: number }) =>
+        mobileApi.deletePoint(pointId, revision),
+      onSuccess: invalidate,
+    }),
+    fill: useMutation({
+      mutationFn: (body: Parameters<typeof mobileApi.fillPoint>[0]) => mobileApi.fillPoint(body),
+      onSuccess: invalidate,
+    }),
+    merge: useMutation({
+      mutationFn: (body: Parameters<typeof mobileApi.mergeSegments>[0]) => mobileApi.mergeSegments(body),
+      onSuccess: invalidate,
+    }),
+    createPlace: useMutation({
+      mutationFn: (body: Parameters<typeof mobileApi.createSavedPlace>[0]) => mobileApi.createSavedPlace(body),
+      onSuccess: invalidate,
+    }),
+    updatePlace: useMutation({
+      mutationFn: ({ placeId, body }: { placeId: string; body: Parameters<typeof mobileApi.updateSavedPlace>[1] }) =>
+        mobileApi.updateSavedPlace(placeId, body),
+      onSuccess: invalidate,
+    }),
   }
 }

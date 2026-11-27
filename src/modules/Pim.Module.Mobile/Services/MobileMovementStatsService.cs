@@ -87,6 +87,7 @@ public sealed class MobileMovementStatsService
             .Where(point => point.UserId == userId
                 && point.RecordedAtUtc >= context.Range.RangeStartUtc
                 && point.RecordedAtUtc < context.Range.RangeEndUtc
+                && !point.IsExcluded
                 && (point.Quality == null || point.Quality.ToLower() != "rejected")
                 && point.HorizontalAccuracyMeters <= (decimal)context.MaxAccuracyMeters);
 

@@ -6172,16 +6172,36 @@ namespace Pim.Infrastructure.Data.Migrations
                         .HasColumnName("created_at")
                         .HasDefaultValueSql("now()");
 
+                    b.Property<DateTimeOffset?>("DeletedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("deleted_at_utc");
+
+                    b.Property<Guid?>("DeletedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("deleted_by_user_id");
+
                     b.Property<string>("DeviceId")
                         .IsRequired()
                         .HasMaxLength(128)
                         .HasColumnType("character varying(128)")
                         .HasColumnName("device_id");
 
+                    b.Property<DateTimeOffset?>("ExcludedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("excluded_at_utc");
+
+                    b.Property<Guid?>("ExcludedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("excluded_by_user_id");
+
                     b.Property<decimal>("HorizontalAccuracyMeters")
                         .HasPrecision(9, 2)
                         .HasColumnType("numeric(9,2)")
                         .HasColumnName("horizontal_accuracy_meters");
+
+                    b.Property<bool>("IsExcluded")
+                        .HasColumnType("boolean")
+                        .HasColumnName("is_excluded");
 
                     b.Property<bool>("IsMock")
                         .HasColumnType("boolean")
@@ -6196,6 +6216,16 @@ namespace Pim.Infrastructure.Data.Migrations
                         .HasPrecision(10, 7)
                         .HasColumnType("numeric(10,7)")
                         .HasColumnName("longitude");
+
+                    b.Property<decimal?>("OriginalLatitude")
+                        .HasPrecision(10, 7)
+                        .HasColumnType("numeric(10,7)")
+                        .HasColumnName("original_latitude");
+
+                    b.Property<decimal?>("OriginalLongitude")
+                        .HasPrecision(10, 7)
+                        .HasColumnType("numeric(10,7)")
+                        .HasColumnName("original_longitude");
 
                     b.Property<string>("Provider")
                         .IsRequired()
@@ -6222,6 +6252,13 @@ namespace Pim.Infrastructure.Data.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("recorded_at_utc");
 
+                    b.Property<int>("Revision")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(0)
+                        .HasColumnName("revision");
+
                     b.Property<string>("Source")
                         .IsRequired()
                         .HasMaxLength(64)
@@ -6238,6 +6275,10 @@ namespace Pim.Infrastructure.Data.Migrations
                         .HasColumnType("numeric(9,2)")
                         .HasColumnName("speed_meters_per_second");
 
+                    b.Property<DateTimeOffset?>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
                     b.Property<Guid>("UserId")
                         .HasColumnType("uuid")
                         .HasColumnName("user_id");
@@ -6251,12 +6292,232 @@ namespace Pim.Infrastructure.Data.Migrations
 
                     b.HasIndex("UserId", "DeviceId", "RecordedAtUtc");
 
+                    b.HasIndex("UserId", "IsExcluded", "RecordedAtUtc");
+
                     b.HasIndex("UserId", "Quality", "RecordedAtUtc");
 
                     b.HasIndex("UserId", "DeviceId", "RecordedAtUtc", "Latitude", "Longitude")
                         .IsUnique();
 
                     b.ToTable("mobile_location_points");
+                });
+
+            modelBuilder.Entity("Pim.Module.Mobile.Entities.MobileLocationPointRevisionEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("ActorUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("actor_user_id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<string>("DeviceId")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("device_id");
+
+                    b.Property<bool?>("ExcludedAfter")
+                        .HasColumnType("boolean")
+                        .HasColumnName("excluded_after");
+
+                    b.Property<bool?>("ExcludedBefore")
+                        .HasColumnType("boolean")
+                        .HasColumnName("excluded_before");
+
+                    b.Property<decimal?>("NewLatitude")
+                        .HasPrecision(10, 7)
+                        .HasColumnType("numeric(10,7)")
+                        .HasColumnName("new_latitude");
+
+                    b.Property<decimal?>("NewLongitude")
+                        .HasPrecision(10, 7)
+                        .HasColumnType("numeric(10,7)")
+                        .HasColumnName("new_longitude");
+
+                    b.Property<string>("Operation")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("operation");
+
+                    b.Property<decimal?>("OriginalLatitude")
+                        .HasPrecision(10, 7)
+                        .HasColumnType("numeric(10,7)")
+                        .HasColumnName("original_latitude");
+
+                    b.Property<decimal?>("OriginalLongitude")
+                        .HasPrecision(10, 7)
+                        .HasColumnType("numeric(10,7)")
+                        .HasColumnName("original_longitude");
+
+                    b.Property<Guid>("PointId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("point_id");
+
+                    b.Property<string>("Reason")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("reason");
+
+                    b.Property<int>("RevisionAfter")
+                        .HasColumnType("integer")
+                        .HasColumnName("revision_after");
+
+                    b.Property<int>("RevisionBefore")
+                        .HasColumnType("integer")
+                        .HasColumnName("revision_before");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("UserId", "CreatedAt");
+
+                    b.HasIndex("UserId", "PointId", "CreatedAt");
+
+                    b.ToTable("mobile_location_point_revisions");
+                });
+
+            modelBuilder.Entity("Pim.Module.Mobile.Entities.MobileLocationSegmentMergeEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("ActorUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("actor_user_id");
+
+                    b.Property<Guid>("AfterPointId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("after_point_id");
+
+                    b.Property<Guid>("BeforePointId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("before_point_id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<string>("DeviceId")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("device_id");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasDefaultValue("move")
+                        .HasColumnName("kind");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("UserId", "DeviceId");
+
+                    b.HasIndex("UserId", "DeviceId", "BeforePointId", "AfterPointId")
+                        .IsUnique();
+
+                    b.ToTable("mobile_location_segment_merges");
+                });
+
+            modelBuilder.Entity("Pim.Module.Mobile.Entities.MobileSavedPlaceEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<decimal>("CenterLatitude")
+                        .HasPrecision(10, 7)
+                        .HasColumnType("numeric(10,7)")
+                        .HasColumnName("center_latitude");
+
+                    b.Property<decimal>("CenterLongitude")
+                        .HasPrecision(10, 7)
+                        .HasColumnType("numeric(10,7)")
+                        .HasColumnName("center_longitude");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<bool>("IsEnabled")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(true)
+                        .HasColumnName("is_enabled");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("name");
+
+                    b.Property<string>("PlaceType")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasDefaultValue("other")
+                        .HasColumnName("place_type");
+
+                    b.Property<decimal>("RadiusMeters")
+                        .HasPrecision(9, 2)
+                        .HasColumnType("numeric(9,2)")
+                        .HasColumnName("radius_meters");
+
+                    b.Property<int>("Revision")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(1)
+                        .HasColumnName("revision");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("UserId", "IsEnabled");
+
+                    b.HasIndex("UserId", "CenterLatitude", "CenterLongitude");
+
+                    b.HasIndex("UserId", "Name", "PlaceType", "CenterLatitude", "CenterLongitude", "RadiusMeters")
+                        .IsUnique()
+                        .HasDatabaseName("IX_mobile_saved_places_user_id_content");
+
+                    b.ToTable("mobile_saved_places");
                 });
 
             modelBuilder.Entity("Pim.Module.Mobile.Entities.MobileSyncBatchEntity", b =>

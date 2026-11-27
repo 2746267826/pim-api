@@ -414,6 +414,10 @@ export function apiPut<T>(path: string, body: unknown = {}, opts?: FetchOptions)
   return apiFetch<T>(path, { method: 'PUT', body }, opts)
 }
 
+export function apiPatch<T>(path: string, body: unknown = {}, opts?: FetchOptions): Promise<T> {
+  return apiFetch<T>(path, { method: 'PATCH', body }, opts)
+}
+
 export function apiDelete<T>(path: string, opts?: FetchOptions): Promise<T> {
   return apiFetch<T>(path, { method: 'DELETE' }, opts)
 }

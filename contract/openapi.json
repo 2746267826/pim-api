@@ -12916,6 +12916,10 @@
           "isHome": {
             "type": "boolean"
           },
+          "name": {
+            "nullable": true,
+            "type": "string"
+          },
           "pointCount": {
             "format": "int32",
             "type": "integer"
@@ -12923,6 +12927,20 @@
           "radiusMeters": {
             "format": "double",
             "type": "number"
+          },
+          "savedPlaceId": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          },
+          "savedPlaceRevision": {
+            "format": "int32",
+            "nullable": true,
+            "type": "integer"
+          },
+          "type": {
+            "nullable": true,
+            "type": "string"
           },
           "visitDayCount": {
             "format": "int32",
@@ -13577,6 +13595,113 @@
         ],
         "type": "object"
       },
+      "MobileLocationBatchItemResult": {
+        "additionalProperties": false,
+        "properties": {
+          "message": {
+            "nullable": true,
+            "type": "string"
+          },
+          "outcome": {
+            "type": "string"
+          },
+          "pointId": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "outcome",
+          "pointId"
+        ],
+        "type": "object"
+      },
+      "MobileLocationBatchMutationResult": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/MobileLocationBatchItemResult"
+            },
+            "type": "array"
+          },
+          "recomputedAtUtc": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "updatedCount": {
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "recomputedAtUtc",
+          "updatedCount"
+        ],
+        "type": "object"
+      },
+      "MobileLocationBatchMutationResultApiResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "data": {
+            "$ref": "#/components/schemas/MobileLocationBatchMutationResult"
+          },
+          "message": {
+            "type": "string"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
+        "type": "object"
+      },
+      "MobileLocationFillRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "deviceId": {
+            "type": "string"
+          },
+          "horizontalAccuracyMeters": {
+            "format": "double",
+            "nullable": true,
+            "type": "number"
+          },
+          "latitude": {
+            "format": "double",
+            "type": "number"
+          },
+          "longitude": {
+            "format": "double",
+            "type": "number"
+          },
+          "reason": {
+            "nullable": true,
+            "type": "string"
+          },
+          "recordedAtUtc": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "deviceId",
+          "latitude",
+          "longitude",
+          "recordedAtUtc"
+        ],
+        "type": "object"
+      },
       "MobileLocationHistoryResponse": {
         "additionalProperties": false,
         "properties": {
@@ -13676,6 +13801,85 @@
           "quality",
           "qualityFlags",
           "recordedAtUtc"
+        ],
+        "type": "object"
+      },
+      "MobileLocationPointCorrectionRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "excluded": {
+            "nullable": true,
+            "type": "boolean"
+          },
+          "latitude": {
+            "format": "double",
+            "type": "number"
+          },
+          "longitude": {
+            "format": "double",
+            "type": "number"
+          },
+          "reason": {
+            "nullable": true,
+            "type": "string"
+          },
+          "revision": {
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "latitude",
+          "longitude",
+          "revision"
+        ],
+        "type": "object"
+      },
+      "MobileLocationPointDeleteResult": {
+        "additionalProperties": false,
+        "properties": {
+          "deletedAtUtc": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "pointId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "recomputedAtUtc": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "deletedAtUtc",
+          "pointId",
+          "recomputedAtUtc"
+        ],
+        "type": "object"
+      },
+      "MobileLocationPointDeleteResultApiResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "data": {
+            "$ref": "#/components/schemas/MobileLocationPointDeleteResult"
+          },
+          "message": {
+            "type": "string"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
         ],
         "type": "object"
       },
@@ -13800,6 +14004,89 @@
         ],
         "type": "object"
       },
+      "MobileLocationPointExclusionItem": {
+        "additionalProperties": false,
+        "properties": {
+          "pointId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "revision": {
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "pointId",
+          "revision"
+        ],
+        "type": "object"
+      },
+      "MobileLocationPointExclusionRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "excluded": {
+            "type": "boolean"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/MobileLocationPointExclusionItem"
+            },
+            "type": "array"
+          },
+          "reason": {
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "required": [
+          "excluded",
+          "items"
+        ],
+        "type": "object"
+      },
+      "MobileLocationPointMutationResult": {
+        "additionalProperties": false,
+        "properties": {
+          "point": {
+            "$ref": "#/components/schemas/MobileManagedLocationPointDto"
+          },
+          "recomputedAtUtc": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "point",
+          "recomputedAtUtc"
+        ],
+        "type": "object"
+      },
+      "MobileLocationPointMutationResultApiResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "data": {
+            "$ref": "#/components/schemas/MobileLocationPointMutationResult"
+          },
+          "message": {
+            "type": "string"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
+        "type": "object"
+      },
       "MobileLocationPointRequest": {
         "additionalProperties": false,
         "properties": {
@@ -13883,6 +14170,130 @@
           "rawJson",
           "recordedAtUtc",
           "sourceKind"
+        ],
+        "type": "object"
+      },
+      "MobileLocationPointRestoreRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "reason": {
+            "nullable": true,
+            "type": "string"
+          },
+          "revision": {
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "revision"
+        ],
+        "type": "object"
+      },
+      "MobileLocationPointRevisionDto": {
+        "additionalProperties": false,
+        "properties": {
+          "actorUserId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "createdAtUtc": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "deviceId": {
+            "type": "string"
+          },
+          "excludedAfter": {
+            "nullable": true,
+            "type": "boolean"
+          },
+          "excludedBefore": {
+            "nullable": true,
+            "type": "boolean"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "newLatitude": {
+            "format": "double",
+            "nullable": true,
+            "type": "number"
+          },
+          "newLongitude": {
+            "format": "double",
+            "nullable": true,
+            "type": "number"
+          },
+          "operation": {
+            "type": "string"
+          },
+          "originalLatitude": {
+            "format": "double",
+            "nullable": true,
+            "type": "number"
+          },
+          "originalLongitude": {
+            "format": "double",
+            "nullable": true,
+            "type": "number"
+          },
+          "pointId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "reason": {
+            "nullable": true,
+            "type": "string"
+          },
+          "revisionAfter": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "revisionBefore": {
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "actorUserId",
+          "createdAtUtc",
+          "deviceId",
+          "id",
+          "operation",
+          "pointId",
+          "revisionAfter",
+          "revisionBefore"
+        ],
+        "type": "object"
+      },
+      "MobileLocationPointRevisionDtoIReadOnlyListApiResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/MobileLocationPointRevisionDto"
+            },
+            "nullable": true,
+            "type": "array"
+          },
+          "message": {
+            "type": "string"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
         ],
         "type": "object"
       },
@@ -14074,6 +14485,104 @@
         ],
         "type": "object"
       },
+      "MobileLocationSegmentMergeRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "deviceId": {
+            "nullable": true,
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "rangeEndUtc": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "rangeStartUtc": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "reason": {
+            "nullable": true,
+            "type": "string"
+          },
+          "segmentIds": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "timezone": {
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "rangeEndUtc",
+          "rangeStartUtc",
+          "segmentIds"
+        ],
+        "type": "object"
+      },
+      "MobileLocationSegmentMergeResult": {
+        "additionalProperties": false,
+        "properties": {
+          "boundaryPointId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "rangeEndUtc": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "rangeStartUtc": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "recomputedAtUtc": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "boundaryPointId",
+          "kind",
+          "rangeEndUtc",
+          "rangeStartUtc",
+          "recomputedAtUtc"
+        ],
+        "type": "object"
+      },
+      "MobileLocationSegmentMergeResultApiResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "data": {
+            "$ref": "#/components/schemas/MobileLocationSegmentMergeResult"
+          },
+          "message": {
+            "type": "string"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
+        "type": "object"
+      },
       "MobileLocationSegmentPointPageDto": {
         "additionalProperties": false,
         "properties": {
@@ -14198,6 +14707,141 @@
             },
             "nullable": true,
             "type": "array"
+          },
+          "message": {
+            "type": "string"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
+        "type": "object"
+      },
+      "MobileManagedLocationPointDto": {
+        "additionalProperties": false,
+        "properties": {
+          "deletedAtUtc": {
+            "format": "date-time",
+            "nullable": true,
+            "type": "string"
+          },
+          "deviceId": {
+            "type": "string"
+          },
+          "excludedAtUtc": {
+            "format": "date-time",
+            "nullable": true,
+            "type": "string"
+          },
+          "horizontalAccuracyMeters": {
+            "format": "double",
+            "type": "number"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "isCorrected": {
+            "type": "boolean"
+          },
+          "isExcluded": {
+            "type": "boolean"
+          },
+          "latitude": {
+            "format": "double",
+            "type": "number"
+          },
+          "longitude": {
+            "format": "double",
+            "type": "number"
+          },
+          "originalLatitude": {
+            "format": "double",
+            "nullable": true,
+            "type": "number"
+          },
+          "originalLongitude": {
+            "format": "double",
+            "nullable": true,
+            "type": "number"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "quality": {
+            "type": "string"
+          },
+          "recordedAtUtc": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "revision": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "sourceKind": {
+            "type": "string"
+          },
+          "updatedAtUtc": {
+            "format": "date-time",
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "required": [
+          "deviceId",
+          "horizontalAccuracyMeters",
+          "id",
+          "isCorrected",
+          "isExcluded",
+          "latitude",
+          "longitude",
+          "provider",
+          "quality",
+          "recordedAtUtc",
+          "revision",
+          "sourceKind"
+        ],
+        "type": "object"
+      },
+      "MobileManagedLocationPointPageDto": {
+        "additionalProperties": false,
+        "properties": {
+          "hasMore": {
+            "type": "boolean"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/MobileManagedLocationPointDto"
+            },
+            "type": "array"
+          },
+          "nextCursor": {
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "required": [
+          "hasMore",
+          "items"
+        ],
+        "type": "object"
+      },
+      "MobileManagedLocationPointPageDtoApiResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "data": {
+            "$ref": "#/components/schemas/MobileManagedLocationPointPageDto"
           },
           "message": {
             "type": "string"
@@ -14525,6 +15169,167 @@
           "code",
           "message",
           "timestamp"
+        ],
+        "type": "object"
+      },
+      "MobileSavedPlaceCreateRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "centerLatitude": {
+            "format": "double",
+            "type": "number"
+          },
+          "centerLongitude": {
+            "format": "double",
+            "type": "number"
+          },
+          "name": {
+            "type": "string"
+          },
+          "radiusMeters": {
+            "format": "double",
+            "type": "number"
+          },
+          "type": {
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "required": [
+          "centerLatitude",
+          "centerLongitude",
+          "name",
+          "radiusMeters"
+        ],
+        "type": "object"
+      },
+      "MobileSavedPlaceDto": {
+        "additionalProperties": false,
+        "properties": {
+          "centerLatitude": {
+            "format": "double",
+            "type": "number"
+          },
+          "centerLongitude": {
+            "format": "double",
+            "type": "number"
+          },
+          "createdAtUtc": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "isEnabled": {
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          },
+          "radiusMeters": {
+            "format": "double",
+            "type": "number"
+          },
+          "revision": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "type": {
+            "type": "string"
+          },
+          "updatedAtUtc": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "centerLatitude",
+          "centerLongitude",
+          "createdAtUtc",
+          "id",
+          "isEnabled",
+          "name",
+          "radiusMeters",
+          "revision",
+          "type",
+          "updatedAtUtc"
+        ],
+        "type": "object"
+      },
+      "MobileSavedPlaceDtoApiResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "data": {
+            "$ref": "#/components/schemas/MobileSavedPlaceDto"
+          },
+          "message": {
+            "type": "string"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
+        "type": "object"
+      },
+      "MobileSavedPlaceDtoIReadOnlyListApiResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/MobileSavedPlaceDto"
+            },
+            "nullable": true,
+            "type": "array"
+          },
+          "message": {
+            "type": "string"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
+        "type": "object"
+      },
+      "MobileSavedPlaceUpdateRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "revision": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "type": {
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "revision"
         ],
         "type": "object"
       },
@@ -41321,6 +42126,16 @@
           "401": {
             "description": "Unauthorized"
           },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -42935,7 +43750,294 @@
         ]
       }
     },
+    "/api/v1/mobile/location/places": {
+      "get": {
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MobileSavedPlaceDtoIReadOnlyListApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Pim.Api"
+        ]
+      },
+      "post": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MobileSavedPlaceCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MobileSavedPlaceDtoApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Pim.Api"
+        ]
+      }
+    },
+    "/api/v1/mobile/location/places/{placeId}": {
+      "patch": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "placeId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MobileSavedPlaceUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MobileSavedPlaceDtoApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Pim.Api"
+        ]
+      }
+    },
     "/api/v1/mobile/location/points": {
+      "get": {
+        "parameters": [
+          {
+            "in": "query",
+            "name": "RangeStartUtc",
+            "schema": {
+              "format": "date-time",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "RangeEndUtc",
+            "schema": {
+              "format": "date-time",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "Timezone",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "DeviceId",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "SegmentId",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "IncludeExcluded",
+            "required": true,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "Cursor",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "PageSize",
+            "schema": {
+              "format": "int32",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MobileManagedLocationPointPageDtoApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Pim.Api"
+        ]
+      },
       "post": {
         "requestBody": {
           "content": {
@@ -43027,6 +44129,555 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Pim.Api"
+        ]
+      }
+    },
+    "/api/v1/mobile/location/points/exclusions": {
+      "post": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MobileLocationPointExclusionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MobileLocationBatchMutationResultApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Pim.Api"
+        ]
+      }
+    },
+    "/api/v1/mobile/location/points/fill": {
+      "post": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MobileLocationFillRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MobileLocationPointMutationResultApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Pim.Api"
+        ]
+      }
+    },
+    "/api/v1/mobile/location/points/{pointId}": {
+      "delete": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "pointId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "revision",
+            "schema": {
+              "format": "int32",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MobileLocationPointDeleteResultApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Pim.Api"
+        ]
+      },
+      "patch": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "pointId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MobileLocationPointCorrectionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MobileLocationPointMutationResultApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Pim.Api"
+        ]
+      }
+    },
+    "/api/v1/mobile/location/points/{pointId}/restore": {
+      "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "pointId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MobileLocationPointRestoreRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MobileLocationPointMutationResultApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Pim.Api"
+        ]
+      }
+    },
+    "/api/v1/mobile/location/points/{pointId}/revisions": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "pointId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MobileLocationPointRevisionDtoIReadOnlyListApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Pim.Api"
+        ]
+      }
+    },
+    "/api/v1/mobile/location/segments/merge": {
+      "post": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MobileLocationSegmentMergeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MobileLocationSegmentMergeResultApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "Conflict"
           },
           "500": {
             "content": {

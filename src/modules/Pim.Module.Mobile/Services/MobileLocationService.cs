@@ -133,6 +133,13 @@ public sealed class MobileLocationService
 
             if (knownPoints.TryGetValue(key, out var existing))
             {
+                // 用户已永久删除的点不能被旧上传队列重新“复活”；按重复回执吞掉。
+                if (existing.DeletedAtUtc is not null)
+                {
+                    itemResults.Add(Item(clientItemKey, "skipped", "deleted", "Location point was deleted by the user."));
+                    continue;
+                }
+
                 // 已存在同一自然键：先落库的坏精度点可以被后来的好精度点升级，其余按重复处理。
                 if (UpsertRejectedToUsable(existing, point, usable))
                     itemResults.Add(Item(clientItemKey, "accepted", "accepted", "Accepted."));
@@ -188,6 +195,7 @@ public sealed class MobileLocationService
         var maxRecordedAt = candidates.Max(point => point.RecordedAtUtc);
 
         var existing = await _db.Set<MobileLocationPointEntity>()
+            .IgnoreQueryFilters()
             .Where(point => point.UserId == userId
                 && deviceIds.Contains(point.DeviceId)
                 && point.RecordedAtUtc >= minRecordedAt
@@ -195,7 +203,26 @@ public sealed class MobileLocationService
             .ToListAsync(ct);
 
         foreach (var point in existing)
+        {
             known[LocationKey.From(userId, point.DeviceId, point.RecordedAtUtc, point.Latitude, point.Longitude)] = point;
+        }
+
+        // 人工纠正后，旧采集队列可能继续重传纠正前的坐标。原始坐标也要登记为既有点，
+        // 否则重传会被误判为新点并重新插入；当前采用坐标优先，避免覆盖同键的现行事实。
+        foreach (var point in existing)
+        {
+            if (point.OriginalLatitude is null || point.OriginalLongitude is null)
+                continue;
+
+            known.TryAdd(
+                LocationKey.From(
+                    userId,
+                    point.DeviceId,
+                    point.RecordedAtUtc,
+                    point.OriginalLatitude.Value,
+                    point.OriginalLongitude.Value),
+                point);
+        }
 
         return known;
     }
@@ -213,6 +240,10 @@ public sealed class MobileLocationService
         var existing = await FindExistingAsync(key, ct);
         if (existing is not null)
         {
+            // 永久删除是用户可见终态：旧队列迟到重传只返回 duplicate，不恢复、不升级。
+            if (existing.DeletedAtUtc is not null)
+                return new LocationUpsert(existing, "duplicate");
+
             if (UpsertRejectedToUsable(existing, request, string.Equals(quality, UsableQuality, StringComparison.Ordinal)))
             {
                 await _db.SaveChangesAsync(ct);
@@ -252,15 +283,18 @@ public sealed class MobileLocationService
         // 不加 AsNoTracking：命中"被拒 → 可用"的升级路径时要能更新这一行。
         // 排序放在内存里做（SQLite 不支持对 DateTimeOffset 排序），唯一索引下最多只有一行。
         var candidates = await _db.Set<MobileLocationPointEntity>()
+            .IgnoreQueryFilters()
             .Where(point => point.UserId == key.UserId
                 && point.DeviceId == key.DeviceId
                 && point.RecordedAtUtc == key.RecordedAtUtc
-                && point.Latitude == key.Latitude
-                && point.Longitude == key.Longitude)
-            .Take(2)
+                && ((point.Latitude == key.Latitude && point.Longitude == key.Longitude)
+                    || (point.OriginalLatitude == key.Latitude && point.OriginalLongitude == key.Longitude)))
             .ToListAsync(ct);
 
-        return candidates.OrderBy(point => point.CreatedAt).FirstOrDefault();
+        return candidates
+            .OrderByDescending(point => point.Latitude == key.Latitude && point.Longitude == key.Longitude)
+            .ThenBy(point => point.CreatedAt)
+            .FirstOrDefault();
     }
 
     /// <summary>
@@ -327,7 +361,7 @@ public sealed class MobileLocationService
         var userId = MobileUserContext.RequireUserId(_currentUser);
         var query = _db.Set<MobileLocationPointEntity>()
             .AsNoTracking()
-            .Where(p => p.UserId == userId);
+            .Where(p => p.UserId == userId && !p.IsExcluded);
 
         if (!string.IsNullOrWhiteSpace(deviceId))
             query = query.Where(p => p.DeviceId == deviceId);

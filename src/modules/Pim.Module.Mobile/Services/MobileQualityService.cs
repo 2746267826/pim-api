@@ -116,7 +116,8 @@ public sealed class MobileQualityService
             .Where(p => p.UserId == userId
                 && (normalizedDeviceId == null || p.DeviceId == normalizedDeviceId)
                 && p.RecordedAtUtc >= rangeStart
-                && p.RecordedAtUtc < rangeEnd)
+                && p.RecordedAtUtc < rangeEnd
+                && !p.IsExcluded)
             .ToListAsync(ct);
 
         var usedPackages = eventRows
