@@ -66,6 +66,18 @@ public static class NotificationEndpoints
         .Produces<ApiResponse<string>>(409)
         .Produces(401);
 
+        group.MapPost("/subscriptions/revoke-current", async (
+            [FromBody] RevokeCurrentNotificationSubscriptionRequest request,
+            [FromServices] NotificationSubscriptionService subscriptions,
+            CancellationToken ct) =>
+        {
+            var result = await subscriptions.RevokeCurrentAsync(request, ct);
+            return Results.Ok(ApiResponse<NotificationSubscriptionRevokeResponse>.Ok(result));
+        })
+        .Produces<ApiResponse<NotificationSubscriptionRevokeResponse>>(200)
+        .Produces<ApiResponse<string>>(400)
+        .Produces(401);
+
         group.MapDelete("/subscriptions/{id:guid}", async (
             Guid id,
             [FromServices] NotificationSubscriptionService subscriptions,

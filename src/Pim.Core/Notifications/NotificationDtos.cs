@@ -64,6 +64,12 @@ public sealed record CreateNotificationSubscriptionRequest(
     string Endpoint,
     NotificationSubscriptionKeysDto Keys);
 
+public sealed record RevokeCurrentNotificationSubscriptionRequest(
+    string? DeviceId,
+    string? Endpoint);
+
+public sealed record NotificationSubscriptionRevokeResponse(int Revoked);
+
 public sealed record NotificationSubscriptionDto(
     Guid Id,
     string DeviceId,

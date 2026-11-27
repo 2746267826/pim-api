@@ -301,6 +301,11 @@ public sealed class NotificationSubscriptionService(
         return Map(subscription);
     }
 
+    public Task<NotificationSubscriptionRevokeResponse> RevokeCurrentAsync(
+        RevokeCurrentNotificationSubscriptionRequest request,
+        CancellationToken ct) =>
+        Task.FromResult(new NotificationSubscriptionRevokeResponse(0));
+
     private async Task SuppressPendingDeliveriesAsync(
         Guid subscriptionId,
         string errorCode,
