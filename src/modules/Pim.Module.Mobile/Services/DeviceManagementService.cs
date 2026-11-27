@@ -254,37 +254,40 @@ public sealed class DeviceManagementService
                 (p, t) => new
                 {
                     SourcePointId = p.Id,
+                    SourceRevision = p.Revision,
                     TargetPointId = t.Id,
+                    TargetRevision = t.Revision,
                     TargetDeleted = t.DeletedAtUtc != null
                 })
             .ToListAsync(ct);
 
         if (duplicateLocationPairs.Count > 0)
         {
-            var duplicatePointIds = duplicateLocationPairs
-                .Select(pair => pair.SourcePointId)
-                .Distinct()
+            var pairs = duplicateLocationPairs
+                .Select(pair => new DuplicateLocationPair(
+                    pair.SourcePointId,
+                    pair.TargetPointId,
+                    pair.TargetDeleted,
+                    pair.SourceRevision,
+                    pair.TargetRevision))
                 .ToList();
 
+            // 先按快照里的 revision 做 CAS 删除，再迁移历史。顺序不能反：如果先迁历史，
+            // 并发的坐标纠正可能已经提交，它的修订行会被挂到目标点，随后源点又按旧 ID
+            // 被无条件删掉——纠正返回 200 却静默消失，目标 revision 也不会递增。
+            // revision 是 MobileLocationPointEntity 的并发令牌，纠正/排除/恢复/删除都会
+            // 原子递增它；源点与目标点任一侧 CAS 失败都说明重复自然键的判定已过期，
+            // 整笔合并回滚并让调用方刷新后重试。
+            await EnsureDuplicateLocationTargetsUnchangedAsync(userId, targetDeviceId, pairs, ct);
+            await DeleteDuplicateLocationPointsAsync(userId, sourceDeviceId, pairs, ct);
+
             // 点行被删除后，修订行与依赖该边界点的分段合并覆盖不能再指向已经不存在的 ID。
-            // 目标设备保留的是同一自然键的点，因此这些历史语义上属于目标点：先重映射再删源点。
+            // 目标设备保留的是同一自然键的点，因此这些历史语义上属于目标点。
             await RemapDuplicateLocationHistoryAsync(
                 userId,
                 targetDeviceId,
-                duplicateLocationPairs
-                    .Select(pair => new DuplicateLocationPair(
-                        pair.SourcePointId,
-                        pair.TargetPointId,
-                        pair.TargetDeleted))
-                    .ToList(),
+                pairs,
                 ct);
-
-            await locations
-                .IgnoreQueryFilters()
-                .Where(p => p.UserId == userId
-                    && p.DeviceId == sourceDeviceId
-                    && duplicatePointIds.Contains(p.Id))
-                .ExecuteDeleteAsync(ct);
         }
 
         // 分段合并的人工覆盖以 (user, device, before_point_id, after_point_id) 唯一。
@@ -300,7 +303,89 @@ public sealed class DeviceManagementService
     }
 
     /// <summary>
-    /// 重复自然键的源定位点删除前，把引用它的历史迁移到保留下来的目标点上。
+    /// 复核重复自然键快照中的目标点在读取之后没有被改写，并把这些行锁到事务提交。
+    ///
+    /// <para>
+    /// 自然键包含经纬度：目标点一旦被并发纠正，源点就不再是它的重复点，按旧快照删除源点
+    /// 会丢掉一个仍然有效的定位点。这里用自赋值的 <c>UPDATE</c> 对目标行做 CAS 并加写锁：
+    /// 若另一事务已提交纠正，<c>revision</c> 条件不再命中，受影响行数少于快照数，抛 6205；
+    /// 若纠正尚未提交，本事务会等它结束后重新判断。锁保持到合并事务结束，后续源点删除与
+    /// 历史迁移期间目标点不会再变化。
+    /// </para>
+    /// </summary>
+    private async Task EnsureDuplicateLocationTargetsUnchangedAsync(
+        Guid userId,
+        string targetDeviceId,
+        IReadOnlyCollection<DuplicateLocationPair> duplicateLocationPairs,
+        CancellationToken ct)
+    {
+        var locations = _db.Set<MobileLocationPointEntity>();
+        foreach (var revisionGroup in duplicateLocationPairs.GroupBy(pair => pair.TargetRevision))
+        {
+            var pointIds = revisionGroup
+                .Select(pair => pair.TargetPointId)
+                .Distinct()
+                .ToList();
+            var unchanged = await locations
+                .IgnoreQueryFilters()
+                .Where(point => point.UserId == userId
+                    && point.DeviceId == targetDeviceId
+                    && pointIds.Contains(point.Id)
+                    && point.Revision == revisionGroup.Key)
+                // 自赋值不是无用写：它让目标行在锁等待结束后重新校验 revision，并持锁到提交。
+                .ExecuteUpdateAsync(
+                    setters => setters.SetProperty(point => point.Revision, point => point.Revision),
+                    ct);
+            if (unchanged != pointIds.Count)
+            {
+                throw new DomainException(
+                    6205,
+                    "设备合并期间有定位点被其他修改更新，请刷新后重试。");
+            }
+        }
+    }
+
+    /// <summary>
+    /// 以读取重复自然键时的 <c>revision</c> 为快照，对源点做 compare-and-delete。
+    ///
+    /// <para>
+    /// 定位点的 <c>revision</c> 是数据库并发令牌：人工纠正、排除/恢复和永久删除都会在同一
+    /// 事务里递增它。因此这里按 <c>(id, revision)</c> 删除，等价于同时复核了自然键未被改写。
+    /// 只要有一个点已被别的请求修改，受影响行数就会少于快照数，必须抛 6205（HTTP 409）
+    /// 让整笔合并回滚；不能把已返回 200 的纠正连同源点一起静默删掉。
+    /// </para>
+    /// </summary>
+    private async Task DeleteDuplicateLocationPointsAsync(
+        Guid userId,
+        string sourceDeviceId,
+        IReadOnlyCollection<DuplicateLocationPair> duplicateLocationPairs,
+        CancellationToken ct)
+    {
+        var locations = _db.Set<MobileLocationPointEntity>();
+        foreach (var revisionGroup in duplicateLocationPairs.GroupBy(pair => pair.SourceRevision))
+        {
+            var pointIds = revisionGroup
+                .Select(pair => pair.SourcePointId)
+                .Distinct()
+                .ToList();
+            var deleted = await locations
+                .IgnoreQueryFilters()
+                .Where(point => point.UserId == userId
+                    && point.DeviceId == sourceDeviceId
+                    && pointIds.Contains(point.Id)
+                    && point.Revision == revisionGroup.Key)
+                .ExecuteDeleteAsync(ct);
+            if (deleted != pointIds.Count)
+            {
+                throw new DomainException(
+                    6205,
+                    "设备合并期间有定位点被其他修改更新，请刷新后重试。");
+            }
+        }
+    }
+
+    /// <summary>
+    /// 重复自然键的源定位点 CAS 删除后，把引用它的历史迁移到保留下来的目标点上。
     ///
     /// <para>
     /// 目标点仍有效时，修订行没有唯一键，直接改 <c>PointId</c> 即可；分段合并覆盖以
@@ -404,7 +489,9 @@ public sealed class DeviceManagementService
     private sealed record DuplicateLocationPair(
         Guid SourcePointId,
         Guid TargetPointId,
-        bool TargetDeleted);
+        bool TargetDeleted,
+        int SourceRevision,
+        int TargetRevision);
 
     private sealed record DuplicateLocationTarget(Guid PointId, bool TargetDeleted);
 

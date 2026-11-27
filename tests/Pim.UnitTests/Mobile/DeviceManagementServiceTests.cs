@@ -1,3 +1,4 @@
+using System.Data.Common;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
@@ -576,6 +577,116 @@ public sealed class DeviceManagementServiceTests
     }
 
     [Fact]
+    public async Task MergeAsync_AbortsWhenADuplicatePointRevisionChangesBeforeTheCasDelete()
+    {
+        var interceptor = new BumpRevisionBeforeDuplicateLocationDeleteInterceptor();
+        await using var ctx = await DeviceManagementTestDb.CreateAsync(interceptor);
+        var db = ctx.Db;
+        SeedDevice(db, TargetDeviceId, Now);
+        SeedDevice(db, SourceDeviceA, Now.AddDays(-60));
+        var recordedAt = Now.AddDays(-45);
+        var targetPoint = SeedLocationPoint(db, TargetDeviceId, recordedAt);
+        var sourcePoint = SeedLocationPoint(db, SourceDeviceA, recordedAt);
+        var sourceMerge = new MobileLocationSegmentMergeEntity
+        {
+            UserId = MobileTestHelpers.UserId,
+            DeviceId = SourceDeviceA,
+            BeforePointId = sourcePoint.Id,
+            AfterPointId = sourcePoint.Id,
+            Kind = "move",
+            ActorUserId = MobileTestHelpers.UserId,
+            CreatedAt = Now.AddDays(-1)
+        };
+        db.Set<MobileLocationSegmentMergeEntity>().Add(sourceMerge);
+        await db.SaveChangesAsync();
+        interceptor.PointId = sourcePoint.Id;
+        var service = CreateService(db);
+
+        var error = await Assert.ThrowsAsync<DomainException>(
+            () => service.MergeAsync([SourceDeviceA], TargetDeviceId, CancellationToken.None));
+
+        Assert.Equal(6205, error.ErrorCode);
+        db.ChangeTracker.Clear();
+        Assert.NotNull(await db.Set<MobileDeviceEntity>()
+            .SingleOrDefaultAsync(device => device.UserId == MobileTestHelpers.UserId
+                && device.DeviceId == SourceDeviceA));
+        var points = await db.Set<MobileLocationPointEntity>()
+            .IgnoreQueryFilters()
+            .OrderBy(point => point.DeviceId)
+            .ToListAsync();
+        Assert.Equal(2, points.Count);
+        Assert.Contains(points, point => point.Id == targetPoint.Id && point.DeviceId == TargetDeviceId);
+        Assert.Contains(points, point => point.Id == sourcePoint.Id && point.DeviceId == SourceDeviceA);
+        var retainedSource = Assert.Single(points, point => point.Id == sourcePoint.Id);
+        Assert.Equal(0, retainedSource.Revision);
+        Assert.Equal(31.2304m, retainedSource.Latitude);
+        Assert.Equal(121.4737m, retainedSource.Longitude);
+
+        // CAS 冲突必须回滚整笔合并：源设备的历史不能先被迁到目标点上。
+        var retainedMerge = Assert.Single(await db.Set<MobileLocationSegmentMergeEntity>().ToListAsync());
+        Assert.Equal(sourceMerge.Id, retainedMerge.Id);
+        Assert.Equal(SourceDeviceA, retainedMerge.DeviceId);
+        Assert.Equal(sourcePoint.Id, retainedMerge.BeforePointId);
+        Assert.Equal(sourcePoint.Id, retainedMerge.AfterPointId);
+    }
+
+    [Fact]
+    public async Task MergeAsync_AbortsWhenADuplicateTargetRevisionChangesBeforeTheCasCheck()
+    {
+        var interceptor = new BumpRevisionBeforeDuplicateTargetCasInterceptor();
+        await using var ctx = await DeviceManagementTestDb.CreateAsync(interceptor);
+        var db = ctx.Db;
+        SeedDevice(db, TargetDeviceId, Now);
+        SeedDevice(db, SourceDeviceA, Now.AddDays(-60));
+        var recordedAt = Now.AddDays(-45);
+        var targetPoint = SeedLocationPoint(db, TargetDeviceId, recordedAt);
+        var sourcePoint = SeedLocationPoint(db, SourceDeviceA, recordedAt);
+        var sourceMerge = new MobileLocationSegmentMergeEntity
+        {
+            UserId = MobileTestHelpers.UserId,
+            DeviceId = SourceDeviceA,
+            BeforePointId = sourcePoint.Id,
+            AfterPointId = sourcePoint.Id,
+            Kind = "move",
+            ActorUserId = MobileTestHelpers.UserId,
+            CreatedAt = Now.AddDays(-1)
+        };
+        db.Set<MobileLocationSegmentMergeEntity>().Add(sourceMerge);
+        await db.SaveChangesAsync();
+        interceptor.PointId = targetPoint.Id;
+        var service = CreateService(db);
+
+        var error = await Assert.ThrowsAsync<DomainException>(
+            () => service.MergeAsync([SourceDeviceA], TargetDeviceId, CancellationToken.None));
+
+        Assert.Equal(6205, error.ErrorCode);
+        db.ChangeTracker.Clear();
+        Assert.NotNull(await db.Set<MobileDeviceEntity>()
+            .SingleOrDefaultAsync(device => device.UserId == MobileTestHelpers.UserId
+                && device.DeviceId == SourceDeviceA));
+        var points = await db.Set<MobileLocationPointEntity>()
+            .IgnoreQueryFilters()
+            .OrderBy(point => point.DeviceId)
+            .ToListAsync();
+        Assert.Equal(2, points.Count);
+        var retainedSource = Assert.Single(points, point => point.Id == sourcePoint.Id);
+        Assert.Equal(SourceDeviceA, retainedSource.DeviceId);
+        Assert.Equal(0, retainedSource.Revision);
+        var retainedTarget = Assert.Single(points, point => point.Id == targetPoint.Id);
+        Assert.Equal(TargetDeviceId, retainedTarget.DeviceId);
+        // 目标点的并发纠正同样必须整笔回滚，不能在删除源点时按过期自然键判定重复。
+        Assert.Equal(0, retainedTarget.Revision);
+        Assert.Equal(31.2304m, retainedTarget.Latitude);
+        Assert.Equal(121.4737m, retainedTarget.Longitude);
+
+        var retainedMerge = Assert.Single(await db.Set<MobileLocationSegmentMergeEntity>().ToListAsync());
+        Assert.Equal(sourceMerge.Id, retainedMerge.Id);
+        Assert.Equal(SourceDeviceA, retainedMerge.DeviceId);
+        Assert.Equal(sourcePoint.Id, retainedMerge.BeforePointId);
+        Assert.Equal(sourcePoint.Id, retainedMerge.AfterPointId);
+    }
+
+    [Fact]
     public async Task PreviewMergeAsync_RejectsAnEmptyOrNullSourceList()
     {
         await using var ctx = await DeviceManagementTestDb.CreateAsync();
@@ -731,6 +842,103 @@ public sealed class DeviceManagementServiceTests
 
     private static DeviceManagementService CreateService(PimDbContext db)
         => new(db, MobileTestHelpers.CurrentUser(), MobileTestHelpers.Time(Now));
+
+    /// <summary>
+    /// 在本事务内、源点 CAS 删除即将执行前，模拟并发纠正已经递增了 <c>revision</c> 并改写坐标。
+    /// SQLite 内存库无法让第二个连接同时提交写事务，因此这里用同一事务证明删除谓词确实带了
+    /// revision；整笔合并回滚后该模拟修改也一起消失。
+    /// 真实“纠正先提交 200、合并随后 409”的交错由 <see cref="DeviceMergeRealDbTests"/> 在
+    /// 独立 PostgreSQL 连接上覆盖。
+    /// </summary>
+    private sealed class BumpRevisionBeforeDuplicateLocationDeleteInterceptor : DbCommandInterceptor
+    {
+        private int _triggered;
+
+        public Guid PointId { get; set; }
+
+        public override async ValueTask<InterceptionResult<int>> NonQueryExecutingAsync(
+            DbCommand command,
+            CommandEventData eventData,
+            InterceptionResult<int> result,
+            CancellationToken cancellationToken = default)
+        {
+            if (Volatile.Read(ref _triggered) != 0
+                || !command.CommandText.TrimStart().StartsWith("DELETE", StringComparison.OrdinalIgnoreCase)
+                || !command.CommandText.Contains("mobile_location_points", StringComparison.OrdinalIgnoreCase)
+                || Interlocked.Exchange(ref _triggered, 1) != 0)
+            {
+                return result;
+            }
+
+            await using var update = command.Connection!.CreateCommand();
+            update.Transaction = command.Transaction;
+            update.CommandText =
+                "UPDATE mobile_location_points " +
+                "SET revision = revision + 1, latitude = @latitude, longitude = @longitude " +
+                "WHERE id = @id";
+            var id = update.CreateParameter();
+            id.ParameterName = "@id";
+            id.Value = PointId;
+            update.Parameters.Add(id);
+            var latitude = update.CreateParameter();
+            latitude.ParameterName = "@latitude";
+            latitude.Value = 31.2401234m;
+            update.Parameters.Add(latitude);
+            var longitude = update.CreateParameter();
+            longitude.ParameterName = "@longitude";
+            longitude.Value = 121.4805678m;
+            update.Parameters.Add(longitude);
+            await update.ExecuteNonQueryAsync(cancellationToken);
+            return result;
+        }
+    }
+
+    /// <summary>
+    /// 合并对目标点做 CAS 复核前，在同一事务内改掉目标点 revision/坐标，
+    /// 模拟快照之后提交的并发纠正；合并必须整笔回滚。
+    /// </summary>
+    private sealed class BumpRevisionBeforeDuplicateTargetCasInterceptor : DbCommandInterceptor
+    {
+        private int _triggered;
+
+        public Guid PointId { get; set; }
+
+        public override async ValueTask<InterceptionResult<int>> NonQueryExecutingAsync(
+            DbCommand command,
+            CommandEventData eventData,
+            InterceptionResult<int> result,
+            CancellationToken cancellationToken = default)
+        {
+            if (Volatile.Read(ref _triggered) != 0
+                || !command.CommandText.TrimStart().StartsWith("UPDATE", StringComparison.OrdinalIgnoreCase)
+                || !command.CommandText.Contains("mobile_location_points", StringComparison.OrdinalIgnoreCase)
+                || Interlocked.Exchange(ref _triggered, 1) != 0)
+            {
+                return result;
+            }
+
+            await using var update = command.Connection!.CreateCommand();
+            update.Transaction = command.Transaction;
+            update.CommandText =
+                "UPDATE mobile_location_points " +
+                "SET revision = revision + 1, latitude = @latitude, longitude = @longitude " +
+                "WHERE id = @id";
+            var id = update.CreateParameter();
+            id.ParameterName = "@id";
+            id.Value = PointId;
+            update.Parameters.Add(id);
+            var latitude = update.CreateParameter();
+            latitude.ParameterName = "@latitude";
+            latitude.Value = 31.2456789m;
+            update.Parameters.Add(latitude);
+            var longitude = update.CreateParameter();
+            longitude.ParameterName = "@longitude";
+            longitude.Value = 121.4856789m;
+            update.Parameters.Add(longitude);
+            await update.ExecuteNonQueryAsync(cancellationToken);
+            return result;
+        }
+    }
 
     private static async Task<List<string>> RowsStillOwnedByAsync(PimDbContext db, string deviceId)
     {

@@ -115,6 +115,7 @@ public sealed class MobileModule : IModule
         .Produces<ApiResponse<string>>(200)
         .Produces(401)
         .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(409)
         .Produces<ApiResponse<string>>(500);
         group.MapGet("/devices/{deviceId}/delete-preview", async ([FromRoute] string deviceId, [FromServices] DeviceManagementService svc, CancellationToken ct) =>
             Results.Ok(ApiResponse<DeviceDeletePreviewDto>.Ok(await svc.PreviewDeleteAsync(deviceId, ct))))
