@@ -535,7 +535,7 @@ public sealed class OpenApiContractShapeTests
         Assert.Contains("versionId", RequiredOf(start));
         Assert.Contains("consent", RequiredOf(start));
         var consent = start.Properties["consent"];
-        Assert.Equal("NoteProcessingConsent", Assert.Single(consent.AllOf).Reference?.Id);
+        Assert.Equal("NoteProcessingConsent", consent.Reference?.Id);
         Assert.False(consent.Nullable);
 
         var consentSchema = Schema("NoteProcessingConsent");
