@@ -547,6 +547,14 @@ public sealed class OpenApiContractShapeTests
             Assert.Contains(property, RequiredOf(consentSchema));
         Assert.DoesNotContain("standingAuthorizationRevision", RequiredOf(consentSchema));
 
+        var targetSchema = Schema("NoteProcessingTargetDto");
+        Assert.Contains("routeConfigRevision", targetSchema.Properties.Keys);
+        Assert.Contains("routeConsentVersion", targetSchema.Properties.Keys);
+        Assert.DoesNotContain("routeConfigRevision", RequiredOf(targetSchema));
+        Assert.DoesNotContain("routeConsentVersion", RequiredOf(targetSchema));
+        Assert.True(targetSchema.Properties["routeConfigRevision"].Nullable);
+        Assert.True(targetSchema.Properties["routeConsentVersion"].Nullable);
+
         var status = Schema("NoteProcessingStatusDto");
         Assert.DoesNotContain("authorization", RequiredOf(status));
         var authorization = status.Properties["authorization"];

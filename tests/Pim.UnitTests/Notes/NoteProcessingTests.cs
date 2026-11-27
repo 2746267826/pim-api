@@ -453,6 +453,45 @@ public sealed class NoteProcessingTests(NoteProcessingFixture host)
     }
 
     [Fact]
+    public async Task ManualStartRejectsStaleRouteConsentBeforeCreatingAnything()
+    {
+        var owner = await OwnerAsync("stale-route-consent");
+        using var client = AuthRegistrationTestHost.Authed(host.Factory, owner.AccessToken);
+        var models = await ConfigureAsync(client, auto: false);
+        var route = await ConfigureCloudRouteAsync(client, models.Asr.Id);
+        var material = await CompleteMaterialAsync(owner, client, withAudio: true);
+
+        var planResponse = await client.GetAsync(
+            $"{Processing}/plan?noteId={material.NoteId}&versionId={material.VersionId}");
+        var planJson = JsonNode.Parse(await planResponse.Content.ReadAsStringAsync())!["data"]!;
+        var asrTarget = planJson["targets"]!.AsArray()
+            .Single(target => target!["kind"]!.GetValue<string>() == "Asr")!;
+        Assert.Equal(route.Revision.ToString("D"),
+            asrTarget["routeConfigRevision"]!.GetValue<string>());
+        Assert.Equal("synthetic-cloud-consent-v1",
+            asrTarget["routeConsentVersion"]!.GetValue<string>());
+        var plan = planJson.Deserialize<NoteProcessingPlanDto>(Json)!;
+
+        using (var scope = host.Factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
+            var config = await db.NoteAsrRouteConfigs.SingleAsync(x => x.OwnerId == owner.UserId);
+            config.ConsentVersion = "synthetic-cloud-consent-v2";
+            await db.SaveChangesAsync();
+        }
+
+        var rejected = await client.PostAsJsonAsync(Processing + "/start",
+            new StartNoteProcessingRequest(material.NoteId, material.VersionId, Consent(plan)));
+        Assert.Equal(HttpStatusCode.Conflict, rejected.StatusCode);
+        Assert.Equal((Asr: 0, Derived: 0), TaskCounts(owner));
+        Assert.Equal(0, await AttemptCountAsync(owner.UserId,
+            NoteProcessingIdentity.Task(owner.UserId, material.VersionId,
+                NoteProcessingTaskKind.Asr)));
+        Assert.Equal(0, host.Models.Calls);
+        Assert.Equal(0, await AiCallCountAsync(owner.UserId));
+    }
+
+    [Fact]
     public async Task LegacyRandomRequestIdsConvergeAndConflictingTargetsReturn409()
     {
         var owner = await OwnerAsync("legacy-chain");

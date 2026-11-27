@@ -2125,6 +2125,7 @@ public sealed class NoteAsrBatchPersistenceTests
         }
 
         var taskId = Guid.NewGuid();
+        var routeConfigRevision = Guid.NewGuid();
         var promptTemplate = AiAsrPromptTemplate.Normalize();
         var prompt = promptTemplate.Snapshot("zh");
         var attempt = new NoteAsrAttemptEntity
@@ -2132,7 +2133,8 @@ public sealed class NoteAsrBatchPersistenceTests
             Id = Guid.NewGuid(), OwnerId = owner, TaskId = taskId, NoteId = material.Version.Upload.NoteId,
             VersionId = material.Version.Upload.VersionId,
             InputSha256 = NoteMaterialManifestValidator.Hash(material.Version.InputJson),
-            Route = NoteAsrRoute.CloudMultimodal, State = "Queued", ConfigRevision = Guid.NewGuid(),
+            Route = NoteAsrRoute.CloudMultimodal, State = "Queued",
+            ConfigRevision = routeConfigRevision,
             ConsentVersion = "consent-1", ModelId = profile.Id, ModelRevision = profile.Revision,
             PresetId = MimoMultimodalPreset.PresetId, PresetVersion = "1", Model = profile.Model,
             Endpoint = "https://api.example.invalid/v1/chat/completions", ExecutionMode = "batch",
@@ -2142,6 +2144,15 @@ public sealed class NoteAsrBatchPersistenceTests
             FencingToken = 7, ExpectedSegments = 2, Language = "zh"
         };
         await db.NoteAsrAttempts.AddAsync(attempt);
+        await db.NoteAsrRouteConfigs.AddAsync(new NoteAsrRouteConfigEntity
+        {
+            OwnerId = owner,
+            Revision = routeConfigRevision,
+            DefaultRoute = NoteAsrRoute.CloudMultimodal,
+            CloudModelId = profile.Id,
+            ConsentVersion = "consent-1",
+            UpdatedAt = now
+        });
         await db.SaveChangesAsync();
         var consent = new AiAsrDestinationConsent(profile.Id, profile.Revision,
             "https://api.example.invalid/v1/chat/completions", MimoMultimodalPreset.PresetId, "1", true);

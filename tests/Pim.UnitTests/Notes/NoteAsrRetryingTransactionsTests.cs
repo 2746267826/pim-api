@@ -209,6 +209,7 @@ public sealed class NoteAsrRetryingTransactionsTests
         var profileId = Guid.NewGuid();
         var profileRevision = Guid.NewGuid();
         var attemptId = Guid.NewGuid();
+        var routeConfigRevision = Guid.NewGuid();
         var now = DateTimeOffset.UtcNow;
 
         await using (var db = database.NewContext(owner))
@@ -238,7 +239,8 @@ public sealed class NoteAsrRetryingTransactionsTests
                 Id = attemptId, OwnerId = owner, TaskId = taskId, NoteId = material.Version.Upload.NoteId,
                 VersionId = material.Version.Upload.VersionId,
                 InputSha256 = NoteMaterialManifestValidator.Hash(material.Version.InputJson),
-                Route = NoteAsrRoute.CloudMultimodal, State = "Queued", ConfigRevision = Guid.NewGuid(),
+                Route = NoteAsrRoute.CloudMultimodal, State = "Queued",
+                ConfigRevision = routeConfigRevision,
                 ConsentVersion = "consent-1", ModelId = profileId, ModelRevision = profileRevision,
                 PresetId = MimoMultimodalPreset.PresetId, PresetVersion = "1", Model = "mimo-v2.6-pro",
                 Endpoint = "https://api.example.invalid/v1/chat/completions", ExecutionMode = "batch",
@@ -247,12 +249,21 @@ public sealed class NoteAsrRetryingTransactionsTests
                 PromptSha256 = prompt.Sha256, PromptRevision = prompt.Revision,
                 FencingToken = 7, ExpectedSegments = 2, Language = "zh"
             });
+            db.NoteAsrRouteConfigs.Add(new NoteAsrRouteConfigEntity
+            {
+                OwnerId = owner,
+                Revision = routeConfigRevision,
+                DefaultRoute = NoteAsrRoute.CloudMultimodal,
+                CloudModelId = profileId,
+                ConsentVersion = "consent-1",
+                UpdatedAt = now
+            });
             await db.SaveChangesAsync();
         }
 
         var consent = new AiAsrDestinationConsent(profileId, profileRevision,
             "https://api.example.invalid/v1/chat/completions", MimoMultimodalPreset.PresetId, "1", true);
-        var route = new NoteAsrRouteConsent(NoteAsrRoute.CloudMultimodal, Guid.NewGuid(),
+        var route = new NoteAsrRouteConsent(NoteAsrRoute.CloudMultimodal, routeConfigRevision,
             "consent-1", true, NoteAsrExecutionMode.Batch, true);
         var request = new StartNoteAsrRequest(taskId, owner, material.Version.Upload.VersionId, consent, "zh", route);
         var tasks = Tasks(owner);
