@@ -86,9 +86,11 @@ export class UploadEngine {
   /** 只清理普通文件传输历史；进行中的上传队列和内存中的 File 继续保留。 */
   clearHistory(): number {
     const cleared = this.history.length
+    const before = this.queue.length
+    this.queue = this.queue.filter((item) => item.status === 'queued' || item.status === 'uploading')
     this.history = []
     remove(STORAGE_KEYS.transferHistory)
-    if (cleared > 0) this.emit()
+    if (cleared > 0 || this.queue.length !== before) this.emit()
     return cleared
   }
 

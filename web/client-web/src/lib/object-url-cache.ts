@@ -14,8 +14,30 @@ const limits: Record<ObjectUrlKind, number> = {
 }
 
 const entries = new Map<string, CacheEntry>()
+const activeConsumers = new Map<string, number>()
 const listeners = new Set<() => void>()
 let epoch = 0
+let clearRevision = 0
+
+function consumerKey(kind: ObjectUrlKind, key: string): string {
+  return `${kind}\u0000${key}`
+}
+
+function isInUse(kind: ObjectUrlKind, key: string): boolean {
+  return (activeConsumers.get(consumerKey(kind, key)) ?? 0) > 0
+}
+
+function release(kind: ObjectUrlKind, key: string) {
+  const id = consumerKey(kind, key)
+  const count = activeConsumers.get(id) ?? 0
+  if (count > 1) {
+    activeConsumers.set(id, count - 1)
+    return
+  }
+  activeConsumers.delete(id)
+  const entry = entries.get(key)
+  if (entry?.kind === kind && trim(kind, '')) notify()
+}
 
 function notify() {
   epoch += 1
@@ -32,12 +54,13 @@ function revoke(url: string) {
 
 function trim(kind: ObjectUrlKind, keepKey: string): boolean {
   const matching = [...entries.entries()]
-    .filter(([, entry]) => entry.kind === kind)
+    .filter(([key, entry]) => entry.kind === kind && key !== keepKey && !isInUse(kind, key))
     .sort((left, right) => left[1].lastUsed - right[1].lastUsed)
-  const overflow = matching.length - limits[kind]
+  const total = [...entries.values()].filter((entry) => entry.kind === kind).length
+  const overflow = total - limits[kind]
   if (overflow <= 0) return false
   let evicted = false
-  for (const [key, entry] of matching.filter(([key]) => key !== keepKey).slice(0, overflow)) {
+  for (const [key, entry] of matching.slice(0, overflow)) {
     revoke(entry.url)
     entries.delete(key)
     evicted = true
@@ -68,8 +91,22 @@ export function putCachedObjectUrl(kind: ObjectUrlKind, key: string, blob: Blob)
   return url
 }
 
-/** 清理缩略图或播放器对象 URL；返回实际撤销的条目数。重复调用返回 0。 */
+function putCachedObjectUrlAtRevision(kind: ObjectUrlKind, key: string, blob: Blob, revision: number): string | null {
+  if (revision !== clearRevision) return null
+  return putCachedObjectUrl(kind, key, blob)
+}
+
+export function objectUrlCacheRevision(): number {
+  return clearRevision
+}
+
+/**
+ * 清理缩略图或播放器对象 URL；返回实际撤销的条目数。重复调用返回 0。
+ * 即使当前没有缓存条目或撤销数量为 0，也要推进清理代次并通知订阅者：
+ * 否则清理前已在途的读取会在稍后完成并把对象 URL 重新放回缓存。
+ */
 export function clearObjectUrlCache(kind?: ObjectUrlKind): number {
+  clearRevision += 1
   let cleared = 0
   for (const [key, entry] of [...entries.entries()]) {
     if (kind && entry.kind !== kind) continue
@@ -77,7 +114,7 @@ export function clearObjectUrlCache(kind?: ObjectUrlKind): number {
     entries.delete(key)
     cleared += 1
   }
-  if (cleared > 0) notify()
+  notify()
   return cleared
 }
 
@@ -129,6 +166,13 @@ export function useCachedBlobUrl(
   }))
 
   useEffect(() => {
+    if (!enabled) return
+    const id = consumerKey(kind, key)
+    activeConsumers.set(id, (activeConsumers.get(id) ?? 0) + 1)
+    return () => release(kind, key)
+  }, [kind, key, enabled])
+
+  useEffect(() => {
     if (!enabled) {
       setState({ url: null, error: null })
       return
@@ -140,15 +184,17 @@ export function useCachedBlobUrl(
     }
     const controller = new AbortController()
     let active = true
+    const revision = objectUrlCacheRevision()
     setState({ url: null, error: null })
     void loadRef.current(controller.signal)
       .then((blob) => {
-        if (!active) return
-        const url = putCachedObjectUrl(kind, key, blob)
+        if (!active || objectUrlCacheRevision() !== revision) return
+        const url = putCachedObjectUrlAtRevision(kind, key, blob, revision)
+        if (!url) return
         setState({ url, error: null })
       })
       .catch((error: unknown) => {
-        if (!active) return
+        if (!active || objectUrlCacheRevision() !== revision) return
         setState({ url: null, error })
       })
     return () => {

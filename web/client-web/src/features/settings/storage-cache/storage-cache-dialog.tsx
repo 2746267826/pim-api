@@ -71,6 +71,7 @@ export function StorageCacheDialog({
 }) {
   const { user } = useAuth()
   const ownerId = user?.id ?? ''
+  const canViewVersionDrafts = user?.role === 'admin'
   const queryClient = useQueryClient()
   useUnsavedDrafts()
   useObjectUrlCacheEpoch()
@@ -134,7 +135,11 @@ export function StorageCacheDialog({
               </div>
             ))}
           </div>
-          <p className="text-xs leading-5 text-text-3">共 {clearableCount} 项可清理；清理后页面会按需重新读取服务器。</p>
+          <p className="text-xs leading-5 text-text-3">
+            共 {clearableCount} 项可清理；
+            {snapshot.inUseQueryEntries > 0 && `当前页面使用中的 ${snapshot.inUseQueryEntries} 条查询会保留；`}
+            清理后页面会按需重新读取服务器。
+          </p>
 
           <section aria-labelledby="storage-dialog-protected-heading">
             <div className="mb-2 flex flex-wrap items-center gap-2">
@@ -184,24 +189,44 @@ export function StorageCacheDialog({
                         {draft.pending && <StatusBadge tone="info" dot={false}>有待核对提交</StatusBadge>}
                         {otherServer && <StatusBadge tone="neutral" dot={false}>其他服务器</StatusBadge>}
                       </div>
-                      <p className="mt-1 break-all text-xs text-text-3">
-                        来源版本 {draft.binding.sourceVersionId || '未知'} · {draft.updatedAt ? formatTime(draft.updatedAt) : '记录损坏'}
-                      </p>
-                      <p className="mt-1 break-all text-xs text-text-3">草稿服务器：{serverLabel(draft.binding.serverBinding)}</p>
-                      <p className="mt-1 text-xs text-text-3">
-                        {otherServer
-                          ? '此草稿属于其他服务器；请先切换到该服务器，再从笔记处理页核对保存。'
-                          : '打开笔记处理页核对并保存人工修改；AI 草稿不会随临时缓存清理删除。'}
-                      </p>
-                      {draft.binding.sourceVersionId && !otherServer && (
-                        <Link
-                          className="mt-1 inline-block text-xs text-primary hover:underline"
-                          to={`/native-notes/processing?version=${encodeURIComponent(draft.binding.sourceVersionId)}`}
-                          onClick={() => handleOpenChange(false)}
-                        >
-                          去保存
-                        </Link>
+                      {canViewVersionDrafts ? (
+                        <>
+                          <p className="mt-1 break-all text-xs text-text-3">
+                            来源版本 {draft.binding.sourceVersionId || '未知'} · {draft.updatedAt ? formatTime(draft.updatedAt) : '记录损坏'}
+                          </p>
+                          <p className="mt-1 break-all text-xs text-text-3">草稿服务器：{serverLabel(draft.binding.serverBinding)}</p>
+                          <p className="mt-1 text-xs text-text-3">
+                            {otherServer
+                              ? '此草稿属于其他服务器；请先切换到该服务器，再从笔记处理页核对保存。'
+                              : '打开笔记处理页核对并保存人工修改；AI 草稿不会随临时缓存清理删除。'}
+                          </p>
+                        </>
+                      ) : (
+                        <p className="mt-1 text-xs leading-5 text-text-3">
+                          {otherServer
+                            ? '此草稿属于其他服务器；请先切换到该服务器，再从笔记处理页核对保存。'
+                            : 'AI 草稿已保存在本机。普通账号不显示历史材料版本；请从处理页选择当前笔记内容核对并保存。'}
+                        </p>
                       )}
+                      {!otherServer && (canViewVersionDrafts
+                        ? draft.binding.sourceVersionId && (
+                          <Link
+                            className="mt-1 inline-block text-xs text-primary hover:underline"
+                            to={`/native-notes/processing?version=${encodeURIComponent(draft.binding.sourceVersionId)}`}
+                            onClick={() => handleOpenChange(false)}
+                          >
+                            去保存
+                          </Link>
+                        )
+                        : (
+                          <Link
+                            className="mt-1 inline-block text-xs text-primary hover:underline"
+                            to="/native-notes/processing"
+                            onClick={() => handleOpenChange(false)}
+                          >
+                            去处理页核对
+                          </Link>
+                        ))}
                     </li>
                   )
                 })}

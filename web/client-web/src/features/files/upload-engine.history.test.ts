@@ -38,6 +38,7 @@ const history = [
 beforeEach(() => {
   localStorage.clear()
   vi.clearAllMocks()
+  filesApi.uploadSimple.mockImplementation(() => new Promise(() => undefined))
 })
 
 afterEach(() => {
@@ -73,5 +74,33 @@ describe('文件传输历史清理', () => {
     expect(engine.snapshot()).toHaveLength(1)
     expect(engine.snapshot()[0]?.status).toBe('uploading')
     expect(filesApi.uploadSimple).toHaveBeenCalledTimes(1)
+  })
+
+  it('清理后下一次上传只记录新任务，已清历史不会复活', async () => {
+    setJSON(STORAGE_KEYS.transferHistory, history)
+    filesApi.uploadSimple.mockResolvedValue(undefined)
+    const engine = new UploadEngine()
+
+    engine.enqueue({
+      providerId: 'provider-1',
+      file: new File(['first'], 'first.txt', { type: 'text/plain' }),
+      targetPath: '/',
+    })
+    await vi.waitFor(() => expect(engine.snapshot()[0]?.status).toBe('done'))
+    expect(engine.historyCount()).toBe(3)
+
+    expect(engine.clearHistory()).toBe(3)
+    expect(engine.snapshot()).toHaveLength(0)
+    expect(localStorage.getItem(STORAGE_KEYS.transferHistory)).toBeNull()
+
+    engine.enqueue({
+      providerId: 'provider-1',
+      file: new File(['second'], 'second.txt', { type: 'text/plain' }),
+      targetPath: '/',
+    })
+    await vi.waitFor(() => expect(engine.snapshot()[0]?.status).toBe('done'))
+
+    expect(engine.historyCount()).toBe(1)
+    expect(engine.historyList().map((item) => item.fileName)).toEqual(['second.txt'])
   })
 })

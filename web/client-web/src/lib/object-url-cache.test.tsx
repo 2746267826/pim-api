@@ -76,4 +76,46 @@ describe('object URL 临时缓存', () => {
     expect(load).toHaveBeenCalledTimes(2)
     expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:test-1')
   })
+
+  it('清理会失效清理前启动的读取，晚到结果不会重新放回缓存', async () => {
+    const pending: Array<(blob: Blob) => void> = []
+    const load = vi.fn(() => new Promise<Blob>((resolve) => pending.push(resolve)))
+    const hook = renderHook(() => useCachedBlobUrl('thumbnail', 'late-load', load))
+
+    await waitFor(() => expect(load).toHaveBeenCalledTimes(1))
+    act(() => {
+      expect(clearObjectUrlCache()).toBe(0)
+    })
+    await waitFor(() => expect(load).toHaveBeenCalledTimes(2))
+
+    await act(async () => {
+      pending[0]?.(new Blob(['stale']))
+      await Promise.resolve()
+    })
+    expect(objectUrlCacheCounts()).toEqual({ thumbnail: 0, player: 0 })
+    expect(hook.result.current.url).toBeNull()
+
+    await act(async () => {
+      pending[1]?.(new Blob(['fresh']))
+      await Promise.resolve()
+    })
+    await waitFor(() => expect(hook.result.current.url).toBe('blob:test-1'))
+    expect(objectUrlCacheCounts()).toEqual({ thumbnail: 1, player: 0 })
+  })
+
+  it('淘汰不会撤销仍挂载消费者正在使用的 URL', async () => {
+    const load = vi.fn(async () => new Blob(['keep']))
+    const hook = renderHook(() => useCachedBlobUrl('thumbnail', 'active-keep', load))
+
+    await waitFor(() => expect(hook.result.current.url).toBe('blob:test-1'))
+    act(() => {
+      for (let index = 0; index < 120; index += 1) {
+        putCachedObjectUrl('thumbnail', `other-${index}`, new Blob([String(index)]))
+      }
+    })
+
+    expect(getCachedObjectUrl('thumbnail', 'active-keep')).toBe('blob:test-1')
+    expect(URL.revokeObjectURL).not.toHaveBeenCalledWith('blob:test-1')
+    expect(objectUrlCacheCounts().thumbnail).toBe(120)
+  })
 })

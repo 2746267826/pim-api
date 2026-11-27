@@ -70,6 +70,7 @@ function CountCard({
 export function StorageCachePage() {
   const { user } = useAuth()
   const ownerId = user?.id ?? ''
+  const canViewVersionDrafts = user?.role === 'admin'
   const queryClient = useQueryClient()
   useUnsavedDrafts()
   useObjectUrlCacheEpoch()
@@ -138,7 +139,11 @@ export function StorageCachePage() {
           <div className="mb-2 flex items-end justify-between gap-3">
             <div>
               <h2 id="cache-clearable-heading" className="text-sm font-semibold text-text-1">临时缓存</h2>
-              <p className="mt-1 text-xs text-text-3">共 {clearableCount} 项可清理；清理后页面会按需重新读取服务器。</p>
+              <p className="mt-1 text-xs text-text-3">
+                共 {clearableCount} 项可清理；
+                {snapshot.inUseQueryEntries > 0 && `当前页面使用中的 ${snapshot.inUseQueryEntries} 条查询会保留；`}
+                清理后页面会按需重新读取服务器。
+              </p>
             </div>
             <Button variant="primary" size="sm" onClick={openCleanup}>
               <Trash2 className="size-4" aria-hidden /> 清理本机缓存
@@ -150,7 +155,7 @@ export function StorageCachePage() {
               title="查询缓存"
               count={snapshot.queryEntries}
               unit="条"
-              description="页面内存中的服务器查询结果；清理后需要时重新读取。"
+              description="未被当前页面使用的查询结果；使用中的查询会保留，清理后需要时重新读取。"
             />
             <CountCard
               icon={Image}
@@ -215,23 +220,39 @@ export function StorageCachePage() {
                         {draft.pending && <StatusBadge tone="info" dot={false}>有待核对提交</StatusBadge>}
                         {otherServer && <StatusBadge tone="neutral" dot={false}>其他服务器</StatusBadge>}
                       </div>
-                      <p className="mt-1 break-all text-xs text-text-3">
-                        来源版本 {draft.binding.sourceVersionId || '未知'} · {draft.updatedAt ? formatTime(draft.updatedAt) : '记录损坏'}
-                      </p>
-                      <p className="mt-1 break-all text-xs text-text-3">草稿服务器：{serverLabel(draft.binding.serverBinding)}</p>
-                      <p className="mt-1 text-xs text-text-3">
-                        {otherServer
-                          ? '此草稿属于其他服务器；请先切换到该服务器，再从笔记处理页核对保存。'
-                          : '打开笔记处理页核对并保存人工修改；AI 草稿不会随临时缓存清理删除。'}
-                      </p>
-                      {draft.binding.sourceVersionId && !otherServer && (
-                        <Link
-                          className="mt-1 inline-block text-xs text-primary hover:underline"
-                          to={`/native-notes/processing?version=${encodeURIComponent(draft.binding.sourceVersionId)}`}
-                        >
-                          去保存
-                        </Link>
+                      {canViewVersionDrafts ? (
+                        <>
+                          <p className="mt-1 break-all text-xs text-text-3">
+                            来源版本 {draft.binding.sourceVersionId || '未知'} · {draft.updatedAt ? formatTime(draft.updatedAt) : '记录损坏'}
+                          </p>
+                          <p className="mt-1 break-all text-xs text-text-3">草稿服务器：{serverLabel(draft.binding.serverBinding)}</p>
+                          <p className="mt-1 text-xs text-text-3">
+                            {otherServer
+                              ? '此草稿属于其他服务器；请先切换到该服务器，再从笔记处理页核对保存。'
+                              : '打开笔记处理页核对并保存人工修改；AI 草稿不会随临时缓存清理删除。'}
+                          </p>
+                        </>
+                      ) : (
+                        <p className="mt-1 text-xs leading-5 text-text-3">
+                          {otherServer
+                            ? '此草稿属于其他服务器；请先切换到该服务器，再从笔记处理页核对保存。'
+                            : 'AI 草稿已保存在本机。普通账号不显示历史材料版本；请从处理页选择当前笔记内容核对并保存。'}
+                        </p>
                       )}
+                      {!otherServer && (canViewVersionDrafts
+                        ? draft.binding.sourceVersionId && (
+                          <Link
+                            className="mt-1 inline-block text-xs text-primary hover:underline"
+                            to={`/native-notes/processing?version=${encodeURIComponent(draft.binding.sourceVersionId)}`}
+                          >
+                            去保存
+                          </Link>
+                        )
+                        : (
+                          <Link className="mt-1 inline-block text-xs text-primary hover:underline" to="/native-notes/processing">
+                            去处理页核对
+                          </Link>
+                        ))}
                     </li>
                   )
                 })}
@@ -298,18 +319,35 @@ export function StorageCachePage() {
                           AI 草稿 · {draft.binding.kind === 'IndependentAnalysis' ? '独立分析' : '完整记录'}
                           {otherServer && <span className="ml-1 text-text-3">（其他服务器）</span>}
                         </div>
-                        <div className="mt-1 break-all text-text-3">来源版本 {draft.binding.sourceVersionId || '未知'}</div>
-                        <div className="mt-1 break-all text-text-3">草稿服务器：{serverLabel(draft.binding.serverBinding)}</div>
-                        {otherServer ? (
+                        {canViewVersionDrafts ? (
+                          <>
+                            <div className="mt-1 break-all text-text-3">来源版本 {draft.binding.sourceVersionId || '未知'}</div>
+                            <div className="mt-1 break-all text-text-3">草稿服务器：{serverLabel(draft.binding.serverBinding)}</div>
+                            {otherServer ? (
+                              <div className="mt-1 text-text-3">请先切换到该服务器，再从笔记处理页保存。</div>
+                            ) : draft.binding.sourceVersionId && (
+                              <Link
+                                className="mt-1 inline-block text-primary hover:underline"
+                                to={`/native-notes/processing?version=${encodeURIComponent(draft.binding.sourceVersionId)}`}
+                                onClick={() => setDialogOpen(false)}
+                              >
+                                去保存
+                              </Link>
+                            )}
+                          </>
+                        ) : otherServer ? (
                           <div className="mt-1 text-text-3">请先切换到该服务器，再从笔记处理页保存。</div>
-                        ) : draft.binding.sourceVersionId && (
-                          <Link
-                            className="mt-1 inline-block text-primary hover:underline"
-                            to={`/native-notes/processing?version=${encodeURIComponent(draft.binding.sourceVersionId)}`}
-                            onClick={() => setDialogOpen(false)}
-                          >
-                            去保存
-                          </Link>
+                        ) : (
+                          <>
+                            <div className="mt-1 text-text-3">AI 草稿已保存在本机。普通账号不显示历史材料版本；请从处理页选择当前笔记内容核对并保存。</div>
+                            <Link
+                              className="mt-1 inline-block text-primary hover:underline"
+                              to="/native-notes/processing"
+                              onClick={() => setDialogOpen(false)}
+                            >
+                              去处理页核对
+                            </Link>
+                          </>
                         )}
                       </li>
                     )

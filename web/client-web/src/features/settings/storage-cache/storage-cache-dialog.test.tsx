@@ -17,7 +17,7 @@ import { StorageCacheLauncher } from './storage-cache-dialog'
 vi.mock('@/lib/notify', () => ({ notifySuccess: vi.fn(), notifyError: vi.fn() }))
 
 const authState = vi.hoisted(() => ({
-  user: { id: '11111111-1111-4111-8111-111111111111' } as { id: string } | null,
+  user: { id: '11111111-1111-4111-8111-111111111111', role: 'admin' } as { id: string; role: 'admin' | 'user' } | null,
 }))
 vi.mock('@/features/auth/auth-context', () => ({ useAuth: () => authState }))
 
@@ -57,7 +57,7 @@ function renderLauncher() {
 }
 
 beforeEach(() => {
-  authState.user = { id: ownerADraftScope.ownerId }
+  authState.user = { id: ownerADraftScope.ownerId, role: 'admin' }
   localStorage.clear()
   resetUnsavedDraftsForTests()
   Object.defineProperties(HTMLElement.prototype, {
@@ -110,7 +110,7 @@ describe('常驻存储与缓存入口', () => {
     const draftKey = noteDerivedDraftStorageKey(ownerADraftScope)
     if (!draftKey) throw new Error('missing draft key')
 
-    authState.user = { id: '99999999-9999-4999-8999-999999999999' }
+    authState.user = { id: '99999999-9999-4999-8999-999999999999', role: 'admin' }
     client = new QueryClient()
     render(
       <QueryClientProvider client={client}>
@@ -125,5 +125,33 @@ describe('常驻存储与缓存入口', () => {
     expect(screen.queryByText('AI 草稿')).toBeNull()
     expect(screen.queryByText('去保存')).toBeNull()
     expect(localStorage.getItem(draftKey)).not.toBeNull()
+  })
+
+  it('普通账号的 AI 草稿提供可用的处理页入口，不暴露不可达的历史版本链接', async () => {
+    const user = userEvent.setup()
+    localStorage.setItem('pim.apiBase', 'https://pim-a.example')
+    const clean = persistStoredDraft(createStoredDraft(ownerADraftScope, '已保存正文', 'head-a'))
+    expect(clean.ok).toBe(true)
+    if (!clean.ok) throw new Error('failed to seed draft')
+    const edited = editStoredDraft(clean.value, '尚未保存的人工正文')
+    expect(edited.ok).toBe(true)
+    if (!edited.ok) throw new Error('failed to edit draft')
+    expect(persistStoredDraft(edited.value).ok).toBe(true)
+
+    authState.user = { id: ownerADraftScope.ownerId, role: 'user' }
+    client = new QueryClient()
+    render(
+      <QueryClientProvider client={client}>
+        <MemoryRouter>
+          <StorageCacheLauncher />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+
+    await user.click(screen.getByRole('button', { name: '存储与缓存' }))
+    const link = await screen.findByRole('link', { name: '去处理页核对' })
+    expect(link.getAttribute('href')).toBe('/native-notes/processing')
+    expect(screen.queryByText('去保存')).toBeNull()
+    expect(screen.queryByText(/来源版本/)).toBeNull()
   })
 })

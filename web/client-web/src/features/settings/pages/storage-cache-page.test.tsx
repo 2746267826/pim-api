@@ -18,7 +18,7 @@ import { StorageCachePage } from './storage-cache-page'
 vi.mock('@/lib/notify', () => ({ notifySuccess: vi.fn(), notifyError: vi.fn() }))
 
 const authState = vi.hoisted(() => ({
-  user: { id: '11111111-1111-4111-8111-111111111111' } as { id: string } | null,
+  user: { id: '11111111-1111-4111-8111-111111111111', role: 'admin' } as { id: string; role: 'admin' | 'user' } | null,
 }))
 vi.mock('@/features/auth/auth-context', () => ({ useAuth: () => authState }))
 
@@ -59,7 +59,7 @@ function renderPage() {
 }
 
 beforeEach(() => {
-  authState.user = { id: scope.ownerId }
+  authState.user = { id: scope.ownerId, role: 'admin' }
   localStorage.clear()
   resetUnsavedDraftsForTests()
   nextUrl = 0
@@ -143,7 +143,7 @@ describe('存储与缓存页面', () => {
   it('同一服务器切换账号后不显示其他 owner 的 AI 草稿和保存入口', () => {
     localStorage.setItem('pim.apiBase', 'https://pim-a.example')
     const otherOwnerDraftKey = seedDirtyAiDraft()
-    authState.user = { id: '99999999-9999-4999-8999-999999999999' }
+    authState.user = { id: '99999999-9999-4999-8999-999999999999', role: 'admin' }
 
     renderPage()
 
@@ -151,5 +151,17 @@ describe('存储与缓存页面', () => {
     expect(screen.queryByText('去保存')).toBeNull()
     expect(screen.getByText('没有检测到页面内未保存编辑或本机 AI 草稿。')).toBeTruthy()
     expect(localStorage.getItem(otherOwnerDraftKey)).not.toBeNull()
+  })
+
+  it('普通账号的 AI 草稿只提供处理页入口，不暴露历史版本链接', () => {
+    localStorage.setItem('pim.apiBase', 'https://pim-a.example')
+    seedDirtyAiDraft()
+    authState.user = { id: scope.ownerId, role: 'user' }
+
+    renderPage()
+
+    expect(screen.getByRole('link', { name: '去处理页核对' }).getAttribute('href')).toBe('/native-notes/processing')
+    expect(screen.queryByText('去保存')).toBeNull()
+    expect(screen.queryByText(/来源版本/)).toBeNull()
   })
 })
