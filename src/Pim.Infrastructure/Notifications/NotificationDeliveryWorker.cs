@@ -382,6 +382,7 @@ public sealed class NotificationDeliveryWorker(
         command.Parameters.AddWithValue("limit", Math.Max(1, Options.FanoutBatchSize));
         await using var reader = await command.ExecuteReaderAsync(ct);
         while (await reader.ReadAsync(ct)) ids.Add(reader.GetGuid(0));
+        if (ids.Count > 0) db.ChangeTracker.Clear();
         return ids;
     }
 
@@ -438,6 +439,7 @@ public sealed class NotificationDeliveryWorker(
         command.Parameters.AddWithValue("limit", Math.Max(1, Options.DeliveryBatchSize));
         await using var reader = await command.ExecuteReaderAsync(ct);
         while (await reader.ReadAsync(ct)) ids.Add(reader.GetGuid(0));
+        if (ids.Count > 0) db.ChangeTracker.Clear();
         return ids;
     }
 
