@@ -1,3 +1,5 @@
+using Pim.Core.Notifications;
+
 namespace Pim.Infrastructure.Notifications;
 
 public sealed record PushSubscriptionSecret(
@@ -10,7 +12,11 @@ public sealed record PushNotificationMessage(
     string Body,
     string? DetailUrl,
     Guid NotificationId,
-    string EventType);
+    string EventType)
+{
+    /// <summary>Stable Q06 category key clients may filter on; never contains secrets.</summary>
+    public string CategoryKey => NotificationCategories.ForEventType(EventType);
+}
 
 public enum PushSendOutcome
 {

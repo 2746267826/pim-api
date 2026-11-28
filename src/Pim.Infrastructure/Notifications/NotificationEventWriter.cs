@@ -61,6 +61,17 @@ public static class NotificationEventDrafts
             "笔记材料的语音转写已完成，可查看逐字稿与后续整理状态。",
             $"/native-notes/processing?noteId={noteId:D}");
 
+    public static NotificationEventDraft NoteTranscriptionAttention(
+        Guid taskId,
+        Guid noteId,
+        Guid revision) =>
+        new(
+            NotificationEventTypes.NoteTranscriptionAttention,
+            $"note-transcription-attention:{taskId:D}:{revision:D}",
+            "转写需要处理",
+            "笔记材料有转写片段失败或停止，请打开处理页检查并重试。",
+            $"/native-notes/processing?noteId={noteId:D}");
+
     public static NotificationEventDraft NoteDerivedCompleted(
         Guid taskId,
         Guid noteId,
@@ -70,6 +81,17 @@ public static class NotificationEventDrafts
             $"note-derived-completed:{taskId:D}",
             "整理已完成",
             "笔记材料的完整记录与独立分析已生成，可打开处理页查看。",
+            $"/native-notes/processing?noteId={noteId:D}");
+
+    public static NotificationEventDraft NoteDerivedAttention(
+        Guid taskId,
+        Guid noteId,
+        Guid revision) =>
+        new(
+            NotificationEventTypes.NoteDerivedAttention,
+            $"note-derived-attention:{taskId:D}:{revision:D}",
+            "整理需要复核",
+            "笔记整理结果不完整或需要人工复核，请打开处理页查看。",
             $"/native-notes/processing?noteId={noteId:D}");
 }
 
@@ -90,8 +112,8 @@ public sealed class NotificationEventWriter(
             throw new ArgumentException("Notification dedupe key is invalid", nameof(draft));
 
         var preferences = await EffectivePreferencesAsync(userId, ct);
-        var categoryEnabled = NotificationPreferencePolicy.IsCategoryEnabled(
-            draft.EventType,
+        var categoryEnabled = NotificationPreferencePolicy.IsCategoryKeyEnabled(
+            NotificationCategories.ForEventType(draft.EventType),
             preferences.TaskCompleted,
             preferences.NoteTranscriptionCompleted,
             preferences.NoteDerivedCompleted,

@@ -6,7 +6,10 @@ import type { UserInfo } from '@/api/types'
 import { detectHostChannel, type HostChannel } from '@/lib/host-channel'
 import { getHostSession, type HostHandshake, type HostStatus } from '@/lib/host-session'
 import { notifyError } from '@/lib/notify'
-import { revokeBrowserPushOnLogout } from '@/features/notifications/logout'
+import {
+  flushPendingPushRevocations,
+  revokeBrowserPushOnLogout,
+} from '@/features/notifications/logout'
 
 interface AuthContextValue {
   user: UserInfo | null
@@ -56,6 +59,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [hostStatus, setHostStatus] = useState<HostStatus>('pending')
   const [hostAuthenticated, setHostAuthenticated] = useState(false)
   const [hostLogoutError, setHostLogoutError] = useState(false)
+
+  useEffect(() => {
+    if (!user) return
+    void flushPendingPushRevocations(user.id)
+  }, [user])
 
   /* ── browser 通道：今天的会话恢复（不改行为） ─────────────── */
   useEffect(() => {
@@ -224,10 +232,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       })
       return
     }
-    void revokeBrowserPushOnLogout()
+    void revokeBrowserPushOnLogout(user?.id)
     clearTokens()
     setUser(null)
-  }, [hostChannel])
+  }, [hostChannel, user])
 
   const value = useMemo(
     () => ({

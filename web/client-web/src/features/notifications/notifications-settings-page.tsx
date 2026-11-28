@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Bell, BellRing, CheckCheck, RefreshCw, Send, Trash2, Wifi, WifiOff } from 'lucide-react'
@@ -14,8 +14,7 @@ import {
   StatusBadge,
   Switch,
 } from '@/components/ui'
-import { apiUrl } from '@/lib/apiBase'
-import { getAccessToken } from '@/api/client'
+import { fetchEventStream } from '@/api/client'
 import { formatTime } from '@/lib/datetime'
 import { notifyError, notifySuccess } from '@/lib/notify'
 import { cn } from '@/lib/utils'
@@ -27,6 +26,11 @@ import {
   type NotificationPreferences,
 } from './api'
 import { notificationDeviceId } from './device'
+import {
+  filterNotificationsByCategory,
+  notificationCategoryKey,
+  notificationCategoryLabel,
+} from './categories'
 import { SseParser } from './sse'
 
 const DEFAULT_PREFERENCES: Omit<NotificationPreferences, 'updatedAt'> = {
@@ -109,9 +113,18 @@ export function NotificationsSettingsPage() {
   const [pushBusy, setPushBusy] = useState(false)
   const [sseActive, setSseActive] = useState(false)
   const [sseStatus, setSseStatus] = useState<'idle' | 'connecting' | 'live' | 'error'>('idle')
+  const [sseUnauthorized, setSseUnauthorized] = useState(false)
+  const [categoryFilter, setCategoryFilter] = useState<string | null>(null)
+  const preferenceSaveChain = useRef<Promise<unknown>>(Promise.resolve())
+  const hydratedDevice = useRef<string | null>(null)
 
   useEffect(() => {
     if (!preferences.data) return
+    // Hydrate from the server only once per device. Later mutation responses may
+    // not include edits that are still queued locally, so they must not overwrite
+    // a newer switch the user already flipped.
+    if (hydratedDevice.current === currentDeviceId) return
+    hydratedDevice.current = currentDeviceId
     setPreferenceState({
       inAppEnabled: preferences.data.inAppEnabled,
       pushEnabled: preferences.data.pushEnabled,
@@ -120,7 +133,7 @@ export function NotificationsSettingsPage() {
       noteDerivedCompleted: preferences.data.noteDerivedCompleted,
       calendarReminder: preferences.data.calendarReminder,
     })
-  }, [preferences.data])
+  }, [preferences.data, currentDeviceId])
 
   const savePreferences = useMutation({
     mutationFn: (next: Partial<typeof DEFAULT_PREFERENCES>) =>
@@ -188,15 +201,15 @@ export function NotificationsSettingsPage() {
     let lastCursor: number | null =
       qc.getQueryData<NotificationList>(['notifications', 'list'])?.items[0]?.cursor ?? null
     let refreshedOnConnect = false
+    let terminalUnauthorized = false
     setSseStatus('connecting')
+    setSseUnauthorized(false)
 
     async function run() {
       while (!stopped && !controller.signal.aborted) {
         try {
-          const token = getAccessToken()
           const query = lastCursor === null ? '' : `?after=${lastCursor}`
-          const response = await fetch(apiUrl(`/api/v1/notifications/stream${query}`), {
-            headers: token ? { Authorization: `Bearer ${token}` } : {},
+          const response = await fetchEventStream(`/api/v1/notifications/stream${query}`, {
             signal: controller.signal,
           })
           if (!response.ok || !response.body) throw new Error('事件流连接失败')
@@ -228,11 +241,19 @@ export function NotificationsSettingsPage() {
           }
         } catch (error) {
           if (stopped || controller.signal.aborted) break
+          // 认证已经终结（统一刷新失败并清理了会话）：继续每 3 秒重连只会重复
+          // 发送同一个过期凭据，直接停下，等用户重新登录或手动开启。
+          if ((error as { status?: number } | null)?.status === 401) {
+            terminalUnauthorized = true
+            setSseStatus('error')
+            setSseUnauthorized(true)
+            break
+          }
           setSseStatus('error')
           await new Promise((resolve) => setTimeout(resolve, 3000))
         }
       }
-      if (!stopped) setSseStatus('idle')
+      if (!stopped && !terminalUnauthorized) setSseStatus('idle')
     }
 
     void run()
@@ -318,10 +339,32 @@ export function NotificationsSettingsPage() {
   }
 
   function updatePreference(key: keyof typeof DEFAULT_PREFERENCES, checked: boolean) {
-    const next = { ...preferenceState, [key]: checked }
-    setPreferenceState(next)
-    savePreferences.mutate(next)
+    const previous = preferenceState[key]
+    setPreferenceState((current) => ({ ...current, [key]: checked }))
+    // 只发送变化的键，并把写入串行化：快速连点不会让旧快照覆盖新值，
+    // 服务端也只需按字段合并。
+    preferenceSaveChain.current = preferenceSaveChain.current
+      .catch(() => undefined)
+      .then(() => savePreferences.mutateAsync({ [key]: checked }))
+      .catch(() => {
+        // 保存失败时只回滚这一项；若用户此刻已经再次切换到别的值，则保留用户选择。
+        setPreferenceState((current) =>
+          current[key] === checked ? { ...current, [key]: previous } : current)
+      })
   }
+
+  const availableCategories = useMemo(() => {
+    const keys = new Set<string>()
+    for (const item of notifications.data?.items ?? []) {
+      keys.add(notificationCategoryKey(item.type))
+    }
+    return [...keys]
+  }, [notifications.data])
+
+  const visibleNotifications = useMemo(
+    () => filterNotificationsByCategory(notifications.data?.items ?? [], categoryFilter),
+    [notifications.data, categoryFilter],
+  )
 
   return (
     <div>
@@ -358,7 +401,9 @@ export function NotificationsSettingsPage() {
         )}
         {sseStatus === 'error' && (
           <InlineAlert tone="warn" title="实时通道暂时断开">
-            正在自动重连；站内通知仍可通过刷新查看。
+            {sseUnauthorized
+              ? '登录已过期，已停止重连；请重新登录后再开启实时接收。'
+              : '正在自动重连；站内通知仍可通过刷新查看。'}
           </InlineAlert>
         )}
 
@@ -483,15 +528,31 @@ export function NotificationsSettingsPage() {
               <CheckCheck className="size-4" aria-hidden /> 全部已读
             </Button>
           </div>
+          <div className="mt-3 flex items-center gap-2 text-xs text-text-3">
+            <label htmlFor="notification-category-filter">按类别筛选</label>
+            <select
+              id="notification-category-filter"
+              aria-label="按类别筛选"
+              className="rounded-ctl border border-border bg-surface px-2 py-1 text-xs"
+              value={categoryFilter ?? ''}
+              onChange={(event) =>
+                setCategoryFilter(event.target.value === '' ? null : event.target.value)}
+            >
+              <option value="">全部类别</option>
+              {availableCategories.map((key) => (
+                <option key={key} value={key}>{notificationCategoryLabel(key)}</option>
+              ))}
+            </select>
+          </div>
           {notifications.isLoading ? (
             <div className="mt-3 space-y-2">
               {Array.from({ length: 3 }, (_, index) => <Skeleton key={index} className="h-12" />)}
             </div>
-          ) : (notifications.data?.items.length ?? 0) === 0 ? (
+          ) : visibleNotifications.length === 0 ? (
             <EmptyState title="暂无通知" description="完成任务、等待提醒或点击上方测试按钮即可看到站内通知。" />
           ) : (
             <div className="mt-2 divide-y divide-divider">
-              {notifications.data!.items.map((item) => (
+              {visibleNotifications.map((item) => (
                 <div key={item.id} className={cn('flex items-start gap-3 py-3', !item.isRead && 'bg-primary/5')}>
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
@@ -500,6 +561,7 @@ export function NotificationsSettingsPage() {
                     </div>
                     <div className="mt-0.5 whitespace-pre-line text-xs text-text-3">{item.body}</div>
                     <div className="mt-1 flex items-center gap-3 text-xs text-text-4">
+                      <span>{notificationCategoryLabel(notificationCategoryKey(item.type))}</span>
                       <span>{formatTime(item.createdAt)}</span>
                       {item.detailUrl && (
                         <Link className="text-primary hover:underline" to={item.detailUrl}>

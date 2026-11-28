@@ -406,6 +406,109 @@ public sealed class NotificationDeliveryRealDbTests
     }
 
     [SkippableFact]
+    public async Task AttentionCategory_RespectsTheDevicesNoteToggle()
+    {
+        var (temp, clock, user, fake) = await NewDatabaseAsync();
+        await using var _ = temp;
+        await using (var db = NotificationTestSupport.NewDbContext(temp.ConnectionString))
+        {
+            _ = await NotificationTestSupport.SubscribeAsync(
+                db, user, fake, clock, deviceId: "device-attention");
+            var preferences = new NotificationPreferenceService(
+                db, new FixedCurrentUser(user), clock);
+            _ = await preferences.UpdateAsync(
+                new UpdateNotificationPreferencesRequest(null, null, null, null, false, null),
+                "device-attention",
+                CancellationToken.None);
+            Assert.Equal(
+                NotificationEnqueueOutcome.Enqueued,
+                await NotificationTestSupport.NewWriter(db, clock).TryEnqueueAsync(
+                    user,
+                    NotificationEventDrafts.NoteDerivedAttention(
+                        Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid()),
+                    CancellationToken.None));
+        }
+
+        await using var verify = NotificationTestSupport.NewDbContext(temp.ConnectionString);
+        var notification = Assert.Single(await verify.NotificationEvents
+            .IgnoreQueryFilters()
+            .Where(e => e.UserId == user)
+            .ToListAsync());
+        Assert.Equal(NotificationEventTypes.NoteDerivedAttention, notification.EventType);
+        Assert.True(notification.InAppVisible);
+        Assert.True(notification.PushEligible);
+        Assert.Equal("Completed", notification.FanoutStatus);
+        Assert.Equal(
+            NotificationCategoryKeys.NotesOrganizingReview,
+            NotificationCategories.ForEventType(notification.EventType));
+        Assert.False(await verify.NotificationDeliveries
+            .IgnoreQueryFilters()
+            .AnyAsync(d => d.EventId == notification.Id));
+    }
+
+    [SkippableFact]
+    public async Task PushPayload_CarriesThePreciseQ06CategoryKey()
+    {
+        var (temp, clock, user, fake) = await NewDatabaseAsync();
+        await using var _ = temp;
+        string? categoryKey = null;
+        string? eventType = null;
+        fake.Handler = (_, message, _) =>
+        {
+            categoryKey = message.CategoryKey;
+            eventType = message.EventType;
+            return Task.FromResult(PushSendResult.Delivered());
+        };
+        await using (var db = NotificationTestSupport.NewDbContext(temp.ConnectionString))
+        {
+            _ = await NotificationTestSupport.SubscribeAsync(
+                db, user, fake, clock, deviceId: "device-category");
+            Assert.Equal(
+                NotificationEnqueueOutcome.Enqueued,
+                await NotificationTestSupport.NewWriter(db, clock).TryEnqueueAsync(
+                    user,
+                    NotificationEventDrafts.NoteDerivedCompleted(
+                        Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid()),
+                    CancellationToken.None));
+            var worker = NotificationTestSupport.NewWorker(db, fake, clock);
+            await worker.FanoutOnceAsync(CancellationToken.None);
+            await worker.DeliverOnceAsync(CancellationToken.None);
+        }
+
+        Assert.Equal(NotificationEventTypes.NoteDerivedCompleted, eventType);
+        Assert.Equal(NotificationCategoryKeys.NotesSummaryReady, categoryKey);
+        Assert.Equal(1, fake.Calls);
+    }
+
+    [SkippableFact]
+    public async Task HungProvider_IsBoundedAndRetriedInsteadOfBlockingTheWorker()
+    {
+        var (temp, clock, user, fake) = await NewDatabaseAsync();
+        await using var _ = temp;
+        fake.Handler = async (_, _, ct) =>
+        {
+            await Task.Delay(Timeout.InfiniteTimeSpan, ct);
+            return PushSendResult.Delivered();
+        };
+        var deliveryId = await PrepareOneDeliveryAsync(temp, clock, user, fake);
+
+        await using (var db = NotificationTestSupport.NewDbContext(temp.ConnectionString))
+        {
+            var worker = NotificationTestSupport.NewWorker(
+                db, fake, clock, maxAttempts: 3, providerTimeoutSeconds: 1);
+            await worker.DeliverOnceAsync(CancellationToken.None)
+                .WaitAsync(TimeSpan.FromSeconds(20));
+        }
+
+        var delivery = await NotificationTestSupport.ReadDeliveryAsync(
+            temp.ConnectionString, deliveryId);
+        Assert.Equal(NotificationDeliveryStatuses.Retrying, delivery.Status);
+        Assert.Equal("push_transport_timeout", delivery.LastErrorCode);
+        Assert.Null(delivery.LockedUntil);
+        Assert.Null(delivery.LockedBy);
+    }
+
+    [SkippableFact]
     public async Task LastError_IsSafe_AndNeverPersistsProviderSecretText()
     {
         var (temp, clock, user, fake) = await NewDatabaseAsync();

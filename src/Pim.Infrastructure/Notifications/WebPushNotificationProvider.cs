@@ -55,7 +55,8 @@ public sealed class WebPushNotificationProvider : IWebPushTransport
                         ? "/settings/notifications"
                         : message.DetailUrl,
                     eventId = message.NotificationId.ToString("D"),
-                    eventType = message.EventType
+                    eventType = message.EventType,
+                    categoryKey = message.CategoryKey
                 }
             }, Json);
             body = WebPushCrypto.Encrypt(

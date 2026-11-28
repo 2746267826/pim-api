@@ -65,6 +65,7 @@ internal static class NotificationTestSupport
         ManualTimeProvider clock,
         int maxAttempts = 3,
         int baseDelaySeconds = 0,
+        int providerTimeoutSeconds = 15,
         ISecretProtector? protector = null)
     {
         var options = Options.Create(new NotificationDispatcherOptions
@@ -73,7 +74,8 @@ internal static class NotificationTestSupport
             BaseDelaySeconds = baseDelaySeconds,
             MaxDelaySeconds = 3600,
             DeliveryBatchSize = 20,
-            FanoutBatchSize = 50
+            FanoutBatchSize = 50,
+            ProviderTimeoutSeconds = providerTimeoutSeconds
         });
         return new NotificationDeliveryWorker(
             db,

@@ -176,21 +176,63 @@ public sealed class NotificationSubscriptionService(
             }
         }
 
-        var otherDeviceSubscriptions = await db.NotificationSubscriptions
+        var duplicateIds = await db.NotificationSubscriptions
             .IgnoreQueryFilters()
+            .AsNoTracking()
             .Where(s => s.UserId == userId &&
                         s.Channel == NotificationChannels.WebPush &&
                         s.DeviceId == deviceId &&
                         s.Id != subscription.Id &&
                         s.Status == "Active")
+            .OrderBy(s => s.Id)
+            .Select(s => s.Id)
             .ToListAsync(ct);
-        foreach (var duplicate in otherDeviceSubscriptions)
+
+        if (db.Database.IsNpgsql())
         {
-            duplicate.Status = "Revoked";
-            duplicate.RevokedAt = now;
-            duplicate.UpdatedAt = now;
-            duplicate.Version = Guid.NewGuid();
-            await SuppressPendingDeliveriesAsync(duplicate.Id, "subscription_replaced", ct);
+            // Lock ordering is subscription -> delivery everywhere (worker and revocation
+            // follow the same order). Lock every affected subscription in id order before
+            // touching any delivery row, otherwise a rebind can deadlock with an in-flight
+            // worker that already owns a subscription row lock.
+            var lockOrder = duplicateIds
+                .Append(subscription.Id)
+                .Distinct()
+                .OrderBy(id => id)
+                .ToList();
+            db.ChangeTracker.Clear();
+            var locked = new Dictionary<Guid, NotificationSubscriptionEntity>();
+            foreach (var id in lockOrder)
+            {
+                var row = await LockSubscriptionAsync(id, userId, ct);
+                if (row is not null) locked[id] = row;
+            }
+            subscription = locked.TryGetValue(subscription.Id, out var lockedTarget)
+                ? lockedTarget
+                : throw new DomainException(40906, EndpointOwnershipConflictMessage);
+            foreach (var id in duplicateIds)
+            {
+                if (!locked.TryGetValue(id, out var duplicate)) continue;
+                duplicate.Status = "Revoked";
+                duplicate.RevokedAt = now;
+                duplicate.UpdatedAt = now;
+                duplicate.Version = Guid.NewGuid();
+                await SuppressPendingDeliveriesAsync(duplicate.Id, "subscription_replaced", ct);
+            }
+        }
+        else
+        {
+            var otherDeviceSubscriptions = await db.NotificationSubscriptions
+                .IgnoreQueryFilters()
+                .Where(s => duplicateIds.Contains(s.Id))
+                .ToListAsync(ct);
+            foreach (var duplicate in otherDeviceSubscriptions)
+            {
+                duplicate.Status = "Revoked";
+                duplicate.RevokedAt = now;
+                duplicate.UpdatedAt = now;
+                duplicate.Version = Guid.NewGuid();
+                await SuppressPendingDeliveriesAsync(duplicate.Id, "subscription_replaced", ct);
+            }
         }
 
         subscription.DeviceId = deviceId;

@@ -114,13 +114,9 @@ public sealed class NotificationEventScanner(
             try
             {
                 var state = await asrTasks.ReadAsync(owner, taskId, ct);
-                if (state.UpdatedAt <= watermark ||
-                    NoteAsrTaskStore.Describe(state).Phase != "Succeeded") continue;
-                var outcome = await writer.TryEnqueueAsync(
-                    owner,
-                    NotificationEventDrafts.NoteTranscriptionCompleted(
-                        taskId, state.NoteId, state.Request.VersionId),
-                    ct);
+                var draft = NotificationScanPolicy.ForTranscription(state, watermark);
+                if (draft is null) continue;
+                var outcome = await writer.TryEnqueueAsync(owner, draft, ct);
                 failed |= outcome == NotificationEnqueueOutcome.Failed;
             }
             catch (Exception error)
@@ -139,13 +135,9 @@ public sealed class NotificationEventScanner(
             try
             {
                 var state = await derivedTasks.ReadTaskAsync(owner, taskId, ct);
-                if (state.UpdatedAt <= watermark ||
-                    NoteDerivedStore.DescribePhase(state) != "Succeeded") continue;
-                var outcome = await writer.TryEnqueueAsync(
-                    owner,
-                    NotificationEventDrafts.NoteDerivedCompleted(
-                        taskId, state.NoteId, state.Request.VersionId),
-                    ct);
+                var draft = NotificationScanPolicy.ForDerived(state, watermark);
+                if (draft is null) continue;
+                var outcome = await writer.TryEnqueueAsync(owner, draft, ct);
                 failed |= outcome == NotificationEnqueueOutcome.Failed;
             }
             catch (Exception error)

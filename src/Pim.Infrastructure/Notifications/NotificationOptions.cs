@@ -12,6 +12,12 @@ public sealed class NotificationDispatcherOptions
     public int BaseDelaySeconds { get; set; } = 30;
     public int MaxDelaySeconds { get; set; } = 3600;
     public int LockSeconds { get; set; } = 120;
+    /// <summary>
+    /// Upper bound for one provider call made while the delivery transaction holds row locks.
+    /// The full out-of-transaction send redesign is tracked separately; this bound keeps a
+    /// hung provider from blocking revocation indefinitely.
+    /// </summary>
+    public int ProviderTimeoutSeconds { get; set; } = 15;
 }
 
 public sealed class WebPushOptions

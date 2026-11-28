@@ -73,8 +73,8 @@ internal static class NotificationDevicePreferences
         var device = overrides.GetValueOrDefault(deviceId);
         var pushEnabled = device?.PushEnabled ?? account?.PushEnabled ?? true;
         if (!pushEnabled) return false;
-        return NotificationPreferencePolicy.IsCategoryEnabled(
-            eventType,
+        return NotificationPreferencePolicy.IsCategoryKeyEnabled(
+            NotificationCategories.ForEventType(eventType),
             device?.TaskCompleted ?? account?.TaskCompleted ?? true,
             device?.NoteTranscriptionCompleted ?? account?.NoteTranscriptionCompleted ?? true,
             device?.NoteDerivedCompleted ?? account?.NoteDerivedCompleted ?? true,
@@ -95,8 +95,30 @@ internal static class NotificationPreferencePolicy
             NotificationEventTypes.TaskCompleted => taskCompleted,
             NotificationEventTypes.CalendarReminderDue => calendarReminder,
             NotificationEventTypes.NoteTranscriptionCompleted => noteTranscriptionCompleted,
+            NotificationEventTypes.NoteTranscriptionAttention => noteTranscriptionCompleted,
             NotificationEventTypes.NoteDerivedCompleted => noteDerivedCompleted,
+            NotificationEventTypes.NoteDerivedAttention => noteDerivedCompleted,
             NotificationEventTypes.Test => true,
             _ => false
+        };
+
+    public static bool IsCategoryKeyEnabled(
+        string categoryKey,
+        bool taskCompleted,
+        bool noteTranscriptionCompleted,
+        bool noteDerivedCompleted,
+        bool calendarReminder) =>
+        categoryKey switch
+        {
+            NotificationCategoryKeys.NotesTranscriptionAttention => noteTranscriptionCompleted,
+            NotificationCategoryKeys.NotesSummaryReady => noteDerivedCompleted,
+            NotificationCategoryKeys.NotesOrganizingReview => noteDerivedCompleted,
+            NotificationCategoryKeys.UploadsAttentionDigest => false,
+            _ => IsCategoryEnabled(
+                categoryKey,
+                taskCompleted,
+                noteTranscriptionCompleted,
+                noteDerivedCompleted,
+                calendarReminder)
         };
 }

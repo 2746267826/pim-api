@@ -246,9 +246,17 @@ public sealed class NotificationDeliveryWorker(
             }
 
             PushSendResult result;
+            var sendTimeout = TimeSpan.FromSeconds(Math.Max(1, Options.ProviderTimeoutSeconds));
+            using var sendBudget = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            Task<PushSendResult>? sendTask = null;
             try
             {
-                result = await transport.SendAsync(
+                // Bounded provider call while the delivery transaction holds
+                // subscription → delivery locks. CancelAfter lets a cooperative provider
+                // stop; WaitAsync also bounds a provider that ignores its token, so a hung
+                // transport cannot hold revocation locks indefinitely.
+                sendBudget.CancelAfter(sendTimeout);
+                sendTask = transport.SendAsync(
                     secret,
                     new PushNotificationMessage(
                         delivery.Event.Title,
@@ -256,7 +264,25 @@ public sealed class NotificationDeliveryWorker(
                         delivery.Event.DetailUrl,
                         delivery.Event.Id,
                         delivery.Event.EventType),
-                    ct);
+                    sendBudget.Token);
+                result = await sendTask.WaitAsync(sendTimeout, ct);
+            }
+            catch (Exception error) when (!ct.IsCancellationRequested &&
+                error is OperationCanceledException or TimeoutException)
+            {
+                // Our own send budget expired, not a shutdown: retry instead of
+                // dead-lettering a healthy delivery or failing the whole batch.
+                logger.LogWarning(
+                    "Push delivery {DeliveryId} exceeded the provider time budget",
+                    delivery.Id);
+                sendBudget.Cancel();
+                if (sendTask is not null)
+                    _ = sendTask.ContinueWith(
+                        static task => _ = task.Exception,
+                        CancellationToken.None,
+                        TaskContinuationOptions.ExecuteSynchronously,
+                        TaskScheduler.Default);
+                result = PushSendResult.Retryable("push_transport_timeout");
             }
             catch (Exception error) when (error is not OperationCanceledException)
             {

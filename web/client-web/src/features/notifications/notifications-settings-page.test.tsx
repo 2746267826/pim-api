@@ -27,6 +27,7 @@ const fixture = vi.hoisted(() => ({
   },
   notifySuccess: vi.fn(),
   notifyError: vi.fn(),
+  fetchEventStream: vi.fn(),
 }))
 
 vi.mock('./api', () => ({ notificationApi: fixture.api }))
@@ -36,7 +37,10 @@ vi.mock('@/lib/notify', () => ({
 }))
 vi.mock('@/lib/datetime', () => ({ formatTime: () => '2026-11-26 08:00' }))
 vi.mock('@/lib/apiBase', () => ({ apiUrl: (path: string) => path }))
-vi.mock('@/api/client', () => ({ getAccessToken: () => 'test-token' }))
+vi.mock('@/api/client', () => ({
+  getAccessToken: () => 'test-token',
+  fetchEventStream: fixture.fetchEventStream,
+}))
 vi.mock('react-router', () => ({
   Link: ({ to, children }: { to: string; children: React.ReactNode }) => (
     <a href={to}>{children}</a>
@@ -157,18 +161,101 @@ describe('NotificationsSettingsPage', () => {
     await user.click(taskSwitch)
 
     await waitFor(() =>
-      expect(fixture.api.updatePreferences).toHaveBeenCalledWith({
-        inAppEnabled: true,
-        pushEnabled: true,
-        taskCompleted: false,
-        noteTranscriptionCompleted: true,
-        noteDerivedCompleted: true,
-        calendarReminder: true,
-      }, expect.any(String)),
+      expect(fixture.api.updatePreferences).toHaveBeenCalledWith(
+        { taskCompleted: false },
+        expect.any(String),
+      ),
     )
     await waitFor(() =>
       expect(fixture.notifySuccess).toHaveBeenCalledWith('通知偏好已保存'),
     )
+  })
+
+  it('serializes rapid preference switches and only sends the changed key', async () => {
+    const user = userEvent.setup()
+    let resolveFirst!: (value: NotificationPreferences) => void
+    const first = new Promise<NotificationPreferences>((resolve) => {
+      resolveFirst = resolve
+    })
+    fixture.api.updatePreferences
+      .mockImplementationOnce(() => first)
+      .mockImplementationOnce(async (body: Partial<NotificationPreferences>) => ({
+        ...preferences,
+        taskCompleted: false,
+        ...body,
+      }))
+    renderPage()
+
+    await user.click(await screen.findByRole('switch', { name: '任务完成' }))
+    await user.click(screen.getByRole('switch', { name: '日历提醒' }))
+
+    await waitFor(() => expect(fixture.api.updatePreferences).toHaveBeenCalledTimes(1))
+    expect(fixture.api.updatePreferences).toHaveBeenNthCalledWith(
+      1,
+      { taskCompleted: false },
+      expect.any(String),
+    )
+
+    resolveFirst({ ...preferences, taskCompleted: false })
+    await waitFor(() => expect(fixture.api.updatePreferences).toHaveBeenCalledTimes(2))
+    expect(fixture.api.updatePreferences).toHaveBeenNthCalledWith(
+      2,
+      { calendarReminder: false },
+      expect.any(String),
+    )
+    await waitFor(() => {
+      expect(screen.getByRole('switch', { name: '任务完成' }).getAttribute('data-state'))
+        .toBe('unchecked')
+      expect(screen.getByRole('switch', { name: '日历提醒' }).getAttribute('data-state'))
+        .toBe('unchecked')
+    })
+  })
+
+  it('rolls back only the failed switch when saving a preference fails', async () => {
+    const user = userEvent.setup()
+    fixture.api.updatePreferences.mockRejectedValue(new Error('network'))
+    renderPage()
+
+    const taskSwitch = await screen.findByRole('switch', { name: '任务完成' })
+    expect(taskSwitch.getAttribute('data-state')).toBe('checked')
+    await user.click(taskSwitch)
+
+    await waitFor(() =>
+      expect(screen.getByRole('switch', { name: '任务完成' }).getAttribute('data-state'))
+        .toBe('checked'),
+    )
+    expect(fixture.notifyError).toHaveBeenCalledWith('network')
+  })
+
+  it('filters the in-app list by the precise Q06 category key', async () => {
+    const user = userEvent.setup()
+    fixture.api.list.mockResolvedValue({
+      unreadCount: 2,
+      items: [
+        {
+          ...notificationList.items[0],
+          id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+          type: 'note.derived.completed',
+          title: '整理已完成',
+        },
+        {
+          ...notificationList.items[0],
+          id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+          type: 'note.transcription.attention',
+          title: '转写需要处理',
+        },
+      ],
+    })
+    renderPage()
+
+    expect(await screen.findByText('整理已完成')).toBeTruthy()
+    expect(screen.getByText('转写需要处理')).toBeTruthy()
+    await user.selectOptions(
+      screen.getByLabelText('按类别筛选'),
+      'notes.summary_ready',
+    )
+    expect(screen.queryByText('转写需要处理')).toBeNull()
+    expect(screen.getByText('整理已完成')).toBeTruthy()
   })
 
   it('shows the in-app notification and exposes dead-letter retry with the safe error text', async () => {
@@ -233,8 +320,8 @@ describe('NotificationsSettingsPage', () => {
   it('resumes SSE from the newest known cursor after a silent disconnect', async () => {
     const user = userEvent.setup()
     const calls: string[] = []
-    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
-      calls.push(String(input))
+    fixture.fetchEventStream.mockImplementation((path: string, options?: { signal?: AbortSignal }) => {
+      calls.push(path)
       if (calls.length === 1) {
         const encoder = new TextEncoder()
         const stream = new ReadableStream<Uint8Array>({
@@ -249,11 +336,11 @@ describe('NotificationsSettingsPage', () => {
         }))
       }
       return new Promise<Response>((_, reject) => {
-        const signal = init?.signal
+        const signal = options?.signal
         signal?.addEventListener('abort', () =>
           reject(new DOMException('aborted', 'AbortError')))
       })
-    }))
+    })
     renderPage()
 
     expect(await screen.findByText('1 条未读')).toBeTruthy()
@@ -262,5 +349,20 @@ describe('NotificationsSettingsPage', () => {
     await waitFor(() => expect(calls.length).toBeGreaterThanOrEqual(2))
     expect(calls[0]).toBe('/api/v1/notifications/stream?after=9')
     expect(calls[1]).toBe('/api/v1/notifications/stream?after=9')
+  })
+
+  it('stops SSE reconnecting after a terminal 401 and shows the expired-session notice', async () => {
+    const user = userEvent.setup()
+    fixture.fetchEventStream.mockRejectedValue(
+      Object.assign(new Error('登录已过期，请重新登录'), { status: 401 }),
+    )
+    renderPage()
+
+    await user.click(await screen.findByRole('button', { name: '开始实时接收' }))
+
+    expect(await screen.findByText(
+      '登录已过期，已停止重连；请重新登录后再开启实时接收。',
+    )).toBeTruthy()
+    expect(fixture.fetchEventStream).toHaveBeenCalledTimes(1)
   })
 })

@@ -59,6 +59,7 @@ describe('AuthProvider browser logout', () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
+    localStorage.clear()
     fixture.token = 'token-account-a'
     fixture.me.mockResolvedValue({
       id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
@@ -95,7 +96,7 @@ describe('AuthProvider browser logout', () => {
     }
   })
 
-  it('unsubscribes the browser endpoint and revokes it with the logout-time token', async () => {
+  it('unsubscribes the browser endpoint and revokes it through the shared auth channel', async () => {
     const user = userEvent.setup()
     render(
       <AuthProvider>
@@ -109,17 +110,37 @@ describe('AuthProvider browser logout', () => {
     await waitFor(() => expect(unsubscribe).toHaveBeenCalled())
     await waitFor(() =>
       expect(fixture.revokeCurrent).toHaveBeenCalledWith(
-        {
-          deviceId: expect.any(String),
-          endpoint: 'https://fcm.googleapis.com/wp/account-a',
-        },
-        expect.objectContaining({
-          headers: expect.objectContaining({
-            Authorization: 'Bearer token-account-a',
-          }),
-        }),
+        { deviceId: expect.any(String) },
       ),
     )
     expect(fixture.clearTokens).toHaveBeenCalled()
+    expect(fixture.revokeCurrent.mock.invocationCallOrder[0])
+      .toBeLessThan(fixture.clearTokens.mock.invocationCallOrder[0])
+  })
+
+  it('keeps a retry marker when server revocation fails and still clears local tokens', async () => {
+    const user = userEvent.setup()
+    fixture.revokeCurrent.mockRejectedValue(new Error('network'))
+    render(
+      <AuthProvider>
+        <Probe />
+      </AuthProvider>,
+    )
+
+    expect(await screen.findByText('alice')).toBeTruthy()
+    await user.click(screen.getByRole('button', { name: '退出登录' }))
+
+    await waitFor(() => expect(fixture.revokeCurrent).toHaveBeenCalled())
+    expect(fixture.clearTokens).toHaveBeenCalled()
+    await waitFor(() => {
+      const raw = localStorage.getItem('pim.pendingPushRevocations')
+      expect(raw).toBeTruthy()
+      expect(JSON.parse(raw!)).toEqual([
+        {
+          deviceId: expect.any(String),
+          userId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        },
+      ])
+    })
   })
 })
