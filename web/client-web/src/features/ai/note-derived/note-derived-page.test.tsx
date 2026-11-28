@@ -504,7 +504,7 @@ it('opens the linked ordinary AI draft from settings and selects its note and re
       }
     : version))
   const draftScope: NoteDerivedDraftScope = {
-    ownerId,
+    ownerId: owner,
     serverBinding: canonicalServerBinding(),
     artifactId,
     sourceVersionId,
@@ -545,7 +545,7 @@ it('reports an ordinary AI draft without a note binding as manual verification i
   auth.user.role = 'user'
   localStorage.setItem('pim.apiBase', 'https://pim-a.example')
   const unboundScope: NoteDerivedDraftScope = {
-    ownerId,
+    ownerId: owner,
     serverBinding: canonicalServerBinding(),
     artifactId,
     sourceVersionId,
