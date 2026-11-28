@@ -1768,10 +1768,13 @@ class Validator:
                 pr_refs = []
             if not pr_refs:
                 authorized = []
+                item_only_refs = []
                 for did in item.get("decisions") or []:
                     if not isinstance(did, str):
                         continue
                     dec = self.decisions.get(did)
+                    if dec and dec.get("type") == ITEM_ONLY_PASS_DECISION_TYPE:
+                        item_only_refs.append(did)
                     if (
                         dec
                         and dec.get("evidence") in refs
@@ -1781,7 +1784,7 @@ class Validator:
                         )
                     ):
                         authorized.append(did)
-                if len(authorized) != 1:
+                if len(item_only_refs) != 1 or len(authorized) != 1:
                     self.error(
                         where,
                         "PASS 没有实现 PR 时必须恰好有一个 approved "

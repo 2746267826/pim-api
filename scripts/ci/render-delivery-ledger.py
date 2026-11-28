@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -68,6 +69,37 @@ def esc(value: str) -> str:
 
 def count_key(value):
     return value if isinstance(value, str) else "<invalid>"
+
+
+def prepare_fixed_output(root: Path) -> Path:
+    relative = Path(LEDGER_VIEW_PATH)
+    current = root
+    for part in relative.parts[:-1]:
+        current /= part
+        if current.is_symlink():
+            raise ValueError(f"固定视图路径不能经过符号链接：{current}")
+        if current.exists() and not current.is_dir():
+            raise ValueError(f"固定视图路径的父级不是目录：{current}")
+
+    output = current / relative.parts[-1]
+    if output.is_symlink():
+        raise ValueError(f"固定视图路径不能是符号链接：{output}")
+    if output.exists() and not output.is_file():
+        raise ValueError(f"固定视图路径必须是普通文件：{output}")
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    if output.parent.is_symlink() or output.is_symlink():
+        raise ValueError(f"固定视图路径不能经过符号链接：{output}")
+    return output
+
+
+def write_fixed_output(output: Path, text: str) -> None:
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(output, flags, 0o644)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        handle.write(text)
 
 
 def short_list(values, limit=None):
@@ -512,9 +544,8 @@ def main() -> int:
         )
         return 0
 
-    output = root / LEDGER_VIEW_PATH
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(text, encoding="utf-8")
+    output = prepare_fixed_output(root)
+    write_fixed_output(output, text)
     print(f"rendered {output} ({len(items)} items, {len(text.splitlines())} lines)")
     return 0
 
@@ -522,7 +553,7 @@ def main() -> int:
 if __name__ == "__main__":
     try:
         sys.exit(main())
-    except (AttributeError, KeyError, TypeError, ValueError) as exc:
+    except (AttributeError, KeyError, OSError, TypeError, ValueError) as exc:
         print(
             f"delivery ledger render failed: malformed data: "
             f"{type(exc).__name__}: {exc}",

@@ -727,6 +727,45 @@ class LedgerCase(unittest.TestCase):
         self.render()
         self.assert_fails_with("PASS 引用了非 current 证据")
 
+    def test_item_only_pass_rejects_extra_invalid_authorization(self):
+        ledger, evidence, _ = self.upgrade_to_pass()
+        decisions = self.load(self.decisions_path)
+        item = self.item(ledger, "A10")
+        other_item = self.item(ledger, "B01")
+        decision_id = "DEC-ITEM-ONLY-INVALID-A10"
+        evidence_id = "EV-DEC-ITEM-ONLY-INVALID-A10"
+        evidence["evidence"].append({
+            "id": evidence_id,
+            "type": "decision",
+            "level": "E0",
+            "freshness": "stale",
+            "claim": "Invalid item-only authorization fixture.",
+            "source": "test fixture",
+            "observed_at": "2026-11-28",
+            "items": ["A10", "B01"],
+            "limits": "Invalid because it binds more than one item.",
+        })
+        decisions["decisions"].append({
+            "id": decision_id,
+            "type": "item-only-pass",
+            "status": "approved",
+            "approved_by": "user",
+            "rationale": "Invalid fixture binding two items.",
+            "source": "test fixture",
+            "items": ["A10", "B01"],
+            "ac_ids": [],
+            "evidence": evidence_id,
+        })
+        item["decisions"].append(decision_id)
+        item["evidence"].append(evidence_id)
+        other_item["decisions"].append(decision_id)
+        other_item["evidence"].append(evidence_id)
+        self.save(self.ledger_path, ledger)
+        self.save(self.decisions_path, decisions)
+        self.save(self.evidence_path, evidence)
+        self.render()
+        self.assert_fails_with("PASS 没有实现 PR 时必须恰好有一个 approved item-only-pass")
+
     def test_pass_rejects_unrelated_stale_decision_evidence(self):
         ledger, evidence, _ = self.upgrade_to_pass()
         decisions = self.load(self.decisions_path)
@@ -1744,6 +1783,21 @@ class RendererCase(unittest.TestCase):
         self.assertFalse(target.exists())
         self.assertTrue(
             (self.tmp / "docs/product/pim-delivery-ledger.md").is_file())
+
+    def test_renderer_rejects_fixed_output_symlink(self):
+        outside_dir = Path(tempfile.mkdtemp(prefix="pim-ledger-outside-"))
+        self.addCleanup(shutil.rmtree, outside_dir, True)
+        outside = outside_dir / "escape.md"
+        outside.write_text("outside sentinel\n", encoding="utf-8")
+        output = self.tmp / "docs/product/pim-delivery-ledger.md"
+        output.symlink_to(outside)
+        proc = subprocess.run(
+            [sys.executable, str(self.tmp / "scripts/ci/render-delivery-ledger.py"),
+             "--root", str(self.tmp)],
+            capture_output=True, text=True)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertEqual(outside.read_text(encoding="utf-8"), "outside sentinel\n")
+        self.assertTrue(output.is_symlink())
 
     def test_renderer_ignores_or_rejects_rendered_view_path_escape(self):
         ledger_path = self.tmp / "docs/product/delivery/ledger.json"
