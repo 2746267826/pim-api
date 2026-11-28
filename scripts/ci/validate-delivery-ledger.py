@@ -212,6 +212,26 @@ class Validator:
         target_acs = {ac_id for ac_id in target_ac_ids if isinstance(ac_id, str)}
         return bool(source_acs) and source_acs.issubset(target_acs)
 
+    def is_item_only_pass_authorization(self, evidence_id: str, item_id: str) -> bool:
+        evidence = self.evidence.get(evidence_id)
+        if (
+            not evidence
+            or evidence.get("type") != "decision"
+            or evidence.get("level") != "E0"
+            or evidence.get("freshness") != "stale"
+        ):
+            return False
+        for decision in self.decisions.values():
+            if (
+                decision.get("evidence") == evidence_id
+                and decision.get("type") == ITEM_ONLY_PASS_DECISION_TYPE
+                and decision.get("status") == "approved"
+                and decision.get("items") == [item_id]
+                and decision.get("ac_ids") == []
+            ):
+                return True
+        return False
+
     def resolve_commit(self, where: str, value, field: str = "source_commit") -> str | None:
         commit = str(value or "")
         if not HASH.fullmatch(commit):
@@ -1695,9 +1715,11 @@ class Validator:
                 if not isinstance(ref, str):
                     continue
                 ev = self.evidence.get(ref, {})
-                if ev.get("type") != "decision" \
-                        and ev.get("freshness") != "current" \
-                        and not self.is_superseded_stale_failure(ref, item_id):
+                if (
+                    ev.get("freshness") != "current"
+                    and not self.is_superseded_stale_failure(ref, item_id)
+                    and not self.is_item_only_pass_authorization(ref, item_id)
+                ):
                     self.error(where, f"PASS 引用了非 current 证据：{ref}")
                 if ev.get("type") == "ci" and ev.get("freshness") != "current":
                     self.error(where, f"PASS 使用了 stale CI：{ref}")
@@ -1750,15 +1772,15 @@ class Validator:
                     if not isinstance(did, str):
                         continue
                     dec = self.decisions.get(did)
-                    if not dec or dec.get("type") != ITEM_ONLY_PASS_DECISION_TYPE:
-                        continue
-                    if dec.get("status") != "approved":
-                        continue
-                    if dec.get("items") != [item_id] or dec.get("ac_ids") != []:
-                        continue
-                    if dec.get("evidence") not in refs:
-                        continue
-                    authorized.append(did)
+                    if (
+                        dec
+                        and dec.get("evidence") in refs
+                        and isinstance(dec.get("evidence"), str)
+                        and self.is_item_only_pass_authorization(
+                            dec["evidence"], item_id
+                        )
+                    ):
+                        authorized.append(did)
                 if len(authorized) != 1:
                     self.error(
                         where,

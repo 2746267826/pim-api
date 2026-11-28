@@ -716,6 +716,52 @@ class LedgerCase(unittest.TestCase):
         self.assertEqual(self.item(ledger, "A10")["prs"], [])
         self.assert_fails_with("PASS 没有实现 PR 时必须恰好有一个 approved item-only-pass")
 
+    def test_item_only_pass_requires_stale_e0_authorization(self):
+        _, evidence, _ = self.upgrade_to_pass()
+        authorization = next(
+            row for row in evidence["evidence"]
+            if row["id"] == "EV-DEC-ITEM-ONLY-A10"
+        )
+        authorization["freshness"] = "unknown"
+        self.save(self.evidence_path, evidence)
+        self.render()
+        self.assert_fails_with("PASS 引用了非 current 证据")
+
+    def test_pass_rejects_unrelated_stale_decision_evidence(self):
+        ledger, evidence, _ = self.upgrade_to_pass()
+        decisions = self.load(self.decisions_path)
+        item = self.item(ledger, "A10")
+        item["decisions"].append("DEC-TEST-UNRELATED")
+        item["evidence"].append("EV-DEC-TEST-UNRELATED")
+        decisions["decisions"].append({
+            "id": "DEC-TEST-UNRELATED",
+            "type": "product-decision",
+            "status": "recorded",
+            "approved_by": None,
+            "approved_in": None,
+            "rationale": "Unrelated stale decision fixture.",
+            "source": "test fixture",
+            "items": ["A10"],
+            "ac_ids": [],
+            "evidence": "EV-DEC-TEST-UNRELATED",
+        })
+        evidence["evidence"].append({
+            "id": "EV-DEC-TEST-UNRELATED",
+            "type": "decision",
+            "level": "E0",
+            "freshness": "stale",
+            "claim": "Unrelated stale decision fixture.",
+            "source": "test fixture",
+            "observed_at": "2026-11-22",
+            "items": ["A10"],
+            "limits": "Not PASS authorization.",
+        })
+        self.save(self.ledger_path, ledger)
+        self.save(self.decisions_path, decisions)
+        self.save(self.evidence_path, evidence)
+        self.render()
+        self.assert_fails_with("PASS 引用了非 current 证据")
+
     def test_pass_requires_every_acceptance_criterion(self):
         ledger = self.load(self.ledger_path)
         item = self.item(ledger, "A10")
