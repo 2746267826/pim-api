@@ -1975,7 +1975,6 @@ public sealed class NoteAsrBatchPersistenceTests
     {
         Skip.If(string.IsNullOrWhiteSpace(ConnectionString), "PIM_ASR516_PG is not configured");
         var seed = await SeedAsync();
-        var routeConfig = await AddRouteConfigAsync(seed.Owner, seed.ProfileId, "route-consent-1");
         var parentPolls = 0;
         var firstChildPolls = 0;
         var secondChildPolls = 0;
@@ -2024,6 +2023,9 @@ public sealed class NoteAsrBatchPersistenceTests
             await service.PollAsync(parent.Id, CancellationToken.None);
             await service.PollAsync(parent.Id, CancellationToken.None);
         }
+        // The retry route consent is frozen after the parent job already ran. Rotating the account
+        // route before Start would be a real consent drift, which the batch guard now rejects.
+        var routeConfig = await AddRouteConfigAsync(seed.Owner, seed.ProfileId, "route-consent-1");
         await using (var db = NewDb(seed.Owner))
         {
             var parent = await db.NoteAsrBatchJobs.AsNoTracking().SingleAsync(x => x.OwnerId == seed.Owner);

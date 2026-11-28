@@ -1282,13 +1282,15 @@ public sealed class NoteAsrRoutingConcurrencyTests
     {
         Skip.If(string.IsNullOrWhiteSpace(ConnectionString), "PIM_ASR516_PG is not configured");
         var owner = Guid.NewGuid();
-        await CleanupAsync(owner);
+        // The premise is "no cloud profile/runtime/key at all", which cannot hold on the shared
+        // CI database where other Notes suites keep a global runtime row. Use a fresh database.
+        await using var isolated = await IsolatedPostgresDatabase.CreateAsync();
         var options = Options.Create(new NoteMaterialUploadOptions { StorageRoot = StorageRoot });
         var materials = new NoteMaterialUploadStore(options);
         var tasks = new NoteAsrTaskStore(options);
         var material = NoteDerivedFixture.CreateMaterial(audioSamples: 1_000);
         await NoteDerivedFixture.UploadAsync(materials, owner, material);
-        await using (var db = NewDb(owner))
+        await using (var db = NewDbWithConnection(owner, isolated.ConnectionString))
         {
             await db.Database.EnsureCreatedAsync();
             await db.Users.AddAsync(NewUser(owner));
@@ -1297,7 +1299,7 @@ public sealed class NoteAsrRoutingConcurrencyTests
         // Give the account an invalid cloud default and no profile/runtime/key at all: an explicit
         // local override must still work from local model configuration alone.
         var configRevision = Guid.NewGuid();
-        await using (var db = NewDb(owner))
+        await using (var db = NewDbWithConnection(owner, isolated.ConnectionString))
         {
             db.NoteAsrRouteConfigs.Add(new NoteAsrRouteConfigEntity
             {
@@ -1311,7 +1313,7 @@ public sealed class NoteAsrRoutingConcurrencyTests
         var request = new StartNoteAsrRequest(taskId, owner, material.Request.VersionId, null, "zh",
             new NoteAsrRouteConsent(NoteAsrRoute.Local, configRevision, "consent-local", true));
         NoteAsrTaskDto started;
-        await using (var db = NewDb(owner))
+        await using (var db = NewDbWithConnection(owner, isolated.ConnectionString))
         {
             var service = new NoteAsrService(tasks, materials, db, new FixedUser(owner),
                 new AiAsrPresetRegistry(Array.Empty<IAiAsrPreset>()), new ConfigurationBuilder().Build(),
@@ -1366,7 +1368,7 @@ public sealed class NoteAsrRoutingConcurrencyTests
             Assert.Equal(beforeReject.Steps[0].Current.Status, afterReject.Steps[0].Current.Status);
             Assert.Equal(beforeReject.Steps[0].Attempts.Count, afterReject.Steps[0].Attempts.Count);
         }
-        await CleanupAsync(owner);
+        await CleanupAsync(owner, isolated.ConnectionString);
     }
 
     [SkippableFact]
