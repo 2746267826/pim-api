@@ -509,6 +509,87 @@ public sealed class NotificationDeliveryRealDbTests
     }
 
     [SkippableFact]
+    public async Task DeliveryClaimLease_CoversTheWorstCaseSerialProviderBatch()
+    {
+        var (temp, clock, user, fake) = await NewDatabaseAsync();
+        await using var _ = temp;
+        var deliveryId = await PrepareOneDeliveryAsync(temp, clock, user, fake);
+
+        await using var db = NotificationTestSupport.NewDbContext(temp.ConnectionString);
+        var worker = NotificationTestSupport.NewWorker(
+            db,
+            fake,
+            clock,
+            deliveryBatchSize: 20,
+            providerTimeoutSeconds: 15,
+            lockSeconds: 120);
+        var claims = await worker.ClaimDeliveriesAsync(
+            clock.UtcNow,
+            "lease-test-worker",
+            CancellationToken.None);
+        var claim = Assert.Single(claims);
+        Assert.Equal(deliveryId, claim.Id);
+
+        var stored = await NotificationTestSupport.ReadDeliveryAsync(
+            temp.ConnectionString, deliveryId);
+        var worstCase = TimeSpan.FromSeconds(20 * 15);
+        Assert.True(
+            stored.LockedUntil >= clock.UtcNow + worstCase,
+            $"批量最坏耗时 {worstCase.TotalSeconds}s 必须落在租约内，实际到期 {stored.LockedUntil:O}");
+        Assert.Equal("lease-test-worker", stored.LockedBy);
+    }
+
+    [SkippableFact]
+    public async Task StaleWorker_CannotSendAfterAnotherWorkerReclaimsTheExpiredLease()
+    {
+        var (temp, clock, user, fake) = await NewDatabaseAsync();
+        await using var _ = temp;
+        var deliveryId = await PrepareOneDeliveryAsync(temp, clock, user, fake);
+
+        await using var staleDb = NotificationTestSupport.NewDbContext(temp.ConnectionString);
+        var staleWorker = NotificationTestSupport.NewWorker(
+            staleDb,
+            fake,
+            clock,
+            deliveryBatchSize: 20,
+            providerTimeoutSeconds: 15,
+            lockSeconds: 120);
+        var staleClaim = Assert.Single(await staleWorker.ClaimDeliveriesAsync(
+            clock.UtcNow,
+            "stale-worker",
+            CancellationToken.None));
+
+        clock.Advance(TimeSpan.FromHours(1));
+        await using var currentDb = NotificationTestSupport.NewDbContext(temp.ConnectionString);
+        var currentWorker = NotificationTestSupport.NewWorker(
+            currentDb,
+            fake,
+            clock,
+            deliveryBatchSize: 20,
+            providerTimeoutSeconds: 15,
+            lockSeconds: 120);
+        var currentClaim = Assert.Single(await currentWorker.ClaimDeliveriesAsync(
+            clock.UtcNow,
+            "current-worker",
+            CancellationToken.None));
+        Assert.NotEqual(staleClaim.Owner, currentClaim.Owner);
+
+        await staleWorker.DeliverClaimedAsync([staleClaim], CancellationToken.None);
+        Assert.Equal(0, fake.Calls);
+        var stillOwned = await NotificationTestSupport.ReadDeliveryAsync(
+            temp.ConnectionString, deliveryId);
+        Assert.Equal(NotificationDeliveryStatuses.Processing, stillOwned.Status);
+        Assert.Equal("current-worker", stillOwned.LockedBy);
+
+        await currentWorker.DeliverClaimedAsync([currentClaim], CancellationToken.None);
+        Assert.Equal(1, fake.Calls);
+        Assert.Equal(
+            NotificationDeliveryStatuses.Delivered,
+            (await NotificationTestSupport.ReadDeliveryAsync(
+                temp.ConnectionString, deliveryId)).Status);
+    }
+
+    [SkippableFact]
     public async Task LastError_IsSafe_AndNeverPersistsProviderSecretText()
     {
         var (temp, clock, user, fake) = await NewDatabaseAsync();

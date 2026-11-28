@@ -273,6 +273,32 @@ describe('NotificationsSettingsPage', () => {
         expect.anything(),
       ),
     )
+    await waitFor(() =>
+      expect(fixture.notifySuccess).toHaveBeenCalledWith(
+        '投递已在待发送队列中，稍后自动重试',
+      ),
+    )
+  })
+
+  it('does not claim a requeue when retry returns a row that is still processing', async () => {
+    const user = userEvent.setup()
+    fixture.api.retryDelivery.mockResolvedValue({
+      ...deliveries.items[0],
+      status: 'Processing',
+      attemptCount: 4,
+    })
+    renderPage()
+
+    await user.click(await screen.findByRole('button', { name: '重试' }))
+
+    await waitFor(() =>
+      expect(fixture.notifySuccess).toHaveBeenCalledWith(
+        '该投递正在发送中，本次重试未改变队列状态',
+      ),
+    )
+    expect(fixture.notifySuccess).not.toHaveBeenCalledWith(
+      '已重新排队，稍后自动重试',
+    )
   })
 
   it('revokes an active subscription only through the subscription action', async () => {

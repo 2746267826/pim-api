@@ -16,6 +16,8 @@ public sealed class NotificationDeliveryWorker(
     TimeProvider clock,
     ILogger<NotificationDeliveryWorker> logger)
 {
+    public sealed record DeliveryClaim(Guid Id, string Owner);
+
     private NotificationDispatcherOptions Options => options.Value;
 
     public async Task RunOnceAsync(CancellationToken ct)
@@ -95,16 +97,25 @@ public sealed class NotificationDeliveryWorker(
     public async Task DeliverOnceAsync(CancellationToken ct)
     {
         var now = clock.GetUtcNow();
-        var claimed = await ClaimDeliveriesAsync(now, ct);
-        foreach (var deliveryId in claimed)
+        var owner = NewOwnerToken();
+        var claimed = await ClaimDeliveriesAsync(now, owner, ct);
+        await DeliverClaimedAsync(claimed, ct);
+    }
+
+    public async Task DeliverClaimedAsync(
+        IReadOnlyList<DeliveryClaim> claimed,
+        CancellationToken ct)
+    {
+        foreach (var claim in claimed)
         {
             ct.ThrowIfCancellationRequested();
-            await DeliverOneAsync(deliveryId, ct);
+            await DeliverOneAsync(claim, ct);
         }
     }
 
-    private async Task DeliverOneAsync(Guid deliveryId, CancellationToken ct)
+    private async Task DeliverOneAsync(DeliveryClaim claim, CancellationToken ct)
     {
+        var deliveryId = claim.Id;
         if (!db.Database.IsNpgsql())
         {
             var delivery = await db.NotificationDeliveries
@@ -112,6 +123,7 @@ public sealed class NotificationDeliveryWorker(
                 .Include(d => d.Event)
                 .SingleOrDefaultAsync(d => d.Id == deliveryId, ct);
             if (delivery is null) return;
+            if (!OwnsClaim(delivery, claim)) return;
             var subscription = await db.NotificationSubscriptions
                 .IgnoreQueryFilters()
                 .AsNoTracking()
@@ -163,10 +175,22 @@ public sealed class NotificationDeliveryWorker(
                 return;
             }
             await db.Entry(delivery).Reference(d => d.Event).LoadAsync(ct);
+            // A worker that lost its lease (for example because the batch ran longer than the
+            // lease) must not send after another worker has re-claimed the row.
+            if (!OwnsClaim(delivery, claim))
+            {
+                await transaction.CommitAsync(ct);
+                return;
+            }
             await DeliverLoadedAsync(delivery, subscription, ct);
             await transaction.CommitAsync(ct);
         });
     }
+
+    private bool OwnsClaim(NotificationDeliveryEntity delivery, DeliveryClaim claim) =>
+        delivery.Status == NotificationDeliveryStatuses.Processing &&
+        string.Equals(delivery.LockedBy, claim.Owner, StringComparison.Ordinal) &&
+        delivery.LockedUntil > clock.GetUtcNow();
 
     private async Task DeliverLoadedAsync(
         NotificationDeliveryEntity delivery,
@@ -449,7 +473,7 @@ public sealed class NotificationDeliveryWorker(
 
     private async Task<List<Guid>> ClaimEventsAsync(DateTimeOffset now, CancellationToken ct)
     {
-        if (!db.Database.IsRelational()) return await ClaimEventsNonRelationalAsync(now, ct);
+        if (!db.Database.IsNpgsql()) return await ClaimEventsNonRelationalAsync(now, ct);
 
         var ids = new List<Guid>();
         var connection = db.Database.GetDbConnection();
@@ -501,11 +525,16 @@ public sealed class NotificationDeliveryWorker(
         return items.Select(e => e.Id).ToList();
     }
 
-    private async Task<List<Guid>> ClaimDeliveriesAsync(DateTimeOffset now, CancellationToken ct)
+    public async Task<IReadOnlyList<DeliveryClaim>> ClaimDeliveriesAsync(
+        DateTimeOffset now,
+        string owner,
+        CancellationToken ct)
     {
-        if (!db.Database.IsRelational()) return await ClaimDeliveriesNonRelationalAsync(now, ct);
+        if (!db.Database.IsNpgsql())
+            return await ClaimDeliveriesNonRelationalAsync(now, owner, ct);
 
-        var ids = new List<Guid>();
+        var ids = new List<DeliveryClaim>();
+        var lockedUntil = now.Add(Options.DeliveryClaimLease);
         var connection = db.Database.GetDbConnection();
         if (connection.State != System.Data.ConnectionState.Open)
             await connection.OpenAsync(ct);
@@ -527,18 +556,19 @@ public sealed class NotificationDeliveryWorker(
             )
             RETURNING id
             """, (NpgsqlConnection)connection);
-        command.Parameters.AddWithValue("locked_until", now.AddSeconds(Math.Max(10, Options.LockSeconds)));
-        command.Parameters.AddWithValue("locked_by", Guid.NewGuid().ToString("N")[..16]);
+        command.Parameters.AddWithValue("locked_until", lockedUntil);
+        command.Parameters.AddWithValue("locked_by", owner);
         command.Parameters.AddWithValue("now", now);
         command.Parameters.AddWithValue("limit", Math.Max(1, Options.DeliveryBatchSize));
         await using var reader = await command.ExecuteReaderAsync(ct);
-        while (await reader.ReadAsync(ct)) ids.Add(reader.GetGuid(0));
+        while (await reader.ReadAsync(ct)) ids.Add(new DeliveryClaim(reader.GetGuid(0), owner));
         if (ids.Count > 0) db.ChangeTracker.Clear();
         return ids;
     }
 
-    private async Task<List<Guid>> ClaimDeliveriesNonRelationalAsync(
+    private async Task<List<DeliveryClaim>> ClaimDeliveriesNonRelationalAsync(
         DateTimeOffset now,
+        string owner,
         CancellationToken ct)
     {
         var items = await db.NotificationDeliveries
@@ -552,13 +582,16 @@ public sealed class NotificationDeliveryWorker(
         foreach (var item in items)
         {
             item.Status = NotificationDeliveryStatuses.Processing;
-            item.LockedUntil = now.AddSeconds(Math.Max(10, Options.LockSeconds));
+            item.LockedUntil = now.Add(Options.DeliveryClaimLease);
+            item.LockedBy = owner;
             item.AttemptCount++;
             item.UpdatedAt = now;
         }
         await db.SaveChangesAsync(ct);
-        return items.Select(d => d.Id).ToList();
+        return items.Select(d => new DeliveryClaim(d.Id, owner)).ToList();
     }
+
+    private static string NewOwnerToken() => Guid.NewGuid().ToString("N")[..16];
 
     private async Task MarkFanoutFailureAsync(
         Guid eventId,

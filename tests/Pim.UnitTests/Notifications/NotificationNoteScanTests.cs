@@ -143,8 +143,66 @@ public sealed class NotificationNoteScanTests
         }
     }
 
+    [SkippableTheory]
+    [InlineData(NoteReadFailure.MalformedJson)]
+    [InlineData(NoteReadFailure.IdentityMismatch)]
+    public async Task UnreadableTask_DoesNotAdvanceTheWatermarkOrReplayLater(
+        NoteReadFailure failure)
+    {
+        var (temp, clock, user) = await NewDatabaseAsync();
+        await using var _ = temp;
+        var storage = NewStorage();
+        try
+        {
+            await WriteAsrAsync(
+                storage,
+                NotificationCategoryTests.AsrState(user, "Succeeded", clock.UtcNow));
+            var brokenId = Guid.NewGuid();
+            var brokenPath = Path.Combine(
+                storage, "asr-tasks", user.ToString("D"), brokenId.ToString("D") + ".json");
+            await File.WriteAllTextAsync(
+                brokenPath,
+                failure == NoteReadFailure.MalformedJson
+                    ? "{ not-json"
+                    : JsonSerializer.Serialize(
+                        NotificationCategoryTests.AsrState(
+                            Guid.NewGuid(), "Succeeded", clock.UtcNow),
+                        Json));
+
+            await using (var db = NotificationTestSupport.NewDbContext(temp.ConnectionString))
+            {
+                var scanner = NewScanner(db, storage, clock);
+                await scanner.ScanCompletedNotesAsync(CancellationToken.None);
+            }
+
+            Assert.False(
+                File.Exists(WatermarkPath(storage)),
+                "读任务失败必须保留水位，否则坏任务会在下一轮被静默跳过");
+
+            await File.Delete(brokenPath);
+            clock.Advance(TimeSpan.FromMinutes(1));
+            await using (var db = NotificationTestSupport.NewDbContext(temp.ConnectionString))
+            {
+                var scanner = NewScanner(db, storage, clock);
+                await scanner.ScanCompletedNotesAsync(CancellationToken.None);
+            }
+
+            await using var verify = NotificationTestSupport.NewDbContext(temp.ConnectionString);
+            var events = await verify.NotificationEvents.IgnoreQueryFilters()
+                .Where(e => e.UserId == user)
+                .ToListAsync();
+            var notification = Assert.Single(events);
+            Assert.Equal(NotificationEventTypes.NoteTranscriptionCompleted, notification.EventType);
+            Assert.True(File.Exists(WatermarkPath(storage)));
+        }
+        finally
+        {
+            Directory.Delete(storage, recursive: true);
+        }
+    }
+
     [SkippableFact]
-    public async Task ConcurrentScanners_ShareTheWatermarkAndDedupeTheEvent()
+    public async Task TwoScannersInOneProcess_ShareTheFileWatermarkAndDedupeTheEvent()
     {
         var (temp, clock, user) = await NewDatabaseAsync();
         await using var _ = temp;
@@ -174,6 +232,12 @@ public sealed class NotificationNoteScanTests
         {
             Directory.Delete(storage, recursive: true);
         }
+    }
+
+    public enum NoteReadFailure
+    {
+        MalformedJson,
+        IdentityMismatch
     }
 
     private static NotificationEventScanner NewScanner(

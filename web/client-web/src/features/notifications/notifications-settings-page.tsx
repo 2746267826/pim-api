@@ -26,6 +26,7 @@ import {
   type NotificationPreferences,
 } from './api'
 import { notificationDeviceId } from './device'
+import { retryDeliveryMessage } from './delivery-status'
 import {
   filterNotificationsByCategory,
   notificationCategoryKey,
@@ -172,8 +173,8 @@ export function NotificationsSettingsPage() {
 
   const retryDelivery = useMutation({
     mutationFn: notificationApi.retryDelivery,
-    onSuccess: async () => {
-      notifySuccess('已重新排队，稍后自动重试')
+    onSuccess: async (data) => {
+      notifySuccess(retryDeliveryMessage(data.status))
       await qc.invalidateQueries({ queryKey: ['notifications', 'deliveries'] })
     },
     onError: (error) => notifyError(errorText(error, '重试投递失败')),

@@ -39,10 +39,8 @@ public static class AdvisoryLock
         PimDbContext db, long key, Func<Task<T>> operation, CancellationToken ct)
     {
         // 只有 PostgreSQL 有 advisory lock；其它关系型提供程序（例如 SQLite）直接执行，
-        // 避免把 pg_advisory_xact_lock 发过去（同 MobileAnalyticsMaterializationService 的判定）。
-        if (!db.Database.IsRelational() ||
-            db.Database.ProviderName?.Contains("Npgsql", StringComparison.OrdinalIgnoreCase) != true)
-            return await operation();
+        // 避免把 pg_advisory_xact_lock 发过去。按 provider 判断，不能只看 IsRelational()。
+        if (!db.Database.IsNpgsql()) return await operation();
 
         var strategy = db.Database.CreateExecutionStrategy();
         return await strategy.ExecuteAsync(async () =>

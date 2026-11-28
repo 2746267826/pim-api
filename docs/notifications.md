@@ -73,6 +73,12 @@ Notifications__WebPush__Subject=mailto:ops@example.com
 - 事件创建时快照当时符合偏好的订阅；之后才重新打开的设备、或关闭期间产生的事件不会补推。关闭类别期间的事件仍以抑制状态落库，用于幂等与去重。
 - `notification_deliveries` 唯一键 `(event_id, subscription_id)` 保证重复 fanout 不重复推送。
 - 可重试失败按指数退避进入 `Retrying`；达到上限进入 `DeadLetter`，设置页可见最近安全错误并允许手动重试。
+- 投递领取租约按“批次大小 × 单次 provider 超时 + 每次固定开销 + 安全余量”推导，
+  并要求 `locked_by` owner 与到期时间同时匹配才发送。这样默认 20 条串行、每条最多
+  15 秒（300 秒）的批次不会在 120 秒租约后过期，旧 worker 即使晚到也不会二次发送。
+  可通过 `Notifications__Dispatcher__ProviderTimeoutSeconds`（默认 15）、
+  `DeliveryBatchSize` 与 `LeaseSafetyMarginSeconds`（默认 60）调整；显式调小租约不会
+  低于该推导值。
 - 手动重试只接受 `DeadLetter` / `Skipped`。PostgreSQL 路径在同一事务内先锁定用户
   拥有的 `Active` subscription，再执行带 `status IN ('DeadLetter', 'Skipped')` 条件的
   `UPDATE`；worker 抢先 claim 后条件更新影响 0 行，接口返回实际状态，绝不会把
@@ -93,8 +99,10 @@ Notifications__WebPush__Subject=mailto:ops@example.com
 - 转写/整理完成事件由文件任务扫描器发现；扫描水位持久化在笔记存储根的 `notification-note-scan-watermark.txt`，首次上线只回看最近 2 分钟，之后按水位增量扫描，补扫上限 7 天，避免历史任务洪泛。服务停机超过补扫上限期间完成的笔记任务不会补发。
 - 扫描器对每个笔记任务按 revision 生成稳定去重键；`Succeeded` 产生完成事件，
   `NeedsAttention` 产生 attention 事件，水位内任务不重放。入队失败时不推进水位。
-  当前回归测试覆盖单进程失败不推进水位、两个扫描器共享水位和去重；真实多实例调度、
-  fencing/租约、进程崩溃恢复和跨实例水位一致性仍为 NOT-VERIFIED，需要独立工单验证。
+  读取任务文件出现 IO / JSON / 域错误时同样不推进水位，坏文件修复前会持续重扫
+  （稳定去重键保证已入队事件不重复）。当前回归只覆盖单个进程内的失败不推进水位和
+  两个扫描器共享同一文件水位；真实多实例调度、跨实例水位一致性和进程崩溃恢复仍为
+  NOT-VERIFIED，需要独立工单验证。
 
 ## 实时通道与登出
 

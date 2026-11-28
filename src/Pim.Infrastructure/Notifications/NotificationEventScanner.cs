@@ -29,7 +29,10 @@ public sealed class NotificationEventScanner(
 
     public async Task ScanDueRemindersAsync(CancellationToken ct)
     {
-        if (!db.Database.IsRelational()) return;
+        // reminders 的领取用 NpgsqlCommand + FOR UPDATE SKIP LOCKED。SQLite 也是
+        // “关系型”但不能强转成 NpgsqlConnection，因此按 provider 判断；生产部署为
+        // PostgreSQL，非 PostgreSQL 测试/辅助上下文直接返回。
+        if (!db.Database.IsNpgsql()) return;
         var now = clock.GetUtcNow();
         var due = new List<ReminderDueRow>();
         var connection = db.Database.GetDbConnection();
@@ -123,8 +126,9 @@ public sealed class NotificationEventScanner(
                 when (error is IOException or InvalidDataException
                     or UnauthorizedAccessException or DomainException or JsonException)
             {
+                failed = true;
                 logger.LogWarning(
-                    "Transcription completion scan skipped task {TaskId} ({ErrorType})",
+                    "Transcription completion scan will keep the watermark at task {TaskId} ({ErrorType})",
                     taskId, error.GetType().Name);
             }
         }
@@ -144,8 +148,9 @@ public sealed class NotificationEventScanner(
                 when (error is IOException or InvalidDataException
                     or UnauthorizedAccessException or DomainException or JsonException)
             {
+                failed = true;
                 logger.LogWarning(
-                    "Derived completion scan skipped task {TaskId} ({ErrorType})",
+                    "Derived completion scan will keep the watermark at task {TaskId} ({ErrorType})",
                     taskId, error.GetType().Name);
             }
         }
