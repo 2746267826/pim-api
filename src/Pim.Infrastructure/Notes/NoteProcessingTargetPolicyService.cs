@@ -2,9 +2,12 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Pim.Core.Ai;
 using Pim.Core.Exceptions;
 using Pim.Core.Notes;
+using Pim.Infrastructure.Ai;
 using Pim.Infrastructure.Ai.Asr;
+using Pim.Infrastructure.Ai.Asr.Mimo;
 using Pim.Infrastructure.Data;
 using Pim.Infrastructure.Data.Entities;
 
@@ -29,11 +32,15 @@ public sealed class NoteProcessingTargetPolicyService(
             : routeName == NoteAsrRoute.Local
                 ? null
                 : route.CloudModelId ?? runtime?.TranscriptionModelId;
+        var textModelId = AiPurposeModelResolver.ResolveId(runtime,
+            AiPurpose.NoteOrganization, hasImages: false);
+        var visionModelId = AiPurposeModelResolver.ResolveId(runtime,
+            AiPurpose.NoteOrganization, hasImages: true);
         var modelIds = new[]
             {
                 asrModelId,
-                runtime?.TextModelId,
-                runtime?.VisionModelId
+                textModelId,
+                visionModelId
             }
             .Where(id => id.HasValue)
             .Select(id => id!.Value)
@@ -66,6 +73,19 @@ public sealed class NoteProcessingTargetPolicyService(
             var profile = asrModelId is { } selected && profiles.TryGetValue(selected, out var found)
                 ? found
                 : null;
+            // Follow the same effective-route resolution as the ASR service and route settings:
+            // a cloud route with no account override is described by the preset of the global
+            // transcription model that will actually receive the audio.
+            if (route is not null && route.CloudModelId is null &&
+                NoteAsrRoute.IsCloud(routeName) && profile is
+                {
+                    Enabled: true,
+                    AsrPresetId: not null
+                } && AiModelCapabilityFlags.Has(profile.Capabilities,
+                    AiModelCapability.Transcription))
+                routeName = profile.AsrPresetId == MimoMultimodalPreset.PresetId
+                    ? NoteAsrRoute.CloudMultimodal
+                    : NoteAsrRoute.CloudAsr;
             var endpoint = AsrEndpoint(profile);
             targets.Add(new
             {
@@ -81,8 +101,8 @@ public sealed class NoteProcessingTargetPolicyService(
                 PresetId(profile), PresetVersion(profile), routeRevision));
         }
 
-        var text = FindProfile(runtime?.TextModelId, profiles);
-        var vision = FindProfile(runtime?.VisionModelId, profiles) ?? text;
+        var text = FindProfile(textModelId, profiles);
+        var vision = FindProfile(visionModelId, profiles) ?? text;
         targets.Add(new
         {
             key = "DerivedText",
@@ -109,12 +129,14 @@ public sealed class NoteProcessingTargetPolicyService(
                 runtime.Enabled,
                 runtime.TextModelId,
                 runtime.VisionModelId,
-                runtime.TranscriptionModelId
+                runtime.TranscriptionModelId,
+                runtime.NoteOrganizationModelId
             },
             route = route is null ? null : new
             {
                 route.Revision,
-                route = routeName,
+                configuredRoute = route.DefaultRoute,
+                effectiveRoute = routeName,
                 route.LocalModelId,
                 route.LocalModelRevision,
                 route.CloudModelId,

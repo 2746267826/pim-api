@@ -137,6 +137,13 @@ public sealed class NoteProcessingService(
             var asrCreated = asrState is not null;
             var derivedCreated = derivedState is not null;
             var allRequiredCreated = (!hasAudio || asrCreated) && derivedCreated;
+            // A record with an authorization snapshot or start timestamp already owns its child
+            // chains. Later target/authorization drift must not rewrite it back to a pending or
+            // not-started explanation; execution-time consent checks still stop paid calls.
+            // Out-of-band chains without either marker still use the validating path below.
+            if (automatic && allRequiredCreated &&
+                (state.Authorization is not null || state.StartedAt is not null))
+                return await BuildStatusAsync(owner, version, state, autoEnabled, lockedCt);
             if (automatic && !autoEnabled)
                 return await SavePendingAsync(state, "auto_processing_disabled",
                     "自动笔记处理未开启；材料已完整，可在笔记处理页手动发起", lockedCt);
@@ -786,9 +793,12 @@ public sealed class NoteProcessingService(
     {
         if (version.Upload.Phase == "Uploading")
             return "材料尚未完整，等待所有分块回执";
+        // A stored pending explanation must never override chains that already exist.
+        // Otherwise a later target/consent drift scan would report a running or completed
+        // material as "not started".
+        if (allRequiredCreated) return null;
         if (!string.IsNullOrWhiteSpace(state?.PendingReason))
             return state.PendingReason;
-        if (allRequiredCreated) return null;
         if (!autoEnabled && state?.StartedAt is null)
             return "自动笔记处理未开启；材料已完整，可在笔记处理页手动发起";
         return "材料已完整，处理任务尚未发起";

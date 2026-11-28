@@ -314,6 +314,150 @@ public sealed class NoteProcessingTests(NoteProcessingFixture host)
     }
 
     [Fact]
+    public async Task StandaloneNoteOrganizationTargetIsVisibleAndEndpointDriftInvalidatesIt()
+    {
+        var owner = await OwnerAsync("standing-note-organization");
+        using var client = AuthRegistrationTestHost.Authed(host.Factory, owner.AccessToken);
+        try
+        {
+            _ = await ConfigureAsync(client, auto: false);
+            var models = await Data<IReadOnlyList<AiModelDto>>(
+                await client.GetAsync("/api/v1/ai/models"));
+            var organization = await SaveOrResetModelAsync(client, models,
+                "整理用途 note-processing", "http://organization.invalid/v1/",
+                "organization-text", [AiModelCapability.Text, AiModelCapability.Vision],
+                4096, "synthetic-organization-key", null);
+            await SetNoteOrganizationDefaultAsync(client, organization.Id);
+
+            var initial = await Data<NoteProcessingPreferencesDto>(
+                await client.GetAsync(Processing + "/preferences"));
+            Assert.Contains(initial.DefaultTargets, value =>
+                value.Contains("整理用途 note-processing", StringComparison.Ordinal) &&
+                value.Contains("organization-text", StringComparison.Ordinal) &&
+                value.Contains("endpoint 已纳入目标策略", StringComparison.Ordinal));
+            Assert.DoesNotContain(initial.DefaultTargets, value =>
+                value.Contains("整理 note-processing", StringComparison.Ordinal));
+
+            var material = await CompleteMaterialAsync(owner, client, withAudio: false);
+            var plan = await PlanAsync(client, material);
+            var derived = Assert.Single(plan.Targets.Where(target =>
+                target.Kind == NoteProcessingTaskKind.Derived));
+            Assert.Equal(organization.Id, derived.ModelId);
+            Assert.Equal(organization.Revision, derived.ModelRevision);
+            Assert.Equal(organization.BaseUrl, derived.Endpoint);
+            Assert.Equal((Asr: 0, Derived: 0), TaskCounts(owner));
+
+            var enabled = await SetAutoProcessingAsync(client, true);
+            Assert.True(enabled.StandingAuthorizationValid);
+            Assert.Equal(initial.CurrentDefaultTargetRevision,
+                enabled.StandingAuthorizationTargetRevision);
+
+            var changedModels = await Data<IReadOnlyList<AiModelDto>>(
+                await client.GetAsync("/api/v1/ai/models"));
+            _ = await SaveOrResetModelAsync(client, changedModels,
+                "整理用途 note-processing", "http://organization-changed.invalid/v1/",
+                "organization-text", [AiModelCapability.Text, AiModelCapability.Vision],
+                4096, "synthetic-organization-key", null);
+
+            var changed = await Data<NoteProcessingPreferencesDto>(
+                await client.GetAsync(Processing + "/preferences"));
+            Assert.False(changed.StandingAuthorizationValid);
+            Assert.Null(changed.StandingAuthorizationRevision);
+            Assert.Null(changed.StandingAuthorizationTargetRevision);
+            Assert.NotEqual(enabled.CurrentDefaultTargetRevision,
+                changed.CurrentDefaultTargetRevision);
+            Assert.Contains(changed.DefaultTargets, value =>
+                value.Contains("整理用途 note-processing", StringComparison.Ordinal) &&
+                value.Contains("endpoint 已纳入目标策略", StringComparison.Ordinal));
+        }
+        finally
+        {
+            await SetNoteOrganizationDefaultAsync(client, Guid.Empty);
+        }
+    }
+
+    [Fact]
+    public async Task StandaloneNoteOrganizationProfileDriftAndUnavailabilityFailClosed()
+    {
+        var owner = await OwnerAsync("standing-note-organization-drift");
+        using var client = AuthRegistrationTestHost.Authed(host.Factory, owner.AccessToken);
+        try
+        {
+            host.Models.Reset();
+            _ = await ConfigureAsync(client, auto: false);
+            var organization = await SaveOrganizationProfileAsync(client,
+                "整理用途 note-processing", "http://organization.invalid/v1/",
+                "organization-text");
+            var replacement = await SaveOrganizationProfileAsync(client,
+                "整理用途替换 note-processing", "http://organization-replacement.invalid/v1/",
+                "organization-replacement");
+            await SetNoteOrganizationDefaultAsync(client, organization.Id);
+            var enabled = await SetAutoProcessingAsync(client, true);
+            Assert.True(enabled.StandingAuthorizationValid);
+
+            using (var scope = host.Factory.Services.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
+                var profile = await db.AiModelProfiles.SingleAsync(x => x.Id == organization.Id);
+                profile.Revision = Guid.NewGuid();
+                await db.SaveChangesAsync();
+            }
+            var revisionDrift = await Data<NoteProcessingPreferencesDto>(
+                await client.GetAsync(Processing + "/preferences"));
+            Assert.False(revisionDrift.StandingAuthorizationValid);
+            Assert.Null(revisionDrift.StandingAuthorizationRevision);
+            Assert.NotEqual(enabled.CurrentDefaultTargetRevision,
+                revisionDrift.CurrentDefaultTargetRevision);
+
+            await SetNoteOrganizationDefaultAsync(client, replacement.Id);
+            var idDrift = await Data<NoteProcessingPreferencesDto>(
+                await client.GetAsync(Processing + "/preferences"));
+            Assert.False(idDrift.StandingAuthorizationValid);
+            Assert.Contains(idDrift.DefaultTargets, value =>
+                value.Contains("organization-replacement", StringComparison.Ordinal));
+
+            var reauthorized = await SetAutoProcessingAsync(client, true);
+            Assert.True(reauthorized.StandingAuthorizationValid);
+            await SetOrganizationAvailabilityAsync(replacement.Id, enabled: false);
+            var disabled = await Data<NoteProcessingPreferencesDto>(
+                await client.GetAsync(Processing + "/preferences"));
+            Assert.False(disabled.StandingAuthorizationValid);
+            var disabledAuthorization = await SetAutoProcessingAsync(client, true);
+            Assert.True(disabledAuthorization.StandingAuthorizationValid);
+
+            var disabledMaterial = await CompleteMaterialAsync(owner, client, withAudio: false);
+            var disabledStatus = await StatusAsync(client, disabledMaterial.NoteId,
+                disabledMaterial.VersionId);
+            Assert.Equal(NoteProcessingState.PendingProcessing, disabledStatus.State);
+            Assert.False(disabledStatus.Derived.TaskCreated);
+            Assert.Contains("未启用", disabledStatus.PendingReason);
+            Assert.Equal((Asr: 0, Derived: 0), TaskCounts(owner));
+            Assert.Equal(0, host.Models.Calls);
+
+            await SetOrganizationAvailabilityAsync(replacement.Id, enabled: true,
+                capabilities: AiModelCapabilityFlags.Text);
+            var incapable = await Data<NoteProcessingPreferencesDto>(
+                await client.GetAsync(Processing + "/preferences"));
+            Assert.False(incapable.StandingAuthorizationValid);
+            var incapableAuthorization = await SetAutoProcessingAsync(client, true);
+            Assert.True(incapableAuthorization.StandingAuthorizationValid);
+
+            var incapableMaterial = await CompleteMaterialAsync(owner, client, withAudio: false);
+            var incapableStatus = await StatusAsync(client, incapableMaterial.NoteId,
+                incapableMaterial.VersionId);
+            Assert.Equal(NoteProcessingState.PendingProcessing, incapableStatus.State);
+            Assert.False(incapableStatus.Derived.TaskCreated);
+            Assert.Contains("未声明视觉能力", incapableStatus.PendingReason);
+            Assert.Equal((Asr: 0, Derived: 0), TaskCounts(owner));
+            Assert.Equal(0, host.Models.Calls);
+        }
+        finally
+        {
+            await SetNoteOrganizationDefaultAsync(client, Guid.Empty);
+        }
+    }
+
+    [Fact]
     public async Task StandingAuthorizationRejectsAStaleDefaultTargetRevision()
     {
         var owner = await OwnerAsync("standing-target-stale");
@@ -1176,6 +1320,146 @@ public sealed class NoteProcessingTests(NoteProcessingFixture host)
     }
 
     [Fact]
+    public async Task TargetDriftDoesNotRegressCreatedTasksToPendingAcrossDispatch()
+    {
+        var owner = await OwnerAsync("dispatch-target-drift");
+        using var client = AuthRegistrationTestHost.Authed(host.Factory, owner.AccessToken);
+        var defaults = await ConfigureAsync(client, auto: true);
+        var material = await CompleteMaterialAsync(owner, client, withAudio: true);
+        var started = await StatusAsync(client, material.NoteId, material.VersionId);
+        Assert.True(started.Asr.TaskCreated);
+        Assert.True(started.Derived.TaskCreated);
+        Assert.Equal((Asr: 1, Derived: 1), TaskCounts(owner));
+
+        using (var scope = host.Factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
+            var profile = await db.AiModelProfiles.SingleAsync(x => x.Id == defaults.Derived.Id);
+            profile.Revision = Guid.NewGuid();
+            profile.Model += "-changed-after-start";
+            await db.SaveChangesAsync();
+        }
+        var driftedPreferences = await Data<NoteProcessingPreferencesDto>(
+            await client.GetAsync(Processing + "/preferences"));
+        Assert.False(driftedPreferences.StandingAuthorizationValid);
+
+        var store = host.Factory.Services.GetRequiredService<NoteProcessingStore>();
+        var before = await store.ReadAsync(owner.UserId, started.ProcessingId, default);
+        var dispatch = host.Factory.Services.GetRequiredService<NoteProcessingDispatchJob>();
+        await dispatch.RunAsync(default);
+        await dispatch.RunAsync(default);
+
+        var after = await store.ReadAsync(owner.UserId, started.ProcessingId, default);
+        Assert.Equal(before.Revision, after.Revision);
+        Assert.Equal(before.UpdatedAt, after.UpdatedAt);
+        Assert.Null(after.PendingReason);
+        Assert.Equal(started.Asr.TaskId, after.AsrTaskId);
+        Assert.Equal(started.Derived.TaskId, after.DerivedTaskId);
+        var status = await StatusAsync(client, material.NoteId, material.VersionId);
+        Assert.NotEqual(NoteProcessingState.PendingProcessing, status.State);
+        Assert.True(status.Asr.TaskCreated);
+        Assert.True(status.Derived.TaskCreated);
+        Assert.Equal(started.Asr.TaskId, status.Asr.TaskId);
+        Assert.Equal(started.Derived.TaskId, status.Derived.TaskId);
+        Assert.Equal((Asr: 1, Derived: 1), TaskCounts(owner));
+
+        using (var scope = host.Factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
+            var profile = await db.AiModelProfiles.SingleAsync(x => x.Id == defaults.Derived.Id);
+            profile.Revision = defaults.Derived.Revision;
+            profile.Model = defaults.Derived.Model;
+            await db.SaveChangesAsync();
+        }
+        await MarkAsrSucceededWithSyntheticReceiptsAsync(owner.UserId, started.Asr.TaskId!.Value,
+            material);
+        await host.Factory.Services.GetRequiredService<NoteDerivedJob>().RunAsync(
+            owner.UserId, started.Derived.TaskId!.Value, CancellationToken.None);
+        var completed = await StatusAsync(client, material.NoteId, material.VersionId);
+        Assert.Equal(NoteProcessingState.Completed, completed.State);
+
+        var completedRecord = await store.ReadAsync(owner.UserId, started.ProcessingId, default);
+        using (var scope = host.Factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
+            var profile = await db.AiModelProfiles.SingleAsync(x => x.Id == defaults.Derived.Id);
+            profile.Revision = Guid.NewGuid();
+            profile.Model += "-changed-after-completion";
+            await db.SaveChangesAsync();
+        }
+        await dispatch.RunAsync(default);
+        var stillCompleted = await StatusAsync(client, material.NoteId, material.VersionId);
+        Assert.Equal(NoteProcessingState.Completed, stillCompleted.State);
+        Assert.Equal(started.Asr.TaskId, stillCompleted.Asr.TaskId);
+        Assert.Equal(started.Derived.TaskId, stillCompleted.Derived.TaskId);
+        Assert.Equal((Asr: 1, Derived: 1), TaskCounts(owner));
+        Assert.Equal(completedRecord.Revision,
+            (await store.ReadAsync(owner.UserId, started.ProcessingId, default)).Revision);
+    }
+
+    [Fact]
+    public async Task EffectiveAsrRouteMatchesGlobalTranscriptionPresetInTargetPolicy()
+    {
+        var owner = await OwnerAsync("effective-route-drift");
+        using var client = AuthRegistrationTestHost.Authed(host.Factory, owner.AccessToken);
+        var defaults = await ConfigureAsync(client, auto: false);
+        try
+        {
+            var current = await Data<NoteAsrRouteConfigDto>(
+                await client.GetAsync("/api/v1/native-notes/asr-routing/config"));
+            var route = await Data<NoteAsrRouteConfigDto>(await client.PutAsJsonAsync(
+                "/api/v1/native-notes/asr-routing/config",
+                new UpdateNoteAsrRouteConfigRequest(current.Revision, NoteAsrRoute.CloudAsr,
+                    null, null, null, "synthetic-cloud-consent-v1")));
+            Assert.Null(route.CloudModelId);
+            Assert.Equal(NoteAsrRoute.CloudAsr, route.DefaultRoute);
+
+            var models = await Data<IReadOnlyList<AiModelDto>>(
+                await client.GetAsync("/api/v1/ai/models"));
+            var multimodal = await SaveOrResetModelAsync(client, models,
+                "多模态默认 note-processing", "http://multimodal.invalid/v1/",
+                "mimo-v2.6-flash", [AiModelCapability.Transcription], 1024,
+                "synthetic-multimodal-key", "mimo-multimodal");
+            var settings = await Data<AiModelSettingsDto>(
+                await client.GetAsync("/api/v1/ai/model-settings"));
+            _ = await Data<AiModelSettingsDto>(await client.PutAsJsonAsync(
+                "/api/v1/ai/model-settings",
+                new SaveAiModelSettingsRequest(settings.Revision, true, defaults.Derived.Id,
+                    defaults.Derived.Id, multimodal.Id)));
+            var replannedRoute = await Data<NoteAsrRouteConfigDto>(
+                await client.GetAsync("/api/v1/native-notes/asr-routing/config"));
+            Assert.Null(replannedRoute.CloudModelId);
+            Assert.Equal(NoteAsrRoute.CloudMultimodal, replannedRoute.DefaultRoute);
+            Assert.Equal(NoteAsrRoute.CloudMultimodal, replannedRoute.EffectiveCloudRoute);
+
+            var preferences = await Data<NoteProcessingPreferencesDto>(
+                await client.GetAsync(Processing + "/preferences"));
+            Assert.Contains(preferences.DefaultTargets, value =>
+                value.Contains("多模态默认 note-processing", StringComparison.Ordinal) &&
+                value.Contains(NoteAsrRoute.CloudMultimodal, StringComparison.Ordinal));
+
+            var material = await CompleteMaterialAsync(owner, client, withAudio: true);
+            var plan = await PlanAsync(client, material);
+            var asr = Assert.Single(plan.Targets.Where(target =>
+                target.Kind == NoteProcessingTaskKind.Asr));
+            Assert.Equal(NoteAsrRoute.CloudMultimodal, asr.Route);
+            Assert.Equal(multimodal.Id, asr.ModelId);
+        }
+        finally
+        {
+            var restored = await Data<AiModelSettingsDto>(
+                await client.GetAsync("/api/v1/ai/model-settings"));
+            _ = await Data<AiModelSettingsDto>(await client.PutAsJsonAsync(
+                "/api/v1/ai/model-settings",
+                new SaveAiModelSettingsRequest(restored.Revision, restored.Enabled,
+                    defaults.Derived.Id, defaults.Derived.Id, defaults.Asr.Id)
+                {
+                    NoteOrganizationModelId = Guid.Empty
+                }));
+        }
+    }
+
+    [Fact]
     public async Task CompensationScanStartsMissingIntentOnce_WithoutRewritingStartedRecord()
     {
         var owner = await OwnerAsync("dispatch-recovery");
@@ -1934,6 +2218,27 @@ public sealed class NoteProcessingTests(NoteProcessingFixture host)
                 $"/api/v1/ai/models/{existing.Id}", request));
     }
 
+    private static async Task<AiModelDto> SaveOrganizationProfileAsync(HttpClient client,
+        string name, string baseUrl, string model)
+    {
+        var models = await Data<IReadOnlyList<AiModelDto>>(
+            await client.GetAsync("/api/v1/ai/models"));
+        return await SaveOrResetModelAsync(client, models, name, baseUrl, model,
+            [AiModelCapability.Text, AiModelCapability.Vision], 4096,
+            $"synthetic-{model}-key", null);
+    }
+
+    private async Task SetOrganizationAvailabilityAsync(Guid modelId, bool enabled,
+        int? capabilities = null)
+    {
+        using var scope = host.Factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
+        var profile = await db.AiModelProfiles.SingleAsync(x => x.Id == modelId);
+        profile.Enabled = enabled;
+        if (capabilities is { } value) profile.Capabilities = value;
+        await db.SaveChangesAsync();
+    }
+
     private static async Task<NoteAsrRouteConfigDto> ConfigureCloudRouteAsync(
         HttpClient client, Guid asrModelId)
     {
@@ -1959,6 +2264,19 @@ public sealed class NoteProcessingTests(NoteProcessingFixture host)
                 DefaultTargetRevision: enabled
                     ? current.CurrentDefaultTargetRevision
                     : null)));
+    }
+
+    private static async Task SetNoteOrganizationDefaultAsync(HttpClient client, Guid modelId)
+    {
+        var settings = await Data<AiModelSettingsDto>(
+            await client.GetAsync("/api/v1/ai/model-settings"));
+        _ = await Data<AiModelSettingsDto>(await client.PutAsJsonAsync(
+            "/api/v1/ai/model-settings",
+            new SaveAiModelSettingsRequest(settings.Revision, settings.Enabled,
+                settings.TextModelId, settings.VisionModelId, settings.TranscriptionModelId)
+            {
+                NoteOrganizationModelId = modelId
+            }));
     }
 
     private static async Task<NoteProcessingStatusDto> StartAsync(HttpClient client,
