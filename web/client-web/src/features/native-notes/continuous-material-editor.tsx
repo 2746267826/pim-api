@@ -213,6 +213,8 @@ function MaterialNodeView({ node, extension, editor, deleteNode, updateAttribute
       'my-4 overflow-hidden rounded-ctl border bg-bg',
       selected ? 'border-primary ring-2 ring-primary-ring' : 'border-border',
     )}
+    data-pim-material-id={block.id}
+    data-pim-material-kind={block.kind}
     data-material-block-id={block.id}
     contentEditable={false}
   >
@@ -405,8 +407,8 @@ export const ContinuousMaterialEditor = forwardRef<
   })
 
   useEffect(() => {
-    if (!editor) return
-    editor.setEditable(editable)
+    if (!editor || editor.options.editable === editable) return
+    editor.setEditable(editable, false)
   }, [editable, editor])
 
   const getBlocks = useCallback(() => {

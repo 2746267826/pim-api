@@ -11,18 +11,24 @@ const rect = {
 } as DOMRect
 
 export function installProseMirrorLayoutStubs() {
-  Object.defineProperty(document, 'elementFromPoint', {
-    configurable: true,
-    value: () => document.body,
-  })
+  if (typeof document.elementFromPoint !== 'function') {
+    Object.defineProperty(document, 'elementFromPoint', {
+      configurable: true,
+      value: () => document.querySelector('[data-testid="continuous-note-editor"]') ?? document.body,
+    })
+  }
   for (const prototype of [Element.prototype, Range.prototype]) {
-    Object.defineProperty(prototype, 'getClientRects', {
-      configurable: true,
-      value: () => [rect],
-    })
-    Object.defineProperty(prototype, 'getBoundingClientRect', {
-      configurable: true,
-      value: () => rect,
-    })
+    if (typeof prototype.getClientRects !== 'function') {
+      Object.defineProperty(prototype, 'getClientRects', {
+        configurable: true,
+        value: () => [rect],
+      })
+    }
+    if (typeof prototype.getBoundingClientRect !== 'function') {
+      Object.defineProperty(prototype, 'getBoundingClientRect', {
+        configurable: true,
+        value: () => rect,
+      })
+    }
   }
 }
