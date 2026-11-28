@@ -553,13 +553,14 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
         {
             var versionId = Guid.ParseExact(versionKey, "D");
             var request = await RequestAsync(userId, versionId, ct);
-            foreach (var file in NoteMaterialManifestValidator.Validate(request, ReadLimits))
+            var files = NoteMaterialManifestValidator.Validate(request, ReadLimits);
+            for (var index = 0; index < files.Count; index++)
             {
+                var file = files[index];
                 if (file.Kind != "AudioChunk" ||
                     (file.AudioFormat ?? NoteAudioFormat.Wav) != NoteAudioFormat.Opus) continue;
                 TryDelete(AudioCachePath(file));
-                _verifiedFiles.RemoveWhere(key =>
-                    key == VerifyKey(userId, versionId, file.Index));
+                _verifiedFiles.RemoveWhere(key => key == VerifyKey(userId, versionId, index));
             }
         }
         catch (Exception error) when (error is IOException or InvalidDataException or
