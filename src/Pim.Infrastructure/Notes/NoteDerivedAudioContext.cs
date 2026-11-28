@@ -9,6 +9,8 @@ internal static class NoteDerivedAudioContext
     // here so planning can block before a task ever attempts a provider call.
     internal const int MaxBytes = 8 * 1024 * 1024;
     internal const int MaxSlices = 5_000;
+    // Context slices are one minute; this is the per-call read budget, not a wider ASR budget.
+    internal const int MaxSamplesPerSlice = NoteAsrPlan.SamplesPerCall;
 
     internal static long ByteSize(long samples) => checked(44 + samples * 2);
 

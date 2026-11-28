@@ -5,12 +5,43 @@
 ## 提交流程
 
 1. Android 先固定现有 schema-v1 的 `NoteMaterialInput` 与 `NoteMaterialManifest`。`POST /api/v1/native-notes/versions` 提交版本/笔记 ID、所基于的服务器版本、原始输入 JSON、材料清单 JSON及本次上传同意。
-2. 服务端对照原稿块和每个录音会话推导所需文件，校验版本身份、输入摘要、原稿/导出 Markdown/录音清单摘要与大小、照片关联、向量尺寸和每个音频分片描述。缺少照片、手写图、录音或夹带未知文件均不接受为完整清单。JSON 原文和未知扩展字段保留，未知块类型明确拒绝，不能假装已经完整兼容。
+2. 服务端对照原稿块和每个录音会话推导所需文件，校验版本身份、输入摘要、原稿/导出 Markdown/录音清单摘要与大小、照片关联、向量尺寸和每个音频分片描述。缺少照片、手写图、录音或夹带未知文件均不接受为完整清单。录音分片可声明 `format`/`mimeType`（见“音频格式与解码边界”），未声明时按旧 WAV 兼容。JSON 原文和未知扩展字段保留，未知块类型明确拒绝，不能假装已经完整兼容。
 3. 客户端按返回的固定 `partSizeBytes`，用 `PUT .../files/{fileIndex}/parts/{partIndex}?sha256=...` 上传二进制分块。每块独立校验长度与 SHA-256，重复相同内容幂等；同位置不同内容返回 409。状态返回已收分块，新进程可继续上传。未完成版本可清除某块后重传，或取消整个上传。
-4. `POST .../{versionId}/complete` 流式校验全部文件的完整摘要、长度、WAV 头/采样格式和图片类型签名。全部齐备后才发布版本；未齐备返回 409，损坏返回 400。发布状态仅为 `Uploaded` 或 `Conflict`，不表示 ASR 或 AI 已开始。
+4. `POST .../{versionId}/complete` 流式校验全部文件的完整摘要、长度、WAV 头或 Ogg Opus 容器结构、声明样本数和图片类型签名。全部齐备后才发布版本；未齐备返回 409，损坏或格式不符返回 400。发布状态仅为 `Uploaded` 或 `Conflict`，不表示 ASR 或 AI 已开始。
 5. 保存校验 `baseVersionId`。当前版本已改变时，保留新旧双方全部材料，新版标为 `Conflict`；不能自动替换当前版本。用户明确选择后，用 `POST .../{versionId}/promote` 携带重新核对的 `expectedCurrentVersionId`，再次校验后才更新当前版本。原有版本仍可读取。
 
 `GET /api/v1/native-notes/upload-limits`、单版本状态和笔记版本列表均要求现有 JWT 鉴权。所有磁盘位置只由已验证用户 ID、版本 ID及整数文件/分块索引生成；清单中的路径只用于核对与展示，不作为磁盘访问路径。文件下载由服务端流式提供，返回预期 SHA-256；不发私有文件 URL、第三方授权直链或账号凭据。
+
+## 音频格式与解码边界
+
+录音会话的每个 `chunks[]` 可带可选 `format` 与 `mimeType`。两者都省略时按旧客户端兼容为 WAV；显式值必须一致，未知值或互相矛盾会在创建上传会话时以 `40001` 拒绝，不会静默当 WAV。
+
+| 声明 | 接受值 | 固定材料路径 |
+| --- | --- | --- |
+| `format` | `wav`、`opus`（大小写不敏感） | 由服务端推导 |
+| `mimeType` | `audio/wav`、`audio/x-wav`、`audio/ogg`、`audio/opus`；允许 `;` 分隔的参数 | 由服务端推导 |
+| WAV 路径 | 旧格式，无额外声明 | `recordings/{recordingId}/s{segment:D4}-c{index:D6}.wav` |
+| Opus 路径 | Ogg 容器，编码必须为 Opus | `recordings/{recordingId}/s{segment:D4}-c{index:D6}.opus` |
+
+Opus 分片的规范扩展名是 `.opus`，媒体类型是 `audio/ogg`；客户端本地文件叫 `.ogg` 不影响上传，清单必须使用服务端推导的 `.opus` 路径。单分片必须大于 0 字节且不超过 64 MiB，声明样本数必须大于 0；每份清单仍受 `NativeNotes:MaxFiles`（默认 20,000）和单版本/用户配额约束。同一 `segment`+`index` 只能声明一次，不能借不同格式重复计时间轴。
+
+MIME 参数按 `NoteAudioFormats.ParseMimeType` 的实际行为处理：只有 `codecs` 会被校验（Opus 只接受单个 `opus`，WAV 接受 `1`/`pcm`/`pcm_s16le`）；其它语法合法的单值参数（例如 `rate=48000`）会被接受但不参与格式判定，也不改变解码参数。空参数、缺少名称或值、重复参数名、控制字符、未闭合引号以及名/值不是合法 token 的参数一律返回 `40001`；不会静默降级为 WAV。
+
+`chunks[].samples` 固定表示**解码后的 16 kHz 单声道样本数**，不是 Ogg Opus 内部的 48 kHz granule。Opus 分片必须：
+
+- 是完整 Ogg 流，首包包含 `OpusHead`，声道数为 1；
+- 有结束页（EOS），且最终 granule 减去 pre-skip 后能被 3 整除；
+- 换算出的 16 kHz 样本数与清单声明完全一致。
+
+这些条件在 `complete` 时校验，非法或截断文件返回 `40001`，不会发布为完整版本。Android 侧把录音分片调整为 15 秒只是客户端采集策略；服务端不把 15 秒写进协议或 ASR 计划，而是继续按声明样本数切片，单次 ASR 预算由已解析路由或任务持久化的 `SamplesPerCall` 决定：专用云端 ASR/本机路由沿用 60 秒（960,000 样本），多模态路由取 `min(预设音频字节预算, 10 分钟 = 9,600,000 样本)`。15 秒对应 240,000 个 16 kHz 样本，服务端会按实际样本数处理，不假定分片长度。
+
+原始 Opus/Ogg 字节按上传内容原样保存、下载和导出，不做有损再编码；WAV 用户和历史数据继续走原有直接读取路径。进入 ASR、Batch 或派生音频上下文前，服务端用 `ffmpeg` 把**整个 Opus 文件**严格解码为 16 kHz 单声道 PCM，再按请求的样本偏移包装成现有 WAV 输入，provider 不会收到压缩容器。解码输出字节数必须与声明样本数完全一致，否则以 `40001` 拒绝且不发送 provider 请求。FFmpeg stderr 只留在内存中丢弃，不写入日志、任务错误或客户端响应。运行镜像安装 `ffmpeg`；可用 `NativeNotes:FfmpegPath`（默认 `ffmpeg`）、`NativeNotes:AudioDecodeTimeoutSeconds`（默认 120 秒）和 `NativeNotes:MaxConcurrentAudioDecodes`（默认 2，范围 1–16）配置。解码器缺失、路径非法、超时配置越界或进程启动失败返回 `50303`（HTTP 503），任务进入可解释的阻断状态，WAV 不受影响；人工重试前应先修复运行环境。
+
+长单文件不再按分片重复哈希、复制和从头解码。文件内容按 `sha256 + samples` 只解码一次，PCM 写入 `NativeNotes:StorageRoot/audio-cache/<sha256>-<samples>.pcm`，同一内容的并发读取由进程内单飞门闩串行化；门闩使用固定 64 个条带槽位，不按任意音频键无限增长，槽位碰撞只会让两个无关解码短暂串行。后续分片只按偏移读取缓存。校验结果按不可变分块的长度与修改时间签名缓存，内容未变化时不重复计算全文件 SHA-256；该缓存是进程内 LRU，默认最多 4096 项（`NativeNotes:VerifiedFileCacheMaxEntries`，范围 1–65536），驱逐只会触发一次重新校验，不改变接收结果。解码前先把分块复制到 `NativeNotes:StorageRoot/audio-work` 下的随机私有文件，解码结束立即删除；崩溃残留超过 1 小时会在后续账号操作或解码时清理。缓存按 `NativeNotes:AudioCacheMaxAgeHours`（默认 24 小时）和 `NativeNotes:AudioCacheMaxBytes`（默认 2 GiB，且必须不小于单个最大解码文件 345,600,000 字节）清理，每 5 分钟最多执行一次，并在每次解码后强制执行；清理不会删除刚写入的当前缓存。单文件仍受 64 MiB 容器上限与 172,800,000 个 16 kHz 样本（约 3 小时）上限约束。
+
+`ReadAudioSliceAsync` 必须显式携带调用方任务预算（ASR 的 `state.SamplesPerCall`、Batch 的 `maxSamplesPerCall` 等），并拒绝超过该预算、超过分块剩余样本、负偏移或零样本的请求；无论调用方声明多大，硬上限都是 10 分钟（9,600,000 样本）。未携带预算的旧调用仍按 60 秒处理，不会因新路由隐式放宽。PCM 缓存是**可再生的派生物**：删除入口可以安全清理它，但当前没有公开的笔记级 `DELETE`，`DeleteNoteAsync` 也未接入生产端点，因此不能承诺用户删除笔记后立即清除 PCM；在删除入口落地前，缓存只由 TTL/字节配额（默认 24 小时 / 2 GiB）回收。
+
+隔离测试覆盖格式白名单、MIME 参数与冲突、旧 WAV 默认兼容、Opus 容器结构/样本数/granule 边界、64 MiB 边界、15 秒样本切片、1 分钟以上显式预算与 10 分钟硬上限、偏移/越界读取、长文件一次解码与偏移读取、FFmpeg 并发上限、崩溃残留/缓存清理、删除笔记时派生缓存清理、解码失败安全信息、配置修复后的恢复，以及人工重试与在途自适应调用之间的 epoch 竞态。真实 FFmpeg 解码用例需要在 CI runner 上安装 `ffmpeg`；当前 workflow 未安装时会在 shard 日志中显式 `[SKIP]`，PR 同时记录 waiver。镜像构建阶段另做真实 Ogg Opus → 16 kHz s16le 解码 smoke（含截断容器必须失败），但这只证明镜像内解码器可用，不替代 API 侧缓存/偏移的集成用例。真实 Android/Windows 采集器、真实 Opus 编码器输出及第三方 ASR provider 的端到端链路尚未在本机验证；包含恶意压缩音频沙箱逃逸、FFmpeg 漏洞面或长期 DoS 的结论也不能由这些测试替代。
 
 ## 存储与限额
 
@@ -26,9 +57,16 @@
 | `NativeNotes:MaxPendingVersions` | 10 | 每用户未完成上传数 |
 | `NativeNotes:MaxVersionsPerUser` | 2,000 | 每用户全部版本数 |
 | `NativeNotes:UploadExpiryHours` | 168 小时 | 未完成上传到期后，在该账号后续操作时清理并释放预留容量 |
+| `NativeNotes:FfmpegPath` | `ffmpeg` | Opus/Ogg 解码器路径；缺失或非法时 `50303`，WAV 不受影响 |
+| `NativeNotes:AudioDecodeTimeoutSeconds` | 120 秒 | 单次 Opus 解码超时；越界配置按解码器不可用返回 `50303`，运行超时按 `40001` 拒绝且不发送 provider |
+| `NativeNotes:MaxConcurrentAudioDecodes` | 2 | 进程内同时运行的 FFmpeg 解码数，范围 1–16 |
+| `NativeNotes:VerifiedFileCacheMaxEntries` | 4096 | 进程内文件校验结果 LRU 上限，范围 1–65536；驱逐只触发重新校验 |
+| `NativeNotes:AudioCacheMaxAgeHours` | 24 小时 | 解码 PCM 缓存保留时间，范围 1–720 小时 |
+| `NativeNotes:AudioCacheMaxBytes` | 2 GiB | 解码 PCM 缓存字节上限；不得小于单个最大解码文件 345,600,000 字节 |
 | 照片/手写派生图 | 32 / 40 MiB | 单文件固定格式上限；照片仍须与原稿关联 |
+| Opus/Ogg 录音分片 | 64 MiB | 单文件上限；还须满足 Ogg Opus 结构、单声道和声明样本数 |
 
-共享字节额度不足时会拒绝新分块并保留已收块，不因单独的笔记预留额度通过而保证全部可写；旧目录内容不计入共享字节额度，仍受笔记预留/版本上限及实际磁盘约束。已发布版本不因上传有效期自动删除。用户可删除一篇笔记的全部服务器材料；本机内容不被远程删除。删除意图先进入原子账本，文件清理中断后在下一次账号操作时继续。已经发布的材料不可通过“取消上传”或分块接口修改。
+共享字节额度不足时会拒绝新分块并保留已收块，不因单独的笔记预留额度通过而保证全部可写；旧目录内容不计入共享字节额度，仍受笔记预留/版本上限及实际磁盘约束。已发布版本不因上传有效期自动删除。内部 `DeleteNoteAsync` 会删除该笔记的全部服务器材料，并尽力删除可再生的 Opus PCM 缓存（失败时回落到 TTL/配额回收）；但当前**没有公开的笔记级删除端点**，所以这不是用户可用的删除语义，也不承诺删除后立即清除 PCM。本机内容不被远程删除。删除意图先进入原子账本，文件清理中断后在下一次账号操作时继续。已经发布的材料不可通过“取消上传”或分块接口修改。
 
 每用户通过磁盘事务锁串行修改，一次原子账本替换同时发布版本和当前版本指针。临时文件写盘同步后原子替换，未完成文件不作为完整收包。不同进程读取同一数据卷可恢复状态；此实现的部署前提是支持文件锁和原子替换的持久文件系统。尚未验收网络文件系统、多节点分散存储、真实掉电恢复或磁盘耗尽。没有全服务器总配额和后台定时扫描；每用户配额及按访问清理不能替代磁盘监控。
 

@@ -110,8 +110,10 @@ public static class NoteMaterialEndpoints
             context.Response.Headers["X-Content-SHA256"] = file.Sha256;
             context.Response.Headers["X-Content-Type-Options"] = "nosniff";
             return Results.Stream(output => store.ReadFileAsync(userId, versionId, fileIndex, output, ct),
-                "application/octet-stream", fileDownloadName: Path.GetFileName(file.Path));
-        }).Produces(200, contentType: "application/octet-stream").Produces(401)
+                NoteMaterialUploadStore.ContentType(file.Path), fileDownloadName: Path.GetFileName(file.Path));
+        }).Produces(200, contentType: NoteMaterialUploadStore.DownloadContentTypes[0],
+                additionalContentTypes: NoteMaterialUploadStore.DownloadContentTypes.Skip(1).ToArray())
+            .Produces(401)
             .Produces<ApiResponse<string>>(404).Produces<ApiResponse<string>>(409);
         group.MapDelete("/versions/{versionId:guid}", async (Guid versionId, NoteMaterialUploadStore store,
             ICurrentUserService user, CancellationToken ct) =>

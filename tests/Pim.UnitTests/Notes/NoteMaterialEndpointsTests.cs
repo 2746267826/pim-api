@@ -67,7 +67,7 @@ public sealed class NoteMaterialEndpointsTests : IDisposable
         var audioIndex = fixture.Content.Count - 1;
         response = await client.GetAsync($"{Root}/versions/{fixture.Request.VersionId}/files/{audioIndex}");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        Assert.Equal("application/octet-stream", response.Content.Headers.ContentType!.MediaType);
+        Assert.Equal("audio/wav", response.Content.Headers.ContentType!.MediaType);
         Assert.Equal(complete.Files[audioIndex].Sha256, response.Headers.GetValues("X-Content-SHA256").Single());
         Assert.Equal("nosniff", response.Headers.GetValues("X-Content-Type-Options").Single());
         Assert.Equal("no-store, private", response.Headers.GetValues("Cache-Control").Single());
@@ -282,6 +282,42 @@ public sealed class NoteMaterialEndpointsTests : IDisposable
     }
 
     [Fact]
+    public async Task OpusDownloadKeepsTheOggContainerMediaTypeAndOriginalBytes()
+    {
+        var owner = await AuthRegistrationTestHost.SeedAndLoginAsync(_factory,
+            "notes-opus-download");
+        using var client = AuthRegistrationTestHost.Authed(_factory, owner.AccessToken);
+        var fixture = NoteMaterialUploadStoreTests.Fixture.Create(audioSamples: 1600,
+            audio: OggOpusTestData.TinyOpus(), audioFormat: "opus");
+        var store = _factory.Services.GetRequiredService<NoteMaterialUploadStore>();
+        await store.BeginAsync(owner.UserId, fixture.Request);
+        for (var file = 0; file < fixture.Content.Count; file++)
+        {
+            var bytes = fixture.Content[file];
+            for (var offset = 0; offset < bytes.Length;
+                 offset += NoteMaterialUploadOptions.PartSizeBytes)
+            {
+                var chunk = bytes.AsSpan(offset,
+                    Math.Min(NoteMaterialUploadOptions.PartSizeBytes, bytes.Length - offset)).ToArray();
+                var hash = Convert.ToHexString(
+                    System.Security.Cryptography.SHA256.HashData(chunk)).ToLowerInvariant();
+                await store.UploadPartAsync(owner.UserId, fixture.Request.VersionId, file,
+                    offset / NoteMaterialUploadOptions.PartSizeBytes, hash, new MemoryStream(chunk));
+            }
+        }
+        await store.CompleteAsync(owner.UserId, fixture.Request.VersionId);
+
+        using var response = await client.GetAsync(
+            $"{Root}/versions/{fixture.Request.VersionId}/files/5");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("audio/ogg", response.Content.Headers.ContentType!.MediaType);
+        Assert.Equal(fixture.Content[5], await response.Content.ReadAsByteArrayAsync());
+        Assert.Contains(".opus", response.Content.Headers.ContentDisposition!.ToString(),
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task RunningTestApiPublishesTheActualAuthenticatedBinaryUploadContract()
     {
         using var client = _factory.CreateClient();
@@ -297,9 +333,19 @@ public sealed class NoteMaterialEndpointsTests : IDisposable
         var download = paths.GetProperty(Root + "/versions/{versionId}/files/{fileIndex}").GetProperty("get");
         Assert.True(download.TryGetProperty("security", out var downloadSecurity) && downloadSecurity.GetArrayLength() > 0);
         var downloadResponse = download.GetProperty("responses").GetProperty("200");
-        Assert.True(downloadResponse.GetProperty("content").TryGetProperty("application/octet-stream", out var fileContent));
-        Assert.Equal("string", fileContent.GetProperty("schema").GetProperty("type").GetString());
-        Assert.Equal("binary", fileContent.GetProperty("schema").GetProperty("format").GetString());
+        var downloadContent = downloadResponse.GetProperty("content");
+        foreach (var contentType in new[]
+                 {
+                     "audio/wav", "audio/ogg", "image/png", "image/jpeg", "image/webp",
+                     "application/json",
+                     "text/markdown; charset=utf-8", "application/octet-stream"
+                 })
+        {
+            Assert.True(downloadContent.TryGetProperty(contentType, out var fileContent),
+                downloadContent.GetRawText());
+            Assert.Equal("string", fileContent.GetProperty("schema").GetProperty("type").GetString());
+            Assert.Equal("binary", fileContent.GetProperty("schema").GetProperty("format").GetString());
+        }
         var headers = downloadResponse.GetProperty("headers");
         Assert.Equal("string", headers.GetProperty("X-Content-SHA256").GetProperty("schema").GetProperty("type").GetString());
         Assert.Equal("^[0-9a-f]{64}$",

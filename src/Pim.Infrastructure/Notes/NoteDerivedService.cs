@@ -502,7 +502,8 @@ public sealed class NoteDerivedService(
                 try
                 {
                     var expectedBytes = await materials.ReadAudioSliceAsync(owner, version.Upload.VersionId,
-                        step.FileIndex, step.SourceOffset, step.Samples, ct);
+                        step.FileIndex, step.SourceOffset, step.Samples, ct,
+                        NoteAsrPlan.BudgetOrDefault(asr.SamplesPerCall));
                     var expectedHash = Convert.ToHexString(SHA256.HashData(expectedBytes)).ToLowerInvariant();
                     if (expectedBytes.Length != audio.SizeBytes ||
                         !string.Equals(expectedHash, audio.Sha256, StringComparison.Ordinal))

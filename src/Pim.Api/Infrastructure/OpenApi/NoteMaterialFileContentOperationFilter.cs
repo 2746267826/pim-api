@@ -1,5 +1,6 @@
 using System.Text.RegularExpressions;
 using Microsoft.OpenApi.Models;
+using Pim.Infrastructure.Notes;
 using Swashbuckle.AspNetCore.SwaggerGen;
 
 namespace Pim.Api.Infrastructure.OpenApi;
@@ -24,10 +25,13 @@ public sealed class NoteMaterialFileContentOperationFilter : IOperationFilter
 
         operation.Responses.TryAdd("200", new OpenApiResponse { Description = "Success" });
         var response = operation.Responses["200"];
-        response.Content["application/octet-stream"] = new OpenApiMediaType
+        foreach (var contentType in NoteMaterialUploadStore.DownloadContentTypes)
         {
-            Schema = new OpenApiSchema { Type = "string", Format = "binary" }
-        };
+            response.Content[contentType] = new OpenApiMediaType
+            {
+                Schema = new OpenApiSchema { Type = "string", Format = "binary" }
+            };
+        }
         response.Headers["X-Content-SHA256"] = new OpenApiHeader
         {
             Description = "Lowercase SHA-256 digest of the exact immutable material file bytes returned.",

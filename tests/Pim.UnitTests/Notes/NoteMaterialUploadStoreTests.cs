@@ -1,4 +1,6 @@
 using System.Buffers.Binary;
+using System.Diagnostics;
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Encodings.Web;
@@ -455,7 +457,658 @@ public sealed class NoteMaterialUploadStoreTests : IDisposable
         Assert.True((await Store().CompleteAsync(_user, fixture.Request.VersionId)).IsCurrent);
     }
 
-    private NoteMaterialUploadStore Store(TimeProvider? time = null) => new(Options.Create(_options), time);
+    [Fact]
+    public async Task Legacy_wav_material_without_a_format_field_still_slices_to_the_same_bytes()
+    {
+        var fixture = Fixture.Create(audioSamples: 160);
+        var store = Store();
+        await store.BeginAsync(_user, fixture.Request);
+        await UploadAll(store, fixture);
+        await store.CompleteAsync(_user, fixture.Request.VersionId);
+
+        var slice = await store.ReadAudioSliceAsync(_user, fixture.Request.VersionId, 5, 0, 160,
+            CancellationToken.None);
+
+        Assert.Equal(fixture.Content[5], slice);
+        Assert.Equal(".wav", Path.GetExtension((await store.GetAsync(_user, fixture.Request.VersionId))
+            .Upload.Files[5].Path));
+    }
+
+    [Fact]
+    public async Task Wav_slicing_ignores_invalid_opus_decoder_configuration()
+    {
+        var fixture = Fixture.Create(audioSamples: 160);
+        var store = Store();
+        await store.BeginAsync(_user, fixture.Request);
+        await UploadAll(store, fixture);
+        await store.CompleteAsync(_user, fixture.Request.VersionId);
+        var options = new NoteMaterialUploadOptions
+        {
+            StorageRoot = _root, MaxVersionBytes = 32 * 1024 * 1024,
+            MaxUserReservedBytes = 64 * 1024 * 1024, FfmpegPath = " ",
+            AudioDecodeTimeoutSeconds = 0
+        };
+
+        var slice = await Store(options: options).ReadAudioSliceAsync(_user,
+            fixture.Request.VersionId, 5, 0, 160, CancellationToken.None);
+
+        Assert.Equal(fixture.Content[5], slice);
+    }
+
+    [Fact]
+    public async Task Opus_upload_and_download_keep_the_original_ogg_container()
+    {
+        var fixture = OpusFixture();
+        var store = Store();
+        var begun = await store.BeginAsync(_user, fixture.Request);
+        Assert.EndsWith(".opus", begun.Files[5].Path);
+        await UploadAll(store, fixture);
+
+        var completed = await store.CompleteAsync(_user, fixture.Request.VersionId);
+        Assert.Equal("Uploaded", completed.Phase);
+        Assert.True(completed.IsCurrent);
+
+        using var output = new MemoryStream();
+        await store.ReadFileAsync(_user, fixture.Request.VersionId, 5, output);
+        Assert.Equal(fixture.Content[5], output.ToArray());
+    }
+
+    [Fact]
+    public async Task Opus_clone_preserves_the_original_container_and_rejects_a_wav_relabel()
+    {
+        var original = OpusFixture();
+        var store = Store();
+        await store.BeginAsync(_user, original.Request);
+        await UploadAll(store, original);
+        await store.CompleteAsync(_user, original.Request.VersionId);
+        var next = CloneFixture(original);
+
+        var cloned = await store.CloneAsync(_user, original.Request.VersionId,
+            new CloneNoteMaterialVersionRequest(original.Request.VersionId, next.Request));
+        Assert.EndsWith(".opus", cloned.Files[5].Path);
+        Assert.Equal(cloned.Files[5].PartCount, cloned.Files[5].UploadedParts.Count);
+        await UploadPart(store, next, 0, 0);
+        await UploadPart(store, next, 1, 0);
+        Assert.True((await store.CompleteAsync(_user, next.Request.VersionId)).IsCurrent);
+        using (var output = new MemoryStream())
+        {
+            await store.ReadFileAsync(_user, next.Request.VersionId, 5, output);
+            Assert.Equal(original.Content[5], output.ToArray());
+        }
+
+        var relabelled = RewriteInput(next, input =>
+        {
+            AudioChunk(input)["format"] = "wav";
+            AudioChunk(input)["mimeType"] = "audio/wav";
+        });
+        await Error(40001, () => store.CloneAsync(_user, original.Request.VersionId,
+            new CloneNoteMaterialVersionRequest(original.Request.VersionId, relabelled.Request)));
+    }
+
+    [Fact]
+    public async Task Opus_mime_without_format_still_uses_the_canonical_opus_path()
+    {
+        var fixture = Fixture.Create(audioSamples: 1600, audio: TinyOpus(),
+            audioFormat: "opus", includeFormat: false);
+        var store = Store();
+        var begun = await store.BeginAsync(_user, fixture.Request);
+        Assert.EndsWith(".opus", begun.Files[5].Path);
+        await UploadAll(store, fixture);
+        Assert.Equal("Uploaded",
+            (await store.CompleteAsync(_user, fixture.Request.VersionId)).Phase);
+    }
+
+    [Fact]
+    public async Task Opus_with_truncated_container_or_wrong_sample_count_never_publishes()
+    {
+        await AssertOpusRejected(Fixture.Create(audioSamples: 1600, audio: TinyOpus()[..^1],
+            audioFormat: "opus"));
+        await AssertOpusRejected(Fixture.Create(audioSamples: 1599, audio: TinyOpus(),
+            audioFormat: "opus"));
+        await AssertOpusRejected(Fixture.Create(audioSamples: 1600,
+            audio: Encoding.UTF8.GetBytes("this is not an ogg opus recording"), audioFormat: "opus"));
+    }
+
+    [Fact]
+    public async Task Opus_with_corrupt_crc_or_inconsistent_pages_never_publishes()
+    {
+        var corruptCrc = TinyOpus();
+        corruptCrc[^1] ^= 1;
+        await AssertOpusRejected(Fixture.Create(audioSamples: 1600, audio: corruptCrc,
+            audioFormat: "opus"));
+
+        const uint serial = 0x12345678;
+        var gapped = OggOpusTestData.Concat([
+            OggOpusTestData.Page(0x02, serial, 0, 0, OggOpusTestData.OpusHead()),
+            OggOpusTestData.Page(0, serial, 2, 0, OggOpusTestData.OpusTags()),
+            OggOpusTestData.Page(0x04, serial, 3, 5112, OggOpusTestData.AudioPacket())
+        ]);
+        await AssertOpusRejected(Fixture.Create(audioSamples: 1600, audio: gapped,
+            audioFormat: "opus"));
+    }
+
+    [Fact]
+    public async Task Opus_manifest_rejects_unknown_conflicting_zero_sample_and_duplicate_chunks_at_begin()
+    {
+        var unknown = RewriteInput(OpusFixture(), input => AudioChunk(input)["format"] = "mp3");
+        await Error(40001, () => Store().BeginAsync(_user, unknown.Request));
+
+        var conflict = RewriteInput(OpusFixture(), input => AudioChunk(input)["format"] = "wav");
+        await Error(40001, () => Store().BeginAsync(_user, conflict.Request));
+
+        var zero = RewriteInput(OpusFixture(), input => AudioChunk(input)["samples"] = 0);
+        await Error(40001, () => Store().BeginAsync(_user, zero.Request));
+
+        var duplicate = RewriteInput(OpusFixture(), input =>
+        {
+            var chunks = input["recordings"]!.AsArray()[0]!["chunks"]!.AsArray();
+            var clone = AudioChunk(input).DeepClone().AsObject();
+            clone["format"] = "wav";
+            clone["mimeType"] = "audio/wav";
+            chunks.Add(clone);
+        });
+        await Error(40001, () => Store().BeginAsync(_user, duplicate.Request));
+    }
+
+    [Fact]
+    public async Task Opus_manifest_rejects_files_over_the_64_mib_declared_boundary_at_begin()
+    {
+        var fixture = OpusFixture();
+        var manifest = JsonNode.Parse(fixture.Request.ManifestJson)!.AsObject();
+        manifest["files"]!.AsArray()[5]!["sizeBytes"] = NoteAudioFormats.MaxOpusFileBytes + 1;
+        var request = fixture.Request with { ManifestJson = manifest.ToJsonString(Json) };
+        var options = new NoteMaterialUploadOptions
+        {
+            StorageRoot = _root, MaxVersionBytes = 128 * 1024 * 1024,
+            MaxUserReservedBytes = 128 * 1024 * 1024
+        };
+
+        await Error(40001, () => Store(options: options).BeginAsync(_user, request));
+    }
+
+    [Fact]
+    public async Task Missing_opus_decoder_fails_with_safe_50303_and_keeps_the_original_downloadable()
+    {
+        var fixture = OpusFixture();
+        var store = Store();
+        await store.BeginAsync(_user, fixture.Request);
+        await UploadAll(store, fixture);
+        await store.CompleteAsync(_user, fixture.Request.VersionId);
+
+        var broken = new NoteMaterialUploadOptions
+        {
+            StorageRoot = _root, MaxVersionBytes = 32 * 1024 * 1024,
+            MaxUserReservedBytes = 64 * 1024 * 1024,
+            FfmpegPath = Path.Combine(_root, "missing-ffmpeg")
+        };
+        var error = await Assert.ThrowsAsync<DomainException>(() =>
+            Store(options: broken).ReadAudioSliceAsync(_user, fixture.Request.VersionId, 5, 0, 1600,
+                CancellationToken.None));
+        Assert.Equal(50303, error.ErrorCode);
+        Assert.DoesNotContain(_root, error.Message);
+        Assert.DoesNotContain("missing-ffmpeg", error.Message);
+
+        using var output = new MemoryStream();
+        await Store().ReadFileAsync(_user, fixture.Request.VersionId, 5, output);
+        Assert.Equal(fixture.Content[5], output.ToArray());
+    }
+
+    [Fact]
+    public async Task Batch_generation_fails_before_provider_with_safe_50303_when_opus_decoder_is_missing()
+    {
+        var fixture = OpusFixture();
+        var store = Store();
+        await store.BeginAsync(_user, fixture.Request);
+        await UploadAll(store, fixture);
+        await store.CompleteAsync(_user, fixture.Request.VersionId);
+        var version = await store.GetAsync(_user, fixture.Request.VersionId);
+        var steps = NoteAsrPlan.Build(version, NoteAsrPlan.SamplesPerCall);
+        var broken = new NoteMaterialUploadOptions
+        {
+            StorageRoot = _root, MaxVersionBytes = 32 * 1024 * 1024,
+            MaxUserReservedBytes = 64 * 1024 * 1024,
+            FfmpegPath = Path.Combine(_root, "missing-ffmpeg")
+        };
+
+        var error = await Assert.ThrowsAsync<DomainException>(() =>
+            NoteAsrBatchJsonlReader.GenerateFromPlanAsync(_user, fixture.Request.VersionId, steps,
+                NoteAsrPlan.SamplesPerCall, "zh", "mimo-v2.6-flash", "逐字转写",
+                Store(options: broken), 4 * 1024 * 1024, ["seg-0"], [0], 4096,
+                CancellationToken.None));
+
+        Assert.Equal(50303, error.ErrorCode);
+        Assert.DoesNotContain(_root, error.Message);
+        Assert.DoesNotContain("missing-ffmpeg", error.Message);
+    }
+
+    [SkippableFact]
+    public async Task Opus_slice_is_decoded_to_exact_16k_wav_and_recovers_after_the_decoder_is_fixed()
+    {
+        Skip.IfNot(FfmpegAvailable(),
+            "CI waiver: GitHub-hosted ubuntu-latest in this workflow does not install FFmpeg; " +
+            "the deterministic fake-decoder tests below still exercise cache, offsets and concurrency");
+        var fixture = OpusFixture();
+        var store = Store();
+        await store.BeginAsync(_user, fixture.Request);
+        await UploadAll(store, fixture);
+        await store.CompleteAsync(_user, fixture.Request.VersionId);
+
+        var broken = new NoteMaterialUploadOptions
+        {
+            StorageRoot = _root, MaxVersionBytes = 32 * 1024 * 1024,
+            MaxUserReservedBytes = 64 * 1024 * 1024,
+            FfmpegPath = Path.Combine(_root, "missing-ffmpeg")
+        };
+        await Error(50303, () => Store(options: broken).ReadAudioSliceAsync(_user,
+            fixture.Request.VersionId, 5, 0, 1600, CancellationToken.None));
+
+        var decoded = Store();
+        var full = await decoded.ReadAudioSliceAsync(_user, fixture.Request.VersionId, 5, 0, 1600,
+            CancellationToken.None);
+        AssertWav(full, 1600);
+        Assert.Contains(full.AsSpan(44).ToArray(), value => value != 0);
+
+        var offset = await decoded.ReadAudioSliceAsync(_user, fixture.Request.VersionId, 5, 800, 800,
+            CancellationToken.None);
+        AssertWav(offset, 800);
+        Assert.Equal(full.AsSpan(44 + 800 * 2, 800 * 2).ToArray(), offset.AsSpan(44).ToArray());
+
+        using var output = new MemoryStream();
+        await decoded.ReadFileAsync(_user, fixture.Request.VersionId, 5, output);
+        Assert.Equal(fixture.Content[5], output.ToArray());
+    }
+
+    [SkippableFact]
+    public async Task Long_opus_file_is_verified_copied_and_decoded_once_for_all_slices()
+    {
+        Skip.If(OperatingSystem.IsWindows(),
+            "The deterministic decoder fixture is a POSIX shell script");
+        const int samples = 1_920_000;
+        const uint serial = 0x12345678;
+        var ogg = OggOpusTestData.Concat([
+            OggOpusTestData.Page(0x02, serial, 0, 0, OggOpusTestData.OpusHead()),
+            OggOpusTestData.Page(0, serial, 1, 0, OggOpusTestData.OpusTags()),
+            OggOpusTestData.Page(0x04, serial, 2, 312UL + (ulong)samples * 3,
+                OggOpusTestData.AudioPacket())
+        ]);
+        var fixture = Fixture.Create(audioSamples: samples, audio: ogg, audioFormat: "opus");
+        var upload = Store();
+        await upload.BeginAsync(_user, fixture.Request);
+        await UploadAll(upload, fixture);
+        await upload.CompleteAsync(_user, fixture.Request.VersionId);
+        var pcm = new byte[checked(samples * 2)];
+        for (var index = 0; index < samples; index++)
+            BinaryPrimitives.WriteInt16LittleEndian(pcm.AsSpan(index * 2), (short)(index % 30_000));
+        var decoder = Store(options: DecoderOptions(FakeDecoder("decode-once", pcm)));
+
+        var first = await decoder.ReadAudioSliceAsync(_user, fixture.Request.VersionId, 5, 0,
+            NoteAsrPlan.SamplesPerCall, CancellationToken.None, samples);
+        var second = await decoder.ReadAudioSliceAsync(_user, fixture.Request.VersionId, 5,
+            NoteAsrPlan.SamplesPerCall, NoteAsrPlan.SamplesPerCall, CancellationToken.None, samples);
+
+        AssertWav(first, NoteAsrPlan.SamplesPerCall);
+        AssertWav(second, NoteAsrPlan.SamplesPerCall);
+        Assert.Equal(pcm.AsSpan(0, NoteAsrPlan.SamplesPerCall * 2).ToArray(),
+            first.AsSpan(44).ToArray());
+        Assert.Equal(pcm.AsSpan(NoteAsrPlan.SamplesPerCall * 2).ToArray(),
+            second.AsSpan(44).ToArray());
+        Assert.Equal(1, Invocations("decode-once"));
+        var cache = Path.Combine(_root, "audio-cache",
+            Hash(ogg) + "-" + samples.ToString(CultureInfo.InvariantCulture) + ".pcm");
+        Assert.True(File.Exists(cache));
+        Assert.Equal(pcm.Length, new FileInfo(cache).Length);
+        Assert.Empty(Directory.EnumerateFiles(Path.Combine(_root, "audio-work")));
+    }
+
+    [SkippableFact]
+    public async Task Opus_slice_accepts_an_explicit_two_minute_task_budget_and_reads_offsets()
+    {
+        Skip.If(OperatingSystem.IsWindows(),
+            "The deterministic decoder fixture is a POSIX shell script");
+        const int samples = 1_920_000;
+        const uint serial = 0x12345678;
+        var ogg = OggOpusTestData.Concat([
+            OggOpusTestData.Page(0x02, serial, 0, 0, OggOpusTestData.OpusHead()),
+            OggOpusTestData.Page(0, serial, 1, 0, OggOpusTestData.OpusTags()),
+            OggOpusTestData.Page(0x04, serial, 2, 312UL + (ulong)samples * 3,
+                OggOpusTestData.AudioPacket())
+        ]);
+        var fixture = Fixture.Create(audioSamples: samples, audio: ogg, audioFormat: "opus");
+        var upload = Store();
+        await upload.BeginAsync(_user, fixture.Request);
+        await UploadAll(upload, fixture);
+        await upload.CompleteAsync(_user, fixture.Request.VersionId);
+        var pcm = new byte[checked(samples * 2)];
+        for (var index = 0; index < samples; index++)
+            BinaryPrimitives.WriteInt16LittleEndian(pcm.AsSpan(index * 2), (short)(index % 31_000));
+        var decoder = Store(options: DecoderOptions(FakeDecoder("two-minute", pcm)));
+
+        var whole = await decoder.ReadAudioSliceAsync(_user, fixture.Request.VersionId, 5, 0,
+            samples, CancellationToken.None, samples);
+        var offset = await decoder.ReadAudioSliceAsync(_user, fixture.Request.VersionId, 5,
+            600_000, 300_000, CancellationToken.None, samples);
+
+        AssertWav(whole, samples);
+        Assert.Equal(pcm, whole.AsSpan(44).ToArray());
+        AssertWav(offset, 300_000);
+        Assert.Equal(pcm.AsSpan(600_000 * 2, 300_000 * 2).ToArray(), offset.AsSpan(44).ToArray());
+        Assert.Equal(1, Invocations("two-minute"));
+    }
+
+    [Fact]
+    public async Task Audio_slice_budget_is_bounded_by_the_task_budget_and_a_hard_ceiling()
+    {
+        var ceiling = NoteAsrPlan.MaxSamplesPerSlice;
+        var fixture = Fixture.Create(audioSamples: 1600);
+        var store = Store();
+        await store.BeginAsync(_user, fixture.Request);
+        await UploadAll(store, fixture);
+        await store.CompleteAsync(_user, fixture.Request.VersionId);
+
+        AssertWav(await store.ReadAudioSliceAsync(_user, fixture.Request.VersionId, 5, 0, 1_600,
+            CancellationToken.None, ceiling), 1_600);
+        AssertWav(await store.ReadAudioSliceAsync(_user, fixture.Request.VersionId, 5, 0, 1_600,
+            CancellationToken.None), 1_600);
+
+        // A caller may not widen the budget past the hard ceiling, nor read more than it declared.
+        await Error(40001, () => store.ReadAudioSliceAsync(_user, fixture.Request.VersionId, 5,
+            0, 1_600, CancellationToken.None, ceiling + 1));
+        await Error(40001, () => store.ReadAudioSliceAsync(_user, fixture.Request.VersionId, 5,
+            0, 1_601, CancellationToken.None, 1_600));
+        await Error(40001, () => store.ReadAudioSliceAsync(_user, fixture.Request.VersionId, 5,
+            0, 1, CancellationToken.None, 0));
+        await Error(40001, () => store.ReadAudioSliceAsync(_user, fixture.Request.VersionId, 5,
+            0, -1, CancellationToken.None, ceiling));
+        await Error(40001, () => store.ReadAudioSliceAsync(_user, fixture.Request.VersionId, 5,
+            1_600, 1, CancellationToken.None, ceiling));
+        await Error(40001, () => store.ReadAudioSliceAsync(_user, fixture.Request.VersionId, 5,
+            -1, 1, CancellationToken.None, ceiling));
+    }
+
+    [Fact]
+    public async Task Legacy_callers_without_a_budget_stay_at_one_minute_while_explicit_budgets_widen()
+    {
+        var samples = NoteAsrPlan.SamplesPerCall + 1;
+        var fixture = Fixture.Create(audioSamples: samples);
+        var store = Store();
+        await store.BeginAsync(_user, fixture.Request);
+        await UploadAll(store, fixture);
+        await store.CompleteAsync(_user, fixture.Request.VersionId);
+
+        await Error(40001, () => store.ReadAudioSliceAsync(_user, fixture.Request.VersionId, 5,
+            0, samples, CancellationToken.None));
+        await Error(40001, () => store.ReadAudioSliceAsync(_user, fixture.Request.VersionId, 5,
+            0, samples, CancellationToken.None, NoteAsrPlan.SamplesPerCall));
+        var widened = await store.ReadAudioSliceAsync(_user, fixture.Request.VersionId, 5, 0,
+            samples, CancellationToken.None, NoteAsrPlan.MaxSamplesPerSlice);
+        AssertWav(widened, samples);
+    }
+
+    [SkippableFact]
+    public async Task Deleting_a_note_removes_its_derived_opus_pcm_cache_but_not_other_notes()
+    {
+        Skip.If(OperatingSystem.IsWindows(),
+            "The deterministic decoder fixture is a POSIX shell script");
+        var target = Fixture.Create(audioSamples: 1600,
+            audio: OggOpusTestData.Valid(1600, serial: 0x12345678), audioFormat: "opus");
+        var keeper = Fixture.Create(audioSamples: 1600,
+            audio: OggOpusTestData.Valid(1600, serial: 0x87654321), audioFormat: "opus");
+        var store = Store();
+        var pcm = new byte[1600 * 2];
+        var decoder = Store(options: DecoderOptions(FakeDecoder("note-delete", pcm)));
+        foreach (var fixture in new[] { target, keeper })
+        {
+            await store.BeginAsync(_user, fixture.Request);
+            await UploadAll(store, fixture);
+            await store.CompleteAsync(_user, fixture.Request.VersionId);
+            await decoder.ReadAudioSliceAsync(_user, fixture.Request.VersionId, 5, 0, 1600,
+                CancellationToken.None, 1600);
+        }
+        var cache = Path.Combine(_root, "audio-cache");
+        var targetCache = Directory.GetFiles(cache, Hash(target.Content[5]) + "-*.pcm");
+        var keeperCache = Directory.GetFiles(cache, Hash(keeper.Content[5]) + "-*.pcm");
+        var targetCachePath = Assert.Single(targetCache);
+        var keeperCachePath = Assert.Single(keeperCache);
+
+        await store.DeleteNoteAsync(_user, target.Request.NoteId);
+
+        Assert.False(File.Exists(targetCachePath));
+        Assert.True(File.Exists(keeperCachePath));
+    }
+
+    [SkippableFact]
+    public async Task Audio_decode_concurrency_is_capped_and_crash_residue_is_pruned()
+    {
+        Skip.If(OperatingSystem.IsWindows(),
+            "The deterministic decoder fixture is a POSIX shell script");
+        var firstFixture = Fixture.Create(audioSamples: 1600,
+            audio: OggOpusTestData.Valid(1600, serial: 0x12345678), audioFormat: "opus");
+        var secondFixture = Fixture.Create(audioSamples: 1600,
+            audio: OggOpusTestData.Valid(1600, serial: 0x87654321), audioFormat: "opus");
+        var upload = Store();
+        await upload.BeginAsync(_user, firstFixture.Request);
+        await UploadAll(upload, firstFixture);
+        await upload.CompleteAsync(_user, firstFixture.Request.VersionId);
+        await upload.BeginAsync(_user, secondFixture.Request);
+        await UploadAll(upload, secondFixture);
+        await upload.CompleteAsync(_user, secondFixture.Request.VersionId);
+        var options = DecoderOptions(FakeDecoder("capped", new byte[1600 * 2], sleepSeconds: 0.4));
+        options.MaxConcurrentAudioDecodes = 1;
+        var store = Store(options: options);
+
+        await Task.WhenAll(
+            store.ReadAudioSliceAsync(_user, firstFixture.Request.VersionId, 5, 0, 1600,
+                CancellationToken.None),
+            store.ReadAudioSliceAsync(_user, secondFixture.Request.VersionId, 5, 0, 1600,
+                CancellationToken.None));
+
+        Assert.Equal(2, Invocations("capped"));
+        Assert.Equal(1, MaxConcurrentDecodes("capped"));
+
+        var work = Path.Combine(_root, "audio-work");
+        Directory.CreateDirectory(work);
+        var stale = Path.Combine(work, "stale.opus");
+        var fresh = Path.Combine(work, "fresh.opus");
+        await File.WriteAllTextAsync(stale, "stale");
+        await File.WriteAllTextAsync(fresh, "fresh");
+        File.SetLastWriteTimeUtc(stale, DateTime.UtcNow.AddHours(-2));
+        var cache = Path.Combine(_root, "audio-cache");
+        var expired = Path.Combine(cache, "expired.pcm");
+        await File.WriteAllTextAsync(expired, "expired");
+        File.SetLastWriteTimeUtc(expired, DateTime.UtcNow.AddHours(-25));
+
+        store.PruneAudioStorage(force: true);
+
+        Assert.False(File.Exists(stale));
+        Assert.True(File.Exists(fresh));
+        Assert.False(File.Exists(expired));
+        Assert.True(Directory.GetFiles(cache, "*.pcm").Sum(path => new FileInfo(path).Length) > 0);
+
+        var budget = DecoderOptions(Path.Combine(_root, "unused-ffmpeg"));
+        budget.AudioCacheMaxBytes = 100;
+        Store(options: budget).PruneAudioStorage(force: true);
+        Assert.True(Directory.GetFiles(cache, "*.pcm").Sum(path => new FileInfo(path).Length) <= 100);
+    }
+
+    [Fact]
+    public void Verification_cache_evicts_the_least_recently_used_entry()
+    {
+        var cache = new BoundedLruCache<string, int>(2);
+        cache.Set("a", 1);
+        cache.Set("b", 2);
+        Assert.True(cache.TryGet("a", out var a));
+        Assert.Equal(1, a);
+
+        cache.Set("c", 3);
+
+        Assert.False(cache.TryGet("b", out _));
+        Assert.True(cache.TryGet("a", out a));
+        Assert.Equal(1, a);
+        Assert.True(cache.TryGet("c", out var c));
+        Assert.Equal(3, c);
+        Assert.Equal(2, cache.Count);
+        Assert.Equal(1, cache.RemoveWhere(key => key == "a"));
+        Assert.False(cache.TryGet("a", out _));
+    }
+
+    [Fact]
+    public async Task Process_caches_are_bounded_across_material_versions_and_audio_keys()
+    {
+        var options = new NoteMaterialUploadOptions
+        {
+            StorageRoot = _root, MaxVersionBytes = 32 * 1024 * 1024,
+            MaxUserReservedBytes = 64 * 1024 * 1024, VerifiedFileCacheMaxEntries = 2
+        };
+        var store = Store(options: options);
+        var fixtures = Enumerable.Range(0, 3).Select(_ => Fixture.Create()).ToArray();
+        foreach (var fixture in fixtures)
+        {
+            await store.BeginAsync(_user, fixture.Request);
+            await UploadAll(store, fixture);
+            await store.CompleteAsync(_user, fixture.Request.VersionId);
+        }
+        foreach (var fixture in fixtures)
+            await store.VerifyAudioFileAsync(_user, fixture.Request.VersionId, 5, CancellationToken.None);
+
+        Assert.Equal(2, store.VerifiedFileCacheCount);
+        Assert.Equal(64, store.AudioDecodeGateSlotCount);
+    }
+
+    private NoteMaterialUploadStore Store(TimeProvider? time = null, NoteMaterialUploadOptions? options = null) =>
+        new(Options.Create(options ?? _options), time);
+
+    private NoteMaterialUploadOptions DecoderOptions(string ffmpeg) => new()
+    {
+        StorageRoot = _root, MaxVersionBytes = 32 * 1024 * 1024,
+        MaxUserReservedBytes = 64 * 1024 * 1024, FfmpegPath = ffmpeg
+    };
+
+    private string FakeDecoder(string tag, byte[] pcm, double sleepSeconds = 0)
+    {
+        var folder = Path.Combine(_root, "fake-ffmpeg-" + tag);
+        Directory.CreateDirectory(folder);
+        var pcmPath = Path.Combine(folder, "pcm.bin");
+        File.WriteAllBytes(pcmPath, pcm);
+        var countPath = Path.Combine(folder, "count");
+        var eventsPath = Path.Combine(folder, "events");
+        var script = Path.Combine(folder, "ffmpeg");
+        var sleep = sleepSeconds > 0
+            ? "sleep " + sleepSeconds.ToString("0.0", CultureInfo.InvariantCulture) + "\n"
+            : "";
+        File.WriteAllText(script,
+            "#!/bin/sh\n" +
+            "printf 'S %s %s\\n' \"$$\" \"$(date +%s%N)\" >> " + ShellQuote(eventsPath) + "\n" +
+            sleep +
+            "printf x >> " + ShellQuote(countPath) + "\n" +
+            "cat " + ShellQuote(pcmPath) + "\n" +
+            "printf 'E %s %s\\n' \"$$\" \"$(date +%s%N)\" >> " + ShellQuote(eventsPath) + "\n");
+        if (!OperatingSystem.IsWindows())
+            File.SetUnixFileMode(script,
+                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        return script;
+    }
+
+    private int Invocations(string tag)
+    {
+        var path = Path.Combine(_root, "fake-ffmpeg-" + tag, "count");
+        return File.Exists(path) ? File.ReadAllText(path).Length : 0;
+    }
+
+    private int MaxConcurrentDecodes(string tag)
+    {
+        var path = Path.Combine(_root, "fake-ffmpeg-" + tag, "events");
+        if (!File.Exists(path)) return 0;
+        var events = File.ReadAllLines(path)
+            .Select(line => line.Split(' '))
+            .Where(parts => parts.Length == 3 && (parts[0] is "S" or "E"))
+            .Select(parts => (At: long.Parse(parts[2], CultureInfo.InvariantCulture),
+                Delta: parts[0] == "S" ? 1 : -1))
+            .OrderBy(item => item.At)
+            .ToArray();
+        var current = 0;
+        var maximum = 0;
+        foreach (var item in events)
+        {
+            current += item.Delta;
+            maximum = Math.Max(maximum, current);
+        }
+        return maximum;
+    }
+
+    private static string ShellQuote(string value) =>
+        "'" + value.Replace("'", "'\"'\"'", StringComparison.Ordinal) + "'";
+
+    private async Task AssertOpusRejected(Fixture fixture)
+    {
+        var store = Store();
+        await store.BeginAsync(_user, fixture.Request);
+        await UploadAll(store, fixture);
+        var error = await Assert.ThrowsAsync<DomainException>(() =>
+            store.CompleteAsync(_user, fixture.Request.VersionId));
+        Assert.Equal(40001, error.ErrorCode);
+        Assert.DoesNotContain(_root, error.Message);
+        Assert.Equal("Uploading", (await store.GetAsync(_user, fixture.Request.VersionId)).Upload.Phase);
+    }
+
+    private static Fixture OpusFixture() => Fixture.Create(audioSamples: 1600, audio: TinyOpus(),
+        audioFormat: "opus");
+
+    private static byte[] TinyOpus() => OggOpusTestData.TinyOpus();
+
+    private static Fixture RewriteInput(Fixture fixture, Action<JsonObject> edit)
+    {
+        var input = JsonNode.Parse(fixture.Request.InputJson)!.AsObject();
+        edit(input);
+        var inputJson = input.ToJsonString(Json);
+        var manifest = JsonNode.Parse(fixture.Request.ManifestJson)!.AsObject();
+        manifest["inputSha256"] = Hash(Encoding.UTF8.GetBytes(inputJson));
+        return fixture with
+        {
+            Request = fixture.Request with
+            {
+                InputJson = inputJson, ManifestJson = manifest.ToJsonString(Json)
+            }
+        };
+    }
+
+    private static JsonObject AudioChunk(JsonObject input) =>
+        input["recordings"]!.AsArray()[0]!["chunks"]!.AsArray()[0]!.AsObject();
+
+    private static void AssertWav(byte[] bytes, int samples)
+    {
+        Assert.Equal(44 + samples * 2, bytes.Length);
+        Assert.Equal("RIFF"u8.ToArray(), bytes[..4]);
+        Assert.Equal("WAVEfmt "u8.ToArray(), bytes.AsSpan(8, 8).ToArray());
+        Assert.Equal(16_000u, BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(24)));
+        Assert.Equal(32_000u, BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(28)));
+        Assert.Equal((uint)(samples * 2), BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(40)));
+    }
+
+    private static bool FfmpegAvailable()
+    {
+        try
+        {
+            var start = new ProcessStartInfo("ffmpeg")
+            {
+                UseShellExecute = false, RedirectStandardOutput = true,
+                RedirectStandardError = true, CreateNoWindow = true
+            };
+            start.ArgumentList.Add("-version");
+            using var process = Process.Start(start);
+            if (process is null) return false;
+            if (!process.WaitForExit(5000))
+            {
+                process.Kill(entireProcessTree: true);
+                return false;
+            }
+            return process.ExitCode == 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     private static async Task Error(int code, Func<Task> action) => Assert.Equal(code, (await Assert.ThrowsAsync<DomainException>(action)).ErrorCode);
     private async Task UploadAll(NoteMaterialUploadStore store, Fixture fixture)
     {
@@ -514,10 +1167,12 @@ public sealed class NoteMaterialUploadStoreTests : IDisposable
 
     internal sealed record Fixture(BeginNoteMaterialUploadRequest Request, List<byte[]> Content)
     {
-        internal static Fixture Create(int audioSamples = 160, Guid? noteId = null, Guid? baseId = null)
+        internal static Fixture Create(int audioSamples = 160, Guid? noteId = null, Guid? baseId = null,
+            byte[]? audio = null, string? audioFormat = null, bool includeFormat = true)
         {
             var version = Guid.NewGuid(); var note = noteId ?? Guid.NewGuid(); var recording = Guid.NewGuid();
             var photoBlock = Guid.NewGuid(); var photo = Guid.NewGuid(); var inkBlock = Guid.NewGuid();
+            var opus = string.Equals(audioFormat, "opus", StringComparison.Ordinal);
             var png = Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a8X8AAAAASUVORK5CYII=");
             var ink = new { width = 320.0, height = 180.0, strokes = Array.Empty<object>() };
             var inkJson = JsonSerializer.Serialize(ink, Json); var inkPath = $"assets/{inkBlock:D}-{Hash(Encoding.UTF8.GetBytes(inkJson))}.png";
@@ -532,11 +1187,20 @@ public sealed class NoteMaterialUploadStoreTests : IDisposable
                     new { id = inkBlock.ToString("D"), kind = "ink", ink }
                 }
             }, Json);
+            var chunk = new Dictionary<string, object?>
+            {
+                ["segment"] = 1, ["index"] = 1, ["samples"] = audioSamples
+            };
+            if (opus)
+            {
+                if (includeFormat) chunk["format"] = "opus";
+                chunk["mimeType"] = "audio/ogg";
+            }
             var sessionJson = JsonSerializer.Serialize(new
             {
                 id = recording.ToString("D"), schemaVersion = 1, createdAtMillis = 1, noteId = note.ToString("D"),
                 phase = "Completed", currentSegment = 1, problem = (string?)null,
-                chunks = new[] { new { segment = 1, index = 1, samples = audioSamples } }
+                chunks = new[] { chunk }
             }, Json);
             var input = JsonSerializer.Serialize(new
             {
@@ -545,17 +1209,12 @@ public sealed class NoteMaterialUploadStoreTests : IDisposable
                 recordings = new[] { JsonSerializer.Deserialize<JsonElement>(sessionJson) }
             }, Json);
             var markdown = $"{text}\n\n![照片](assets/{photo:D}.png)\n\n![手写卡片]({inkPath})\n<!-- 可编辑笔迹、身份和尺寸保存在同包 note.json 中 -->";
-            var wav = new byte[44 + audioSamples * 2];
-            "RIFF"u8.CopyTo(wav); BinaryPrimitives.WriteUInt32LittleEndian(wav.AsSpan(4), (uint)(wav.Length - 8));
-            "WAVEfmt "u8.CopyTo(wav.AsSpan(8)); BinaryPrimitives.WriteUInt32LittleEndian(wav.AsSpan(16), 16);
-            BinaryPrimitives.WriteUInt16LittleEndian(wav.AsSpan(20), 1); BinaryPrimitives.WriteUInt16LittleEndian(wav.AsSpan(22), 1);
-            BinaryPrimitives.WriteUInt32LittleEndian(wav.AsSpan(24), 16_000); BinaryPrimitives.WriteUInt32LittleEndian(wav.AsSpan(28), 32_000);
-            BinaryPrimitives.WriteUInt16LittleEndian(wav.AsSpan(32), 2); BinaryPrimitives.WriteUInt16LittleEndian(wav.AsSpan(34), 16);
-            "data"u8.CopyTo(wav.AsSpan(36)); BinaryPrimitives.WriteUInt32LittleEndian(wav.AsSpan(40), (uint)(audioSamples * 2));
+            var audioBytes = audio ?? Wav(audioSamples);
             var content = new List<byte[]> { Encoding.UTF8.GetBytes(noteJson), Encoding.UTF8.GetBytes(markdown), png, png,
-                Encoding.UTF8.GetBytes(sessionJson), wav };
+                Encoding.UTF8.GetBytes(sessionJson), audioBytes };
+            var extension = opus ? ".opus" : ".wav";
             var paths = new[] { "note.json", "document.md", $"assets/{photo:D}.png", inkPath,
-                $"recordings/{recording:D}/manifest.json", $"recordings/{recording:D}/s0001-c000001.wav" };
+                $"recordings/{recording:D}/manifest.json", $"recordings/{recording:D}/s0001-c000001{extension}" };
             var kinds = new[] { "Document", "Markdown", "Photo", "InkPreview", "RecordingManifest", "AudioChunk" };
             var files = paths.Select((path, i) => new
             {
@@ -567,6 +1226,18 @@ public sealed class NoteMaterialUploadStoreTests : IDisposable
             var manifest = JsonSerializer.Serialize(new { schemaVersion = 1, versionId = version.ToString("D"), noteId = note.ToString("D"),
                 revision = 1, inputSha256 = Hash(Encoding.UTF8.GetBytes(input)), files }, Json);
             return new(new(version, note, baseId, input, manifest, true), content);
+        }
+
+        private static byte[] Wav(int audioSamples)
+        {
+            var wav = new byte[44 + audioSamples * 2];
+            "RIFF"u8.CopyTo(wav); BinaryPrimitives.WriteUInt32LittleEndian(wav.AsSpan(4), (uint)(wav.Length - 8));
+            "WAVEfmt "u8.CopyTo(wav.AsSpan(8)); BinaryPrimitives.WriteUInt32LittleEndian(wav.AsSpan(16), 16);
+            BinaryPrimitives.WriteUInt16LittleEndian(wav.AsSpan(20), 1); BinaryPrimitives.WriteUInt16LittleEndian(wav.AsSpan(22), 1);
+            BinaryPrimitives.WriteUInt32LittleEndian(wav.AsSpan(24), 16_000); BinaryPrimitives.WriteUInt32LittleEndian(wav.AsSpan(28), 32_000);
+            BinaryPrimitives.WriteUInt16LittleEndian(wav.AsSpan(32), 2); BinaryPrimitives.WriteUInt16LittleEndian(wav.AsSpan(34), 16);
+            "data"u8.CopyTo(wav.AsSpan(36)); BinaryPrimitives.WriteUInt32LittleEndian(wav.AsSpan(40), (uint)(audioSamples * 2));
+            return wav;
         }
     }
 }

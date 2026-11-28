@@ -9,7 +9,8 @@ namespace Pim.Infrastructure.Notes;
 
 internal sealed record NoteUploadedMaterial(
     string Path, string Kind, string Sha256, long SizeBytes,
-    string? BlockId, string? RecordingId, int? Segment, int? ChunkIndex, long? Samples);
+    string? BlockId, string? RecordingId, int? Segment, int? ChunkIndex, long? Samples,
+    NoteAudioFormat? AudioFormat = null);
 
 internal static partial class NoteMaterialManifestValidator
 {
@@ -90,14 +91,20 @@ internal static partial class NoteMaterialManifestValidator
                 expected.Add($"{prefix}/manifest.json", new("RecordingManifest", Hash(recording.GetRawText()), RecordingId: recordingId.ToString("D"),
                     SizeBytes: Encoding.UTF8.GetByteCount(recording.GetRawText())));
                 long samples = 0;
+                var chunks = new HashSet<(int Segment, int Index)>();
                 foreach (var chunk in recording.GetProperty("chunks").EnumerateArray())
                 {
                     var segment = Int(chunk, "segment"); var index = Int(chunk, "index"); var count = Long(chunk, "samples");
-                    Require(segment > 0 && segment <= currentSegment && index > 0 && count is >= 0 and <= 172_800_000,
+                    var format = NoteAudioFormats.Parse(chunk);
+                    Require(segment > 0 && segment <= currentSegment && index > 0 &&
+                        count is >= 0 and <= NoteAudioFormats.MaxSamplesPerChunk,
                         "录音分片信息无效");
-                    var path = $"{prefix}/s{segment:D4}-c{index:D6}.wav";
+                    Require(chunks.Add((segment, index)), "录音包含重复分片");
+                    Require(format == NoteAudioFormat.Wav || count > 0, "Opus 录音分片必须包含有效音频");
+                    var path = NoteAudioFormats.Path(recordingId, segment, index, format);
                     Require(expected.TryAdd(path, new("AudioChunk", RecordingId: recordingId.ToString("D"),
-                        Segment: segment, ChunkIndex: index, Samples: count)), "录音包含重复分片");
+                        Segment: segment, ChunkIndex: index, Samples: count, AudioFormat: format)),
+                        "录音包含重复分片");
                     samples = checked(samples + count);
                 }
                 Require(samples > 0, "录音没有有效音频");
@@ -117,12 +124,17 @@ internal static partial class NoteMaterialManifestValidator
                     OptionalString(file, "blockId") == source.BlockId && OptionalString(file, "recordingId") == source.RecordingId &&
                     OptionalInt(file, "segment") == source.Segment && OptionalInt(file, "chunkIndex") == source.ChunkIndex &&
                     OptionalLong(file, "samples") == source.Samples, "文件描述与固定原稿不一致");
-                if (source.Samples is { } audioSamples) Require(size == checked(44 + audioSamples * 2), "录音 WAV 大小与样本数不一致");
+                if (source.Samples is { } audioSamples && source.AudioFormat is { } audioFormat)
+                    Require(NoteAudioFormats.HasValidDeclaredSize(audioFormat, size, audioSamples),
+                        audioFormat == NoteAudioFormat.Wav
+                            ? "录音 WAV 大小与样本数不一致"
+                            : "录音 Opus 文件大小无效或超过 64 MiB");
                 if (source.Kind == "Photo") Require(size is > 0 and <= 32 * 1024 * 1024, "照片大小无效或超过 32 MB");
                 if (source.Kind == "InkPreview") Require(size is > 0 and <= 40 * 1024 * 1024, "手写预览图大小无效或超过 40 MB");
                 total = checked(total + size);
                 Require(total <= options.MaxVersionBytes, "本次材料超过服务器单版本容量上限");
-                result.Add(new(path, source.Kind, hash, size, source.BlockId, source.RecordingId, source.Segment, source.ChunkIndex, source.Samples));
+                result.Add(new(path, source.Kind, hash, size, source.BlockId, source.RecordingId,
+                    source.Segment, source.ChunkIndex, source.Samples, source.AudioFormat));
             }
             Require(expected.Count == 0, "缺少固定原稿所需的材料");
             return result;
@@ -271,7 +283,8 @@ internal static partial class NoteMaterialManifestValidator
     private static void Require(bool value, string message) { if (!value) throw Invalid(message); }
     private static DomainException Invalid(string message) => new(40001, message);
     private sealed record ExpectedMaterial(string Kind, string? Hash = null, string? BlockId = null,
-        string? RecordingId = null, int? Segment = null, int? ChunkIndex = null, long? Samples = null, long? SizeBytes = null);
+        string? RecordingId = null, int? Segment = null, int? ChunkIndex = null, long? Samples = null,
+        long? SizeBytes = null, NoteAudioFormat? AudioFormat = null);
     [GeneratedRegex("^[0-9a-f]{64}$", RegexOptions.CultureInvariant)] private static partial Regex DigestPattern();
     [GeneratedRegex("^#[0-9A-Fa-f]{6}$", RegexOptions.CultureInvariant)] private static partial Regex InkColorPattern();
 }

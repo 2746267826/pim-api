@@ -579,7 +579,8 @@ public sealed class NoteAsrRoutingService(PimDbContext db, ICurrentUserService u
             throw new DomainException(40901, "固定输入快照不匹配或分片不存在");
         var step = state.Steps[segmentIndex];
         var bytes = await materials.ReadAudioSliceAsync(owner, attempt.VersionId, step.FileIndex,
-            step.SourceOffset, step.Samples, ct);
+            step.SourceOffset, step.Samples, ct,
+            NoteAsrPlan.BudgetOrDefault(state.SamplesPerCall));
         var sliceSha = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
         return new(bytes, sliceSha, step.Sha256, owner, lease.NodeId, lease.Id, lease.AttemptId,
             attempt.VersionId, lease.FencingToken, segmentIndex, step.FileIndex, step.SourceOffset, step.Samples);
@@ -1404,6 +1405,42 @@ internal static class NoteAsrAcceptedEvidence
         proof.ResultSha256 == Convert.ToHexString(SHA256.HashData(
             System.Text.Encoding.UTF8.GetBytes(proof.ResultText))).ToLowerInvariant();
 
+    internal static string AdaptiveProviderHandle(Guid requestId) =>
+        "adaptive:" + requestId.ToString("N");
+
+    internal static bool AdaptiveCoverageMatches(string? coverageJson, NoteAsrStep step)
+    {
+        if (string.IsNullOrWhiteSpace(coverageJson))
+            return false;
+        try
+        {
+            using var document = JsonDocument.Parse(coverageJson);
+            var root = document.RootElement;
+            return root.ValueKind == JsonValueKind.Object &&
+                root.TryGetProperty("recordFormat", out var format) &&
+                format.ValueKind == JsonValueKind.String &&
+                format.GetString() == "adaptive-transcription-v1" &&
+                root.TryGetProperty("rootRequestId", out var request) &&
+                request.ValueKind == JsonValueKind.String &&
+                Guid.TryParse(request.GetString(), out var requestId) &&
+                requestId == step.Current.RequestId &&
+                MatchesEpoch(root, step.ExecutionEpoch);
+        }
+        catch (JsonException) { return false; }
+
+        // Steps created before executionEpoch existed can only be settled by a legacy row that also
+        // has no epoch; new steps always carry one, and a row without it is a failed-pre-upgrade
+        // leftover that must not be accepted into the new execution.
+        static bool MatchesEpoch(JsonElement root, Guid? epoch)
+        {
+            var hasEpoch = root.TryGetProperty("executionEpoch", out var node) &&
+                node.ValueKind != JsonValueKind.Null;
+            if (epoch is not { } expected) return !hasEpoch;
+            return hasEpoch && node.ValueKind == JsonValueKind.String &&
+                Guid.TryParse(node.GetString(), out var actual) && actual == expected;
+        }
+    }
+
     internal static async Task<Dictionary<int, NoteAsrSegmentEvidenceEntity>> LoadAsync(PimDbContext db,
         Guid owner, NoteAsrAttemptEntity attempt, NoteAsrState state, CancellationToken ct)
     {
@@ -1438,8 +1475,10 @@ internal static class NoteAsrAcceptedEvidence
                 "batch" => attempt.Route == NoteAsrRoute.CloudMultimodal &&
                     attempt.ExecutionMode == NoteAsrExecutionMode.Batch,
                 "adaptive" => NoteAsrRoute.IsCloud(attempt.Route) &&
-                    row.ProviderHandle.StartsWith("adaptive:", StringComparison.Ordinal) &&
-                    !string.IsNullOrWhiteSpace(row.CoverageJson),
+                    state.Steps[row.SegmentIndex].Current.EvidenceId == row.Id &&
+                    row.ProviderHandle == AdaptiveProviderHandle(
+                        state.Steps[row.SegmentIndex].Current.RequestId) &&
+                    AdaptiveCoverageMatches(row.CoverageJson, state.Steps[row.SegmentIndex]),
                 _ => false
             };
             if (valid) accepted[row.SegmentIndex] = row;

@@ -69,6 +69,22 @@ public class ExceptionMiddlewareTests
         Assert.Equal(4003, response.Code);
     }
 
+    [Fact]
+    public async Task InvokeAsync_MapsMissingAudioDecoderTo503()
+    {
+        var context = new DefaultHttpContext();
+        context.Response.Body = new MemoryStream();
+        var middleware = new ExceptionMiddleware(
+            _ => throw new DomainException(50303, "服务器未配置可用的 Ogg Opus 解码器"),
+            NullLogger<ExceptionMiddleware>.Instance);
+
+        await middleware.InvokeAsync(context);
+
+        Assert.Equal(StatusCodes.Status503ServiceUnavailable, context.Response.StatusCode);
+        var response = await ReadResponseAsync(context);
+        Assert.Equal(50303, response.Code);
+    }
+
     [Theory]
     [InlineData(40901)]
     [InlineData(MobileSyncErrorCodes.PayloadConflict)]
