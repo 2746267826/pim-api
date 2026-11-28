@@ -1,6 +1,8 @@
 # 接口契约映射清单（批次 1：响应定义 / Response definitions）
 
 > 由 `contract/openapi.json` 与源码自动核对生成。约定与例外见文末。
+>
+> 2026-11-26 说明：本文件是历史批次的人工映射快照，统计与端点可能落后于源码。**唯一 OpenAPI 权威仍是 `contract/openapi.json`**；J05 已移除 `/api/v1/ai/status`、`/api/v1/ai/test`、`/api/v1/ai/health-check`，下表不再列出这三项。当前 AI 模型设置与连接测试以仓库根契约和生成 Web 类型为准。
 
 ## 覆盖统计 / Coverage
 
@@ -24,12 +26,11 @@
 
 | 方法 | 路径 | 响应（状态码:schema） |
 |---|---|---|
-| POST | `/api/v1/ai/health-check` | 200:`AiStatusDtoApiResponse`、401、403、500:`StringApiResponse` |
 | GET | `/api/v1/ai/requests` | 200:`AiRequestLogListItemDtoPagedResultApiResponse`、400:`StringApiResponse`、401、403、500:`StringApiResponse` |
 | GET | `/api/v1/ai/requests/{id}` | 200:`AiRequestLogDetailDtoApiResponse`、401、403、404:`StringApiResponse`、500:`StringApiResponse` |
-| GET | `/api/v1/ai/status` | 200:`AiStatusDtoApiResponse`、401、403、500:`StringApiResponse` |
-| POST | `/api/v1/ai/test` | 200:`AiResultApiResponse`、401、403、500:`StringApiResponse` |
 | GET | `/api/v1/ai/usage/summary` | 200:`AiUsageSummaryDtoApiResponse`、400:`StringApiResponse`、401、403、500:`StringApiResponse` |
+
+> 已移除（J05）：`POST /api/v1/ai/health-check`、`GET /api/v1/ai/status`、`POST /api/v1/ai/test`。当前模型设置、连接测试和 ASR 配置端点请直接查阅 `contract/openapi.json`。
 
 ### src/Pim.Api/Endpoints/AuthEndpoints.cs
 
@@ -177,12 +178,12 @@
 | POST | `/api/v1/calendar/data-center/restore/preview` | 200:`RestorePreviewResponseApiResponse`、400:`StringApiResponse`、401、500:`StringApiResponse` |
 | POST | `/api/v1/calendar/data-center/restore/request-confirmation` | 200:`OperationConfirmationDtoApiResponse`、400:`StringApiResponse`、401、500:`StringApiResponse` |
 | GET | `/api/v1/calendar/events` | 200:`EventResponsePagedResultApiResponse`、400:`StringApiResponse`、401、500:`StringApiResponse` |
-| POST | `/api/v1/calendar/events` | 201:`EventResponseApiResponse`、400:`StringApiResponse`、401、500:`StringApiResponse` |
+| POST | `/api/v1/calendar/events` | 200:`EventResponseApiResponse`、201:`EventResponseApiResponse`、400:`OutlookWriteResultApiResponse`、401、403:`OutlookWriteResultApiResponse`、404:`OutlookWriteResultApiResponse`、409:`OutlookWriteResultApiResponse`、502:`OutlookWriteResultApiResponse`、500:`StringApiResponse` |
 | POST | `/api/v1/calendar/events/batch-delete` | 200:`CalendarOperationResultApiResponse`、400:`StringApiResponse`、401、500:`StringApiResponse` |
 | GET | `/api/v1/calendar/events/{id}` | 200:`EventResponseApiResponse`、401、404:`StringApiResponse`、500:`StringApiResponse` |
 | GET | `/api/v1/calendar/events/{eventId}/attachments/{attachmentId}/download` | 200、400:`StringApiResponse`、401、404、409:`StringApiResponse`、500:`StringApiResponse` |
-| DELETE | `/api/v1/calendar/events/{id}` | 200:`StringApiResponse`、400:`StringApiResponse`、401、500:`StringApiResponse` |
-| PUT | `/api/v1/calendar/events/{id}` | 200:`EventResponseApiResponse`、400:`StringApiResponse`、401、500:`StringApiResponse` |
+| DELETE | `/api/v1/calendar/events/{id}` | 200:`OutlookWriteResultApiResponse`、400:`OutlookWriteResultApiResponse`、401、403:`OutlookWriteResultApiResponse`、404:`OutlookWriteResultApiResponse`、409:`OutlookWriteResultApiResponse`、429:`OutlookWriteResultApiResponse`、502:`OutlookWriteResultApiResponse`、504:`OutlookWriteResultApiResponse`、500:`StringApiResponse` |
+| PUT | `/api/v1/calendar/events/{id}` | 200:`EventResponseApiResponse`、400:`OutlookWriteResultApiResponse`、401、403:`OutlookWriteResultApiResponse`、404:`OutlookWriteResultApiResponse`、409:`OutlookWriteResultApiResponse`、429:`OutlookWriteResultApiResponse`、502:`OutlookWriteResultApiResponse`、504:`OutlookWriteResultApiResponse`、500:`StringApiResponse` |
 | POST | `/api/v1/calendar/events/{id}/restore` | 200:`CalendarOperationResultApiResponse`、400:`StringApiResponse`、401、500:`StringApiResponse` |
 | GET | `/api/v1/calendar/export-ics` | 200、401、500:`StringApiResponse` |
 | GET | `/api/v1/calendar/habits` | 200:`HabitRoutineDtoIReadOnlyListApiResponse`、400:`StringApiResponse`、401、500:`StringApiResponse` |
@@ -202,7 +203,8 @@
 | POST | `/api/v1/calendar/outlook/device-code/poll` | 200:`OutlookAuthorizationSessionResponseApiResponse`、400:`StringApiResponse`、401、404:`StringApiResponse`、500:`StringApiResponse` |
 | POST | `/api/v1/calendar/outlook/device-code/{sessionId}/cancel` | 200:`StringApiResponse`、401、404:`StringApiResponse`、500:`StringApiResponse` |
 | POST | `/api/v1/calendar/outlook/disconnect` | 200:`StringApiResponse`、400:`StringApiResponse`、401、500:`StringApiResponse` |
-| POST | `/api/v1/calendar/outlook/events/writeback` | 200:`OutlookWriteResultApiResponse`、400:`StringApiResponse`、401、409:`OutlookWriteResultApiResponse`、500:`StringApiResponse` |
+| POST | `/api/v1/calendar/outlook/events/writeback` | 200:`OutlookWriteResultApiResponse`、400:`OutlookWriteResultApiResponse`、401、403:`OutlookWriteResultApiResponse`、404:`OutlookWriteResultApiResponse`、409:`OutlookWriteResultApiResponse`、429:`OutlookWriteResultApiResponse`、502:`OutlookWriteResultApiResponse`、504:`OutlookWriteResultApiResponse`、500:`StringApiResponse` |
+| POST | `/api/v1/calendar/outlook/events/{clientOperationId}/undo` | 200:`OutlookWriteResultApiResponse`、400:`OutlookWriteResultApiResponse`、401、403:`OutlookWriteResultApiResponse`、404:`OutlookWriteResultApiResponse`、409:`OutlookWriteResultApiResponse`、429:`OutlookWriteResultApiResponse`、502:`OutlookWriteResultApiResponse`、504:`OutlookWriteResultApiResponse`、500:`StringApiResponse` |
 | DELETE | `/api/v1/calendar/outlook/local-data` | 200:`StringApiResponse`、400:`StringApiResponse`、401、500:`StringApiResponse` |
 | GET | `/api/v1/calendar/outlook/local-data/preview` | 200:`OutlookLocalDataPreviewApiResponse`、400:`StringApiResponse`、401、500:`StringApiResponse` |
 | GET | `/api/v1/calendar/outlook/settings` | 200:`OutlookSettingsResponseApiResponse`、400:`StringApiResponse`、401、500:`StringApiResponse` |

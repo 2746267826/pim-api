@@ -552,16 +552,6 @@ public class InfrastructureCoverageTests : ServiceTestBase
     }
 
     [Fact]
-    public async Task DisabledAiGateway_ReturnsBlocked()
-    {
-        var gw = new DisabledAiGateway();
-        var req = new Pim.Core.Ai.AiGatewayRequest("m", "p", "type", "id", new List<Pim.Core.Ai.AiMessage> { new(Pim.Core.Ai.AiMessageRole.User, "hi") });
-        var result = await gw.CompleteAsync(req);
-        Assert.Equal(Pim.Core.Ai.AiRequestStatus.Blocked, result.Status);
-        Assert.Contains("not configured", result.UserFacingError, StringComparison.OrdinalIgnoreCase);
-    }
-
-    [Fact]
     public async Task Stage0DiagnosticJob_Runs()
     {
         var logger = Microsoft.Extensions.Logging.Abstractions.NullLogger<Stage0DiagnosticJob>.Instance;
@@ -654,10 +644,7 @@ public class InfrastructureCoverageTests : ServiceTestBase
             StartedAt = DateTimeOffset.UtcNow, PromptTokens = 5
         });
         await db.SaveChangesAsync();
-        var opts = Microsoft.Extensions.Options.Options.Create(new AiOptions { Enabled = true, Provider = "openai", BaseUrl = "http://x", DefaultModel = "gpt-4" });
-        var svc = new AiUsageService(db, opts);
-        var status = await svc.GetStatusAsync();
-        Assert.True(status.Enabled);
+        var svc = new AiUsageService(db);
         var detail = await svc.GetRequestDetailAsync(logId);
         Assert.NotNull(detail);
         Assert.Null(await svc.GetRequestDetailAsync(Guid.NewGuid()));

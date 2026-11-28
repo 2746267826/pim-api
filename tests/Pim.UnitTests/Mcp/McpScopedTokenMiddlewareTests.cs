@@ -48,7 +48,7 @@ public sealed class McpScopedTokenMiddlewareTests
     [Fact]
     public async Task ReadToken_DeniesUnmappedHighRiskWrite()
     {
-        // Not in the 50-tool map, but must still be denied for read tokens.
+        // Not in the 50-endpoint map, but must still be denied for read tokens.
         Assert.Equal(403, await RunAsync("get_tasks", "POST", "/api/v1/calendar/data-center/batch/execute"));
     }
 

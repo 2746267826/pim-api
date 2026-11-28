@@ -15,7 +15,8 @@ public interface IMimoBatchClientLease : IDisposable
     MimoBatchClient Client { get; }
 }
 
-public sealed class MimoBatchClientFactory(IOptions<NoteAsrBatchOptions>? options = null) : IMimoBatchClientFactory
+public sealed class MimoBatchClientFactory(AiProviderCircuitBreaker? breaker = null,
+    IOptions<NoteAsrBatchOptions>? options = null) : IMimoBatchClientFactory
 {
     public IMimoBatchClientLease Create(Uri baseAddress, string apiKey)
     {
@@ -28,7 +29,10 @@ public sealed class MimoBatchClientFactory(IOptions<NoteAsrBatchOptions>? option
             PooledConnectionLifetime = TimeSpan.FromMinutes(5),
             UseCookies = false
         };
-        var http = MimoBatchClient.CreateHttpClient(handler, baseAddress);
+        HttpMessageHandler pipeline = handler;
+        if (breaker is not null)
+            pipeline = new AiProviderCircuitBreakerHandler(breaker) { InnerHandler = handler };
+        var http = MimoBatchClient.CreateHttpClient(pipeline, baseAddress);
         http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
         return new Lease(http, new MimoBatchClient(http, new MimoBatchClientOptions(baseAddress,
             TimeSpan.FromSeconds(60), AudioBatchEnabled: options?.Value.AllowUnverifiedAudioBatch == true)));

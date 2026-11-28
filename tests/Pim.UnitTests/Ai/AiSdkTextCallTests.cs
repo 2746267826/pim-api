@@ -92,6 +92,38 @@ public sealed class AiSdkTextCallTests : IDisposable
             new(disabled.Revision, true, model.Id, null, null), default));
     }
 
+    [Fact]
+    public async Task PurposeDefaultsPreserveOmittedFieldsAndClearOnEmptyGuid()
+    {
+        var model = await Model();
+        var config = await Settings.GetSettingsAsync(default);
+        config = await Settings.SaveSettingsAsync(new(config.Revision, true, model.Id, null, null)
+        {
+            NoteOrganizationModelId = model.Id,
+            NoteTodoModelId = model.Id
+        }, default);
+        Assert.Equal(model.Id, config.NoteOrganizationModelId);
+        Assert.Equal(model.Id, config.NoteTodoModelId);
+
+        var preserved = await Settings.SaveSettingsAsync(
+            new(config.Revision, true, model.Id, null, null), default);
+
+        Assert.Equal(model.Id, preserved.NoteOrganizationModelId);
+        Assert.Equal(model.Id, preserved.NoteTodoModelId);
+        Assert.Null(preserved.CalendarPlanningModelId);
+
+        var cleared = await Settings.SaveSettingsAsync(new(preserved.Revision, true, model.Id, null, null)
+        {
+            NoteOrganizationModelId = Guid.Empty,
+            NoteTodoModelId = null,
+            CalendarPlanningModelId = Guid.Empty
+        }, default);
+
+        Assert.Null(cleared.NoteOrganizationModelId);
+        Assert.Null(cleared.NoteTodoModelId);
+        Assert.Null(cleared.CalendarPlanningModelId);
+    }
+
     [Theory]
     [InlineData("file:///etc/passwd")]
     [InlineData("https://user:pass@example.com/v1")]
@@ -201,7 +233,7 @@ public sealed class AiSdkTextCallTests : IDisposable
         Assert.Equal(AiRequestStatus.Incomplete, result.Status); Assert.Equal(Wire.Reply, result.ResponseText);
         var row = await _db.AiRequestLogs.AsNoTracking().SingleAsync();
         Assert.Equal("length", row.FinishReason); Assert.Null(row.PromptTokens); Assert.Null(row.TotalTokens);
-        var usage = await new AiUsageService(_db, Options.Create(new AiOptions())).GetUsageSummaryAsync(null, null);
+        var usage = await new AiUsageService(_db).GetUsageSummaryAsync(null, null);
         Assert.Equal(1, usage.FailureCount); Assert.Equal(1, usage.UnknownTokenUsageCount);
         Assert.Equal(0, usage.KnownCostRequestCount);
     }

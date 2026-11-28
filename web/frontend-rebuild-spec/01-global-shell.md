@@ -88,7 +88,7 @@
 | `/settings/account` | 账号安全 | 修改自己的登录密码（对全员可见） |
 | `/settings/data-reliability` | 数据可信度 | 13 规则数据体检 |
 | `/settings/sync` | 同步设置 | Microsoft Outlook 同步 |
-| `/settings/ai` | AI 设置 | LiteLLM 状态/用量/请求日志 |
+| `/settings/ai` | AI 设置 | 模型/ASR 配置、连接测试、调用记录与统计 |
 | `/settings/mcp` | MCP 设置 | MCP 客户端/令牌/权限管理 |
 | `/settings/calendar-data` | 日程数据管理 | 日程事件批量管理（ICS 导入导出/删除） |
 | `/settings/recycle-bin` | 回收站 | 日历域回收站+恢复预览 |

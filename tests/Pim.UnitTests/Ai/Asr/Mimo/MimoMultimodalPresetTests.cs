@@ -107,6 +107,21 @@ public sealed class MimoMultimodalPresetTests
     }
 
     [Fact]
+    public async Task Transcribe_TransportFailureMapsToRetryable50206WithoutLeakingCredential()
+    {
+        var (preset, handler) = Create((_, _) =>
+            Task.FromException<HttpResponseMessage>(
+                new HttpRequestException("synthetic-key upstream failure")));
+
+        var error = await Assert.ThrowsAsync<DomainException>(() =>
+            preset.TranscribeAsync(Connection, Wave(), "zh", default));
+
+        Assert.Equal(50206, error.ErrorCode);
+        Assert.DoesNotContain("synthetic-key", error.Message);
+        Assert.Single(handler.Requests);
+    }
+
+    [Fact]
     public void AuditRequest_RedactsAudioReference_AndRejectsLanguageMismatch()
     {
         var (preset, _) = Create((_, _) => throw new InvalidOperationException("no request"));

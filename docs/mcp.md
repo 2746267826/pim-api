@@ -1,7 +1,7 @@
 # MCP Server 使用文档 / MCP Server Guide
 
-> PIM MCP v3 — 100 只读 + 49 写入工具（HTTP 多客户端 + 工具级权限），给自家可信 AI Agent 专用。
-> PIM MCP v3 — 100 read-only + 49 write tools (HTTP multi-client + tool-level permissions), for trusted internal AI Agent.
+> PIM MCP v3 — 99 只读 + 49 写入工具（HTTP 多客户端 + 工具级权限），给自家可信 AI Agent 专用。
+> PIM MCP v3 — 99 read-only + 49 write tools (HTTP multi-client + tool-level permissions), for trusted internal AI Agent.
 
 ## 目录 / Table of Contents
 - [1. 概览 / Overview](#1-概览--overview)
@@ -14,7 +14,7 @@
   - [5.3 Mobile 19](#53-mobile-19)
   - [5.4 QuickNotes 3](#54-quicknotes-3)
   - [5.5 Files 7](#55-files-7)
-  - [5.6 Core/Infra 14](#56-coreinfra-14)
+  - [5.6 Core/Infra 13](#56-coreinfra-13)
   - [5.7 写入工具 49 / Write Tools 49](#57-写入工具-49--write-tools-49)
 - [6. HTTP 接入与 Token / HTTP Access & Tokens](#6-http-接入与-token--http-access--tokens)
 - [7. 典型调用流 / Recipes](#7-典型调用流--recipes)
@@ -28,8 +28,8 @@
 ### 是什么 / What it is
 - Python `FastMCP` 服务，地址 `scripts/mcp/pim_mcp_server.py`（**已退役**，仅作行为基准；线上 `/mcp` 是 .NET 进程内服务）。
 - 双传输：`stdio`（默认，兼容 v2）+ `Streamable HTTP`（Phase 3，多客户端远程并发）。
-- 线上 `/mcp`（.NET，`McpToolCatalog`）：**149 工具** = 读取 `100`（Calendar 31 + PcTracker 26 + Mobile 19 + QuickNotes 3 + Files 7 + Core/Infra 14）+ 写入 `49`（Calendar 30 + QuickNotes 8 + Files 5 + PcTracker 4 + Mobile 2）。
-- 退役的 Python 基准脚本：**148 工具** = 读取 `99` + 写入 `49`（比 .NET 少 `get_mobile_liveness_summary`，且 WO-PC-BACKEND-20261001 REQ-6 又下线了 `get_pc_aw_heatmap`）。
+- 线上 `/mcp`（.NET，`McpToolCatalog`）：**148 工具** = 读取 `99`（Calendar 31 + PcTracker 26 + Mobile 19 + QuickNotes 3 + Files 7 + Core/Infra 13）+ 写入 `49`（Calendar 30 + QuickNotes 8 + Files 5 + PcTracker 4 + Mobile 2）。
+- 退役的 Python 基准脚本：**147 工具** = 读取 `98` + 写入 `49`（比 .NET 少 `get_mobile_liveness_summary`；两者均随 J05 移除 `get_ai_status`，且 WO-PC-BACKEND-20261001 REQ-6 下线了 `get_pc_aw_heatmap`）。
   （计数按 `scripts/mcp/pim_mcp_server.py --check` 与 `McpToolCatalog` 实际目录核对。）
 - Python `FastMCP` service at `scripts/mcp/pim_mcp_server.py`. stdio (default) + Streamable HTTP.
 
@@ -40,7 +40,8 @@
 - 覆盖 AI 常用场景：今天有啥事 / 这周效率 / 人在哪在干啥 / 找文件笔记 / 顺手把日程任务排进去。
 
 ### 不能做什么 / What it cannot do
-- 写入仅限 50 个已开放工具；`batch/execute`、`/ops/*`、Outlook 写回、端侧采集上传、confirmations 等一律不开。
+- 写入仅限 49 个已开放工具；`batch/execute`、`/ops/*`、端侧采集上传、confirmations 等一律不开。Outlook 日程写回已封装进 `create_event` / `update_event` / `delete_event`，不需要单独调用 REST 写回端点。
+- Outlook 写回当前仅覆盖日历日程；仓库没有 Microsoft To Do / Outlook 任务 provider，任务写回尚未实现。
 - 文件二进制下载 `items/{id}/download` 等流式下载不开放，只给元数据与搜索。
 - `/ops/*` 运维接口不开放。第三方限流/OAuth 不做（自家可信）。
 
@@ -83,7 +84,7 @@ dotnet src/Pim.Api.dll --urls http://127.0.0.1:5858
 PIM_ACCESS_TOKEN=<jwt> dotnet src/Pim.Api.dll --mcp-stdio
 ```
 - `--mcp-stdio` 模式下 stdout 只承载 MCP 协议，日志走 stderr 与文件。
-- 自检：`dotnet test tests/Pim.UnitTests` 的 `Mcp*` 用例覆盖 149 工具契约等价性。
+- 自检：`dotnet test tests/Pim.UnitTests/Pim.UnitTests.csproj --filter "FullyQualifiedName~Pim.UnitTests.Mcp"` 覆盖 148 工具契约等价性。
 - 生产部署（HTTP 模式）：见 §6「生产部署 / Production deployment」——Pim.Api 单容器直接对外。
 
 ### 客户端配置 / Client configs
@@ -188,7 +189,7 @@ Content-Type: application/json
 
 ## 5. 工具全表 / Tools
 
-**总览 100**：`Calendar 31 | PcTracker 26 | Mobile 19 | QuickNotes 3 | Files 7 | Core 14`。
+**总览 99**：`Calendar 31 | PcTracker 26 | Mobile 19 | QuickNotes 3 | Files 7 | Core/Infra 13`。
 
 > **参数命名 / Parameter names**：规范形态统一为 camelCase。历史 snake_case 参数（`task_id`、`file_id`、`from_time`、`event_id`、`calendar_id`、`habit_id`、`note_id`、`attachment_id`、`report_id`）没有兼容期：任一旧名都会在鉴权与分发前返回 `400`，并在 `error` 中给出对应的 camelCase 替代名。工具 schema 不再声明这些旧属性，`required` 只声明 camelCase。`get_tasks.status` 仍是独立的 deprecated 单值别名，请优先使用 `statuses`。
 >
@@ -198,10 +199,10 @@ Content-Type: application/json
 |---|---|---|
 | Calendar | 31 | `get_events`, `get_tasks`, `get_calendar_layers`, `search_calendar_events`, `get_calendars` |
 | PcTracker | 26 | `get_pc_timeline_v2`, `get_pc_productivity_range`, `get_pc_focus_blocks`, `get_pc_category_distribution`, `get_pc_quality` |
-| Mobile | 18 | `get_mobile_timeline`, `get_mobile_location_latest`, `get_mobile_analytics_overview`, `get_mobile_quality` |
+| Mobile | 19 | `get_mobile_timeline`, `get_mobile_location_latest`, `get_mobile_analytics_overview`, `get_mobile_quality` |
 | QuickNotes | 3 | `get_quick_notes`, `get_quick_note` |
-| Files | 8 | `search_files`, `get_files`, `get_file` |
-| Core | 14 | `get_today_sections`, `search_pim`, `get_version` |
+| Files | 7 | `search_files`, `get_files`, `get_file` |
+| Core/Infra | 13 | `get_today_sections`, `search_pim`, `get_version` |
 
 > 提示：工具数多易胀上下文，日常对话按场景选 20 常用即可（见 §6）。
 
@@ -2724,7 +2725,7 @@ async def get_file_open_link(fileId: str) -> Any: ...
 }
 ```
 
-### 5.6 Core/Infra 14
+### 5.6 Core/Infra 13
 
 #### `get_today_sections` — Today registry.
 - **API**: `GET /today/sections?date`
@@ -2871,32 +2872,6 @@ async def get_status_summary(-) -> Any: ...
 {
   "code": 0,
   "data": "<SummaryResponse example - see DTO>"
-}
-```
-
-**错误示例 / Error**
-```json
-{
-  "error": "missing bearer token: call MCP with Authorization: Bearer <PIM JWT>",
-  "code": 401
-}
-```
-
-#### `get_ai_status` — AI status.
-- **API**: `GET /ai/status`
-- **参数**: 无
-- **返回**: `{enabled,model,health}`
-
-**签名 / Signature**
-```python
-async def get_ai_status(-) -> Any: ...
-```
-
-**返回示例 / Success**
-```json
-{
-  "code": 0,
-  "data": "<{enabled,model,health} example - see DTO>"
 }
 ```
 
@@ -3108,11 +3083,15 @@ async def get_version(-) -> Any: ...
 
 | 工具 | 方法 + 路径 | 主要参数 |
 |---|---|---|
-| `create_event` | `POST /api/v1/calendar/events` | calendarId,title,dtStart,dtEnd + 可选 description/location/rRule/attendees... |
-| `update_event` | `PUT /api/v1/calendar/events/{id}` | 同 create + query scope/recurrenceId/originalEventId |
-| `delete_event` | `DELETE /api/v1/calendar/events/{id}` | query scope/recurrenceId/originalEventId |
+| `create_event` | `POST /api/v1/calendar/events` | calendarId,title,dtStart,dtEnd + 可选 description/location/rRule/attendees...；query `clientOperationId`（UUID，幂等重试用） |
+| `update_event` | `PUT /api/v1/calendar/events/{id}` | 同 create + query scope/recurrenceId/originalEventId/clientOperationId/expectedEtag |
+| `delete_event` | `DELETE /api/v1/calendar/events/{id}` | query scope/recurrenceId/originalEventId/clientOperationId/expectedEtag |
 | `restore_event` | `POST /api/v1/calendar/events/{id}/restore` | restoreAsCopy? |
 | `batch_delete_events` | `POST /api/v1/calendar/events/batch-delete` | ids[] |
+
+> Outlook 绑定日历：上述 create/update/delete 会自动走受控写回（服务端判断，不新增工具）。写回结果带 `outlookEtag`、`clientOperationId`、`requiresConfirmation`、`undoAvailable` 与 `userMessage`；同一 `clientOperationId` 重放幂等，内容不一致返回 409；ETag 冲突返回 409 + `latestEvent`/`latestEtag`/`noChangesApplied`，不会静默覆盖。DELETE 成功也返回 `OutlookWriteResult`（含 `undoAvailable`、`clientOperationId`、`userMessage`、`noChangesApplied` 和按 scope 生成的提示），不再只返回字符串。MCP `tools/call` 会同时把这些可操作字段平铺到结果顶层，`details.data` 仍保留完整原始回执。重复事件 `scope=this` 会先解析并写入具体的 Graph occurrence/exception，找不到时拒绝请求，绝不回退到系列主事件；`originalEventId` 只允许用于展开 occurrence，服务端会校验它与 URL eventId、系列主事件和 recurrenceId 的对应关系，不一致返回 400，绝不写到另一条日程。单次删除不提供自动撤销；携带 RRule 的创建按 Graph 实际类型落为 seriesMaster，撤销时删除整个系列。撤销普通创建/更新/删除使用 `POST /api/v1/calendar/outlook/events/{clientOperationId}/undo`（API JWT）。`batch_delete_events` 仍只支持本地日程。
+
+> 失败按 Graph 状态分类，不再把所有错误都伪装成 provider unavailable：400/403/404 返回 400/403/404 的脱敏结构化回执（`GRAPH_BAD_REQUEST` / `GRAPH_FORBIDDEN` / `GRAPH_EVENT_NOT_FOUND`，`noChangesApplied=true`，不提供同 ID 重试指引）；409/412 返回 409 + 最新远端快照；429/5xx/网络/超时返回结构化 502（`noChangesApplied=false`，保留 `clientOperationId` 并提示同 ID 重试）。超时与调用方取消分开处理：超时返回 `PROVIDER_TIMEOUT`（`unknown`，可同 ID 重试或先核对），调用方取消只落账本后中止请求。若进程在 create/update 的 Graph 成功与本地提交之间中断，返回 `OPERATION_OUTCOME_UNKNOWN`（`unknown`，`noChangesApplied=false`，提示先到 Outlook 核对，不会盲目重放），不会落到丢失重试 ID 的通用 500。单次重复日程的 synthetic occurrence 预检若收到 malformed/partial 2xx（非法 JSON、缺字段、非法日期等），返回结构化 502 `GRAPH_INVALID_RESPONSE`（`noChangesApplied=true`），创建 failed batch 与 operation，且不写系列主事件。DELETE 不同：Graph DELETE 成功后，任何本地读库、occurrence 查找、构造、映射或保存失败都会收敛为 `LOCAL_STATE_PENDING`（`failed`，`noChangesApplied=false`）；同一 `clientOperationId` 重试只补做本地状态收敛，直接复用持久化的远端删除目标，不会再次调用 Graph DELETE。
 
 **Calendar 任务 14**
 
@@ -3205,7 +3184,7 @@ async def get_version(-) -> Any: ...
 ### 权限模型 / Permissions
 - 按**客户端连接**授权：一个客户端 = 一把 Token = 一套权限。
 - 默认模板：新建客户端「读取全开 / 写入全关」。
-- 粒度：读取 100 项 + 写入 49 项均可独立开关（WebUI 设置 → MCP 管理）。
+- 粒度：读取 99 项 + 写入 49 项均可独立开关（WebUI 设置 → MCP 管理）。
 - 保存即生效（每次调用实时经 `/verify` 校验，无需重启 MCP server）。
 - **写越权防护**：`/verify` 签发的短时 JWT（2 分钟）带 `mcp_tool` 声明，Pim.Api 中间件按工具端点限定用途：
   - 写工具 JWT 只能调用该工具对应的 REST 端点；
@@ -3272,7 +3251,7 @@ async def get_version(-) -> Any: ...
      -H "Authorization: Bearer pim_mcp_<token>" \
      -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"verify","version":"1.0"}}}'
    ```
-   期望：`jsonrpc/result/serverInfo` 的 JSON-RPC 响应；`tools/list` 返回 149 个工具。
+   期望：`jsonrpc/result/serverInfo` 的 JSON-RPC 响应；`tools/list` 返回 148 个工具。
 
 ### 管理 API / Management API
 | 端点 | 方法 | 说明 |
@@ -3282,7 +3261,7 @@ async def get_version(-) -> Any: ...
 | `/api/v1/mcp/clients/{id}` | PUT | 改名/改权限 |
 | `/api/v1/mcp/clients/{id}/revoke` | POST | 吊销 Token |
 | `/api/v1/mcp/clients/{id}` | DELETE | 删除客户端 |
-| `/api/v1/mcp/catalog` | GET | 工具目录（读 100 + 写 49，供权限页渲染） |
+| `/api/v1/mcp/catalog` | GET | 工具目录（读 99 + 写 49，供权限页渲染） |
 | `/api/v1/mcp/verify` | POST | 内部：Token 校验 + 权限鉴权 + 发短时 JWT（仅 MCP server 内网调用） |
 
 ## 7. 典型调用流 / Recipes
@@ -3516,7 +3495,7 @@ A: 事件可能被软删除进回收站，用 `get_recycle_bin(type='event')` �
 A: `>50KB` 自动加 `truncated`，用 `nextPage` 分页继续。或缩小时间范围、加 `calendarId` 过滤。
 
 **Q: 需要写入怎么办？ / Need writes?**
-A: 已支持：HTTP 模式（v3）提供 50 个写入工具（`create_*`/`update_*`/`delete_*` 等），需在 WebUI 设置 → MCP 管理 → 客户端权限中开启对应写权限；stdio 模式仍为只读（v2 兼容）。
+A: 已支持：HTTP 模式（v3）提供 49 个写入工具（`create_*`/`update_*`/`delete_*` 等），需在 WebUI 设置 → MCP 管理 → 客户端权限中开启对应写权限；stdio 模式仍为只读（v2 兼容）。
 
 **Q: 时区跨天不准？ / Timezone day cut?**
 A: 所有聚合按 `timezone` 切天，默认为 `Asia/Shanghai`。传入 `timezone=UTC` 可按 UTC 切天。
@@ -3526,13 +3505,14 @@ A: 所有聚合按 `timezone` 切天，默认为 `Asia/Shanghai`。传入 `timez
 | 版本 | 日期 | 变更 |
 |---|---|---|
 | v1.0 | 2026-08-15 | 24 工具：`PcTracker 16 + Mobile 位置 4 + Today/Search/Status 4` |
-| v2.0 | 2026-08-31 | 新增 77 工具 → 101 工具闭环：`Calendar 31 + PcTracker +11 + Mobile +14 + QuickNotes 3 + Files 8 + Core/Infra +10`，兼容 v1，写入 0 |
-| v3.0 | 2026-09-01 | 新增写入 50 工具 + HTTP（Streamable HTTP）多客户端 + 客户端级 Token 鉴权 + 工具级权限（读 101/写 50）+ WebUI MCP 管理页；stdio 模式兼容 v2 |
-| v4.0 | 2026-09-01 | MCP Server 集成进 Pim.Api（.NET 8）进程内：`/mcp` Streamable HTTP + `--mcp-stdio`，151 工具契约与 Python 版等价；Python 独立服务退役（源码保留作行为基准） |
+| v2.0 | 2026-08-31 | 当时新增 77 工具 → 101 工具闭环：`Calendar 31 + PcTracker +11 + Mobile +14 + QuickNotes 3 + Files 8 + Core/Infra +10`，兼容 v1，写入 0 |
+| v3.0 | 2026-09-01 | 当时新增写入 50 工具 + HTTP（Streamable HTTP）多客户端 + 客户端级 Token 鉴权 + 工具级权限（当时读 101/写 50；当前 .NET 为 99/49）+ WebUI MCP 管理页；stdio 模式兼容 v2 |
+| v4.0 | 2026-09-01 | MCP Server 集成进 Pim.Api（.NET 8）进程内：`/mcp` Streamable HTTP + `--mcp-stdio`；当时为 151 工具契约，后续 J05/REQ-6 调整后当前 .NET 为 148（99 读 / 49 写）、退役 Python 基准为 147（98 读 / 49 写，缺 `get_mobile_liveness_summary`），不声称两者等价；Python 独立服务退役（源码保留作行为基准） |
 | v3.1 | 2026-09-01 | 修复 mcp>=2.0 兼容（构造参数/HTTP app/请求头获取适配，--check/stdio/HTTP 三种模式可用，issue #179）+ 生产部署模板（systemd + OpenResty `/mcp` 反代，issue #178）|
 | v5.0 | 2026-09-20 | 文件模块 v2（P4）：新增 `read_file_text`（元数据搜索之外的内容级读取，交 Hermes 现取现抽）；退役 `get_file_versions`/`get_file_trash`/`index_file`（WebDAV 与内容索引线随 OneDrive 切换取消）→ 149 工具（读 100 / 写 49）；Python 参考服务同步 |
 | v5.1 | 2026-11-23 | MCP 参数统一为 camelCase；`task_id`/`file_id`/`from_time` 等旧名保留为 `deprecated` 兼容别名，双写法冲突值返回 400；`required` 仅声明 camelCase（WO-R01-CAMEL / #460） |
 | v5.2 | 2026-11-25 | R01 收口：移除 14 个 snake_case 兼容别名（`report_id`、`task_id`、`event_id`、`habit_id`、`calendar_id`、`note_id`、`attachment_id`、`file_id`、`from_time`）；旧名在鉴权与分发前直接返回 400 并给出 camelCase 替代名，契约不再声明旧属性 |
+| v5.3 | 2026-11-26 | J05：移除旧 AI 网关 `get_ai_status` 读工具（`GET /ai/status`），.NET 工具总数 149 → 148（读 100 → 99 / 写 49）；Python 参考服务同步移除该工具后为 147（读 98 / 写 49，仍少 `get_mobile_liveness_summary`），契约同步 .NET 148 |
 
 ---
 

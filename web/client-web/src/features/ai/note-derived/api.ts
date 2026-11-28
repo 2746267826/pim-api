@@ -15,10 +15,12 @@ export type StartNoteDerived = components['schemas']['StartNoteDerivedTaskReques
 export type RetryNoteDerived = components['schemas']['RetryNoteDerivedTaskRequest']
 export type SaveNoteDerivedManual = components['schemas']['SaveNoteDerivedManualRevisionRequest']
 export type SelectNoteDerivedVersion = components['schemas']['SelectNoteDerivedVersionRequest']
+export type NoteDerivedPurpose = components['schemas']['AiPurpose']
 
 export const noteDerivedApi = {
   limits: (signal?: AbortSignal) => apiGet<NoteDerivedLimits>('/api/v1/native-notes/derived-tasks/limits', { signal }),
-  destinations: (signal?: AbortSignal) => apiGet<NoteDerivedDestinations>('/api/v1/native-notes/derived-tasks/destinations', { signal }),
+  destinations: (purpose: NoteDerivedPurpose, signal?: AbortSignal) =>
+    apiGet<NoteDerivedDestinations>(`/api/v1/native-notes/derived-tasks/destinations?purpose=${encodeURIComponent(purpose)}`, { signal }),
   sources: (offset: number, signal?: AbortSignal) => apiGet<NoteDerivedSources>(`/api/v1/native-notes/derived-tasks/sources?offset=${offset}&limit=20`, { signal }),
   tasks: (noteId: string | null, signal?: AbortSignal) => {
     const query = noteId ? `?noteId=${encodeURIComponent(noteId)}` : ''

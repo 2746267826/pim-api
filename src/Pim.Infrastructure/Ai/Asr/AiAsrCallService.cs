@@ -215,11 +215,13 @@ public sealed class AiAsrCallService(PimDbContext db, ISecretProtector secrets, 
         AiAsrInput? audio = null;
         AiCallAudioEntity? storedAudio = null;
         var providerPhase = false;
+        var circuitBlocked = false;
         var callerCancelled = false;
         var abortSource = "none";
         var outcomeKnown = false;
         int? upstreamStatus = null;
         AiUsageLimitLease? usageLease = null;
+        using var callerScope = AiProviderCircuitBreaker.EnterCallerScope(ct);
         using var total = new CancellationTokenSource(operationBudget);
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(total.Token, ct);
         using var wire = new AiTextWireCapture();
@@ -362,10 +364,19 @@ public sealed class AiAsrCallService(PimDbContext db, ISecretProtector secrets, 
                 : providerPhase ? $"provider_{error.ErrorCode}" : $"url_preflight_{error.ErrorCode}";
             row.ErrorMessage = providerPhase
                 ? "URL ASR上游请求或响应失败，结果UNKNOWN，本次未自动重试"
-                : Clip(error.Message, 2000);
+                : Safe(Clip(error.Message, 2000), key, out _);
             abortSource = providerTimedOut ? "provider_timeout" : providerPhase ? "provider_error" : "url_preflight";
             outcomeKnown = !providerPhase;
             if (providerTimedOut) upstreamStatus = 504;
+        }
+        catch (AiProviderCircuitOpenException error)
+        {
+            circuitBlocked = true;
+            row.Status = "blocked";
+            row.ErrorCode = "circuit_open";
+            row.ErrorMessage = error.Message;
+            abortSource = "circuit_breaker";
+            outcomeKnown = true;
         }
         catch (Exception)
         {
@@ -402,7 +413,8 @@ public sealed class AiAsrCallService(PimDbContext db, ISecretProtector secrets, 
                 row.ErrorMessage = SanitizeRemoteText(row.ErrorMessage, audio, out _);
                 row.ResponseRawJson = UrlResponseAudit(row);
                 row.MetadataJson = UrlMetadata(audio, storedAudio?.ObjectKey is not null,
-                    wire.ProviderAttempted || providerPhase, wire.RequestBody is not null,
+                    !circuitBlocked && (wire.ProviderAttempted || providerPhase),
+                    wire.RequestBody is not null,
                     wire.ResponseBody is not null, reportedSeconds, wire.ResponseTooLarge,
                     abortSource, outcomeKnown, upstreamStatus);
             }
@@ -570,6 +582,7 @@ public sealed class AiAsrCallService(PimDbContext db, ISecretProtector secrets, 
                 }
                 usageLease = decision.Lease;
             }
+            using var callerScope = AiProviderCircuitBreaker.EnterCallerScope(ct);
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(profile.TimeoutSeconds));
             using var linked = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token, ct);
             using var wire = new AiTextWireCapture();
@@ -681,17 +694,26 @@ public sealed class AiAsrCallService(PimDbContext db, ISecretProtector secrets, 
                     : prepared ? $"provider_{error.ErrorCode}" : "audio_prepare_failed";
                 row.ErrorMessage = providerTimedOut
                     ? "ASR上游请求超时，结果UNKNOWN，未自动重试"
-                    : prepared ? Clip(error.Message, 2000) : "音频未能保存，本次未发送模型，请检查文件来源";
+                    : prepared ? Safe(Clip(error.Message, 2000), key, out _)
+                        : "音频未能保存，本次未发送模型，请检查文件来源";
                 abortSource = providerTimedOut ? "provider_timeout" : prepared ? "provider_error" : "audio_storage";
                 outcomeKnown = !prepared;
                 if (providerTimedOut) upstreamStatus = 504;
             }
-            catch (Exception error)
+            catch (AiProviderCircuitOpenException error)
+            {
+                row.Status = "blocked";
+                row.ErrorCode = "circuit_open";
+                row.ErrorMessage = error.Message;
+                abortSource = "circuit_breaker";
+                outcomeKnown = true;
+            }
+            catch (Exception)
             {
                 row.Status = "failed";
                 row.ErrorCode = prepared ? "provider_error" : "audio_prepare_failed";
                 row.ErrorMessage = prepared
-                    ? Clip("ASR连接或响应异常，请核对记录；本次未自动重试：" + error.Message, 2000)
+                    ? "ASR连接或响应异常，结果未确认；本次未自动重试，请核对调用记录"
                     : "音频未能保存，本次未发送模型，请检查文件来源";
                 abortSource = prepared ? "provider_error" : "audio_storage";
                 outcomeKnown = !prepared;

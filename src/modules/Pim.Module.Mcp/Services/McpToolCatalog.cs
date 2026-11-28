@@ -140,14 +140,13 @@ public static class McpToolCatalog
         Add(tools, "files", "get_file_suggestions", "File suggestions.");
         Add(tools, "files", "get_file_open_link", "Build file open link.");
 
-        // Core/Infra 14
+        // Core/Infra 13
         Add(tools, "core", "get_today_sections", "Today dashboard sections.");
         Add(tools, "core", "get_today_section", "Today section detail.");
         Add(tools, "core", "search_pim", "Unified PIM search.");
         Add(tools, "core", "get_system_status", "System status.");
         Add(tools, "core", "get_system_health", "System health.");
         Add(tools, "core", "get_status_summary", "Status summary.");
-        Add(tools, "core", "get_ai_status", "AI status.");
         Add(tools, "core", "get_ai_requests", "AI request logs.");
         Add(tools, "core", "get_ai_usage_summary", "AI usage summary.");
         Add(tools, "core", "get_audit_timeline", "Audit timeline.");
@@ -164,9 +163,9 @@ public static class McpToolCatalog
         var tools = new List<McpToolInfo>();
 
         // Calendar 事件 5
-        AddW(tools, "calendar.events", "create_event", "Create a local calendar event. Outlook-bound calendars require confirmed writeback, which this MCP tool does not expose; canEdit is not event-write capability.");
-        AddW(tools, "calendar.events", "update_event", "Update a local event (scope/recurrenceId for series). Outlook-bound events/calendars require confirmed writeback, not supported by this tool.");
-        AddW(tools, "calendar.events", "delete_event", "Delete a local event. Outlook-bound events/calendars require confirmed writeback, not supported by this tool.");
+        AddW(tools, "calendar.events", "create_event", "Create a calendar event. Outlook-bound calendars are transparently written through controlled Outlook writeback; pass clientOperationId for idempotent retries.");
+        AddW(tools, "calendar.events", "update_event", "Update an event (scope/recurrenceId for series). Outlook-bound events use controlled writeback with automatic ETag; conflicts return 409 plus the latest snapshot.");
+        AddW(tools, "calendar.events", "delete_event", "Delete an event. Outlook-bound events use controlled writeback with automatic ETag; conflicts return 409 plus the latest snapshot.");
         AddW(tools, "calendar.events", "restore_event", "Restore a deleted event from recycle bin.");
         AddW(tools, "calendar.events", "batch_delete_events", "Batch delete local events. Outlook-bound events require confirmed writeback, not supported by this tool.");
 

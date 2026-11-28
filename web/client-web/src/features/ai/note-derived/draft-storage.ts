@@ -1,5 +1,5 @@
 import { apiUrl } from '@/lib/apiBase'
-import { getString, setString } from '@/lib/storage'
+import { getString, setString, storageKeys } from '@/lib/storage'
 import {
   createTextDraft,
   editTextDraft,
@@ -18,6 +18,8 @@ export interface NoteDerivedDraftScope {
   readonly kind: NoteDerivedArtifactKind
   /** Ordinary-user editing is scoped to the selected result version. */
   readonly artifactVersionId?: string
+  /** `sourceVersionId` 所属笔记；仅用于导航，不参与草稿存储键。 */
+  readonly noteId?: string
 }
 
 export interface PendingMutationIntent {
@@ -71,6 +73,14 @@ const browserStorage: DraftStoragePort = { get: getString, set: setString }
 
 export const MAX_LOCAL_DRAFT_CHARACTERS = 1_000_000
 const STORAGE_PREFIX = 'pim.noteDerivedDraft.v1'
+
+export interface StoredAiDraftSummary {
+  readonly key: string
+  readonly binding: NoteDerivedDraftScope
+  readonly dirty: boolean
+  readonly pending: boolean
+  readonly updatedAt: string
+}
 
 function localRevisionOf(record: StoredNoteDerivedDraft): number {
   const revision = record.localRevision
@@ -143,12 +153,14 @@ export function isUsableDraftScope(scope: NoteDerivedDraftScope | null | undefin
 }
 
 export function sameDraftScope(left: NoteDerivedDraftScope, right: NoteDerivedDraftScope): boolean {
+  // noteId 是由 sourceVersionId 推导的导航元数据；旧记录没有该字段。
   return left.ownerId === right.ownerId &&
     left.serverBinding === right.serverBinding &&
     left.artifactId === right.artifactId &&
     left.sourceVersionId === right.sourceVersionId &&
     left.kind === right.kind &&
-    left.artifactVersionId === right.artifactVersionId
+    left.artifactVersionId === right.artifactVersionId &&
+    (!left.noteId || !right.noteId || left.noteId === right.noteId)
 }
 
 export function noteDerivedDraftStorageKey(scope: NoteDerivedDraftScope): string | null {
@@ -203,6 +215,37 @@ function loadLegacyDraftForResultVersion(
   } catch {
     return { ok: false, error: { code: 'corrupt', message: '本机草稿数据损坏，未载入；现有内容不会被静默替换。' } }
   }
+}
+
+/**
+ * 只枚举指定 owner 的本机 AI 草稿元数据，供缓存清理页展示“需要先保存或明确处理”的对象。
+ * 不读取正文，也不暴露凭据；正文仍由 NoteDerivedPage 按作用域读取。
+ * ownerId 为空或记录无法解析时失败闭合：无法确认归属的草稿不进入当前账号的列表。
+ */
+export function listStoredAiDrafts(ownerId: string): StoredAiDraftSummary[] {
+  const normalizedOwnerId = ownerId.trim()
+  if (!normalizedOwnerId) return []
+  const summaries: StoredAiDraftSummary[] = []
+  for (const key of storageKeys(`${STORAGE_PREFIX}/`)) {
+    const raw = getString(key)
+    if (raw == null) continue
+    try {
+      const parsed: unknown = JSON.parse(raw)
+      if (!isStoredDraft(parsed)) continue
+      if (parsed.binding.ownerId !== normalizedOwnerId) continue
+      if (!parsed.dirty && !parsed.pending) continue
+      summaries.push({
+        key,
+        binding: parsed.binding,
+        dirty: parsed.dirty,
+        pending: Boolean(parsed.pending),
+        updatedAt: parsed.updatedAt,
+      })
+    } catch {
+      // Ownership cannot be proven for a corrupted record; fail closed.
+    }
+  }
+  return summaries.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
 }
 
 export function createStoredDraft(
@@ -264,7 +307,8 @@ function isStoredDraft(value: unknown): value is StoredNoteDerivedDraft {
     typeof scope.artifactId === 'string' &&
     typeof scope.sourceVersionId === 'string' &&
     (scope.kind === 'CompleteRecord' || scope.kind === 'IndependentAnalysis') &&
-    (scope.artifactVersionId === undefined || typeof scope.artifactVersionId === 'string')
+    (scope.artifactVersionId === undefined || typeof scope.artifactVersionId === 'string') &&
+    (scope.noteId === undefined || typeof scope.noteId === 'string')
 }
 
 export function loadStoredDraft(
@@ -285,10 +329,12 @@ export function loadStoredDraft(
     if (!sameDraftScope(parsed.binding, scope)) {
       return { ok: false, error: { code: 'scope-mismatch', message: '本机草稿与当前账号、服务器或材料版本不一致，未载入。' } }
     }
+    const binding = parsed.binding.noteId || !scope.noteId ? parsed.binding : { ...parsed.binding, noteId: scope.noteId }
     return {
       ok: true,
       value: {
         ...parsed,
+        binding,
         localRevision: localRevisionOf(parsed),
         localWriteId: parsed.localWriteId ?? legacyWriteId(raw),
       },

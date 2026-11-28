@@ -496,11 +496,20 @@ public static class OutlookEventMapper
             if (string.IsNullOrEmpty(target.RecurrenceId))
             {
                 string? originalStartRaw = null;
-                if (graph.TryGetProperty("originalStart", out var originalStartEl) && originalStartEl.ValueKind == JsonValueKind.Object)
+                if (graph.TryGetProperty("originalStart", out var originalStartEl))
                 {
-                    originalStartRaw = GetStringOrNull(originalStartEl, "dateTime");
-                    if (originalStartRaw is null && originalStartEl.TryGetProperty("dateTime", out var dtProp) && dtProp.ValueKind == JsonValueKind.String)
-                        originalStartRaw = dtProp.GetString();
+                    if (originalStartEl.ValueKind == JsonValueKind.String)
+                    {
+                        originalStartRaw = originalStartEl.GetString();
+                    }
+                    else if (originalStartEl.ValueKind == JsonValueKind.Object)
+                    {
+                        originalStartRaw = GetStringOrNull(originalStartEl, "dateTime");
+                        if (originalStartRaw is null
+                            && originalStartEl.TryGetProperty("dateTime", out var dtProp)
+                            && dtProp.ValueKind == JsonValueKind.String)
+                            originalStartRaw = dtProp.GetString();
+                    }
                 }
                 if (!string.IsNullOrEmpty(originalStartRaw))
                 {

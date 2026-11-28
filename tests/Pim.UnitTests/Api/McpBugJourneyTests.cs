@@ -289,7 +289,7 @@ public sealed class McpBugJourneyTests(ITestOutputHelper output)
     }
 
     [Fact]
-    public async Task LocalEventWriteWorks_OutlookBoundaryStaysEnforcedAndAdvertised()
+    public async Task LocalEventWriteWorks_DisconnectedOutlookWritebackIsRejectedAndAdvertised()
     {
         using var setup = await Setup.CreateAsync(writes: true);
         var localId = Guid.NewGuid();
@@ -299,23 +299,39 @@ public sealed class McpBugJourneyTests(ITestOutputHelper output)
             var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
             db.Add(new CalendarEntity { Id = localId, UserId = setup.UserId, Name = "Local" });
             db.Add(new CalendarEntity { Id = outlookId, UserId = setup.UserId, Name = "Bound", Source = "outlook" });
-            db.Add(new OutlookCalendarBindingEntity { PimCalendarId = outlookId, ConnectionId = Guid.NewGuid(), GraphCalendarId = "test-only", CanEdit = true });
+            var connectionId = Guid.NewGuid();
+            db.Add(new OutlookConnectionEntity
+            {
+                Id = connectionId,
+                UserId = setup.UserId,
+                Status = "not-connected"
+            });
+            db.Add(new OutlookCalendarBindingEntity
+            {
+                PimCalendarId = outlookId,
+                ConnectionId = connectionId,
+                GraphCalendarId = "test-only",
+                CanEdit = true,
+                RemoteState = "active",
+                IsSelected = true
+            });
             await db.SaveChangesAsync();
         }
         var local = await setup.Call("create_event", new { calendarId = localId, title = "Local event", dtStart = "2026-10-20T01:00:00Z", dtEnd = "2026-10-20T02:00:00Z" });
         Assert.Equal(0, local.GetProperty("code").GetInt32());
         var refused = await setup.Call("create_event", new { calendarId = outlookId, title = "Must not be written", dtStart = "2026-10-20T01:00:00Z", dtEnd = "2026-10-20T02:00:00Z" }, error: true);
         Assert.Equal(400, refused.GetProperty("code").GetInt32());
-        Assert.Contains("确认写回", refused.GetProperty("details").GetProperty("message").GetString());
+        Assert.Contains("not connected", refused.GetProperty("details").GetProperty("message").GetString());
         using var list = Rpc("tools/list", new { });
         var wire = ReadRpc(await setup.Mcp.SendAsync(list));
         var advertised = wire.GetProperty("result").GetProperty("tools").EnumerateArray().Single(t => t.GetProperty("name").GetString() == "create_event");
-        Assert.Contains("does NOT expose", advertised.GetProperty("description").GetString());
+        Assert.Contains("writeback", advertised.GetProperty("description").GetString(), StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("does NOT expose", advertised.GetProperty("description").GetString());
         using var final = setup.Factory.Services.CreateScope();
         var rows = await final.ServiceProvider.GetRequiredService<PimDbContext>().Set<EventEntity>().ToListAsync();
         Assert.Single(rows);
         Assert.Equal(localId, rows[0].CalendarId);
-        output.WriteLine("Local create succeeded. A synthetic Outlook binding with canEdit=true was still rejected, tool discovery explained why, and no Outlook event was written. No real Outlook account was contacted.");
+        output.WriteLine("Local create succeeded. A disconnected Outlook binding entered the transparent writeback path and was rejected with 02005 before any Graph call; discovery advertised the writeback flow. No real Outlook account was contacted.");
     }
 
     private static HttpRequestMessage Rpc(string method, object args)

@@ -69,5 +69,5 @@ groups:
         labels:
           severity: warning
         annotations:
-          summary: "AI 网关错误率超过 5%"
-          description: "最近 15 分钟 AI 调用失败/超时占比过高，检查 LiteLLM 网关与模型可用性。"
+          summary: "AI 调用错误率超过 5%"
+          description: "最近 15 分钟 AI 调用失败/超时占比过高，检查已配置模型服务的地址、凭据与上游可用性。"

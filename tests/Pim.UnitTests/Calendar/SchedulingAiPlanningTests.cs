@@ -145,7 +145,7 @@ Let me know if you need changes.";
             currentUser,
             confirmationService: null,
             recurrence: null,
-            aiGateway: null);
+            aiTextCalls: null);
 
         // Add a pending task
         var task = new TaskEntity
@@ -179,6 +179,70 @@ Let me know if you need changes.";
     }
 
     [Fact]
+    public async Task GenerateAiPlanAsync_ExposesSpecificAiFailureWhenRuleEngineFallbackIsUsed()
+    {
+        await using var db = CreateDb();
+        var service = new PlanningModelService(
+            db,
+            CurrentUser(TestUserId),
+            confirmationService: null,
+            recurrence: null,
+            aiTextCalls: new FixedPurposeCalls(_ => Task.FromResult(
+                new AiTextCallResultDto(Guid.NewGuid(), AiRequestStatus.Failed, null,
+                    "服务商限流（HTTP 429）", false))));
+        db.Set<TaskEntity>().Add(new TaskEntity
+        {
+            UserId = TestUserId,
+            Uid = "plan-task-reason@pim",
+            Title = "Expose fallback",
+            Priority = 1,
+            Status = "NEEDS-ACTION",
+            EstimatedDuration = TimeSpan.FromHours(1)
+        });
+        await db.SaveChangesAsync();
+
+        var response = await service.GenerateAiPlanAsync(new GenerateAiPlanRequest(HorizonDays: 3));
+
+        Assert.Equal("rule-engine", response.Source);
+        Assert.Contains("模型调用未成功", response.FallbackReason);
+        Assert.Contains("HTTP 429", response.FallbackReason);
+        Assert.NotEmpty(response.Placeholders);
+    }
+
+    [Fact]
+    public async Task GenerateAiPlanAsync_DoesNotSwallowCancellationOrStartRuleEngine()
+    {
+        await using var db = CreateDb();
+        using var cancellation = new CancellationTokenSource();
+        var service = new PlanningModelService(
+            db,
+            CurrentUser(TestUserId),
+            confirmationService: null,
+            recurrence: null,
+            aiTextCalls: new FixedPurposeCalls(ct =>
+            {
+                cancellation.Cancel();
+                return Task.FromException<AiTextCallResultDto>(
+                    new OperationCanceledException(cancellation.Token));
+            }));
+        db.Set<TaskEntity>().Add(new TaskEntity
+        {
+            UserId = TestUserId,
+            Uid = "plan-task-cancel@pim",
+            Title = "Cancelled planning",
+            Priority = 1,
+            Status = "NEEDS-ACTION",
+            EstimatedDuration = TimeSpan.FromHours(1)
+        });
+        await db.SaveChangesAsync();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            service.GenerateAiPlanAsync(new GenerateAiPlanRequest(HorizonDays: 3), cancellation.Token));
+
+        Assert.Empty(await db.Set<AiPlanningPlaceholderEntity>().ToListAsync());
+    }
+
+    [Fact]
     public async Task DismissAiPlaceholderAsync_MarksStatusAsDismissed()
     {
         await using var db = CreateDb();
@@ -188,7 +252,7 @@ Let me know if you need changes.";
             currentUser,
             confirmationService: null,
             recurrence: null,
-            aiGateway: null);
+            aiTextCalls: null);
 
         var placeholder = new AiPlanningPlaceholderEntity
         {
@@ -222,7 +286,7 @@ Let me know if you need changes.";
             currentUser,
             confirmationService: null,
             recurrence: null,
-            aiGateway: null);
+            aiTextCalls: null);
 
         var placeholder = new AiPlanningPlaceholderEntity
         {
@@ -245,5 +309,12 @@ Let me know if you need changes.";
         var updated = await db.Set<AiPlanningPlaceholderEntity>().SingleAsync(p => p.Id == placeholder.Id);
         Assert.Equal("PendingConfirmation", updated.Status);
         Assert.Equal(confirmation.Id, updated.ConfirmationId);
+    }
+
+    private sealed class FixedPurposeCalls(
+        Func<CancellationToken, Task<AiTextCallResultDto>> call) : IAiPurposeTextCallService
+    {
+        public Task<AiTextCallResultDto> CallForPurposeAsync(AiPurpose purpose,
+            AiTextCallRequest request, CancellationToken ct) => call(ct);
     }
 }

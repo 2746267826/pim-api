@@ -10,11 +10,13 @@ using Pim.Core.Exceptions;
 using Pim.Core.Notes;
 using Pim.Infrastructure.Ai;
 using Pim.Infrastructure.Ai.Asr;
+using Pim.Infrastructure.Ai.Asr.Mimo;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
 using Pim.Infrastructure.Data.Entities;
 using Pim.Infrastructure.Notes;
 using Pim.Infrastructure.Secrets;
+using Pim.UnitTests.Harness.RealDb;
 using Xunit;
 
 namespace Pim.UnitTests.Notes;
@@ -767,6 +769,82 @@ public sealed class NoteAsrRoutingConcurrencyTests
     }
 
     [SkippableFact]
+    public async Task Account_cloud_route_without_override_follows_changed_global_transcription_default()
+    {
+        await using var isolated = await IsolatedPostgresDatabase.CreateAsync();
+        var storageRoot = Path.Combine(Path.GetTempPath(), "pim-asr516-tests-" + Guid.NewGuid().ToString("N"));
+        var owner = Guid.NewGuid();
+        var asrId = Guid.NewGuid();
+        var multimodalId = Guid.NewGuid();
+        var options = Options.Create(new NoteMaterialUploadOptions { StorageRoot = storageRoot });
+        var materials = new NoteMaterialUploadStore(options);
+        var tasks = new NoteAsrTaskStore(options);
+        var material = NoteDerivedFixture.CreateMaterial(audioSamples: 1_000);
+        await NoteDerivedFixture.UploadAsync(materials, owner, material);
+        try
+        {
+            await using (var db = NewDbWithConnection(owner, isolated.ConnectionString))
+            {
+                await db.Users.AddAsync(NewUser(owner));
+                db.AiModelProfiles.AddRange(
+                    new AiModelProfileEntity
+                    {
+                        Id = asrId, Name = $"asr-{owner:N}", NormalizedName = $"asr-{owner:N}",
+                        BaseUrl = "https://asr.example.invalid/v1/", Model = "mimo-v2.5-asr",
+                        Enabled = true, Capabilities = AiModelCapabilityFlags.Transcription,
+                        AsrPresetId = "mimo-asr", ApiKeySecret = "synthetic"
+                    },
+                    new AiModelProfileEntity
+                    {
+                        Id = multimodalId, Name = $"multimodal-{owner:N}",
+                        NormalizedName = $"multimodal-{owner:N}",
+                        BaseUrl = "https://multimodal.example.invalid/v1/", Model = "mimo-v2.6-flash",
+                        Enabled = true, Capabilities = AiModelCapabilityFlags.Transcription,
+                        AsrPresetId = MimoMultimodalPreset.PresetId, ApiKeySecret = "synthetic"
+                    });
+                await db.SaveChangesAsync();
+                await UpsertRuntimeAsync(db, asrId);
+                var initial = await NewService(db, owner, storageRoot: storageRoot).UpdateConfigAsync(
+                    new UpdateNoteAsrRouteConfigRequest(Guid.Empty, NoteAsrRoute.CloudAsr,
+                        "local-model", "r1", null, "consent-follow-global"), CancellationToken.None);
+                Assert.Null(initial.CloudModelId);
+                Assert.Equal(NoteAsrRoute.CloudAsr, initial.DefaultRoute);
+                Assert.Equal<Guid?>(asrId, initial.EffectiveCloudModelId);
+                Assert.Equal(NoteAsrRoute.CloudAsr, initial.EffectiveCloudRoute);
+
+                await UpsertRuntimeAsync(db, multimodalId);
+                var replanned = await NewService(db, owner, storageRoot: storageRoot).GetConfigAsync(CancellationToken.None);
+                Assert.Null(replanned.CloudModelId);
+                Assert.Equal(NoteAsrRoute.CloudMultimodal, replanned.DefaultRoute);
+                Assert.Equal<Guid?>(multimodalId, replanned.EffectiveCloudModelId);
+                Assert.Equal(NoteAsrRoute.CloudMultimodal, replanned.EffectiveCloudRoute);
+                Assert.Equal<Guid?>(multimodalId, await db.AiModelRuntime.AsNoTracking()
+                    .Select(x => x.TranscriptionModelId).SingleAsync());
+            }
+
+            await using (var db = NewDbWithConnection(owner, isolated.ConnectionString))
+            {
+                var presets = new AiAsrPresetRegistry([
+                    new MimoAsrPreset(new UnusedChatClientFactory()),
+                    new MimoMultimodalPreset(_ => new HttpClient())
+                ]);
+                var routing = NewService(db, owner, presets, storageRoot);
+                var service = new NoteAsrService(tasks, materials, db, new FixedUser(owner), presets,
+                    new ConfigurationBuilder().Build(), new PassthroughSecrets(), routing);
+                var version = await materials.GetAsync(owner, material.VersionId, CancellationToken.None);
+                var request = await service.BuildDefaultRequestForProcessingAsync(owner, version,
+                    CancellationToken.None);
+                Assert.Equal(NoteAsrRoute.CloudMultimodal, request.Route?.Route);
+                Assert.Equal<Guid?>(multimodalId, request.Consent?.ModelId);
+            }
+        }
+        finally
+        {
+            if (Directory.Exists(storageRoot)) Directory.Delete(storageRoot, recursive: true);
+        }
+    }
+
+    [SkippableFact]
     public async Task Concurrent_route_config_update_has_exactly_one_winner()
     {
         Skip.If(string.IsNullOrWhiteSpace(ConnectionString), "PIM_ASR516_PG is not configured");
@@ -926,67 +1004,76 @@ public sealed class NoteAsrRoutingConcurrencyTests
     public async Task Task_stop_reads_back_terminal_attempt_when_cas_loses_to_completion(
         string terminalState)
     {
-        Skip.If(string.IsNullOrWhiteSpace(ConnectionString), "PIM_ASR516_PG is not configured");
+        await using var isolated = await IsolatedPostgresDatabase.CreateAsync();
+        var storageRoot = Path.Combine(Path.GetTempPath(), "pim-asr516-tests-" + Guid.NewGuid().ToString("N"));
         var owner = Guid.NewGuid();
         var nodeId = Guid.NewGuid();
-        var attemptId = await SeedAsync(owner, nodeId, Guid.NewGuid());
-        Guid taskId;
-        await using (var seedView = NewDb(owner))
-            taskId = (await seedView.NoteAsrAttempts.AsNoTracking()
-                .SingleAsync(x => x.Id == attemptId)).TaskId;
-        var terminalUpdatedAt = new DateTimeOffset(2026, 1, 2, 3, 4, 5, TimeSpan.Zero);
-
-        // Hold an uncommitted terminal transition so the stop request reads the old row,
-        // then blocks on its CAS until that terminal state becomes visible.
-        await using var terminalConnection = new NpgsqlConnection(ConnectionString);
-        await terminalConnection.OpenAsync();
-        await using var terminalTransaction = await terminalConnection.BeginTransactionAsync();
-        await using (var terminal = new NpgsqlCommand("""
-            UPDATE note_asr_attempts
-            SET state = @terminal_state, stop_requested = false, updated_at = @updated_at
-            WHERE owner_id = @owner_id AND id = @attempt_id
-            """, terminalConnection, terminalTransaction))
-        {
-            terminal.Parameters.AddWithValue("terminal_state", terminalState);
-            terminal.Parameters.AddWithValue("updated_at", terminalUpdatedAt);
-            terminal.Parameters.AddWithValue("owner_id", owner);
-            terminal.Parameters.AddWithValue("attempt_id", attemptId);
-            Assert.Equal(1, await terminal.ExecuteNonQueryAsync());
-        }
-
-        var interceptor = new BlockingAttemptStopInterceptor();
-        var stop = Task.Run(async () =>
-        {
-            await using var db = NewDb(owner, interceptor);
-            var options = Options.Create(new NoteMaterialUploadOptions { StorageRoot = StorageRoot });
-            return await NewNoteService(db, owner, new NoteMaterialUploadStore(options),
-                new NoteAsrTaskStore(options)).StopAsync(taskId, CancellationToken.None);
-        });
         try
         {
-            await interceptor.Blocked.Task.WaitAsync(TimeSpan.FromSeconds(10));
-            await terminalTransaction.CommitAsync();
-            interceptor.Release.TrySetResult();
-            var stopped = await stop;
-            Assert.NotNull(stopped);
-            Assert.True(stopped.StopRequested);
+            var attemptId = await SeedAsync(owner, nodeId, Guid.NewGuid(),
+                isolated.ConnectionString, storageRoot, ensureCreated: false);
+            Guid taskId;
+            await using (var seedView = NewDbWithConnection(owner, isolated.ConnectionString))
+                taskId = (await seedView.NoteAsrAttempts.AsNoTracking()
+                    .SingleAsync(x => x.Id == attemptId)).TaskId;
+            var terminalUpdatedAt = new DateTimeOffset(2026, 1, 2, 3, 4, 5, TimeSpan.Zero);
+
+            // Hold an uncommitted terminal transition so the stop request reads the old row,
+            // then blocks on its CAS until that terminal state becomes visible.
+            await using var terminalConnection = new NpgsqlConnection(isolated.ConnectionString);
+            await terminalConnection.OpenAsync();
+            await using var terminalTransaction = await terminalConnection.BeginTransactionAsync();
+            await using (var terminal = new NpgsqlCommand("""
+                UPDATE note_asr_attempts
+                SET state = @terminal_state, stop_requested = false, updated_at = @updated_at
+                WHERE owner_id = @owner_id AND id = @attempt_id
+                """, terminalConnection, terminalTransaction))
+            {
+                terminal.Parameters.AddWithValue("terminal_state", terminalState);
+                terminal.Parameters.AddWithValue("updated_at", terminalUpdatedAt);
+                terminal.Parameters.AddWithValue("owner_id", owner);
+                terminal.Parameters.AddWithValue("attempt_id", attemptId);
+                Assert.Equal(1, await terminal.ExecuteNonQueryAsync());
+            }
+
+            var interceptor = new BlockingAttemptStopInterceptor();
+            var stop = Task.Run(async () =>
+            {
+                await using var db = NewDbWithConnection(owner, isolated.ConnectionString, interceptor);
+                var options = Options.Create(new NoteMaterialUploadOptions { StorageRoot = storageRoot });
+                return await NewNoteService(db, owner, new NoteMaterialUploadStore(options),
+                    new NoteAsrTaskStore(options), storageRoot)
+                    .StopAsync(taskId, CancellationToken.None);
+            });
+            try
+            {
+                await interceptor.Blocked.Task.WaitAsync(TimeSpan.FromSeconds(10));
+                await terminalTransaction.CommitAsync();
+                interceptor.Release.TrySetResult();
+                var stopped = await stop;
+                Assert.NotNull(stopped);
+                Assert.True(stopped.StopRequested);
+            }
+            finally
+            {
+                interceptor.Release.TrySetResult();
+            }
+
+            await using var check = NewDbWithConnection(owner, isolated.ConnectionString);
+            var attempt = await check.NoteAsrAttempts.AsNoTracking()
+                .SingleAsync(x => x.Id == attemptId);
+            Assert.Equal(terminalState, attempt.State);
+            Assert.False(attempt.StopRequested);
+            Assert.Equal(terminalUpdatedAt, attempt.UpdatedAt);
+            Assert.Equal(0, await check.NoteAsrLeases.CountAsync(x => x.AttemptId == attemptId));
+            Assert.Equal(0, await check.NoteAsrAckReceipts.CountAsync(x => x.AttemptId == attemptId));
+            Assert.Equal(0, await check.NoteAsrSegmentEvidence.CountAsync(x => x.AttemptId == attemptId));
+            Assert.Equal(0, await check.AiRequestLogs.CountAsync(x => x.UserId == owner));
         }
         finally
         {
-            interceptor.Release.TrySetResult();
+            if (Directory.Exists(storageRoot)) Directory.Delete(storageRoot, recursive: true);
         }
-
-        await using var check = NewDb(owner);
-        var attempt = await check.NoteAsrAttempts.AsNoTracking()
-            .SingleAsync(x => x.Id == attemptId);
-        Assert.Equal(terminalState, attempt.State);
-        Assert.False(attempt.StopRequested);
-        Assert.Equal(terminalUpdatedAt, attempt.UpdatedAt);
-        Assert.Equal(0, await check.NoteAsrLeases.CountAsync(x => x.AttemptId == attemptId));
-        Assert.Equal(0, await check.NoteAsrAckReceipts.CountAsync(x => x.AttemptId == attemptId));
-        Assert.Equal(0, await check.NoteAsrSegmentEvidence.CountAsync(x => x.AttemptId == attemptId));
-        Assert.Equal(0, await check.AiRequestLogs.CountAsync(x => x.UserId == owner));
-        await CleanupAsync(owner);
     }
 
     [SkippableFact]
@@ -1605,11 +1692,14 @@ public sealed class NoteAsrRoutingConcurrencyTests
         catch (Exception error) { return error; }
     }
 
-    private static async Task<Guid> SeedAsync(Guid owner, Guid nodeA, Guid nodeB)
+    private static async Task<Guid> SeedAsync(Guid owner, Guid nodeA, Guid nodeB,
+        string? connectionString = null, string? storageRoot = null, bool ensureCreated = true)
     {
-        await CleanupAsync(owner);
-        await using var db = NewDb(owner);
-        await db.Database.EnsureCreatedAsync();
+        var conn = connectionString ?? ConnectionString!;
+        var root = storageRoot ?? StorageRoot;
+        await CleanupAsync(owner, conn, root);
+        await using var db = NewDbWithConnection(owner, conn);
+        if (ensureCreated) await db.Database.EnsureCreatedAsync();
         var now = DateTimeOffset.UtcNow;
         var attemptId = Guid.NewGuid();
         var taskId = Guid.NewGuid();
@@ -1641,7 +1731,7 @@ public sealed class NoteAsrRoutingConcurrencyTests
                 Attempts = [new()]
             }).ToList()
         };
-        var taskDir = Path.Combine(StorageRoot, "asr-tasks", owner.ToString("D"));
+        var taskDir = Path.Combine(root, "asr-tasks", owner.ToString("D"));
         Directory.CreateDirectory(taskDir);
         await File.WriteAllTextAsync(Path.Combine(taskDir, taskId.ToString("D") + ".json"),
             JsonSerializer.Serialize(task, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
@@ -1716,18 +1806,42 @@ public sealed class NoteAsrRoutingConcurrencyTests
     };
 
     private static PimDbContext NewDb(Guid owner, DbCommandInterceptor? interceptor = null,
-        bool retryOnFailure = false)
+        bool retryOnFailure = false) =>
+        NewDbWithConnection(owner, ConnectionString!, interceptor, retryOnFailure);
+
+    private static PimDbContext NewDbWithConnection(Guid owner, string connectionString,
+        DbCommandInterceptor? interceptor = null, bool retryOnFailure = false)
     {
-        var builder = new DbContextOptionsBuilder<PimDbContext>().UseNpgsql(ConnectionString!,
+        var builder = new DbContextOptionsBuilder<PimDbContext>().UseNpgsql(connectionString,
             npgsql => { if (retryOnFailure) npgsql.EnableRetryOnFailure(3); });
         if (interceptor is not null) builder.AddInterceptors(interceptor);
         return new PimDbContext(builder.Options, new FixedUser(owner));
     }
 
-    private static NoteAsrRoutingService NewService(PimDbContext db, Guid owner,
-        AiAsrPresetRegistry? presets = null)
+    private static async Task UpsertRuntimeAsync(PimDbContext db, Guid transcriptionModelId)
     {
-        var options = Options.Create(new NoteMaterialUploadOptions { StorageRoot = StorageRoot });
+        var runtime = await db.AiModelRuntime.SingleOrDefaultAsync(x => x.Id == AiModelRuntimeEntity.SingletonId);
+        if (runtime is null)
+        {
+            db.AiModelRuntime.Add(new AiModelRuntimeEntity
+            {
+                Id = AiModelRuntimeEntity.SingletonId, Revision = Guid.NewGuid(), Enabled = true,
+                TranscriptionModelId = transcriptionModelId
+            });
+        }
+        else
+        {
+            runtime.Revision = Guid.NewGuid();
+            runtime.Enabled = true;
+            runtime.TranscriptionModelId = transcriptionModelId;
+        }
+        await db.SaveChangesAsync();
+    }
+
+    private static NoteAsrRoutingService NewService(PimDbContext db, Guid owner,
+        AiAsrPresetRegistry? presets = null, string? storageRoot = null)
+    {
+        var options = Options.Create(new NoteMaterialUploadOptions { StorageRoot = storageRoot ?? StorageRoot });
         var materials = new NoteMaterialUploadStore(options);
         var tasks = new NoteAsrTaskStore(options);
         return new NoteAsrRoutingService(db, new FixedUser(owner), materials,
@@ -1737,15 +1851,16 @@ public sealed class NoteAsrRoutingConcurrencyTests
     }
 
     private static NoteAsrService NewNoteService(PimDbContext db, Guid owner,
-        NoteMaterialUploadStore materials, NoteAsrTaskStore tasks) =>
+        NoteMaterialUploadStore materials, NoteAsrTaskStore tasks, string? storageRoot = null) =>
         new(tasks, materials, db, new FixedUser(owner),
             new AiAsrPresetRegistry(Array.Empty<IAiAsrPreset>()), new ConfigurationBuilder().Build(),
-            new PassthroughSecrets(), NewService(db, owner));
+            new PassthroughSecrets(), NewService(db, owner, storageRoot: storageRoot));
 
-    private static async Task CleanupAsync(Guid owner)
+    private static async Task CleanupAsync(Guid owner, string? connectionString = null, string? storageRoot = null)
     {
-        if (string.IsNullOrWhiteSpace(ConnectionString)) return;
-        await using var db = NewDb(owner);
+        var conn = connectionString ?? ConnectionString;
+        if (string.IsNullOrWhiteSpace(conn)) return;
+        await using var db = NewDbWithConnection(owner, conn);
         try
         {
             await db.NoteAsrAckReceipts.Where(x => x.OwnerId == owner).ExecuteDeleteAsync();
@@ -1757,13 +1872,109 @@ public sealed class NoteAsrRoutingConcurrencyTests
             await db.Users.Where(x => x.Id == owner).ExecuteDeleteAsync();
         }
         catch (Exception error) when (error is Npgsql.PostgresException { SqlState: "42P01" }) { }
-        var tasks = Path.Combine(StorageRoot, "asr-tasks", owner.ToString("D"));
+        var rootPath = storageRoot ?? StorageRoot;
+        var tasks = Path.Combine(rootPath, "asr-tasks", owner.ToString("D"));
         if (Directory.Exists(tasks))
         {
             var full = Path.GetFullPath(tasks);
-            var root = Path.GetFullPath(StorageRoot);
+            var root = Path.GetFullPath(rootPath);
             if (full.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
                 Directory.Delete(full, recursive: true);
+        }
+    }
+
+    private sealed class IsolatedPostgresDatabase : IAsyncDisposable
+    {
+        private readonly string _database;
+        private readonly NpgsqlConnection _admin;
+
+        private IsolatedPostgresDatabase(string database, NpgsqlConnection admin, string connectionString)
+        {
+            _database = database;
+            _admin = admin;
+            ConnectionString = connectionString;
+        }
+
+        public string ConnectionString { get; }
+
+        public static async Task<IsolatedPostgresDatabase> CreateAsync()
+        {
+            var adminConnectionString = ResolveAdminConnectionString();
+            var admin = new NpgsqlConnection(adminConnectionString);
+            await admin.OpenAsync();
+            var database = "pim_asr516_routing_" + Guid.NewGuid().ToString("N");
+            var created = false;
+            try
+            {
+                await using (var create = new NpgsqlCommand($"CREATE DATABASE \"{database}\"", admin))
+                    await create.ExecuteNonQueryAsync();
+                created = true;
+                var scoped = new NpgsqlConnectionStringBuilder(adminConnectionString)
+                {
+                    Database = database
+                }.ConnectionString;
+                await using (var db = NewDbWithConnection(Guid.Empty, scoped))
+                    await db.Database.MigrateAsync();
+                return new IsolatedPostgresDatabase(database, admin, scoped);
+            }
+            catch
+            {
+                if (created)
+                {
+                    try
+                    {
+                        await using var drop = new NpgsqlCommand($"DROP DATABASE IF EXISTS \"{database}\" WITH (FORCE)", admin);
+                        await drop.ExecuteNonQueryAsync();
+                    }
+                    catch { /* Preserve original setup failure. */ }
+                }
+                await admin.DisposeAsync();
+                throw;
+            }
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            await using (var scopedPool = new NpgsqlConnection(ConnectionString))
+                NpgsqlConnection.ClearPool(scopedPool);
+            await using (var drop = new NpgsqlCommand($"DROP DATABASE IF EXISTS \"{_database}\" WITH (FORCE)", _admin))
+                await drop.ExecuteNonQueryAsync();
+            await _admin.DisposeAsync();
+        }
+
+        private static string ResolveAdminConnectionString()
+        {
+            var primary = RealDbTestConnection.FromEnvironment;
+            if (!string.IsNullOrWhiteSpace(primary))
+            {
+                VerifyReachable(primary);
+                return primary;
+            }
+
+            var dedicated = Environment.GetEnvironmentVariable("PIM_ASR516_PG");
+            if (!string.IsNullOrWhiteSpace(dedicated))
+            {
+                VerifyReachable(dedicated);
+                return dedicated;
+            }
+
+            RealDbTestConnection.SkipIfUnavailable();
+            return RealDbTestConnection.Require();
+        }
+
+        private static void VerifyReachable(string connectionString)
+        {
+            try
+            {
+                using var connection = new NpgsqlConnection(connectionString);
+                connection.Open();
+                using var command = new NpgsqlCommand("SELECT 1", connection);
+                command.ExecuteScalar();
+            }
+            catch (Exception error) when (RealDbTestConnection.IsServerUnreachable(error))
+            {
+                throw new Xunit.SkipException($"RealDb unreachable: {error.Message}");
+            }
         }
     }
 

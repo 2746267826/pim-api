@@ -17,7 +17,7 @@ PIM 的后端服务：数据接入、确定性处理、结论输出。**所有�
 | `docs/mcp.md` | MCP 协议规范 |
 | `docs/release-channels.md` | 发版通道：显示版本号 / dev pre-release / 正式版提升 |
 | `docs/product/native-notes-roadmap.md` | 原生客户端与笔记的持续路线图、完整需求编号及分批交付边界 |
-| `docker-compose*.yml`、`nginx.conf`、`litellm-config.yaml` | 部署编排 |
+| `docker-compose*.yml`、`nginx.conf` | 部署编排 |
 
 ## 部署要点
 

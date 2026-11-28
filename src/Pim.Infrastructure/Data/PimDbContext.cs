@@ -306,6 +306,9 @@ public class PimDbContext : DbContext
             e.HasOne<AiModelProfileEntity>().WithMany().HasForeignKey(a => a.TextModelId).OnDelete(DeleteBehavior.Restrict);
             e.HasOne<AiModelProfileEntity>().WithMany().HasForeignKey(a => a.VisionModelId).OnDelete(DeleteBehavior.Restrict);
             e.HasOne<AiModelProfileEntity>().WithMany().HasForeignKey(a => a.TranscriptionModelId).OnDelete(DeleteBehavior.Restrict);
+            e.HasOne<AiModelProfileEntity>().WithMany().HasForeignKey(a => a.NoteOrganizationModelId).OnDelete(DeleteBehavior.Restrict);
+            e.HasOne<AiModelProfileEntity>().WithMany().HasForeignKey(a => a.NoteTodoModelId).OnDelete(DeleteBehavior.Restrict);
+            e.HasOne<AiModelProfileEntity>().WithMany().HasForeignKey(a => a.CalendarPlanningModelId).OnDelete(DeleteBehavior.Restrict);
         });
         modelBuilder.Entity<NoteAsrRouteConfigEntity>(e => e.Property(x => x.Revision).IsConcurrencyToken());
         modelBuilder.Entity<NoteProcessingPreferenceEntity>(e =>

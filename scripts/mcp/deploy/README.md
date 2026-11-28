@@ -7,7 +7,7 @@
 
 ## 前置条件
 
-- 仓库 master 已包含 `scripts/mcp/pim_mcp_server.py`（v3，151 工具）。
+- 仓库 master 已包含 `scripts/mcp/pim_mcp_server.py`（v3，当前 147 工具；已退役）。
 - 生产机 Python >= 3.10，安装依赖：
   ```bash
   python3 -m pip install mcp httpx uvicorn
@@ -16,7 +16,7 @@
 - 自检（部署前必跑）：
   ```bash
   python3 scripts/mcp/pim_mcp_server.py --check
-  # 期望输出: OK tools read=101 write=50 total=151
+  # 期望输出: OK tools read=98 write=49 total=147
   ```
 
 ## 1. systemd 单元
@@ -60,7 +60,7 @@ curl -k -X POST https://home.hsww.party:15858/mcp \
   -H "Accept: application/json, text/event-stream" \
   -H "Authorization: Bearer pim_mcp_<token>" \
   -d '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}'
-# 期望: 151 个工具
+# 期望: 148 个工具（当前 .NET 契约；退役 Python 基准为 147）
 ```
 
 ## 回滚

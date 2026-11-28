@@ -70,6 +70,7 @@ public class CalendarModule : IModule
         services.AddScoped<EventAttachmentService>();
         services.AddScoped<OutlookCalendarSyncService>();
         services.AddScoped<OutlookEventWriteService>();
+        services.AddScoped<OutlookCalendarWritebackGateway>();
         services.AddScoped<OutlookCalendarSyncJob>();
     }
 
@@ -655,15 +656,39 @@ public class CalendarModule : IModule
 
         group.MapPost("/events", async (
             [FromBody] CreateEventRequest req,
-            [FromServices] CalendarService svc, CancellationToken ct) =>
+            [FromQuery] Guid? clientOperationId,
+            [FromServices] CalendarService svc,
+            [FromServices] OutlookCalendarWritebackGateway outlookWriteback,
+            [FromServices] ICurrentUserService currentUser,
+            CancellationToken ct) =>
         {
-            var result = await svc.CreateEventAsync(req, ct);
-            return Results.Created($"/api/v1/calendar/events/{result.Id}",
-                ApiResponse<EventResponse>.Ok(result));
+            var operationId = clientOperationId is { } requested && requested != Guid.Empty
+                ? requested
+                : Guid.NewGuid();
+            try
+            {
+                var outlookResult = await outlookWriteback.CreateAsync(
+                    currentUser.UserId!.Value, req, operationId, ct);
+                if (outlookResult is not null)
+                    return MapOutlookWriteResult(outlookResult, created: true);
+
+                var result = await svc.CreateEventAsync(req, ct);
+                return Results.Created($"/api/v1/calendar/events/{result.Id}",
+                    ApiResponse<EventResponse>.Ok(result));
+            }
+            catch (DomainException ex)
+            {
+                return MapOutlookValidationError(ex, operationId);
+            }
         })
         .Produces<ApiResponse<EventResponse>>(201)
+        .Produces<ApiResponse<EventResponse>>(200)
+        .Produces<ApiResponse<OutlookWriteResult>>(403)
+        .Produces<ApiResponse<OutlookWriteResult>>(404)
+        .Produces<ApiResponse<OutlookWriteResult>>(409)
+        .Produces<ApiResponse<OutlookWriteResult>>(502)
         .Produces(401)
-        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<OutlookWriteResult>>(400)
         .Produces<ApiResponse<string>>(500);
 
         group.MapPut("/events/{id:guid}", async (
@@ -671,34 +696,70 @@ public class CalendarModule : IModule
             [FromQuery] string? scope,
             [FromQuery] string? recurrenceId,
             [FromQuery] Guid? originalEventId,
-            [FromServices] CalendarService svc, CancellationToken ct) =>
+            [FromQuery] Guid? clientOperationId,
+            [FromQuery] string? expectedEtag,
+            [FromServices] CalendarService svc,
+            [FromServices] OutlookCalendarWritebackGateway outlookWriteback,
+            [FromServices] ICurrentUserService currentUser,
+            CancellationToken ct) =>
         {
-            string? normalizedRecurrenceId = recurrenceId;
-            if (!string.IsNullOrEmpty(recurrenceId))
+            var operationId = clientOperationId is { } requested && requested != Guid.Empty
+                ? requested
+                : Guid.NewGuid();
+            try
             {
-                if (!DateTimeOffset.TryParse(recurrenceId, out var parsed))
-                    throw new DomainException(02009, "RecurrenceId 格式无效");
-                normalizedRecurrenceId = parsed.ToString("O");
-                if (!string.IsNullOrEmpty(req.RecurrenceId) && !string.Equals(req.RecurrenceId, normalizedRecurrenceId, StringComparison.Ordinal) && !string.Equals(req.RecurrenceId, recurrenceId, StringComparison.Ordinal))
-                    throw new DomainException(02009, "RecurrenceId 与查询参数不一致");
-                if (string.IsNullOrEmpty(req.RecurrenceId))
-                    req = req with { RecurrenceId = normalizedRecurrenceId };
-                else if (!DateTimeOffset.TryParse(req.RecurrenceId, out var bodyParsed))
-                    throw new DomainException(02009, "RecurrenceId 格式无效");
-                else
-                    req = req with { RecurrenceId = bodyParsed.ToString("O") };
+                string? normalizedRecurrenceId = recurrenceId;
+                if (!string.IsNullOrEmpty(recurrenceId))
+                {
+                    if (!DateTimeOffset.TryParse(recurrenceId, out var parsed))
+                        throw new DomainException(02009, "RecurrenceId 格式无效");
+                    normalizedRecurrenceId = parsed.ToString("O");
+                    if (!string.IsNullOrEmpty(req.RecurrenceId) && !string.Equals(req.RecurrenceId, normalizedRecurrenceId, StringComparison.Ordinal) && !string.Equals(req.RecurrenceId, recurrenceId, StringComparison.Ordinal))
+                        throw new DomainException(02009, "RecurrenceId 与查询参数不一致");
+                    if (string.IsNullOrEmpty(req.RecurrenceId))
+                        req = req with { RecurrenceId = normalizedRecurrenceId };
+                    else if (!DateTimeOffset.TryParse(req.RecurrenceId, out var bodyParsed))
+                        throw new DomainException(02009, "RecurrenceId 格式无效");
+                    else
+                        req = req with { RecurrenceId = bodyParsed.ToString("O") };
+                }
+                else if (!string.IsNullOrEmpty(req.RecurrenceId))
+                {
+                    if (!DateTimeOffset.TryParse(req.RecurrenceId, out var bodyParsed2))
+                        throw new DomainException(02009, "RecurrenceId 格式无效");
+                    req = req with { RecurrenceId = bodyParsed2.ToString("O") };
+                }
+
+                var outlookResult = await outlookWriteback.UpdateAsync(
+                    currentUser.UserId!.Value,
+                    id,
+                    req,
+                    scope,
+                    normalizedRecurrenceId,
+                    originalEventId,
+                    operationId,
+                    expectedEtag,
+                    ct);
+                if (outlookResult is not null)
+                    return MapOutlookWriteResult(outlookResult, created: false);
+
+                return Results.Ok(ApiResponse<EventResponse>.Ok(
+                    await svc.UpdateEventAsync(id, req, scope, originalEventId, ct)));
             }
-            else if (!string.IsNullOrEmpty(req.RecurrenceId))
+            catch (DomainException ex)
             {
-                if (!DateTimeOffset.TryParse(req.RecurrenceId, out var bodyParsed2))
-                    throw new DomainException(02009, "RecurrenceId 格式无效");
-                req = req with { RecurrenceId = bodyParsed2.ToString("O") };
+                return MapOutlookValidationError(ex, operationId);
             }
-            return Results.Ok(ApiResponse<EventResponse>.Ok(await svc.UpdateEventAsync(id, req, scope, originalEventId, ct)));
         })
         .Produces<ApiResponse<EventResponse>>(200)
+        .Produces<ApiResponse<OutlookWriteResult>>(403)
+        .Produces<ApiResponse<OutlookWriteResult>>(404)
+        .Produces<ApiResponse<OutlookWriteResult>>(409)
+        .Produces<ApiResponse<OutlookWriteResult>>(429)
+        .Produces<ApiResponse<OutlookWriteResult>>(502)
+        .Produces<ApiResponse<OutlookWriteResult>>(504)
         .Produces(401)
-        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<OutlookWriteResult>>(400)
         .Produces<ApiResponse<string>>(500);
 
         group.MapDelete("/events/{id:guid}", async (
@@ -706,14 +767,51 @@ public class CalendarModule : IModule
             [FromQuery] string? scope,
             [FromQuery] string? recurrenceId,
             [FromQuery] Guid? originalEventId,
-            [FromServices] CalendarService svc, CancellationToken ct) =>
+            [FromQuery] Guid? clientOperationId,
+            [FromQuery] string? expectedEtag,
+            [FromServices] CalendarService svc,
+            [FromServices] OutlookCalendarWritebackGateway outlookWriteback,
+            [FromServices] ICurrentUserService currentUser,
+            CancellationToken ct) =>
         {
-            await svc.DeleteEventAsync(id, scope, recurrenceId, originalEventId, ct);
-            return Results.Ok(ApiResponse<string>.Ok("已删除"));
+            var operationId = clientOperationId is { } requested && requested != Guid.Empty
+                ? requested
+                : Guid.NewGuid();
+            try
+            {
+                var outlookResult = await outlookWriteback.DeleteAsync(
+                    currentUser.UserId!.Value,
+                    id,
+                    scope,
+                    recurrenceId,
+                    originalEventId,
+                    operationId,
+                    expectedEtag,
+                    ct);
+                if (outlookResult is not null)
+                    return MapOutlookOperationResult(outlookResult);
+
+                await svc.DeleteEventAsync(id, scope, recurrenceId, originalEventId, ct);
+                return Results.Ok(ApiResponse<OutlookWriteResult>.Ok(new OutlookWriteResult(
+                    "deleted",
+                    ClientOperationId: operationId,
+                    UserMessage: "已删除。",
+                    NoChangesApplied: false)));
+            }
+            catch (DomainException ex)
+            {
+                return MapOutlookValidationError(ex, operationId);
+            }
         })
-        .Produces<ApiResponse<string>>(200)
+        .Produces<ApiResponse<OutlookWriteResult>>(200)
+        .Produces<ApiResponse<OutlookWriteResult>>(400)
+        .Produces<ApiResponse<OutlookWriteResult>>(403)
+        .Produces<ApiResponse<OutlookWriteResult>>(404)
+        .Produces<ApiResponse<OutlookWriteResult>>(409)
+        .Produces<ApiResponse<OutlookWriteResult>>(429)
+        .Produces<ApiResponse<OutlookWriteResult>>(502)
+        .Produces<ApiResponse<OutlookWriteResult>>(504)
         .Produces(401)
-        .Produces<ApiResponse<string>>(400)
         .Produces<ApiResponse<string>>(500);
 
         group.MapPost("/events/{id:guid}/restore", async (
@@ -1387,15 +1485,61 @@ public class CalendarModule : IModule
             [FromServices] OutlookEventWriteService writeSvc,
             CancellationToken ct) =>
         {
-            var result = await writeSvc.ExecuteAsync(currentUser.UserId!.Value, req, ct);
-            if (result.Status == "conflict" || result.ErrorCode == "CONFLICT")
-                return Results.Conflict(ApiResponse<OutlookWriteResult>.Ok(result));
-            return Results.Ok(ApiResponse<OutlookWriteResult>.Ok(result));
+            try
+            {
+                var result = await writeSvc.ExecuteAsync(currentUser.UserId!.Value, req, ct);
+                return MapLegacyOutlookWriteResult(result);
+            }
+            catch (DomainException ex)
+            {
+                return MapOutlookValidationError(ex, req.ClientOperationId);
+            }
+            catch (HttpRequestException)
+            {
+                return MapProviderUnavailable(ProviderUnavailable(req.ClientOperationId));
+            }
         })
         .Produces<ApiResponse<OutlookWriteResult>>(200)
+        .Produces<ApiResponse<OutlookWriteResult>>(400)
+        .Produces<ApiResponse<OutlookWriteResult>>(403)
+        .Produces<ApiResponse<OutlookWriteResult>>(404)
         .Produces<ApiResponse<OutlookWriteResult>>(409)
+        .Produces<ApiResponse<OutlookWriteResult>>(429)
+        .Produces<ApiResponse<OutlookWriteResult>>(502)
+        .Produces<ApiResponse<OutlookWriteResult>>(504)
         .Produces(401)
-        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
+
+        group.MapPost("/outlook/events/{clientOperationId:guid}/undo", async (
+            Guid clientOperationId,
+            [FromServices] ICurrentUserService currentUser,
+            [FromServices] OutlookEventWriteService writeSvc,
+            CancellationToken ct) =>
+        {
+            try
+            {
+                var result = await writeSvc.UndoAsync(
+                    currentUser.UserId!.Value, clientOperationId, ct);
+                return MapOutlookOperationResult(result);
+            }
+            catch (DomainException ex)
+            {
+                return MapOutlookValidationError(ex, clientOperationId);
+            }
+            catch (HttpRequestException)
+            {
+                return MapProviderUnavailable(ProviderUnavailable(clientOperationId));
+            }
+        })
+        .Produces<ApiResponse<OutlookWriteResult>>(200)
+        .Produces<ApiResponse<OutlookWriteResult>>(400)
+        .Produces<ApiResponse<OutlookWriteResult>>(403)
+        .Produces<ApiResponse<OutlookWriteResult>>(404)
+        .Produces<ApiResponse<OutlookWriteResult>>(409)
+        .Produces<ApiResponse<OutlookWriteResult>>(429)
+        .Produces<ApiResponse<OutlookWriteResult>>(502)
+        .Produces<ApiResponse<OutlookWriteResult>>(504)
+        .Produces(401)
         .Produces<ApiResponse<string>>(500);
 
         group.MapPost("/outlook/disconnect", async (
@@ -1535,6 +1679,79 @@ public class CalendarModule : IModule
         .Produces<ApiResponse<string>>(400)
         .Produces<ApiResponse<string>>(500);
     }
+
+    private static IResult MapOutlookWriteResult(OutlookWriteResult result, bool created)
+    {
+        if (result.Status is not ("created" or "updated"))
+            return MapOutlookOperationResult(result);
+
+        if (result.Event is null)
+            return Results.Json(
+                ApiResponse<OutlookWriteResult>.Error(02099, "Outlook 写回完成，但缺少事件回执。"),
+                statusCode: StatusCodes.Status502BadGateway);
+
+        var response = ApiResponse<EventResponse>.Ok(result.Event);
+        return created && !result.Replayed
+            ? Results.Created($"/api/v1/calendar/events/{result.Event.Id}", response)
+            : Results.Ok(response);
+    }
+
+    private static IResult MapOutlookOperationResult(OutlookWriteResult result)
+    {
+        if (result.Status is "conflict" or "reauth-required")
+            return Results.Conflict(ApiResponse<OutlookWriteResult>.Ok(result));
+        if (result.Status == "invalid-request")
+            return MapOutlookError(result, StatusCodes.Status400BadRequest);
+        if (result.Status == "forbidden")
+            return MapOutlookError(result, StatusCodes.Status403Forbidden);
+        if (result.Status == "not-found")
+            return MapOutlookError(result, StatusCodes.Status404NotFound);
+        // Pre-write target resolution failed before any Graph write: surface the
+        // provider's own retry semantics instead of collapsing throttle/timeout
+        // into the generic 502 used when a remote write outcome is unknown.
+        if (result.NoChangesApplied && result.ErrorCode == "PROVIDER_RATE_LIMITED")
+            return MapOutlookError(result, StatusCodes.Status429TooManyRequests);
+        if (result.NoChangesApplied && result.ErrorCode == "PROVIDER_TIMEOUT")
+            return MapOutlookError(result, StatusCodes.Status504GatewayTimeout);
+        if (result.Status is "error" or "unknown")
+            return MapOutlookError(result, StatusCodes.Status502BadGateway);
+        return Results.Ok(ApiResponse<OutlookWriteResult>.Ok(result));
+    }
+
+    private static IResult MapLegacyOutlookWriteResult(OutlookWriteResult result)
+        => MapOutlookOperationResult(result);
+
+    private static IResult MapProviderUnavailable(OutlookWriteResult result)
+        => MapOutlookError(result, StatusCodes.Status502BadGateway);
+
+    private static IResult MapOutlookValidationError(DomainException ex, Guid clientOperationId)
+        => MapOutlookError(
+            new OutlookWriteResult(
+                "invalid-request",
+                ErrorCode: "INVALID_REQUEST",
+                ErrorMessage: ex.Message,
+                ClientOperationId: clientOperationId == Guid.Empty ? null : clientOperationId,
+                UserMessage: ex.Message,
+                NoChangesApplied: true),
+            StatusCodes.Status400BadRequest);
+
+    private static IResult MapOutlookError(OutlookWriteResult result, int statusCode)
+        => Results.Json(
+            new ApiResponse<OutlookWriteResult>(
+                02099,
+                result.UserMessage ?? result.ErrorMessage ?? "Outlook 写回失败。",
+                result,
+                DateTimeOffset.UtcNow),
+            statusCode: statusCode);
+
+    private static OutlookWriteResult ProviderUnavailable(Guid clientOperationId)
+        => new(
+            "error",
+            ErrorCode: "PROVIDER_UNAVAILABLE",
+            ErrorMessage: "Outlook 服务暂时不可用，请使用同一 clientOperationId 稍后重试。",
+            ClientOperationId: clientOperationId == Guid.Empty ? null : clientOperationId,
+            UserMessage: "Outlook 服务暂时不可用，请使用同一 clientOperationId 稍后重试。",
+            NoChangesApplied: false);
 
     private static OutlookSettingsResponse MapSettings(OutlookConnectionEntity? connection)
     {
@@ -1691,6 +1908,7 @@ public static class CalendarEndpointPaths
     public const string OutlookCalendarsDiscover = "/api/v1/calendar/outlook/calendars/discover";
     public const string OutlookCalendarsSelection = "/api/v1/calendar/outlook/calendars/selection";
     public const string OutlookEventsWriteback = "/api/v1/calendar/outlook/events/writeback";
+    public const string OutlookEventsUndo = "/api/v1/calendar/outlook/events/{clientOperationId}/undo";
     public const string OutlookDisconnect = "/api/v1/calendar/outlook/disconnect";
     public const string OutlookLocalDataPreview = "/api/v1/calendar/outlook/local-data/preview";
     public const string OutlookLocalDataDelete = "/api/v1/calendar/outlook/local-data";

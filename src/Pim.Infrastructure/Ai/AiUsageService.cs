@@ -1,5 +1,4 @@
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Options;
 using Pim.Core.Ai;
 using Pim.Core.Common;
 using Pim.Infrastructure.Data;
@@ -7,30 +6,8 @@ using Pim.Infrastructure.Data.Entities;
 
 namespace Pim.Infrastructure.Ai;
 
-public sealed class AiUsageService(PimDbContext db, IOptions<AiOptions> options) : IAiUsageService
+public sealed class AiUsageService(PimDbContext db) : IAiUsageService
 {
-    public async Task<AiStatusDto> GetStatusAsync(CancellationToken ct = default)
-    {
-        var ai = options.Value;
-        var recentSuccess = await db.AiRequestLogs
-            .Where(l => l.Status == "succeeded")
-            .OrderByDescending(l => l.StartedAt)
-            .ThenByDescending(l => l.Id)
-            .Select(l => (DateTimeOffset?)l.StartedAt)
-            .FirstOrDefaultAsync(ct);
-
-        var settings = await db.AiProviderSettings.SingleOrDefaultAsync(s => s.Provider == "litellm", ct);
-
-        return new AiStatusDto(
-            ai.Enabled,
-            ai.Provider,
-            ai.BaseUrl,
-            ai.DefaultModel,
-            settings?.LastHealthCheckAt,
-            settings?.LastError,
-            recentSuccess);
-    }
-
     public async Task<PagedResult<AiRequestLogListItemDto>> ListRequestsAsync(
         AiRequestLogFilter filter,
         CancellationToken ct = default)

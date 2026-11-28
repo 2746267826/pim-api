@@ -90,8 +90,8 @@ function SectionTitle({ number, title, description }: { number?: string; title: 
   </div>
 }
 
-function bindingScope(ownerId: string, serverBinding: string, artifactId: string, sourceVersionId: string, kind: NoteDerivedArtifactKind, artifactVersionId?: string): NoteDerivedDraftScope {
-  return { ownerId, serverBinding, artifactId, sourceVersionId, kind, ...(artifactVersionId ? { artifactVersionId } : {}) }
+function bindingScope(ownerId: string, serverBinding: string, artifactId: string, sourceVersionId: string, kind: NoteDerivedArtifactKind, artifactVersionId?: string, noteId?: string): NoteDerivedDraftScope {
+  return { ownerId, serverBinding, artifactId, sourceVersionId, kind, ...(artifactVersionId ? { artifactVersionId } : {}), ...(noteId ? { noteId } : {}) }
 }
 
 function loadLocalRecord(scope: NoteDerivedDraftScope): { record: StoredNoteDerivedDraft; error: string | null } {
@@ -121,12 +121,16 @@ function Workspace({ ownerId, serverBinding, role }: { ownerId: string; serverBi
   const [sourcePage, setSourcePage] = useState(0)
   const [sourceVersionId, setSourceVersionId] = useState(() =>
     canViewVersions ? searchParams.get('version') ?? searchParams.get('versionId') ?? '' : '')
+  const requestedArtifactVersionId = searchParams.get('artifactVersionId') ?? ''
+  const [unresolvedNoteLink, setUnresolvedNoteLink] = useState(false)
+  const [ignoredHistoricalVersion] = useState(() =>
+    !canViewVersions && (searchParams.has('version') || searchParams.has('versionId')))
   const [asrTaskId, setAsrTaskId] = useState('')
   const [asrSelectionRevision, setAsrSelectionRevision] = useState(0)
   const [taskId, setTaskId] = useState('')
   const [message, setMessage] = useState('')
   const sources = useQuery({ queryKey: ['note-derived', ownerId, serverBinding, 'sources', sourcePage], queryFn: ({ signal }) => noteDerivedApi.sources(sourcePage, signal) })
-  const destinations = useQuery({ queryKey: ['note-derived', ownerId, serverBinding, 'destinations'], queryFn: ({ signal }) => noteDerivedApi.destinations(signal) })
+  const destinations = useQuery({ queryKey: ['note-derived', ownerId, serverBinding, 'destinations', 'NoteOrganization'], queryFn: ({ signal }) => noteDerivedApi.destinations('NoteOrganization', signal) })
   const limits = useQuery({ queryKey: ['note-derived', ownerId, serverBinding, 'limits'], queryFn: ({ signal }) => noteDerivedApi.limits(signal) })
   const requestedNoteId = searchParams.get('noteId') ?? ''
   const requestedAction = searchParams.get('action')
@@ -166,8 +170,11 @@ function Workspace({ ownerId, serverBinding, role }: { ownerId: string; serverBi
     }
     const searchingForLinkedSource = Boolean(sourceVersionId || requestedNoteId)
     const sourceFound = source || (requestedNoteId && visibleSources.some((item) => item.noteId === requestedNoteId))
-    if (searchingForLinkedSource && sources.data && !sourceFound && sourcePage + sources.data.items.length < sources.data.total) {
-      setSourcePage((page) => page + 20)
+    if (searchingForLinkedSource && sources.data && !sourceFound) {
+      if (sourcePage + sources.data.items.length < sources.data.total) setSourcePage((page) => page + 20)
+      else if (requestedNoteId) setUnresolvedNoteLink(true)
+    } else if (sourceFound) {
+      setUnresolvedNoteLink(false)
     }
   }, [canViewVersions, requestedNoteId, source, sourcePage, sourceVersionId, sources.data, setSearchParams, visibleSources])
   useEffect(() => {
@@ -204,6 +211,10 @@ function Workspace({ ownerId, serverBinding, role }: { ownerId: string; serverBi
     enabled: Boolean(noteId),
     refetchInterval: (query) => query.state.data?.some((item) => item.versions.some((version) => !version.isHead)) ? 5000 : false,
   })
+  const linkedArtifactVersionAvailable = Boolean(requestedArtifactVersionId) &&
+    Boolean(artifacts.data?.some((item) => item.versions.some((version) => version.versionId === requestedArtifactVersionId)))
+  const missingArtifactVersionId = Boolean(requestedArtifactVersionId) && Boolean(noteId) &&
+    artifacts.isSuccess && !linkedArtifactVersionAvailable
   const refresh = () => {
     void qc.invalidateQueries({ queryKey: ['note-derived', ownerId, serverBinding] })
     void qc.invalidateQueries({ queryKey: ['ai', ownerId, serverBinding, 'note-asr-owner', 'tasks'] })
@@ -263,6 +274,7 @@ function Workspace({ ownerId, serverBinding, role }: { ownerId: string; serverBi
                       setSourceVersionId(value)
                       setSearchParams((current) => {
                         const next = new URLSearchParams(current)
+                        next.delete('artifactVersionId')
                         if (canViewVersions) {
                           next.set('version', value)
                         } else {
@@ -320,7 +332,8 @@ function Workspace({ ownerId, serverBinding, role }: { ownerId: string; serverBi
               : '仅使用当前内容已成功的转写。若转写仍在处理中，可稍后返回；不会自动启动生成。'}
           </p>}
           <StartTaskCard key={source.versionId} ownerId={ownerId} serverBinding={serverBinding} role={role} source={source}
-          destinations={destinations.data?.items ?? []} destinationsError={destinations.isError
+          destinations={destinations.data?.items ?? []} defaultModelId={destinations.data?.defaultModelId ?? null}
+          destinationsError={destinations.isError
             ? failureText(destinations.error, canViewVersions, '暂时无法读取安全目标，请刷新核对。')
             : ''}
           asrTasks={asrTasks.data ?? []} selectedAsrTaskId={selectedAsrTaskId} asrSelectionRevision={asrSelectionRevision} asrLoading={asrTasks.isPending} limits={limits.data}
@@ -359,6 +372,15 @@ function Workspace({ ownerId, serverBinding, role }: { ownerId: string; serverBi
     </div>
 
     {message && <p role="status" className="rounded-ctl bg-surface p-3 text-sm text-text-2">{message}</p>}
+    {ignoredHistoricalVersion && <p role="status" className="rounded-ctl bg-info-soft p-3 text-sm text-text-2">
+      关联的材料版本已不是当前内容，已改为打开当前内容；本机草稿仍按原版本保存，未被覆盖。
+    </p>}
+    {unresolvedNoteLink && !source && <p role="status" className="rounded-ctl bg-warn-soft p-3 text-sm text-text-2">
+      本机 AI 草稿关联的笔记已不在可处理的当前内容中；草稿仍保留在本机，请在下方选择一篇当前笔记核对。
+    </p>}
+    {missingArtifactVersionId && <p role="status" className="rounded-ctl bg-warn-soft p-3 text-sm text-text-2">
+      本机 AI 草稿关联的结果版本已不在服务器返回的列表中；请核对当前可用版本，草稿仍保留在本机。
+    </p>}
     {noteId && <div className="grid gap-5 lg:grid-cols-2">
       {(['CompleteRecord', 'IndependentAnalysis'] as const).map((kind) => {
         const artifact = artifacts.data?.find((item) => item.kind === kind)
@@ -366,18 +388,20 @@ function Workspace({ ownerId, serverBinding, role }: { ownerId: string; serverBi
           ? '任务生成完成后，候选版本会出现在这里；需要明确选择后才成为当前选用版本。'
           : '任务生成完成后，新结果会出现在这里；采用后才成为当前内容。'} /></Card>
         return <ArtifactCard key={`${artifact.artifactId}/${artifact.revision}`} artifact={artifact} ownerId={ownerId}
-          serverBinding={serverBinding} showVersionDetails={canViewVersions} onChanged={refreshArtifacts} />
+          serverBinding={serverBinding} showVersionDetails={canViewVersions} onChanged={refreshArtifacts}
+          focusedVersionId={requestedArtifactVersionId} />
       })}
     </div>}
   </div>
 }
 
-function StartTaskCard({ ownerId, serverBinding, role, source, destinations, destinationsError, asrTasks, selectedAsrTaskId, asrSelectionRevision, asrLoading, limits, onCreated }: {
+function StartTaskCard({ ownerId, serverBinding, role, source, destinations, defaultModelId, destinationsError, asrTasks, selectedAsrTaskId, asrSelectionRevision, asrLoading, limits, onCreated }: {
   ownerId: string
   serverBinding: string
   role?: string
   source: NoteDerivedSource
   destinations: NoteDerivedDestination[]
+  defaultModelId: string | null
   destinationsError: string
   asrTasks: NoteAsrTask[]
   selectedAsrTaskId: string
@@ -387,7 +411,7 @@ function StartTaskCard({ ownerId, serverBinding, role, source, destinations, des
   onCreated: (task: NoteDerivedTask) => void
 }) {
   const canViewVersions = role === 'admin'
-  const scope = bindingScope(ownerId, serverBinding, 'task-create', source.versionId, 'CompleteRecord')
+  const scope = bindingScope(ownerId, serverBinding, 'task-create', source.versionId, 'CompleteRecord', undefined, source.noteId)
   const initial = loadLocalRecord(scope)
   const [stored, setStored] = useState(initial.record)
   const [storageError, setStorageError] = useState(initial.error)
@@ -402,6 +426,11 @@ function StartTaskCard({ ownerId, serverBinding, role, source, destinations, des
   const approvalWithSelection = `${approval}/${asrSelectionRevision}`
   const ready = Boolean(destination) && (!needsAsr || Boolean(completedAsr)) && !stored.pending
   const pending = stored.pending
+  useEffect(() => {
+    if (destinationId || !defaultModelId) return
+    const preferred = destinations.find((item) => item.modelId === defaultModelId)
+    if (preferred) setDestinationId(destinationKey(preferred))
+  }, [defaultModelId, destinationId, destinations])
 
   async function persistIntent(intentId: string, body: StartNoteDerived) {
     const reserved = reserveAndPersistIntent(stored, 'create', intentId, {}, JSON.stringify(body))
@@ -558,7 +587,7 @@ function RetryControls({ task, steps, ownerId, serverBinding, showVersionDetails
   showVersionDetails: boolean
   onChanged: () => void
 }) {
-  const scope = bindingScope(ownerId, serverBinding, `task-retry:${task.taskId}`, task.sourceVersionId, 'CompleteRecord')
+  const scope = bindingScope(ownerId, serverBinding, `task-retry:${task.taskId}`, task.sourceVersionId, 'CompleteRecord', undefined, task.noteId)
   const initial = loadLocalRecord(scope)
   const [stored, setStored] = useState(initial.record)
   const [selected, setSelected] = useState<string[]>([])
@@ -619,14 +648,25 @@ function RetryControls({ task, steps, ownerId, serverBinding, showVersionDetails
   </div>
 }
 
-function ArtifactCard({ artifact, ownerId, serverBinding, showVersionDetails, onChanged }: {
+function ArtifactCard({ artifact, ownerId, serverBinding, showVersionDetails, onChanged, focusedVersionId }: {
   artifact: NoteDerivedArtifact
   ownerId: string
   serverBinding: string
   showVersionDetails: boolean
   onChanged: () => void
+  focusedVersionId?: string
 }) {
-  const [selectedVersionId, setSelectedVersionId] = useState(artifact.headVersionId ?? artifact.versions[0]?.versionId ?? '')
+  const initialVersionId = focusedVersionId && artifact.versions.some((item) => item.versionId === focusedVersionId)
+    ? focusedVersionId
+    : artifact.headVersionId ?? artifact.versions[0]?.versionId ?? ''
+  const [selectedVersionId, setSelectedVersionId] = useState(initialVersionId)
+  const appliedFocus = useRef(focusedVersionId)
+  useEffect(() => {
+    if (appliedFocus.current === focusedVersionId) return
+    appliedFocus.current = focusedVersionId
+    if (!focusedVersionId) return
+    if (artifact.versions.some((item) => item.versionId === focusedVersionId)) setSelectedVersionId(focusedVersionId)
+  }, [artifact.versions, focusedVersionId])
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState('')
   const version = useQuery({
@@ -646,7 +686,7 @@ function ArtifactCard({ artifact, ownerId, serverBinding, showVersionDetails, on
       await noteDerivedApi.select(artifact.artifactId, { expectedHeadRevision: artifact.revision, versionId: selectedVersionId })
       if (version.data) {
         const scope = bindingScope(ownerId, serverBinding, artifact.artifactId, version.data.sourceVersionId, artifact.kind,
-          showVersionDetails ? undefined : version.data.versionId)
+          showVersionDetails ? undefined : version.data.versionId, artifact.noteId)
         const loaded = loadStoredDraft(scope)
         if (!loaded.ok) setMessage(loaded.error.message)
         else if (!loaded.value) {
@@ -734,7 +774,7 @@ function ArtifactEditor({ artifact, version, ownerId, serverBinding, showVersion
   onChanged: () => void
 }) {
   const scope = bindingScope(ownerId, serverBinding, artifact.artifactId, version.sourceVersionId, artifact.kind,
-    showVersionDetails ? undefined : version.versionId)
+    showVersionDetails ? undefined : version.versionId, artifact.noteId)
   const initial = loadLocalRecord(scope)
   const [stored, setStored] = useState(() => initial.record.draft.text || initial.record.pending ? initial.record : { ...initial.record, draft: createStoredDraft(scope, version.contentMarkdown, version.versionId).draft, dirty: false })
   const [error, setError] = useState(initial.error ?? '')

@@ -101,6 +101,7 @@ public sealed class MimoBatchClient
         {
             Content = new StringContent(payload, Encoding.UTF8, "application/json")
         };
+        using var callerScope = AiProviderCircuitBreaker.EnterCallerScopeIfUnscoped(ct);
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(_options.CreateTimeout);
         var sendStarted = false;

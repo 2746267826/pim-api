@@ -99,6 +99,10 @@ export type AiUsageLimitRule = components['schemas']['AiUsageLimitRuleDto']
 export type SaveAiUsageLimitRule = components['schemas']['SaveAiUsageLimitRuleRequest']
 export type AiUsageLimitUsage = components['schemas']['AiUsageLimitUsageDto']
 export type AiUsageReminder = components['schemas']['AiUsageReminderDto']
+export type ConnectionTestRequest = components['schemas']['AiConnectionTestRequest']
+export type ConnectionTestResult = components['schemas']['AiConnectionTestResultDto']
+export type ConnectionTestSummary = components['schemas']['AiConnectionTestSummaryDto']
+export type AiPurpose = components['schemas']['AiPurpose']
 
 export const aiApi = {
   noteAsrSources: (offset: number, signal?: AbortSignal) => apiGet<NoteAsrSources>(`/api/v1/native-notes/asr-tasks/sources?offset=${offset}&limit=20`, { signal }),
@@ -195,5 +199,20 @@ export const aiApi = {
   },
   detail: (id: string, signal?: AbortSignal) => apiGet<CallDetail>(`/api/v1/ai/requests/${encodeURIComponent(id)}`, { signal }),
   usage: (signal?: AbortSignal) => apiGet<Usage>('/api/v1/ai/usage/summary', { signal }),
-  legacy: (signal?: AbortSignal) => apiGet<components['schemas']['AiStatusDto']>('/api/v1/ai/status', { signal }),
+  testConnection: (id: string, body: ConnectionTestRequest) =>
+    apiPost<ConnectionTestResult>(`/api/v1/ai/models/${encodeURIComponent(id)}/connection-test`, body),
+  connectionTestLatest: async (id: string, revision: string, capability: Capability,
+    clientRequestId?: string, signal?: AbortSignal): Promise<ConnectionTestResult | null> => {
+    const query = new URLSearchParams({ revision, capability })
+    if (clientRequestId) query.set('clientRequestId', clientRequestId)
+    try {
+      return await apiGet<ConnectionTestResult>(
+        `/api/v1/ai/models/${encodeURIComponent(id)}/connection-tests/latest?${query}`, { signal })
+    } catch (failure) {
+      if (failure instanceof ApiError && failure.status === 404) return null
+      throw failure
+    }
+  },
+  connectionTests: (signal?: AbortSignal) =>
+    apiGet<ConnectionTestSummary[]>('/api/v1/ai/models/connection-tests/latest', { signal }),
 }

@@ -197,14 +197,31 @@ public sealed class McpBugBoundaryTests
     [InlineData("create_event")]
     [InlineData("update_event")]
     [InlineData("delete_event")]
-    [InlineData("batch_delete_events")]
-    public void EventWrites_AdvertiseTheRealOutlookBoundary(string name)
+    public void EventWrites_AdvertiseTransparentOutlookWriteback(string name)
     {
+        var description = McpToolExecutor.ToolContract.Single(t => t.Name == name).Description;
+        Assert.DoesNotContain("LOCAL EVENTS ONLY", description);
+        Assert.DoesNotContain("does NOT expose", description);
+        Assert.Contains("Outlook", description);
+        Assert.Contains("writeback", description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("clientOperationId", description);
+        Assert.Contains("Outlook", McpToolCatalog.WriteTools.Single(t => t.Name == name).Description);
+
+        var spec = McpToolTable.TryGet(name)!;
+        Assert.Contains("clientOperationId", spec.QueryParams);
+        if (name != "create_event")
+            Assert.Contains("expectedEtag", spec.QueryParams);
+    }
+
+    [Fact]
+    public void BatchDeleteEvents_StillAdvertisesTheLocalOnlyBoundary()
+    {
+        const string name = "batch_delete_events";
         var description = McpToolExecutor.ToolContract.Single(t => t.Name == name).Description;
         Assert.Contains("LOCAL EVENTS ONLY", description);
         Assert.Contains("does NOT expose", description);
-        Assert.Contains("canEdit", description);
         Assert.Contains("Outlook", McpToolCatalog.WriteTools.Single(t => t.Name == name).Description);
+        Assert.DoesNotContain("clientOperationId", McpToolTable.TryGet(name)!.QueryParams);
     }
 
     [Theory]
