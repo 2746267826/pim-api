@@ -331,6 +331,65 @@ public sealed class NoteMcpOperationStoreTests : IDisposable
         Assert.Equal(OperationId(operation, requestId), status.OperationId);
     }
 
+    [Fact]
+    public async Task PersistedFailureMessagesPassThroughFullNoteErrorSanitizer()
+    {
+        var store = Store();
+        var requestId = Guid.NewGuid();
+        const string raw =
+            "派生任务 11111111-1111-4111-8111-111111111111 调用 provider " +
+            "https://internal.example/v1 读取 /data/private/secret.md 失败";
+
+        var failure = await Assert.ThrowsAsync<NativeNoteMcpOperationException>(() =>
+            RunAsync(store, requestId, new { value = 1 },
+                _ => throw new DomainException(40901, raw)));
+
+        Assert.Equal(raw, failure.Message);
+        var fallback = NoteErrorSanitizer.FallbackMessage(409);
+        Assert.Equal(fallback, failure.Receipt.Message);
+        Assert.DoesNotContain("internal.example", failure.Receipt.Message,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain("secret.md", failure.Receipt.Message, StringComparison.Ordinal);
+
+        var status = await store.GetAsync(_owner, _noteId, requestId, default);
+        Assert.Equal(fallback, status.Receipt.Message);
+        var marker = await ReadOperationAsync(requestId);
+        Assert.Equal(fallback, marker.GetProperty("errorMessage").GetString());
+        Assert.Equal(fallback, marker.GetProperty("message").GetString());
+    }
+
+    [Fact]
+    public async Task PendingMarkersBecomeTombstonesInsteadOfReexecutingAfterPrune()
+    {
+        var store = Store();
+        var requestIds = new List<Guid>();
+        for (var index = 0; index < 202; index++)
+        {
+            var requestId = Guid.NewGuid();
+            requestIds.Add(requestId);
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+                RunAsync(store, requestId, new { value = index },
+                    _ => throw new OperationCanceledException("synthetic unknown outcome")));
+        }
+
+        var calls = 0;
+        var replay = await Assert.ThrowsAsync<NativeNoteMcpOperationException>(() =>
+            RunAsync(store, requestIds[0], new { value = 0 }, _ =>
+            {
+                calls++;
+                return Task.FromResult(Result(requestIds[0], "must not run"));
+            }));
+
+        Assert.Equal(40901, replay.ErrorCode);
+        Assert.Equal("unknown", replay.Receipt.Status);
+        Assert.Contains("超出本机核对窗口", replay.Message);
+        Assert.Equal(0, calls);
+
+        var status = await store.GetAsync(_owner, _noteId, requestIds[0], default);
+        Assert.Equal("unknown", status.State);
+        Assert.Equal("unknown", status.Receipt.Status);
+    }
+
     private NoteMcpOperationStore Store()
         => new(Options.Create(new NoteMaterialUploadOptions { StorageRoot = _root }));
 

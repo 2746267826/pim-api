@@ -5,6 +5,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Pim.Api.Middleware;
 using Pim.Core.Exceptions;
+using Pim.Core.Notes;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
 using Pim.Infrastructure.Data.Entities;

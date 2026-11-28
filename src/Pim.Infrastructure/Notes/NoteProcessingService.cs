@@ -279,10 +279,12 @@ public sealed class NoteProcessingService(
                 }
                 catch (DomainException error)
                 {
-                    state.PendingReason = error.Message;
+                    var safeMessage = NoteErrorSanitizer.SanitizeOperationMessage(
+                        error.Message, error.ErrorCode);
+                    state.PendingReason = safeMessage;
                     state.Issues =
                     [
-                        new("asr_attempt_recovery", error.Message, NoteProcessingTaskKind.Asr)
+                        new("asr_attempt_recovery", safeMessage, NoteProcessingTaskKind.Asr)
                     ];
                     _ = await processing.SaveLockedAsync(state, lockedCt);
                     if (!automatic) throw;
@@ -346,10 +348,12 @@ public sealed class NoteProcessingService(
             }
             catch (DomainException error)
             {
-                state.PendingReason = error.Message;
+                var safeMessage = NoteErrorSanitizer.SanitizeOperationMessage(
+                    error.Message, error.ErrorCode);
+                state.PendingReason = safeMessage;
                 state.Issues =
                 [
-                    new("processing_not_started", error.Message,
+                    new("processing_not_started", safeMessage,
                         startingTask ?? (hasAudio ? NoteProcessingTaskKind.Asr : NoteProcessingTaskKind.Derived))
                 ];
                 _ = await processing.SaveLockedAsync(state, lockedCt);

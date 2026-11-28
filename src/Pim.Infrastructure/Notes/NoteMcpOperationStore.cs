@@ -16,10 +16,20 @@ namespace Pim.Infrastructure.Notes;
 /// but before the result is written, the next call reports an unconfirmed outcome instead of
 /// executing the same mutation again. Failures and unknown outcomes are returned as structured
 /// receipts keyed by a stable external operation id.
+/// <para>
+/// Scope: this journal is a per-owner JSON file guarded by a process-local file lock. It gives
+/// exactly-once replay only on a single API instance/host; it is not a multi-instance
+/// idempotency ledger. Cross-instance replay protection depends on the PostgreSQL ledger tracked
+/// by #621. Pending/unknown markers are deliberately not age-pruned, and when capacity forces
+/// eviction they become durable tombstones so a later replay fails closed instead of executing
+/// as a brand-new operation.
+/// </para>
 /// </summary>
 public sealed class NoteMcpOperationStore(IOptions<NoteMaterialUploadOptions> options, TimeProvider? clock = null)
 {
     private const int MaxRetainedRequests = 200;
+    private const int MaxRetainedUnconfirmed = 200;
+    private const int MaxRetainedTombstones = 2000;
     private static readonly TimeSpan Retention = TimeSpan.FromDays(30);
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     private const string PendingState = "pending";
@@ -43,7 +53,7 @@ public sealed class NoteMcpOperationStore(IOptions<NoteMaterialUploadOptions> op
 
         await using var lease = await LockAsync(owner, ct);
         var ledger = await LoadAsync(owner, ct);
-        Prune(ledger);
+        if (Prune(ledger)) await SaveAsync(owner, ledger, ct);
         if (ledger.Operations.TryGetValue(Key(requestId), out var existing))
         {
             if (existing.NoteId != Guid.Empty && existing.NoteId != noteId)
@@ -65,8 +75,10 @@ public sealed class NoteMcpOperationStore(IOptions<NoteMaterialUploadOptions> op
             if (existing.State == FailedState)
             {
                 var code = existing.ErrorCode ?? 40901;
-                var failedMessage = existing.ErrorMessage
-                    ?? "该 requestId 的上一次执行没有产生可重放结果，请先重新读取最新状态";
+                var failedMessage = NoteErrorSanitizer.SanitizeOperationMessage(
+                    existing.ErrorMessage
+                    ?? "该 requestId 的上一次执行没有产生可重放结果，请先重新读取最新状态",
+                    code);
                 var failedReceipt = StoredReceipt(existing, noteId, storedOperationId, "failed",
                     _clock.GetUtcNow(), replayed: false, failedMessage, code);
                 throw new NativeNoteMcpOperationException(code, failedMessage, failedReceipt);
@@ -88,9 +100,22 @@ public sealed class NoteMcpOperationStore(IOptions<NoteMaterialUploadOptions> op
                 {
                     OperationId = operationId,
                     Replayed = true,
-                    Message = replayed.Receipt.Message + "（已幂等重放，未再次执行）",
+                    Message = NoteErrorSanitizer.SanitizeDomainMessage(
+                        replayed.Receipt.Message, 400) + "（已幂等重放，未再次执行）",
                 },
             };
+        }
+
+        if (ledger.RetiredRequests.TryGetValue(Key(requestId), out var retired))
+        {
+            if (retired.NoteId != Guid.Empty && retired.NoteId != noteId)
+                throw new DomainException(40401, "该 requestId 没有对应当前笔记的操作记录");
+            const string message =
+                "该 requestId 的执行结果曾未确认，且已超出本机核对窗口；为避免重复写入，不能再次执行。请重新读取最新状态并换用新的 requestId";
+            var retiredReceipt = new NativeNoteMcpReceiptDto(
+                BuildOperationId(owner, retired.Operation, requestId), retired.Operation, noteId,
+                null, "unknown", false, _clock.GetUtcNow(), message, 40901);
+            throw new NativeNoteMcpOperationException(40901, message, retiredReceipt);
         }
 
         var operationKey = Key(requestId);
@@ -126,10 +151,12 @@ public sealed class NoteMcpOperationStore(IOptions<NoteMaterialUploadOptions> op
         }
         catch (DomainException error)
         {
+            var safeMessage = NoteErrorSanitizer.SanitizeOperationMessage(error.Message,
+                error.ErrorCode);
             await MarkFailedAsync(owner, ledger, operationKey, pending, FailedState,
-                error.ErrorCode, error.Message, ct);
+                error.ErrorCode, safeMessage, ct);
             var receipt = StoredReceipt(pending, noteId, operationId, "failed",
-                _clock.GetUtcNow(), replayed: false, error.Message, error.ErrorCode);
+                _clock.GetUtcNow(), replayed: false, safeMessage, error.ErrorCode);
             throw new NativeNoteMcpOperationException(error.ErrorCode, error.Message, receipt);
         }
         catch (Exception)
@@ -168,9 +195,23 @@ public sealed class NoteMcpOperationStore(IOptions<NoteMaterialUploadOptions> op
         if (requestId == Guid.Empty) throw new DomainException(40001, "requestId 不能为空");
         await using var lease = await LockAsync(owner, ct);
         var ledger = await LoadAsync(owner, ct);
-        Prune(ledger);
+        if (Prune(ledger)) await SaveAsync(owner, ledger, ct);
         if (!ledger.Operations.TryGetValue(Key(requestId), out var stored))
+        {
+            if (ledger.RetiredRequests.TryGetValue(Key(requestId), out var retired))
+            {
+                if (retired.NoteId != Guid.Empty && retired.NoteId != noteId)
+                    throw new DomainException(40401, "该 requestId 没有对应当前笔记的操作记录");
+                const string retiredMessage =
+                    "该 requestId 的执行结果曾未确认，且已超出本机核对窗口；为避免重复写入，不能再次执行。请重新读取最新状态并换用新的 requestId";
+                var retiredReceipt = new NativeNoteMcpReceiptDto(
+                    BuildOperationId(owner, retired.Operation, requestId), retired.Operation, noteId,
+                    null, "unknown", false, _clock.GetUtcNow(), retiredMessage, 40901);
+                return new NativeNoteMcpOperationStatusDto(retiredReceipt.OperationId,
+                    retired.Operation, noteId, "unknown", retiredReceipt);
+            }
             throw new DomainException(40401, "该 requestId 没有对应的 native-note 操作记录");
+        }
         if (stored.NoteId != Guid.Empty && stored.NoteId != noteId)
             throw new DomainException(40401, "该 requestId 没有对应当前笔记的操作记录");
 
@@ -195,13 +236,15 @@ public sealed class NoteMcpOperationStore(IOptions<NoteMaterialUploadOptions> op
                 OperationId = operationId,
                 NoteId = noteId,
                 Replayed = false,
+                Message = NoteErrorSanitizer.SanitizeDomainMessage(receipt.Message, 400),
             };
         }
         else
         {
             var status = state == "failed" ? "failed" : "unknown";
             var message = state == "failed"
-                ? stored.ErrorMessage ?? "该 requestId 的执行失败"
+                ? NoteErrorSanitizer.SanitizeOperationMessage(
+                    stored.ErrorMessage ?? "该 requestId 的执行失败", stored.ErrorCode ?? 40901)
                 : "该 requestId 的执行结果尚未确认";
             receipt = StoredReceipt(stored, noteId, operationId, status,
                 stored.CompletedAt ?? stored.CreatedAt, replayed: false, message,
@@ -243,13 +286,15 @@ public sealed class NoteMcpOperationStore(IOptions<NoteMaterialUploadOptions> op
         StoredMcpOperation pending, string state, int errorCode, string errorMessage,
         CancellationToken ct)
     {
+        var safeMessage = Truncate(NoteErrorSanitizer.SanitizeOperationMessage(errorMessage,
+            errorCode), 500);
         ledger.Operations[operationKey] = pending with
         {
             State = state,
             ReceiptStatus = state,
             ErrorCode = errorCode,
-            ErrorMessage = Truncate(errorMessage, 500),
-            Message = Truncate(errorMessage, 500),
+            ErrorMessage = safeMessage,
+            Message = safeMessage,
             CompletedAt = _clock.GetUtcNow(),
         };
         try
@@ -263,21 +308,62 @@ public sealed class NoteMcpOperationStore(IOptions<NoteMaterialUploadOptions> op
         }
     }
 
-    private void Prune(Ledger ledger)
+    private bool Prune(Ledger ledger)
     {
+        var changed = false;
         var cutoff = _clock.GetUtcNow() - Retention;
         foreach (var key in ledger.Operations
-                     .Where(item => item.Value.CreatedAt < cutoff)
+                     .Where(item => item.Value.State is CompletedState or FailedState &&
+                                    item.Value.CreatedAt < cutoff)
                      .Select(item => item.Key)
                      .ToArray())
+        {
             ledger.Operations.Remove(key);
-        if (ledger.Operations.Count <= MaxRetainedRequests) return;
+            changed = true;
+        }
+
         foreach (var key in ledger.Operations
+                     .Where(item => item.Value.State is CompletedState or FailedState)
                      .OrderByDescending(item => item.Value.CreatedAt)
                      .Skip(MaxRetainedRequests)
                      .Select(item => item.Key)
                      .ToArray())
+        {
             ledger.Operations.Remove(key);
+            changed = true;
+        }
+
+        // A pending/unknown marker represents a mutation whose outcome was never confirmed.
+        // Evicting it silently would let the same requestId execute the mutation again, so the
+        // eviction leaves a tombstone that keeps failing closed. This is a single-host
+        // mitigation; #621's PostgreSQL ledger is required for durable cross-instance replay
+        // protection.
+        foreach (var (key, entry) in ledger.Operations
+                     .Where(item => item.Value.State is PendingState or UnknownState)
+                     .OrderByDescending(item => item.Value.CreatedAt)
+                     .Skip(MaxRetainedUnconfirmed)
+                     .ToArray())
+        {
+            ledger.Operations.Remove(key);
+            ledger.RetiredRequests[key] = new RetiredOperation
+            {
+                Operation = entry.Operation,
+                NoteId = entry.NoteId,
+                RetiredAt = _clock.GetUtcNow(),
+            };
+            changed = true;
+        }
+
+        foreach (var key in ledger.RetiredRequests
+                     .OrderByDescending(item => item.Value.RetiredAt)
+                     .Skip(MaxRetainedTombstones)
+                     .Select(item => item.Key)
+                     .ToArray())
+        {
+            ledger.RetiredRequests.Remove(key);
+            changed = true;
+        }
+        return changed;
     }
 
     private async Task<Ledger> LoadAsync(Guid owner, CancellationToken ct)
@@ -355,6 +441,14 @@ public sealed class NoteMcpOperationStore(IOptions<NoteMaterialUploadOptions> op
         public int SchemaVersion { get; init; } = 1;
         public Guid Owner { get; init; }
         public Dictionary<string, StoredMcpOperation> Operations { get; init; } = new(StringComparer.Ordinal);
+        public Dictionary<string, RetiredOperation> RetiredRequests { get; init; } = new(StringComparer.Ordinal);
+    }
+
+    private sealed record RetiredOperation
+    {
+        public required string Operation { get; init; }
+        public Guid NoteId { get; init; }
+        public DateTimeOffset RetiredAt { get; init; }
     }
 
     private sealed record StoredMcpOperation

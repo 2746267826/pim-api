@@ -23,6 +23,7 @@ public sealed class NativeNoteMcpService(
     TimeProvider? clock = null)
 {
     public const int MaxPackageBytes = 64 * 1024 * 1024;
+    internal const int MaxPackageEntries = 512;
     private const int MaxBase64Characters = ((MaxPackageBytes + 2) / 3) * 4 + 16;
     private static readonly string[] PackageMetadataPaths = ["material-version.json", "materials.json"];
     private readonly TimeProvider _clock = clock ?? TimeProvider.System;
@@ -609,7 +610,7 @@ public sealed class NativeNoteMcpService(
             status.ResumePending,
             status.Scope,
             status.IncrementalScopeSupported,
-            status.PendingReason,
+            SanitizePendingReason(status.PendingReason),
             MapChain("asr", status.Asr),
             MapChain("organization", status.Derived),
             status.Artifacts
@@ -617,11 +618,17 @@ public sealed class NativeNoteMcpService(
                     item.Kind.ToString(), item.HeadVersionId))
                 .ToArray(),
             status.Issues
-                .Select(item => new NativeNoteMcpIssueDto(item.Code, item.Message,
+                .Select(item => new NativeNoteMcpIssueDto(item.Code,
+                    SanitizePendingReason(item.Message) ?? string.Empty,
                     item.Task?.ToString().ToLowerInvariant()))
                 .ToArray(),
             status.CreatedAt,
             status.UpdatedAt);
+
+    private static string? SanitizePendingReason(string? message)
+        => string.IsNullOrWhiteSpace(message)
+            ? message
+            : NoteErrorSanitizer.SanitizeOperationMessage(message, 40901);
 
     internal static NativeNoteMcpProcessingChainDto MapChain(string domain,
         NoteProcessingChainDto chain) => new(
@@ -663,7 +670,7 @@ public sealed class NativeNoteMcpService(
             throw new DomainException(40901, "笔记版本已变化，请先重新读取 get_native_note_versions 后再试");
     }
 
-    private static PackageContents ParsePackage(Guid noteId, string packageBase64, Guid versionId)
+    internal static PackageContents ParsePackage(Guid noteId, string packageBase64, Guid versionId)
     {
         if (string.IsNullOrWhiteSpace(packageBase64))
             throw new DomainException(40001, "材料包为空");
@@ -689,12 +696,18 @@ public sealed class NativeNoteMcpService(
                 ZipArchiveMode.Read, leaveOpen: false);
             if (archive.Entries.Count == 0)
                 throw new DomainException(40001, "材料包为空");
+            // Bound the central directory before per-entry decompression/caching so a ZIP with
+            // an unreasonable number of tiny entries cannot exhaust CPU or the file ledger.
+            if (archive.Entries.Count > MaxPackageEntries)
+                throw new DomainException(41301,
+                    $"材料包条目数超过 {MaxPackageEntries} 个上限");
             entries = new Dictionary<string, byte[]>(StringComparer.Ordinal);
             long total = 0;
             foreach (var entry in archive.Entries)
             {
                 var path = entry.FullName.Replace('\\', '/');
                 if (path.Length == 0 || path.EndsWith('/') ||
+                    path.Length > 512 ||
                     path.StartsWith('/') || path.Contains(':') ||
                     path.Split('/').Any(segment => segment is "" or "." or ".."))
                     throw new DomainException(40001, "材料包包含无效路径");
@@ -842,7 +855,7 @@ public sealed class NativeNoteMcpService(
     private static string Hash(string text)
         => Hash(Encoding.UTF8.GetBytes(text));
 
-    private sealed record PackageContents(
+    internal sealed record PackageContents(
         Guid VersionId,
         byte[] ZipBytes,
         string InputJson,
