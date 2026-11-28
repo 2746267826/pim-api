@@ -73,6 +73,7 @@ public sealed class NoteAsrJob(NoteAsrTaskStore tasks, NoteMaterialUploadStore m
                 ?? (!state.StopRequested ? state.Steps.FirstOrDefault(x => x.Current.Status == "Queued") : null);
             if (step is null) return;
             var requestId = step.Current.RequestId;
+            var executionEpoch = step.ExecutionEpoch;
             await AiCallRecovery.RecoverExpiredAsync(db, ct);
             var receipt = await db.AiRequestLogs.AsNoTracking().SingleOrDefaultAsync(
                 x => x.UserId == owner && x.ClientRequestId == requestId, ct);
@@ -120,27 +121,47 @@ public sealed class NoteAsrJob(NoteAsrTaskStore tasks, NoteMaterialUploadStore m
                         return;
                     }
                     var adaptive = await RunAdaptiveAsync(owner, id, state, step,
-                        Math.Min(NoteAsrAdaptiveOptions.Default.MaxCalls, remaining), ct);
+                        Math.Min(NoteAsrAdaptiveOptions.Default.MaxCalls, remaining), executionEpoch, ct);
+                    var latest = await tasks.ReadAsync(owner, id, ct);
+                    if (latest.AttemptId != state.AttemptId ||
+                        !EpochMatches(latest, step.Index, executionEpoch)) return;
                     if (adaptive.Status == NoteAsrAdaptiveRunStatus.Succeeded)
                     {
-                        await RecordAdaptiveSuccessAsync(owner, id, state, step, adaptive, ct);
+                        await RecordAdaptiveSuccessAsync(owner, id, state, step, adaptive,
+                            executionEpoch, ct);
                         continue;
                     }
-                    await RecordAdaptiveFailureAsync(owner, id, step, adaptive, ct);
+                    await RecordAdaptiveFailureAsync(owner, id, state.AttemptId!.Value, step, adaptive,
+                        executionEpoch, ct);
                     return;
                 }
-                await tasks.UpdateAsync(owner, id, current =>
+                byte[] bytes;
+                try
                 {
-                    if (!current.StopRequested) current.Steps[step.Index].Current.Status = "Running";
-                }, ct);
-                await SyncCloudAttemptAsync(owner, id, ct);
-                var bytes = await materials.ReadAudioSliceAsync(owner, state.Request.VersionId,
-                    step.FileIndex, step.SourceOffset, step.Samples, ct);
+                    bytes = await materials.ReadAudioSliceAsync(owner, state.Request.VersionId,
+                        step.FileIndex, step.SourceOffset, step.Samples, ct,
+                        NoteAsrPlan.BudgetOrDefault(state.SamplesPerCall));
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception error) when (error is IOException or InvalidDataException or
+                    UnauthorizedAccessException)
+                {
+                    await MarkAsync("Blocked",
+                        "本地音频输入读取失败，未发送至转写服务；请核对材料后显式重试", true);
+                    return;
+                }
                 if ((await tasks.ReadAsync(owner, id, ct)).StopRequested)
                 {
                     await MarkAsync("Cancelled", "任务已停止，此片未发送", false);
                     return;
                 }
+                await tasks.UpdateAsync(owner, id, current =>
+                {
+                    if (!EpochMatches(current, step.Index, executionEpoch))
+                        throw new StaleExecutionException();
+                    if (!current.StopRequested) current.Steps[step.Index].Current.Status = "Running";
+                }, ct);
+                await SyncCloudAttemptAsync(owner, id, ct, step.Index, executionEpoch);
                 var request = new AiAsrCallRequest(requestId, owner,
                     new($"segment-{step.Index + 1:D5}.wav", "wav", Convert.ToBase64String(bytes)),
                     state.Request.Consent, state.Request.Language, state.Request.Consent.ModelId);
@@ -149,6 +170,7 @@ public sealed class NoteAsrJob(NoteAsrTaskStore tasks, NoteMaterialUploadStore m
                 if (result.Status is AiRequestStatus.Running or AiRequestStatus.Blocked) return;
             }
             catch (OperationCanceledException) { throw; }
+            catch (StaleExecutionException) { return; }
             catch (DomainException error)
             {
                 if (error.ErrorCode == 50302)
@@ -168,49 +190,87 @@ public sealed class NoteAsrJob(NoteAsrTaskStore tasks, NoteMaterialUploadStore m
 
             async Task RecordAsync(AiTextCallResultDto result)
             {
-                using var budget = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-                await tasks.UpdateAsync(owner, id, current =>
+                try
                 {
-                    var attempt = current.Steps[step.Index].Current;
-                    if (attempt.RequestId != requestId)
-                        throw new InvalidDataException("ASR attempt changed during execution");
-                    attempt.LogId = result.LogId;
-                    attempt.Status = result.Status.ToString();
-                    attempt.ErrorMessage = result.ErrorMessage;
-                    current.StopRequested |= result.Status == AiRequestStatus.Blocked;
-                    current.CompletionAcknowledged |= current.Route is not null &&
-                        current.Steps.All(x => x.Current.Status == "Succeeded");
-                }, budget.Token);
-                await SyncCloudAttemptAsync(owner, id, budget.Token);
+                    using var budget = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                    await tasks.UpdateAsync(owner, id, current =>
+                    {
+                        if (!EpochMatches(current, step.Index, executionEpoch))
+                            throw new StaleExecutionException();
+                        var attempt = current.Steps[step.Index].Current;
+                        if (attempt.RequestId != requestId)
+                            throw new StaleExecutionException();
+                        attempt.LogId = result.LogId;
+                        attempt.Status = result.Status.ToString();
+                        attempt.ErrorMessage = result.ErrorMessage;
+                        current.StopRequested |= result.Status == AiRequestStatus.Blocked;
+                        current.CompletionAcknowledged |= current.Route is not null &&
+                            current.Steps.All(x => x.Current.Status == "Succeeded");
+                    }, budget.Token);
+                    await SyncCloudAttemptAsync(owner, id, budget.Token, step.Index, executionEpoch);
+                }
+                catch (StaleExecutionException) { }
             }
 
             async Task MarkAsync(string status, string message, bool stop)
             {
-                using var budget = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-                await tasks.UpdateAsync(owner, id, current =>
+                try
                 {
-                    var attempt = current.Steps[step.Index].Current;
-                    attempt.Status = status;
-                    attempt.ErrorMessage = message;
-                    current.StopRequested |= stop;
-                }, budget.Token);
-                await SyncCloudAttemptAsync(owner, id, budget.Token);
+                    using var budget = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                    await tasks.UpdateAsync(owner, id, current =>
+                    {
+                        if (!EpochMatches(current, step.Index, executionEpoch))
+                            throw new StaleExecutionException();
+                        var attempt = current.Steps[step.Index].Current;
+                        attempt.Status = status;
+                        attempt.ErrorMessage = message;
+                        current.StopRequested |= stop;
+                    }, budget.Token);
+                    await SyncCloudAttemptAsync(owner, id, budget.Token, step.Index, executionEpoch);
+                }
+                catch (StaleExecutionException) { }
             }
         }
     }
 
     private async Task<NoteAsrAdaptiveRun> RunAdaptiveAsync(Guid owner, Guid taskId, NoteAsrState rootState,
-        NoteAsrStep rootStep, int maxCalls, CancellationToken ct)
+        NoteAsrStep rootStep, int maxCalls, Guid? executionEpoch, CancellationToken ct)
     {
         var options = NoteAsrAdaptiveOptions.Default with { MaxCalls = maxCalls };
+        var preparedAudio = new Dictionary<Guid, byte[]>();
         var engine = new NoteAsrAdaptiveTranscription(
             options,
             async (request, token) =>
             {
+                var current = await tasks.ReadAsync(owner, taskId, token);
+                if (current.StopRequested) throw new OperationCanceledException(token);
+                if (current.AttemptId != rootState.AttemptId)
+                    throw new DomainException(40901, "任务执行快照已变化");
+                if (!EpochMatches(current, rootStep.Index, executionEpoch))
+                    throw new StaleExecutionException();
+                var version = await materials.GetAsync(owner, rootState.Request.VersionId, token);
+                if (NoteMaterialManifestValidator.Hash(version.InputJson) != rootState.InputSha256 ||
+                    NoteMaterialManifestValidator.Hash(version.ManifestJson) != rootState.ManifestSha256)
+                    throw new DomainException(40901, "固定材料已改变，本片未发送");
+                var start = checked(rootStep.SourceOffset + request.Range.OffsetSamples);
+                if (start < rootStep.SourceOffset ||
+                    checked(start + request.Range.Samples) > rootStep.SourceOffset + rootStep.Samples)
+                    throw new DomainException(40901, "本地音频范围超出固定分片，本片未发送");
+                var bytes = await materials.ReadAudioSliceAsync(owner, rootState.Request.VersionId,
+                    rootStep.FileIndex, start, request.Range.Samples, token,
+                    NoteAsrPlan.BudgetOrDefault(rootState.SamplesPerCall));
+                current = await tasks.ReadAsync(owner, taskId, token);
+                if (current.StopRequested) throw new OperationCanceledException(token);
+                if (current.AttemptId != rootState.AttemptId)
+                    throw new DomainException(40901, "任务执行快照已变化");
+                if (!EpochMatches(current, rootStep.Index, executionEpoch))
+                    throw new StaleExecutionException();
                 await tasks.UpdateAsync(owner, taskId, state =>
                 {
                     if (state.AttemptId != rootState.AttemptId || state.StopRequested)
                         throw new DomainException(40901, "任务执行快照或停止状态已变化");
+                    if (!EpochMatches(state, rootStep.Index, executionEpoch))
+                        throw new StaleExecutionException();
                     var attempt = LocateAttempt(state.Steps, rootStep.Index, request.ChildRequestId);
                     if (attempt is null)
                     {
@@ -234,10 +294,13 @@ public sealed class NoteAsrJob(NoteAsrTaskStore tasks, NoteMaterialUploadStore m
                     attempt.Status = "Running";
                     attempt.ErrorMessage = null;
                 }, token);
+                preparedAudio[request.ChildRequestId] = bytes;
             },
             async (request, token) =>
             {
                 var current = await tasks.ReadAsync(owner, taskId, token);
+                if (!EpochMatches(current, rootStep.Index, executionEpoch))
+                    return new(NoteAsrAdaptiveOutcome.Cancelled, ReasonCode: "execution_superseded");
                 var attempt = LocateAttempt(current.Steps, rootStep.Index, request.ChildRequestId);
                 if (attempt is null) return null;
                 if (attempt.LogId is not { } logId)
@@ -248,40 +311,83 @@ public sealed class NoteAsrJob(NoteAsrTaskStore tasks, NoteMaterialUploadStore m
                 return row is null ? TerminalWithoutLog(attempt) : Classify(row, attempt);
             },
             async (request, token) =>
-                await CallAdaptiveAsync(owner, taskId, rootState, rootStep, request, token));
+                await CallAdaptiveAsync(owner, taskId, rootState, rootStep, request, preparedAudio,
+                    executionEpoch, token));
         return await engine.RunAsync(rootStep.Current.RequestId,
             new NoteAsrAdaptiveRange(0, rootStep.Samples, NoteAsrPlan.SampleRate), ct);
     }
 
     private async ValueTask<NoteAsrAdaptiveResult> CallAdaptiveAsync(Guid owner, Guid taskId,
-        NoteAsrState rootState, NoteAsrStep rootStep, NoteAsrAdaptiveRequest request, CancellationToken ct)
+        NoteAsrState rootState, NoteAsrStep rootStep, NoteAsrAdaptiveRequest request,
+        Dictionary<Guid, byte[]> preparedAudio, Guid? executionEpoch, CancellationToken ct)
     {
-        var current = await tasks.ReadAsync(owner, taskId, ct);
-        if (current.StopRequested)
-            return new(NoteAsrAdaptiveOutcome.Cancelled, ReasonCode: "stop_requested");
-        var version = await materials.GetAsync(owner, rootState.Request.VersionId, ct);
-        if (NoteMaterialManifestValidator.Hash(version.InputJson) != rootState.InputSha256 ||
-            NoteMaterialManifestValidator.Hash(version.ManifestJson) != rootState.ManifestSha256)
-            return new(NoteAsrAdaptiveOutcome.ConfigurationRejected, ReasonCode: "material_changed");
-        var start = checked(rootStep.SourceOffset + request.Range.OffsetSamples);
-        if (start < rootStep.SourceOffset ||
-            checked(start + request.Range.Samples) > rootStep.SourceOffset + rootStep.Samples)
-            return new(NoteAsrAdaptiveOutcome.ConfigurationRejected, ReasonCode: "range_outside_fixed_segment");
-        var bytes = await materials.ReadAudioSliceAsync(owner, rootState.Request.VersionId,
-            rootStep.FileIndex, start, request.Range.Samples, ct);
-        var routedAttempt = await db.NoteAsrAttempts.AsNoTracking().SingleOrDefaultAsync(x =>
-            x.Id == rootState.AttemptId && x.OwnerId == owner, ct)
-            ?? throw new DomainException(40901, "ASR 执行快照不存在");
+        NoteAsrState current;
+        NoteAsrAttemptEntity? routedAttempt;
+        try
+        {
+            current = await tasks.ReadAsync(owner, taskId, ct);
+            if (current.AttemptId != rootState.AttemptId ||
+                !EpochMatches(current, rootStep.Index, executionEpoch))
+            {
+                // A retry can happen after preparation marked the child Running. The retry
+                // supersedes the open old attempt tree, so the stale pass must neither call the
+                // provider nor write into the new step.
+                return new(NoteAsrAdaptiveOutcome.Cancelled, ReasonCode: "attempt_changed");
+            }
+            if (current.StopRequested)
+            {
+                await PersistAdaptiveAttemptAsync(owner, taskId, rootStep.Index, request.ChildRequestId,
+                    "Cancelled", "任务已停止，此调用未发送", null, executionEpoch,
+                    CancellationToken.None);
+                return new(NoteAsrAdaptiveOutcome.Cancelled, ReasonCode: "stop_requested");
+            }
+            routedAttempt = await db.NoteAsrAttempts.AsNoTracking().SingleOrDefaultAsync(x =>
+                x.Id == rootState.AttemptId && x.OwnerId == owner, ct);
+        }
+        catch (OperationCanceledException)
+        {
+            await PersistAdaptiveAttemptAsync(owner, taskId, rootStep.Index, request.ChildRequestId,
+                "Cancelled", "任务已停止或调用取消，此调用未发送", null, executionEpoch,
+                CancellationToken.None);
+            throw;
+        }
+        if (!preparedAudio.Remove(request.ChildRequestId, out var bytes))
+        {
+            await PersistAdaptiveAttemptAsync(owner, taskId, rootStep.Index, request.ChildRequestId,
+                "Blocked", "本地音频输入尚未准备完成，未发送至转写服务", null, executionEpoch,
+                CancellationToken.None);
+            return new(NoteAsrAdaptiveOutcome.PreparationFailed,
+                ReasonCode: "input_not_prepared", Reason: "本地音频输入尚未准备完成");
+        }
+        if (routedAttempt is null)
+        {
+            await PersistAdaptiveAttemptAsync(owner, taskId, rootStep.Index, request.ChildRequestId,
+                "Blocked", "ASR 执行快照不存在，本片未发送", null, executionEpoch,
+                CancellationToken.None);
+            return new(NoteAsrAdaptiveOutcome.ConfigurationRejected,
+                ReasonCode: "attempt_missing", Reason: "ASR 执行快照不存在");
+        }
         if (!CanDispatchAttempt(routedAttempt, owner, taskId, rootState))
+        {
+            await PersistAdaptiveAttemptAsync(owner, taskId, rootStep.Index, request.ChildRequestId,
+                "Blocked", "ASR 执行快照已停止或处于不可执行状态，本片未发送", null,
+                executionEpoch, CancellationToken.None);
             return new(NoteAsrAdaptiveOutcome.ConfigurationRejected,
                 ReasonCode: "attempt_not_dispatchable",
                 Reason: "ASR 执行快照已停止或处于不可执行状态");
+        }
         if (string.IsNullOrWhiteSpace(routedAttempt.PromptRendered) ||
             string.IsNullOrWhiteSpace(routedAttempt.PromptSha256) ||
             string.IsNullOrWhiteSpace(routedAttempt.PromptRevision) ||
             string.IsNullOrWhiteSpace(routedAttempt.PromptTemplateSha256) ||
             string.IsNullOrWhiteSpace(routedAttempt.PromptTemplateRevision))
-            throw new DomainException(40901, "ASR 提示词快照缺失，不能在当前配置下重发");
+        {
+            await PersistAdaptiveAttemptAsync(owner, taskId, rootStep.Index, request.ChildRequestId,
+                "Blocked", "ASR 提示词快照缺失，本片未发送", null, executionEpoch,
+                CancellationToken.None);
+            return new(NoteAsrAdaptiveOutcome.ConfigurationRejected,
+                ReasonCode: "prompt_snapshot_missing", Reason: "ASR 提示词快照缺失");
+        }
         var prompt = new AiAsrPromptSnapshot(routedAttempt.PromptRendered,
             rootState.Request.Language, routedAttempt.PromptSha256, routedAttempt.PromptRevision,
             routedAttempt.PromptTemplateSha256, routedAttempt.PromptTemplateRevision);
@@ -292,38 +398,48 @@ public sealed class NoteAsrJob(NoteAsrTaskStore tasks, NoteMaterialUploadStore m
         AiTextCallResultDto result;
         try
         {
+            var latest = await tasks.ReadAsync(owner, taskId, ct);
+            if (!EpochMatches(latest, rootStep.Index, executionEpoch))
+                return new(NoteAsrAdaptiveOutcome.Cancelled,
+                    ReasonCode: "execution_superseded");
             result = await calls.CallForOwnerAsync(owner, callRequest, taskId, ct);
         }
         catch (OperationCanceledException)
         {
             await PersistAdaptiveAttemptAsync(owner, taskId, rootStep.Index, request.ChildRequestId,
-                "Unknown", "ASR 调用取消，未确认供应商是否处理；不会自动重发", null, CancellationToken.None);
+                "Unknown", "ASR 调用取消，未确认供应商是否处理；不会自动重发", null,
+                executionEpoch, CancellationToken.None);
             throw;
         }
         catch (DomainException error)
         {
             var busy = error.ErrorCode == 50302;
             await PersistAdaptiveAttemptAsync(owner, taskId, rootStep.Index, request.ChildRequestId,
-                busy ? "Queued" : "Blocked", error.Message, null, CancellationToken.None);
+                busy ? "Queued" : "Blocked", error.Message, null, executionEpoch,
+                CancellationToken.None);
             return busy
                 ? new(NoteAsrAdaptiveOutcome.TransientFailure, ReasonCode: "admission_busy", Reason: error.Message)
                 : new(NoteAsrAdaptiveOutcome.ConfigurationRejected,
                     ReasonCode: "provider_configuration_or_admission_rejected", Reason: error.Message);
         }
         await PersistAdaptiveAttemptAsync(owner, taskId, rootStep.Index, request.ChildRequestId,
-            result.Status.ToString(), result.ErrorMessage, result.LogId, CancellationToken.None);
+            result.Status.ToString(), result.ErrorMessage, result.LogId, executionEpoch,
+            CancellationToken.None);
         var row = await db.AiRequestLogs.AsNoTracking().SingleAsync(x => x.Id == result.LogId &&
             x.UserId == owner && x.Purpose == "ai.asr-call" && x.SourceObjectId == taskId.ToString(), ct);
         return Classify(row, null);
     }
 
     private async Task PersistAdaptiveAttemptAsync(Guid owner, Guid taskId, int segmentIndex,
-        Guid requestId, string status, string? error, Guid? logId, CancellationToken ct)
+        Guid requestId, string status, string? error, Guid? logId, Guid? executionEpoch,
+        CancellationToken ct)
     {
         using var budget = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, budget.Token);
         await tasks.UpdateAsync(owner, taskId, state =>
         {
+            if (!EpochMatches(state, segmentIndex, executionEpoch))
+                throw new StaleExecutionException();
             var attempt = LocateAttempt(state.Steps, segmentIndex, requestId)
                 ?? throw new InvalidDataException("Adaptive ASR child attempt is missing");
             attempt.Status = status;
@@ -343,7 +459,7 @@ public sealed class NoteAsrJob(NoteAsrTaskStore tasks, NoteMaterialUploadStore m
         attempt.State is ("Queued" or "Running");
 
     private async Task RecordAdaptiveSuccessAsync(Guid owner, Guid taskId, NoteAsrState state,
-        NoteAsrStep step, NoteAsrAdaptiveRun run, CancellationToken ct)
+        NoteAsrStep step, NoteAsrAdaptiveRun run, Guid? executionEpoch, CancellationToken ct)
     {
         if (run.Status != NoteAsrAdaptiveRunStatus.Succeeded || run.Successes.Count == 0)
             throw new InvalidDataException("Adaptive ASR success requires complete ordered transcript coverage");
@@ -364,6 +480,7 @@ public sealed class NoteAsrJob(NoteAsrTaskStore tasks, NoteMaterialUploadStore m
         {
             recordFormat = "adaptive-transcription-v1",
             rootRequestId = step.Current.RequestId,
+            executionEpoch = executionEpoch,
             promptRevision = attemptEntity.PromptRevision,
             promptSha256 = attemptEntity.PromptSha256,
             children = run.Successes.Select(x => new
@@ -375,57 +492,109 @@ public sealed class NoteAsrJob(NoteAsrTaskStore tasks, NoteMaterialUploadStore m
             }).ToArray()
         }, Json);
         var resultSha = Sha256(transcript);
-        var providerHandle = "adaptive:" + step.Current.RequestId.ToString("N");
-        var existing = await db.NoteAsrSegmentEvidence.SingleOrDefaultAsync(x => x.OwnerId == owner &&
-            x.AttemptId == attemptEntity.Id && x.FencingToken == attemptEntity.FencingToken &&
-            x.SegmentIndex == step.Index && x.ReceiptKind == "adaptive", ct);
-        if (existing is null)
+        var providerHandle = NoteAsrAcceptedEvidence.AdaptiveProviderHandle(step.Current.RequestId);
+        var evidenceId = Guid.Empty;
+        // Retry uses the same account-scoped task lock. Holding it across the epoch check,
+        // evidence insert and checkpoint update makes stale adaptive success either fully win
+        // before the retry or observe the retry and write nothing. The checkpoint is the only
+        // commit point: if its write fails, the just-inserted row is compensated so a later
+        // retry cannot be blocked by evidence that no checkpoint ever accepted.
+        var recorded = await tasks.WithLockAsync(owner, async lockedCt =>
         {
-            existing = new NoteAsrSegmentEvidenceEntity
+            var current = await tasks.ReadAsync(owner, taskId, lockedCt);
+            if (!EpochMatches(current, step.Index, executionEpoch))
+                throw new StaleExecutionException();
+            if (current.AttemptId != attemptEntity.Id || current.StopRequested) return false;
+            var existing = await db.NoteAsrSegmentEvidence.SingleOrDefaultAsync(x => x.OwnerId == owner &&
+                x.AttemptId == attemptEntity.Id && x.FencingToken == attemptEntity.FencingToken &&
+                x.SegmentIndex == step.Index && x.ReceiptKind == "adaptive", lockedCt);
+            var referenced = existing is not null &&
+                CheckpointReferencesEvidence(current, step.Index, existing.Id);
+            var created = false;
+            if (existing is not null &&
+                !AdaptiveEvidenceMatches(existing, providerHandle, resultSha, coverage))
             {
-                OwnerId = owner, AttemptId = attemptEntity.Id, TaskId = taskId,
-                VersionId = attemptEntity.VersionId, Route = attemptEntity.Route,
-                FencingToken = attemptEntity.FencingToken, SegmentIndex = step.Index,
-                RecordingId = step.RecordingId, RecordingSegment = step.RecordingSegment,
-                ChunkIndex = step.ChunkIndex, SourceFileIndex = step.FileIndex,
-                SourceSha256 = step.Sha256, SourceOffsetSamples = step.SourceOffset, Samples = step.Samples,
-                ReceiptKind = "adaptive", ProviderHandle = providerHandle,
-                ResultText = transcript, ResultSha256 = resultSha, CoverageJson = coverage
-            };
-            db.NoteAsrSegmentEvidence.Add(existing);
-            try { await db.SaveChangesAsync(ct); }
-            catch (DbUpdateException error) when (IsUniqueViolation(error))
-            {
-                db.Entry(existing).State = EntityState.Detached;
-                existing = await db.NoteAsrSegmentEvidence.AsNoTracking().SingleOrDefaultAsync(x =>
-                    x.OwnerId == owner && x.AttemptId == attemptEntity.Id &&
-                    x.FencingToken == attemptEntity.FencingToken && x.SegmentIndex == step.Index &&
-                    x.ReceiptKind == "adaptive", ct);
-                if (existing is null || existing.ProviderHandle != providerHandle ||
-                    existing.ResultSha256 != resultSha || existing.CoverageJson != coverage)
+                // A previous process may have committed evidence and then failed before the
+                // checkpoint, so nothing consumes it. Only a referenced row is immutable.
+                if (referenced)
                     throw new DomainException(40901, "同一分片已有不同自适应成功证据，原记录保留");
+                db.NoteAsrSegmentEvidence.Remove(existing);
+                await db.SaveChangesAsync(lockedCt);
+                existing = null;
             }
-        }
-        else if (existing.ProviderHandle != providerHandle || existing.ResultSha256 != resultSha ||
-                 existing.CoverageJson != coverage)
-            throw new DomainException(40901, "同一分片已有不同自适应成功证据，原记录保留");
-        var evidenceId = existing.Id;
-        await tasks.UpdateAsync(owner, taskId, current =>
-        {
-            if (current.AttemptId != attemptEntity.Id || current.StopRequested) return;
-            var target = current.Steps[step.Index].Current;
-            target.Status = "Succeeded";
-            target.ErrorMessage = null;
-            target.LogId = rootLogId;
-            target.EvidenceId = evidenceId;
-            current.CompletionAcknowledged = current.Steps.All(x => x.Current.Status == "Succeeded");
+            if (existing is null)
+            {
+                var candidate = NewAdaptiveEvidence(owner, taskId, attemptEntity, step,
+                    providerHandle, transcript, resultSha, coverage);
+                db.NoteAsrSegmentEvidence.Add(candidate);
+                try
+                {
+                    await db.SaveChangesAsync(lockedCt);
+                    existing = candidate;
+                    created = true;
+                }
+                catch (DbUpdateException error) when (IsUniqueViolation(error))
+                {
+                    db.Entry(candidate).State = EntityState.Detached;
+                    existing = await db.NoteAsrSegmentEvidence.AsNoTracking().SingleOrDefaultAsync(x =>
+                        x.OwnerId == owner && x.AttemptId == attemptEntity.Id &&
+                        x.FencingToken == attemptEntity.FencingToken && x.SegmentIndex == step.Index &&
+                        x.ReceiptKind == "adaptive", lockedCt)
+                        ?? throw new DomainException(40901, "同一分片已有不同自适应成功证据，原记录保留");
+                    referenced = CheckpointReferencesEvidence(current, step.Index, existing.Id);
+                    if (!AdaptiveEvidenceMatches(existing, providerHandle, resultSha, coverage))
+                    {
+                        if (referenced)
+                            throw new DomainException(40901,
+                                "同一分片已有不同自适应成功证据，原记录保留");
+                        db.NoteAsrSegmentEvidence.Remove(existing);
+                        await db.SaveChangesAsync(lockedCt);
+                        var replacement = NewAdaptiveEvidence(owner, taskId, attemptEntity, step,
+                            providerHandle, transcript, resultSha, coverage);
+                        db.NoteAsrSegmentEvidence.Add(replacement);
+                        await db.SaveChangesAsync(lockedCt);
+                        existing = replacement;
+                        created = true;
+                    }
+                }
+            }
+            evidenceId = existing.Id;
+            try
+            {
+                await tasks.UpdateLockedAsync(owner, taskId, latest =>
+                {
+                    if (!EpochMatches(latest, step.Index, executionEpoch))
+                        throw new StaleExecutionException();
+                    if (latest.AttemptId != attemptEntity.Id || latest.StopRequested) return;
+                    var target = latest.Steps[step.Index].Current;
+                    target.Status = "Succeeded";
+                    target.ErrorMessage = null;
+                    target.LogId = rootLogId;
+                    target.EvidenceId = evidenceId;
+                    latest.CompletionAcknowledged = latest.Steps.All(x => x.Current.Status == "Succeeded");
+                }, lockedCt);
+            }
+            catch
+            {
+                if (created || !referenced)
+                    await TryDeleteUncommittedEvidenceAsync(owner, evidenceId);
+                throw;
+            }
+            return true;
         }, ct);
+        if (!recorded || evidenceId == Guid.Empty)
+        {
+            // A stop or attempt change prevents the step checkpoint, but the durable attempt
+            // still needs to leave StopAttemptAsync's non-terminal Unknown state.
+            await SyncCloudAttemptAsync(owner, taskId, ct, step.Index, executionEpoch);
+            return;
+        }
         var completed = await db.NoteAsrSegmentEvidence.AsNoTracking().Where(x =>
                 x.OwnerId == owner && x.AttemptId == attemptEntity.Id &&
                 x.FencingToken == attemptEntity.FencingToken)
             .Select(x => x.SegmentIndex).Distinct().CountAsync(ct);
         await UpdateAttemptCountersAsync(owner, attemptEntity, completed, ct);
-        await SyncCloudAttemptAsync(owner, taskId, ct);
+        await SyncCloudAttemptAsync(owner, taskId, ct, step.Index, executionEpoch);
     }
 
     /// <summary>
@@ -460,8 +629,8 @@ public sealed class NoteAsrJob(NoteAsrTaskStore tasks, NoteMaterialUploadStore m
         await db.SaveChangesAsync(ct);
     }
 
-    private async Task RecordAdaptiveFailureAsync(Guid owner, Guid taskId, NoteAsrStep step,
-        NoteAsrAdaptiveRun run, CancellationToken ct)
+    private async Task RecordAdaptiveFailureAsync(Guid owner, Guid taskId, Guid expectedAttemptId,
+        NoteAsrStep step, NoteAsrAdaptiveRun run, Guid? executionEpoch, CancellationToken ct)
     {
         if (run.StopResult?.Outcome == NoteAsrAdaptiveOutcome.TransientFailure)
         {
@@ -474,11 +643,15 @@ public sealed class NoteAsrJob(NoteAsrTaskStore tasks, NoteMaterialUploadStore m
                 ("Cancelled", "ASR 调用已取消；供应商是否处理未确认，不会自动重发"),
             NoteAsrAdaptiveOutcome.ConfigurationRejected or NoteAsrAdaptiveOutcome.ConsentRejected =>
                 ("Blocked", "ASR 配置、目标授权或同意已拒绝，本片未继续发送"),
+            NoteAsrAdaptiveOutcome.PreparationFailed =>
+                ("Blocked", "本地音频输入准备失败，未发送至转写服务；请核对材料后显式重试"),
             NoteAsrAdaptiveOutcome.UnconfirmedTimeout or NoteAsrAdaptiveOutcome.Unknown =>
                 ("Unknown", "ASR 结果未确认；已保留已有成功子片和真实记录，请人工核对"),
             _ => ("Failed", "自动分片重试未能覆盖完整原分片；已成功子片和真实记录保留")
         };
-        var detail = run.PartialReason ?? run.StopResult?.Reason;
+        var detail = run.StopResult?.Outcome == NoteAsrAdaptiveOutcome.PreparationFailed
+            ? null
+            : run.PartialReason ?? run.StopResult?.Reason;
         await MarkAsync(status, string.IsNullOrWhiteSpace(detail) ? message : message + "：" + detail, true);
 
         async Task MarkAsync(string nextStatus, string error, bool stop)
@@ -487,6 +660,9 @@ public sealed class NoteAsrJob(NoteAsrTaskStore tasks, NoteMaterialUploadStore m
             using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, budget.Token);
             await tasks.UpdateAsync(owner, taskId, current =>
             {
+                if (!EpochMatches(current, step.Index, executionEpoch))
+                    throw new StaleExecutionException();
+                if (current.AttemptId != expectedAttemptId) return;
                 if (current.Steps.Count <= step.Index) return;
                 var target = current.Steps[step.Index].Current;
                 target.Status = nextStatus;
@@ -494,7 +670,7 @@ public sealed class NoteAsrJob(NoteAsrTaskStore tasks, NoteMaterialUploadStore m
                 current.StopRequested |= stop;
                 current.CompletionAcknowledged = false;
             }, linked.Token);
-            await SyncCloudAttemptAsync(owner, taskId, linked.Token);
+            await SyncCloudAttemptAsync(owner, taskId, linked.Token, step.Index, executionEpoch);
         }
     }
 
@@ -580,6 +756,52 @@ public sealed class NoteAsrJob(NoteAsrTaskStore tasks, NoteMaterialUploadStore m
     private static string Sha256(string value) =>
         Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value))).ToLowerInvariant();
 
+    private static bool AdaptiveEvidenceMatches(NoteAsrSegmentEvidenceEntity row,
+        string providerHandle, string resultSha, string coverage) =>
+        row.ProviderHandle == providerHandle && row.ResultSha256 == resultSha &&
+        string.Equals(row.CoverageJson, coverage, StringComparison.Ordinal);
+
+    private static NoteAsrSegmentEvidenceEntity NewAdaptiveEvidence(Guid owner, Guid taskId,
+        NoteAsrAttemptEntity attempt, NoteAsrStep step, string providerHandle, string transcript,
+        string resultSha, string coverage) => new()
+    {
+        OwnerId = owner, AttemptId = attempt.Id, TaskId = taskId, VersionId = attempt.VersionId,
+        Route = attempt.Route, FencingToken = attempt.FencingToken, SegmentIndex = step.Index,
+        RecordingId = step.RecordingId, RecordingSegment = step.RecordingSegment,
+        ChunkIndex = step.ChunkIndex, SourceFileIndex = step.FileIndex,
+        SourceSha256 = step.Sha256, SourceOffsetSamples = step.SourceOffset, Samples = step.Samples,
+        ReceiptKind = "adaptive", ProviderHandle = providerHandle, ResultText = transcript,
+        ResultSha256 = resultSha, CoverageJson = coverage
+    };
+
+    private static bool CheckpointReferencesEvidence(NoteAsrState state, int stepIndex, Guid evidenceId) =>
+        stepIndex >= 0 && stepIndex < state.Steps.Count &&
+        state.Steps[stepIndex].Current.EvidenceId == evidenceId;
+
+    /// <summary>
+    /// Best-effort compensation for a failed checkpoint write. Leaving the row behind is safe for
+    /// readers (acceptance requires the checkpoint reference), but deleting it lets a later retry
+    /// reuse the same attempt/fence/segment unique slot without waiting for recovery.
+    /// </summary>
+    private async Task TryDeleteUncommittedEvidenceAsync(Guid owner, Guid evidenceId)
+    {
+        try
+        {
+            var row = db.NoteAsrSegmentEvidence.Local.FirstOrDefault(x =>
+                    x.OwnerId == owner && x.Id == evidenceId)
+                ?? await db.NoteAsrSegmentEvidence.FirstOrDefaultAsync(x =>
+                    x.OwnerId == owner && x.Id == evidenceId, CancellationToken.None);
+            if (row is null) return;
+            db.NoteAsrSegmentEvidence.Remove(row);
+            await db.SaveChangesAsync(CancellationToken.None);
+        }
+        catch (Exception error) when (error is DbUpdateException or InvalidOperationException)
+        {
+            // The original checkpoint failure is the actionable error. A leftover row is ignored
+            // by readers and replaced on the next adaptive success for this segment.
+        }
+    }
+
     private static bool IsUniqueViolation(Exception error)
     {
         for (Exception? current = error; current is not null; current = current.InnerException)
@@ -591,27 +813,36 @@ public sealed class NoteAsrJob(NoteAsrTaskStore tasks, NoteMaterialUploadStore m
         return false;
     }
 
-    private async Task SyncCloudAttemptAsync(Guid owner, Guid taskId, CancellationToken ct)
+    private static bool EpochMatches(NoteAsrState state, int stepIndex, Guid? epoch) =>
+        stepIndex >= 0 && stepIndex < state.Steps.Count &&
+        state.Steps[stepIndex].ExecutionEpoch == epoch;
+
+    private sealed class StaleExecutionException : Exception { }
+
+    private async Task SyncCloudAttemptAsync(Guid owner, Guid taskId, CancellationToken ct,
+        int? stepIndex = null, Guid? executionEpoch = null)
     {
         var state = await tasks.ReadAsync(owner, taskId, ct);
+        if (stepIndex is { } index && !EpochMatches(state, index, executionEpoch)) return;
         if (state.AttemptId is not { } attemptId) return;
         var completed = state.Steps.Count(x => x.Current.Status == "Succeeded");
         var failed = state.Steps.Count(x => x.Current.Status is not ("Queued" or "Running" or "Succeeded"));
         var terminal = state.Steps.Count > 0 && completed == state.Steps.Count;
         var stopped = state.StopRequested;
         var nextState = terminal ? "Succeeded" : stopped ? "Failed" : "Running";
+        // CAS against the exact observed attempt row: a concurrent stop, retry convergence,
+        // new attempt version or terminal transition must not be overwritten by this stale pass.
+        var observed = await db.NoteAsrAttempts.AsNoTracking()
+            .SingleOrDefaultAsync(x => x.Id == attemptId && x.OwnerId == owner, ct);
+        if (observed is null) return;
+        // A stop that landed after this pass read the task file is never cleared by the stale pass.
+        if (observed.StopRequested && !stopped) return;
         if (db.Database.IsRelational())
         {
-            // CAS against the observed attempt: a concurrent stop, new attempt version or terminal
-            // transition must not be overwritten by this stale job pass.
-            var observed = await db.NoteAsrAttempts.AsNoTracking()
-                .SingleOrDefaultAsync(x => x.Id == attemptId && x.OwnerId == owner, ct);
-            if (observed is null) return;
-            // A stop that landed after this pass read the task file is never cleared by the stale pass.
-            if (observed.StopRequested && !stopped) return;
             await db.NoteAsrAttempts.Where(x => x.Id == attemptId && x.OwnerId == owner &&
                     x.Route == observed.Route && x.VersionId == observed.VersionId &&
                     x.FencingToken == observed.FencingToken && x.StopRequested == observed.StopRequested &&
+                    x.UpdatedAt == observed.UpdatedAt &&
                     x.State != "Succeeded" && x.State != "Cancelled")
                 .ExecuteUpdateAsync(setters => setters
                     .SetProperty(x => x.CompletedSegments, completed)
@@ -625,6 +856,7 @@ public sealed class NoteAsrJob(NoteAsrTaskStore tasks, NoteMaterialUploadStore m
         // single-statement CAS above.
         var tracked = await db.NoteAsrAttempts.SingleOrDefaultAsync(x => x.Id == attemptId && x.OwnerId == owner, ct);
         if (tracked is null || tracked.StopRequested && !stopped ||
+            tracked.UpdatedAt != observed.UpdatedAt ||
             tracked.State is "Succeeded" or "Cancelled") return;
         tracked.CompletedSegments = completed;
         tracked.FailedSegments = failed;

@@ -9,6 +9,12 @@ internal static class NoteAsrPlan
     internal const int SampleRate = 16_000;
     // One minute is within the existing attachment/ASR boundary. Samples, not rounded milliseconds, define coverage.
     internal const int SamplesPerCall = SampleRate * 60;
+    // Hard upper bound for any single local read/decode request. Cloud multimodal callers may
+    // raise their effective budget up to this ten-minute duration; no caller may exceed it.
+    internal const int MaxSamplesPerSlice = SampleRate * 10 * 60;
+    // Tasks persisted before the budget existed have no SamplesPerCall; their plan used one-minute steps.
+    internal static int BudgetOrDefault(int samplesPerCall) =>
+        samplesPerCall > 0 ? samplesPerCall : SamplesPerCall;
     internal static List<NoteAsrStep> Build(NoteMaterialVersionDto version, int samplesPerCall = SamplesPerCall)
     {
         if (version.Upload.Phase == "Uploading") throw new DomainException(40901, "请先上传完整固定材料，再开始转写");
@@ -23,11 +29,13 @@ internal static class NoteAsrPlan
             {
                 var segment = chunk.GetProperty("segment").GetInt32(); var index = chunk.GetProperty("index").GetInt32();
                 var count = chunk.GetProperty("samples").GetInt64();
-                var file = files[$"recordings/{recordingId:D}/s{segment:D4}-c{index:D6}.wav"];
+                var format = NoteAudioFormats.Parse(chunk);
+                var file = files[NoteAudioFormats.Path(recordingId, segment, index, format)];
                 for (long offset = 0; offset < count; offset += samplesPerCall)
                 {
                     if (steps.Count >= 5_000) throw new DomainException(41301, "本次转写超过5000片，请按材料版本分批处理；原录音保留");
-                    steps.Add(new() { Index = steps.Count, RecordingId = recordingId, RecordingSegment = segment,
+                    steps.Add(new() { Index = steps.Count, ExecutionEpoch = Guid.NewGuid(),
+                        RecordingId = recordingId, RecordingSegment = segment,
                         ChunkIndex = index, FileIndex = file.Index, Path = file.Path, Sha256 = file.Sha256,
                         SourceOffset = offset, RecordingOffset = position + offset, TimelineOffset = timeline + position + offset,
                         Samples = Math.Min(samplesPerCall, count - offset), Attempts = [new()] });
@@ -89,6 +97,9 @@ internal sealed class NoteAsrRetryIntent
 internal sealed class NoteAsrStep
 {
     public int Index { get; set; }
+    // Every manual retry advances this epoch, including a retry of a still-Queued step. A job
+    // pass that started before the retry can therefore never write into the new attempt.
+    public Guid? ExecutionEpoch { get; set; }
     public Guid RecordingId { get; set; }
     public int RecordingSegment { get; set; }
     public int ChunkIndex { get; set; }

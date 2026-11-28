@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Diagnostics;
 using System.Net;
 using System.Security.Cryptography;
 using System.Text;
@@ -26,7 +27,12 @@ namespace Pim.UnitTests.Notes;
 public sealed class NoteAsrBatchPersistenceTests
 {
     private static readonly Uri Origin = new("https://batch-api-cn.xiaomimimo.com/v1/");
-    private static string? ConnectionString => Environment.GetEnvironmentVariable("PIM_ASR516_PG");
+    // PIM_ASR516_PG remains the dedicated local/reviewer switch. CI provisions the same
+    // disposable PostgreSQL through PIM_TEST_CONN, so the Batch suite must run there rather
+    // than disappearing as skipped evidence. Both point at throwaway databases only.
+    private static string? ConnectionString =>
+        Environment.GetEnvironmentVariable("PIM_ASR516_PG") ??
+        Environment.GetEnvironmentVariable("PIM_TEST_CONN");
 
     [SkippableFact]
     public async Task Input_is_bounded_and_custom_ids_cannot_escape_attempt_segments()
@@ -1535,6 +1541,85 @@ public sealed class NoteAsrBatchPersistenceTests
     }
 
     [SkippableFact]
+    public async Task Missing_ffmpeg_during_service_generation_keeps_child_queued_without_batch_or_provider()
+    {
+        Skip.If(string.IsNullOrWhiteSpace(ConnectionString), "PIM_ASR516_PG is not configured");
+        var (owner, material, profile) = await SeedRealBatchOwnerAsync(NoteAsrPlan.SampleRate,
+            "ffmpeg-missing", opus: true);
+        var (source, routeConfig) = await StartViaRealServiceAsync(owner, material, Guid.NewGuid(), profile);
+        await Tasks(owner).UpdateAsync(owner, source.TaskId, current =>
+        {
+            foreach (var step in current.Steps) step.Current.Status = "Succeeded";
+            current.CompletionAcknowledged = true;
+        }, CancellationToken.None);
+        var terminal = NoteAsrTaskStore.Describe(await Tasks(owner)
+            .ReadAsync(owner, source.TaskId, CancellationToken.None));
+        Assert.Equal("Succeeded", terminal.Phase);
+
+        var childTaskId = Guid.NewGuid();
+        var factory = new SyntheticFactory((_, _) =>
+            throw new InvalidOperationException("missing FFmpeg must not call the provider"));
+        var options = new NoteMaterialUploadOptions
+        {
+            StorageRoot = StorageRoot(owner),
+            MaxVersionBytes = 32 * 1024 * 1024,
+            MaxUserReservedBytes = 64 * 1024 * 1024,
+            FfmpegPath = Path.Combine(StorageRoot(owner), "missing-ffmpeg")
+        };
+        await using (var db = NewDb(owner))
+        {
+            var service = NewService(db, owner, factory, noteAsr: RealNoteAsr(db, owner),
+                materialsOptions: options);
+            var error = await Assert.ThrowsAsync<DomainException>(() => service.StartFromTaskAsync(
+                ChildBatchRequest(owner, source.TaskId, terminal.Revision, childTaskId, routeConfig,
+                    profile, "consent-missing-ffmpeg"), CancellationToken.None));
+            Assert.Equal(50303, error.ErrorCode);
+            Assert.DoesNotContain(StorageRoot(owner), error.Message);
+            Assert.DoesNotContain("missing-ffmpeg", error.Message);
+        }
+        Assert.Empty(factory.Requests);
+        await AssertChildQueuedWithoutBatchAsync(owner, childTaskId);
+        await CleanupAsync(owner);
+    }
+
+    [SkippableFact]
+    public async Task Decode_failure_during_service_generation_keeps_child_queued_without_batch_or_provider()
+    {
+        Skip.If(string.IsNullOrWhiteSpace(ConnectionString), "PIM_ASR516_PG is not configured");
+        Skip.IfNot(FfmpegAvailable(),
+            "CI waiver: GitHub-hosted ubuntu-latest in this workflow does not install FFmpeg; " +
+            "service-level failure handling is covered by the missing-decoder test instead");
+        var samples = NoteAsrPlan.SampleRate;
+        var (owner, material, profile) = await SeedRealBatchOwnerAsync(samples, "decode-failure",
+            opus: true, opusAudio: UndecodableOpus(samples));
+        var (source, routeConfig) = await StartViaRealServiceAsync(owner, material, Guid.NewGuid(), profile);
+        await Tasks(owner).UpdateAsync(owner, source.TaskId, current =>
+        {
+            foreach (var step in current.Steps) step.Current.Status = "Succeeded";
+            current.CompletionAcknowledged = true;
+        }, CancellationToken.None);
+        var terminal = NoteAsrTaskStore.Describe(await Tasks(owner)
+            .ReadAsync(owner, source.TaskId, CancellationToken.None));
+        Assert.Equal("Succeeded", terminal.Phase);
+
+        var childTaskId = Guid.NewGuid();
+        var factory = new SyntheticFactory((_, _) =>
+            throw new InvalidOperationException("decode failure must not call the provider"));
+        await using (var db = NewDb(owner))
+        {
+            var service = NewService(db, owner, factory, noteAsr: RealNoteAsr(db, owner));
+            var error = await Assert.ThrowsAsync<DomainException>(() => service.StartFromTaskAsync(
+                ChildBatchRequest(owner, source.TaskId, terminal.Revision, childTaskId, routeConfig,
+                    profile, "consent-decode-failure"), CancellationToken.None));
+            Assert.Equal(40001, error.ErrorCode);
+            Assert.DoesNotContain(StorageRoot(owner), error.Message);
+        }
+        Assert.Empty(factory.Requests);
+        await AssertChildQueuedWithoutBatchAsync(owner, childTaskId);
+        await CleanupAsync(owner);
+    }
+
+    [SkippableFact]
     public async Task Distinct_full_child_is_rejected_for_queued_or_running_source()
     {
         Skip.If(string.IsNullOrWhiteSpace(ConnectionString), "PIM_ASR516_PG is not configured");
@@ -1974,11 +2059,11 @@ public sealed class NoteAsrBatchPersistenceTests
     }
 
     private static async Task<(Guid Owner, NoteMaterialVersionDto Version, AiModelProfileEntity Profile)>
-        SeedRealBatchOwnerAsync(int samplesPerChunk, string tag)
+        SeedRealBatchOwnerAsync(int samplesPerChunk, string tag, bool opus = false, byte[]? opusAudio = null)
     {
         var owner = Guid.NewGuid();
         await CleanupAsync(owner);
-        var (material, _) = await SeedMaterialAsync(owner, samplesPerChunk);
+        var (material, _) = await SeedMaterialAsync(owner, samplesPerChunk, opus, opusAudio);
         await using var db = NewDb(owner);
         await db.Database.EnsureCreatedAsync();
         await db.NoteAsrBatchJobs.Where(x => x.OwnerId != owner).ExecuteDeleteAsync();
@@ -2015,6 +2100,65 @@ public sealed class NoteAsrBatchPersistenceTests
         }
         await db.SaveChangesAsync();
         return (owner, material, profile);
+    }
+
+    private static StartNoteAsrBatchFromTaskRequest ChildBatchRequest(Guid owner, Guid sourceTaskId,
+        Guid sourceRevision, Guid childTaskId, NoteAsrRouteConfigDto routeConfig,
+        AiModelProfileEntity profile, string consentRef) =>
+        new(childTaskId, sourceTaskId, sourceRevision, owner,
+            new NoteAsrReprocessRoute(NoteAsrRoute.CloudMultimodal, routeConfig.Revision,
+                routeConfig.ConsentVersion, NoteAsrExecutionMode.Batch, true, true),
+            new NoteAsrBatchTarget(profile.Id, profile.Revision, consentRef, true, true),
+            new NoteAsrReprocessReason(NoteAsrReprocessReasonKind.Manual, consentRef));
+
+    private static async Task AssertChildQueuedWithoutBatchAsync(Guid owner, Guid childTaskId)
+    {
+        await using (var db = NewDb(owner))
+        {
+            Assert.Equal(0, await db.NoteAsrBatchJobs.CountAsync(x => x.OwnerId == owner));
+            var attempt = await db.NoteAsrAttempts.AsNoTracking().SingleAsync(x =>
+                x.OwnerId == owner && x.TaskId == childTaskId);
+            Assert.Equal("Queued", attempt.State);
+        }
+        var state = await Tasks(owner).ReadAsync(owner, childTaskId, CancellationToken.None);
+        Assert.Equal("Queued", NoteAsrTaskStore.Describe(state).Phase);
+        Assert.All(state.Steps, step => Assert.Equal("Queued", step.Current.Status));
+    }
+
+    private static byte[] UndecodableOpus(int samples)
+    {
+        const uint serial = 0x12345678;
+        return OggOpusTestData.Concat([
+            OggOpusTestData.Page(0x02, serial, 0, 0, OggOpusTestData.OpusHead()),
+            OggOpusTestData.Page(0, serial, 1, 0, OggOpusTestData.OpusTags()),
+            OggOpusTestData.PageWithLacing(0x04, serial, 2,
+                312UL + (ulong)samples * 3, [1], [0xFF])
+        ]);
+    }
+
+    private static bool FfmpegAvailable()
+    {
+        try
+        {
+            var start = new ProcessStartInfo("ffmpeg")
+            {
+                UseShellExecute = false, RedirectStandardOutput = true,
+                RedirectStandardError = true, CreateNoWindow = true
+            };
+            start.ArgumentList.Add("-version");
+            using var process = Process.Start(start);
+            if (process is null) return false;
+            if (!process.WaitForExit(5000))
+            {
+                process.Kill(entireProcessTree: true);
+                return false;
+            }
+            return process.ExitCode == 0;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private static async Task<(NoteAsrTaskDto Task, NoteAsrRouteConfigDto Route)> StartViaRealServiceAsync(Guid owner,
@@ -2168,7 +2312,7 @@ public sealed class NoteAsrBatchPersistenceTests
     }
 
     private static async Task<(NoteMaterialVersionDto Version, List<byte[]> Content)> SeedMaterialAsync(
-        Guid owner, int samplesPerChunk = 160)
+        Guid owner, int samplesPerChunk = 160, bool opus = false, byte[]? opusAudio = null)
     {
         var versionId = Guid.NewGuid();
         var noteId = Guid.NewGuid();
@@ -2180,15 +2324,16 @@ public sealed class NoteAsrBatchPersistenceTests
             createdAtMillis = 1,
             blocks = new[] { new { id = Guid.NewGuid().ToString("D"), kind = "markdown", text } }
         }, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        object[] chunks = opus
+            ? [new { segment = 1, index = 1, samples = samplesPerChunk, format = "opus", mimeType = "audio/ogg" },
+                new { segment = 1, index = 2, samples = samplesPerChunk, format = "opus", mimeType = "audio/ogg" }]
+            : [new { segment = 1, index = 1, samples = samplesPerChunk },
+                new { segment = 1, index = 2, samples = samplesPerChunk }];
         var recordingJson = JsonSerializer.Serialize(new
         {
             id = recordingId.ToString("D"), schemaVersion = 1, createdAtMillis = 1,
             noteId = noteId.ToString("D"), phase = "Completed", currentSegment = 1, problem = (string?)null,
-            chunks = new[]
-            {
-                new { segment = 1, index = 1, samples = samplesPerChunk },
-                new { segment = 1, index = 2, samples = samplesPerChunk }
-            }
+            chunks
         }, new JsonSerializerOptions(JsonSerializerDefaults.Web));
         using var noteDoc = JsonDocument.Parse(noteJson);
         using var recordingDoc = JsonDocument.Parse(recordingJson);
@@ -2197,20 +2342,22 @@ public sealed class NoteAsrBatchPersistenceTests
             schemaVersion = 1, id = versionId.ToString("D"), createdAtMillis = 1,
             note = noteDoc.RootElement.Clone(), recordings = new[] { recordingDoc.RootElement.Clone() }
         }, new JsonSerializerOptions(JsonSerializerDefaults.Web));
-        var chunks = new[]
+        var audioChunks = new[]
         {
-            SyntheticWav(samplesPerChunk, 2_000),
-            SyntheticWav(samplesPerChunk, 8_000)
+            opus ? opusAudio ?? OggOpusTestData.Valid(samplesPerChunk) : SyntheticWav(samplesPerChunk, 2_000),
+            opus ? opusAudio ?? OggOpusTestData.Valid(samplesPerChunk) : SyntheticWav(samplesPerChunk, 8_000)
         };
         var content = new List<byte[]>
         {
             Encoding.UTF8.GetBytes(noteJson), Encoding.UTF8.GetBytes(text),
-            Encoding.UTF8.GetBytes(recordingJson), chunks[0], chunks[1]
+            Encoding.UTF8.GetBytes(recordingJson), audioChunks[0], audioChunks[1]
         };
+        var extension = opus ? "opus" : "wav";
         var paths = new[]
         {
             "note.json", "document.md", $"recordings/{recordingId:D}/manifest.json",
-            $"recordings/{recordingId:D}/s0001-c000001.wav", $"recordings/{recordingId:D}/s0001-c000002.wav"
+            $"recordings/{recordingId:D}/s0001-c000001.{extension}",
+            $"recordings/{recordingId:D}/s0001-c000002.{extension}"
         };
         var kinds = new[] { "Document", "Markdown", "RecordingManifest", "AudioChunk", "AudioChunk" };
         var files = paths.Select((path, index) => new
@@ -2341,8 +2488,9 @@ public sealed class NoteAsrBatchPersistenceTests
     private static string StorageRoot(Guid owner) =>
         Path.Combine(Path.GetTempPath(), "pim-asr516-batch-tests", owner.ToString("D"));
 
-    private static NoteMaterialUploadStore Materials(Guid owner) => new(Options.Create(
-        new NoteMaterialUploadOptions
+    private static NoteMaterialUploadStore Materials(Guid owner,
+        NoteMaterialUploadOptions? options = null) => new(Options.Create(
+        options ?? new NoteMaterialUploadOptions
         {
             StorageRoot = StorageRoot(owner), MaxVersionBytes = 32 * 1024 * 1024,
             MaxUserReservedBytes = 64 * 1024 * 1024
@@ -2354,8 +2502,9 @@ public sealed class NoteAsrBatchPersistenceTests
     private static NoteAsrBatchService NewService(PimDbContext db, Guid owner,
         IMimoBatchClientFactory factory, IMimoBatchHandleSink? sink = null,
         INoteAsrEvidenceSink? evidence = null, NoteAsrService? noteAsr = null,
-        AiAsrPresetRegistry? presets = null, bool allowBatch = true) =>
-        new(db, new FixedUser(owner), Tasks(owner), Materials(owner),
+        AiAsrPresetRegistry? presets = null, bool allowBatch = true,
+        NoteMaterialUploadOptions? materialsOptions = null) =>
+        new(db, new FixedUser(owner), Tasks(owner), Materials(owner, materialsOptions),
             evidence ?? new NoteAsrEvidenceService(db, Tasks(owner), new FixedUser(owner)),
             sink ?? new EfMimoBatchHandleSink(db), factory,
             new PassthroughSecrets(),

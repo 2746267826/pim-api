@@ -85,6 +85,7 @@ public sealed class NoteSearchProvider(
         var result = new Dictionary<Guid, List<TranscriptField>>();
         var noteByVersion = sources.ToDictionary(source => source.VersionId, source => source.NoteId);
         var logOwners = new Dictionary<Guid, Guid>();
+        var evidenceSteps = new Dictionary<Guid, (NoteAsrStep Step, Guid NoteId)>();
         foreach (var (_, taskId) in asrTasks.Enumerate(owner))
         {
             try
@@ -95,6 +96,8 @@ public sealed class NoteSearchProvider(
                 {
                     if (step.Current.Status == "Succeeded" && step.Current.LogId is { } logId)
                         logOwners[logId] = noteId;
+                    if (step.Current.EvidenceId is { } evidenceId)
+                        evidenceSteps[evidenceId] = (step, noteId);
                 }
             }
             catch (Exception error) when (error is IOException or JsonException
@@ -124,13 +127,31 @@ public sealed class NoteSearchProvider(
         var versionIds = noteByVersion.Keys.ToArray();
         if (versionIds.Length > 0)
         {
+            // Adaptive evidence is accepted only when a checkpoint references it. Local/Batch rows
+            // keep their own receipt-backed acceptance, so search must not index an uncommitted
+            // adaptive row left by a failed checkpoint write.
+            var evidenceIds = evidenceSteps.Keys.ToArray();
             var evidence = await db.NoteAsrSegmentEvidence.AsNoTracking()
                 .Where(row => row.OwnerId == owner && versionIds.Contains(row.VersionId) &&
-                    row.ResultText != "")
-                .Select(row => new { row.VersionId, row.SegmentIndex, row.ResultText })
+                    row.ResultText != "" &&
+                    (row.ReceiptKind != "adaptive" || evidenceIds.Contains(row.Id)))
+                .Select(row => new
+                {
+                    row.Id, row.VersionId, row.SegmentIndex, row.ResultText, row.ReceiptKind,
+                    row.ProviderHandle, row.CoverageJson
+                })
                 .ToListAsync(ct);
             foreach (var row in evidence)
+            {
+                if (row.ReceiptKind == "adaptive" &&
+                    (!evidenceSteps.TryGetValue(row.Id, out var binding) ||
+                     row.ProviderHandle != NoteAsrAcceptedEvidence.AdaptiveProviderHandle(
+                         binding.Step.Current.RequestId) ||
+                     !NoteAsrAcceptedEvidence.AdaptiveCoverageMatches(
+                         row.CoverageJson, binding.Step)))
+                    continue;
                 AddTranscript(noteByVersion[row.VersionId], row.SegmentIndex + 1, row.ResultText);
+            }
         }
 
         return result;
