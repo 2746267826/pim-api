@@ -17,6 +17,7 @@ export interface ConfirmDialogProps {
   onOpenChange: (open: boolean) => void
   title: ReactNode
   description?: ReactNode
+  feedback?: ReactNode
   /** danger 时确认按钮与标题使用危险语义 */
   tone?: 'default' | 'danger'
   /** 删除影响预览（规格"删除影响预览"结构：影响数+样例） */
@@ -26,7 +27,7 @@ export interface ConfirmDialogProps {
   confirmLabel?: string
   cancelLabel?: string
   loading?: boolean
-  onConfirm: () => void | Promise<void>
+  onConfirm: () => boolean | void | Promise<boolean | void>
 }
 
 /**
@@ -38,6 +39,7 @@ export function ConfirmDialog({
   onOpenChange,
   title,
   description,
+  feedback,
   tone = 'default',
   impact,
   requireText,
@@ -96,6 +98,7 @@ export function ConfirmDialog({
               />
             </div>
           )}
+          {feedback != null && <div>{feedback}</div>}
         </DialogBody>
         <DialogFooter>
           <Button variant="secondary" onClick={() => onOpenChange(false)} disabled={loading}>
@@ -106,8 +109,8 @@ export function ConfirmDialog({
             disabled={!armed}
             loading={loading}
             onClick={async () => {
-              await onConfirm()
-              onOpenChange(false)
+              const result = await onConfirm()
+              if (result !== false) onOpenChange(false)
             }}
           >
             {confirmLabel}

@@ -7,6 +7,7 @@ import {
   ContinuousMaterialEditor,
   type ContinuousMaterialEditorHandle,
   projectMaterialMarkdown,
+  serializeMaterialBlocks,
 } from './continuous-material-editor'
 import type { MaterialDraftBlock } from './material-model'
 
@@ -122,6 +123,77 @@ describe('continuous native-note material editor', () => {
     const projection = projectMaterialMarkdown(blocks)
     expect(projection.indexOf('照片之前')).toBeLessThan(projection.indexOf('assets/'))
     expect(projection.indexOf('assets/')).toBeLessThan(projection.indexOf('照片之后'))
+  })
+
+  it('keeps nested Markdown intact when a material boundary splits a list', async () => {
+    Object.defineProperties(URL, {
+      createObjectURL: { configurable: true, value: vi.fn(() => 'blob:continuous-material') },
+      revokeObjectURL: { configurable: true, value: vi.fn() },
+    })
+    render(<Harness initial={[{
+      id: markdownA,
+      kind: 'markdown',
+      text: '- 上层条目\n  - 嵌套 **重点**\n\n> 引用段落',
+    }]} />)
+
+    const body = await screen.findByLabelText('笔记正文')
+    body.focus()
+    await userEvent.keyboard('{ArrowRight}{ArrowRight}')
+    const photo = new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47, 4])], 'nested.png', { type: 'image/png' })
+    await userEvent.upload(screen.getByLabelText('添加照片'), photo)
+    await waitFor(() =>
+      expect(body.querySelectorAll('[data-material-block-id]')).toHaveLength(1))
+
+    await userEvent.click(screen.getByRole('button', { name: '读取正文原稿' }))
+    await waitFor(() => expect(screen.getByTestId('read-blocks').textContent).not.toBe('[]'))
+    const result = JSON.parse(screen.getByTestId('read-blocks').textContent ?? '[]') as MaterialDraftBlock[]
+
+    expect(result.filter((block) => block.kind === 'photo')).toHaveLength(1)
+    expect(new Set(result.map((block) => block.id)).size).toBe(result.length)
+    expect(result.filter((block) => block.kind === 'markdown').map((block) =>
+      block.kind === 'markdown' ? block.text : '').join('\n')).toContain('嵌套 **重点**')
+    expect(result.filter((block) => block.kind === 'markdown').map((block) =>
+      block.kind === 'markdown' ? block.text : '').join('\n')).toContain('引用段落')
+  })
+
+  it('rejects missing or duplicate block identities before an incomplete submission', () => {
+    const markdownNode = (id: string) => ({
+      type: { name: 'markdownBlock' },
+      attrs: { blockId: id },
+      content: { toJSON: () => ({ type: 'paragraph' }) },
+    })
+    const materialNode = (id: string) => ({
+      type: { name: 'nativeNoteMaterial' },
+      attrs: { blockId: id, kind: 'photo' },
+    })
+    const editorFor = (nodes: Array<ReturnType<typeof markdownNode> | ReturnType<typeof materialNode>>) => ({
+      state: {
+        doc: {
+          forEach: (visit: (node: unknown, offset: number) => void) =>
+            nodes.forEach((node, offset) => visit(node, offset)),
+        },
+      },
+      storage: { markdown: { serializer: { serialize: () => '' } } },
+    }) as unknown as Parameters<typeof serializeMaterialBlocks>[0]
+    const noMaterial = () => undefined
+
+    expect(() => serializeMaterialBlocks(
+      editorFor([materialNode('missing')]),
+      noMaterial,
+      new Map(),
+      new Map(),
+      new Set(),
+      new Map(),
+    )).toThrow(/未能从编辑上下文还原/)
+
+    expect(() => serializeMaterialBlocks(
+      editorFor([markdownNode('duplicate'), markdownNode('duplicate')]),
+      noMaterial,
+      new Map([['duplicate', '原稿']]),
+      new Map([['duplicate', '{}']]),
+      new Set(['duplicate']),
+      new Map(),
+    )).toThrow(/正文块标识重复/)
   })
 
   it('does not emit a dirty change when saved source is loaded into the editor', async () => {

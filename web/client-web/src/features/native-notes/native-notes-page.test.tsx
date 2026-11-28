@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { createMemoryRouter, RouterProvider, useNavigate } from 'react-router'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -147,6 +147,17 @@ const historyMaterial: NoteMaterialVersion = {
   },
 }
 
+function duplicateBlockMaterial(): NoteMaterialVersion {
+  const input = JSON.parse(inputJson) as {
+    note: {
+      blocks: Array<{ id: string; kind: string; text: string }>
+    }
+  }
+  const first = input.note.blocks[0]!
+  input.note.blocks = [first, { ...first }]
+  return { ...material, inputJson: JSON.stringify(input) }
+}
+
 let client: QueryClient
 let testRouter: ReturnType<typeof createMemoryRouter>
 
@@ -275,6 +286,7 @@ afterEach(() => {
   client?.clear()
   setApiBase('')
   vi.restoreAllMocks()
+  vi.unstubAllGlobals()
 })
 
 async function consentToStorage() {
@@ -382,6 +394,47 @@ describe('NativeNotesPage', () => {
       Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
+  it('keeps the format toolbar below a wrapped sticky editor header on narrow screens', async () => {
+    let measuredHeaderHeight = 96
+    let resizeCallback: ResizeObserverCallback | undefined
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(callback: ResizeObserverCallback) {
+        resizeCallback = callback
+      }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    })
+    const originalBounds = HTMLElement.prototype.getBoundingClientRect
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      if (this.dataset.testid === 'note-editor-sticky-header') {
+        return {
+          ...originalBounds.call(this),
+          height: measuredHeaderHeight,
+          bottom: measuredHeaderHeight,
+        }
+      }
+      return originalBounds.call(this)
+    })
+
+    page()
+    await userEvent.click(await screen.findByText('课堂笔记').then((node) => node.closest('button')!))
+    const header = await screen.findByTestId('note-editor-sticky-header')
+    const toolbar = screen.getByTestId('note-format-toolbar')
+    const stickyRoot = header.parentElement as HTMLElement
+
+    expect(header.style.top).toBe('var(--note-sticky-top, 0px)')
+    expect(toolbar.style.top).toContain('var(--note-sticky-header-height')
+    await waitFor(() =>
+      expect(stickyRoot.style.getPropertyValue('--note-sticky-header-height')).toBe('96px'))
+
+    measuredHeaderHeight = 148
+    act(() => resizeCallback?.([], {} as ResizeObserver))
+    await waitFor(() =>
+      expect(stickyRoot.style.getPropertyValue('--note-sticky-header-height')).toBe('148px'))
+    expect(toolbar.style.top).not.toBe(header.style.top)
+  })
+
   it('loads a saved note without marking the untouched editor as dirty', async () => {
     page()
     await userEvent.click(await screen.findByText('课堂笔记').then((node) => node.closest('button')!))
@@ -416,10 +469,13 @@ describe('NativeNotesPage', () => {
     const dialog = within(await screen.findByRole('dialog'))
     expect(dialog.getByText('结束这次记录？')).toBeTruthy()
     await userEvent.click(dialog.getByRole('button', { name: '结束并保存' }))
-    expect(await screen.findByText(/结束前需要先确认保存到当前服务器/)).toBeTruthy()
+    expect(await dialog.findByText(/结束前需要先确认保存到当前服务器/)).toBeTruthy()
     expect(nativeApi.complete).not.toHaveBeenCalled()
+    expect(screen.getByRole('dialog')).toBeTruthy()
     expect(await screen.findByLabelText('笔记正文')).toBeTruthy()
 
+    await userEvent.click(dialog.getByRole('button', { name: '继续编辑' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
     await consentToStorage()
     await userEvent.click(screen.getByRole('button', { name: '结束' }))
     const nextDialog = within(await screen.findByRole('dialog'))
@@ -435,12 +491,51 @@ describe('NativeNotesPage', () => {
     await screen.findByRole('heading', { name: '继续写这篇笔记' })
     await userEvent.click(screen.getByRole('button', { name: '结束' }))
     const dialog = within(await screen.findByRole('dialog'))
+    expect(dialog.getByText(/服务器上的当前版本会保持不变/)).toBeTruthy()
     await userEvent.click(dialog.getByRole('button', { name: '结束' }))
 
     expect(nativeApi.begin).not.toHaveBeenCalled()
     expect(nativeApi.clone).not.toHaveBeenCalled()
     expect(await screen.findByText(/没有检测到需要提交的改动/)).toBeTruthy()
     expect(testRouter.state.location.search).toBe('')
+  })
+
+  it('ends a new note with no body without requiring consent or an empty-title upload', async () => {
+    page()
+    await userEvent.click(await screen.findByRole('button', { name: /新建笔记/ }))
+    await screen.findByRole('heading', { name: '新建笔记' })
+    await userEvent.type(screen.getByLabelText('笔记标题'), '只有标题，还没有正文')
+
+    await userEvent.click(screen.getByRole('button', { name: '结束' }))
+    const dialog = within(await screen.findByRole('dialog'))
+    expect(dialog.getByText(/当前没有可保存的正文，不会在服务器创建新笔记/)).toBeTruthy()
+    await userEvent.click(dialog.getByRole('button', { name: '结束' }))
+
+    expect(nativeApi.begin).not.toHaveBeenCalled()
+    expect(nativeApi.clone).not.toHaveBeenCalled()
+    expect(await screen.findByText(/当前没有可保存的正文，未在服务器创建笔记/)).toBeTruthy()
+    expect(testRouter.state.location.search).toBe('')
+  })
+
+  it('keeps the draft when the end confirmation is cancelled or closed', async () => {
+    page()
+    await userEvent.click(await screen.findByText('课堂笔记').then((node) => node.closest('button')!))
+    await screen.findByRole('heading', { name: '继续写这篇笔记' })
+    await typeBody('取消结束也不能丢失草稿')
+
+    await userEvent.click(screen.getByRole('button', { name: '结束' }))
+    let dialog = within(await screen.findByRole('dialog'))
+    await userEvent.click(dialog.getByRole('button', { name: '继续编辑' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(screen.getByLabelText('笔记正文').textContent).toContain('取消结束也不能丢失草稿')
+
+    await userEvent.click(screen.getByRole('button', { name: '结束' }))
+    dialog = within(await screen.findByRole('dialog'))
+    await userEvent.click(dialog.getByRole('button', { name: '关闭' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(screen.getByLabelText('笔记正文').textContent).toContain('取消结束也不能丢失草稿')
+    expect(testRouter.state.location.search).toBe(`?note=${noteId}`)
+    expect(nativeApi.clone).not.toHaveBeenCalled()
   })
 
   it('keeps the dirty note and allows retrying the same end submission after failure', async () => {
@@ -452,20 +547,45 @@ describe('NativeNotesPage', () => {
     nativeApi.clone.mockRejectedValueOnce(new Error('结束保存网络失败'))
 
     await userEvent.click(screen.getByRole('button', { name: '结束' }))
-    let dialog = within(await screen.findByRole('dialog'))
+    const dialog = within(await screen.findByRole('dialog'))
     await userEvent.click(dialog.getByRole('button', { name: '结束并保存' }))
     expect(await screen.findByText(/结束保存网络失败/)).toBeTruthy()
     expect(testRouter.state.location.search).toBe(`?note=${noteId}`)
     expect((screen.getByLabelText('笔记正文')).textContent).toContain('结束保存失败仍保留')
     expect(screen.getAllByText('有未保存更改').length).toBeGreaterThan(0)
-    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(screen.getByRole('dialog')).toBeTruthy()
+    expect(await dialog.findByText(/结束保存网络失败/)).toBeTruthy()
 
-    await userEvent.click(screen.getByRole('button', { name: '结束' }))
-    dialog = within(await screen.findByRole('dialog'))
     await userEvent.click(dialog.getByRole('button', { name: '结束并保存' }))
     await waitFor(() => expect(nativeApi.clone).toHaveBeenCalledTimes(2))
     await waitFor(() => expect(testRouter.state.location.search).toBe(''))
     expect(await screen.findByText(/本次记录已结束/)).toBeTruthy()
+  })
+
+  it('reports duplicate block identities in the end confirmation and preserves the draft', async () => {
+    const duplicate = duplicateBlockMaterial()
+    nativeApi.current.mockResolvedValue(duplicate)
+    nativeApi.version.mockResolvedValue(duplicate)
+    page()
+    await userEvent.click(await screen.findByText('课堂笔记').then((node) => node.closest('button')!))
+    await screen.findByRole('heading', { name: '继续写这篇笔记' })
+    await typeBody('重复标识错误也必须保留这段草稿')
+    await consentToStorage()
+
+    await userEvent.click(screen.getByRole('button', { name: '结束' }))
+    const dialog = within(await screen.findByRole('dialog'))
+    await userEvent.click(dialog.getByRole('button', { name: '结束并保存' }))
+
+    expect(await dialog.findByText(/正文块标识重复/)).toBeTruthy()
+    expect(screen.getByRole('dialog')).toBeTruthy()
+    expect(nativeApi.begin).not.toHaveBeenCalled()
+    expect(nativeApi.clone).not.toHaveBeenCalled()
+    expect(screen.getByLabelText('笔记正文').textContent).toContain('重复标识错误也必须保留这段草稿')
+
+    await userEvent.click(dialog.getByRole('button', { name: '继续编辑' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(screen.getByText(/正文块标识重复/)).toBeTruthy()
+    expect(screen.getByLabelText('笔记正文').textContent).toContain('重复标识错误也必须保留这段草稿')
   })
 
   it('keeps the end confirmation and frozen submission when Escape is pressed during submission', async () => {
@@ -493,9 +613,9 @@ describe('NativeNotesPage', () => {
 
     rejectClone(new Error('结束提交网络失败'))
     expect(await screen.findByText(/结束提交网络失败/)).toBeTruthy()
-    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(screen.getByRole('dialog')).toBeTruthy()
     expect(screen.getByLabelText('笔记正文').textContent).toContain('提交中不能因 Esc 丢失冻结状态')
-    expect(screen.getAllByRole('button', { name: '重试同一提交' }).length).toBeGreaterThan(0)
+    expect(within(screen.getByRole('dialog')).getByRole('button', { name: '结束并保存' })).toBeTruthy()
     expect(testRouter.state.location.search).toBe(`?note=${noteId}`)
   })
 
@@ -1273,17 +1393,20 @@ describe('NativeNotesPage', () => {
         hasConflict: false,
       },
     }
-    nativeApi.current.mockResolvedValueOnce(nextMaterial)
     nativeApi.version.mockImplementation(async (id: string) =>
       id === conflictVersionId ? nextMaterial : material)
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
     page()
     await userEvent.click(await screen.findByText('课堂笔记').then((node) => node.closest('button')!))
     const title = await screen.findByLabelText('笔记标题') as HTMLInputElement
+    expect(title.value).toBe('课堂笔记')
+    await waitFor(() => expect(nativeApi.versions).toHaveBeenCalledOnce())
     await userEvent.clear(title)
     await userEvent.type(title, '本机未保存草稿')
     await typeBody('服务器版本更新也不能静默换稿')
 
+    nativeApi.current.mockResolvedValueOnce(nextMaterial)
+    nativeApi.versions.mockResolvedValueOnce([nextMaterial.upload])
     await userEvent.click(screen.getByRole('button', { name: '刷新版本历史' }))
 
     expect(await screen.findByText('服务器当前版本已更新')).toBeTruthy()

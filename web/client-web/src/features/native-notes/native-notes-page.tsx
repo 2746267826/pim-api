@@ -22,7 +22,11 @@ import { groupNoteLibrary, type NoteLibraryEntry } from './library-model'
 import { bindNativeNotesApi } from './api'
 import { createMaterialId, type NoteMaterialUpload } from './material-model'
 import { assertAndroidNotePackageSize, importAndroidNotePackage } from './material-package'
-import { NoteEditorPane, type NoteEditorSeed } from './note-material-editor'
+import {
+  NoteEditorPane,
+  type EndWithoutSaveReason,
+  type NoteEditorSeed,
+} from './note-material-editor'
 import { NoteVersionPanel, type ConflictMaterialState, type PromoteVersionOutcome } from './note-version-panel'
 import { versionShortId } from './version-model'
 import {
@@ -389,11 +393,13 @@ function Workspace({ ownerId, role, serverBinding }: { ownerId: string; role?: s
     changeInternalNavigation(() => setParams({}, { replace: true }))
   }
 
-  function endedWithoutSave() {
+  function endedWithoutSave(reason: EndWithoutSaveReason) {
     updateEditorDirty(false)
     setSeed(null)
     setError('')
-    setMessage('本次记录已结束。没有检测到需要提交的改动，服务器上的当前内容保持不变。')
+    setMessage(reason === 'empty'
+      ? '本次记录已结束。当前没有可保存的正文，未在服务器创建笔记。'
+      : '本次记录已结束。没有检测到需要提交的改动，服务器上的当前内容保持不变。')
     changeInternalNavigation(() => setParams({}, { replace: true }))
   }
 

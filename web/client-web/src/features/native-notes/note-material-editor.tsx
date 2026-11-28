@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import type { CSSProperties } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { ArrowLeft, Download, ImagePlus, RotateCcw, Save } from 'lucide-react'
 import {
@@ -40,6 +41,8 @@ export interface NoteEditorSeed {
   legacyNotice?: string
 }
 
+export type EndWithoutSaveReason = 'unchanged' | 'empty'
+
 export interface NoteEditorPaneProps {
   ownerId: string
   serverBinding: string
@@ -49,7 +52,7 @@ export interface NoteEditorPaneProps {
   seed?: NoteEditorSeed
   onDirtyChange?: (dirty: boolean) => void
   onSaved: (upload: NoteMaterialUpload, outcome: 'save' | 'end') => void
-  onEnded: () => void
+  onEnded: (reason: EndWithoutSaveReason) => void
   onBack: () => void
   promoteInFlight: boolean
   promotingVersionId: string
@@ -73,7 +76,7 @@ interface LoadedEditorProps {
   showVersionDetails: boolean
   onDirtyChange?: (dirty: boolean) => void
   onSaved: (upload: NoteMaterialUpload, outcome: 'save' | 'end') => void
-  onEnded: () => void
+  onEnded: (reason: EndWithoutSaveReason) => void
   onBack: () => void
   promoteInFlight: boolean
   promotingVersionId: string
@@ -311,6 +314,8 @@ function LoadedEditor({
   const [inkPending, setInkPending] = useState(false)
   const [hasEditorContent, setHasEditorContent] = useState(initialBlocks.length > 0)
   const [endConfirmOpen, setEndConfirmOpen] = useState(false)
+  const [stickyHeaderHeight, setStickyHeaderHeight] = useState(0)
+  const stickyHeaderRef = useRef<HTMLDivElement>(null)
   const continuousEditorRef = useRef<ContinuousMaterialEditorHandle>(null)
   const uploadSessionRef = useRef<EditorUploadSession | null>(null)
   const editable = !busy && !exporting && !frozen && isCurrent
@@ -321,6 +326,31 @@ function LoadedEditor({
   const canRetryFrozen = Boolean(frozen) && isCurrent && !busy && !inkEditorOpen && !inkPending
   const canSubmit = hasEditorContent && storageConsent && !inkEditorOpen && !inkPending &&
     (editable || canRetryFrozen)
+
+  useLayoutEffect(() => {
+    const node = stickyHeaderRef.current
+    if (!node) return
+    const measure = () => {
+      const height = Math.ceil(node.getBoundingClientRect().height)
+      if (height <= 0) return
+      setStickyHeaderHeight((current) => current === height ? current : height)
+    }
+    measure()
+    const observer = typeof ResizeObserver === 'undefined'
+      ? null
+      : new ResizeObserver(measure)
+    observer?.observe(node)
+    window.addEventListener('resize', measure)
+    return () => {
+      observer?.disconnect()
+      window.removeEventListener('resize', measure)
+    }
+  }, [])
+
+  const stickyVariables = {
+    '--note-sticky-top': '0px',
+    '--note-sticky-header-height': `${stickyHeaderHeight || 72}px`,
+  } as CSSProperties
 
   const requireUploadSession = useCallback(() => {
     const session = uploadSessionRef.current
@@ -365,11 +395,21 @@ function LoadedEditor({
 
   async function save(outcome: 'save' | 'end' = 'save'): Promise<boolean> {
     if (busy || inkEditorOpen || inkPending || !isCurrent) return false
+    if (!title.trim()) {
+      setError('请先填写笔记标题，再保存或结束这次记录；当前草稿仍保留在本页。')
+      return false
+    }
     if (!storageConsent) {
       setError('请先在页内勾选“确认保存到当前服务器”，再保存或结束本次记录。')
       return false
     }
-    const blocks = continuousEditorRef.current?.getBlocks() ?? []
+    let blocks: MaterialDraftBlock[]
+    try {
+      blocks = continuousEditorRef.current?.getBlocks() ?? []
+    } catch (failure) {
+      setError(`${errorText(failure)}。当前草稿仍保留在本页，未提交任何内容。`)
+      return false
+    }
     if (!blocks.length) {
       setError('正文还没有可保存的内容。')
       return false
@@ -433,22 +473,36 @@ function LoadedEditor({
     }
   }
 
-  async function finishSession() {
-    if (busy || inkEditorOpen || inkPending || !isCurrent) return
-    if (!storageConsent && (dirty || !baseVersionId || frozen)) {
-      setError('结束前需要先确认保存到当前服务器；当前正文仍保留在本页，未提交任何内容。')
-      return
+  async function finishSession(): Promise<boolean> {
+    if (busy || inkEditorOpen || inkPending || !isCurrent) return false
+    if (!baseVersionId && !hasEditorContent && !frozen) {
+      onEnded('empty')
+      return true
     }
     if (!dirty && baseVersionId && !frozen) {
-      onEnded()
-      return
+      onEnded('unchanged')
+      return true
     }
-    await save('end')
+    if (!title.trim()) {
+      setError('请先填写笔记标题，再保存或结束这次记录；当前草稿仍保留在本页。')
+      return false
+    }
+    if (!storageConsent) {
+      setError('结束前需要先确认保存到当前服务器；当前正文仍保留在本页，未提交任何内容。')
+      return false
+    }
+    return save('end')
   }
 
   async function exportPackage() {
     if (busy || exporting || inkEditorOpen || inkPending) return
-    const blocks = continuousEditorRef.current?.getBlocks() ?? []
+    let blocks: MaterialDraftBlock[]
+    try {
+      blocks = continuousEditorRef.current?.getBlocks() ?? []
+    } catch (failure) {
+      setError(`${errorText(failure)}。当前草稿仍保留在本页，未导出任何内容。`)
+      return
+    }
     if (!blocks.length) {
       setError('正文还没有可导出的内容。')
       return
@@ -552,9 +606,23 @@ function LoadedEditor({
     setMessage('已放弃本页的提交尝试；部分未完成上传会由服务端按策略过期清理。再次保存会重新提交。')
   }
 
+  const endsEmptyNewNote = !baseVersionId && !hasEditorContent && !frozen
+  const endsSavedWithoutChanges = Boolean(baseVersionId) && !dirty && !frozen
+  const endNeedsSave = !endsEmptyNewNote && !endsSavedWithoutChanges
+  const endDescription = endsEmptyNewNote
+    ? '当前没有可保存的正文，不会在服务器创建新笔记；标题和本页内容不会上传。'
+    : endsSavedWithoutChanges
+      ? '服务器上的当前版本会保持不变；结束不会创建新版本。'
+      : '会先保存当前标题与连续正文，再结束本次编辑。保存失败时留在本页，当前草稿不会丢失。'
+
   return <>
-  <Card className="relative overflow-visible">
-    <div className="sticky top-[4.25rem] z-30 rounded-t-card border-b border-divider bg-bg/95 px-4 py-3 shadow-card backdrop-blur">
+  <Card className="relative overflow-visible" style={stickyVariables}>
+    <div
+      ref={stickyHeaderRef}
+      data-testid="note-editor-sticky-header"
+      className="sticky z-30 rounded-t-card border-b border-divider bg-bg/95 px-4 py-3 shadow-card backdrop-blur"
+      style={{ top: 'var(--note-sticky-top, 0px)' }}
+    >
       <PageHeader className="mb-0" actionsClassName="ml-auto justify-end" title={baseVersionId ? '继续写这篇笔记' : '新建笔记'} subtitle={baseVersionId ? '标题、正文、照片与手写共用唯一连续编辑上下文。' : '先写下内容，再决定是否保存到当前服务器。'} actions={
         <div className="flex flex-wrap items-center justify-end gap-2">
           <Button className="xl:hidden" size="sm" variant="ghost" aria-label="返回笔记列表" onClick={onBack}>
@@ -569,7 +637,10 @@ function LoadedEditor({
             size="sm"
             variant="secondary"
             disabled={!isCurrent || busy || inkEditorOpen || inkPending}
-            onClick={() => setEndConfirmOpen(true)}
+            onClick={() => {
+              setError('')
+              setEndConfirmOpen(true)
+            }}
           >
             结束
           </Button>
@@ -667,7 +738,7 @@ function LoadedEditor({
             {showVersionDetails ? ` · ${progress.currentPath}` : ''}
           </p>
         </div>}
-        {error && <InlineAlert tone="crit" title="未完成">{error}</InlineAlert>}
+        {error && !endConfirmOpen && <InlineAlert tone="crit" title="未完成">{error}</InlineAlert>}
         {message && <InlineAlert tone={message.includes('选择采用哪一份') ? 'warn' : 'ok'}>{message}</InlineAlert>}
       </section>
 
@@ -701,8 +772,9 @@ function LoadedEditor({
     open={endConfirmOpen}
     onOpenChange={setEndConfirmOpen}
     title="结束这次记录？"
-    description="会先保存当前标题与连续正文，再结束本次编辑。保存失败时留在本页，当前草稿不会丢失。"
-    confirmLabel={dirty || !baseVersionId || frozen ? '结束并保存' : '结束'}
+    description={endDescription}
+    feedback={error ? <InlineAlert tone="crit" title="结束未完成">{error}</InlineAlert> : undefined}
+    confirmLabel={endNeedsSave ? '结束并保存' : '结束'}
     cancelLabel="继续编辑"
     loading={busy}
     onConfirm={finishSession}

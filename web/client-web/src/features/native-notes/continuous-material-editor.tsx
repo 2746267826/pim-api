@@ -510,11 +510,21 @@ export const ContinuousMaterialEditor = forwardRef<
       setPreview(null)
       return
     }
-    setPreview(projectMaterialMarkdown(getBlocks()))
+    try {
+      setPreview(projectMaterialMarkdown(getBlocks()))
+    } catch (failure) {
+      errorCallbackRef.current(
+        `${failure instanceof Error ? failure.message : '正文序列化失败'}。当前草稿仍保留在本页，未生成预览。`,
+      )
+    }
   }
 
   return <div className="space-y-3">
-    <div className="sticky top-[4.25rem] z-10 -mx-1 flex flex-wrap items-center gap-1 rounded-ctl border border-border bg-bg/95 px-2 py-1.5 shadow-card backdrop-blur">
+    <div
+      data-testid="note-format-toolbar"
+      className="sticky z-10 -mx-1 flex flex-wrap items-center gap-1 rounded-ctl border border-border bg-bg/95 px-2 py-1.5 shadow-card backdrop-blur"
+      style={{ top: 'calc(var(--note-sticky-top, 0px) + var(--note-sticky-header-height, 4.5rem))' }}
+    >
       <span className="px-1 text-[11px] font-medium text-text-3">连续正文</span>
       <Button size="sm" variant="ghost" aria-label="加粗" disabled={!editable} onClick={() => editor?.chain().focus().toggleBold().run()}>
         <Bold className="size-4" aria-hidden />
