@@ -409,7 +409,7 @@ public sealed class NotificationDeliveryRealDbTests
     public async Task AttentionCategory_RespectsTheDevicesNoteToggle()
     {
         var (temp, clock, user, fake) = await NewDatabaseAsync();
-        await using var _ = temp;
+        await using var databaseScope = temp;
         await using (var db = NotificationTestSupport.NewDbContext(temp.ConnectionString))
         {
             _ = await NotificationTestSupport.SubscribeAsync(
@@ -450,7 +450,7 @@ public sealed class NotificationDeliveryRealDbTests
     public async Task PushPayload_CarriesThePreciseQ06CategoryKey()
     {
         var (temp, clock, user, fake) = await NewDatabaseAsync();
-        await using var _ = temp;
+        await using var databaseScope = temp;
         string? categoryKey = null;
         string? eventType = null;
         fake.Handler = (_, message, _) =>
