@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, render, screen } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { NativeNotesClient } from '@/features/native-notes/api'
 import type { NoteMaterialVersion } from '@/features/native-notes/material-model'
@@ -88,6 +89,8 @@ describe('临时缓存清理与真实笔记编辑器', () => {
           showVersionDetails
           versionId={versionId}
           onSaved={vi.fn()}
+          onEnded={vi.fn()}
+          onBack={vi.fn()}
           promoteInFlight={false}
           promotingVersionId=""
           onPromoteVersion={vi.fn()}
@@ -96,12 +99,12 @@ describe('临时缓存清理与真实笔记编辑器', () => {
     )
     const view = render(editor())
 
-    const textarea = await screen.findByLabelText('正文块 1') as HTMLTextAreaElement
-    textarea.focus()
-    fireEvent.change(textarea, { target: { value: '尚未保存的正文' } })
+    const editorBody = await screen.findByLabelText('笔记正文')
+    await userEvent.click(editorBody)
+    await userEvent.keyboard('尚未保存的正文')
 
-    expect(document.activeElement).toBe(textarea)
-    expect(textarea.value).toBe('尚未保存的正文')
+    expect(document.activeElement).toBe(editorBody)
+    expect(editorBody.textContent).toContain('尚未保存的正文')
     expect(snapshotTemporaryCache(client, ownerId)).toMatchObject({
       queryEntries: 1,
       inUseQueryEntries: 2,
@@ -113,9 +116,9 @@ describe('临时缓存清理与真实笔记编辑器', () => {
     })
     view.rerender(editor())
 
-    expect(screen.getByLabelText('正文块 1')).toBe(textarea)
-    expect(document.activeElement).toBe(textarea)
-    expect(textarea.value).toBe('尚未保存的正文')
+    expect(screen.getByLabelText('笔记正文')).toBe(editorBody)
+    expect(document.activeElement).toBe(editorBody)
+    expect(editorBody.textContent).toContain('尚未保存的正文')
     expect(api.version).toHaveBeenCalledTimes(1)
     expect(client.getQueryCache().find({ exact: true, queryKey: ['inactive-query'] })).toBeUndefined()
     expect(client.getQueryCache().find({
