@@ -508,13 +508,17 @@ public sealed class NotificationDeliveryWorker(
         DateTimeOffset now,
         CancellationToken ct)
     {
-        var items = await db.NotificationEvents
+        // SQLite (used by the relational-provider tests) cannot translate
+        // DateTimeOffset comparisons; keep the time window and ordering in memory.
+        var candidates = await db.NotificationEvents
             .IgnoreQueryFilters()
-            .Where(e => (e.FanoutStatus == "Pending" || e.FanoutStatus == "Retrying") &&
-                        e.NextFanoutAt <= now)
+            .Where(e => e.FanoutStatus == "Pending" || e.FanoutStatus == "Retrying")
+            .ToListAsync(ct);
+        var items = candidates
+            .Where(e => e.NextFanoutAt <= now)
             .OrderBy(e => e.NextFanoutAt)
             .Take(Math.Max(1, Options.FanoutBatchSize))
-            .ToListAsync(ct);
+            .ToList();
         foreach (var item in items)
         {
             item.FanoutStatus = "Processing";
@@ -571,14 +575,19 @@ public sealed class NotificationDeliveryWorker(
         string owner,
         CancellationToken ct)
     {
-        var items = await db.NotificationDeliveries
+        // See ClaimEventsNonRelationalAsync: SQLite cannot translate DateTimeOffset
+        // comparisons, so only the status predicate runs in SQL and the due-time
+        // window is applied after materialization.
+        var candidates = await db.NotificationDeliveries
             .IgnoreQueryFilters()
-            .Where(d => (d.Status == NotificationDeliveryStatuses.Pending ||
-                         d.Status == NotificationDeliveryStatuses.Retrying) &&
-                        d.NextAttemptAt <= now)
+            .Where(d => d.Status == NotificationDeliveryStatuses.Pending ||
+                        d.Status == NotificationDeliveryStatuses.Retrying)
+            .ToListAsync(ct);
+        var items = candidates
+            .Where(d => d.NextAttemptAt <= now)
             .OrderBy(d => d.NextAttemptAt)
             .Take(Math.Max(1, Options.DeliveryBatchSize))
-            .ToListAsync(ct);
+            .ToList();
         foreach (var item in items)
         {
             item.Status = NotificationDeliveryStatuses.Processing;
