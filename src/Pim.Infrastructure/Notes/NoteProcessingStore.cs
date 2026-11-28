@@ -81,6 +81,22 @@ public sealed class NoteProcessingStore(IOptions<NoteMaterialUploadOptions> opti
         await TryReadAsync(owner, processingId, ct)
         ?? throw new DomainException(40401, "处理编排记录不存在");
 
+    internal async Task DeleteForNoteAsync(Guid owner, Guid noteId, CancellationToken ct)
+    {
+        if (noteId == Guid.Empty) throw Invalid("笔记标识无效");
+        await using var lease = await LockAsync(owner, ct);
+        var folder = Folder(owner);
+        if (!Directory.Exists(folder)) return;
+        foreach (var path in Directory.EnumerateFiles(folder, "*.json"))
+        {
+            if (!Guid.TryParseExact(Path.GetFileNameWithoutExtension(path), "D", out var id))
+                continue;
+            var state = await TryReadAsync(owner, id, ct);
+            if (state is null || state.NoteId != noteId) continue;
+            File.Delete(path);
+        }
+    }
+
     internal async Task<T> WithLockAsync<T>(Guid owner,
         Func<CancellationToken, Task<T>> action, CancellationToken ct)
     {

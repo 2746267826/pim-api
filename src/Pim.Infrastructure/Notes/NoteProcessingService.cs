@@ -75,6 +75,7 @@ public sealed class NoteProcessingService(
     {
         if (request.NoteId == Guid.Empty || request.VersionId == Guid.Empty)
             throw new DomainException(40001, "笔记或材料版本标识无效");
+        await materials.EnsureNoteActiveAsync(owner, request.NoteId, ct);
         var autoEnabled = await AutoEnabledAsync(owner, ct);
         var supplied = await materials.GetAsync(owner, request.VersionId, ct);
         if (supplied.Upload.NoteId != request.NoteId)

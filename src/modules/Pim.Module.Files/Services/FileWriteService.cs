@@ -192,12 +192,41 @@ public sealed class FileWriteService
     /// 本地恢复：增量同步语义下「软删即远端已删」，
     /// 因此只有「本地软删但远端仍存在」的短暂窗口可恢复，其余返回明确错误。
     /// </summary>
-    public async Task<FileWriteResult> RestoreAsync(Guid itemId, CancellationToken ct = default)
+    public Task<FileWriteResult> RestoreAsync(Guid itemId, CancellationToken ct = default)
+        => RestoreAsync(itemId, null, ct);
+
+    /// <summary>
+    /// Restores a file with an optional recycle-bin token. The token is checked after
+    /// acquiring the provider-scoped advisory lock, so a concurrent purge cannot pass
+    /// the stale check between the caller's list read and the restore mutation.
+    /// </summary>
+    public async Task<FileWriteResult> RestoreAsync(
+        Guid itemId,
+        DateTimeOffset? expectedDeletedAt,
+        CancellationToken ct = default)
+    {
+        var (_, provider) = await LoadItemIncludingDeletedAsync(itemId, ct);
+        return await AdvisoryLock.RunAsync(
+            _db,
+            FileRecycleLock.KeyFor(UserId, provider.Id),
+            () => RestoreCoreAsync(itemId, expectedDeletedAt, ct),
+            ct);
+    }
+
+    private async Task<FileWriteResult> RestoreCoreAsync(
+        Guid itemId,
+        DateTimeOffset? expectedDeletedAt,
+        CancellationToken ct)
     {
         var (item, provider) = await LoadItemIncludingDeletedAsync(itemId, ct);
         if (!item.IsDeleted)
         {
             throw new DomainException(5339, "该文件不在回收站中");
+        }
+        if (expectedDeletedAt.HasValue &&
+            (item.DeletedAt ?? item.ModifiedAt) != expectedDeletedAt.Value)
+        {
+            throw new DomainException(40901, "文件状态已变化，请刷新回收站后重试");
         }
 
         var session = await _sessions.OpenAsync(provider, ct);

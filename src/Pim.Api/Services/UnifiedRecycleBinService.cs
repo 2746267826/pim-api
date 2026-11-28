@@ -1,0 +1,1132 @@
+using System.Globalization;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
+using Microsoft.EntityFrameworkCore;
+using Pim.Api.DTOs;
+using Pim.Core.Exceptions;
+using Pim.Core.Operations;
+using Pim.Infrastructure.Auth;
+using Pim.Infrastructure.Data;
+using Pim.Infrastructure.Data.Entities;
+using Pim.Infrastructure.Notes;
+using Pim.Infrastructure.Storage;
+using Pim.Module.Calendar.DTOs;
+using Pim.Module.Calendar.Entities;
+using Pim.Module.Calendar.Services;
+using Pim.Module.Files.Entities;
+using Pim.Module.Files.Providers.Local;
+using Pim.Module.Files.Services;
+
+namespace Pim.Api.Services;
+
+/// <summary>
+/// Read and batch orchestration for the user-accessible unified recycle bin.
+/// Domain services remain authoritative: notes use their material ledger, files use
+/// <see cref="FileWriteService"/> / <see cref="LocalFileStore"/>, and calendar items
+/// reuse <see cref="CalendarRecycleBinService"/> restore rules.
+/// </summary>
+public sealed class UnifiedRecycleBinService(
+    PimDbContext db,
+    ICurrentUserService currentUser,
+    CalendarRecycleBinService calendar,
+    NativeNoteRecycleService notes,
+    FileWriteService files,
+    LocalFileStore localFiles,
+    IAuditLogService audit,
+    ILogger<UnifiedRecycleBinService>? logger = null)
+{
+    private static readonly TimeSpan OperationLease = TimeSpan.FromMinutes(5);
+    private static readonly JsonSerializerOptions ReceiptJson = new(JsonSerializerDefaults.Web);
+    private static readonly string[] Domains =
+    [
+        RecycleBinDomains.Note,
+        RecycleBinDomains.File,
+        RecycleBinDomains.Task,
+        RecycleBinDomains.Calendar
+    ];
+
+    private Guid UserId => currentUser.UserId ?? throw new DomainException(1002, "未登录");
+
+    public async Task<RecycleBinPageDto> ListAsync(
+        string? domain,
+        string? search,
+        DateTimeOffset? deletedFrom,
+        DateTimeOffset? deletedTo,
+        int page,
+        int pageSize,
+        CancellationToken ct = default)
+    {
+        var normalizedDomain = NormalizeDomainFilter(domain);
+        var term = string.IsNullOrWhiteSpace(search) ? null : search.Trim();
+        // Every domain is loaded even when one filter is active: the frontend renders
+        // the other group counters from this response, and zeroing them made the
+        // counters silently lie for every filtered view.
+        var all = new List<RecycleBinItemDto>();
+        all.AddRange((await notes.ListDeletedAsync(UserId, ct))
+            .Where(item => Matches(term, item.Title))
+            .Where(item => InRange(item.DeletedAt, deletedFrom, deletedTo))
+            .Select(item => new RecycleBinItemDto(
+                item.NoteId,
+                RecycleBinDomains.Note,
+                "note",
+                item.Title,
+                item.DeletedAt,
+                "builtin",
+                null,
+                null,
+                true,
+                false,
+                null)));
+
+        var fileRows = await db.Set<FileItemEntity>()
+            .AsNoTracking()
+            .Include(row => row.Provider)
+            .IgnoreQueryFilters()
+            .Where(row => row.IsDeleted
+                && row.Provider != null
+                && row.Provider.UserId == UserId)
+            .OrderByDescending(row => row.DeletedAt)
+            .ToListAsync(ct);
+        all.AddRange(fileRows
+            .Select(row => FileItem(row))
+            .Where(item => Matches(term, item.Title, item.Location))
+            .Where(item => InRange(item.DeletedAt, deletedFrom, deletedTo)));
+
+        all.AddRange(await LoadCalendarItemsAsync(term, deletedFrom, deletedTo, ct));
+
+        var counts = Domains.ToDictionary(
+            value => value,
+            value => all.Count(item => item.Domain == value));
+        var filtered = normalizedDomain == RecycleBinDomains.All
+            ? all
+            : all.Where(item => item.Domain == normalizedDomain).ToList();
+
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 100);
+        var ordered = filtered
+            .OrderByDescending(item => item.DeletedAt)
+            .ThenBy(item => item.Domain, StringComparer.Ordinal)
+            .ThenBy(item => item.Title, StringComparer.Ordinal)
+            .ToArray();
+        var total = ordered.Length;
+        return new RecycleBinPageDto(
+            ordered.Skip((page - 1) * pageSize).Take(pageSize).ToArray(),
+            Domains.Select(value => new RecycleBinGroupDto(value, counts[value])).ToArray(),
+            total,
+            page,
+            pageSize,
+            (int)Math.Ceiling(total / (double)pageSize));
+    }
+
+    public Task<RecycleBinBatchReceiptDto> RestoreAsync(
+        RecycleBinBatchRequest request,
+        CancellationToken ct = default) =>
+        ExecuteBatchAsync("restore", request, restore: true, ct);
+
+    public Task<RecycleBinBatchReceiptDto> PurgeAsync(
+        RecycleBinBatchRequest request,
+        CancellationToken ct = default) =>
+        ExecuteBatchAsync("purge", request, restore: false, ct);
+
+    private async Task<RecycleBinBatchReceiptDto> ExecuteBatchAsync(
+        string action,
+        RecycleBinBatchRequest request,
+        bool restore,
+        CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        var unique = (request.Items ?? [])
+            .Where(item => item is not null)
+            .Select(item => new RecycleBinItemRef(
+                item.Domain?.Trim().ToLowerInvariant() ?? string.Empty,
+                item.Id,
+                item.ExpectedDeletedAt?.ToUniversalTime()))
+            .DistinctBy(item => (item.Domain, item.Id))
+            .ToArray();
+        if (unique.Length == 0)
+            throw new DomainException(40001, "请选择至少一个回收站项目");
+        if (unique.Length > 200)
+            throw new DomainException(40001, "单次最多处理 200 个回收站项目，请分批提交");
+
+        if (request.OperationId is not { } operationId || operationId == Guid.Empty)
+        {
+            return await RunBatchAsync(
+                action, request, restore, unique, Guid.NewGuid(), null, null, null, ct);
+        }
+
+        var payloadHash = PayloadHash(action, request.RestoreAsCopy, unique);
+        var claim = await ClaimOperationAsync(operationId, action, payloadHash, ct);
+        if (claim.Replay is not null)
+            return claim.Replay;
+
+        try
+        {
+            var processingToken = claim.Operation.ProcessingToken;
+            var receipt = await RunBatchAsync(
+                action,
+                request,
+                restore,
+                unique,
+                claim.Operation.Id,
+                operationId,
+                claim.Operation.Id,
+                processingToken,
+                ct);
+            return await CompleteOperationAsync(
+                claim.Operation.Id, processingToken, receipt, ct);
+        }
+        catch
+        {
+            await ReleaseOperationAsync(
+                claim.Operation.Id,
+                claim.Operation.ProcessingToken,
+                CancellationToken.None);
+            throw;
+        }
+    }
+
+    private async Task<RecycleBinBatchReceiptDto> RunBatchAsync(
+        string action,
+        RecycleBinBatchRequest request,
+        bool restore,
+        IReadOnlyList<RecycleBinItemRef> unique,
+        Guid receiptId,
+        Guid? operationId,
+        Guid? operationEntityId,
+        Guid? operationProcessingToken,
+        CancellationToken ct)
+    {
+        var results = new List<RecycleBinItemResultDto>(unique.Count);
+        for (var index = 0; index < unique.Count; index++)
+        {
+            var item = unique[index];
+            // A successful item committed its own rows; drop anything a failed item left
+            // tracked before the next item can save it. The operation lease is renewed
+            // per item so a long batch does not lose its idempotency key mid-flight.
+            db.ChangeTracker.Clear();
+            if (operationEntityId is { } leaseOperationId)
+            {
+                await RenewOperationLeaseAsync(
+                    leaseOperationId,
+                    operationProcessingToken
+                        ?? throw new InvalidOperationException(
+                            "Recycle-bin operation lease token is missing."),
+                    ct);
+            }
+            try
+            {
+                results.Add(await ExecuteItemAsync(
+                    action,
+                    restore,
+                    request.RestoreAsCopy,
+                    index,
+                    item,
+                    ct));
+            }
+            catch (DomainException error)
+            {
+                results.Add(Failed(index, item, action, await TitleAsync(item, ct), error.ErrorCode, error.Message));
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception error)
+            {
+                logger?.LogWarning(
+                    error,
+                    "Unified recycle-bin item did not reach a confirmed result: {Domain}/{Id}",
+                    item.Domain,
+                    item.Id);
+                results.Add(Failed(
+                    index,
+                    item,
+                    action,
+                    await TitleAsync(item, ct),
+                    null,
+                    "服务器未能确认该项结果，请重试并核对回收站"));
+            }
+        }
+
+        return new RecycleBinBatchReceiptDto(
+            receiptId,
+            operationId,
+            action,
+            results.Count(result => result.Status == RecycleBinItemStatuses.Success),
+            results.Count(result => result.Status == RecycleBinItemStatuses.Failed),
+            results.Count(result => result.Status == RecycleBinItemStatuses.SourcePending),
+            results);
+    }
+
+    internal Task<(RecycleBinOperationEntity Operation, RecycleBinBatchReceiptDto? Replay)>
+        ClaimOperationAsync(
+        Guid operationId, string action, string payloadHash, CancellationToken ct) =>
+        AdvisoryLock.RunAsync(
+            db,
+            OperationLockKey(UserId, operationId),
+            async () =>
+            {
+                var now = DateTimeOffset.UtcNow;
+                var operation = await db.RecycleBinOperations.SingleOrDefaultAsync(row =>
+                    row.UserId == UserId && row.OperationId == operationId, ct);
+                if (operation is null)
+                {
+                    operation = new RecycleBinOperationEntity
+                    {
+                        Id = Guid.NewGuid(),
+                        UserId = UserId,
+                        OperationId = operationId,
+                        Action = action,
+                        PayloadHash = payloadHash,
+                        Status = RecycleBinOperationStatuses.Running,
+                        ProcessingToken = Guid.NewGuid(),
+                        LeaseExpiresAt = now.Add(OperationLease),
+                        AttemptCount = 1,
+                        CreatedAt = now,
+                        UpdatedAt = now
+                    };
+                    db.RecycleBinOperations.Add(operation);
+                    await db.SaveChangesAsync(ct);
+                    return (operation, (RecycleBinBatchReceiptDto?)null);
+                }
+
+                if (operation.Action != action || operation.PayloadHash != payloadHash)
+                    throw new DomainException(
+                        40902,
+                        "operationId 已用于另一批不同的回收站请求，请使用新的 operationId");
+
+                if (operation.Status == RecycleBinOperationStatuses.Completed)
+                {
+                    RecycleBinBatchReceiptDto? replay = null;
+                    if (!string.IsNullOrWhiteSpace(operation.ReceiptJson))
+                    {
+                        replay = JsonSerializer.Deserialize<RecycleBinBatchReceiptDto>(
+                            operation.ReceiptJson, ReceiptJson);
+                    }
+                    return (operation, replay ?? throw new DomainException(
+                        40903,
+                        "该 operationId 的回执不可用，请使用新的 operationId 重试"));
+                }
+
+                if (operation.LeaseExpiresAt > now)
+                    throw new DomainException(
+                        40904,
+                        "该 operationId 的批次仍在处理中，请稍后使用同一 operationId 重试");
+
+                // An expired running lease means a previous attempt died before persisting its
+                // receipt. The retry re-runs the same batch, but each item reconciles against its
+                // own durable state so work that already committed is not reported as failed.
+                operation.ProcessingToken = Guid.NewGuid();
+                operation.LeaseExpiresAt = now.Add(OperationLease);
+                operation.AttemptCount++;
+                operation.UpdatedAt = now;
+                await db.SaveChangesAsync(ct);
+                return (operation, (RecycleBinBatchReceiptDto?)null);
+            },
+            ct);
+
+    internal async Task<RecycleBinBatchReceiptDto> CompleteOperationAsync(
+        Guid operationEntityId,
+        Guid processingToken,
+        RecycleBinBatchReceiptDto receipt,
+        CancellationToken ct)
+    {
+        // Every item that succeeded has already committed its own business rows and
+        // audit. Anything still tracked here belongs to an item that failed before its
+        // save, so dropping it prevents receipt persistence from silently committing a
+        // partial mutation that the receipt reports as failed.
+        db.ChangeTracker.Clear();
+        // A failing item may have cleared the change tracker (note purge does this so a
+        // partial purge can never be committed). The conditional update below revalidates
+        // the processing token so a stale lease cannot overwrite a newer receipt.
+        var now = DateTimeOffset.UtcNow;
+        var receiptJson = JsonSerializer.Serialize(receipt, ReceiptJson);
+        if (db.Database.IsRelational())
+        {
+            var updated = await db.RecycleBinOperations
+                .Where(row => row.Id == operationEntityId
+                    && row.UserId == UserId
+                    && row.Status == RecycleBinOperationStatuses.Running
+                    && row.ProcessingToken == processingToken)
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(row => row.Status, RecycleBinOperationStatuses.Completed)
+                    .SetProperty(row => row.ReceiptJson, receiptJson)
+                    .SetProperty(row => row.CompletedAt, (DateTimeOffset?)now)
+                    .SetProperty(row => row.UpdatedAt, now)
+                    .SetProperty(row => row.LeaseExpiresAt, now), ct);
+            if (updated == 0)
+                throw new DomainException(
+                    40904,
+                    "该 operationId 的处理租约已变化，请使用同一 operationId 重试");
+            return receipt;
+        }
+
+        var operation = await db.RecycleBinOperations.SingleOrDefaultAsync(
+            row => row.Id == operationEntityId && row.UserId == UserId, ct)
+            ?? throw new DomainException(
+                40904,
+                "该 operationId 的处理记录不存在，请使用同一 operationId 重试");
+        if (operation.Status != RecycleBinOperationStatuses.Running
+            || operation.ProcessingToken != processingToken)
+            throw new DomainException(
+                40904,
+                "该 operationId 的处理租约已变化，请使用同一 operationId 重试");
+        operation.Status = RecycleBinOperationStatuses.Completed;
+        operation.ReceiptJson = receiptJson;
+        operation.CompletedAt = now;
+        operation.UpdatedAt = now;
+        operation.LeaseExpiresAt = now;
+        await db.SaveChangesAsync(ct);
+        return receipt;
+    }
+
+    internal async Task RenewOperationLeaseAsync(
+        Guid operationEntityId, Guid processingToken, CancellationToken ct)
+    {
+        var now = DateTimeOffset.UtcNow;
+        if (db.Database.IsRelational())
+        {
+            var updated = await db.RecycleBinOperations
+                .Where(row => row.Id == operationEntityId
+                    && row.UserId == UserId
+                    && row.Status == RecycleBinOperationStatuses.Running
+                    && row.ProcessingToken == processingToken)
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(row => row.LeaseExpiresAt, now.Add(OperationLease))
+                    .SetProperty(row => row.UpdatedAt, now), ct);
+            if (updated == 0)
+                throw new DomainException(
+                    40904,
+                    "该 operationId 的处理租约已变化，请使用同一 operationId 重试");
+            return;
+        }
+
+        db.ChangeTracker.Clear();
+        var operation = await db.RecycleBinOperations.SingleOrDefaultAsync(
+            row => row.Id == operationEntityId && row.UserId == UserId, ct)
+            ?? throw new DomainException(
+                40904,
+                "该 operationId 的处理记录不存在，请使用同一 operationId 重试");
+        if (operation.Status != RecycleBinOperationStatuses.Running
+            || operation.ProcessingToken != processingToken)
+            throw new DomainException(
+                40904,
+                "该 operationId 的处理租约已变化，请使用同一 operationId 重试");
+        operation.LeaseExpiresAt = now.Add(OperationLease);
+        operation.UpdatedAt = now;
+        await db.SaveChangesAsync(ct);
+    }
+
+    internal async Task ReleaseOperationAsync(
+        Guid operationId, Guid processingToken, CancellationToken ct)
+    {
+        try
+        {
+            db.ChangeTracker.Clear();
+            var now = DateTimeOffset.UtcNow;
+            if (db.Database.IsRelational())
+            {
+                await db.RecycleBinOperations
+                    .Where(row => row.Id == operationId
+                        && row.UserId == UserId
+                        && row.Status == RecycleBinOperationStatuses.Running
+                        && row.ProcessingToken == processingToken)
+                    .ExecuteUpdateAsync(setters => setters
+                        .SetProperty(row => row.LeaseExpiresAt, now)
+                        .SetProperty(row => row.UpdatedAt, now), ct);
+                return;
+            }
+
+            var operation = await db.RecycleBinOperations
+                .SingleOrDefaultAsync(
+                    row => row.Id == operationId && row.UserId == UserId, ct);
+            if (operation is null
+                || operation.Status == RecycleBinOperationStatuses.Completed
+                || operation.ProcessingToken != processingToken)
+                return;
+            operation.LeaseExpiresAt = now;
+            operation.UpdatedAt = now;
+            await db.SaveChangesAsync(ct);
+        }
+        catch (Exception error)
+        {
+            logger?.LogWarning(
+                error,
+                "Unable to release recycle-bin operation lease {OperationId}",
+                operationId);
+        }
+    }
+
+    private static string PayloadHash(
+        string action, bool restoreAsCopy, IReadOnlyList<RecycleBinItemRef> items)
+    {
+        var canonical = new StringBuilder()
+            .Append(action).Append('\n')
+            .Append(restoreAsCopy ? '1' : '0').Append('\n');
+        foreach (var item in items
+                     .OrderBy(value => value.Domain, StringComparer.Ordinal)
+                     .ThenBy(value => value.Id)
+                     .ThenBy(value => value.ExpectedDeletedAt?.UtcTicks ?? 0))
+        {
+            canonical
+                .Append(item.Domain).Append('|')
+                .Append(item.Id.ToString("D")).Append('|')
+                .Append(item.ExpectedDeletedAt is { } expected
+                    ? expected.UtcTicks.ToString(CultureInfo.InvariantCulture)
+                    : string.Empty)
+                .Append('\n');
+        }
+
+        return Convert.ToHexString(SHA256.HashData(
+            Encoding.UTF8.GetBytes(canonical.ToString()))).ToLowerInvariant();
+    }
+
+    private static long OperationLockKey(Guid owner, Guid operationId)
+    {
+        var ownerBytes = owner.ToByteArray();
+        var operationBytes = operationId.ToByteArray();
+        return BitConverter.ToInt64(ownerBytes, 0)
+            ^ BitConverter.ToInt64(ownerBytes, 8)
+            ^ BitConverter.ToInt64(operationBytes, 0)
+            ^ BitConverter.ToInt64(operationBytes, 8);
+    }
+
+    private async Task<RecycleBinItemResultDto> ExecuteItemAsync(
+        string action,
+        bool restore,
+        bool restoreAsCopy,
+        int index,
+        RecycleBinItemRef item,
+        CancellationToken ct)
+    {
+        if (item.Id == Guid.Empty)
+            throw new DomainException(40001, "项目标识无效");
+
+        return item.Domain switch
+        {
+            RecycleBinDomains.Note => await ExecuteNoteAsync(action, restore, restoreAsCopy, index, item, ct),
+            RecycleBinDomains.File => await ExecuteFileAsync(action, restore, restoreAsCopy, index, item, ct),
+            RecycleBinDomains.Task or RecycleBinDomains.Calendar =>
+                await ExecuteCalendarAsync(action, restore, restoreAsCopy, index, item, ct),
+            _ => throw new DomainException(40001, "不支持的回收站领域")
+        };
+    }
+
+    private async Task<RecycleBinItemResultDto> ExecuteNoteAsync(
+        string action,
+        bool restore,
+        bool restoreAsCopy,
+        int index,
+        RecycleBinItemRef item,
+        CancellationToken ct)
+    {
+        var id = item.Id;
+        if (restore)
+        {
+            if (restoreAsCopy)
+                throw new DomainException(40001, "笔记不支持恢复为副本；请恢复原笔记或保留副本后手动新建");
+            var result = await notes.RestoreAsync(UserId, id, item.ExpectedDeletedAt, ct);
+            return Success(index, RecycleBinDomains.Note, id, result.Title, action, "builtin", result.Message);
+        }
+
+        var title = await NoteTitleAsync(id, ct);
+        var purge = await notes.PurgeAsync(UserId, id, item.ExpectedDeletedAt, ct);
+        var alreadyGone = purge is
+        {
+            MaterialVersions: 0,
+            AsrTasks: 0,
+            DerivedTasks: 0,
+            AiCalls: 0,
+            AiImages: 0,
+            AiAudio: 0
+        };
+        return Success(
+            index,
+            RecycleBinDomains.Note,
+            id,
+            title,
+            action,
+            "builtin",
+            alreadyGone
+                ? "笔记已永久删除，无需重复提交"
+                : "笔记及其原稿、材料、转写与派生数据已永久删除");
+    }
+
+    private async Task<RecycleBinItemResultDto> ExecuteFileAsync(
+        string action,
+        bool restore,
+        bool restoreAsCopy,
+        int index,
+        RecycleBinItemRef item,
+        CancellationToken ct)
+    {
+        var id = item.Id;
+        var row = await db.Set<FileItemEntity>()
+            .Include(entity => entity.Provider)
+            .SingleOrDefaultAsync(entity => entity.Id == id
+                && entity.Provider != null
+                && entity.Provider.UserId == UserId, ct);
+        if (row is null)
+        {
+            if (!restore
+                && await FindCommittedPurgeAsync(
+                    RecycleBinPurgeDomains.File, id, item.ExpectedDeletedAt, ct) is { } receipt)
+            {
+                // A crash after the catalog commit but before the batch receipt was written
+                // leaves the row gone and the durable per-item receipt behind. That receipt is
+                // the only thing that makes "already purged" truthful here.
+                return Success(
+                    index,
+                    RecycleBinDomains.File,
+                    id,
+                    string.IsNullOrWhiteSpace(receipt.Title) ? "未知文件" : receipt.Title,
+                    action,
+                    "builtin",
+                    "文件已永久删除，无需重复提交");
+            }
+
+            throw new DomainException(40401, "文件不存在");
+        }
+        var provider = row.Provider ?? throw new DomainException(40401, "文件来源不存在");
+        var source = SourceOf(provider.Provider);
+        if (!row.IsDeleted)
+        {
+            if (restore)
+                return Success(index, RecycleBinDomains.File, id, row.Name, action, source, "文件已恢复，无需重复提交");
+            throw new DomainException(40901, "文件不在回收站，不能永久删除");
+        }
+
+        EnsureExpectedDeletedAt(row.DeletedAt ?? row.ModifiedAt, item.ExpectedDeletedAt, "文件");
+
+        if (source != "builtin")
+        {
+            var label = ProviderLabel(provider.Provider);
+            return new RecycleBinItemResultDto(
+                index,
+                RecycleBinDomains.File,
+                id,
+                row.Name,
+                RecycleBinItemStatuses.SourcePending,
+                action,
+                source,
+                $"{label} 的恢复与永久清理需由外部来源确认，本条未在本地误报成功",
+                null);
+        }
+
+        if (restore)
+        {
+            if (restoreAsCopy)
+                throw new DomainException(40001, "文件不支持恢复为副本；请在网盘中复制后再同步");
+            var restored = await files.RestoreAsync(id, item.ExpectedDeletedAt, ct);
+            return Success(index, RecycleBinDomains.File, id, row.Name, action, source, $"文件已恢复到 {restored.Path}");
+        }
+
+        if (provider.Provider != LocalFileProvider.Key)
+            throw new DomainException(40901, "只能永久清理内置存储文件");
+
+        return await AdvisoryLock.RunAsync(
+            db,
+            FileRecycleLock.KeyFor(UserId, provider.Id),
+            () => PurgeBuiltinFileAsync(index, action, id, item.ExpectedDeletedAt, ct),
+            ct);
+    }
+
+    private async Task<RecycleBinItemResultDto> PurgeBuiltinFileAsync(
+        int index,
+        string action,
+        Guid id,
+        DateTimeOffset? expectedDeletedAt,
+        CancellationToken ct)
+    {
+        var row = await db.Set<FileItemEntity>()
+            .Include(entity => entity.Provider)
+            .SingleOrDefaultAsync(entity => entity.Id == id
+                && entity.Provider != null
+                && entity.Provider.UserId == UserId, ct);
+        if (row is null)
+            throw new DomainException(40401, "文件不存在或已永久删除");
+        var provider = row.Provider ?? throw new DomainException(40401, "文件来源不存在");
+        if (provider.Provider != LocalFileProvider.Key)
+            throw new DomainException(40901, "只能永久清理内置存储文件");
+        if (!row.IsDeleted)
+            throw new DomainException(40901, "文件不在回收站，不能永久删除");
+        EnsureExpectedDeletedAt(row.DeletedAt ?? row.ModifiedAt, expectedDeletedAt, "文件");
+
+        // Blob removal is idempotent and runs while the catalog lock is held, before the
+        // catalog mutation. If it fails, the catalog and recycle-bin row remain so the
+        // user can retry; if a later step fails, retrying recomputes the same keys.
+        var blobKeys = await localFiles.PurgeTrashedAsync(
+            UserId,
+            provider.Id,
+            row.ExternalFileId,
+            async (keys, token) =>
+            {
+                foreach (var blobKey in keys)
+                {
+                    await localFiles.Binaries.DeleteAsync(
+                        UserId,
+                        ManagedBinaryStore.Files,
+                        provider.Id,
+                        blobKey,
+                        token);
+                }
+            },
+            ct);
+
+        var prefix = row.Path.TrimEnd('/') + "/";
+        var metadataRows = await db.Set<FileItemEntity>()
+            .Where(candidate => candidate.ProviderId == provider.Id
+                && candidate.IsDeleted
+                && (candidate.Id == row.Id
+                    || candidate.Path == row.Path
+                    || candidate.Path.StartsWith(prefix)))
+            .ToListAsync(ct);
+
+        // PostgreSQL enforces two RESTRICT edges inside the files schema:
+        //   file_items.current_version_id -> file_versions(file_item_id,id)
+        //   file_index_jobs.version_id     -> file_versions(file_item_id,id)
+        // A bare DELETE of file_items can therefore hit the index-job guard before the
+        // cascade removes the versions. Break both edges first, then delete versions, so
+        // the final catalog delete is deterministic instead of depending on trigger order.
+        var itemIds = metadataRows.Select(candidate => candidate.Id).ToArray();
+        var indexJobs = await db.Set<FileIndexJobEntity>()
+            .Where(job => itemIds.Contains(job.FileItemId))
+            .ToListAsync(ct);
+        var versions = await db.Set<FileVersionEntity>()
+            .Where(version => itemIds.Contains(version.FileItemId))
+            .ToListAsync(ct);
+        // Prepare the RESTRICT edges in an explicit order: index jobs first, then null the
+        // current-version pointers, then delete the versions. EF cannot order a single
+        // SaveChanges through the item<->version cycle reliably, and PostgreSQL rejects the
+        // version delete while a current_version_id still references it.
+        if (indexJobs.Count > 0 || versions.Count > 0)
+        {
+            if (indexJobs.Count > 0)
+                db.Set<FileIndexJobEntity>().RemoveRange(indexJobs);
+            if (versions.Count > 0)
+            {
+                foreach (var candidate in metadataRows)
+                    candidate.CurrentVersionId = null;
+            }
+
+            await db.SaveChangesAsync(ct);
+            if (versions.Count > 0)
+            {
+                db.Set<FileVersionEntity>().RemoveRange(versions);
+                await db.SaveChangesAsync(ct);
+            }
+        }
+
+        // The catalog delete and the per-generation receipts commit together, so a retry after
+        // a crash between commit and batch-receipt write can prove this exact trash generation
+        // was purged instead of reporting it as failed.
+        await WritePurgeReceiptsAsync(
+            RecycleBinPurgeDomains.File,
+            metadataRows
+                .Select(candidate => (
+                    candidate.Id,
+                    (DateTimeOffset?)(candidate.DeletedAt ?? candidate.ModifiedAt),
+                    candidate.Name))
+                .ToArray(),
+            ct);
+        db.Set<FileItemEntity>().RemoveRange(metadataRows);
+        audit.Enqueue(new CreateAuditLogRequest(
+            UserId,
+            AuditActorType.User,
+            "files.recycle_bin.purge",
+            "file_item",
+            row.Id.ToString("D"),
+            "recycle-bin",
+            AuditResult.Success,
+            null,
+            null,
+            null,
+            new Dictionary<string, string>
+            {
+                ["metadataRows"] = metadataRows.Count.ToString(),
+                ["blobs"] = blobKeys.Count.ToString(),
+                ["versions"] = versions.Count.ToString(),
+                ["indexJobs"] = indexJobs.Count.ToString()
+            },
+            null,
+            null));
+        await db.SaveChangesAsync(ct);
+        return Success(index, RecycleBinDomains.File, id, row.Name, action, "builtin", "内置文件及服务器内容已永久删除");
+    }
+
+    private async Task<RecycleBinItemResultDto> ExecuteCalendarAsync(
+        string action,
+        bool restore,
+        bool restoreAsCopy,
+        int index,
+        RecycleBinItemRef item,
+        CancellationToken ct)
+    {
+        var target = await CalendarTargetAsync(item.Domain, item.Id, ct);
+        if (target is null)
+        {
+            if (!restore
+                && await FindCommittedPurgeAsync(item.Domain, item.Id, item.ExpectedDeletedAt, ct)
+                    is { } receipt)
+            {
+                // The calendar purge committed but the process died before the batch receipt
+                // was written. The durable per-generation receipt proves the covered work
+                // already happened, so this is a truthful replay rather than a new deletion.
+                return Success(
+                    index,
+                    item.Domain,
+                    item.Id,
+                    string.IsNullOrWhiteSpace(receipt.Title) ? "未知日历项" : receipt.Title,
+                    action,
+                    receipt.Domain == RecycleBinPurgeDomains.Task ? "task" : "calendar",
+                    "日历项已永久删除，无需重复提交");
+            }
+
+            throw new DomainException(40401, "日历项不存在");
+        }
+        if (restore && target.Active)
+        {
+            return Success(
+                index,
+                item.Domain,
+                item.Id,
+                target.Title,
+                action,
+                target.Type,
+                "该日历项已恢复，无需重复提交");
+        }
+
+        if (target.DeletedAt is not { } deletedAt)
+            throw new DomainException(40901, "日历项状态已变化，请刷新回收站后重试");
+        EnsureExpectedDeletedAt(deletedAt, item.ExpectedDeletedAt, "日历项");
+
+        if (restore)
+        {
+            var result = await calendar.RestoreWithCasAsync(
+                target.Type,
+                item.Id,
+                new CalendarRestoreRequest(restoreAsCopy),
+                item.ExpectedDeletedAt,
+                ct);
+            return Success(
+                index,
+                item.Domain,
+                item.Id,
+                target.Title,
+                action,
+                target.Type,
+                result.Message);
+        }
+
+        _ = await calendar.PurgeAsync(target.Type, item.Id, item.ExpectedDeletedAt, ct);
+        return Success(
+            index,
+            item.Domain,
+            item.Id,
+            target.Title,
+            action,
+            target.Type,
+            "日历项已永久删除");
+    }
+
+    private async Task<IReadOnlyList<RecycleBinItemDto>> LoadCalendarItemsAsync(
+        string? search,
+        DateTimeOffset? deletedFrom,
+        DateTimeOffset? deletedTo,
+        CancellationToken ct)
+    {
+        var result = new List<RecycleBinItemDto>();
+        var page = 1;
+        while (true)
+        {
+            var batch = await calendar.ListAsync(
+                "all",
+                search,
+                deletedFrom,
+                deletedTo,
+                page,
+                100,
+                ct);
+            result.AddRange(batch.Items.Select(CalendarItem));
+            if (page >= batch.TotalPages || batch.Items.Count == 0) break;
+            page++;
+        }
+        return result;
+    }
+
+    private async Task<CalendarTarget?> CalendarTargetAsync(string domain, Guid id,
+        CancellationToken ct)
+    {
+        var task = await db.Set<TaskEntity>()
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(row => row.Id == id && row.UserId == UserId)
+            .Select(row => new { row.Title, row.DeletedAt })
+            .SingleOrDefaultAsync(ct);
+        if (task is not null)
+        {
+            return domain == RecycleBinDomains.Task
+                ? new CalendarTarget("task", task.Title, task.DeletedAt is null, task.DeletedAt)
+                : null;
+        }
+
+        var evt = await db.Set<EventEntity>()
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(row => row.Id == id && row.Calendar.UserId == UserId)
+            .Select(row => new { row.Title, row.DeletedAt })
+            .SingleOrDefaultAsync(ct);
+        if (evt is not null)
+        {
+            return domain == RecycleBinDomains.Calendar
+                ? new CalendarTarget("event", evt.Title, evt.DeletedAt is null, evt.DeletedAt)
+                : null;
+        }
+
+        var book = await db.Set<CalendarEntity>()
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(row => row.Id == id && row.UserId == UserId)
+            .Select(row => new { row.Name, row.Kind, row.DeletedAt })
+            .SingleOrDefaultAsync(ct);
+        if (book is null) return null;
+        var expectedDomain = book.Kind == "task" ? RecycleBinDomains.Task : RecycleBinDomains.Calendar;
+        if (domain != expectedDomain) return null;
+        return new CalendarTarget(
+            book.Kind == "task" ? "task-book" : "calendar",
+            book.Name,
+            book.DeletedAt is null,
+            book.DeletedAt);
+    }
+
+    private async Task<string> TitleAsync(RecycleBinItemRef item, CancellationToken ct)
+    {
+        try
+        {
+            return item.Domain switch
+            {
+                RecycleBinDomains.Note => await NoteTitleAsync(item.Id, ct),
+                RecycleBinDomains.File => await db.Set<FileItemEntity>()
+                    .Where(row => row.Id == item.Id && row.Provider != null && row.Provider.UserId == UserId)
+                    .Select(row => row.Name)
+                    .SingleOrDefaultAsync(ct) ?? "未知文件",
+                RecycleBinDomains.Task or RecycleBinDomains.Calendar =>
+                    (await CalendarTargetAsync(item.Domain, item.Id, ct))?.Title ?? "未知日历项",
+                _ => "未知项目"
+            };
+        }
+        catch (Exception error) when (error is not OperationCanceledException)
+        {
+            logger?.LogDebug(error, "Unable to resolve recycle-bin receipt title for {Domain}/{Id}",
+                item.Domain, item.Id);
+            return "未知项目";
+        }
+    }
+
+    private async Task<string> NoteTitleAsync(Guid id, CancellationToken ct) =>
+        (await notes.ListDeletedAsync(UserId, ct))
+            .FirstOrDefault(item => item.NoteId == id)?.Title
+        ?? "未知笔记";
+
+    private static RecycleBinItemDto CalendarItem(CalendarRecycleBinItem item)
+    {
+        var domain = item.Type is "task" or "task-book"
+            ? RecycleBinDomains.Task
+            : RecycleBinDomains.Calendar;
+        return new RecycleBinItemDto(
+            item.Id,
+            domain,
+            item.Type,
+            item.Title,
+            item.DeletedAt,
+            string.IsNullOrWhiteSpace(item.Source) ? "manual" : item.Source,
+            item.BookName,
+            null,
+            true,
+            false,
+            null);
+    }
+
+    private static RecycleBinItemDto FileItem(FileItemEntity row)
+    {
+        var source = SourceOf(row.Provider?.Provider);
+        var pending = source != "builtin";
+        return new RecycleBinItemDto(
+            row.Id,
+            RecycleBinDomains.File,
+            row.ItemType,
+            row.Name,
+            row.DeletedAt ?? row.ModifiedAt,
+            source,
+            row.Path,
+            row.Size,
+            !pending,
+            pending,
+            pending
+                ? $"{ProviderLabel(row.Provider?.Provider)} 的恢复与永久清理需由外部来源确认"
+                : null);
+    }
+
+    private static string SourceOf(string? provider) =>
+        provider?.ToLowerInvariant() switch
+        {
+            "local" or "builtin" or null or "" => "builtin",
+            "onedrive" => "onedrive",
+            "google" => "google",
+            var value => value
+        };
+
+    private static string ProviderLabel(string? provider) =>
+        provider?.ToLowerInvariant() switch
+        {
+            "onedrive" => "OneDrive",
+            "google" => "Google Drive",
+            "local" or "builtin" => "内置存储",
+            _ => provider ?? "外部来源"
+        };
+
+    private static bool Matches(string? term, params string?[] values) =>
+        term is null || values.Any(value =>
+            value?.Contains(term, StringComparison.OrdinalIgnoreCase) == true);
+
+    private static bool InRange(
+        DateTimeOffset value,
+        DateTimeOffset? from,
+        DateTimeOffset? to) =>
+        (!from.HasValue || value >= from.Value) && (!to.HasValue || value <= to.Value);
+
+    private static string NormalizeDomainFilter(string? domain)
+    {
+        if (string.IsNullOrWhiteSpace(domain)) return RecycleBinDomains.All;
+        var value = domain.Trim().ToLowerInvariant();
+        return value is RecycleBinDomains.All
+            or RecycleBinDomains.Note
+            or RecycleBinDomains.File
+            or RecycleBinDomains.Task
+            or RecycleBinDomains.Calendar
+            ? value
+            : throw new DomainException(40001, "不支持的回收站领域筛选");
+    }
+
+    private static void EnsureExpectedDeletedAt(
+        DateTimeOffset actual,
+        DateTimeOffset? expected,
+        string label)
+    {
+        if (expected.HasValue && expected.Value != actual)
+            throw new DomainException(40901, $"{label}状态已变化，请刷新回收站后重试");
+    }
+
+    /// <summary>
+    /// Looks up a purge receipt for exactly this soft-delete generation. Callers use it only
+    /// to reconcile "row is gone but our destructive work provably ran"; it never turns an
+    /// unproven request into a success.
+    /// </summary>
+    private Task<RecycleBinPurgeIntentEntity?> FindCommittedPurgeAsync(
+        string domain,
+        Guid id,
+        DateTimeOffset? deletedAt,
+        CancellationToken ct)
+    {
+        var query = db.RecycleBinPurgeIntents
+            .AsNoTracking()
+            .Where(row => row.UserId == UserId
+                && row.Domain == domain
+                && row.ItemId == id
+                && (row.Phase == RecycleBinPurgePhases.Completed
+                    || row.Phase == RecycleBinPurgePhases.DbCommitted));
+        if (deletedAt is { } deletionAt)
+        {
+            var generation = RecycleBinPurgeGenerations.FromDeletedAt(deletionAt);
+            query = query.Where(row => row.Generation == generation);
+        }
+        return query
+            .OrderByDescending(row => row.CompletedAt ?? row.UpdatedAt)
+            .FirstOrDefaultAsync(ct);
+    }
+
+    /// <summary>
+    /// Adds completed per-generation receipts for work committed in the current
+    /// <see cref="db"/> change set. The caller commits them in the same SaveChanges as the
+    /// deletion, so a crash before the batch receipt is written can still be reconciled.
+    /// Existing receipts are left untouched so a retried purge cannot violate the
+    /// (owner, domain, item, generation) unique key.
+    /// </summary>
+    private async Task WritePurgeReceiptsAsync(
+        string domain,
+        IReadOnlyList<(Guid Id, DateTimeOffset? DeletedAt, string Title)> items,
+        CancellationToken ct)
+    {
+        var planned = items
+            .Where(item => item.DeletedAt is not null)
+            .Select(item => (
+                item.Id,
+                Generation: RecycleBinPurgeGenerations.FromDeletedAt(item.DeletedAt!.Value),
+                DeletedAt: item.DeletedAt!.Value,
+                item.Title))
+            .DistinctBy(item => (item.Id, item.Generation))
+            .ToArray();
+        if (planned.Length == 0) return;
+
+        var itemIds = planned.Select(item => item.Id).Distinct().ToArray();
+        var existing = await db.RecycleBinPurgeIntents
+            .Where(row => row.UserId == UserId
+                && row.Domain == domain
+                && itemIds.Contains(row.ItemId))
+            .Select(row => new { row.ItemId, row.Generation })
+            .ToListAsync(ct);
+        var known = existing
+            .Select(row => (row.ItemId, row.Generation))
+            .ToHashSet();
+
+        var now = DateTimeOffset.UtcNow;
+        foreach (var receipt in planned)
+        {
+            if (!known.Add((receipt.Id, receipt.Generation))) continue;
+            db.RecycleBinPurgeIntents.Add(new RecycleBinPurgeIntentEntity
+            {
+                UserId = UserId,
+                Domain = domain,
+                ItemId = receipt.Id,
+                Generation = receipt.Generation,
+                ExpectedDeletedAt = receipt.DeletedAt,
+                Title = receipt.Title.Length > 500 ? receipt.Title[..500] : receipt.Title,
+                Phase = RecycleBinPurgePhases.Completed,
+                LeaseToken = null,
+                LeaseExpiresAt = null,
+                AttemptCount = 1,
+                CreatedAt = now,
+                UpdatedAt = now,
+                CompletedAt = now
+            });
+        }
+    }
+
+    private static RecycleBinItemResultDto Success(
+        int index,
+        string domain,
+        Guid id,
+        string title,
+        string action,
+        string source,
+        string message) =>
+        new(index, domain, id, title, RecycleBinItemStatuses.Success,
+            action, source, message, null);
+
+    private static RecycleBinItemResultDto Failed(
+        int index,
+        RecycleBinItemRef item,
+        string action,
+        string title,
+        int? errorCode,
+        string message) =>
+        new(index, item.Domain, item.Id, title, RecycleBinItemStatuses.Failed,
+            action, null, message, errorCode);
+
+    private sealed record CalendarTarget(
+        string Type,
+        string Title,
+        bool Active,
+        DateTimeOffset? DeletedAt);
+}

@@ -49,6 +49,7 @@ const DevicesPage = lazyPage(() => import('@/features/mobile/pages/devices-page'
 const DeviceDetailPage = lazyPage(() => import('@/features/mobile/pages/device-detail-page'), 'DeviceDetailPage')
 
 const FilesPage = lazyPage(() => import('@/features/files/pages/files-page'), 'FilesPage')
+const RecycleBinPage = lazyPage(() => import('@/features/recycle-bin/recycle-bin-page'), 'RecycleBinPage')
 const MicrosoftPage = lazyPage(() => import('@/features/settings/microsoft/microsoft-page'), 'MicrosoftPage')
 const GoogleDrivePage = lazyPage(() => import('@/features/settings/google/google-page'), 'GoogleDrivePage')
 const AppKnowledgeBasePage = lazyPage(() => import('@/features/knowledge/pages/app-knowledge-page'), 'AppKnowledgeBasePage')
@@ -65,7 +66,6 @@ const DataReliabilityPage = lazyPage(settingsPages, 'DataReliabilityPage')
 const McpSettingsPage = lazyPage(settingsPages, 'McpSettingsPage')
 const NoteProcessingSettingsPage = lazyPage(settingsPages, 'NoteProcessingSettingsPage')
 const PcDetailQueryPage = lazyPage(settingsPages, 'PcDetailQueryPage')
-const RecycleBinPage = lazyPage(settingsPages, 'RecycleBinPage')
 const AccountSecurityPage = lazyPage(() => import('@/features/settings/pages/account-security-page'), 'AccountSecurityPage')
 
 /** 路由表（对应规格 01 §4 全量路由；P0 先通骨架与设置域，其余为占位页） */
@@ -121,6 +121,7 @@ export const router = createBrowserRouter([
           { path: 'reminders', element: <RemindersPage /> },
           { path: 'reports', element: <ReportsPage /> },
           { path: 'habits', element: <HabitsPage /> },
+          { path: 'recycle-bin', element: <RecycleBinPage /> },
 
           {
             // 数据中心与审计台账只对管理员/运维开放；普通笔记冲突仍走笔记页，不依赖这些入口。
@@ -152,7 +153,7 @@ export const router = createBrowserRouter([
           },
           { path: 'settings/mcp', element: <McpSettingsPage /> },
           { path: 'settings/calendar-data', element: <CalendarDataManagerPage /> },
-          { path: 'settings/recycle-bin', element: <RecycleBinPage /> },
+          { path: 'settings/recycle-bin', element: <Navigate to="/recycle-bin" replace /> },
           { path: 'settings/pc-data', element: <PcDetailQueryPage /> },
 
           // ── 其它 ──

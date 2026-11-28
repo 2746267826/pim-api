@@ -5,6 +5,7 @@ using Pim.Core.Ai;
 using Pim.Core.Exceptions;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
+using Pim.Infrastructure.Notes;
 using Pim.Module.Calendar.Entities;
 using Pim.Module.Calendar.Services;
 using Pim.Module.NoteTaskSuggestions.DTOs;
@@ -18,7 +19,8 @@ internal sealed class NoteTaskSuggestionExtractionJob(
     CalendarService calendar,
     INoteTaskSuggestionModelClient model,
     TimeProvider timeProvider,
-    ILogger<NoteTaskSuggestionExtractionJob> logger)
+    ILogger<NoteTaskSuggestionExtractionJob> logger,
+    NoteMaterialUploadStore? materials = null)
 {
     [AutomaticRetry(Attempts = 0)]
     public async Task RunAsync(Guid owner, Guid extractionId, CancellationToken ct)
@@ -29,6 +31,14 @@ internal sealed class NoteTaskSuggestionExtractionJob(
             extraction.Status is NoteTaskSuggestionExtractionStatuses.Succeeded or
                 NoteTaskSuggestionExtractionStatuses.Failed)
             return;
+        if (materials is not null &&
+            !await materials.IsNoteActiveAsync(owner, extraction.NoteId, ct))
+        {
+            await FailAsync(owner, extractionId, extraction.NoteId, null, "note_deleted",
+                "笔记在回收站中，任务建议不会继续生成；恢复笔记后可重新发起",
+                extraction.Revision, ct);
+            return;
+        }
 
         var now = timeProvider.GetUtcNow();
         var staleRunningBefore = now.AddMinutes(-5);
@@ -54,6 +64,14 @@ internal sealed class NoteTaskSuggestionExtractionJob(
 
         try
         {
+            if (materials is not null &&
+                !await materials.IsNoteActiveAsync(owner, extraction.NoteId, ct))
+            {
+                await FailAsync(owner, extractionId, extraction.NoteId, null, "note_deleted",
+                    "笔记在回收站中，任务建议不会继续生成；恢复笔记后可重新发起",
+                    extraction.Revision, ct);
+                return;
+            }
             var result = await model.ExtractAsync(owner, extraction, ct);
             if (result.Status == AiRequestStatus.Running)
                 return;

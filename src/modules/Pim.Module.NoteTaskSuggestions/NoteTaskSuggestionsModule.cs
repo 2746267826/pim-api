@@ -10,6 +10,7 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
 using Pim.Core.Common;
 using Pim.Core.Modules;
+using Pim.Core.Notes;
 using Pim.Infrastructure.Data;
 using Pim.Module.NoteTaskSuggestions.DTOs;
 using Pim.Module.NoteTaskSuggestions.Jobs;
@@ -30,6 +31,7 @@ public sealed class NoteTaskSuggestionsModule : IModule
         services.AddScoped<INoteTaskSuggestionModelClient, AiTextNoteTaskSuggestionModelClient>();
         services.AddScoped<NoteTaskSuggestionService>();
         services.AddScoped<NoteTaskSuggestionExtractionJob>();
+        services.AddScoped<INotePurgeContributor, NoteTaskSuggestionPurgeContributor>();
     }
 
     public void MapEndpoints(IEndpointRouteBuilder endpoints)

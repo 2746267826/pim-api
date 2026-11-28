@@ -121,6 +121,14 @@ public static class NoteMaterialEndpoints
             await store.CancelAsync(UserId(user), versionId, ct);
             return Results.Ok(ApiResponse<string>.Ok("未完成上传已取消，本机原材料不受影响"));
         }).Produces<ApiResponse<string>>().Produces(401).Produces<ApiResponse<string>>(409);
+        group.MapDelete("/{noteId:guid}", async (Guid noteId, NativeNoteRecycleService recycle,
+            ICurrentUserService user, CancellationToken ct) =>
+            Results.Ok(ApiResponse<NativeNoteDeletedItem>.Ok(
+                await recycle.SoftDeleteAsync(UserId(user), noteId, ct))))
+            .Produces<ApiResponse<NativeNoteDeletedItem>>()
+            .Produces(401)
+            .Produces<ApiResponse<string>>(404)
+            .Produces<ApiResponse<string>>(409);
         return endpoints;
     }
 

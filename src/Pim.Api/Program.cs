@@ -160,6 +160,8 @@ builder.Services.AddScoped<Pim.Infrastructure.Notes.NoteProcessingPreferencesSer
 builder.Services.AddScoped<Pim.Infrastructure.Notes.NoteProcessingDispatchJob>();
 builder.Services.AddScoped<Pim.Infrastructure.Notes.NoteAsrJob>();
 builder.Services.AddScoped<Pim.Infrastructure.Notes.NoteDerivedJob>();
+builder.Services.AddScoped<Pim.Infrastructure.Notes.NativeNoteRecycleService>();
+builder.Services.AddScoped<Pim.Api.Services.UnifiedRecycleBinService>();
 builder.Services.AddAggregateResultCaching();
 builder.Services.Configure<OpsOptions>(o =>
 {
@@ -465,6 +467,7 @@ app.MapDataReliabilityEndpoints();
 app.MapTodayEndpoints();
 app.MapAiEndpoints();
 app.MapNoteMaterialEndpoints();
+app.MapUnifiedRecycleBinEndpoints();
 app.MapNoteAsrEndpoints();
 app.MapNoteAsrBatchSubmissionEndpoints();
 app.MapNoteAsrReprocessEndpoints();

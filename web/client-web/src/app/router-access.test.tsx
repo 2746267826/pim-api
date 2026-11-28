@@ -99,4 +99,14 @@ describe('application route access', () => {
     const work = navGroupsForRole('user').find((group) => group.label === '工作')
     expect(work?.items).toContainEqual(expect.objectContaining({ to: '/search', label: '搜索' }))
   })
+
+  it('exposes the unified recycle bin to ordinary users from the real shell route', () => {
+    const found = findRoutes(router.routes, 'recycle-bin')
+    expect(found).toHaveLength(1)
+    expect(found[0]?.route.element).toBeTruthy()
+    expect(found[0]?.ancestors.some((route) =>
+      isValidElement(route.element) && route.element.type === RequireAdmin)).toBe(false)
+    const system = navGroupsForRole('user').find((group) => group.label === '系统')
+    expect(system?.items.find((item) => item.to === '/recycle-bin')?.label).toBe('回收站')
+  })
 })

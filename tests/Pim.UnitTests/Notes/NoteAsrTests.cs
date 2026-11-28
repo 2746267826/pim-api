@@ -307,6 +307,26 @@ public sealed class NoteAsrTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task SoftDeletedNoteKeepsCheckpointReadableButStopsQueuedAsrWork()
+    {
+        var fixture = NoteMaterialUploadStoreTests.Fixture.Create(); await Upload(fixture);
+        var task = await Data<NoteAsrTaskDto>(await _client.PostAsJsonAsync(Route, Start(fixture)));
+
+        var deleted = await _client.DeleteAsync($"/api/v1/native-notes/{fixture.Request.NoteId}");
+        Assert.Equal(HttpStatusCode.OK, deleted.StatusCode);
+
+        await Run(task.TaskId);
+        Assert.Equal(0, _calls);
+        var after = await Get(task.TaskId);
+        Assert.Equal("Stopped", after.Phase);
+        Assert.True(after.StopRequested);
+
+        var checkpoint = JsonNode.Parse(await File.ReadAllTextAsync(TaskPath(task.TaskId)))!;
+        Assert.True(checkpoint["stopRequested"]!.GetValue<bool>());
+        Assert.Equal("Queued", checkpoint["steps"]![0]!["attempts"]![0]!["status"]!.GetValue<string>());
+    }
+
+    [Fact]
     public async Task NormalAccountOwnsTaskLifecycleAndOnlyReceivesSafeDestinationsWhileAdminSettingsStayProtected()
     {
         var adminFixture = NoteMaterialUploadStoreTests.Fixture.Create(); await Upload(adminFixture);

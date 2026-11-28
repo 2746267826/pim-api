@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { MemoryRouter } from 'react-router'
 import type { FileItem, FileProvider } from '../types'
 import { STORAGE_KEYS } from '@/lib/storage'
 
@@ -36,7 +37,7 @@ function item(providerId: string, path: string, size: number): FileItem {
 
 async function openPage(ready = true) {
   client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity, gcTime: 0 } } })
-  render(<QueryClientProvider client={client}><FilesPage /></QueryClientProvider>)
+  render(<MemoryRouter><QueryClientProvider client={client}><FilesPage /></QueryClientProvider></MemoryRouter>)
   if (ready) await waitFor(() => expect((screen.getByRole('button', { name: '上传文件' }) as HTMLButtonElement).disabled).toBe(false))
 }
 
@@ -163,7 +164,7 @@ describe('文件上传用户闭环（真实页面、查询缓存和上传引擎�
   it('来源加载异常时禁用上传并提供重试，避免误导用户必须连接云盘', async () => {
     api.providers.mockResolvedValue([])
     client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-    render(<QueryClientProvider client={client}><FilesPage /></QueryClientProvider>)
+    render(<MemoryRouter><QueryClientProvider client={client}><FilesPage /></QueryClientProvider></MemoryRouter>)
     await screen.findByText('暂时无法加载文件来源')
     expect((screen.getByRole('button', { name: '上传文件' }) as HTMLButtonElement).disabled).toBe(true)
     expect(screen.getByRole('button', { name: '重试' })).toBeTruthy()

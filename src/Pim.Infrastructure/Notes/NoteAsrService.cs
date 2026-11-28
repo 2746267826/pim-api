@@ -36,6 +36,7 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
         if ((request.ParentTaskId is null) != string.IsNullOrWhiteSpace(request.ReprocessReason) ||
             request.ReprocessReason is { Length: > 240 })
             throw new DomainException(40001, "重跑来源和原因必须同时提供，原因最多240字");
+        await materials.EnsureVersionNoteActiveAsync(owner, request.VersionId, ct);
         // A lost HTTP response replays an already persisted intent even after configuration changes.
         try
         {
@@ -161,6 +162,19 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
     public async Task<NoteAsrTaskDto> StopAsync(Guid id, CancellationToken ct)
     {
         var owner = await RequireActiveOwnerAsync(ct);
+        return Describe(await StopCoreAsync(owner, id, ct));
+    }
+
+    /// <summary>
+    /// Stops work that can no longer produce a note result because the note is in the recycle bin.
+    /// The task checkpoint is retained so a restore still shows what had been running.
+    /// </summary>
+    internal async Task<NoteAsrTaskDto> StopForInactiveNoteAsync(Guid owner, Guid id,
+        CancellationToken ct) =>
+        Describe(await StopCoreAsync(owner, id, ct));
+
+    private async Task<NoteAsrState> StopCoreAsync(Guid owner, Guid id, CancellationToken ct)
+    {
         return await tasks.WithLockAsync(owner, async lockedCt =>
         {
             var updated = await tasks.UpdateLockedAsync(owner, id,
@@ -171,8 +185,8 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
                 .Select(x => x.Id)
                 .ToArrayAsync(lockedCt);
             foreach (var attemptId in attemptIds)
-                await routing.StopAttemptAsync(attemptId, lockedCt);
-            return Describe(updated);
+                await routing.StopAttemptForOwnerAsync(owner, attemptId, lockedCt);
+            return updated;
         }, ct);
     }
     public async Task<NoteAsrTaskDto> RetryAsync(Guid id, RetryNoteAsrRequest request, CancellationToken ct)
@@ -182,6 +196,8 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
         if (request.RetryId == Guid.Empty || request.SegmentIndexes is not { Count: > 0 and <= 5_000 } ||
             request.SegmentIndexes.Distinct().Count() != request.SegmentIndexes.Count)
             throw new DomainException(40001, "请选择待恢复分片，核对原目标，并确认重试可能重复计费");
+        var observed = await tasks.ReadAsync(owner, id, ct);
+        await materials.EnsureNoteActiveAsync(owner, observed.NoteId, ct);
         var before = await ReconcileAsync(owner, id, ct);
         if (before.Route == NoteAsrRoute.Local && request.Consent is not null)
             throw new DomainException(40901, "本机重跑不涉及云端外发，不需要云端确认");
@@ -442,6 +458,7 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
         if (state.Request.ExpectedUserId != owner || state.Request.VersionId != versionId)
             throw new DomainException(40901, "ASR 任务不属于当前账号或固定材料版本");
         var version = await materials.GetAsync(owner, versionId, ct);
+        await materials.EnsureNoteActiveAsync(owner, version.Upload.NoteId, ct);
         if (state.NoteId != version.Upload.NoteId ||
             state.InputSha256 != NoteMaterialManifestValidator.Hash(version.InputJson) ||
             state.ManifestSha256 != NoteMaterialManifestValidator.Hash(version.ManifestJson))
