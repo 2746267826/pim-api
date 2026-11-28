@@ -161,6 +161,7 @@ function duplicateBlockMaterial(): NoteMaterialVersion {
 
 let client: QueryClient
 let testRouter: ReturnType<typeof createMemoryRouter>
+const uploadReceipts = new Map<string, NoteMaterialUpload>()
 
 function ProcessingPage() {
   const navigate = useNavigate()
@@ -198,6 +199,7 @@ function page(initialEntry = '/native-notes') {
 beforeEach(() => {
   installProseMirrorLayoutStubs()
   vi.resetAllMocks()
+  uploadReceipts.clear()
   authState.userId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
   authState.role = 'admin'
   Object.defineProperties(URL, {
@@ -218,7 +220,7 @@ beforeEach(() => {
     const manifest = JSON.parse(body.manifestJson) as {
       files: Array<{ path: string; kind: string; sha256: string; sizeBytes: number }>
     }
-    return {
+    const receipt = {
       ...material.upload,
       versionId: body.versionId,
       noteId: body.noteId,
@@ -233,17 +235,28 @@ beforeEach(() => {
         uploadedParts: [],
       })),
     } satisfies NoteMaterialUpload
+    uploadReceipts.set(body.versionId, receipt)
+    return receipt
   })
   nativeApi.clone.mockImplementation(async (_sourceVersionId: string, body: {
     material: { versionId: string; noteId: string; baseVersionId: string | null; manifestJson: string }
   }) => nativeApi.begin(body.material))
   nativeApi.uploadPart.mockResolvedValue('ok')
-  nativeApi.complete.mockImplementation(async (id: string) => ({
-    ...material.upload,
-    versionId: id,
-    phase: 'Uploaded',
-    isCurrent: true,
-  }))
+  nativeApi.complete.mockImplementation(async (id: string) => {
+    const receipt = uploadReceipts.get(id)
+    if (!receipt) throw new Error(`缺少上传回执 ${id}`)
+    return {
+      ...receipt,
+      versionId: id,
+      phase: 'Uploaded' as const,
+      isCurrent: true,
+      currentVersionId: id,
+      files: receipt.files.map((file) => ({
+        ...file,
+        uploadedParts: Array.from({ length: file.partCount }, (_, partIndex) => partIndex),
+      })),
+    }
+  })
   nativeApi.promote.mockImplementation(async (id: string) => ({
     ...material.upload,
     versionId: id,
@@ -1693,6 +1706,7 @@ describe('NativeNotesPage', () => {
     await screen.findByText('课堂笔记')
     await userEvent.click(screen.getByRole('button', { name: /新建笔记/ }))
     await userEvent.type(screen.getByLabelText('笔记标题'), '保存失败仍在内存')
+    await typeBody('保存失败后仍需保留的正文')
     await consentToStorage()
     await userEvent.click(screen.getAllByRole('button', { name: '保存笔记' })[0]!)
     expect(await screen.findByText(/合成网络失败/)).toBeTruthy()
@@ -1767,6 +1781,7 @@ describe('NativeNotesPage', () => {
     await screen.findByText('课堂笔记')
     await userEvent.click(screen.getByRole('button', { name: /新建笔记/ }))
     await userEvent.type(screen.getByLabelText('笔记标题'), '切换前正在上传')
+    await typeBody('切换前已经写入的正文')
     await consentToStorage()
     await userEvent.click(screen.getAllByRole('button', { name: '保存笔记' })[0]!)
     await waitFor(() => expect(nativeApi.begin).toHaveBeenCalledOnce())
