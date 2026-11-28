@@ -72,7 +72,27 @@ RUN set -eux; \
 EXPOSE 5000
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends supervisor tini \
+    && apt-get install -y --no-install-recommends supervisor tini ffmpeg \
+    && ffmpeg -version >/dev/null \
+    && opus_probe="$(mktemp -d)" \
+    && ffmpeg -nostdin -hide_banner -loglevel error \
+         -f lavfi -i "sine=frequency=440:sample_rate=48000:duration=0.2" \
+         -ac 1 -c:a libopus -b:a 32k -f ogg "$opus_probe/probe.opus" \
+    && ffmpeg -nostdin -hide_banner -loglevel error -xerror -threads 1 \
+         -max_alloc 67108864 -probesize 1048576 -analyzeduration 2000000 \
+         -protocol_whitelist file,pipe -f ogg -i "$opus_probe/probe.opus" \
+         -map 0:a:0 -vn -sn -dn -ac 1 -ar 16000 -f s16le -acodec pcm_s16le \
+         "$opus_probe/probe.pcm" \
+    && test -s "$opus_probe/probe.pcm" \
+    && test $(( $(wc -c < "$opus_probe/probe.pcm") % 2 )) -eq 0 \
+    && test "$(wc -c < "$opus_probe/probe.pcm")" = "6400" \
+    && head -c 400 "$opus_probe/probe.opus" > "$opus_probe/truncated.opus" \
+    && if ffmpeg -nostdin -hide_banner -loglevel error -xerror -f ogg \
+         -i "$opus_probe/truncated.opus" -f s16le -acodec pcm_s16le \
+         "$opus_probe/truncated.pcm" 2>/dev/null; then \
+         echo "image smoke: truncated Ogg Opus unexpectedly decoded" >&2; exit 1; \
+       fi \
+    && rm -rf "$opus_probe" \
     && rm -rf /var/lib/apt/lists/*
 
 COPY scripts/docker/supervisord.conf /etc/supervisor/supervisord.conf

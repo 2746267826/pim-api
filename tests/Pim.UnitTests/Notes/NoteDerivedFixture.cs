@@ -14,7 +14,8 @@ internal static class NoteDerivedFixture
     internal static readonly byte[] PhotoBytes = CreateRgbaPng(214, 73, 52, 255);
     internal static readonly byte[] InkBytes = CreateRgbaPng(32, 91, 176, 255);
 
-    internal static Material CreateMaterial(bool withAudio = true, int audioSamples = 160)
+    internal static Material CreateMaterial(bool withAudio = true, int audioSamples = 160,
+        byte[]? audio = null, string audioFormat = "wav")
     {
         if (PhotoBytes.SequenceEqual(InkBytes))
             throw new InvalidOperationException("Fixture Photo and InkPreview bytes must differ");
@@ -45,6 +46,16 @@ internal static class NoteDerivedFixture
                 new { id = inkBlock.ToString("D"), kind = "ink", ink }
             }
         }, Json);
+        var opus = string.Equals(audioFormat, "opus", StringComparison.Ordinal);
+        var chunk = new Dictionary<string, object?>
+        {
+            ["segment"] = 1, ["index"] = 1, ["samples"] = audioSamples
+        };
+        if (opus)
+        {
+            chunk["format"] = "opus";
+            chunk["mimeType"] = "audio/ogg";
+        }
         var sessionJson = JsonSerializer.Serialize(new
         {
             id = recording.ToString("D"),
@@ -54,7 +65,7 @@ internal static class NoteDerivedFixture
             phase = "Completed",
             currentSegment = 1,
             problem = (string?)null,
-            chunks = new[] { new { segment = 1, index = 1, samples = audioSamples } }
+            chunks = new[] { chunk }
         }, Json);
         var input = JsonSerializer.Serialize(new
         {
@@ -97,10 +108,11 @@ internal static class NoteDerivedFixture
             BinaryPrimitives.WriteUInt16LittleEndian(wave.AsSpan(34), 16);
             "data"u8.CopyTo(wave.AsSpan(36));
             BinaryPrimitives.WriteUInt32LittleEndian(wave.AsSpan(40), (uint)(audioSamples * 2));
+            var audioBytes = audio ?? wave;
             content.Add(Encoding.UTF8.GetBytes(sessionJson));
-            content.Add(wave);
+            content.Add(audioBytes);
             paths.Add($"recordings/{recording:D}/manifest.json");
-            paths.Add($"recordings/{recording:D}/s0001-c000001.wav");
+            paths.Add($"recordings/{recording:D}/s0001-c000001{(opus ? ".opus" : ".wav")}");
             kinds.Add("RecordingManifest");
             kinds.Add("AudioChunk");
             blockIds.Add(null);

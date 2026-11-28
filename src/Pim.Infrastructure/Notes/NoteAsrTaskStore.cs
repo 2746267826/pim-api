@@ -9,6 +9,8 @@ namespace Pim.Infrastructure.Notes;
 public sealed class NoteAsrTaskStore(IOptions<NoteMaterialUploadOptions> options)
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
+    // Test seam for the evidence/checkpoint failure window. Production leaves this null.
+    internal Func<NoteAsrState, Exception?>? CheckpointWriteFailureForTests { get; set; }
     private string Root => Path.Combine(Path.GetFullPath(options.Value.StorageRoot), "asr-tasks");
     private string Folder(Guid owner)
     {
@@ -271,6 +273,7 @@ public sealed class NoteAsrTaskStore(IOptions<NoteMaterialUploadOptions> options
     }
     private async Task SaveAsync(NoteAsrState state, CancellationToken ct)
     {
+        if (CheckpointWriteFailureForTests?.Invoke(state) is { } injected) throw injected;
         var path = FilePath(state.Owner, state.Request.TaskId); var temp = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
         try
         {

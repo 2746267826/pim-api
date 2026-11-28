@@ -20,6 +20,7 @@ using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
 using Pim.Infrastructure.Notes;
 using Pim.Infrastructure.Secrets;
+using Pim.Infrastructure.Storage;
 using Pim.UnitTests.Api;
 using Xunit;
 
@@ -300,6 +301,38 @@ public sealed class NoteDerivedJobTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task MissingOpusDecoderBlocksRecordSynthesisBeforeProviderWithoutUnknown()
+    {
+        var material = NoteDerivedFixture.CreateMaterial(audioSamples: 1600,
+            audio: OggOpusTestData.TinyOpus(), audioFormat: "opus");
+        var materials = _factory.Services.GetRequiredService<NoteMaterialUploadStore>();
+        await NoteDerivedFixture.UploadAsync(materials, _owner, material);
+        var allowlist = new NoteDerivedAudioContextOptions { ModelNames = ["derived-model"] };
+        var task = await StartWithAudioContextAsync(material, allowlist);
+        using var di = _factory.Services.CreateScope();
+        var broken = new NoteMaterialUploadStore(Options.Create(new NoteMaterialUploadOptions
+        {
+            StorageRoot = Path.Combine(_root, "materials"),
+            MaxVersionBytes = 32 * 1024 * 1024,
+            MaxUserReservedBytes = 64 * 1024 * 1024,
+            FfmpegPath = Path.Combine(_root, "missing-ffmpeg")
+        }), binaries: di.ServiceProvider.GetRequiredService<ManagedBinaryStore>());
+
+        await Run(task.TaskId, allowlist, broken);
+
+        using var scope = _factory.Services.CreateScope();
+        var state = await scope.ServiceProvider.GetRequiredService<NoteDerivedStore>()
+            .ReadTaskAsync(_owner, task.TaskId, default);
+        var record = state.Steps.Single(step => step.Kind == NoteDerivedStepKind.RecordSynthesis);
+        Assert.Equal("Blocked", record.Current.Status);
+        Assert.Equal("audio_context_unreadable", record.Current.ErrorCode);
+        Assert.True(state.StopRequested);
+        Assert.DoesNotContain(state.Steps, step => step.Current.Status == "Unknown");
+        Assert.Empty(_recordBodies);
+        Assert.Empty(_analysisBodies);
+    }
+
+    [Fact]
     public async Task UnlistedDerivedModelKeepsTheExistingAsrRequirement()
     {
         var material = NoteDerivedFixture.CreateMaterial();
@@ -327,9 +360,10 @@ public sealed class NoteDerivedJobTests : IAsyncLifetime
     }
 
     private NoteDerivedJob CreateJob(IServiceProvider services,
-        NoteDerivedAudioContextOptions? audioContext = null) => new(
+        NoteDerivedAudioContextOptions? audioContext = null,
+        NoteMaterialUploadStore? materials = null) => new(
         services.GetRequiredService<NoteDerivedStore>(),
-        services.GetRequiredService<NoteMaterialUploadStore>(),
+        materials ?? services.GetRequiredService<NoteMaterialUploadStore>(),
         services.GetRequiredService<NoteAsrTaskStore>(),
         services.GetRequiredService<NoteDerivedSnapshotBuilder>(),
         services.GetRequiredService<PimDbContext>(),
@@ -357,10 +391,11 @@ public sealed class NoteDerivedJobTests : IAsyncLifetime
             waitForAsr: false, allowIncompleteAsr: false, default);
     }
 
-    private async Task Run(Guid taskId, NoteDerivedAudioContextOptions? audioContext = null)
+    private async Task Run(Guid taskId, NoteDerivedAudioContextOptions? audioContext = null,
+        NoteMaterialUploadStore? materials = null)
     {
         using var scope = _factory.Services.CreateScope();
-        var job = CreateJob(scope.ServiceProvider, audioContext);
+        var job = CreateJob(scope.ServiceProvider, audioContext, materials);
         await job.RunAsync(_owner, taskId, default);
     }
 

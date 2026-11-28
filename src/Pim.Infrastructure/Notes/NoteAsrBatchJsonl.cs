@@ -66,7 +66,7 @@ internal static class NoteAsrBatchJsonlReader
                     if (step.Samples <= 0 || step.Samples > maxSamplesPerCall)
                         throw new DomainException(40901, "Batch 固定分片超出可信单片预算");
                     var audio = await materials.ReadAudioSliceAsync(owner, versionId, step.FileIndex,
-                        step.SourceOffset, step.Samples, ct);
+                        step.SourceOffset, step.Samples, ct, maxSamplesPerCall);
                     if (audio.Length < 45 || audio.Length > MimoAudioFormats.MaxDecodedBytes)
                         throw new DomainException(41301, "Batch 服务端音频分片超过50MiB");
                     var body = CanonicalLine(expectedIds[step.Index], audio, model, prompt, maxCompletionTokens);
@@ -174,7 +174,7 @@ internal static class NoteAsrBatchJsonlReader
                     throw new DomainException(40301, "Batch custom_id 不能超出当前账号的 attempt 分片范围");
                 var step = steps[segmentIndex];
                 var trusted = await materials.ReadAudioSliceAsync(owner, versionId, step.FileIndex,
-                    step.SourceOffset, step.Samples, ct);
+                    step.SourceOffset, step.Samples, ct, maxSamplesPerCall);
                 var uploaded = DecodeAudioDataUrl(parsed.DataUrl, parsed.Format, lineNumber);
                 if (!ValidWav(uploaded) || uploaded.Length != trusted.Length ||
                     !CryptographicOperations.FixedTimeEquals(SHA256.HashData(uploaded), SHA256.HashData(trusted)) ||
