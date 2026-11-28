@@ -60,7 +60,8 @@ const asrTask: NoteAsrTask = {
   },
   createdAt: '2026-10-29T00:00:00Z', updatedAt: '2026-10-29T00:00:00Z', totalSegments: 1,
   completedSegments: 0, failedSegments: 1, totalSamples: 16000, completedSamples: 0, sampleRate: 16000,
-  stopRequested: false, backgroundProcessingAvailable: true, route: 'cloud-asr',
+  stopRequested: false, isCanonicalInitial: true, backgroundProcessingAvailable: true,
+  route: 'cloud-asr',
 }
 const localAsrTask: NoteAsrTask = {
   ...asrTask,
@@ -99,7 +100,8 @@ const task: NoteDerivedTask = {
   inputSha256: 'a'.repeat(64), manifestSha256: 'b'.repeat(64), phase: 'Queued',
   destination: { modelId: destinationId, modelRevision: destinationRevision, endpoint: destination.endpoint, confirmed: true },
   coverage, artifacts: [{ artifactId, kind: 'CompleteRecord', headVersionId: null }], issues: [], steps: [], planVersion: 'v1',
-  createdAt: '2026-10-29T00:00:00Z', updatedAt: '2026-10-29T00:00:00Z', stopRequested: false, backgroundProcessingAvailable: true,
+  createdAt: '2026-10-29T00:00:00Z', updatedAt: '2026-10-29T00:00:00Z', stopRequested: false,
+  isCanonicalInitial: true, backgroundProcessingAvailable: true,
 }
 const artifact: NoteDerivedArtifact = {
   artifactId, noteId, kind: 'CompleteRecord', revision: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', headVersionId: null,

@@ -73,6 +73,130 @@ public sealed class NoteAsrBatchPersistenceTests
     }
 
     [SkippableFact]
+    public async Task Route_consent_drift_at_batch_freeze_creates_no_job_or_provider_call()
+    {
+        Skip.If(string.IsNullOrWhiteSpace(ConnectionString), "PIM_ASR516_PG is not configured");
+        var seed = await SeedAsync();
+        var factory = new SyntheticFactory((_, _) =>
+            throw new InvalidOperationException("must not send"));
+
+        await using (var db = NewDb(seed.Owner))
+        {
+            var service = NewService(db, seed.Owner, factory);
+            service.BeforeFreezeForTests = async ct =>
+            {
+                await using var driftDb = NewDb(seed.Owner);
+                var config = await driftDb.NoteAsrRouteConfigs.SingleAsync(x =>
+                    x.OwnerId == seed.Owner, ct);
+                config.ConsentVersion = "consent-2";
+                await driftDb.SaveChangesAsync(ct);
+            };
+            var error = await Assert.ThrowsAsync<DomainException>(() => StartAsync(service, seed));
+            Assert.Equal(40901, error.ErrorCode);
+        }
+
+        Assert.Empty(factory.Requests);
+        await using (var check = NewDb(seed.Owner))
+        {
+            Assert.Equal(0, await check.NoteAsrBatchJobs.CountAsync(x => x.OwnerId == seed.Owner));
+            Assert.Equal(0, await check.NoteAsrLeases.CountAsync(x => x.OwnerId == seed.Owner));
+            var attempt = await check.NoteAsrAttempts.AsNoTracking()
+                .SingleAsync(x => x.Id == seed.AttemptId);
+            Assert.Equal("Queued", attempt.State);
+        }
+        await CleanupAsync(seed.Owner);
+    }
+
+    [SkippableFact]
+    public async Task Route_consent_drift_before_batch_upload_never_uploads_or_creates()
+    {
+        Skip.If(string.IsNullOrWhiteSpace(ConnectionString), "PIM_ASR516_PG is not configured");
+        var seed = await SeedAsync();
+        var factory = new SyntheticFactory((_, _) =>
+            throw new InvalidOperationException("must not send"));
+        NoteAsrBatchJobDto job;
+
+        await using (var db = NewDb(seed.Owner))
+        {
+            var service = NewService(db, seed.Owner, factory);
+            service.BeforeUploadForTests = async ct =>
+            {
+                await using var driftDb = NewDb(seed.Owner);
+                var config = await driftDb.NoteAsrRouteConfigs.SingleAsync(x =>
+                    x.OwnerId == seed.Owner, ct);
+                config.ConsentVersion = "consent-2";
+                await driftDb.SaveChangesAsync(ct);
+            };
+            job = await StartAsync(service, seed);
+        }
+
+        Assert.Equal("Failed", job.Status);
+        Assert.Equal("batch_route_consent_drift", job.LastErrorCode);
+        Assert.Null(job.BatchId);
+        Assert.Null(job.InputFileId);
+        Assert.Empty(factory.Requests);
+        await AssertBatchAttemptRevokedAsync(seed, expectUpload: false);
+        await CleanupAsync(seed.Owner);
+    }
+
+    [SkippableFact]
+    public async Task Route_consent_drift_before_batch_create_never_creates_paid_batch()
+    {
+        Skip.If(string.IsNullOrWhiteSpace(ConnectionString), "PIM_ASR516_PG is not configured");
+        var seed = await SeedAsync();
+        var factory = new SyntheticFactory((request, _) =>
+        {
+            if (request.Method == HttpMethod.Post &&
+                request.Path.EndsWith("/v1/files", StringComparison.Ordinal))
+                return Task.FromResult(UploadOk());
+            throw new InvalidOperationException("must not create a provider batch");
+        });
+        NoteAsrBatchJobDto job;
+
+        await using (var db = NewDb(seed.Owner))
+        {
+            var service = NewService(db, seed.Owner, factory);
+            service.BeforeCreateForTests = async ct =>
+            {
+                await using var driftDb = NewDb(seed.Owner);
+                var config = await driftDb.NoteAsrRouteConfigs.SingleAsync(x =>
+                    x.OwnerId == seed.Owner, ct);
+                config.ConsentVersion = "consent-2";
+                await driftDb.SaveChangesAsync(ct);
+            };
+            job = await StartAsync(service, seed);
+        }
+
+        Assert.Equal("Failed", job.Status);
+        Assert.Equal("batch_route_consent_drift", job.LastErrorCode);
+        Assert.Null(job.BatchId);
+        Assert.Equal("file-in-1", job.InputFileId);
+        Assert.Equal(1, factory.UploadCalls);
+        Assert.Equal(0, factory.CreateCalls);
+        await AssertBatchAttemptRevokedAsync(seed, expectUpload: true);
+        await CleanupAsync(seed.Owner);
+    }
+
+    private static async Task AssertBatchAttemptRevokedAsync(Seeded seed, bool expectUpload)
+    {
+        await using var check = NewDb(seed.Owner);
+        var attempt = await check.NoteAsrAttempts.AsNoTracking()
+            .SingleAsync(x => x.Id == seed.AttemptId);
+        Assert.Equal("Failed", attempt.State);
+        Assert.True(attempt.StopRequested);
+        Assert.Equal("route_consent_drift", attempt.LastErrorCode);
+        var job = await check.NoteAsrBatchJobs.AsNoTracking()
+            .SingleAsync(x => x.OwnerId == seed.Owner && x.AttemptId == seed.AttemptId);
+        Assert.Equal("Failed", job.Status);
+        Assert.Null(job.BatchId);
+        Assert.Equal(expectUpload ? "file-in-1" : null, job.InputFileId);
+        var task = await Tasks(seed.Owner).ReadAsync(seed.Owner, seed.TaskId,
+            CancellationToken.None);
+        Assert.True(task.StopRequested);
+        Assert.All(task.Steps, step => Assert.Equal("Blocked", step.Current.Status));
+    }
+
+    [SkippableFact]
     public async Task Batch_jsonl_uses_the_frozen_profile_output_limit()
     {
         Skip.If(string.IsNullOrWhiteSpace(ConnectionString), "PIM_ASR516_PG is not configured");
@@ -1851,7 +1975,6 @@ public sealed class NoteAsrBatchPersistenceTests
     {
         Skip.If(string.IsNullOrWhiteSpace(ConnectionString), "PIM_ASR516_PG is not configured");
         var seed = await SeedAsync();
-        var routeConfig = await AddRouteConfigAsync(seed.Owner, seed.ProfileId, "route-consent-1");
         var parentPolls = 0;
         var firstChildPolls = 0;
         var secondChildPolls = 0;
@@ -1900,6 +2023,9 @@ public sealed class NoteAsrBatchPersistenceTests
             await service.PollAsync(parent.Id, CancellationToken.None);
             await service.PollAsync(parent.Id, CancellationToken.None);
         }
+        // The retry route consent is frozen after the parent job already ran. Rotating the account
+        // route before Start would be a real consent drift, which the batch guard now rejects.
+        var routeConfig = await AddRouteConfigAsync(seed.Owner, seed.ProfileId, "route-consent-1");
         await using (var db = NewDb(seed.Owner))
         {
             var parent = await db.NoteAsrBatchJobs.AsNoTracking().SingleAsync(x => x.OwnerId == seed.Owner);
@@ -2269,6 +2395,7 @@ public sealed class NoteAsrBatchPersistenceTests
         }
 
         var taskId = Guid.NewGuid();
+        var routeConfigRevision = Guid.NewGuid();
         var promptTemplate = AiAsrPromptTemplate.Normalize();
         var prompt = promptTemplate.Snapshot("zh");
         var attempt = new NoteAsrAttemptEntity
@@ -2276,7 +2403,8 @@ public sealed class NoteAsrBatchPersistenceTests
             Id = Guid.NewGuid(), OwnerId = owner, TaskId = taskId, NoteId = material.Version.Upload.NoteId,
             VersionId = material.Version.Upload.VersionId,
             InputSha256 = NoteMaterialManifestValidator.Hash(material.Version.InputJson),
-            Route = NoteAsrRoute.CloudMultimodal, State = "Queued", ConfigRevision = Guid.NewGuid(),
+            Route = NoteAsrRoute.CloudMultimodal, State = "Queued",
+            ConfigRevision = routeConfigRevision,
             ConsentVersion = "consent-1", ModelId = profile.Id, ModelRevision = profile.Revision,
             PresetId = MimoMultimodalPreset.PresetId, PresetVersion = "1", Model = profile.Model,
             Endpoint = "https://api.example.invalid/v1/chat/completions", ExecutionMode = "batch",
@@ -2286,6 +2414,15 @@ public sealed class NoteAsrBatchPersistenceTests
             FencingToken = 7, ExpectedSegments = 2, Language = "zh"
         };
         await db.NoteAsrAttempts.AddAsync(attempt);
+        await db.NoteAsrRouteConfigs.AddAsync(new NoteAsrRouteConfigEntity
+        {
+            OwnerId = owner,
+            Revision = routeConfigRevision,
+            DefaultRoute = NoteAsrRoute.CloudMultimodal,
+            CloudModelId = profile.Id,
+            ConsentVersion = "consent-1",
+            UpdatedAt = now
+        });
         await db.SaveChangesAsync();
         var consent = new AiAsrDestinationConsent(profile.Id, profile.Revision,
             "https://api.example.invalid/v1/chat/completions", MimoMultimodalPreset.PresetId, "1", true);

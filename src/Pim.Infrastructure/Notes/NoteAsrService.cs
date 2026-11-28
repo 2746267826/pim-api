@@ -22,17 +22,43 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
     private Guid Owner => user.UserId ?? throw new DomainException(40101, "请先登录");
     private bool BackgroundProcessingAvailable => !(bool.TryParse(configuration["DisableHangfire"], out var disabled) && disabled)
         && !string.IsNullOrWhiteSpace(configuration.GetConnectionString("DefaultConnection"));
-    private NoteAsrTaskDto Describe(NoteAsrState state) => NoteAsrTaskStore.Describe(state) with
-    { BackgroundProcessingAvailable = BackgroundProcessingAvailable };
-    public Task<NoteAsrTaskDto> StartAsync(StartNoteAsrRequest request, CancellationToken ct) =>
-        StartForOwnerAsync(Owner, request, ct);
+    private NoteAsrTaskDto Describe(NoteAsrState state, Guid? canonicalInitialTaskId = null) =>
+        NoteAsrTaskStore.Describe(state, canonicalInitialTaskId) with
+        {
+            BackgroundProcessingAvailable = BackgroundProcessingAvailable
+        };
 
-    internal async Task<NoteAsrTaskDto> StartForOwnerAsync(Guid owner,
-        StartNoteAsrRequest request, CancellationToken ct)
+    private async Task<NoteAsrTaskDto> DescribeAsync(Guid owner, NoteAsrState state,
+        CancellationToken ct)
+    {
+        var canonical = await tasks.TryReadInitialForVersionAsync(owner,
+            state.Request.VersionId, ct);
+        return Describe(state, canonical?.Request.TaskId);
+    }
+    public Task<NoteAsrTaskDto> StartAsync(StartNoteAsrRequest request, CancellationToken ct) =>
+        StartCoreAsync(Owner, request, allowChain: false, ct);
+
+    internal Task<NoteAsrTaskDto> StartForOwnerAsync(Guid owner,
+        StartNoteAsrRequest request, CancellationToken ct) =>
+        StartCoreAsync(owner, request, allowChain: false, ct);
+
+    /// <summary>
+    /// Starts a task that is already bound to a trusted server-side parent. Only the reprocess and
+    /// batch pipelines may use this; the public ASR start endpoint must never choose a parent chain.
+    /// </summary>
+    internal Task<NoteAsrTaskDto> StartChainedForOwnerAsync(Guid owner,
+        StartNoteAsrRequest request, CancellationToken ct) =>
+        StartCoreAsync(owner, request, allowChain: true, ct);
+
+    private async Task<NoteAsrTaskDto> StartCoreAsync(Guid owner, StartNoteAsrRequest request,
+        bool allowChain, CancellationToken ct)
     {
         await RequireActiveOwnerAsync(owner, ct);
         if (request.ExpectedUserId != owner) throw new DomainException(40301, "账号已改变，请重新核对材料和目标");
         if (request.TaskId == Guid.Empty || request.VersionId == Guid.Empty) throw new DomainException(40001, "任务或版本标识无效");
+        if (!allowChain && (request.ParentTaskId is not null ||
+                            !string.IsNullOrWhiteSpace(request.ReprocessReason)))
+            throw new DomainException(40001, "任务链来源只能由服务端重处理或批量流程提交");
         if ((request.ParentTaskId is null) != string.IsNullOrWhiteSpace(request.ReprocessReason) ||
             request.ReprocessReason is { Length: > 240 })
             throw new DomainException(40001, "重跑来源和原因必须同时提供，原因最多240字");
@@ -42,8 +68,22 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
             var old = await tasks.ReadAsync(owner, request.TaskId, ct);
             var hash = NoteMaterialManifestValidator.Hash(JsonSerializer.Serialize(request, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
             if (old.Fingerprint != hash) throw new DomainException(40901, "任务标识已绑定另一份输入，原任务保留");
+            if (old.Request.ParentTaskId is null)
+            {
+                var canonical = await tasks.TryReadInitialForVersionAsync(owner,
+                    old.Request.VersionId, ct);
+                if (canonical is not null && canonical.Request.TaskId != old.Request.TaskId)
+                {
+                    if (!NoteAsrTaskStore.SameInitialRequest(canonical.Request, request))
+                        throw new DomainException(40901,
+                            "同一材料版本已有另一条转写任务链；原任务保留");
+                    await EnsureAttemptAsync(owner, canonical, ct);
+                    return await DescribeAsync(owner, await tasks.ReadAsync(owner,
+                        canonical.Request.TaskId, ct), ct);
+                }
+            }
             await EnsureAttemptAsync(owner, old, ct);
-            return Describe(await tasks.ReadAsync(owner, request.TaskId, ct));
+            return await DescribeAsync(owner, await tasks.ReadAsync(owner, request.TaskId, ct), ct);
         }
         catch (DomainException error) when (error.ErrorCode == 40401) { }
         var version = await materials.GetAsync(owner, request.VersionId, ct);
@@ -53,7 +93,7 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
         var state = await tasks.CreateAsync(owner, request, version, NoteAsrPlan.Build(version, samplesPerCall),
             resolved?.Consent, resolved?.ExecutionMode, samplesPerCall, ct);
         await EnsureAttemptAsync(owner, state, ct);
-        return Describe(await tasks.ReadAsync(owner, request.TaskId, ct));
+        return await DescribeAsync(owner, await tasks.ReadAsync(owner, state.Request.TaskId, ct), ct);
     }
 
     /// <summary>
@@ -63,7 +103,7 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
     /// before any child task is persisted.
     /// </summary>
     internal async Task<StartNoteAsrRequest> BuildDefaultRequestForProcessingAsync(Guid owner,
-        NoteMaterialVersionDto version, CancellationToken ct)
+        NoteMaterialVersionDto version, bool confirmed, CancellationToken ct)
     {
         var taskId = NoteProcessingIdentity.Task(owner, version.Upload.VersionId,
             NoteProcessingTaskKind.Asr);
@@ -71,7 +111,8 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
             .SingleOrDefaultAsync(x => x.OwnerId == owner, ct);
         if (config is null)
         {
-            var (consent, _) = await DefaultCloudConsentAsync(owner, preferredModelId: null, ct);
+            var (consent, _) = await DefaultCloudConsentAsync(owner, preferredModelId: null,
+                confirmed, ct);
             return new(taskId, owner, version.Upload.VersionId, consent);
         }
 
@@ -79,7 +120,7 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
         if (!NoteAsrRoute.Known(route))
             throw new DomainException(40901, "账号当前转写路由无效，材料保持待发起");
         var routeConsent = new NoteAsrRouteConsent(route, config.Revision,
-            config.ConsentVersion, true, NoteAsrExecutionMode.Realtime);
+            config.ConsentVersion, confirmed, NoteAsrExecutionMode.Realtime);
         if (route == NoteAsrRoute.Local)
         {
             if (string.IsNullOrWhiteSpace(config.LocalModelId))
@@ -87,11 +128,11 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
             return new(taskId, owner, version.Upload.VersionId, null, "auto", routeConsent);
         }
 
-        var (cloudConsent, descriptor) = await DefaultCloudConsentAsync(owner, config.CloudModelId, ct);
+        var (cloudConsent, descriptor) = await DefaultCloudConsentAsync(owner, config.CloudModelId,
+            confirmed, ct);
         var isMultimodal = descriptor.Id == MimoMultimodalPreset.PresetId;
-        var effectiveRoute = config.CloudModelId is null
-            ? isMultimodal ? NoteAsrRoute.CloudMultimodal : NoteAsrRoute.CloudAsr
-            : route;
+        var effectiveRoute = NoteAsrRouteResolution.EffectiveCloudRoute(route,
+            config.CloudModelId, descriptor.Id);
         routeConsent = routeConsent with { Route = effectiveRoute };
         if (effectiveRoute == NoteAsrRoute.CloudMultimodal && !isMultimodal)
             throw new DomainException(40901,
@@ -106,7 +147,18 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
     {
         var owner = await RequireActiveOwnerAsync(ct);
         var result = new List<NoteAsrTaskDto>();
-        foreach (var (_, id) in tasks.Enumerate(owner)) result.Add(Describe(await tasks.ReadAsync(owner, id, ct)));
+        var canonicalByVersion = new Dictionary<Guid, Guid?>();
+        foreach (var (_, id) in tasks.Enumerate(owner))
+        {
+            var state = await tasks.ReadAsync(owner, id, ct);
+            if (!canonicalByVersion.TryGetValue(state.Request.VersionId, out var canonicalId))
+            {
+                canonicalId = (await tasks.TryReadInitialForVersionAsync(owner,
+                    state.Request.VersionId, ct))?.Request.TaskId;
+                canonicalByVersion[state.Request.VersionId] = canonicalId;
+            }
+            result.Add(Describe(state, canonicalId));
+        }
         return result.OrderByDescending(x => x.CreatedAt).ToArray();
     }
     public async Task<NoteAsrSourcesDto> SourcesAsync(int offset, int limit, CancellationToken ct)
@@ -128,7 +180,7 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
     public async Task<NoteAsrTaskDto> GetAsync(Guid id, CancellationToken ct)
     {
         var owner = await RequireActiveOwnerAsync(ct);
-        return Describe(await ReconcileAsync(owner, id, ct));
+        return await DescribeAsync(owner, await ReconcileAsync(owner, id, ct), ct);
     }
 
     /// <summary>
@@ -161,6 +213,9 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
     public async Task<NoteAsrTaskDto> StopAsync(Guid id, CancellationToken ct)
     {
         var owner = await RequireActiveOwnerAsync(ct);
+        var before = await tasks.ReadAsync(owner, id, ct);
+        var canonicalId = (await tasks.TryReadInitialForVersionAsync(owner,
+            before.Request.VersionId, ct))?.Request.TaskId;
         return await tasks.WithLockAsync(owner, async lockedCt =>
         {
             var updated = await tasks.UpdateLockedAsync(owner, id,
@@ -172,9 +227,29 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
                 .ToArrayAsync(lockedCt);
             foreach (var attemptId in attemptIds)
                 await routing.StopAttemptAsync(attemptId, lockedCt);
-            return Describe(updated);
+            return Describe(updated, canonicalId);
         }, ct);
     }
+
+    /// <summary>
+    /// A non-canonical local task whose lease was issued before canonical enforcement is still
+    /// executable by the device. Dispatch must revoke that lease and stop the duplicate before it
+    /// skips the task, otherwise the node could keep renewing/reading/acking the old chain.
+    /// </summary>
+    internal async Task RevokeNonCanonicalLeaseAsync(Guid owner, NoteAsrState state,
+        CancellationToken ct)
+    {
+        if (state.AttemptId is not { } attemptId) return;
+        var hasActiveLease = await db.NoteAsrLeases.AsNoTracking().AnyAsync(x =>
+            x.OwnerId == owner && x.AttemptId == attemptId && x.Status == "Active", ct);
+        if (!hasActiveLease) return;
+        await NoteAsrRouteConsentGuard.RevokeAttemptAsync(db, owner, attemptId,
+            NoteAsrRouteConsentGuard.NonCanonicalCode,
+            NoteAsrRouteConsentGuard.NonCanonicalMessage, ct);
+        await NoteAsrRouteConsentGuard.StopTaskAsync(tasks, owner, state.Request.TaskId,
+            attemptId, NoteAsrRouteConsentGuard.NonCanonicalMessage, ct);
+    }
+
     public async Task<NoteAsrTaskDto> RetryAsync(Guid id, RetryNoteAsrRequest request, CancellationToken ct)
     {
         var owner = await RequireActiveOwnerAsync(ct);
@@ -182,7 +257,31 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
         if (request.RetryId == Guid.Empty || request.SegmentIndexes is not { Count: > 0 and <= 5_000 } ||
             request.SegmentIndexes.Distinct().Count() != request.SegmentIndexes.Count)
             throw new DomainException(40001, "请选择待恢复分片，核对原目标，并确认重试可能重复计费");
+        await tasks.WithLockAsync(owner, async lockedCt =>
+        {
+            var locked = await tasks.ReadAsync(owner, id, lockedCt);
+            if (locked.Request.ParentTaskId is null &&
+                !await tasks.IsCanonicalInitialUnlockedAsync(owner, id,
+                    locked.Request.VersionId, lockedCt))
+                throw new DomainException(40901,
+                    "该材料版本已有当前转写链；历史重复任务不会外发或重复计费");
+            return true;
+        }, ct);
         var before = await ReconcileAsync(owner, id, ct);
+        // A route-config edit after the attempt was frozen must not replay the old consent. Reject
+        // before any retry mutation and revoke the stale snapshot so it can never reach a provider.
+        if (before.Route is { } frozenRoute && NoteAsrRoute.IsCloud(frozenRoute) &&
+            !await NoteAsrRouteConsentGuard.IsCurrentAsync(db, owner,
+                before.RouteConfigRevision, before.RouteConsentVersion, ct))
+        {
+            if (before.AttemptId is { } driftedAttemptId)
+                await NoteAsrRouteConsentGuard.RevokeAttemptAsync(db, owner, driftedAttemptId,
+                    NoteAsrRouteConsentGuard.RouteDriftCode,
+                    NoteAsrRouteConsentGuard.RouteDriftMessage, ct);
+            await BlockAttemptRecoveryAsync(owner, before,
+                NoteAsrRouteConsentGuard.RouteDriftMessage, ct, stop: true);
+            throw new DomainException(40901, NoteAsrRouteConsentGuard.RouteDriftMessage);
+        }
         if (before.Route == NoteAsrRoute.Local && request.Consent is not null)
             throw new DomainException(40901, "本机重跑不涉及云端外发，不需要云端确认");
         if (before.Route != NoteAsrRoute.Local &&
@@ -201,7 +300,7 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
                     throw new DomainException(40901, "恢复意图缺少原执行快照，请刷新后重新确认");
                 if (!before.StopRequested) await ConvergeRetryAttemptAsync(owner, before.Request.TaskId, intent, ct);
             }
-            return Describe(await tasks.ReadAsync(owner, id, ct));
+            return await DescribeAsync(owner, await tasks.ReadAsync(owner, id, ct), ct);
         }
         // Null-vs-null means the local replay matches its task; cloud replays must re-confirm the exact consent.
         if (!Equals(request.Consent, before.Request.Consent)) throw new DomainException(40901, "重试目标与固定任务不一致，请新建任务");
@@ -265,7 +364,7 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
             await EnsureAttemptAsync(owner, updated, ct);
             updated = await tasks.ReadAsync(owner, id, ct);
         }
-        return Describe(updated);
+        return await DescribeAsync(owner, updated, ct);
     }
 
     private static void SupersedeOpenAttempts(NoteAsrAttempt attempt)
@@ -396,9 +495,8 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
         if (request.Consent.ModelId == Guid.Empty)
             throw new DomainException(40901, "云端目标未选择，请刷新后重新确认");
         var descriptor = await ValidateDestinationAsync(request.Consent, request.Language, ct);
-        if (config.CloudModelId is null)
-            route = descriptor.Id == MimoMultimodalPreset.PresetId
-                ? NoteAsrRoute.CloudMultimodal : NoteAsrRoute.CloudAsr;
+        route = NoteAsrRouteResolution.EffectiveCloudRoute(route, config.CloudModelId,
+            descriptor.Id);
         if (route == NoteAsrRoute.CloudMultimodal && descriptor.Id != MimoMultimodalPreset.PresetId)
             throw new DomainException(40901, "多模态执行位置尚未配置 MiMo 多模态预设");
         if (route == NoteAsrRoute.CloudAsr && descriptor.Id == MimoMultimodalPreset.PresetId)
@@ -441,6 +539,10 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
         var state = await tasks.ReadAsync(owner, taskId, ct);
         if (state.Request.ExpectedUserId != owner || state.Request.VersionId != versionId)
             throw new DomainException(40901, "ASR 任务不属于当前账号或固定材料版本");
+        if (state.Request.ParentTaskId is null &&
+            !await tasks.IsCanonicalInitialUnlockedAsync(owner, taskId, versionId, ct))
+            throw new DomainException(40901,
+                "该材料版本已有当前转写链；历史重复任务不会外发或重复计费");
         var version = await materials.GetAsync(owner, versionId, ct);
         if (state.NoteId != version.Upload.NoteId ||
             state.InputSha256 != NoteMaterialManifestValidator.Hash(version.InputJson) ||
@@ -534,6 +636,21 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
         if (state.AttemptId == existing.Id && !CanExecuteAttempt(existing) &&
             !NoteAsrTaskStore.Active(state))
             return state;
+
+        if (NoteAsrRoute.IsCloud(existing.Route) && CanExecuteAttempt(existing))
+        {
+            try
+            {
+                await NoteAsrRouteConsentGuard.RequireCurrentForCloudAttemptAsync(
+                    db, owner, existing, ct);
+            }
+            catch (DomainException)
+            {
+                await BlockAttemptRecoveryAsync(owner, state,
+                    NoteAsrRouteConsentGuard.RouteDriftMessage, ct, stop: true);
+                throw;
+            }
+        }
 
         if (!AttemptMatches(state, existing))
         {
@@ -662,15 +779,17 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
         !attempt.StopRequested && attempt.State is ("Queued" or "Running" or "Leased");
 
     private async Task BlockAttemptRecoveryAsync(Guid owner, NoteAsrState state, string message,
-        CancellationToken ct)
+        CancellationToken ct, bool stop = false)
     {
         var current = await tasks.ReadAsync(owner, state.Request.TaskId, ct);
         if (current.Revision != state.Revision || !SameTaskIdentity(current, state)) return;
-        if (!current.Steps.Any(step =>
-                step.Current.Status is "Queued" or "Running" or "Unknown"))
+        var hasRecoverableSteps = current.Steps.Any(step =>
+            step.Current.Status is "Queued" or "Running" or "Unknown");
+        if (!hasRecoverableSteps && (!stop || current.StopRequested))
             return;
         await tasks.UpdateLockedAsync(owner, state.Request.TaskId, currentState =>
         {
+            if (stop) currentState.StopRequested = true;
             foreach (var step in currentState.Steps.Where(step =>
                          step.Current.Status is "Queued" or "Running" or "Unknown"))
             {
@@ -753,7 +872,8 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
     }
 
     private async Task<(AiAsrDestinationConsent Consent, AiAsrPresetDto Descriptor)>
-        DefaultCloudConsentAsync(Guid owner, Guid? preferredModelId, CancellationToken ct)
+        DefaultCloudConsentAsync(Guid owner, Guid? preferredModelId, bool confirmed,
+            CancellationToken ct)
     {
         var runtime = await db.AiModelRuntime.AsNoTracking().SingleOrDefaultAsync(ct);
         if (runtime is null || !runtime.Enabled)
@@ -770,14 +890,16 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
         var endpoint = AiAsrPresetRegistry.OperationEndpoint(
             preset.NormalizeEndpoint(model.BaseUrl), descriptor);
         var consent = new AiAsrDestinationConsent(model.Id, model.Revision, endpoint,
-            descriptor.Id, descriptor.Version, true);
-        _ = await ValidateDestinationAsync(consent, "auto", ct);
+            descriptor.Id, descriptor.Version, confirmed);
+        _ = await ValidateDestinationAsync(consent, "auto", ct, requireConfirmed: false);
         return (consent, descriptor);
     }
 
-    private async Task<AiAsrPresetDto> ValidateDestinationAsync(AiAsrDestinationConsent? consent, string language, CancellationToken ct)
+    private async Task<AiAsrPresetDto> ValidateDestinationAsync(AiAsrDestinationConsent? consent,
+        string language, CancellationToken ct, bool requireConfirmed = true)
     {
-        if (consent?.Confirmed != true) throw new DomainException(40001, "请明确同意将全部录音分片发送至所示ASR目标");
+        if (consent is null || (requireConfirmed && !consent.Confirmed))
+            throw new DomainException(40001, "请明确同意将全部录音分片发送至所示ASR目标");
         var model = await db.AiModelProfiles.AsNoTracking().SingleOrDefaultAsync(x => x.Id == consent.ModelId, ct);
         if (model is null || !model.Enabled ||
             (model.Capabilities & AiModelCapabilityFlags.Transcription) == 0 ||

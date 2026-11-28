@@ -27,6 +27,9 @@ public sealed class NoteDerivedDispatchJob(
             try
             {
                 var state = await tasks.ReadTaskAsync(owner, taskId, ct);
+                if (!await tasks.IsCanonicalInitialAsync(owner, taskId,
+                        state.Request.VersionId, ct))
+                    continue;
                 var needsStopCheckpoint = state.StopRequested &&
                     state.Steps.Any(step => step.Current.Status == "Queued");
                 if (!NoteDerivedStore.IsActive(state) && !needsStopCheckpoint) continue;
@@ -61,6 +64,10 @@ public sealed class NoteDerivedJob(
     {
         using var lease = tasks.TryRunLease(owner, taskId);
         if (lease is null) return;
+        var initial = await tasks.ReadTaskAsync(owner, taskId, ct);
+        if (!await tasks.IsCanonicalInitialAsync(owner, taskId,
+                initial.Request.VersionId, ct))
+            return;
 
         // Fairness bound mirrors ASR. Every exit is a durable checkpoint and never allocates a new attempt.
         for (var processed = 0; processed < 64; processed++)

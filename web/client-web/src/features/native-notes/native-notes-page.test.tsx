@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { createMemoryRouter, RouterProvider, useNavigate } from 'react-router'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -10,6 +10,7 @@ import { setApiBase } from '@/lib/apiBase'
 import { NativeNotesPage } from './native-notes-page'
 import { buildMaterialBundle, type NoteMaterialUpload, type NoteMaterialVersion } from './material-model'
 import { exportAndroidNotePackage } from './material-package'
+import { installProseMirrorLayoutStubs } from '@/test-utils/prosemirror-layout'
 
 const nativeApi = vi.hoisted(() => ({
   limits: vi.fn(),
@@ -147,8 +148,20 @@ const historyMaterial: NoteMaterialVersion = {
   },
 }
 
+function duplicateBlockMaterial(): NoteMaterialVersion {
+  const input = JSON.parse(inputJson) as {
+    note: {
+      blocks: Array<{ id: string; kind: string; text: string }>
+    }
+  }
+  const first = input.note.blocks[0]!
+  input.note.blocks = [first, { ...first }]
+  return { ...material, inputJson: JSON.stringify(input) }
+}
+
 let client: QueryClient
 let testRouter: ReturnType<typeof createMemoryRouter>
+const uploadReceipts = new Map<string, NoteMaterialUpload>()
 
 function ProcessingPage() {
   const navigate = useNavigate()
@@ -184,7 +197,9 @@ function page(initialEntry = '/native-notes') {
 }
 
 beforeEach(() => {
+  installProseMirrorLayoutStubs()
   vi.resetAllMocks()
+  uploadReceipts.clear()
   authState.userId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
   authState.role = 'admin'
   Object.defineProperties(URL, {
@@ -205,7 +220,7 @@ beforeEach(() => {
     const manifest = JSON.parse(body.manifestJson) as {
       files: Array<{ path: string; kind: string; sha256: string; sizeBytes: number }>
     }
-    return {
+    const receipt = {
       ...material.upload,
       versionId: body.versionId,
       noteId: body.noteId,
@@ -220,17 +235,28 @@ beforeEach(() => {
         uploadedParts: [],
       })),
     } satisfies NoteMaterialUpload
+    uploadReceipts.set(body.versionId, receipt)
+    return receipt
   })
   nativeApi.clone.mockImplementation(async (_sourceVersionId: string, body: {
     material: { versionId: string; noteId: string; baseVersionId: string | null; manifestJson: string }
   }) => nativeApi.begin(body.material))
   nativeApi.uploadPart.mockResolvedValue('ok')
-  nativeApi.complete.mockImplementation(async (id: string) => ({
-    ...material.upload,
-    versionId: id,
-    phase: 'Uploaded',
-    isCurrent: true,
-  }))
+  nativeApi.complete.mockImplementation(async (id: string) => {
+    const receipt = uploadReceipts.get(id)
+    if (!receipt) throw new Error(`缺少上传回执 ${id}`)
+    return {
+      ...receipt,
+      versionId: id,
+      phase: 'Uploaded' as const,
+      isCurrent: true,
+      currentVersionId: id,
+      files: receipt.files.map((file) => ({
+        ...file,
+        uploadedParts: Array.from({ length: file.partCount }, (_, partIndex) => partIndex),
+      })),
+    }
+  })
   nativeApi.promote.mockImplementation(async (id: string) => ({
     ...material.upload,
     versionId: id,
@@ -275,10 +301,17 @@ afterEach(() => {
   client?.clear()
   setApiBase('')
   vi.restoreAllMocks()
+  vi.unstubAllGlobals()
 })
 
 async function consentToStorage() {
   await userEvent.click(screen.getByLabelText('确认保存到当前服务器'))
+}
+
+async function typeBody(text: string) {
+  const editor = await screen.findByLabelText('笔记正文')
+  await userEvent.click(editor)
+  await userEvent.keyboard(text)
 }
 
 describe('NativeNotesPage', () => {
@@ -290,6 +323,315 @@ describe('NativeNotesPage', () => {
     expect(ordinaryGovernance?.items.some((item) => item.to === '/data-center')).toBe(false)
     const adminGovernance = navGroupsForRole('admin').find((group) => group.label === '治理')
     expect(adminGovernance?.items).toContainEqual(expect.objectContaining({ to: '/data-center', label: '数据中心' }))
+  })
+
+  it('shows a compact first-load failure with exact reason and in-place retry', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    nativeApi.notes.mockRejectedValueOnce(new Error('数据库暂时不可用'))
+    page()
+
+    expect(await screen.findByText('笔记库读取失败')).toBeTruthy()
+    expect(screen.getByText('数据库暂时不可用')).toBeTruthy()
+    nativeApi.notes.mockResolvedValueOnce({ total: 1, offset: 0, items: [source] })
+    await userEvent.click(screen.getByRole('button', { name: '就地重试' }))
+
+    expect(await screen.findByText('课堂笔记')).toBeTruthy()
+  })
+
+  it('shows a stable initial loading surface before the first note page arrives', async () => {
+    let resolveNotes!: (value: { total: number; offset: number; items: typeof source[] }) => void
+    nativeApi.notes.mockReturnValueOnce(new Promise((resolve) => {
+      resolveNotes = resolve
+    }))
+    page()
+
+    expect(await screen.findByLabelText('正在读取笔记')).toBeTruthy()
+    expect(screen.getByText('正在读取笔记…')).toBeTruthy()
+    resolveNotes({ total: 1, offset: 0, items: [source] })
+    expect(await screen.findByText('课堂笔记')).toBeTruthy()
+  })
+
+  it('keeps the loaded list and scroll surface after a refresh failure, then retries in place', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    page()
+    await screen.findByText('课堂笔记')
+    nativeApi.notes.mockRejectedValueOnce(new Error('刷新连接超时'))
+
+    await userEvent.click(screen.getByRole('button', { name: '刷新笔记库' }))
+    expect(await screen.findByText('更新失败')).toBeTruthy()
+    expect(screen.getAllByText('刷新连接超时').length).toBeGreaterThan(0)
+    expect(screen.getByText('课堂笔记')).toBeTruthy()
+    expect(screen.getByText('列表与浏览位置保持不变。')).toBeTruthy()
+    expect(consoleError).toHaveBeenCalledWith(
+      '[native-notes] 笔记列表读取失败',
+      expect.objectContaining({ message: '刷新连接超时' }),
+    )
+
+    nativeApi.notes.mockResolvedValueOnce({ total: 1, offset: 0, items: [source] })
+    await userEvent.click(screen.getByRole('button', { name: '重试' }))
+    await waitFor(() => expect(screen.queryByText('更新失败')).toBeNull())
+    expect(screen.getByText('课堂笔记')).toBeTruthy()
+  })
+
+  it('uses the confirmed empty-library and empty-search language while keeping search editable', async () => {
+    nativeApi.notes.mockResolvedValueOnce({ total: 0, offset: 0, items: [] })
+    page()
+    expect(await screen.findByText('还没有笔记')).toBeTruthy()
+    expect(screen.getByRole('button', { name: '新建笔记' })).toBeTruthy()
+
+    nativeApi.notes.mockResolvedValueOnce({ total: 1, offset: 0, items: [source] })
+    await userEvent.click(screen.getByRole('button', { name: '刷新笔记库' }))
+    await screen.findByText('课堂笔记')
+    const search = screen.getByLabelText('搜索笔记标题')
+    await userEvent.type(search, '不存在的标题')
+    expect(await screen.findByText('没有匹配的笔记')).toBeTruthy()
+    expect((search as HTMLInputElement).value).toBe('不存在的标题')
+    await userEvent.click(screen.getAllByRole('button', { name: '清空搜索' })[0]!)
+    expect(await screen.findByText('课堂笔记')).toBeTruthy()
+  })
+
+  it('uses one continuous body editor, prioritizes it on narrow screens and omits the library headline while editing', async () => {
+    page()
+    await userEvent.click(await screen.findByText('课堂笔记').then((node) => node.closest('button')!))
+
+    expect(await screen.findByRole('heading', { name: '继续写这篇笔记' })).toBeTruthy()
+    expect(screen.queryByRole('heading', { name: '笔记库' })).toBeNull()
+    expect(screen.queryByText('PIM 笔记')).toBeNull()
+    expect(screen.getAllByLabelText('笔记正文')).toHaveLength(1)
+    expect(screen.queryByLabelText('正文块 1')).toBeNull()
+    const workspace = screen.getByTestId('note-workspace')
+    expect(workspace.getAttribute('data-mode')).toBe('editing')
+    expect(workspace.className).toContain('xl:grid-cols-[18rem_minmax(0,1fr)]')
+    expect(screen.getByTestId('note-library-pane').className).toContain('hidden')
+    expect(screen.getByRole('button', { name: '返回笔记列表' })).toBeTruthy()
+    const versionHeading = screen.getByRole('heading', { name: '版本与保存编号' })
+    expect(screen.getByLabelText('笔记正文').compareDocumentPosition(versionHeading) &
+      Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('keeps the format toolbar below a wrapped sticky editor header on narrow screens', async () => {
+    let measuredHeaderHeight = 96
+    let resizeCallback: ResizeObserverCallback | undefined
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(callback: ResizeObserverCallback) {
+        resizeCallback = callback
+      }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    })
+    const originalBounds = HTMLElement.prototype.getBoundingClientRect
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      if (this.dataset.testid === 'note-editor-sticky-header') {
+        return {
+          ...originalBounds.call(this),
+          height: measuredHeaderHeight,
+          bottom: measuredHeaderHeight,
+        }
+      }
+      return originalBounds.call(this)
+    })
+
+    page()
+    await userEvent.click(await screen.findByText('课堂笔记').then((node) => node.closest('button')!))
+    const header = await screen.findByTestId('note-editor-sticky-header')
+    const toolbar = screen.getByTestId('note-format-toolbar')
+    const stickyRoot = header.parentElement as HTMLElement
+
+    expect(header.style.top).toBe('var(--note-sticky-top, 0px)')
+    expect(toolbar.style.top).toContain('var(--note-sticky-header-height')
+    await waitFor(() =>
+      expect(stickyRoot.style.getPropertyValue('--note-sticky-header-height')).toBe('96px'))
+
+    measuredHeaderHeight = 148
+    act(() => resizeCallback?.([], {} as ResizeObserver))
+    await waitFor(() =>
+      expect(stickyRoot.style.getPropertyValue('--note-sticky-header-height')).toBe('148px'))
+    expect(toolbar.style.top).not.toBe(header.style.top)
+  })
+
+  it('loads a saved note without marking the untouched editor as dirty', async () => {
+    page()
+    await userEvent.click(await screen.findByText('课堂笔记').then((node) => node.closest('button')!))
+
+    expect(await screen.findByLabelText('笔记正文')).toBeTruthy()
+    expect(screen.queryByText('有未保存更改')).toBeNull()
+    expect(screen.getByText('已从服务器载入')).toBeTruthy()
+  })
+
+  it('retries a failed current-note read in place and then opens the continuous editor', async () => {
+    nativeApi.current.mockRejectedValueOnce(new ApiError('当前笔记暂时不可读取', 50301, 503))
+    page()
+    await userEvent.click(await screen.findByText('课堂笔记').then((node) => node.closest('button')!))
+
+    const editorPane = screen.getByTestId('note-editor-pane')
+    await within(editorPane).findByRole('button', { name: '就地重试' })
+    expect(within(editorPane).getAllByText('当前版本读取失败')).toHaveLength(1)
+    expect(within(editorPane).getAllByText('当前笔记暂时不可读取').length).toBeGreaterThan(0)
+    await userEvent.click(within(editorPane).getByRole('button', { name: '就地重试' }))
+
+    expect(await within(editorPane).findByLabelText('笔记正文')).toBeTruthy()
+    expect(testRouter.state.location.search).toBe(`?note=${noteId}`)
+  })
+
+  it('requires the server-storage confirmation before ending and then saves the continuous body', async () => {
+    page()
+    await userEvent.click(await screen.findByText('课堂笔记').then((node) => node.closest('button')!))
+    await screen.findByRole('heading', { name: '继续写这篇笔记' })
+    await typeBody('结束前写入的连续正文')
+
+    await userEvent.click(screen.getByRole('button', { name: '结束' }))
+    const dialog = within(await screen.findByRole('dialog'))
+    expect(dialog.getByText('结束这次记录？')).toBeTruthy()
+    await userEvent.click(dialog.getByRole('button', { name: '结束并保存' }))
+    expect(await dialog.findByText(/结束前需要先确认保存到当前服务器/)).toBeTruthy()
+    expect(nativeApi.complete).not.toHaveBeenCalled()
+    expect(screen.getByRole('dialog')).toBeTruthy()
+    expect(await screen.findByLabelText('笔记正文')).toBeTruthy()
+
+    await userEvent.click(dialog.getByRole('button', { name: '继续编辑' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    await consentToStorage()
+    await userEvent.click(screen.getByRole('button', { name: '结束' }))
+    const nextDialog = within(await screen.findByRole('dialog'))
+    await userEvent.click(nextDialog.getByRole('button', { name: '结束并保存' }))
+    await waitFor(() => expect(nativeApi.complete).toHaveBeenCalledOnce())
+    expect(await screen.findByText(/本次记录已结束/)).toBeTruthy()
+    expect(testRouter.state.location.search).toBe('')
+  })
+
+  it('ends an already saved note without creating an empty upload', async () => {
+    page()
+    await userEvent.click(await screen.findByText('课堂笔记').then((node) => node.closest('button')!))
+    await screen.findByRole('heading', { name: '继续写这篇笔记' })
+    await userEvent.click(screen.getByRole('button', { name: '结束' }))
+    const dialog = within(await screen.findByRole('dialog'))
+    expect(dialog.getByText(/服务器上的当前版本会保持不变/)).toBeTruthy()
+    await userEvent.click(dialog.getByRole('button', { name: '结束' }))
+
+    expect(nativeApi.begin).not.toHaveBeenCalled()
+    expect(nativeApi.clone).not.toHaveBeenCalled()
+    expect(await screen.findByText(/没有检测到需要提交的改动/)).toBeTruthy()
+    expect(testRouter.state.location.search).toBe('')
+  })
+
+  it('ends a new note with no body without requiring consent or an empty-title upload', async () => {
+    page()
+    await userEvent.click(await screen.findByRole('button', { name: /新建笔记/ }))
+    await screen.findByRole('heading', { name: '新建笔记' })
+    await userEvent.type(screen.getByLabelText('笔记标题'), '只有标题，还没有正文')
+
+    await userEvent.click(screen.getByRole('button', { name: '结束' }))
+    const dialog = within(await screen.findByRole('dialog'))
+    expect(dialog.getByText(/当前没有可保存的正文，不会在服务器创建新笔记/)).toBeTruthy()
+    await userEvent.click(dialog.getByRole('button', { name: '结束' }))
+
+    expect(nativeApi.begin).not.toHaveBeenCalled()
+    expect(nativeApi.clone).not.toHaveBeenCalled()
+    expect(await screen.findByText(/当前没有可保存的正文，未在服务器创建笔记/)).toBeTruthy()
+    expect(testRouter.state.location.search).toBe('')
+  })
+
+  it('keeps the draft when the end confirmation is cancelled or closed', async () => {
+    page()
+    await userEvent.click(await screen.findByText('课堂笔记').then((node) => node.closest('button')!))
+    await screen.findByRole('heading', { name: '继续写这篇笔记' })
+    await typeBody('取消结束也不能丢失草稿')
+
+    await userEvent.click(screen.getByRole('button', { name: '结束' }))
+    let dialog = within(await screen.findByRole('dialog'))
+    await userEvent.click(dialog.getByRole('button', { name: '继续编辑' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(screen.getByLabelText('笔记正文').textContent).toContain('取消结束也不能丢失草稿')
+
+    await userEvent.click(screen.getByRole('button', { name: '结束' }))
+    dialog = within(await screen.findByRole('dialog'))
+    await userEvent.click(dialog.getByRole('button', { name: '关闭' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(screen.getByLabelText('笔记正文').textContent).toContain('取消结束也不能丢失草稿')
+    expect(testRouter.state.location.search).toBe(`?note=${noteId}`)
+    expect(nativeApi.clone).not.toHaveBeenCalled()
+  })
+
+  it('keeps the dirty note and allows retrying the same end submission after failure', async () => {
+    page()
+    await userEvent.click(await screen.findByText('课堂笔记').then((node) => node.closest('button')!))
+    await screen.findByRole('heading', { name: '继续写这篇笔记' })
+    await typeBody('结束保存失败仍保留')
+    await consentToStorage()
+    nativeApi.clone.mockRejectedValueOnce(new Error('结束保存网络失败'))
+
+    await userEvent.click(screen.getByRole('button', { name: '结束' }))
+    const dialog = within(await screen.findByRole('dialog'))
+    await userEvent.click(dialog.getByRole('button', { name: '结束并保存' }))
+    expect(await screen.findByText(/结束保存网络失败/)).toBeTruthy()
+    expect(testRouter.state.location.search).toBe(`?note=${noteId}`)
+    expect((screen.getByLabelText('笔记正文')).textContent).toContain('结束保存失败仍保留')
+    expect(screen.getAllByText('有未保存更改').length).toBeGreaterThan(0)
+    expect(screen.getByRole('dialog')).toBeTruthy()
+    expect(await dialog.findByText(/结束保存网络失败/)).toBeTruthy()
+
+    await userEvent.click(dialog.getByRole('button', { name: '结束并保存' }))
+    await waitFor(() => expect(nativeApi.clone).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(testRouter.state.location.search).toBe(''))
+    expect(await screen.findByText(/本次记录已结束/)).toBeTruthy()
+  })
+
+  it('reports duplicate block identities in the end confirmation and preserves the draft', async () => {
+    const duplicate = duplicateBlockMaterial()
+    nativeApi.current.mockResolvedValue(duplicate)
+    nativeApi.version.mockResolvedValue(duplicate)
+    page()
+    await userEvent.click(await screen.findByText('课堂笔记').then((node) => node.closest('button')!))
+    await screen.findByRole('heading', { name: '继续写这篇笔记' })
+    await typeBody('重复标识错误也必须保留这段草稿')
+    await consentToStorage()
+
+    await userEvent.click(screen.getByRole('button', { name: '结束' }))
+    const dialog = within(await screen.findByRole('dialog'))
+    await userEvent.click(dialog.getByRole('button', { name: '结束并保存' }))
+
+    expect(await dialog.findByText(/正文块标识重复/)).toBeTruthy()
+    expect(screen.getByRole('dialog')).toBeTruthy()
+    expect(nativeApi.begin).not.toHaveBeenCalled()
+    expect(nativeApi.clone).not.toHaveBeenCalled()
+    expect(screen.getByLabelText('笔记正文').textContent).toContain('重复标识错误也必须保留这段草稿')
+
+    await userEvent.click(dialog.getByRole('button', { name: '继续编辑' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(screen.getByText(/正文块标识重复/)).toBeTruthy()
+    expect(screen.getByLabelText('笔记正文').textContent).toContain('重复标识错误也必须保留这段草稿')
+  })
+
+  it('keeps the end confirmation and frozen submission when Escape is pressed during submission', async () => {
+    page()
+    await userEvent.click(await screen.findByText('课堂笔记').then((node) => node.closest('button')!))
+    await screen.findByRole('heading', { name: '继续写这篇笔记' })
+    await typeBody('提交中不能因 Esc 丢失冻结状态')
+    await consentToStorage()
+
+    let rejectClone!: (reason?: unknown) => void
+    nativeApi.clone.mockImplementationOnce(() => new Promise<NoteMaterialUpload>((_resolve, reject) => {
+      rejectClone = reject
+    }))
+    await userEvent.click(screen.getByRole('button', { name: '结束' }))
+    const dialog = within(await screen.findByRole('dialog'))
+    await userEvent.click(dialog.getByRole('button', { name: '结束并保存' }))
+    await waitFor(() => expect(nativeApi.clone).toHaveBeenCalledOnce())
+
+    expect(screen.getByRole('dialog')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: '关闭' })).toBeNull()
+    await userEvent.keyboard('{Escape}')
+    expect(screen.getByRole('dialog')).toBeTruthy()
+    expect(testRouter.state.location.search).toBe(`?note=${noteId}`)
+    expect(screen.getByLabelText('笔记正文').textContent).toContain('提交中不能因 Esc 丢失冻结状态')
+
+    rejectClone(new Error('结束提交网络失败'))
+    expect(await screen.findByText(/结束提交网络失败/)).toBeTruthy()
+    expect(screen.getByRole('dialog')).toBeTruthy()
+    expect(screen.getByLabelText('笔记正文').textContent).toContain('提交中不能因 Esc 丢失冻结状态')
+    expect(within(screen.getByRole('dialog')).getByRole('button', { name: '结束并保存' })).toBeTruthy()
+    expect(testRouter.state.location.search).toBe(`?note=${noteId}`)
   })
 
   it('keeps daily note actions primary and labels offline restore as optional', async () => {
@@ -484,7 +826,7 @@ describe('NativeNotesPage', () => {
     await userEvent.click(screen.getByText('课堂笔记').closest('button')!)
     expect(await screen.findByRole('heading', { name: '继续写这篇笔记' })).toBeTruthy()
     expect((screen.getByLabelText('笔记标题') as HTMLInputElement).value).toBe('课堂笔记')
-    expect((screen.getByLabelText('正文块 1') as HTMLTextAreaElement).value).toContain('保留原文')
+    expect((await screen.findByLabelText('笔记正文')).textContent).toContain('保留原文')
     expect(screen.getByText('当前载入版本 ID')).toBeTruthy()
     expect(screen.getByText('本次保存编号')).toBeTruthy()
     expect(screen.getByText('本次保存来源版本')).toBeTruthy()
@@ -512,7 +854,9 @@ describe('NativeNotesPage', () => {
     await waitFor(() => expect(quickApi.get).toHaveBeenCalledWith('44444444-4444-4444-8444-444444444444'))
     expect(await screen.findByRole('heading', { name: '新建笔记' })).toBeTruthy()
     expect((screen.getByLabelText('笔记标题') as HTMLInputElement).value).toBe('旧标题')
-    expect((screen.getByLabelText('正文块 1') as HTMLTextAreaElement).value).toBe('旧标题\n旧内容 保留')
+    const body = (await screen.findByLabelText('笔记正文')).textContent ?? ''
+    expect(body).toContain('旧标题')
+    expect(body).toContain('旧内容 保留')
     expect(nativeApi.begin).not.toHaveBeenCalled()
   })
 
@@ -526,7 +870,9 @@ describe('NativeNotesPage', () => {
     expect(confirm).toHaveBeenCalledWith(expect.stringContaining('当前编辑内容尚未保存'))
     expect(await screen.findByRole('heading', { name: '新建笔记' })).toBeTruthy()
     expect((screen.getByLabelText('笔记标题') as HTMLInputElement).value).toBe('旧标题')
-    expect((screen.getByLabelText('正文块 1') as HTMLTextAreaElement).value).toBe('旧标题\n旧内容 保留')
+    const body = (await screen.findByLabelText('笔记正文')).textContent ?? ''
+    expect(body).toContain('旧标题')
+    expect(body).toContain('旧内容 保留')
   })
 
   it('shows both conflict sides for admins and only promotes after an explicit choice', async () => {
@@ -1028,6 +1374,10 @@ describe('NativeNotesPage', () => {
     page()
     await userEvent.click(await screen.findByText('课堂笔记').then((node) => node.closest('button')!))
     expect(await screen.findByText('历史版')).toBeTruthy()
+    const title = screen.getByLabelText('笔记标题') as HTMLInputElement
+    await userEvent.clear(title)
+    await userEvent.type(title, '刷新失败仍保留')
+    await typeBody('当前版本刷新失败也不能替换草稿')
     const versionCalls = nativeApi.versions.mock.calls.length
 
     nativeApi.current.mockRejectedValueOnce(new ApiError('当前版本暂时不可读取', 50301, 503))
@@ -1038,6 +1388,52 @@ describe('NativeNotesPage', () => {
     expect(screen.getByRole('list', { name: '版本历史列表' })).toBeTruthy()
     expect(screen.getByText('历史版')).toBeTruthy()
     expect(screen.queryByText('版本历史读取失败')).toBeNull()
+    expect((screen.getByLabelText('笔记标题') as HTMLInputElement).value).toBe('刷新失败仍保留')
+    expect(screen.getByLabelText('笔记正文').textContent).toContain('当前版本刷新失败也不能替换草稿')
+    expect(screen.getAllByText('有未保存更改').length).toBeGreaterThan(0)
+
+    await userEvent.click(screen.getByRole('button', { name: '重新读取当前版本' }))
+    await waitFor(() => expect(screen.queryByText('当前版本读取失败')).toBeNull())
+    expect((screen.getByLabelText('笔记标题') as HTMLInputElement).value).toBe('刷新失败仍保留')
+    expect(screen.getByLabelText('笔记正文').textContent).toContain('当前版本刷新失败也不能替换草稿')
+  })
+
+  it('warns without replacing a dirty draft when the server current version advances', async () => {
+    const nextMaterial: NoteMaterialVersion = {
+      ...conflictMaterial,
+      upload: {
+        ...conflictMaterial.upload,
+        currentVersionId: conflictVersionId,
+        isCurrent: true,
+        hasConflict: false,
+      },
+    }
+    nativeApi.version.mockImplementation(async (id: string) =>
+      id === conflictVersionId ? nextMaterial : material)
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    page()
+    await userEvent.click(await screen.findByText('课堂笔记').then((node) => node.closest('button')!))
+    const title = await screen.findByLabelText('笔记标题') as HTMLInputElement
+    expect(title.value).toBe('课堂笔记')
+    await waitFor(() => expect(nativeApi.versions).toHaveBeenCalledOnce())
+    await userEvent.clear(title)
+    await userEvent.type(title, '本机未保存草稿')
+    await typeBody('服务器版本更新也不能静默换稿')
+
+    nativeApi.current.mockResolvedValueOnce(nextMaterial)
+    nativeApi.versions.mockResolvedValueOnce([nextMaterial.upload])
+    await userEvent.click(screen.getByRole('button', { name: '刷新版本历史' }))
+
+    expect(await screen.findByText('服务器当前版本已更新')).toBeTruthy()
+    expect(screen.getByText(/没有自动替换/)).toBeTruthy()
+    expect((screen.getByLabelText('笔记标题') as HTMLInputElement).value).toBe('本机未保存草稿')
+    expect(screen.getByLabelText('笔记正文').textContent).toContain('服务器版本更新也不能静默换稿')
+    expect(screen.getAllByText('有未保存更改').length).toBeGreaterThan(0)
+
+    await userEvent.click(screen.getByRole('button', { name: '载入服务器最新版本' }))
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('替换本页未保存草稿'))
+    expect(await screen.findByDisplayValue('冲突候选笔记')).toBeTruthy()
+    expect(screen.queryByText('服务器当前版本已更新')).toBeNull()
   })
 
   it('shows an explicit empty version history instead of a blank panel', async () => {
@@ -1054,8 +1450,7 @@ describe('NativeNotesPage', () => {
     await userEvent.click(screen.getByRole('button', { name: /新建笔记/ }))
     expect(await screen.findByRole('heading', { name: '新建笔记' })).toBeTruthy()
     await userEvent.type(screen.getByLabelText('笔记标题'), '合成新笔记')
-    await userEvent.clear(screen.getByLabelText('正文块 1'))
-    await userEvent.type(screen.getByLabelText('正文块 1'), '正文与照片走同一固定版本')
+    await typeBody('正文与照片走同一固定版本')
     expect((screen.getAllByRole('button', { name: '保存笔记' })[0]! as HTMLButtonElement).disabled).toBe(true)
     await consentToStorage()
     await userEvent.click(screen.getAllByRole('button', { name: '保存笔记' })[0]!)
@@ -1079,8 +1474,7 @@ describe('NativeNotesPage', () => {
     page()
     await userEvent.click(await screen.findByRole('button', { name: /新建笔记/ }))
     await userEvent.type(screen.getByLabelText('笔记标题'), '混合材料笔记')
-    await userEvent.clear(screen.getByLabelText('正文块 1'))
-    await userEvent.type(screen.getByLabelText('正文块 1'), '照片与正文一起冻结')
+    await typeBody('照片与正文一起冻结')
     await consentToStorage()
     const photo = new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3])], 'board.png', { type: 'image/png' })
     await userEvent.upload(screen.getByLabelText('添加照片'), photo)
@@ -1182,13 +1576,13 @@ describe('NativeNotesPage', () => {
     await waitFor(() => expect(finishDeferredPreview).toBeTypeOf('function'))
 
     await userEvent.click(screen.getByRole('button', { name: '取消' }))
-    await userEvent.click(screen.getByRole('button', { name: /编辑手写卡片 2/ }))
+    await userEvent.click(screen.getAllByRole('button', { name: /编辑手写卡片/ })[1]!)
     finishDeferredPreview!(preview)
     await new Promise((resolve) => setTimeout(resolve, 0))
     expect(screen.getByTestId('ink-canvas-editor')).toBeTruthy()
 
     await userEvent.click(screen.getByRole('button', { name: '取消' }))
-    await userEvent.click(screen.getByRole('button', { name: /编辑手写卡片 2/ }))
+    await userEvent.click(screen.getAllByRole('button', { name: /编辑手写卡片/ })[1]!)
     expect(screen.getByTestId('ink-canvas').querySelectorAll('path')).toHaveLength(1)
   })
 
@@ -1225,9 +1619,9 @@ describe('NativeNotesPage', () => {
 
     expect(await screen.findByRole('heading', { name: '新建笔记' })).toBeTruthy()
     expect((screen.getByLabelText('笔记标题') as HTMLInputElement).value).toBe('从 Android 导入')
-    expect((screen.getByLabelText('正文块 1') as HTMLTextAreaElement).value).toBe('混排正文')
-    expect(screen.getByAltText('正文照片 2').getAttribute('src')).toBe('blob:synthetic-note-image')
-    expect(screen.getByAltText('手写卡片 3').getAttribute('src')).toBe('blob:synthetic-note-image')
+    expect((await screen.findByLabelText('笔记正文')).textContent).toContain('混排正文')
+    expect(screen.getByAltText('正文照片').getAttribute('src')).toBe('blob:synthetic-note-image')
+    expect(screen.getByAltText('手写卡片').getAttribute('src')).toBe('blob:synthetic-note-image')
     expect(await screen.findByText(/尚未上传；保存时仍需明确确认服务器存储/)).toBeTruthy()
     expect((screen.getByLabelText('确认保存到当前服务器') as HTMLInputElement).checked).toBe(false)
     expect(nativeApi.begin).not.toHaveBeenCalled()
@@ -1312,6 +1706,7 @@ describe('NativeNotesPage', () => {
     await screen.findByText('课堂笔记')
     await userEvent.click(screen.getByRole('button', { name: /新建笔记/ }))
     await userEvent.type(screen.getByLabelText('笔记标题'), '保存失败仍在内存')
+    await typeBody('保存失败后仍需保留的正文')
     await consentToStorage()
     await userEvent.click(screen.getAllByRole('button', { name: '保存笔记' })[0]!)
     expect(await screen.findByText(/合成网络失败/)).toBeTruthy()
@@ -1319,6 +1714,57 @@ describe('NativeNotesPage', () => {
     await userEvent.click(screen.getByText('课堂笔记').closest('button')!)
     expect(confirm).toHaveBeenCalledWith(expect.stringContaining('当前编辑内容尚未保存'))
     expect((screen.getByLabelText('笔记标题') as HTMLInputElement).value).toBe('保存失败仍在内存')
+  })
+
+  it('re-enables retry of the same frozen submission after a save failure', async () => {
+    nativeApi.begin.mockRejectedValueOnce(new Error('合成网络失败'))
+    page()
+    await screen.findByText('课堂笔记')
+    await userEvent.click(screen.getByRole('button', { name: /新建笔记/ }))
+    await userEvent.type(screen.getByLabelText('笔记标题'), '保存失败后重试')
+    await typeBody('保存失败后仍可重试同一提交')
+    await consentToStorage()
+    await userEvent.click(screen.getAllByRole('button', { name: '保存笔记' })[0]!)
+    expect(await screen.findByText(/合成网络失败/)).toBeTruthy()
+
+    const retry = screen.getAllByRole('button', { name: '重试同一提交' })[0] as HTMLButtonElement
+    expect(retry.disabled).toBe(false)
+    await userEvent.click(retry)
+    await waitFor(() => expect(nativeApi.begin).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(nativeApi.complete).toHaveBeenCalledOnce())
+    expect(await screen.findByText(/已保存/)).toBeTruthy()
+  })
+
+  it('keeps the frozen submission, draft and material node when version refresh fails', async () => {
+    page()
+    await userEvent.click(await screen.findByText('课堂笔记').then((node) => node.closest('button')!))
+    await screen.findByRole('heading', { name: '继续写这篇笔记' })
+    await typeBody('冻结提交与材料节点都要保留')
+    const photo = new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3])], 'refresh.png', { type: 'image/png' })
+    await userEvent.upload(screen.getByLabelText('添加照片'), photo)
+    expect(await screen.findByAltText('正文照片')).toBeTruthy()
+    await consentToStorage()
+
+    nativeApi.clone.mockRejectedValueOnce(new Error('首次固定提交失败'))
+    await userEvent.click(screen.getAllByRole('button', { name: '保存笔记' })[0]!)
+    expect(await screen.findByText(/首次固定提交失败/)).toBeTruthy()
+    expect(screen.getAllByRole('button', { name: '重试同一提交' }).length).toBeGreaterThan(0)
+
+    nativeApi.current.mockRejectedValueOnce(new Error('刷新当前版本失败'))
+    nativeApi.version.mockRejectedValueOnce(new Error('刷新材料失败'))
+    await userEvent.click(screen.getByRole('button', { name: '刷新版本历史' }))
+
+    expect(await screen.findByText('笔记刷新失败，当前草稿已保留')).toBeTruthy()
+    expect(screen.getByText(/刷新材料失败/)).toBeTruthy()
+    expect(screen.getByLabelText('笔记正文').textContent).toContain('冻结提交与材料节点都要保留')
+    expect(screen.getByAltText('正文照片')).toBeTruthy()
+    expect(screen.getAllByRole('button', { name: '重试同一提交' }).length).toBeGreaterThan(0)
+
+    nativeApi.version.mockResolvedValueOnce(material)
+    await userEvent.click(screen.getByRole('button', { name: '就地重试' }))
+    await waitFor(() => expect(screen.queryByText('笔记刷新失败，当前草稿已保留')).toBeNull())
+    expect(screen.getByAltText('正文照片')).toBeTruthy()
+    expect(screen.getAllByRole('button', { name: '重试同一提交' }).length).toBeGreaterThan(0)
   })
 
   it('aborts the previous upload closure before it can send later parts after a switch', async () => {
@@ -1335,6 +1781,7 @@ describe('NativeNotesPage', () => {
     await screen.findByText('课堂笔记')
     await userEvent.click(screen.getByRole('button', { name: /新建笔记/ }))
     await userEvent.type(screen.getByLabelText('笔记标题'), '切换前正在上传')
+    await typeBody('切换前已经写入的正文')
     await consentToStorage()
     await userEvent.click(screen.getAllByRole('button', { name: '保存笔记' })[0]!)
     await waitFor(() => expect(nativeApi.begin).toHaveBeenCalledOnce())

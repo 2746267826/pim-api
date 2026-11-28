@@ -30,7 +30,9 @@ public sealed class NullabilityRequiredSchemaFilter : ISchemaFilter
         (typeof(Pim.Core.Notes.NoteAsrTaskDto),
             nameof(Pim.Core.Notes.NoteAsrTaskDto.Destination)),
         (typeof(Pim.Core.Notes.ReprocessNoteAsrRequest),
-            nameof(Pim.Core.Notes.ReprocessNoteAsrRequest.Consent))
+            nameof(Pim.Core.Notes.ReprocessNoteAsrRequest.Consent)),
+        (typeof(Pim.Core.Notes.NoteProcessingStatusDto),
+            nameof(Pim.Core.Notes.NoteProcessingStatusDto.Authorization))
     };
 
     public void Apply(OpenApiSchema schema, SchemaFilterContext context)

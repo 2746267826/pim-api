@@ -8,6 +8,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Pim.Core.Ai;
 using Pim.Core.Exceptions;
+using Pim.Core.Notes;
 using Pim.Infrastructure.Ai;
 using Pim.Infrastructure.Ai.Asr;
 using Pim.Infrastructure.Data;
@@ -27,6 +28,14 @@ public sealed class NoteAsrDispatchJob(NoteAsrTaskStore tasks, NoteAsrService as
             try
             {
                 var state = await tasks.ReadAsync(owner, id, ct);
+                if (state.Request.ParentTaskId is null &&
+                    !await tasks.IsCanonicalInitialAsync(owner, id, state.Request.VersionId, ct))
+                {
+                    // A lease claimed before canonical enforcement may still be alive. Revoke it
+                    // before skipping so renew/read/ack cannot keep the duplicate running.
+                    await asr.RevokeNonCanonicalLeaseAsync(owner, state, ct);
+                    continue;
+                }
                 if (state.Route is not null)
                     state = await asr.EnsureAttemptForOwnerAsync(owner, id,
                         state.Request.VersionId, ct);
@@ -44,6 +53,7 @@ public sealed class NoteAsrJob(NoteAsrTaskStore tasks, NoteMaterialUploadStore m
     PimDbContext db, AiAsrCallService calls)
 {
     private const int AdaptiveCallAllowance = 128;
+    internal Func<CancellationToken, Task>? BeforeProviderCallForTests { get; set; }
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     private static readonly Regex TimedTranscriptLine = new(
         @"^(?<start>\d+(?:\.\d+)?)\s*[-–—]\s*(?<end>\d+(?:\.\d+)?)(?<rest>\s*\|.*)$",
@@ -54,10 +64,15 @@ public sealed class NoteAsrJob(NoteAsrTaskStore tasks, NoteMaterialUploadStore m
     {
         using var lease = tasks.TryRunLease(owner, id);
         if (lease is null) return;
+        var initial = await tasks.ReadAsync(owner, id, ct);
+        if (!await EnsureCanonicalAsync(owner, id, initial, ct)) return;
         for (var processed = 0; processed < 64; processed++)
         {
             ct.ThrowIfCancellationRequested();
             var state = await tasks.ReadAsync(owner, id, ct);
+            // Re-check every pass: a task may stop being the canonical initial chain while this
+            // worker is running, and the job must never keep spending on a duplicate.
+            if (!await EnsureCanonicalAsync(owner, id, state, ct)) return;
             if (!NoteAsrTaskStore.CloudPipeline(state)) return;
             if (state.Route is not null && state.AttemptId is null) return;
             if (state.AttemptId is { } routedAttempt)
@@ -65,6 +80,7 @@ public sealed class NoteAsrJob(NoteAsrTaskStore tasks, NoteMaterialUploadStore m
                 var attempt = await db.NoteAsrAttempts.AsNoTracking()
                     .SingleOrDefaultAsync(x => x.Id == routedAttempt && x.OwnerId == owner, ct);
                 if (attempt is null || !CanDispatchAttempt(attempt, owner, id, state)) return;
+                if (!await EnsureCloudConsentAsync(owner, attempt, ct)) return;
             }
             if (state.AttemptId is { } routedAttemptId && await db.NoteAsrBatchJobs.AsNoTracking()
                     .AnyAsync(x => x.OwnerId == owner && x.AttemptId == routedAttemptId, ct))
@@ -165,6 +181,17 @@ public sealed class NoteAsrJob(NoteAsrTaskStore tasks, NoteMaterialUploadStore m
                 var request = new AiAsrCallRequest(requestId, owner,
                     new($"segment-{step.Index + 1:D5}.wav", "wav", Convert.ToBase64String(bytes)),
                     state.Request.Consent, state.Request.Language, state.Request.Consent.ModelId);
+                if (BeforeProviderCallForTests is { } beforeProviderCall) await beforeProviderCall(ct);
+                if (state.AttemptId is { } currentAttemptId)
+                {
+                    var currentAttempt = await db.NoteAsrAttempts.AsNoTracking()
+                        .SingleOrDefaultAsync(x => x.Id == currentAttemptId && x.OwnerId == owner, ct)
+                        ?? throw new DomainException(40901, "ASR 执行快照不存在");
+                    // Last-moment guard: the route consent observed at loop entry may have drifted
+                    // while this worker read the material. Refuse before any provider call.
+                    await NoteAsrRouteConsentGuard.RequireCurrentForCloudAttemptAsync(
+                        db, owner, currentAttempt, ct);
+                }
                 var result = await calls.CallForOwnerAsync(owner, request, id, ct);
                 await RecordAsync(result);
                 if (result.Status is AiRequestStatus.Running or AiRequestStatus.Blocked) return;
@@ -402,6 +429,9 @@ public sealed class NoteAsrJob(NoteAsrTaskStore tasks, NoteMaterialUploadStore m
             if (!EpochMatches(latest, rootStep.Index, executionEpoch))
                 return new(NoteAsrAdaptiveOutcome.Cancelled,
                     ReasonCode: "execution_superseded");
+            if (BeforeProviderCallForTests is { } beforeProviderCall) await beforeProviderCall(ct);
+            await NoteAsrRouteConsentGuard.RequireCurrentForCloudAttemptAsync(
+                db, owner, routedAttempt, ct);
             result = await calls.CallForOwnerAsync(owner, callRequest, taskId, ct);
         }
         catch (OperationCanceledException)
@@ -457,6 +487,40 @@ public sealed class NoteAsrJob(NoteAsrTaskStore tasks, NoteMaterialUploadStore m
         attempt.Route == state.Route &&
         !attempt.StopRequested &&
         attempt.State is ("Queued" or "Running");
+
+    private async Task<bool> EnsureCanonicalAsync(Guid owner, Guid id, NoteAsrState state,
+        CancellationToken ct)
+    {
+        if (state.Request.ParentTaskId is not null) return true;
+        if (await tasks.IsCanonicalInitialAsync(owner, id, state.Request.VersionId, ct)) return true;
+        // A legacy duplicate without a durable attempt has never spent money; leave its auditable
+        // status untouched. Once an attempt exists, revoke it before any provider-side effect.
+        if (state.AttemptId is not { } attemptId) return false;
+        await NoteAsrRouteConsentGuard.RevokeAttemptAsync(db, owner, attemptId,
+            NoteAsrRouteConsentGuard.NonCanonicalCode,
+            NoteAsrRouteConsentGuard.NonCanonicalMessage, ct);
+        await NoteAsrRouteConsentGuard.StopTaskAsync(tasks, owner, id, state.AttemptId,
+            NoteAsrRouteConsentGuard.NonCanonicalMessage, ct);
+        return false;
+    }
+
+    private async Task<bool> EnsureCloudConsentAsync(Guid owner, NoteAsrAttemptEntity attempt,
+        CancellationToken ct)
+    {
+        if (!NoteAsrRoute.IsCloud(attempt.Route)) return true;
+        try
+        {
+            await NoteAsrRouteConsentGuard.RequireCurrentForCloudAttemptAsync(
+                db, owner, attempt, ct);
+            return true;
+        }
+        catch (DomainException)
+        {
+            await NoteAsrRouteConsentGuard.StopTaskAsync(tasks, owner, attempt.TaskId,
+                attempt.Id, NoteAsrRouteConsentGuard.RouteDriftMessage, ct);
+            return false;
+        }
+    }
 
     private async Task RecordAdaptiveSuccessAsync(Guid owner, Guid taskId, NoteAsrState state,
         NoteAsrStep step, NoteAsrAdaptiveRun run, Guid? executionEpoch, CancellationToken ct)

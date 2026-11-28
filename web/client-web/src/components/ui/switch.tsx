@@ -7,12 +7,14 @@ export interface SwitchProps {
   disabled?: boolean
   id?: string
   className?: string
+  ariaLabel?: string
 }
 
-export function Switch({ checked, onCheckedChange, disabled, id, className }: SwitchProps) {
+export function Switch({ checked, onCheckedChange, disabled, id, className, ariaLabel }: SwitchProps) {
   return (
     <SwitchPrimitive.Root
       id={id}
+      aria-label={ariaLabel}
       checked={checked}
       onCheckedChange={onCheckedChange}
       disabled={disabled}

@@ -59,6 +59,14 @@ public sealed class NoteDerivedService(
             var existing = await store.ReadTaskAsync(owner, request.TaskId, ct);
             if (existing.Fingerprint != fingerprint)
                 throw Conflict("任务标识已经绑定另一份派生输入，原任务保留");
+            var canonical = await store.TryReadInitialForVersionAsync(owner,
+                existing.Request.VersionId, ct);
+            if (canonical is not null && canonical.Request.TaskId != existing.Request.TaskId)
+            {
+                if (!NoteDerivedStore.SameInitialRequest(canonical.Request, request))
+                    throw Conflict("同一材料版本已有另一条整理任务链；原任务保留");
+                return await DescribeAsync(canonical, ct);
+            }
             return await DescribeAsync(existing, ct);
         }
         catch (DomainException error) when (error.ErrorCode == 40401)
@@ -78,7 +86,7 @@ public sealed class NoteDerivedService(
     }
 
     internal async Task<NoteDerivedGenerationConsent> ResolveDefaultConsentForProcessingAsync(
-        Guid owner, NoteMaterialVersionDto version, CancellationToken ct)
+        Guid owner, NoteMaterialVersionDto version, bool confirmed, CancellationToken ct)
     {
         var runtime = await db.AiModelRuntime.AsNoTracking().SingleOrDefaultAsync(ct);
         if (runtime is null || !runtime.Enabled)
@@ -96,8 +104,8 @@ public sealed class NoteDerivedService(
                 ? "笔记整理默认模型未声明视觉能力，无法处理含图片材料；请管理员调整用途默认模型"
                 : "笔记整理默认模型未声明文本能力，请管理员调整用途默认模型");
         var consent = new NoteDerivedGenerationConsent(profile.Id, profile.Revision,
-            profile.BaseUrl, true);
-        await ValidateDestinationAsync(consent, hasImages, ct);
+            profile.BaseUrl, confirmed);
+        await ValidateDestinationAsync(consent, hasImages, ct, requireConfirmed: false);
         return consent;
     }
 
@@ -532,9 +540,9 @@ public sealed class NoteDerivedService(
     }
 
     private async Task ValidateDestinationAsync(NoteDerivedGenerationConsent? consent, bool hasImages,
-        CancellationToken ct)
+        CancellationToken ct, bool requireConfirmed = true)
     {
-        if (consent?.Confirmed != true)
+        if (consent is null || (requireConfirmed && !consent.Confirmed))
             throw Invalid("请核对本次固定材料、派生目标与实际地址，并明确同意发送");
         var profile = await db.AiModelProfiles.AsNoTracking().SingleOrDefaultAsync(x => x.Id == consent.ModelId, ct);
         if (profile is null || !profile.Enabled ||
@@ -579,9 +587,13 @@ public sealed class NoteDerivedService(
 
     private async Task<NoteDerivedTaskDto> DescribeAsync(NoteDerivedTaskState state, CancellationToken ct)
     {
+        var canonical = await store.TryReadInitialForVersionAsync(state.Owner,
+            state.Request.VersionId, ct);
         var described = NoteDerivedStore.DescribeTask(state) with
         {
-            BackgroundProcessingAvailable = BackgroundProcessingAvailable
+            BackgroundProcessingAvailable = BackgroundProcessingAvailable,
+            IsCanonicalInitial = canonical?.Request.TaskId == state.Request.TaskId,
+            CanonicalInitialTaskId = canonical?.Request.TaskId
         };
         if (described.Coverage.Complete)
         {

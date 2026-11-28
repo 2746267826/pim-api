@@ -35,7 +35,18 @@ public sealed class NoteDerivedStore(IOptions<NoteMaterialUploadOptions> options
             if (existingRecord.ArtifactId != existing.CompleteRecordArtifactId ||
                 existingAnalysis.ArtifactId != existing.IndependentAnalysisArtifactId)
                 throw new InvalidDataException("Derived task artifact identity no longer matches storage");
+            var chain = await ReadChainUnlockedAsync(owner, request.VersionId, ct);
+            if (chain is null || chain.TaskId == request.TaskId)
+                await WriteChainUnlockedAsync(owner, request.VersionId, request.TaskId, ct);
             return existing;
+        }
+        var chained = await TryReadInitialUnlockedAsync(owner, request.VersionId, ct);
+        if (chained is not null && chained.Request.TaskId != request.TaskId)
+        {
+            if (!SameInitialRequest(chained.Request, request))
+                throw Conflict(
+                    $"同一材料版本已有整理任务 {chained.Request.TaskId:D}；请使用原任务或显式重试");
+            return chained;
         }
 
         var tasks = Directory.Exists(TasksFolder(owner))
@@ -84,6 +95,7 @@ public sealed class NoteDerivedStore(IOptions<NoteMaterialUploadOptions> options
             IndependentAnalysisArtifactId = analysis.ArtifactId
         };
         await SaveTaskAsync(task, ct);
+        await WriteChainUnlockedAsync(owner, request.VersionId, request.TaskId, ct);
         return task;
     }
 
@@ -93,6 +105,107 @@ public sealed class NoteDerivedStore(IOptions<NoteMaterialUploadOptions> options
         var state = await TryReadTaskAsync(owner, taskId, ct);
         return state ?? throw new DomainException(40401, "派生任务不存在");
     }
+
+    /// <summary>
+    /// Resolves the one initial paid derived chain for an owner/version. Step retries reuse the
+    /// same task id and never allocate a second chain.
+    /// </summary>
+    internal async Task<NoteDerivedTaskState?> TryReadInitialForVersionAsync(Guid owner,
+        Guid versionId, CancellationToken ct)
+    {
+        if (versionId == Guid.Empty) throw Invalid("材料版本标识无效");
+        await using var lease = await LockAsync(owner, ct);
+        return await TryReadInitialUnlockedAsync(owner, versionId, ct);
+    }
+
+    internal async Task<bool> IsCanonicalInitialAsync(Guid owner, Guid taskId, Guid versionId,
+        CancellationToken ct)
+    {
+        var initial = await TryReadInitialForVersionAsync(owner, versionId, ct);
+        return initial?.Request.TaskId == taskId;
+    }
+
+    private async Task<NoteDerivedTaskState?> TryReadInitialUnlockedAsync(Guid owner,
+        Guid versionId, CancellationToken ct)
+    {
+        var path = ChainPath(owner, versionId);
+        if (File.Exists(path))
+        {
+            var chain = await ReadChainAsync(path, ct);
+            if (chain is not null)
+            {
+                var state = await TryReadTaskAsync(owner, chain.TaskId, ct);
+                if (state is not null && state.Request.VersionId == versionId)
+                    return state;
+            }
+        }
+        if (!Directory.Exists(TasksFolder(owner))) return null;
+        NoteDerivedTaskState? earliest = null;
+        foreach (var file in Directory.EnumerateFiles(TasksFolder(owner), "*.json"))
+        {
+            if (!Guid.TryParseExact(Path.GetFileNameWithoutExtension(file), "D", out var id))
+                continue;
+            var state = await ReadTaskFileAsync(file, owner, id, ct);
+            if (state.Request.VersionId != versionId) continue;
+            if (earliest is null || state.CreatedAt < earliest.CreatedAt ||
+                state.CreatedAt == earliest.CreatedAt &&
+                state.Request.TaskId.CompareTo(earliest.Request.TaskId) < 0)
+                earliest = state;
+        }
+        if (earliest is null) return null;
+        await WriteChainUnlockedAsync(owner, versionId, earliest.Request.TaskId, ct);
+        return earliest;
+    }
+
+    internal static bool SameInitialRequest(StartNoteDerivedTaskRequest left,
+        StartNoteDerivedTaskRequest right) =>
+        left.VersionId == right.VersionId &&
+        left.ExpectedUserId == right.ExpectedUserId &&
+        left.AsrTaskId == right.AsrTaskId &&
+        Equals(left.Consent, right.Consent);
+
+    private string ChainPath(Guid owner, Guid versionId) =>
+        Path.Combine(OwnerFolder(owner), "chains", versionId.ToString("D") + ".json");
+
+    private async Task WriteChainUnlockedAsync(Guid owner, Guid versionId, Guid taskId,
+        CancellationToken ct)
+    {
+        var path = ChainPath(owner, versionId);
+        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path))!);
+        var temp = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try
+        {
+            await using (var stream = new FileStream(temp, FileMode.CreateNew, FileAccess.Write,
+                FileShare.None))
+            {
+                await JsonSerializer.SerializeAsync(stream, new DerivedChain(taskId), Json, ct);
+                await stream.FlushAsync(ct);
+                stream.Flush(true);
+            }
+            File.Move(temp, path, overwrite: true);
+        }
+        finally
+        {
+            if (File.Exists(temp)) File.Delete(temp);
+        }
+    }
+
+    private async Task<DerivedChain?> ReadChainUnlockedAsync(Guid owner, Guid versionId,
+        CancellationToken ct)
+    {
+        var path = ChainPath(owner, versionId);
+        return File.Exists(path) ? await ReadChainAsync(path, ct) : null;
+    }
+
+    private static async Task<DerivedChain?> ReadChainAsync(string path, CancellationToken ct)
+    {
+        await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read,
+            FileShare.ReadWrite | FileShare.Delete);
+        var chain = await JsonSerializer.DeserializeAsync<DerivedChain>(stream, Json, ct);
+        return chain is { TaskId: var taskId } && taskId != Guid.Empty ? chain : null;
+    }
+
+    private sealed record DerivedChain(Guid TaskId);
 
     internal async Task<NoteDerivedTaskState> UpdateTaskAsync(Guid owner, Guid taskId,
         Action<NoteDerivedTaskState> update, CancellationToken ct)
@@ -485,6 +598,7 @@ public sealed class NoteDerivedStore(IOptions<NoteMaterialUploadOptions> options
         state.CreatedAt,
         state.UpdatedAt,
         state.StopRequested,
+        IsCanonicalInitial: false,
         AwaitingAsr: state.AwaitingAsr);
 
     internal static NoteDerivedStepDto DescribeStep(NoteDerivedStepState step) => new(

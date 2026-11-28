@@ -313,6 +313,9 @@ public class PimDbContext : DbContext
             e.HasKey(x => x.OwnerId);
             e.Property(x => x.Revision).IsConcurrencyToken();
             e.Property(x => x.AutoNoteProcessingEnabled).HasDefaultValue(false);
+            e.Property(x => x.StandingAuthorizationTargetRevision);
+            e.Property(x => x.StandingAuthorizationPossibleChargeAcknowledged)
+                .HasDefaultValue(false);
         });
 
         modelBuilder.Entity<NoteAsrNodeEntity>(e =>
