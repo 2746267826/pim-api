@@ -67,7 +67,7 @@ public sealed class McpClientServiceTests : IDisposable
         Assert.All(McpToolCatalog.ReadTools.Where(tool => tool.Group == "native-notes"),
             tool => Assert.False(stored.Permissions["read"][tool.Name], tool.Name));
         Assert.True(stored.Permissions["write"].Values.All(v => !v));
-        Assert.Equal(108, stored.Permissions["read"].Count);
+        Assert.Equal(107, stored.Permissions["read"].Count);
         Assert.Equal(60, stored.Permissions["write"].Count);
     }
 
