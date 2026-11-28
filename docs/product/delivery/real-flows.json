@@ -1,0 +1,388 @@
+{
+  "schema_version": 1,
+  "flows": [
+    {
+      "id": "RF-R04-ISOLATED",
+      "title": "R04 隔离环境 REST/MCP/Web 多状态链路",
+      "items": [
+        "R04"
+      ],
+      "ac_ids": [
+        "R04-AC01"
+      ],
+      "platforms": [
+        "api",
+        "mcp",
+        "web"
+      ],
+      "result": "passed_legacy",
+      "freshness": "stale",
+      "environment": "隔离 Docker Test API + PostgreSQL + Chromium",
+      "observed_at": "2026-11-24",
+      "artifacts": [
+        "REST 19/19",
+        "MCP 14/14",
+        "HTTP/Chromium 用例通过"
+      ],
+      "limits": "旧台账记录的真实链路未在本轮重跑；不能证明外部独立 MCP 客户端。",
+      "evidence": "EV-RF-R04-ISOLATED"
+    },
+    {
+      "id": "RF-R04-AC8-EXTERNAL-MCP",
+      "title": "R04-AC8 外部独立 MCP 客户端",
+      "items": [
+        "R04"
+      ],
+      "ac_ids": [
+        "R04-AC08"
+      ],
+      "platforms": [
+        "mcp"
+      ],
+      "result": "not-run",
+      "freshness": "not-verified",
+      "environment": null,
+      "observed_at": "2026-11-27",
+      "artifacts": [],
+      "limits": "尚无外部独立 MCP 客户端执行记录，R04 不得记 PASS。",
+      "evidence": "EV-RF-R04-AC8-EXTERNAL-MCP"
+    },
+    {
+      "id": "RF-M05-WINDOWS-TODAY",
+      "title": "M05 真实 Windows 桌面今日流程",
+      "items": [
+        "M05"
+      ],
+      "ac_ids": [
+        "M05-AC01"
+      ],
+      "platforms": [
+        "windows"
+      ],
+      "result": "not-run",
+      "freshness": "not-verified",
+      "environment": null,
+      "observed_at": "2026-11-27",
+      "artifacts": [],
+      "limits": "登录、托盘点击、刷新、新建与完成任务未在真实桌面执行。",
+      "evidence": "EV-RF-M05-WINDOWS-TODAY"
+    },
+    {
+      "id": "RF-D04-CROSS-END",
+      "title": "D04 Android/Windows/Web 手写跨端闭环",
+      "items": [
+        "D04"
+      ],
+      "ac_ids": [
+        "D04-AC01"
+      ],
+      "platforms": [
+        "android",
+        "windows",
+        "web"
+      ],
+      "result": "not-run",
+      "freshness": "not-verified",
+      "environment": null,
+      "observed_at": "2026-11-27",
+      "artifacts": [],
+      "limits": "Windows 工具缺口、Web 已保存块不可再编辑、真机与往返回读均未验。",
+      "evidence": "EV-RF-D04-CROSS-END"
+    },
+    {
+      "id": "RF-Z02-CROSS-DEVICE",
+      "title": "Z02 换端恢复与真实 provider",
+      "items": [
+        "Z02"
+      ],
+      "ac_ids": [
+        "Z02-AC01"
+      ],
+      "platforms": [
+        "api",
+        "android",
+        "windows",
+        "web"
+      ],
+      "result": "not-run",
+      "freshness": "not-verified",
+      "environment": null,
+      "observed_at": "2026-11-27",
+      "artifacts": [],
+      "limits": "真实 provider、Hangfire 多进程、浏览器与客户端换端未执行。",
+      "evidence": "EV-RF-Z02-CROSS-DEVICE"
+    },
+    {
+      "id": "RF-S01-RELEASE",
+      "title": "S01 真实 release dispatch 与生产拉取",
+      "items": [
+        "S01"
+      ],
+      "ac_ids": [
+        "S01-AC01"
+      ],
+      "platforms": [
+        "release"
+      ],
+      "result": "not-run",
+      "freshness": "not-verified",
+      "environment": null,
+      "observed_at": "2026-11-27",
+      "artifacts": [],
+      "limits": "正式 bump/promote、并发重跑、`:latest` 收敛与生产部署未执行。",
+      "evidence": "EV-RF-S01-RELEASE"
+    },
+    {
+      "id": "RF-R05-EXTERNAL-MCP",
+      "title": "R05 外部独立 MCP 客户端 19 工具",
+      "items": [
+        "R05"
+      ],
+      "ac_ids": [
+        "R05-AC01"
+      ],
+      "platforms": [
+        "mcp"
+      ],
+      "result": "not-run",
+      "freshness": "not-verified",
+      "environment": null,
+      "observed_at": "2026-11-27",
+      "artifacts": [],
+      "limits": "#613 仍 OPEN；外部客户端与真实部署未验。",
+      "evidence": "EV-RF-R05-EXTERNAL-MCP"
+    },
+    {
+      "id": "RF-Q08-BROWSER",
+      "title": "Q08 真实浏览器双账号搜索",
+      "items": [
+        "Q08"
+      ],
+      "ac_ids": [
+        "Q08-AC10"
+      ],
+      "platforms": [
+        "web"
+      ],
+      "result": "not-run",
+      "freshness": "not-verified",
+      "environment": null,
+      "observed_at": "2026-11-27",
+      "artifacts": [],
+      "limits": "双账号、持久索引/重建/离线缓存与字段级定位未验。",
+      "evidence": "EV-RF-Q08-BROWSER"
+    },
+    {
+      "id": "RF-Z01-BROWSER",
+      "title": "Z01 普通用户/管理员浏览器走查",
+      "items": [
+        "Z01"
+      ],
+      "ac_ids": [
+        "Z01-AC01"
+      ],
+      "platforms": [
+        "web"
+      ],
+      "result": "not-run",
+      "freshness": "not-verified",
+      "environment": null,
+      "observed_at": "2026-11-27",
+      "artifacts": [],
+      "limits": "协议/诊断例外仍存在，真实浏览器与客户端呈现未验。",
+      "evidence": "EV-RF-Z01-BROWSER"
+    },
+    {
+      "id": "RF-Q04-PUBLIC-TLS",
+      "title": "Q04 公网 TLS 与生产反代",
+      "items": [
+        "Q04"
+      ],
+      "ac_ids": [
+        "Q04-AC09"
+      ],
+      "platforms": [
+        "api",
+        "web"
+      ],
+      "result": "not-run",
+      "freshness": "not-verified",
+      "environment": null,
+      "observed_at": "2026-11-27",
+      "artifacts": [],
+      "limits": "仅隔离拓扑通过；1Panel/OpenResty/证书链与生产入口未验。",
+      "evidence": "EV-RF-Q04-PUBLIC-TLS"
+    },
+    {
+      "id": "RF-H03-MULTIMODAL",
+      "title": "H03 真实多模态 provider 长音频",
+      "items": [
+        "H03"
+      ],
+      "ac_ids": [
+        "H03-AC01",
+        "H03-AC10"
+      ],
+      "platforms": [
+        "api"
+      ],
+      "result": "not-run",
+      "freshness": "not-verified",
+      "environment": null,
+      "observed_at": "2026-11-27",
+      "artifacts": [],
+      "limits": "真实 provider 质量/费用、Hangfire 多进程与 PostgreSQL 行锁未验。",
+      "evidence": "EV-RF-H03-MULTIMODAL"
+    },
+    {
+      "id": "RF-C12-FFMPEG",
+      "title": "C12 真实 FFmpeg 解码与客户端分片",
+      "items": [
+        "C12"
+      ],
+      "ac_ids": [
+        "C12-AC01"
+      ],
+      "platforms": [
+        "android",
+        "windows"
+      ],
+      "result": "not-run",
+      "freshness": "not-verified",
+      "environment": null,
+      "observed_at": "2026-11-27",
+      "artifacts": [],
+      "limits": "客户端仍为 WAV 分片/整段；runner 无 FFmpeg，相关用例 skipped。",
+      "evidence": "EV-RF-C12-FFMPEG"
+    },
+    {
+      "id": "RF-I03-I04-CLIENTS",
+      "title": "I03/I04 三端建议与确认闭环",
+      "items": [
+        "I03",
+        "I04"
+      ],
+      "ac_ids": [
+        "I03-AC01",
+        "I04-AC01"
+      ],
+      "platforms": [
+        "android",
+        "windows",
+        "web"
+      ],
+      "result": "not-run",
+      "freshness": "not-verified",
+      "environment": null,
+      "observed_at": "2026-11-27",
+      "artifacts": [],
+      "limits": "Windows 客户端 PR 仍 OPEN；Android 契约 freshness 红；真实三端未验。",
+      "evidence": "EV-RF-I03-I04-CLIENTS"
+    },
+    {
+      "id": "RF-Q03-CROSS-DEVICE",
+      "title": "Q03 回收站跨端流程",
+      "items": [
+        "Q03"
+      ],
+      "ac_ids": [
+        "Q03-AC01"
+      ],
+      "platforms": [
+        "android",
+        "windows",
+        "web"
+      ],
+      "result": "not-run",
+      "freshness": "not-verified",
+      "environment": null,
+      "observed_at": "2026-11-27",
+      "artifacts": [],
+      "limits": "Android/Windows 原生回收站未交付，真实浏览器跨端未验。",
+      "evidence": "EV-RF-Q03-CROSS-DEVICE"
+    },
+    {
+      "id": "RF-P05-BROWSER",
+      "title": "P05 位置纠正真实浏览器 E2E",
+      "items": [
+        "P05"
+      ],
+      "ac_ids": [
+        "P05-AC01"
+      ],
+      "platforms": [
+        "web"
+      ],
+      "result": "not-run",
+      "freshness": "not-verified",
+      "environment": null,
+      "observed_at": "2026-11-27",
+      "artifacts": [],
+      "limits": "API/Web 实现 OPEN；真实浏览器 E2E 与客户端只读消费未验。",
+      "evidence": "EV-RF-P05-BROWSER"
+    },
+    {
+      "id": "RF-Q06-PUSH",
+      "title": "Q06 真实推送通道",
+      "items": [
+        "Q06"
+      ],
+      "ac_ids": [
+        "Q06-AC01"
+      ],
+      "platforms": [
+        "api",
+        "android",
+        "windows",
+        "web"
+      ],
+      "result": "not-run",
+      "freshness": "not-verified",
+      "environment": null,
+      "observed_at": "2026-11-27",
+      "artifacts": [],
+      "limits": "FCM/WNS/Web Push、设备级 dismiss/click 与保留策略未验。",
+      "evidence": "EV-RF-Q06-PUSH"
+    },
+    {
+      "id": "RF-J09-PROVIDER",
+      "title": "J09 真实 provider Token 限额",
+      "items": [
+        "J09"
+      ],
+      "ac_ids": [
+        "J09-AC01"
+      ],
+      "platforms": [
+        "api"
+      ],
+      "result": "not-run",
+      "freshness": "not-verified",
+      "environment": null,
+      "observed_at": "2026-11-27",
+      "artifacts": [],
+      "limits": "真实第三方 provider 记账/限额、管理员浏览器与崩溃恢复未验。",
+      "evidence": "EV-RF-J09-PROVIDER"
+    },
+    {
+      "id": "RF-N01-BROWSER",
+      "title": "N01 Web 笔记完整编辑与回放",
+      "items": [
+        "N01"
+      ],
+      "ac_ids": [
+        "N01-AC01"
+      ],
+      "platforms": [
+        "web"
+      ],
+      "result": "not-run",
+      "freshness": "not-verified",
+      "environment": null,
+      "observed_at": "2026-11-27",
+      "artifacts": [],
+      "limits": "无录音播放器、正文分段 Textarea、已有材料不可删除，真实浏览器未验。",
+      "evidence": "EV-RF-N01-BROWSER"
+    }
+  ]
+}

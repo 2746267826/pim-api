@@ -1,0 +1,145 @@
+{
+  "schema_version": 1,
+  "decisions": [
+    {
+      "id": "DEC-B15",
+      "type": "scope-exception",
+      "status": "approved",
+      "approved_by": "user",
+      "approved_in": "PIM功能确认-最终交付-20261122",
+      "rationale": "不做 100 分钟长笔记性能验收，仅登记性能风险。",
+      "source": "PIM功能确认-最终交付-20261122/01-讨论记录/B08-B16-编辑器基础能力.md",
+      "items": [
+        "B15"
+      ],
+      "ac_ids": [],
+      "evidence": "EV-DEC-B15"
+    },
+    {
+      "id": "DEC-C14",
+      "type": "scope-exception",
+      "status": "approved",
+      "approved_by": "user",
+      "approved_in": "PIM功能确认-最终交付-20261122",
+      "rationale": "由 C12 直接采集 Opus/Ogg 取代结束后 WAV 合成，随 C12 验收。",
+      "source": "PIM功能确认-最终交付-20261122/01-讨论记录/C12-压缩录音格式与处理链路.md",
+      "items": [
+        "C14"
+      ],
+      "ac_ids": [],
+      "evidence": "EV-DEC-C14"
+    },
+    {
+      "id": "DEC-C21",
+      "type": "scope-exception",
+      "status": "approved",
+      "approved_by": "user",
+      "approved_in": "PIM功能确认-最终交付-20261122",
+      "rationale": "实时转写暂缓，仅保留本地小模型定义勘误。",
+      "source": "PIM功能确认-最终交付-20261122/01-讨论记录/C21-实时转写.md",
+      "items": [
+        "C21"
+      ],
+      "ac_ids": [],
+      "evidence": "EV-DEC-C21"
+    },
+    {
+      "id": "DEC-E03",
+      "type": "scope-exception",
+      "status": "approved",
+      "approved_by": "user",
+      "approved_in": "PIM功能确认-最终交付-20261122",
+      "rationale": "不做通用 PDF/文档附件，仅保留 Markdown、照片、手写和录音。",
+      "source": "PIM功能确认-最终交付-20261122/01-讨论记录/E03-文档附件.md",
+      "items": [
+        "E03"
+      ],
+      "ac_ids": [],
+      "evidence": "EV-DEC-E03"
+    },
+    {
+      "id": "DEC-O04",
+      "type": "scope-exception",
+      "status": "approved",
+      "approved_by": "user",
+      "approved_in": "PIM功能确认-最终交付-20261122",
+      "rationale": "跳过 OPPO 笔记动画和字体采用，原素材清单移出接入计划。",
+      "source": "PIM功能确认-最终交付-20261122/01-讨论记录/O03-Android视觉组件接入.md",
+      "items": [
+        "O04"
+      ],
+      "ac_ids": [],
+      "evidence": "EV-DEC-O04"
+    },
+    {
+      "id": "DEC-Q02",
+      "type": "scope-exception",
+      "status": "approved",
+      "approved_by": "user",
+      "approved_in": "PIM功能确认-最终交付-20261122",
+      "rationale": "当前不做全量备份与导出，Kopia 仅保留为早期文件基础能力。",
+      "source": "PIM功能确认-最终交付-20261122/01-讨论记录/Q02-全量备份与导出.md",
+      "items": [
+        "Q02"
+      ],
+      "ac_ids": [],
+      "evidence": "EV-DEC-Q02"
+    },
+    {
+      "id": "DEC-Q01",
+      "type": "product-decision",
+      "status": "pending",
+      "approved_by": null,
+      "approved_in": null,
+      "rationale": "Q01 平台范围与验收口径未确认，保持 BLOCKED。",
+      "source": "PIM功能确认-最终交付-20261122/README.md",
+      "items": [
+        "Q01"
+      ],
+      "ac_ids": [],
+      "evidence": "EV-DEC-Q01"
+    },
+    {
+      "id": "DEC-Q07",
+      "type": "product-decision",
+      "status": "pending",
+      "approved_by": null,
+      "approved_in": null,
+      "rationale": "Conflict 终态清理语义需用户裁决，保持 BLOCKED。",
+      "source": "PIM功能确认-最终交付-20261122/01-讨论记录/Q07-本地缓存清理.md",
+      "items": [
+        "Q07"
+      ],
+      "ac_ids": [],
+      "evidence": "EV-DEC-Q07"
+    },
+    {
+      "id": "DEC-R05-AC05",
+      "type": "product-decision",
+      "status": "pending",
+      "approved_by": null,
+      "approved_in": null,
+      "rationale": "R05 永久身份墓碑容量策略未获产品/运营批准，AC-05 保持 BLOCKED。",
+      "source": "docs/product/pim-delivery-ledger-20261125.md",
+      "items": [
+        "R05"
+      ],
+      "ac_ids": [
+        "R05-AC05"
+      ],
+      "evidence": "EV-DEC-R05-AC05"
+    },
+    {
+      "id": "DEC-MIGRATION-STRUCTURE",
+      "type": "migration",
+      "status": "recorded",
+      "approved_by": null,
+      "approved_in": null,
+      "rationale": "把 2026-11-25 文本台账迁移为结构化源；旧证据保持 stale，不重新认定为当前通过。",
+      "source": "docs/product/pim-delivery-ledger-20261125.md",
+      "items": [],
+      "ac_ids": [],
+      "evidence": "EV-DEC-MIGRATION-STRUCTURE"
+    }
+  ]
+}
