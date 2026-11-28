@@ -42,6 +42,9 @@ internal sealed class NoteProcessingRecord
     public bool AutoStarted { get; set; }
     public bool ManualStarted { get; set; }
     public DateTimeOffset? StartedAt { get; set; }
+    public Guid? AsrTaskId { get; set; }
+    public Guid? DerivedTaskId { get; set; }
+    public NoteProcessingAuthorizationDto? Authorization { get; set; }
     public string? PendingReason { get; set; }
     public List<NoteProcessingIssueDto> Issues { get; set; } = [];
     public StartNoteAsrRequest? AsrRequest { get; set; }

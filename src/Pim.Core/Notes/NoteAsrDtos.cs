@@ -13,9 +13,11 @@ public sealed record NoteAsrTaskDto(Guid TaskId, Guid Revision, Guid NoteId, Gui
     string InputSha256, string ManifestSha256, string Phase, string Language,
     AiAsrDestinationConsent? Destination, DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt,
     int TotalSegments, int CompletedSegments, int FailedSegments, long TotalSamples, long CompletedSamples,
-    int SampleRate, bool StopRequested, bool BackgroundProcessingAvailable = false,
+    int SampleRate, bool StopRequested, bool IsCanonicalInitial,
+    bool BackgroundProcessingAvailable = false,
     string? Route = null, Guid? AttemptId = null, Guid RouteConfigRevision = default,
-    string RouteConsentVersion = "", string? ExecutionMode = null);
+    string RouteConsentVersion = "", string? ExecutionMode = null,
+    Guid? CanonicalInitialTaskId = null);
 
 public sealed record NoteAsrAttemptDto(Guid RequestId, Guid? LogId, string Status, string? ErrorMessage,
     Guid? EvidenceId = null, string? ReceiptKind = null, string? ProviderHandle = null);

@@ -193,8 +193,10 @@ public sealed record NoteDerivedTaskDto(
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt,
     bool StopRequested,
+    bool IsCanonicalInitial,
     bool BackgroundProcessingAvailable = false,
-    bool AwaitingAsr = false);
+    bool AwaitingAsr = false,
+    Guid? CanonicalInitialTaskId = null);
 
 public sealed record NoteDerivedVersionSummaryDto(
     Guid VersionId,

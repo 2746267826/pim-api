@@ -579,7 +579,7 @@ public sealed class NoteDerivedRecoveryTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task NewGenerationAfterManualRevisionNeverMovesTheHumanHead()
+    public async Task RepeatedStartAfterManualRevisionConvergesAndNeverMovesTheHumanHead()
     {
         var material = NoteDerivedFixture.CreateMaterial(withAudio: false);
         await UploadAsync(material);
@@ -603,16 +603,13 @@ public sealed class NoteDerivedRecoveryTests : IAsyncLifetime
         Assert.Equal(manualId, manual.Artifact.HeadVersionId);
 
         var secondTask = await StartDerivedAsync(material);
+        Assert.Equal(firstTask.TaskId, secondTask.TaskId);
         await RunDerivedAsync(secondTask.TaskId);
         var after = await Data<NoteDerivedArtifactDto>(
             await _client.GetAsync($"{ArtifactRoute}/{record.ArtifactId}"));
         Assert.Equal(manualId, after.HeadVersionId);
-        Assert.Equal(3, after.Versions.Count);
+        Assert.Equal(2, after.Versions.Count);
         Assert.Equal(manualId, Assert.Single(after.Versions, x => x.IsHead).VersionId);
-        var secondGenerated = Assert.Single(after.Versions,
-            x => x.GenerationTaskId == secondTask.TaskId);
-        Assert.Equal(manualId, secondGenerated.ParentVersionId);
-        Assert.False(secondGenerated.IsHead);
     }
 
     private async Task UploadAsync(NoteDerivedFixture.Material material)

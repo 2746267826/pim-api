@@ -328,8 +328,8 @@ function Workspace({ ownerId, serverBinding, role }: { ownerId: string; serverBi
           <div><h2 className="text-base font-semibold text-text-1">{source.recordings > 0 ? '2 · 整理并生成' : '1 · 整理并生成'}</h2><p className="mt-1 text-sm text-text-3">{canViewVersions ? '生成完整记录与独立分析；原笔记和已选版本保持不变。' : '生成完整记录与独立分析；原笔记和当前内容保持不变。'}</p></div>
           {source.recordings > 0 && <p className="rounded-ctl bg-surface p-3 text-sm text-text-2">
             {canViewVersions
-              ? '仅使用当前固定版本已成功的转写。若转写仍在处理中，可稍后返回；不会自动启动生成。'
-              : '仅使用当前内容已成功的转写。若转写仍在处理中，可稍后返回；不会自动启动生成。'}
+              ? '仅使用当前固定版本已成功的转写。若转写仍在处理中，可稍后返回；本页不会自动启动生成。若账号已开启自动笔记处理，材料完成事件可能已按持续授权创建任务，可在处理状态中核对。'
+              : '仅使用当前内容已成功的转写。若转写仍在处理中，可稍后返回；本页不会自动启动生成。若账号已开启自动笔记处理，材料完成事件可能已按持续授权创建任务，可在处理状态中核对。'}
           </p>}
           <StartTaskCard key={source.versionId} ownerId={ownerId} serverBinding={serverBinding} role={role} source={source}
           destinations={destinations.data?.items ?? []} defaultModelId={destinations.data?.defaultModelId ?? null}

@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using Pim.Core.Ai;
 using Pim.Core.Exceptions;
 using Pim.Core.Notes;
 using Pim.Infrastructure.Auth;
@@ -23,9 +24,12 @@ public sealed class NoteProcessingService(
     NoteDerivedStore derivedTasks,
     PimDbContext db,
     ICurrentUserService user,
+    NoteProcessingTargetPolicyService targetPolicies,
     ILogger<NoteProcessingService> logger)
 {
     internal const string FullVersionScope = "FullVersion";
+    private const string AttemptRecoveryIssue = "asr_attempt_recovery";
+    internal Func<CancellationToken, Task>? BeforePlanResolutionForTests { get; set; }
     private Guid Owner => user.UserId ?? throw new DomainException(40101, "请先登录");
 
     public async Task<NoteProcessingStatusDto> StartAsync(StartNoteProcessingRequest request,
@@ -58,7 +62,9 @@ public sealed class NoteProcessingService(
         {
             var version = await materials.GetAsync(owner, versionId, ct);
             if (version.Upload.Phase != "Uploaded" || !version.Upload.IsCurrent) return null;
-            var request = new StartNoteProcessingRequest(version.Upload.NoteId, versionId);
+            // Automatic reconciliation never reads request.Consent; the standing authorization
+            // snapshot is resolved and persisted inside the owner/processing lock.
+            var request = new StartNoteProcessingRequest(version.Upload.NoteId, versionId, null!);
             return await StartForOwnerAsync(owner, request, automatic: true, ct);
         }
         catch (Exception error) when (error is not OperationCanceledException)
@@ -75,7 +81,10 @@ public sealed class NoteProcessingService(
     {
         if (request.NoteId == Guid.Empty || request.VersionId == Guid.Empty)
             throw new DomainException(40001, "笔记或材料版本标识无效");
-        var autoEnabled = await AutoEnabledAsync(owner, ct);
+        if (!automatic && (request.Consent is null || !request.Consent.Confirmed ||
+                           !request.Consent.PossibleChargeAcknowledged))
+            throw new DomainException(40001,
+                "发起处理前必须核对处理目标、材料范围、费用提示与授权 revision");
         var supplied = await materials.GetAsync(owner, request.VersionId, ct);
         if (supplied.Upload.NoteId != request.NoteId)
             throw new DomainException(40401, "材料版本不存在或不属于当前笔记");
@@ -83,7 +92,13 @@ public sealed class NoteProcessingService(
         var processingId = NoteProcessingIdentity.Processing(owner, request.VersionId);
         return await processing.WithLockAsync(owner, async lockedCt =>
         {
+            // Settings and automatic dispatch share the owner orchestration lock, so a
+            // concurrent revoke can never race ahead of a paid child task allocation.
+            var preferences = await PreferencesAsync(owner, lockedCt);
+            var autoEnabled = preferences.AutoProcessingEnabled;
             var version = await materials.GetAsync(owner, request.VersionId, lockedCt);
+            if (automatic && (version.Upload.Phase != "Uploaded" || !version.Upload.IsCurrent))
+                return null;
             var state = await processing.TryReadAsync(owner, processingId, lockedCt)
                 ?? new NoteProcessingRecord
                 {
@@ -96,8 +111,8 @@ public sealed class NoteProcessingService(
             if (state.NoteId != request.NoteId || state.VersionId != request.VersionId)
                 throw new DomainException(40901, "处理编排身份与材料版本不一致");
             state.AutoProcessingEnabled = autoEnabled;
-            if (automatic) state.AutoRequested = true;
-            else state.ManualStarted = true;
+            state.AutoRequested = automatic;
+            if (!automatic) state.ManualStarted = true;
 
             if (version.Upload.Phase == "Uploading")
             {
@@ -116,47 +131,155 @@ public sealed class NoteProcessingService(
                     "账号已停用，材料保持待发起；启用账号后可手动处理", lockedCt);
             }
             var hasAudio = HasAudio(version);
-            var asrTaskId = NoteProcessingIdentity.Task(owner, request.VersionId,
-                NoteProcessingTaskKind.Asr);
-            var derivedTaskId = NoteProcessingIdentity.Task(owner, request.VersionId,
-                NoteProcessingTaskKind.Derived);
-            var asrState = hasAudio ? await TryReadAsrAsync(owner, asrTaskId, lockedCt) : null;
+            var asrState = hasAudio
+                ? await ResolveAsrStateAsync(owner, version, state, lockedCt)
+                : null;
+            var derivedState = await ResolveDerivedStateAsync(owner, version, state, lockedCt);
+            var asrCreated = asrState is not null;
+            var derivedCreated = derivedState is not null;
+            var allRequiredCreated = (!hasAudio || asrCreated) && derivedCreated;
+            // A record with an authorization snapshot or start timestamp already owns its child
+            // chains. Later target/authorization drift must not rewrite it back to a pending or
+            // not-started explanation; execution-time consent checks still stop paid calls.
+            // Out-of-band chains without either marker still use the validating path below.
+            if (automatic && allRequiredCreated &&
+                (state.Authorization is not null || state.StartedAt is not null))
+            {
+                // The child chains are authoritative, but a routed ASR task without its durable
+                // attempt is not dispatchable: the executor skips route tasks with no attempt, so
+                // a crash between persisting the authorization/task and inserting the attempt
+                // would otherwise leave the material "created" forever. Repair only that missing
+                // attempt here; no chain is re-created and a refusal stays visible and retryable.
+                if (asrState is { Route: not null, AttemptId: null })
+                    asrState = await RecoverExistingAsrAttemptAsync(owner, version, state, asrState,
+                        lockedCt);
+                return await BuildStatusAsync(owner, version, state, autoEnabled, lockedCt);
+            }
+            if (automatic && !autoEnabled)
+                return await SavePendingAsync(state, "auto_processing_disabled",
+                    "自动笔记处理未开启；材料已完整，可在笔记处理页手动发起", lockedCt);
+            if (automatic && !preferences.StandingAuthorizationValid)
+                return await SavePendingAsync(state, "standing_authorization_required",
+                    "账号默认处理目标已变化或持续授权无效；请在设置中核对当前目标、材料范围与可能费用后重新开启",
+                    lockedCt);
+
+            ResolvedProcessingPlan plan;
+            try
+            {
+                if (BeforePlanResolutionForTests is { } barrier) await barrier(lockedCt);
+                plan = await ResolvePlanAsync(owner, version, preferences, lockedCt);
+            }
+            catch (DomainException error)
+            {
+                state.PendingReason = error.Message;
+                state.Issues =
+                [
+                    new("processing_target_unavailable", error.Message,
+                        hasAudio ? NoteProcessingTaskKind.Asr : NoteProcessingTaskKind.Derived)
+                ];
+                _ = await processing.SaveLockedAsync(state, lockedCt);
+                if (!automatic) throw;
+                return await BuildStatusAsync(owner, version, state, autoEnabled, lockedCt);
+            }
+
+            // The standing authorization was evaluated against the target policy read before
+            // the plan resolved concrete models. Re-read it after plan creation so a concurrent
+            // profile/route/preset change cannot start a paid chain under an older policy.
+            var currentTargetPolicy = await targetPolicies.ResolveAsync(owner, lockedCt);
+            if (currentTargetPolicy.Revision != preferences.CurrentDefaultTargetRevision)
+            {
+                var message =
+                    "账号默认处理目标在生成处理计划时发生变化；请刷新处理计划后重新确认";
+                if (!automatic)
+                    throw new DomainException(40901, message);
+                state.PendingReason = message;
+                state.Issues =
+                [
+                    new("processing_target_changed", message,
+                        hasAudio ? NoteProcessingTaskKind.Asr : NoteProcessingTaskKind.Derived)
+                ];
+                _ = await processing.SaveLockedAsync(state, lockedCt);
+                return await BuildStatusAsync(owner, version, state, autoEnabled, lockedCt);
+            }
+
+            var targetMismatch = TargetMismatch(plan, asrState, derivedState, hasAudio,
+                owner, request.VersionId);
+            if (targetMismatch is not null)
+            {
+                if (!automatic)
+                    throw new DomainException(40901, targetMismatch);
+                state.PendingReason = targetMismatch;
+                state.Issues =
+                [
+                    new("processing_target_changed", targetMismatch,
+                        hasAudio ? NoteProcessingTaskKind.Asr : NoteProcessingTaskKind.Derived)
+                ];
+                _ = await processing.SaveLockedAsync(state, lockedCt);
+                return await BuildStatusAsync(owner, version, state, autoEnabled, lockedCt);
+            }
+
+            NoteProcessingAuthorizationDto authorization;
+            if (automatic)
+            {
+                authorization = Snapshot(plan, preferences.StandingAuthorizationRevision,
+                    NoteProcessingAuthorizationSource.Standing);
+            }
+            else
+            {
+                ValidateManualConsent(request.Consent, plan.Plan, preferences,
+                    state, asrCreated || derivedCreated);
+                authorization = Snapshot(plan,
+                    request.Consent?.StandingAuthorizationRevision,
+                    NoteProcessingAuthorizationSource.Manual);
+            }
+            if (state.Authorization is not null && (asrCreated || derivedCreated) &&
+                state.Authorization.AuthorizationRevision !=
+                authorization.AuthorizationRevision)
+            {
+                if (!automatic)
+                    throw new DomainException(40901,
+                        "该材料版本已按另一份授权创建处理任务，请使用原任务状态或显式重跑");
+                return await SavePendingAsync(state, "processing_authorization_changed",
+                    "处理目标、材料范围或费用提示已变化；已有任务保留，本次不会自动追加新任务",
+                    lockedCt);
+            }
+            if (state.StartedAt is not null && state.Authorization is not null &&
+                state.Authorization.AuthorizationRevision != authorization.AuthorizationRevision)
+                throw new DomainException(40901,
+                    "该材料版本已按另一份授权创建处理任务，请使用原任务状态或显式重跑");
+            state.Authorization = authorization;
+            _ = await processing.SaveLockedAsync(state, lockedCt);
+
             if (asrState is not null)
             {
                 try
                 {
-                    asrState = await asr.EnsureAttemptForOwnerAsync(owner, asrTaskId,
-                        request.VersionId, lockedCt);
+                    asrState = await asr.EnsureAttemptForOwnerAsync(owner,
+                        asrState.Request.TaskId, request.VersionId, lockedCt);
+                    state.AsrTaskId = asrState.Request.TaskId;
                 }
                 catch (DomainException error)
                 {
                     state.PendingReason = error.Message;
                     state.Issues =
                     [
-                        new("asr_attempt_recovery", error.Message, NoteProcessingTaskKind.Asr)
+                        new(AttemptRecoveryIssue, error.Message, NoteProcessingTaskKind.Asr)
                     ];
                     _ = await processing.SaveLockedAsync(state, lockedCt);
                     if (!automatic) throw;
                     return await BuildStatusAsync(owner, version, state, autoEnabled, lockedCt);
                 }
             }
-            var asrCreated = asrState is not null;
-            var derivedCreated = await TryReadDerivedAsync(owner, derivedTaskId, lockedCt) is not null;
-            if ((!hasAudio || asrCreated) && derivedCreated)
+
+            if (allRequiredCreated)
             {
-                if (state.StartedAt is null || state.PendingReason is not null ||
-                    state.Issues.Count > 0)
-                {
-                    state.PendingReason = null;
-                    state.Issues = [];
-                    state.StartedAt ??= DateTimeOffset.UtcNow;
-                    _ = await processing.SaveLockedAsync(state, lockedCt);
-                }
+                state.PendingReason = null;
+                state.Issues = [];
+                state.StartedAt ??= DateTimeOffset.UtcNow;
+                state.AutoStarted |= automatic;
+                _ = await processing.SaveLockedAsync(state, lockedCt);
                 return await BuildStatusAsync(owner, version, state, autoEnabled, lockedCt);
             }
-            if (automatic && !autoEnabled)
-                return await SavePendingAsync(state, "auto_processing_disabled",
-                    "自动笔记处理未开启；材料已完整，可在笔记处理页手动发起", lockedCt);
 
             NoteProcessingTaskKind? startingTask = null;
             try
@@ -166,14 +289,18 @@ public sealed class NoteProcessingService(
                 if (!hasAudio)
                     state.AsrRequest = null;
                 else if (!asrCreated)
-                    state.AsrRequest = await asr.BuildDefaultRequestForProcessingAsync(
-                        owner, version, lockedCt);
+                    state.AsrRequest = Confirm(plan.AsrRequest
+                        ?? throw new DomainException(40901, "ASR 处理计划缺少固定任务"));
                 if (!derivedCreated)
                 {
-                    var consent = await derived.ResolveDefaultConsentForProcessingAsync(
-                        owner, version, lockedCt);
-                    state.DerivedRequest = new StartNoteDerivedTaskRequest(derivedTaskId,
-                        owner, request.VersionId, hasAudio ? asrTaskId : null, consent);
+                    var actualAsrTaskId = asrState?.Request.TaskId
+                        ?? NoteProcessingIdentity.Task(owner, request.VersionId,
+                            NoteProcessingTaskKind.Asr);
+                    state.DerivedRequest = new StartNoteDerivedTaskRequest(
+                        NoteProcessingIdentity.Task(owner, request.VersionId,
+                            NoteProcessingTaskKind.Derived),
+                        owner, request.VersionId, hasAudio ? actualAsrTaskId : null,
+                        plan.DerivedConsent with { Confirmed = true });
                 }
                 state.PendingReason = "处理任务正在持久化入队";
                 state.Issues = [];
@@ -186,13 +313,30 @@ public sealed class NoteProcessingService(
                 if (hasAudio && !asrCreated)
                 {
                     startingTask = NoteProcessingTaskKind.Asr;
-                    _ = await asr.StartForOwnerAsync(owner, state.AsrRequest!, lockedCt);
+                    var startedAsr = await asr.StartForOwnerAsync(owner, state.AsrRequest!,
+                        lockedCt);
+                    state.AsrTaskId = startedAsr.TaskId;
+                    state.AsrRequest = state.AsrRequest! with { TaskId = startedAsr.TaskId };
+                    if (!derivedCreated && state.DerivedRequest is { } derivedRequest &&
+                        derivedRequest.AsrTaskId != startedAsr.TaskId)
+                        state.DerivedRequest = derivedRequest with
+                        {
+                            AsrTaskId = startedAsr.TaskId
+                        };
+                    _ = await processing.SaveLockedAsync(state, lockedCt);
                 }
                 if (!derivedCreated)
                 {
                     startingTask = NoteProcessingTaskKind.Derived;
-                    _ = await derived.StartForOwnerAsync(owner, state.DerivedRequest,
+                    var derivedRequest = state.DerivedRequest!;
+                    var startedDerived = await derived.StartForOwnerAsync(owner,
+                        derivedRequest,
                         waitForAsr: hasAudio, allowIncompleteAsr: false, lockedCt);
+                    state.DerivedTaskId = startedDerived.TaskId;
+                    state.DerivedRequest = derivedRequest with
+                    {
+                        TaskId = startedDerived.TaskId
+                    };
                 }
             }
             catch (DomainException error)
@@ -225,6 +369,265 @@ public sealed class NoteProcessingService(
         }, ct);
     }
 
+    private async Task<NoteAsrState?> ResolveAsrStateAsync(Guid owner,
+        NoteMaterialVersionDto version, NoteProcessingRecord state, CancellationToken ct)
+    {
+        var taskId = state.AsrTaskId ?? NoteProcessingIdentity.Task(owner,
+            version.Upload.VersionId, NoteProcessingTaskKind.Asr);
+        var value = await TryReadAsrAsync(owner, taskId, ct)
+            ?? await asrTasks.TryReadInitialForVersionAsync(owner, version.Upload.VersionId, ct);
+        if (value is not null && value.Request.ParentTaskId is null)
+            value = await asrTasks.TryReadInitialForVersionAsync(owner,
+                version.Upload.VersionId, ct) ?? value;
+        if (value is not null) state.AsrTaskId = value.Request.TaskId;
+        return value;
+    }
+
+    /// <summary>
+    /// The ASR chain already exists, so only its durable attempt may still be missing after a
+    /// crash between persisting the authorization/task and inserting the attempt. Rebuild exactly
+    /// that attempt through the ASR authority; a refusal stays fail-closed, visible and retryable
+    /// on the next compensation scan instead of silently reporting a created-but-never-dispatched
+    /// task. No child task is created here and completed material is never rewritten to pending.
+    /// </summary>
+    private async Task<NoteAsrState> RecoverExistingAsrAttemptAsync(Guid owner,
+        NoteMaterialVersionDto version, NoteProcessingRecord state, NoteAsrState asrState,
+        CancellationToken ct)
+    {
+        try
+        {
+            var recovered = await asr.EnsureAttemptForOwnerAsync(owner,
+                asrState.Request.TaskId, version.Upload.VersionId, ct);
+            state.AsrTaskId = recovered.Request.TaskId;
+            await ClearAttemptRecoveryIssueAsync(state, ct);
+            return recovered;
+        }
+        catch (DomainException error)
+        {
+            state.Issues = state.Issues
+                .Where(issue => issue.Code != AttemptRecoveryIssue)
+                .Append(new(AttemptRecoveryIssue, error.Message, NoteProcessingTaskKind.Asr))
+                .ToList();
+            _ = await processing.SaveLockedAsync(state, ct);
+            logger.LogWarning(
+                "Routed ASR task {TaskId} still has no durable attempt ({ErrorType}); the created chain remains authoritative and the recovery stays retryable",
+                asrState.Request.TaskId, error.GetType().Name);
+            return asrState;
+        }
+    }
+
+    private async Task ClearAttemptRecoveryIssueAsync(NoteProcessingRecord state,
+        CancellationToken ct)
+    {
+        if (!state.Issues.Any(issue => issue.Code == AttemptRecoveryIssue)) return;
+        state.Issues = state.Issues.Where(issue => issue.Code != AttemptRecoveryIssue).ToList();
+        _ = await processing.SaveLockedAsync(state, ct);
+    }
+
+    private async Task<NoteDerivedTaskState?> ResolveDerivedStateAsync(Guid owner,
+        NoteMaterialVersionDto version, NoteProcessingRecord state, CancellationToken ct)
+    {
+        var taskId = state.DerivedTaskId ?? NoteProcessingIdentity.Task(owner,
+            version.Upload.VersionId, NoteProcessingTaskKind.Derived);
+        var value = await TryReadDerivedAsync(owner, taskId, ct)
+            ?? await derivedTasks.TryReadInitialForVersionAsync(owner,
+                version.Upload.VersionId, ct);
+        if (value is not null)
+            value = await derivedTasks.TryReadInitialForVersionAsync(owner,
+                version.Upload.VersionId, ct) ?? value;
+        if (value is not null) state.DerivedTaskId = value.Request.TaskId;
+        return value;
+    }
+
+    public async Task<NoteProcessingPlanDto> PlanAsync(Guid noteId, Guid versionId,
+        CancellationToken ct)
+    {
+        var owner = await RequireActiveOwnerAsync(ct);
+        var version = await materials.GetAsync(owner, versionId, ct);
+        if (version.Upload.NoteId != noteId)
+            throw new DomainException(40401, "材料版本不存在或不属于当前笔记");
+        var preferences = await PreferencesAsync(owner, ct);
+        return RedactPlan((await ResolvePlanAsync(owner, version, preferences, ct)).Plan);
+    }
+
+    private async Task<ResolvedProcessingPlan> ResolvePlanAsync(Guid owner,
+        NoteMaterialVersionDto version, NoteProcessingPreferencesDto preferences,
+        CancellationToken ct)
+    {
+        var hasAudio = HasAudio(version);
+        var asrRequest = hasAudio
+            ? await asr.BuildDefaultRequestForProcessingAsync(owner, version,
+                confirmed: false, ct)
+            : null;
+        var derivedConsent = await derived.ResolveDefaultConsentForProcessingAsync(
+            owner, version, confirmed: false, ct);
+
+        var modelIds = new[] { asrRequest?.Consent?.ModelId, derivedConsent.ModelId }
+            .Where(id => id.HasValue).Select(id => id!.Value).Distinct().ToArray();
+        var profiles = await db.AiModelProfiles.AsNoTracking()
+            .Where(x => modelIds.Contains(x.Id))
+            .Select(x => new { x.Id, x.Name, x.Model })
+            .ToDictionaryAsync(x => x.Id, ct);
+        var routeConfig = asrRequest?.Route?.Route == NoteAsrRoute.Local
+            ? await db.NoteAsrRouteConfigs.AsNoTracking()
+                .SingleOrDefaultAsync(x => x.OwnerId == owner, ct)
+            : null;
+
+        var targets = new List<NoteProcessingTargetDto>(2);
+        if (asrRequest is not null)
+        {
+            var consent = asrRequest.Consent;
+            var route = asrRequest.Route?.Route;
+            var local = route == NoteAsrRoute.Local;
+            profiles.TryGetValue(consent?.ModelId ?? Guid.Empty, out var profile);
+            targets.Add(new(NoteProcessingTaskKind.Asr, true, consent is not null,
+                consent?.ModelId,
+                consent?.ModelRevision ?? LocalModelRevision(routeConfig),
+                profile?.Name ?? (local ? routeConfig?.LocalModelId : null),
+                profile?.Model ?? (local ? routeConfig?.LocalModelId : null),
+                consent?.Endpoint, route, asrRequest.Route?.ExecutionMode,
+                consent?.PresetId, consent?.PresetVersion,
+                asrRequest.Route?.ConfigRevision, asrRequest.Route?.ConsentVersion));
+        }
+        profiles.TryGetValue(derivedConsent.ModelId, out var derivedProfile);
+        targets.Add(new(NoteProcessingTaskKind.Derived, true, true,
+            derivedConsent.ModelId, derivedConsent.ModelRevision,
+            derivedProfile?.Name, derivedProfile?.Model, derivedConsent.Endpoint,
+            "cloud", NoteAsrExecutionMode.Realtime, null, null, null, null));
+
+        var possibleCharge = targets.Any(target => target.Paid);
+        var materialScopeText = hasAudio
+            ? NoteProcessingAuthorizationPurpose.MaterialScopeText
+            : "当前固定版本的全部材料（正文、图片与手写）";
+        var revision = AuthorizationRevision(owner, version.Upload.VersionId, targets,
+            possibleCharge, materialScopeText);
+        var standingRevision = preferences.StandingAuthorizationValid
+            ? preferences.StandingAuthorizationRevision
+            : null;
+        var plan = new NoteProcessingPlanDto(version.Upload.NoteId, version.Upload.VersionId,
+            NoteProcessingAuthorizationPurpose.NativeNoteProcessing,
+            NoteProcessingAuthorizationPurpose.PurposeText,
+            NoteProcessingAuthorizationPurpose.MaterialScope, materialScopeText,
+            NoteProcessingAuthorizationRules.CostNotice, possibleCharge, revision,
+            standingRevision, preferences.StandingAuthorizationValid,
+            hasAudio, targets);
+        return new(asrRequest, derivedConsent, plan);
+    }
+
+    private static void ValidateManualConsent(NoteProcessingConsent? consent,
+        NoteProcessingPlanDto plan, NoteProcessingPreferencesDto preferences,
+        NoteProcessingRecord state, bool anyTaskCreated)
+    {
+        if (consent is null)
+            throw new DomainException(40001,
+                "发起处理前必须核对处理目标、材料范围、费用提示与授权 revision");
+        if (!consent.Confirmed || !consent.PossibleChargeAcknowledged)
+            throw new DomainException(40001,
+                "请明确确认处理目标、材料范围，并知悉云端处理可能产生费用");
+        if (!string.Equals(consent.Purpose, plan.Purpose, StringComparison.Ordinal) ||
+            !string.Equals(consent.MaterialScope, plan.MaterialScope, StringComparison.Ordinal) ||
+            !string.Equals(consent.CostNotice, plan.CostNotice, StringComparison.Ordinal) ||
+            consent.AuthorizationRevision != plan.AuthorizationRevision)
+            throw new DomainException(40901,
+                "处理目标、材料范围或费用提示已变化，请刷新处理计划后重新确认");
+        if (consent.StandingAuthorizationRevision is { } standing &&
+            (!preferences.StandingAuthorizationValid ||
+             standing != preferences.StandingAuthorizationRevision))
+            throw new DomainException(40901, "持续授权已变化，请刷新后重新确认");
+        if (state.Authorization is not null && anyTaskCreated &&
+            state.Authorization.AuthorizationRevision != plan.AuthorizationRevision)
+            throw new DomainException(40901,
+                "该材料版本已按另一份授权创建处理任务，请使用原任务状态或显式重跑");
+    }
+
+    private static NoteProcessingAuthorizationDto Snapshot(ResolvedProcessingPlan plan,
+        Guid? standingAuthorizationRevision, string source) =>
+        new(plan.Plan.Purpose, plan.Plan.PurposeText, plan.Plan.MaterialScope,
+            plan.Plan.MaterialScopeText, plan.Plan.CostNotice, plan.Plan.PossibleCharge,
+            Confirmed: true, PossibleChargeAcknowledged: true,
+            plan.Plan.AuthorizationRevision, standingAuthorizationRevision, source,
+            plan.Plan.Targets);
+
+    private static string? TargetMismatch(ResolvedProcessingPlan plan, NoteAsrState? asrState,
+        NoteDerivedTaskState? derivedState, bool hasAudio, Guid owner, Guid versionId)
+    {
+        if (asrState is not null && plan.AsrRequest is not null &&
+            !SameAsrTarget(plan.AsrRequest, asrState.Request))
+            return "已有转写任务使用了不同的处理目标；原任务保留，本次不会追加新任务";
+        if (derivedState is null) return null;
+        Guid? plannedAsrTaskId = hasAudio
+            ? asrState?.Request.TaskId ?? NoteProcessingIdentity.Task(owner, versionId,
+                NoteProcessingTaskKind.Asr)
+            : null;
+        return derivedState.Request.VersionId == versionId &&
+               derivedState.Request.AsrTaskId == plannedAsrTaskId &&
+               Unconfirmed(derivedState.Request.Consent) == Unconfirmed(plan.DerivedConsent)
+            ? null
+            : "已有整理任务使用了不同的处理目标；原任务保留，本次不会追加新任务";
+    }
+
+    private static bool SameAsrTarget(StartNoteAsrRequest planned,
+        StartNoteAsrRequest existing) =>
+        planned.VersionId == existing.VersionId &&
+        planned.ExpectedUserId == existing.ExpectedUserId &&
+        string.Equals(planned.Language, existing.Language, StringComparison.Ordinal) &&
+        Unconfirmed(planned.Consent) == Unconfirmed(existing.Consent) &&
+        Unconfirmed(planned.Route) == Unconfirmed(existing.Route);
+
+    private static AiAsrDestinationConsent? Unconfirmed(AiAsrDestinationConsent? consent) =>
+        consent is null ? null : consent with { Confirmed = false };
+
+    private static NoteAsrRouteConsent? Unconfirmed(NoteAsrRouteConsent? route) =>
+        route is null ? null : route with { Confirmed = false };
+
+    private static NoteDerivedGenerationConsent Unconfirmed(
+        NoteDerivedGenerationConsent consent) =>
+        consent with { Confirmed = false };
+
+    private static StartNoteAsrRequest Confirm(StartNoteAsrRequest request) =>
+        request with
+        {
+            Consent = request.Consent is null
+                ? null
+                : request.Consent with { Confirmed = true },
+            Route = request.Route is null
+                ? null
+                : request.Route with { Confirmed = true }
+        };
+
+    private static Guid? LocalModelRevision(
+        Pim.Infrastructure.Data.Entities.NoteAsrRouteConfigEntity? config) =>
+        Guid.TryParse(config?.LocalModelRevision, out var revision) ? revision : null;
+
+    private static Guid AuthorizationRevision(Guid owner, Guid versionId,
+        IReadOnlyList<NoteProcessingTargetDto> targets, bool possibleCharge,
+        string materialScopeText)
+    {
+        var payload = JsonSerializer.Serialize(new
+        {
+            owner,
+            versionId,
+            purpose = NoteProcessingAuthorizationPurpose.NativeNoteProcessing,
+            purposeText = NoteProcessingAuthorizationPurpose.PurposeText,
+            materialScope = NoteProcessingAuthorizationPurpose.MaterialScope,
+            materialScopeText,
+            costNotice = NoteProcessingAuthorizationRules.CostNotice,
+            possibleCharge,
+            targets
+        });
+        var bytes = System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes(payload));
+        var identity = bytes.AsSpan(0, 16).ToArray();
+        identity[6] = (byte)((identity[6] & 0x0f) | 0x50);
+        identity[8] = (byte)((identity[8] & 0x3f) | 0x80);
+        return new Guid(identity);
+    }
+
+    private sealed record ResolvedProcessingPlan(
+        StartNoteAsrRequest? AsrRequest,
+        NoteDerivedGenerationConsent DerivedConsent,
+        NoteProcessingPlanDto Plan);
+
     private async Task<NoteProcessingStatusDto> GetForOwnerAsync(Guid owner, Guid noteId,
         Guid versionId, CancellationToken ct)
     {
@@ -232,7 +635,7 @@ public sealed class NoteProcessingService(
         var version = await materials.GetAsync(owner, versionId, ct);
         if (version.Upload.NoteId != noteId)
             throw new DomainException(40401, "材料版本不存在或不属于当前笔记");
-        var autoEnabled = await AutoEnabledAsync(owner, ct);
+        var autoEnabled = (await PreferencesAsync(owner, ct)).AutoProcessingEnabled;
         var state = await processing.TryReadAsync(owner,
             NoteProcessingIdentity.Processing(owner, versionId), ct);
         return await BuildStatusAsync(owner, version, state, autoEnabled, ct);
@@ -254,15 +657,47 @@ public sealed class NoteProcessingService(
         CancellationToken ct)
     {
         var hasAudio = HasAudio(version);
-        var asrTaskId = NoteProcessingIdentity.Task(owner, version.Upload.VersionId,
-            NoteProcessingTaskKind.Asr);
-        var derivedTaskId = NoteProcessingIdentity.Task(owner, version.Upload.VersionId,
-            NoteProcessingTaskKind.Derived);
+        var asrTaskId = state?.AsrTaskId ?? NoteProcessingIdentity.Task(owner,
+            version.Upload.VersionId, NoteProcessingTaskKind.Asr);
+        var derivedTaskId = state?.DerivedTaskId ?? NoteProcessingIdentity.Task(owner,
+            version.Upload.VersionId, NoteProcessingTaskKind.Derived);
         var asrState = hasAudio ? await TryReadAsrAsync(owner, asrTaskId, ct) : null;
         var derivedState = await TryReadDerivedAsync(owner, derivedTaskId, ct);
-        var asrChain = await DescribeAsrAsync(owner, asrState, hasAudio, version, state, ct);
-        var derivedChain = await DescribeDerivedAsync(owner, derivedState, hasAudio, asrState,
-            version, state, ct);
+        if (hasAudio && asrState is null)
+        {
+            asrState = await asrTasks.TryReadInitialForVersionAsync(owner,
+                version.Upload.VersionId, ct);
+            if (asrState is not null) asrTaskId = asrState.Request.TaskId;
+        }
+        if (derivedState is null)
+        {
+            derivedState = await derivedTasks.TryReadInitialForVersionAsync(owner,
+                version.Upload.VersionId, ct);
+            if (derivedState is not null) derivedTaskId = derivedState.Request.TaskId;
+        }
+        if (asrState is not null && asrState.Request.ParentTaskId is null)
+        {
+            var canonicalAsr = await asrTasks.TryReadInitialForVersionAsync(owner,
+                version.Upload.VersionId, ct);
+            if (canonicalAsr is not null)
+            {
+                asrState = canonicalAsr;
+                asrTaskId = canonicalAsr.Request.TaskId;
+            }
+        }
+        if (derivedState is not null)
+        {
+            var canonicalDerived = await derivedTasks.TryReadInitialForVersionAsync(owner,
+                version.Upload.VersionId, ct);
+            if (canonicalDerived is not null)
+            {
+                derivedState = canonicalDerived;
+                derivedTaskId = canonicalDerived.Request.TaskId;
+            }
+        }
+        var asrChain = await DescribeAsrAsync(asrTaskId, asrState, hasAudio, version, state, ct);
+        var derivedChain = await DescribeDerivedAsync(derivedTaskId, derivedState, hasAudio,
+            asrState, version, state, ct);
         var artifacts = await ArtifactsAsync(owner, derivedState, ct);
         var allRequiredCreated = (!hasAudio || asrState is not null) && derivedState is not null;
         var pendingReason = PendingReason(version, state, autoEnabled, allRequiredCreated);
@@ -280,16 +715,28 @@ public sealed class NoteProcessingService(
             state?.AutoStarted == true,
             version.Upload.Phase != "Uploading" && !allRequiredCreated, FullVersionScope,
             IncrementalScopeSupported: false, pendingReason, asrChain, derivedChain,
-            artifacts, issues, created, updated);
+            artifacts, issues, created, updated,
+            state?.Authorization is null ? null : RedactAuthorization(state.Authorization));
     }
 
-    private async Task<NoteProcessingChainDto> DescribeAsrAsync(Guid owner, NoteAsrState? task,
-        bool required, NoteMaterialVersionDto version, NoteProcessingRecord? processing,
-        CancellationToken ct)
+    private NoteProcessingPlanDto RedactPlan(NoteProcessingPlanDto plan) =>
+        plan with { Targets = RedactTargets(plan.Targets) };
+
+    private NoteProcessingAuthorizationDto RedactAuthorization(
+        NoteProcessingAuthorizationDto authorization) =>
+        authorization with { Targets = RedactTargets(authorization.Targets) };
+
+    private IReadOnlyList<NoteProcessingTargetDto> RedactTargets(
+        IReadOnlyList<NoteProcessingTargetDto> targets) =>
+        string.Equals(user.Role, AdminBootstrap.AdminRole, StringComparison.Ordinal)
+            ? targets
+            : targets.Select(target => target with { Endpoint = null }).ToArray();
+
+    private async Task<NoteProcessingChainDto> DescribeAsrAsync(Guid taskId,
+        NoteAsrState? task, bool required, NoteMaterialVersionDto version,
+        NoteProcessingRecord? processing, CancellationToken ct)
     {
         await Task.CompletedTask;
-        var taskId = NoteProcessingIdentity.Task(owner, version.Upload.VersionId,
-            NoteProcessingTaskKind.Asr);
         if (!required)
             return new(NoteProcessingTaskKind.Asr, NoteProcessingChainState.NotApplicable,
                 null, false, null, null, 0, 0, 0, false, [], null);
@@ -320,14 +767,12 @@ public sealed class NoteProcessingService(
             errors, null);
     }
 
-    private async Task<NoteProcessingChainDto> DescribeDerivedAsync(Guid owner,
+    private async Task<NoteProcessingChainDto> DescribeDerivedAsync(Guid taskId,
         NoteDerivedTaskState? task, bool hasAudio, NoteAsrState? asrTask,
         NoteMaterialVersionDto version, NoteProcessingRecord? processing,
         CancellationToken ct)
     {
         await Task.CompletedTask;
-        var taskId = NoteProcessingIdentity.Task(owner, version.Upload.VersionId,
-            NoteProcessingTaskKind.Derived);
         if (task is null)
         {
             var state = NoteProcessingChainState.PendingStart;
@@ -400,9 +845,12 @@ public sealed class NoteProcessingService(
     {
         if (version.Upload.Phase == "Uploading")
             return "材料尚未完整，等待所有分块回执";
+        // A stored pending explanation must never override chains that already exist.
+        // Otherwise a later target/consent drift scan would report a running or completed
+        // material as "not started".
+        if (allRequiredCreated) return null;
         if (!string.IsNullOrWhiteSpace(state?.PendingReason))
             return state.PendingReason;
-        if (allRequiredCreated) return null;
         if (!autoEnabled && state?.StartedAt is null)
             return "自动笔记处理未开启；材料已完整，可在笔记处理页手动发起";
         return "材料已完整，处理任务尚未发起";
@@ -475,11 +923,22 @@ public sealed class NoteProcessingService(
         return redacted.Length <= 500 ? redacted : redacted[..500];
     }
 
-    private Task<bool> AutoEnabledAsync(Guid owner, CancellationToken ct) =>
-        db.NoteProcessingPreferences.AsNoTracking()
-            .Where(x => x.OwnerId == owner)
-            .Select(x => x.AutoNoteProcessingEnabled)
-            .SingleOrDefaultAsync(ct);
+    private async Task<NoteProcessingPreferencesDto> PreferencesAsync(Guid owner,
+        CancellationToken ct)
+    {
+        var config = await db.NoteProcessingPreferences.AsNoTracking()
+            .SingleOrDefaultAsync(x => x.OwnerId == owner, ct);
+        var targetPolicy = await targetPolicies.ResolveAsync(owner, ct);
+        return config is null
+            ? new NoteProcessingPreferencesDto(Guid.Empty, false, null,
+                NoteProcessingAuthorizationPurpose.NativeNoteProcessing,
+                NoteProcessingAuthorizationPurpose.PurposeText,
+                NoteProcessingAuthorizationPurpose.MaterialScope,
+                NoteProcessingAuthorizationPurpose.MaterialScopeText,
+                NoteProcessingAuthorizationRules.CostNotice, false, false,
+                targetPolicy.Revision, null, targetPolicy.Descriptions)
+            : NoteProcessingPreferencesService.Describe(config, targetPolicy);
+    }
 
     private Task<bool> IsActiveOwnerAsync(Guid owner, CancellationToken ct) =>
         db.Users.AsNoTracking().AnyAsync(x => x.Id == owner && x.IsActive, ct);

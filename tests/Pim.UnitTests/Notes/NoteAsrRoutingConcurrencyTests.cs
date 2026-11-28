@@ -22,18 +22,22 @@ using Xunit;
 namespace Pim.UnitTests.Notes;
 
 /// <summary>
-/// Real relational concurrency proof for #516 phase 1. Requires a disposable synthetic
-/// PostgreSQL cluster via PIM_ASR516_PG; never points at production or pim_test.
+/// Real relational concurrency proof for #516 phase 1. Prefers a disposable synthetic
+/// PostgreSQL cluster via PIM_ASR516_PG; otherwise uses the CI-owned PIM_TEST_CONN database.
+/// Never points at production.
 /// </summary>
+[Collection("NoteAsrRoutingConcurrencyPg")]
 public sealed class NoteAsrRoutingConcurrencyTests
 {
     private static readonly string StorageRoot = Path.Combine(Path.GetTempPath(), "pim-asr516-tests");
-    private static string? ConnectionString => Environment.GetEnvironmentVariable("PIM_ASR516_PG");
+    private static string? ConnectionString =>
+        Environment.GetEnvironmentVariable("PIM_ASR516_PG") ??
+        Environment.GetEnvironmentVariable("PIM_TEST_CONN");
 
     [SkippableFact]
     public async Task Local_evidence_without_matching_receipt_never_counts_as_success()
     {
-        Skip.If(string.IsNullOrWhiteSpace(ConnectionString), "PIM_ASR516_PG is not configured");
+        Skip.If(string.IsNullOrWhiteSpace(ConnectionString), "No test PostgreSQL connection is configured");
         var owner = Guid.NewGuid();
         var nodeA = Guid.NewGuid();
         var attemptId = await SeedAsync(owner, nodeA, Guid.NewGuid());
@@ -84,7 +88,7 @@ public sealed class NoteAsrRoutingConcurrencyTests
     [SkippableFact]
     public async Task Local_partial_retry_reissues_only_missing_segments_and_keeps_cross_fence_proof()
     {
-        Skip.If(string.IsNullOrWhiteSpace(ConnectionString), "PIM_ASR516_PG is not configured");
+        Skip.If(string.IsNullOrWhiteSpace(ConnectionString), "No test PostgreSQL connection is configured");
         var owner = Guid.NewGuid();
         var nodeA = Guid.NewGuid();
         var options = Options.Create(new NoteMaterialUploadOptions { StorageRoot = StorageRoot });
@@ -700,18 +704,20 @@ public sealed class NoteAsrRoutingConcurrencyTests
             await db.NoteAsrLeases.Where(x => x.Id == oldClaim.LeaseId).ExecuteUpdateAsync(setters => setters
                 .SetProperty(x => x.ExpiresAt, DateTimeOffset.UtcNow.AddSeconds(-1)));
             var taskId = Guid.NewGuid();
+            var versionId = Guid.NewGuid();
             newAttemptId = Guid.NewGuid();
             db.NoteAsrAttempts.Add(new NoteAsrAttemptEntity
             {
                 Id = newAttemptId, OwnerId = owner, TaskId = taskId, NoteId = oldAttempt.NoteId,
-                VersionId = oldAttempt.VersionId, InputSha256 = oldAttempt.InputSha256,
+                VersionId = versionId, InputSha256 = oldAttempt.InputSha256,
                 Route = NoteAsrRoute.Local, State = "Queued", Language = oldAttempt.Language,
                 ExpectedSegments = oldAttempt.ExpectedSegments, LocalModelId = oldAttempt.LocalModelId,
                 LocalModelRevision = oldAttempt.LocalModelRevision, ConfigRevision = oldAttempt.ConfigRevision,
                 ConsentVersion = oldAttempt.ConsentVersion, CreatedAt = oldAttempt.CreatedAt.AddSeconds(1)
             });
             await db.SaveChangesAsync();
-            await WriteTaskStateAsync(owner, taskId, oldAttempt.VersionId, oldAttempt.NoteId, oldAttempt.InputSha256);
+            await WriteTaskStateAsync(owner, taskId, versionId, oldAttempt.NoteId,
+                oldAttempt.InputSha256, newAttemptId);
         }
 
         NoteAsrClaimDto next;
@@ -833,7 +839,7 @@ public sealed class NoteAsrRoutingConcurrencyTests
                     new ConfigurationBuilder().Build(), new PassthroughSecrets(), routing);
                 var version = await materials.GetAsync(owner, material.VersionId, CancellationToken.None);
                 var request = await service.BuildDefaultRequestForProcessingAsync(owner, version,
-                    CancellationToken.None);
+                    confirmed: true, CancellationToken.None);
                 Assert.Equal(NoteAsrRoute.CloudMultimodal, request.Route?.Route);
                 Assert.Equal<Guid?>(multimodalId, request.Consent?.ModelId);
             }
@@ -929,6 +935,7 @@ public sealed class NoteAsrRoutingConcurrencyTests
                 new AiAsrDestinationConsent(Guid.NewGuid(), Guid.NewGuid(), "synthetic", "local", "1", true), "zh"),
             Fingerprint = new string('e', 64), NoteId = material.NoteId, InputSha256 = inputSha,
             ManifestSha256 = NoteMaterialManifestValidator.Hash(material.Request.ManifestJson),
+            AttemptId = attemptId,
             Steps =
             [
                 new NoteAsrStep
@@ -1275,13 +1282,15 @@ public sealed class NoteAsrRoutingConcurrencyTests
     {
         Skip.If(string.IsNullOrWhiteSpace(ConnectionString), "PIM_ASR516_PG is not configured");
         var owner = Guid.NewGuid();
-        await CleanupAsync(owner);
+        // The premise is "no cloud profile/runtime/key at all", which cannot hold on the shared
+        // CI database where other Notes suites keep a global runtime row. Use a fresh database.
+        await using var isolated = await IsolatedPostgresDatabase.CreateAsync();
         var options = Options.Create(new NoteMaterialUploadOptions { StorageRoot = StorageRoot });
         var materials = new NoteMaterialUploadStore(options);
         var tasks = new NoteAsrTaskStore(options);
         var material = NoteDerivedFixture.CreateMaterial(audioSamples: 1_000);
         await NoteDerivedFixture.UploadAsync(materials, owner, material);
-        await using (var db = NewDb(owner))
+        await using (var db = NewDbWithConnection(owner, isolated.ConnectionString))
         {
             await db.Database.EnsureCreatedAsync();
             await db.Users.AddAsync(NewUser(owner));
@@ -1290,7 +1299,7 @@ public sealed class NoteAsrRoutingConcurrencyTests
         // Give the account an invalid cloud default and no profile/runtime/key at all: an explicit
         // local override must still work from local model configuration alone.
         var configRevision = Guid.NewGuid();
-        await using (var db = NewDb(owner))
+        await using (var db = NewDbWithConnection(owner, isolated.ConnectionString))
         {
             db.NoteAsrRouteConfigs.Add(new NoteAsrRouteConfigEntity
             {
@@ -1304,7 +1313,7 @@ public sealed class NoteAsrRoutingConcurrencyTests
         var request = new StartNoteAsrRequest(taskId, owner, material.Request.VersionId, null, "zh",
             new NoteAsrRouteConsent(NoteAsrRoute.Local, configRevision, "consent-local", true));
         NoteAsrTaskDto started;
-        await using (var db = NewDb(owner))
+        await using (var db = NewDbWithConnection(owner, isolated.ConnectionString))
         {
             var service = new NoteAsrService(tasks, materials, db, new FixedUser(owner),
                 new AiAsrPresetRegistry(Array.Empty<IAiAsrPreset>()), new ConfigurationBuilder().Build(),
@@ -1359,7 +1368,7 @@ public sealed class NoteAsrRoutingConcurrencyTests
             Assert.Equal(beforeReject.Steps[0].Current.Status, afterReject.Steps[0].Current.Status);
             Assert.Equal(beforeReject.Steps[0].Attempts.Count, afterReject.Steps[0].Attempts.Count);
         }
-        await CleanupAsync(owner);
+        await CleanupAsync(owner, isolated.ConnectionString);
     }
 
     [SkippableFact]
@@ -1510,17 +1519,18 @@ public sealed class NoteAsrRoutingConcurrencyTests
             wrong.LocalModelId = "other-model";
             compatibleAttemptId = Guid.NewGuid();
             compatibleTaskId = Guid.NewGuid();
+            var compatibleVersionId = Guid.NewGuid();
             db.NoteAsrAttempts.Add(new NoteAsrAttemptEntity
             {
                 Id = compatibleAttemptId, OwnerId = owner, TaskId = compatibleTaskId, NoteId = wrong.NoteId,
-                VersionId = wrong.VersionId, InputSha256 = wrong.InputSha256, Route = NoteAsrRoute.Local,
+                VersionId = compatibleVersionId, InputSha256 = wrong.InputSha256, Route = NoteAsrRoute.Local,
                 State = "Queued", Language = "zh", ExpectedSegments = wrong.ExpectedSegments,
                 LocalModelId = "local-model", LocalModelRevision = "r1", ConfigRevision = wrong.ConfigRevision,
                 ConsentVersion = wrong.ConsentVersion, CreatedAt = wrong.CreatedAt.AddSeconds(1)
             });
             await db.SaveChangesAsync();
-            await WriteTaskStateAsync(owner, compatibleTaskId, wrong.VersionId, wrong.NoteId,
-                wrong.InputSha256);
+            await WriteTaskStateAsync(owner, compatibleTaskId, compatibleVersionId, wrong.NoteId,
+                wrong.InputSha256, compatibleAttemptId);
         }
         NoteAsrClaimDto claim;
         await using (var db = NewDb(owner))
@@ -1549,17 +1559,18 @@ public sealed class NoteAsrRoutingConcurrencyTests
                 poisoned.TaskId.ToString("D") + ".json"));
             compatibleId = Guid.NewGuid();
             compatibleTaskId = Guid.NewGuid();
+            var compatibleVersionId = Guid.NewGuid();
             db.NoteAsrAttempts.Add(new NoteAsrAttemptEntity
             {
                 Id = compatibleId, OwnerId = owner, TaskId = compatibleTaskId, NoteId = poisoned.NoteId,
-                VersionId = poisoned.VersionId, InputSha256 = poisoned.InputSha256, Route = NoteAsrRoute.Local,
+                VersionId = compatibleVersionId, InputSha256 = poisoned.InputSha256, Route = NoteAsrRoute.Local,
                 State = "Queued", Language = "zh", ExpectedSegments = poisoned.ExpectedSegments,
                 LocalModelId = "local-model", LocalModelRevision = "r1", ConfigRevision = poisoned.ConfigRevision,
                 ConsentVersion = poisoned.ConsentVersion, CreatedAt = poisoned.CreatedAt.AddSeconds(1)
             });
             await db.SaveChangesAsync();
-            await WriteTaskStateAsync(owner, compatibleTaskId, poisoned.VersionId, poisoned.NoteId,
-                poisoned.InputSha256);
+            await WriteTaskStateAsync(owner, compatibleTaskId, compatibleVersionId, poisoned.NoteId,
+                poisoned.InputSha256, compatibleId);
         }
 
         NoteAsrClaimDto claim;
@@ -1680,6 +1691,631 @@ public sealed class NoteAsrRoutingConcurrencyTests
         await CleanupAsync(owner);
     }
 
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Create_attempt_rejects_non_canonical_duplicate_without_writing(bool hasExistingAttempt)
+    {
+        Skip.If(string.IsNullOrWhiteSpace(ConnectionString), "PIM_ASR516_PG is not configured");
+        var owner = Guid.NewGuid();
+        await CleanupAsync(owner);
+        var options = Options.Create(new NoteMaterialUploadOptions { StorageRoot = StorageRoot });
+        var materials = new NoteMaterialUploadStore(options);
+        var tasks = new NoteAsrTaskStore(options);
+        var material = NoteDerivedFixture.CreateMaterial(audioSamples: 1_000);
+        await NoteDerivedFixture.UploadAsync(materials, owner, material);
+        var version = await materials.GetAsync(owner, material.Request.VersionId, CancellationToken.None);
+        var steps = NoteAsrPlan.Build(version);
+        var inputSha = NoteMaterialManifestValidator.Hash(version.InputJson);
+        var revision = Guid.NewGuid();
+        await SeedActiveOwnerAsync(owner, revision, "consent-local");
+
+        var canonicalTaskId = Guid.NewGuid();
+        var duplicateTaskId = Guid.NewGuid();
+        var canonical = NewTaskState(owner, canonicalTaskId, material.NoteId,
+            material.Request.VersionId, inputSha, CloneSteps(steps), DateTimeOffset.UtcNow.AddMinutes(-2),
+            route: NoteAsrRoute.Local, routeRevision: revision, routeConsent: "consent-local");
+        var duplicateAttemptId = Guid.NewGuid();
+        var duplicate = NewTaskState(owner, duplicateTaskId, material.NoteId,
+            material.Request.VersionId, inputSha, CloneSteps(steps), DateTimeOffset.UtcNow.AddMinutes(-1),
+            attemptId: hasExistingAttempt ? duplicateAttemptId : null,
+            route: NoteAsrRoute.Local, routeRevision: revision, routeConsent: "consent-local");
+        await WriteTaskStateAsync(canonical);
+        await WriteTaskStateAsync(duplicate);
+        await WriteChainAsync(owner, material.Request.VersionId, canonicalTaskId);
+
+        if (hasExistingAttempt)
+        {
+            await using var seed = NewDb(owner);
+            seed.NoteAsrAttempts.Add(LocalAttempt(owner, duplicateAttemptId, duplicateTaskId,
+                material.NoteId, material.Request.VersionId, inputSha, steps.Count));
+            await seed.SaveChangesAsync();
+        }
+
+        await using var db = NewDb(owner);
+        var error = await Assert.ThrowsAsync<DomainException>(() =>
+            NewService(db, owner).CreateAttemptAsync(duplicateTaskId, material.Request.VersionId,
+                steps.Count, "zh", new NoteAsrRouteConsent(NoteAsrRoute.Local, revision,
+                    "consent-local", true, NoteAsrExecutionMode.Realtime), CancellationToken.None));
+        Assert.Equal(40901, error.ErrorCode);
+
+        await using var check = NewDb(owner);
+        Assert.Equal(hasExistingAttempt ? 1 : 0, await check.NoteAsrAttempts.CountAsync(x =>
+            x.OwnerId == owner && x.TaskId == duplicateTaskId));
+        Assert.Equal(0, await check.NoteAsrLeases.CountAsync(x => x.OwnerId == owner));
+        Assert.Equal(0, await check.NoteAsrBatchJobs.CountAsync(x => x.OwnerId == owner));
+        Assert.Equal(0, await check.AiRequestLogs.CountAsync(x => x.UserId == owner));
+        var after = await tasks.ReadAsync(owner, duplicateTaskId, CancellationToken.None);
+        Assert.Equal(duplicate.Revision, after.Revision);
+        await CleanupAsync(owner);
+    }
+
+    [SkippableFact]
+    public async Task Create_attempt_rejects_stale_route_consent_version_without_writing()
+    {
+        Skip.If(string.IsNullOrWhiteSpace(ConnectionString), "PIM_ASR516_PG is not configured");
+        var owner = Guid.NewGuid();
+        await CleanupAsync(owner);
+        var options = Options.Create(new NoteMaterialUploadOptions { StorageRoot = StorageRoot });
+        var materials = new NoteMaterialUploadStore(options);
+        var tasks = new NoteAsrTaskStore(options);
+        var material = NoteDerivedFixture.CreateMaterial(audioSamples: 1_000);
+        await NoteDerivedFixture.UploadAsync(materials, owner, material);
+        var version = await materials.GetAsync(owner, material.Request.VersionId, CancellationToken.None);
+        var steps = NoteAsrPlan.Build(version);
+        var inputSha = NoteMaterialManifestValidator.Hash(version.InputJson);
+        var revision = Guid.NewGuid();
+        await SeedActiveOwnerAsync(owner, revision, "consent-local-v1");
+        var taskId = Guid.NewGuid();
+        var state = NewTaskState(owner, taskId, material.NoteId, material.Request.VersionId,
+            inputSha, CloneSteps(steps), route: NoteAsrRoute.Local, routeRevision: revision,
+            routeConsent: "consent-local-v1");
+        await WriteTaskStateAsync(state);
+        await WriteChainAsync(owner, material.Request.VersionId, taskId);
+
+        await using (var db = NewDb(owner))
+        {
+            var config = await db.NoteAsrRouteConfigs.SingleAsync(x => x.OwnerId == owner);
+            config.ConsentVersion = "consent-local-v2";
+            await db.SaveChangesAsync();
+        }
+
+        await using var serviceDb = NewDb(owner);
+        var staleConsent = await Assert.ThrowsAsync<DomainException>(() =>
+            NewService(serviceDb, owner).CreateAttemptAsync(taskId, material.Request.VersionId,
+                steps.Count, "zh", new NoteAsrRouteConsent(NoteAsrRoute.Local, revision,
+                    "consent-local-v1", true, NoteAsrExecutionMode.Realtime), CancellationToken.None));
+        Assert.Equal(40901, staleConsent.ErrorCode);
+        // The task itself froze consent-local-v1. Supplying the new route consent must not let the
+        // old task start under a newer route policy.
+        await using var newerServiceDb = NewDb(owner);
+        var newerConsent = await Assert.ThrowsAsync<DomainException>(() =>
+            NewService(newerServiceDb, owner).CreateAttemptAsync(taskId, material.Request.VersionId,
+                steps.Count, "zh", new NoteAsrRouteConsent(NoteAsrRoute.Local, revision,
+                    "consent-local-v2", true, NoteAsrExecutionMode.Realtime), CancellationToken.None));
+        Assert.Equal(40901, newerConsent.ErrorCode);
+        await using var check = NewDb(owner);
+        Assert.Equal(0, await check.NoteAsrAttempts.CountAsync(x =>
+            x.OwnerId == owner && x.TaskId == taskId));
+        Assert.Equal(0, await check.NoteAsrLeases.CountAsync(x => x.OwnerId == owner));
+        Assert.Equal(0, await check.NoteAsrBatchJobs.CountAsync(x => x.OwnerId == owner));
+        Assert.Equal(0, await check.AiRequestLogs.CountAsync(x => x.UserId == owner));
+        Assert.Equal(state.Revision,
+            (await tasks.ReadAsync(owner, taskId, CancellationToken.None)).Revision);
+        await CleanupAsync(owner);
+    }
+
+    [SkippableFact]
+    public async Task Renew_rejects_predeployment_non_canonical_lease_and_revokes_attempt()
+    {
+        Skip.If(string.IsNullOrWhiteSpace(ConnectionString), "PIM_ASR516_PG is not configured");
+        var owner = Guid.NewGuid();
+        var nodeId = Guid.NewGuid();
+        await CleanupAsync(owner);
+        var seeded = await SeedNonCanonicalLocalLeaseAsync(owner, nodeId);
+
+        await using (var db = NewDb(owner))
+        {
+            var error = await Assert.ThrowsAsync<DomainException>(() =>
+                NewService(db, owner).RenewLeaseAsync(seeded.LeaseId,
+                    new NoteAsrLeaseHeartbeatRequest(seeded.LeaseId, seeded.LeaseToken,
+                        seeded.FencingToken), CancellationToken.None));
+            Assert.Equal(40901, error.ErrorCode);
+        }
+
+        await AssertNonCanonicalRevokedAsync(owner, seeded);
+        await CleanupAsync(owner);
+    }
+
+    [SkippableFact]
+    public async Task Segment_read_rejects_predeployment_non_canonical_lease_without_audio()
+    {
+        Skip.If(string.IsNullOrWhiteSpace(ConnectionString), "PIM_ASR516_PG is not configured");
+        var owner = Guid.NewGuid();
+        var nodeId = Guid.NewGuid();
+        await CleanupAsync(owner);
+        var seeded = await SeedNonCanonicalLocalLeaseAsync(owner, nodeId);
+
+        await using (var db = NewDb(owner))
+        {
+            var error = await Assert.ThrowsAsync<DomainException>(() =>
+                NewService(db, owner).ReadSegmentInputAsync(seeded.LeaseId, 0,
+                    seeded.LeaseToken, seeded.FencingToken, CancellationToken.None));
+            Assert.Equal(40901, error.ErrorCode);
+        }
+
+        await AssertNonCanonicalRevokedAsync(owner, seeded);
+        await CleanupAsync(owner);
+    }
+
+    [SkippableFact]
+    public async Task Ack_rejects_predeployment_non_canonical_lease_without_writing_receipt()
+    {
+        Skip.If(string.IsNullOrWhiteSpace(ConnectionString), "PIM_ASR516_PG is not configured");
+        var owner = Guid.NewGuid();
+        var nodeId = Guid.NewGuid();
+        await CleanupAsync(owner);
+        var seeded = await SeedNonCanonicalLocalLeaseAsync(owner, nodeId);
+        var request = new NoteAsrAckRequest(seeded.LeaseId, seeded.LeaseToken,
+            seeded.FencingToken, "segment", "Succeeded", 0, "provider-noncanonical", null,
+            null, "synthetic transcript");
+
+        await using (var db = NewDb(owner))
+        {
+            var error = await Assert.ThrowsAsync<DomainException>(() =>
+                NewService(db, owner).AcknowledgeAsync(seeded.AttemptId, request,
+                    CancellationToken.None));
+            Assert.Equal(40901, error.ErrorCode);
+        }
+
+        await AssertNonCanonicalRevokedAsync(owner, seeded);
+        await using (var check = NewDb(owner))
+        {
+            Assert.Equal(0, await check.NoteAsrAckReceipts.CountAsync(x =>
+                x.OwnerId == owner && x.AttemptId == seeded.AttemptId));
+            Assert.Equal(0, await check.NoteAsrSegmentEvidence.CountAsync(x =>
+                x.OwnerId == owner && x.AttemptId == seeded.AttemptId));
+        }
+        await CleanupAsync(owner);
+    }
+
+    [SkippableFact]
+    public async Task Dispatch_revokes_predeployment_non_canonical_lease_without_enqueuing_duplicate_job()
+    {
+        Skip.If(string.IsNullOrWhiteSpace(ConnectionString), "PIM_ASR516_PG is not configured");
+        var owner = Guid.NewGuid();
+        var nodeId = Guid.NewGuid();
+        var storageRoot = Path.Combine(StorageRoot, "dispatch-" + owner.ToString("N"));
+        await CleanupAsync(owner);
+        var seeded = await SeedNonCanonicalLocalLeaseAsync(owner, nodeId, storageRoot);
+
+        await using (var db = NewDb(owner))
+        {
+            var options = Options.Create(new NoteMaterialUploadOptions { StorageRoot = storageRoot });
+            var materials = new NoteMaterialUploadStore(options);
+            var tasks = new NoteAsrTaskStore(options);
+            var jobs = new RecordingJobs();
+            var service = NewNoteService(db, owner, materials, tasks, storageRoot);
+            var dispatch = new NoteAsrDispatchJob(tasks, service, jobs,
+                Microsoft.Extensions.Logging.Abstractions.NullLogger<NoteAsrDispatchJob>.Instance);
+            await dispatch.RunAsync(CancellationToken.None);
+            Assert.DoesNotContain(jobs.Items, item =>
+                item.Type == typeof(NoteAsrJob) &&
+                item.Args.Count >= 2 &&
+                Equals(item.Args[0], owner) &&
+                Equals(item.Args[1], seeded.TaskId));
+        }
+
+        await AssertNonCanonicalRevokedAsync(owner, seeded, storageRoot);
+        await CleanupAsync(owner);
+        if (Directory.Exists(storageRoot)) Directory.Delete(storageRoot, recursive: true);
+    }
+
+    [SkippableFact]
+    public async Task Job_revokes_predeployment_non_canonical_local_lease_before_execution()
+    {
+        Skip.If(string.IsNullOrWhiteSpace(ConnectionString), "PIM_ASR516_PG is not configured");
+        var owner = Guid.NewGuid();
+        var nodeId = Guid.NewGuid();
+        await CleanupAsync(owner);
+        var seeded = await SeedNonCanonicalLocalLeaseAsync(owner, nodeId);
+
+        await using (var db = NewDb(owner))
+        {
+            var options = Options.Create(new NoteMaterialUploadOptions { StorageRoot = StorageRoot });
+            var materials = new NoteMaterialUploadStore(options);
+            var tasks = new NoteAsrTaskStore(options);
+            // The provider must never be reached; a null call service proves the job exits first.
+            var job = new NoteAsrJob(tasks, materials, db, null!);
+            await job.RunAsync(owner, seeded.TaskId, CancellationToken.None);
+        }
+
+        await AssertNonCanonicalRevokedAsync(owner, seeded);
+        await CleanupAsync(owner);
+    }
+
+    [SkippableFact]
+    public async Task Claim_rejects_non_canonical_duplicate_before_creating_lease()
+    {
+        Skip.If(string.IsNullOrWhiteSpace(ConnectionString), "PIM_ASR516_PG is not configured");
+        var owner = Guid.NewGuid();
+        var nodeId = Guid.NewGuid();
+        await CleanupAsync(owner);
+        await SeedActiveOwnerAsync(owner);
+        await using (var db = NewDb(owner))
+        {
+            db.NoteAsrNodes.Add(Node(owner, nodeId, "node-a", DateTimeOffset.UtcNow));
+            await db.SaveChangesAsync();
+        }
+
+        var versionId = Guid.NewGuid();
+        var noteId = Guid.NewGuid();
+        var inputSha = new string('a', 64);
+        var steps = SyntheticSteps();
+        var canonicalTaskId = Guid.NewGuid();
+        var duplicateTaskId = Guid.NewGuid();
+        var duplicateAttemptId = Guid.NewGuid();
+        var canonical = NewTaskState(owner, canonicalTaskId, noteId, versionId, inputSha,
+            CloneSteps(steps), DateTimeOffset.UtcNow.AddMinutes(-2), route: NoteAsrRoute.Local,
+            routeRevision: Guid.NewGuid(), routeConsent: "consent-local");
+        var duplicate = NewTaskState(owner, duplicateTaskId, noteId, versionId, inputSha,
+            CloneSteps(steps), DateTimeOffset.UtcNow.AddMinutes(-1), attemptId: duplicateAttemptId,
+            route: NoteAsrRoute.Local, routeRevision: Guid.NewGuid(), routeConsent: "consent-local");
+        await WriteTaskStateAsync(canonical);
+        await WriteTaskStateAsync(duplicate);
+        await WriteChainAsync(owner, versionId, canonicalTaskId);
+        await using (var db = NewDb(owner))
+        {
+            db.NoteAsrAttempts.Add(LocalAttempt(owner, duplicateAttemptId, duplicateTaskId,
+                noteId, versionId, inputSha, steps.Count));
+            await db.SaveChangesAsync();
+        }
+
+        await using var serviceDb = NewDb(owner);
+        var error = await Assert.ThrowsAsync<DomainException>(() =>
+            NewService(serviceDb, owner).ClaimAsync(
+                new ClaimNoteAsrTaskRequest(nodeId, "duplicate-claim"), CancellationToken.None));
+        Assert.Equal(40901, error.ErrorCode);
+        await using var check = NewDb(owner);
+        Assert.Equal(0, await check.NoteAsrLeases.CountAsync(x => x.OwnerId == owner));
+        Assert.Equal(0, await check.NoteAsrAckReceipts.CountAsync(x =>
+            x.OwnerId == owner && x.AttemptId == duplicateAttemptId));
+        Assert.Equal(0, await check.NoteAsrBatchJobs.CountAsync(x => x.OwnerId == owner));
+        Assert.Equal(0, await check.AiRequestLogs.CountAsync(x => x.UserId == owner));
+        var attempt = await check.NoteAsrAttempts.AsNoTracking()
+            .SingleAsync(x => x.Id == duplicateAttemptId);
+        Assert.Equal("Queued", attempt.State);
+        Assert.Equal(0L, attempt.FencingToken);
+        var taskStore = new NoteAsrTaskStore(Options.Create(
+            new NoteMaterialUploadOptions { StorageRoot = StorageRoot }));
+        Assert.Equal(duplicate.Revision,
+            (await taskStore.ReadAsync(owner, duplicateTaskId, CancellationToken.None)).Revision);
+        await CleanupAsync(owner);
+    }
+
+    [SkippableFact]
+    public async Task Claim_rejects_task_attempt_binding_mismatch_before_creating_lease()
+    {
+        Skip.If(string.IsNullOrWhiteSpace(ConnectionString), "PIM_ASR516_PG is not configured");
+        var owner = Guid.NewGuid();
+        var nodeId = Guid.NewGuid();
+        await CleanupAsync(owner);
+        await SeedActiveOwnerAsync(owner);
+        await using (var db = NewDb(owner))
+        {
+            db.NoteAsrNodes.Add(Node(owner, nodeId, "node-a", DateTimeOffset.UtcNow));
+            await db.SaveChangesAsync();
+        }
+
+        var versionId = Guid.NewGuid();
+        var noteId = Guid.NewGuid();
+        var inputSha = new string('a', 64);
+        var steps = SyntheticSteps();
+        var taskId = Guid.NewGuid();
+        var candidateAttemptId = Guid.NewGuid();
+        var otherAttemptId = Guid.NewGuid();
+        var state = NewTaskState(owner, taskId, noteId, versionId, inputSha,
+            CloneSteps(steps), DateTimeOffset.UtcNow.AddMinutes(-1), attemptId: otherAttemptId,
+            route: NoteAsrRoute.Local, routeRevision: Guid.NewGuid(), routeConsent: "consent-local");
+        await WriteTaskStateAsync(state);
+        await WriteChainAsync(owner, versionId, taskId);
+        await using (var db = NewDb(owner))
+        {
+            db.NoteAsrAttempts.Add(LocalAttempt(owner, candidateAttemptId, taskId,
+                noteId, versionId, inputSha, steps.Count));
+            await db.SaveChangesAsync();
+        }
+
+        await using var serviceDb = NewDb(owner);
+        var error = await Assert.ThrowsAsync<DomainException>(() =>
+            NewService(serviceDb, owner).ClaimAsync(
+                new ClaimNoteAsrTaskRequest(nodeId, "binding-mismatch"), CancellationToken.None));
+        Assert.Equal(40901, error.ErrorCode);
+        await using var check = NewDb(owner);
+        Assert.Equal(0, await check.NoteAsrLeases.CountAsync(x => x.OwnerId == owner));
+        Assert.Equal(0, await check.NoteAsrAckReceipts.CountAsync(x => x.OwnerId == owner));
+        Assert.Equal(0, await check.NoteAsrBatchJobs.CountAsync(x => x.OwnerId == owner));
+        Assert.Equal(0, await check.AiRequestLogs.CountAsync(x => x.UserId == owner));
+        var attempt = await check.NoteAsrAttempts.AsNoTracking()
+            .SingleAsync(x => x.Id == candidateAttemptId);
+        Assert.Equal("Queued", attempt.State);
+        Assert.Equal(0L, attempt.FencingToken);
+        var taskStore = new NoteAsrTaskStore(Options.Create(
+            new NoteMaterialUploadOptions { StorageRoot = StorageRoot }));
+        Assert.Equal(state.Revision,
+            (await taskStore.ReadAsync(owner, taskId, CancellationToken.None)).Revision);
+        await CleanupAsync(owner);
+    }
+
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Retry_rejects_non_canonical_duplicate_before_mutating_task_or_attempt(
+        bool hasExistingAttempt)
+    {
+        Skip.If(string.IsNullOrWhiteSpace(ConnectionString), "PIM_ASR516_PG is not configured");
+        var owner = Guid.NewGuid();
+        await CleanupAsync(owner);
+        var options = Options.Create(new NoteMaterialUploadOptions { StorageRoot = StorageRoot });
+        var materials = new NoteMaterialUploadStore(options);
+        var tasks = new NoteAsrTaskStore(options);
+        var material = NoteDerivedFixture.CreateMaterial(audioSamples: 1_000);
+        await NoteDerivedFixture.UploadAsync(materials, owner, material);
+        var version = await materials.GetAsync(owner, material.Request.VersionId, CancellationToken.None);
+        var steps = NoteAsrPlan.Build(version);
+        var inputSha = NoteMaterialManifestValidator.Hash(version.InputJson);
+        await SeedActiveOwnerAsync(owner);
+        var revision = Guid.NewGuid();
+
+        var canonicalTaskId = Guid.NewGuid();
+        var duplicateTaskId = Guid.NewGuid();
+        var duplicateAttemptId = Guid.NewGuid();
+        var canonical = NewTaskState(owner, canonicalTaskId, material.NoteId,
+            material.Request.VersionId, inputSha, CloneSteps(steps), DateTimeOffset.UtcNow.AddMinutes(-2),
+            route: NoteAsrRoute.Local, routeRevision: revision, routeConsent: "consent-local");
+        var duplicateSteps = CloneSteps(steps);
+        if (hasExistingAttempt)
+            foreach (var step in duplicateSteps) step.Current.Status = "Failed";
+        var duplicate = NewTaskState(owner, duplicateTaskId, material.NoteId,
+            material.Request.VersionId, inputSha, duplicateSteps, DateTimeOffset.UtcNow.AddMinutes(-1),
+            attemptId: hasExistingAttempt ? duplicateAttemptId : null, route: NoteAsrRoute.Local,
+            routeRevision: revision, routeConsent: "consent-local");
+        await WriteTaskStateAsync(canonical);
+        await WriteTaskStateAsync(duplicate);
+        await WriteChainAsync(owner, material.Request.VersionId, canonicalTaskId);
+        if (hasExistingAttempt)
+        {
+            await using var seed = NewDb(owner);
+            seed.NoteAsrAttempts.Add(LocalAttempt(owner, duplicateAttemptId, duplicateTaskId,
+                material.NoteId, material.Request.VersionId, inputSha, steps.Count,
+                state: "Failed"));
+            await seed.SaveChangesAsync();
+        }
+
+        await using var db = NewDb(owner);
+        var service = NewNoteService(db, owner, materials, tasks);
+        var error = await Assert.ThrowsAsync<DomainException>(() => service.RetryAsync(
+            duplicateTaskId, new RetryNoteAsrRequest(Guid.NewGuid(), owner, duplicate.Revision,
+                [0], null, false), CancellationToken.None));
+        Assert.Equal(40901, error.ErrorCode);
+
+        await using var check = NewDb(owner);
+        Assert.Equal(hasExistingAttempt ? 1 : 0, await check.NoteAsrAttempts.CountAsync(x =>
+            x.OwnerId == owner && x.TaskId == duplicateTaskId));
+        Assert.Equal(0, await check.NoteAsrLeases.CountAsync(x => x.OwnerId == owner));
+        Assert.Equal(0, await check.NoteAsrBatchJobs.CountAsync(x => x.OwnerId == owner));
+        Assert.Equal(0, await check.AiRequestLogs.CountAsync(x => x.UserId == owner));
+        if (hasExistingAttempt)
+        {
+            var attempt = await check.NoteAsrAttempts.AsNoTracking()
+                .SingleAsync(x => x.Id == duplicateAttemptId);
+            Assert.Equal("Failed", attempt.State);
+            Assert.Equal(0L, attempt.FencingToken);
+        }
+        var after = await tasks.ReadAsync(owner, duplicateTaskId, CancellationToken.None);
+        Assert.Equal(duplicate.Revision, after.Revision);
+        Assert.Empty(after.Retries);
+        Assert.Empty(after.RetryIntents);
+        Assert.All(after.Steps, step => Assert.Equal(
+            hasExistingAttempt ? "Failed" : "Queued", step.Current.Status));
+        await CleanupAsync(owner);
+    }
+
+    private static NoteAsrState NewTaskState(Guid owner, Guid taskId, Guid noteId, Guid versionId,
+        string inputSha, List<NoteAsrStep> steps, DateTimeOffset? createdAt = null,
+        Guid? attemptId = null, string? route = null, Guid routeRevision = default,
+        string routeConsent = "")
+    {
+        var frozenRoute = route is null
+            ? null
+            : new NoteAsrRouteConsent(route, routeRevision, routeConsent, true,
+                NoteAsrExecutionMode.Realtime);
+        var state = new NoteAsrState
+        {
+            Owner = owner,
+            Request = new StartNoteAsrRequest(taskId, owner, versionId, null, "zh", frozenRoute),
+            Fingerprint = new string('b', 64),
+            NoteId = noteId,
+            InputSha256 = inputSha,
+            ManifestSha256 = new string('c', 64),
+            AttemptId = attemptId,
+            Route = route,
+            RouteConfigRevision = routeRevision,
+            RouteConsentVersion = routeConsent,
+            Steps = steps
+        };
+        if (createdAt is { } value)
+        {
+            state.CreatedAt = value;
+            state.UpdatedAt = value;
+        }
+        return state;
+    }
+
+    private static List<NoteAsrStep> SyntheticSteps() =>
+    [
+        new()
+        {
+            Index = 0,
+            RecordingId = Guid.NewGuid(),
+            RecordingSegment = 1,
+            ChunkIndex = 1,
+            FileIndex = 0,
+            Path = "recordings/synthetic-s0001-c000001.wav",
+            Sha256 = new string('d', 64),
+            SourceOffset = 0,
+            RecordingOffset = 0,
+            TimelineOffset = 0,
+            Samples = 1_000,
+            Attempts = [new()]
+        }
+    ];
+
+    private static List<NoteAsrStep> CloneSteps(IEnumerable<NoteAsrStep> steps) =>
+        steps.Select(step => new NoteAsrStep
+        {
+            Index = step.Index,
+            RecordingId = step.RecordingId,
+            RecordingSegment = step.RecordingSegment,
+            ChunkIndex = step.ChunkIndex,
+            FileIndex = step.FileIndex,
+            Path = step.Path,
+            Sha256 = step.Sha256,
+            SourceOffset = step.SourceOffset,
+            RecordingOffset = step.RecordingOffset,
+            TimelineOffset = step.TimelineOffset,
+            Samples = step.Samples,
+            Attempts = [new()]
+        }).ToList();
+
+    private static NoteAsrAttemptEntity LocalAttempt(Guid owner, Guid attemptId, Guid taskId,
+        Guid noteId, Guid versionId, string inputSha, int expectedSegments, string state = "Queued")
+    {
+        var now = DateTimeOffset.UtcNow;
+        return new NoteAsrAttemptEntity
+        {
+            Id = attemptId,
+            OwnerId = owner,
+            TaskId = taskId,
+            NoteId = noteId,
+            VersionId = versionId,
+            InputSha256 = inputSha,
+            Route = NoteAsrRoute.Local,
+            State = state,
+            Language = "zh",
+            ExpectedSegments = expectedSegments,
+            LocalModelId = "local-model",
+            LocalModelRevision = "r1",
+            ConfigRevision = Guid.NewGuid(),
+            ConsentVersion = "consent-local",
+            CreatedAt = now.AddMinutes(-1),
+            UpdatedAt = now.AddMinutes(-1)
+        };
+    }
+
+    private sealed record NonCanonicalLeaseSeed(Guid TaskId, Guid AttemptId, Guid LeaseId,
+        Guid LeaseToken, long FencingToken);
+
+    private static async Task<NonCanonicalLeaseSeed> SeedNonCanonicalLocalLeaseAsync(Guid owner,
+        Guid nodeId, string? storageRoot = null)
+    {
+        var revision = Guid.NewGuid();
+        await SeedActiveOwnerAsync(owner, revision, "consent-local");
+        var versionId = Guid.NewGuid();
+        var noteId = Guid.NewGuid();
+        var inputSha = new string('a', 64);
+        var duplicateSteps = SyntheticSteps();
+        duplicateSteps[0].Current.Status = "Running";
+        var canonicalTaskId = Guid.NewGuid();
+        var duplicateTaskId = Guid.NewGuid();
+        var duplicateAttemptId = Guid.NewGuid();
+        var leaseId = Guid.NewGuid();
+        var leaseToken = Guid.NewGuid();
+        const long fencingToken = 4;
+        var now = DateTimeOffset.UtcNow;
+        var canonical = NewTaskState(owner, canonicalTaskId, noteId, versionId, inputSha,
+            CloneSteps(SyntheticSteps()), now.AddMinutes(-2), route: NoteAsrRoute.Local,
+            routeRevision: revision, routeConsent: "consent-local");
+        var duplicate = NewTaskState(owner, duplicateTaskId, noteId, versionId, inputSha,
+            duplicateSteps, now.AddMinutes(-1), attemptId: duplicateAttemptId,
+            route: NoteAsrRoute.Local, routeRevision: revision,
+            routeConsent: "consent-local");
+        await WriteTaskStateAsync(canonical, storageRoot);
+        await WriteTaskStateAsync(duplicate, storageRoot);
+        await WriteChainAsync(owner, versionId, canonicalTaskId, storageRoot);
+
+        await using var db = NewDb(owner);
+        db.NoteAsrNodes.Add(Node(owner, nodeId, "node-a", now));
+        var attempt = LocalAttempt(owner, duplicateAttemptId, duplicateTaskId, noteId,
+            versionId, inputSha, 1, state: "Leased");
+        attempt.FencingToken = fencingToken;
+        db.NoteAsrAttempts.Add(attempt);
+        db.NoteAsrLeases.Add(new NoteAsrLeaseEntity
+        {
+            Id = leaseId, OwnerId = owner, AttemptId = duplicateAttemptId, NodeId = nodeId,
+            LeaseToken = leaseToken, FencingToken = fencingToken, Status = "Active",
+            ClaimedAt = now, ExpiresAt = now.AddMinutes(5)
+        });
+        await db.SaveChangesAsync();
+        return new(duplicateTaskId, duplicateAttemptId, leaseId, leaseToken, fencingToken);
+    }
+
+    private static async Task AssertNonCanonicalRevokedAsync(Guid owner,
+        NonCanonicalLeaseSeed seeded, string? storageRoot = null)
+    {
+        await using var check = NewDb(owner);
+        var lease = await check.NoteAsrLeases.AsNoTracking()
+            .SingleAsync(x => x.Id == seeded.LeaseId);
+        Assert.Equal("Expired", lease.Status);
+        Assert.NotNull(lease.EndedAt);
+        var attempt = await check.NoteAsrAttempts.AsNoTracking()
+            .SingleAsync(x => x.Id == seeded.AttemptId);
+        Assert.Equal("Failed", attempt.State);
+        Assert.True(attempt.StopRequested);
+        Assert.Equal("noncanonical_initial_task", attempt.LastErrorCode);
+        var tasks = new NoteAsrTaskStore(Options.Create(new NoteMaterialUploadOptions
+        {
+            StorageRoot = storageRoot ?? StorageRoot
+        }));
+        var state = await tasks.ReadAsync(owner, seeded.TaskId, CancellationToken.None);
+        Assert.True(state.StopRequested);
+        Assert.All(state.Steps, step => Assert.Equal("Blocked", step.Current.Status));
+    }
+
+    private static async Task SeedActiveOwnerAsync(Guid owner, Guid? routeRevision = null,
+        string routeConsent = "consent-local")
+    {
+        await using var db = NewDb(owner);
+        await db.Database.EnsureCreatedAsync();
+        if (!await db.Users.AnyAsync(x => x.Id == owner))
+            db.Users.Add(NewUser(owner));
+        if (routeRevision is { } revision &&
+            !await db.NoteAsrRouteConfigs.AnyAsync(x => x.OwnerId == owner))
+        {
+            db.NoteAsrRouteConfigs.Add(new NoteAsrRouteConfigEntity
+            {
+                OwnerId = owner,
+                Revision = revision,
+                DefaultRoute = NoteAsrRoute.Local,
+                LocalModelId = "local-model",
+                LocalModelRevision = "r1",
+                CloudModelId = Guid.NewGuid(),
+                ConsentVersion = routeConsent
+            });
+        }
+        await db.SaveChangesAsync();
+    }
+
+    private static async Task WriteChainAsync(Guid owner, Guid versionId, Guid taskId,
+        string? storageRoot = null)
+    {
+        var path = Path.Combine(storageRoot ?? StorageRoot, "asr-tasks", owner.ToString("D"),
+            "chains", versionId.ToString("D") + ".json");
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        await File.WriteAllTextAsync(path, JsonSerializer.Serialize(new { taskId },
+            new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+    }
+
     private static async Task<Exception?> Capture(Func<Task<NoteAsrRouteConfigDto>> task)
     {
         try { await task(); return null; }
@@ -1738,7 +2374,8 @@ public sealed class NoteAsrRoutingConcurrencyTests
         return attemptId;
     }
 
-    private static async Task WriteTaskStateAsync(Guid owner, Guid taskId, Guid versionId, Guid noteId, string inputSha)
+    private static async Task WriteTaskStateAsync(Guid owner, Guid taskId, Guid versionId,
+        Guid noteId, string inputSha, Guid? attemptId = null)
     {
         var task = new NoteAsrState
         {
@@ -1746,7 +2383,7 @@ public sealed class NoteAsrRoutingConcurrencyTests
             Request = new StartNoteAsrRequest(taskId, owner, versionId,
                 new AiAsrDestinationConsent(Guid.NewGuid(), Guid.NewGuid(), "synthetic", "local", "1", true), "zh"),
             Fingerprint = new string('b', 64), NoteId = noteId, InputSha256 = inputSha,
-            ManifestSha256 = new string('c', 64),
+            ManifestSha256 = new string('c', 64), AttemptId = attemptId,
             Steps = Enumerable.Range(0, 3).Select(i => new NoteAsrStep
             {
                 Index = i, RecordingId = Guid.NewGuid(), RecordingSegment = 1, ChunkIndex = i,
@@ -1757,11 +2394,11 @@ public sealed class NoteAsrRoutingConcurrencyTests
         await WriteTaskStateAsync(task);
     }
 
-    private static async Task WriteTaskStateAsync(NoteAsrState task)
+    private static async Task WriteTaskStateAsync(NoteAsrState task, string? storageRoot = null)
     {
         var owner = task.Owner;
         var taskId = task.Request.TaskId;
-        var taskDir = Path.Combine(StorageRoot, "asr-tasks", owner.ToString("D"));
+        var taskDir = Path.Combine(storageRoot ?? StorageRoot, "asr-tasks", owner.ToString("D"));
         Directory.CreateDirectory(taskDir);
         await File.WriteAllTextAsync(Path.Combine(taskDir, taskId.ToString("D") + ".json"),
             JsonSerializer.Serialize(task, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
@@ -1848,6 +2485,18 @@ public sealed class NoteAsrRoutingConcurrencyTests
             presets ?? new AiAsrPresetRegistry(Array.Empty<IAiAsrPreset>()), tasks,
             new NoteAsrEvidenceService(db, tasks, new FixedUser(owner)),
             new PassthroughSecrets(), Options.Create(new NoteAsrRoutingOptions()));
+    }
+
+    private sealed class RecordingJobs : Hangfire.IBackgroundJobClient
+    {
+        public List<Hangfire.Common.Job> Items { get; } = [];
+        public string Create(Hangfire.Common.Job job, Hangfire.States.IState state)
+        {
+            Items.Add(job);
+            return Items.Count.ToString();
+        }
+        public bool ChangeState(string jobId, Hangfire.States.IState state,
+            string expectedState) => throw new NotSupportedException();
     }
 
     private static NoteAsrService NewNoteService(PimDbContext db, Guid owner,
@@ -2020,3 +2669,6 @@ public sealed class NoteAsrRoutingConcurrencyTests
             throw new NotSupportedException("This routing test never executes a cloud chat call");
     }
 }
+
+[CollectionDefinition("NoteAsrRoutingConcurrencyPg", DisableParallelization = true)]
+public sealed class NoteAsrRoutingConcurrencyPgCollection;

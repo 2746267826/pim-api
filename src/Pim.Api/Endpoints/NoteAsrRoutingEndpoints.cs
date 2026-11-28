@@ -53,7 +53,8 @@ public static class NoteAsrRoutingEndpoints
         leases.MapPost("/claim", async (ClaimNoteAsrTaskRequest request, HttpRequest http,
             [FromServices] NoteAsrRoutingService service, CancellationToken ct) =>
             Results.Ok(ApiResponse<NoteAsrClaimDto>.Ok(Bind(await service.ClaimAsync(request, ct), http))))
-            .Produces<ApiResponse<NoteAsrClaimDto>>().Produces(400).Produces(401).Produces(403).Produces(404);
+            .Produces<ApiResponse<NoteAsrClaimDto>>().Produces(400).Produces(401).Produces(403)
+            .Produces(404).Produces(409);
         leases.MapPost("/{leaseId:guid}/renew", async (Guid leaseId, NoteAsrLeaseHeartbeatRequest request, HttpRequest http,
             [FromServices] NoteAsrRoutingService service, CancellationToken ct) =>
             Results.Ok(ApiResponse<NoteAsrLeaseDto>.Ok(Bind(await service.RenewLeaseAsync(leaseId, request, ct), http))))

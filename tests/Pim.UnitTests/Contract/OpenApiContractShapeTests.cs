@@ -517,6 +517,72 @@ public sealed class OpenApiContractShapeTests
             }
     }
 
+    [Fact]
+    public void NoteProcessingPlanAndConsentCaptureTheVisibleAuthorizationSnapshot()
+    {
+        var operation = Document.Paths["/api/v1/native-notes/processing/plan"]
+            .Operations[OperationType.Get];
+        Assert.NotEmpty(operation.Security);
+        Assert.Equal(2, operation.Parameters.Count(parameter =>
+            parameter.In == ParameterLocation.Query && parameter.Required &&
+            parameter.Name is "noteId" or "versionId"));
+
+        var plan = Schema("NoteProcessingPlanDto");
+        foreach (var property in new[]
+                 {
+                     "purpose", "purposeText", "materialScope", "materialScopeText", "costNotice",
+                     "possibleCharge", "authorizationRevision", "standingAuthorizationValid",
+                     "asrRequired", "targets"
+                 })
+            Assert.Contains(property, RequiredOf(plan));
+        Assert.DoesNotContain("standingAuthorizationRevision", RequiredOf(plan));
+
+        var start = Schema("StartNoteProcessingRequest");
+        Assert.Contains("noteId", RequiredOf(start));
+        Assert.Contains("versionId", RequiredOf(start));
+        Assert.Contains("consent", RequiredOf(start));
+        var consent = start.Properties["consent"];
+        Assert.Equal("NoteProcessingConsent", consent.Reference?.Id);
+        Assert.False(consent.Nullable);
+
+        var consentSchema = Schema("NoteProcessingConsent");
+        foreach (var property in new[]
+                 {
+                     "purpose", "materialScope", "costNotice", "possibleChargeAcknowledged",
+                     "confirmed", "authorizationRevision"
+                 })
+            Assert.Contains(property, RequiredOf(consentSchema));
+        Assert.DoesNotContain("standingAuthorizationRevision", RequiredOf(consentSchema));
+
+        var targetSchema = Schema("NoteProcessingTargetDto");
+        Assert.Contains("routeConfigRevision", targetSchema.Properties.Keys);
+        Assert.Contains("routeConsentVersion", targetSchema.Properties.Keys);
+        Assert.DoesNotContain("routeConfigRevision", RequiredOf(targetSchema));
+        Assert.DoesNotContain("routeConsentVersion", RequiredOf(targetSchema));
+        Assert.True(targetSchema.Properties["routeConfigRevision"].Nullable);
+        Assert.True(targetSchema.Properties["routeConsentVersion"].Nullable);
+
+        var status = Schema("NoteProcessingStatusDto");
+        Assert.DoesNotContain("authorization", RequiredOf(status));
+        var authorization = status.Properties["authorization"];
+        Assert.Equal("NoteProcessingAuthorizationDto",
+            Assert.Single(authorization.AllOf).Reference?.Id);
+        Assert.True(authorization.Nullable);
+        Assert.Contains("authorizationRevision", RequiredOf(
+            Schema("NoteProcessingAuthorizationDto")));
+
+        var preferences = Schema("NoteProcessingPreferencesDto");
+        Assert.Contains("currentDefaultTargetRevision", RequiredOf(preferences));
+        Assert.Contains("defaultTargets", RequiredOf(preferences));
+        Assert.DoesNotContain("standingAuthorizationTargetRevision",
+            RequiredOf(preferences));
+
+        Assert.Contains("isCanonicalInitial", RequiredOf(Schema("NoteAsrTaskDto")));
+        Assert.DoesNotContain("canonicalInitialTaskId", RequiredOf(Schema("NoteAsrTaskDto")));
+        Assert.Contains("isCanonicalInitial", RequiredOf(Schema("NoteDerivedTaskDto")));
+        Assert.DoesNotContain("canonicalInitialTaskId", RequiredOf(Schema("NoteDerivedTaskDto")));
+    }
+
     private static void AssertNullableConsentWrapper(OpenApiSchema property, string label)
     {
         var wrapped = Assert.Single(property.AllOf);

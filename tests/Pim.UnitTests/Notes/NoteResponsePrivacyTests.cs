@@ -70,7 +70,8 @@ public class NoteResponsePrivacyTests
                     [new NoteDerivedAttemptDto(Guid.NewGuid(), Guid.NewGuid(), "Failed",
                         "provider_error", "https://internal.example/v1 返回 500")])
             ],
-            "plan-v1", DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch, false);
+            "plan-v1", DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch, false,
+            IsCanonicalInitial: true);
 
         var redacted = NoteResponsePrivacy.RedactTask(task, includeDiagnostics: false);
 
