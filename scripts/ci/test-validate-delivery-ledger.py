@@ -1372,7 +1372,7 @@ class LedgerCase(unittest.TestCase):
         self.assert_fails_with("items 必须为数组")
 
     def test_pass_rejects_open_pr(self):
-        ledger, _, _ = self.upgrade_to_pass()
+        ledger, _, _ = self.upgrade_to_pass(authorize_item_only=False)
         prs = self.load(self.prs_path)
         self.attach_pr(ledger, prs, state="open")
         self.save(self.ledger_path, ledger)
@@ -1381,7 +1381,7 @@ class LedgerCase(unittest.TestCase):
         self.assert_fails_with("必须 merged")
 
     def test_pass_rejects_draft_pr(self):
-        ledger, _, _ = self.upgrade_to_pass()
+        ledger, _, _ = self.upgrade_to_pass(authorize_item_only=False)
         prs = self.load(self.prs_path)
         self.attach_pr(ledger, prs, state="draft", number=9998)
         self.save(self.ledger_path, ledger)
@@ -1390,7 +1390,7 @@ class LedgerCase(unittest.TestCase):
         self.assert_fails_with("必须 merged")
 
     def test_pass_rejects_closed_unmerged_pr(self):
-        ledger, _, _ = self.upgrade_to_pass()
+        ledger, _, _ = self.upgrade_to_pass(authorize_item_only=False)
         prs = self.load(self.prs_path)
         self.attach_pr(ledger, prs, state="closed", number=9997)
         self.save(self.ledger_path, ledger)
@@ -1399,7 +1399,7 @@ class LedgerCase(unittest.TestCase):
         self.assert_fails_with("必须 merged")
 
     def test_pass_accepts_merged_resolvable_pr(self):
-        ledger, _, _ = self.upgrade_to_pass()
+        ledger, _, _ = self.upgrade_to_pass(authorize_item_only=False)
         prs = self.load(self.prs_path)
         self.attach_pr(ledger, prs, state="merged", number=9996,
                        merge_commit=self.commit, verified_by="git-history")
@@ -1409,7 +1409,7 @@ class LedgerCase(unittest.TestCase):
         self.assert_baseline_valid()
 
     def test_pass_rejects_stale_merged_pr(self):
-        ledger, _, _ = self.upgrade_to_pass()
+        ledger, _, _ = self.upgrade_to_pass(authorize_item_only=False)
         prs = self.load(self.prs_path)
         pid = self.attach_pr(ledger, prs, state="merged", number=9996,
                              merge_commit=self.commit, verified_by="git-history")
@@ -1420,7 +1420,7 @@ class LedgerCase(unittest.TestCase):
         self.assert_fails_with(f"PASS 依赖的 PR {pid} 不是 current 状态")
 
     def test_merged_pr_requires_head(self):
-        ledger, _, _ = self.upgrade_to_pass()
+        ledger, _, _ = self.upgrade_to_pass(authorize_item_only=False)
         prs = self.load(self.prs_path)
         pid = self.attach_pr(ledger, prs, state="merged", number=9996,
                              merge_commit=self.commit, verified_by="git-history")
@@ -1431,7 +1431,7 @@ class LedgerCase(unittest.TestCase):
         self.assert_fails_with("merged PR 必须给出非空 head")
 
     def test_merged_pr_rejects_unresolvable_head(self):
-        ledger, _, _ = self.upgrade_to_pass()
+        ledger, _, _ = self.upgrade_to_pass(authorize_item_only=False)
         prs = self.load(self.prs_path)
         pid = self.attach_pr(ledger, prs, state="merged", number=9996,
                              head="deadbeef" * 5,
@@ -1442,7 +1442,7 @@ class LedgerCase(unittest.TestCase):
         self.assert_fails_with("merged PR head 无法解析")
 
     def test_merged_pr_head_must_relate_to_merge_commit(self):
-        ledger, _, _ = self.upgrade_to_pass()
+        ledger, _, _ = self.upgrade_to_pass(authorize_item_only=False)
         prs = self.load(self.prs_path)
         self.attach_pr(ledger, prs, state="merged", number=9996,
                        head=self.second_commit, merge_commit=self.commit,
@@ -1584,7 +1584,7 @@ class LedgerCase(unittest.TestCase):
         self.assert_fails_with("PASS 引用了非 current 证据")
 
     def test_pass_rejects_failed_current_ci_evidence(self):
-        ledger, _, _ = self.upgrade_to_pass()
+        ledger, _, _ = self.upgrade_to_pass(authorize_item_only=False)
         prs = self.load(self.prs_path)
         evidence = self.load(self.evidence_path)
         ci = self.load(self.ci_path)
