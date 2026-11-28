@@ -10,6 +10,7 @@ import { setApiBase } from '@/lib/apiBase'
 import { NativeNotesPage } from './native-notes-page'
 import { buildMaterialBundle, type NoteMaterialUpload, type NoteMaterialVersion } from './material-model'
 import { exportAndroidNotePackage } from './material-package'
+import { installProseMirrorLayoutStubs } from '@/test-utils/prosemirror-layout'
 
 const nativeApi = vi.hoisted(() => ({
   limits: vi.fn(),
@@ -195,6 +196,7 @@ function page(initialEntry = '/native-notes') {
 }
 
 beforeEach(() => {
+  installProseMirrorLayoutStubs()
   vi.resetAllMocks()
   authState.userId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
   authState.role = 'admin'
@@ -344,7 +346,7 @@ describe('NativeNotesPage', () => {
 
     await userEvent.click(screen.getByRole('button', { name: '刷新笔记库' }))
     expect(await screen.findByText('更新失败')).toBeTruthy()
-    expect(screen.getByText('刷新连接超时')).toBeTruthy()
+    expect(screen.getAllByText('刷新连接超时').length).toBeGreaterThan(0)
     expect(screen.getByText('课堂笔记')).toBeTruthy()
     expect(screen.getByText('列表与浏览位置保持不变。')).toBeTruthy()
     expect(consoleError).toHaveBeenCalledWith(

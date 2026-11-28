@@ -2,11 +2,12 @@
 import { act, cleanup, render, screen } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import userEvent from '@testing-library/user-event'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { NativeNotesClient } from '@/features/native-notes/api'
 import type { NoteMaterialVersion } from '@/features/native-notes/material-model'
 import { NoteEditorPane } from '@/features/native-notes/note-material-editor'
 import { resetUnsavedDraftsForTests } from '@/lib/unsaved-drafts'
+import { installProseMirrorLayoutStubs } from '@/test-utils/prosemirror-layout'
 import { clearTemporaryWebCache, snapshotTemporaryCache } from './cache-cleanup'
 
 const ownerId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
@@ -69,6 +70,10 @@ afterEach(() => {
   client?.clear()
   resetUnsavedDraftsForTests()
   vi.restoreAllMocks()
+})
+
+beforeEach(() => {
+  installProseMirrorLayoutStubs()
 })
 
 describe('临时缓存清理与真实笔记编辑器', () => {

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { useRef, useState } from 'react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import {
@@ -10,6 +10,7 @@ import {
   serializeMaterialBlocks,
 } from './continuous-material-editor'
 import type { MaterialDraftBlock } from './material-model'
+import { installProseMirrorLayoutStubs } from '@/test-utils/prosemirror-layout'
 
 const markdownA = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 const photoId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
@@ -49,6 +50,10 @@ const blocks: MaterialDraftBlock[] = [
 afterEach(() => {
   cleanup()
   vi.restoreAllMocks()
+})
+
+beforeEach(() => {
+  installProseMirrorLayoutStubs()
 })
 
 function Harness({ initial = blocks, onDirty = () => undefined }: {
@@ -222,7 +227,7 @@ describe('continuous native-note material editor', () => {
     const photo = new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47, 3])], 'middle.png', { type: 'image/png' })
     await userEvent.upload(screen.getByLabelText('添加照片'), photo)
     await waitFor(() =>
-      expect(body.querySelectorAll('[data-material-block-id]')).toHaveLength(2))
+      expect(body.querySelectorAll('[data-material-block-id]')).toHaveLength(3))
 
     await userEvent.click(screen.getByRole('button', { name: '读取正文原稿' }))
     await waitFor(() => expect(screen.getByTestId('read-blocks').textContent).not.toBe('[]'))

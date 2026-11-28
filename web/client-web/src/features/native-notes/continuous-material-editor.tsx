@@ -298,7 +298,6 @@ export const ContinuousMaterialEditor = forwardRef<
   const originalMarkdownRef = useRef(new Map(initialBlocks.flatMap((block) =>
     block.kind === 'markdown' ? [[block.id, block.text] as const] : [])))
   const initialContentRef = useRef(new Map<string, string>())
-  const initializingRef = useRef(true)
   const initialDocument = useMemo(() => initialBlocks, [initialBlocks])
   const editableRef = useRef(editable)
   const showTechnicalDetailsRef = useRef(showVersionDetails)
@@ -311,7 +310,6 @@ export const ContinuousMaterialEditor = forwardRef<
   const mountedRef = useRef(false)
   const [inkEditor, setInkEditor] = useState<ActiveInkEditor | null>(null)
   const [preview, setPreview] = useState<string | null>(null)
-  const [ready, setReady] = useState(false)
 
   useLayoutEffect(() => {
     mountedRef.current = true
@@ -338,7 +336,7 @@ export const ContinuousMaterialEditor = forwardRef<
 
   const editor = useEditor({
     extensions: [
-      StarterKit.configure({ document: false }),
+      StarterKit.configure({ document: false, trailingNode: false }),
       NoteDocument,
       Image.configure({ inline: false, allowBase64: false }),
       Markdown.configure({ html: true, linkify: false, breaks: false }),
@@ -362,7 +360,7 @@ export const ContinuousMaterialEditor = forwardRef<
         },
       }),
     ],
-    content: '<div data-pim-markdown-block-id="bootstrap"><p></p></div>',
+    content: '',
     editable,
     editorProps: {
       attributes: {
@@ -388,21 +386,15 @@ export const ContinuousMaterialEditor = forwardRef<
         'data-testid': 'continuous-note-editor',
       },
     },
+    onBeforeCreate: ({ editor: created }) => {
+      created.options.content = buildMaterialDocument(created, initialDocument).toJSON()
+    },
     onCreate: ({ editor: created }) => {
-      const document = buildMaterialDocument(created, initialDocument)
-      created.commands.setContent(document.content, { emitUpdate: false })
-      created.commands.setTextSelection(TextSelection.near(created.state.doc.resolve(1), 1).from)
       initialContentRef.current = snapshotMarkdownBlocks(created)
       lastSelectionRef.current = selectionPoint(created)
-      window.setTimeout(() => {
-        if (!mountedRef.current || created.isDestroyed) return
-        contentStateCallbackRef.current(documentHasContent(created))
-        setReady(true)
-        initializingRef.current = false
-      }, 0)
+      contentStateCallbackRef.current(documentHasContent(created))
     },
     onUpdate: ({ editor: updated }) => {
-      if (initializingRef.current) return
       dirtyCallbackRef.current()
       contentStateCallbackRef.current(documentHasContent(updated))
       lastSelectionRef.current = selectionPoint(updated)
@@ -605,7 +597,6 @@ export const ContinuousMaterialEditor = forwardRef<
       />
     </Card>}
 
-    {!ready && <Card className="space-y-2 p-5"><p className="text-xs text-text-3">正在建立连续正文编辑上下文…</p></Card>}
     <div className={cn('rounded-ctl border border-border bg-bg px-4 py-3', !editable && 'bg-surface/60')}>
       <EditorContent editor={editor} />
     </div>
@@ -622,7 +613,7 @@ export const ContinuousMaterialEditor = forwardRef<
 })
 
 export function buildMaterialDocument(editor: Editor, blocks: MaterialDraftBlock[]): ProseMirrorNode {
-  const schema = editor.state.schema
+  const schema = editor.schema
   const markdownStorage = (editor.storage as unknown as { markdown: Pick<MarkdownStorage, 'parser'> }).markdown
   const ordered: ProseMirrorNode[] = []
   for (const block of blocks) {
@@ -645,6 +636,11 @@ export function buildMaterialDocument(editor: Editor, blocks: MaterialDraftBlock
     }))
   }
   if (!ordered.length) {
+    ordered.push(schema.nodes.markdownBlock.create(
+      { blockId: createMaterialId() },
+      schema.nodes.paragraph.create(),
+    ))
+  } else if (ordered[ordered.length - 1]?.type.name !== MarkdownBlock.name) {
     ordered.push(schema.nodes.markdownBlock.create(
       { blockId: createMaterialId() },
       schema.nodes.paragraph.create(),
