@@ -766,6 +766,19 @@ class LedgerCase(unittest.TestCase):
         self.render()
         self.assert_fails_with("PASS 没有实现 PR 时必须恰好有一个 approved item-only-pass")
 
+    def test_pr_backed_pass_rejects_item_only_authorization(self):
+        ledger, _, _ = self.upgrade_to_pass()
+        prs = self.load(self.prs_path)
+        item = self.item(ledger, "A10")
+        pr_id = self.attach_pr(
+            ledger, prs, state="merged", number=9998,
+            head=self.commit, merge_commit=self.commit)
+        item["prs"].append(pr_id)
+        self.save(self.ledger_path, ledger)
+        self.save(self.prs_path, prs)
+        self.render()
+        self.assert_fails_with("PR-backed PASS 不得引用该例外")
+
     def test_pass_rejects_unrelated_stale_decision_evidence(self):
         ledger, evidence, _ = self.upgrade_to_pass()
         decisions = self.load(self.decisions_path)
@@ -1798,6 +1811,21 @@ class RendererCase(unittest.TestCase):
         self.assertNotEqual(proc.returncode, 0)
         self.assertEqual(outside.read_text(encoding="utf-8"), "outside sentinel\n")
         self.assertTrue(output.is_symlink())
+
+    def test_renderer_rejects_fixed_output_hardlink(self):
+        outside_dir = Path(tempfile.mkdtemp(prefix="pim-ledger-outside-"))
+        self.addCleanup(shutil.rmtree, outside_dir, True)
+        outside = outside_dir / "escape.md"
+        outside.write_text("outside sentinel\n", encoding="utf-8")
+        output = self.tmp / "docs/product/pim-delivery-ledger.md"
+        output.hardlink_to(outside)
+        proc = subprocess.run(
+            [sys.executable, str(self.tmp / "scripts/ci/render-delivery-ledger.py"),
+             "--root", str(self.tmp)],
+            capture_output=True, text=True)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertEqual(outside.read_text(encoding="utf-8"), "outside sentinel\n")
+        self.assertTrue(output.is_file())
 
     def test_renderer_ignores_or_rejects_rendered_view_path_escape(self):
         ledger_path = self.tmp / "docs/product/delivery/ledger.json"

@@ -1709,6 +1709,14 @@ class Validator:
             self.error(where, "evidence 必须为数组")
             refs = []
         if status == "PASS":
+            pr_refs = item.get("prs")
+            if not isinstance(pr_refs, list):
+                pr_refs = []
+            item_only_refs = [
+                did for did in item.get("decisions", [])
+                if isinstance(did, str)
+                and self.decisions.get(did, {}).get("type") == ITEM_ONLY_PASS_DECISION_TYPE
+            ]
             if item.get("freshness") != "current":
                 self.error(where, "stale PASS：PASS 项必须是 current freshness")
             for ref in refs:
@@ -1718,7 +1726,10 @@ class Validator:
                 if (
                     ev.get("freshness") != "current"
                     and not self.is_superseded_stale_failure(ref, item_id)
-                    and not self.is_item_only_pass_authorization(ref, item_id)
+                    and not (
+                        not pr_refs
+                        and self.is_item_only_pass_authorization(ref, item_id)
+                    )
                 ):
                     self.error(where, f"PASS 引用了非 current 证据：{ref}")
                 if ev.get("type") == "ci" and ev.get("freshness") != "current":
@@ -1763,18 +1774,12 @@ class Validator:
             missing = [p for p in required if p not in covered]
             if missing:
                 self.error(where, f"PASS 缺少由 AC 关联 passed flow 覆盖的 required 平台：{missing}")
-            pr_refs = item.get("prs")
-            if not isinstance(pr_refs, list):
-                pr_refs = []
             if not pr_refs:
                 authorized = []
-                item_only_refs = []
                 for did in item.get("decisions") or []:
                     if not isinstance(did, str):
                         continue
                     dec = self.decisions.get(did)
-                    if dec and dec.get("type") == ITEM_ONLY_PASS_DECISION_TYPE:
-                        item_only_refs.append(did)
                     if (
                         dec
                         and dec.get("evidence") in refs
@@ -1791,6 +1796,12 @@ class Validator:
                         f"{ITEM_ONLY_PASS_DECISION_TYPE} 决定，且该决定只绑定本 item、"
                         "无 AC 绑定、证据已列入 item.evidence",
                     )
+            elif item_only_refs:
+                self.error(
+                    where,
+                    "item-only-pass 决定只能用于没有实现 PR 的 PASS；"
+                    "PR-backed PASS 不得引用该例外或其 stale E0 证据",
+                )
             for pid in pr_refs:
                 if not isinstance(pid, str):
                     continue

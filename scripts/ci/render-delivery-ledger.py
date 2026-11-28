@@ -10,6 +10,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import secrets
+import stat
 import sys
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -71,35 +73,80 @@ def count_key(value):
     return value if isinstance(value, str) else "<invalid>"
 
 
-def prepare_fixed_output(root: Path) -> Path:
+def open_fixed_directory(root: Path) -> tuple[int, str]:
     relative = Path(LEDGER_VIEW_PATH)
-    current = root
-    for part in relative.parts[:-1]:
-        current /= part
-        if current.is_symlink():
-            raise ValueError(f"固定视图路径不能经过符号链接：{current}")
-        if current.exists() and not current.is_dir():
-            raise ValueError(f"固定视图路径的父级不是目录：{current}")
-
-    output = current / relative.parts[-1]
-    if output.is_symlink():
-        raise ValueError(f"固定视图路径不能是符号链接：{output}")
-    if output.exists() and not output.is_file():
-        raise ValueError(f"固定视图路径必须是普通文件：{output}")
-
-    output.parent.mkdir(parents=True, exist_ok=True)
-    if output.parent.is_symlink() or output.is_symlink():
-        raise ValueError(f"固定视图路径不能经过符号链接：{output}")
-    return output
-
-
-def write_fixed_output(output: Path, text: str) -> None:
-    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+    flags = os.O_RDONLY
+    if hasattr(os, "O_DIRECTORY"):
+        flags |= os.O_DIRECTORY
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
-    descriptor = os.open(output, flags, 0o644)
-    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-        handle.write(text)
+
+    directory_fd = os.open(root, flags)
+    for part in relative.parts[:-1]:
+        try:
+            next_fd = os.open(part, flags, dir_fd=directory_fd)
+        except FileNotFoundError:
+            os.mkdir(part, 0o755, dir_fd=directory_fd)
+            next_fd = os.open(part, flags, dir_fd=directory_fd)
+        os.close(directory_fd)
+        directory_fd = next_fd
+    return directory_fd, relative.parts[-1]
+
+
+def write_fixed_output(root: Path, text: str) -> Path:
+    directory_fd, filename = open_fixed_directory(root)
+    temporary_name = None
+    try:
+        try:
+            existing = os.stat(filename, dir_fd=directory_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            existing = None
+        if existing is not None:
+            if stat.S_ISLNK(existing.st_mode):
+                raise ValueError(f"固定视图路径不能是符号链接：{root / LEDGER_VIEW_PATH}")
+            if not stat.S_ISREG(existing.st_mode):
+                raise ValueError(f"固定视图路径必须是普通文件：{root / LEDGER_VIEW_PATH}")
+            if existing.st_nlink != 1:
+                raise ValueError(f"固定视图路径不能是硬链接：{root / LEDGER_VIEW_PATH}")
+
+        temporary_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        if hasattr(os, "O_NOFOLLOW"):
+            temporary_flags |= os.O_NOFOLLOW
+        for _ in range(10):
+            candidate = f".{filename}.{os.getpid()}.{secrets.token_hex(8)}.tmp"
+            try:
+                descriptor = os.open(
+                    candidate,
+                    temporary_flags,
+                    0o644,
+                    dir_fd=directory_fd,
+                )
+            except FileExistsError:
+                continue
+            temporary_name = candidate
+            break
+        else:
+            raise OSError("无法创建固定视图的临时文件")
+
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(
+            temporary_name,
+            filename,
+            src_dir_fd=directory_fd,
+            dst_dir_fd=directory_fd,
+        )
+        temporary_name = None
+        return root / LEDGER_VIEW_PATH
+    finally:
+        if temporary_name is not None:
+            try:
+                os.unlink(temporary_name, dir_fd=directory_fd)
+            except FileNotFoundError:
+                pass
+        os.close(directory_fd)
 
 
 def short_list(values, limit=None):
@@ -544,8 +591,7 @@ def main() -> int:
         )
         return 0
 
-    output = prepare_fixed_output(root)
-    write_fixed_output(output, text)
+    output = write_fixed_output(root, text)
     print(f"rendered {output} ({len(items)} items, {len(text.splitlines())} lines)")
     return 0
 
