@@ -417,7 +417,7 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
         // ordered and resumeable instead of relying on one oversized response.
         var bytesBounded = (descriptor.MaxAudioBytes - 44L) / 2L;
         if (bytesBounded <= 0) throw new DomainException(40901, "多模态预设音频预算不足");
-        var durationBounded = (long)NoteAsrPlan.SampleRate * 10 * 60;
+        var durationBounded = (long)NoteAsrPlan.MaxSamplesPerSlice;
         return checked((int)Math.Min(bytesBounded, durationBounded));
     }
 

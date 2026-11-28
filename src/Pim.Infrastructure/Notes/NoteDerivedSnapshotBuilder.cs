@@ -282,7 +282,7 @@ public sealed class NoteDerivedSnapshotBuilder(
                     {
                         var expectedBytes = await materials.ReadAudioSliceAsync(owner,
                             version.Upload.VersionId, step.FileIndex, step.SourceOffset,
-                            step.Samples, ct);
+                            step.Samples, ct, NoteAsrPlan.BudgetOrDefault(asr.SamplesPerCall));
                         var expectedHash = Convert.ToHexString(SHA256.HashData(expectedBytes))
                             .ToLowerInvariant();
                         if (expectedBytes.Length != audio.SizeBytes ||

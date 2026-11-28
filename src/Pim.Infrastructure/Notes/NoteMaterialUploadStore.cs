@@ -409,11 +409,16 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
     }
 
     internal async Task<byte[]> ReadAudioSliceAsync(Guid owner, Guid versionId, int fileIndex,
-        long offsetSamples, long samples, CancellationToken ct)
+        long offsetSamples, long samples, CancellationToken ct, long? maxSamples = null)
     {
+        // Callers pass their persisted task budget (multimodal routes may use up to ten minutes).
+        // Omitting it keeps the legacy one-minute bound instead of widening it implicitly.
+        var budget = maxSamples ?? NoteAsrPlan.SamplesPerCall;
         byte[]? wav = null;
         NoteUploadedMaterial? opus = null;
         string? cachePath = null;
+        if (budget is <= 0 or > NoteAsrPlan.MaxSamplesPerSlice)
+            throw Invalid("录音分片预算超出单次读取上限");
         await using (var lease = await LockAsync(owner, ct))
         {
             var ledger = await LoadLedgerAsync(owner, ct);
@@ -421,7 +426,7 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
             var file = FileAt(NoteMaterialManifestValidator.Validate(
                 await RequestAsync(owner, versionId, ct), ReadLimits), fileIndex);
             if (file.Kind != "AudioChunk" || offsetSamples < 0 ||
-                samples is <= 0 or > NoteAsrPlan.SamplesPerCall ||
+                samples <= 0 || samples > budget ||
                 file.Samples is not { } sourceSamples || offsetSamples > sourceSamples ||
                 samples > sourceSamples - offsetSamples)
                 throw Invalid("录音分片范围无效");
@@ -525,14 +530,43 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
     {
         await using var lease = await LockAsync(userId, ct);
         var ledger = await LoadLedgerAsync(userId, ct);
-        foreach (var key in ledger.Versions.Where(item => item.Value.NoteId == noteId).Select(item => item.Key).ToArray())
+        var keys = ledger.Versions.Where(item => item.Value.NoteId == noteId)
+            .Select(item => item.Key).ToArray();
+        foreach (var key in keys)
         {
             ledger.Versions.Remove(key);
             ledger.Deletions.Add(key);
+            await DeleteAudioCacheAsync(userId, key, ct);
         }
         ledger.Heads.Remove(Key(noteId));
         await SaveLedgerAsync(userId, ledger, ct);
         await PurgeAsync(userId, ledger, ct);
+    }
+
+    /// <summary>
+    /// PCM cache entries are derived, content-addressed data, so dropping them cannot lose source
+    /// audio; a later read simply decodes again. Only this note's own audio keys are removed.
+    /// </summary>
+    private async Task DeleteAudioCacheAsync(Guid userId, string versionKey, CancellationToken ct)
+    {
+        try
+        {
+            var versionId = Guid.ParseExact(versionKey, "D");
+            var request = await RequestAsync(userId, versionId, ct);
+            foreach (var file in NoteMaterialManifestValidator.Validate(request, ReadLimits))
+            {
+                if (file.Kind != "AudioChunk" ||
+                    (file.AudioFormat ?? NoteAudioFormat.Wav) != NoteAudioFormat.Opus) continue;
+                TryDelete(AudioCachePath(file));
+                _verifiedFiles.RemoveWhere(key =>
+                    key == VerifyKey(userId, versionId, file.Index));
+            }
+        }
+        catch (Exception error) when (error is IOException or InvalidDataException or
+            JsonException or DomainException)
+        {
+            // The version may already be partially gone; its cache stays bounded by TTL/byte quota.
+        }
     }
 
     private async Task VerifyFileAsync(Guid userId, Guid versionId, int index, NoteUploadedMaterial file, CancellationToken ct)

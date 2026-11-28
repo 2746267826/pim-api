@@ -139,7 +139,8 @@ public sealed class NoteAsrJob(NoteAsrTaskStore tasks, NoteMaterialUploadStore m
                 try
                 {
                     bytes = await materials.ReadAudioSliceAsync(owner, state.Request.VersionId,
-                        step.FileIndex, step.SourceOffset, step.Samples, ct);
+                        step.FileIndex, step.SourceOffset, step.Samples, ct,
+                        NoteAsrPlan.BudgetOrDefault(state.SamplesPerCall));
                 }
                 catch (OperationCanceledException) { throw; }
                 catch (Exception error) when (error is IOException or InvalidDataException or
@@ -256,7 +257,8 @@ public sealed class NoteAsrJob(NoteAsrTaskStore tasks, NoteMaterialUploadStore m
                     checked(start + request.Range.Samples) > rootStep.SourceOffset + rootStep.Samples)
                     throw new DomainException(40901, "本地音频范围超出固定分片，本片未发送");
                 var bytes = await materials.ReadAudioSliceAsync(owner, rootState.Request.VersionId,
-                    rootStep.FileIndex, start, request.Range.Samples, token);
+                    rootStep.FileIndex, start, request.Range.Samples, token,
+                    NoteAsrPlan.BudgetOrDefault(rootState.SamplesPerCall));
                 current = await tasks.ReadAsync(owner, taskId, token);
                 if (current.StopRequested) throw new OperationCanceledException(token);
                 if (current.AttemptId != rootState.AttemptId)

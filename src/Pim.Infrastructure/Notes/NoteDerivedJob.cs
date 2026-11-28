@@ -565,7 +565,8 @@ public sealed class NoteDerivedJob(
             try
             {
                 bytes = await materials.ReadAudioSliceAsync(state.Owner, state.Request.VersionId,
-                    audio.FileIndex, audio.SourceOffsetSamples, audio.Samples, ct);
+                    audio.FileIndex, audio.SourceOffsetSamples, audio.Samples, ct,
+                    NoteDerivedAudioContext.MaxSamplesPerSlice);
             }
             catch (DomainException error)
             {

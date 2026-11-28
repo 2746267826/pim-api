@@ -571,7 +571,8 @@ public sealed class NoteAsrRoutingService(PimDbContext db, ICurrentUserService u
             throw new DomainException(40901, "固定输入快照不匹配或分片不存在");
         var step = state.Steps[segmentIndex];
         var bytes = await materials.ReadAudioSliceAsync(owner, attempt.VersionId, step.FileIndex,
-            step.SourceOffset, step.Samples, ct);
+            step.SourceOffset, step.Samples, ct,
+            NoteAsrPlan.BudgetOrDefault(state.SamplesPerCall));
         var sliceSha = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
         return new(bytes, sliceSha, step.Sha256, owner, lease.NodeId, lease.Id, lease.AttemptId,
             attempt.VersionId, lease.FencingToken, segmentIndex, step.FileIndex, step.SourceOffset, step.Samples);

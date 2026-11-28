@@ -9,6 +9,12 @@ internal static class NoteAsrPlan
     internal const int SampleRate = 16_000;
     // One minute is within the existing attachment/ASR boundary. Samples, not rounded milliseconds, define coverage.
     internal const int SamplesPerCall = SampleRate * 60;
+    // Hard upper bound for any single local read/decode request. Cloud multimodal callers may
+    // raise their effective budget up to this ten-minute duration; no caller may exceed it.
+    internal const int MaxSamplesPerSlice = SampleRate * 10 * 60;
+    // Tasks persisted before the budget existed have no SamplesPerCall; their plan used one-minute steps.
+    internal static int BudgetOrDefault(int samplesPerCall) =>
+        samplesPerCall > 0 ? samplesPerCall : SamplesPerCall;
     internal static List<NoteAsrStep> Build(NoteMaterialVersionDto version, int samplesPerCall = SamplesPerCall)
     {
         if (version.Upload.Phase == "Uploading") throw new DomainException(40901, "请先上传完整固定材料，再开始转写");
