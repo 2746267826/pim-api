@@ -90,6 +90,18 @@ public sealed class NoteAsrBatchPollJob(
                           // every scan page while still allowing the provider poller to retry
                           // after its shorter PollBackoff.
                           (job.LastPolledAt == null || job.LastPolledAt < repairDue) &&
+                          // A terminal audit closed with the explicit unavailable marker is a
+                          // converged dead end: the marker always reflects the persisted evidence.
+                          // It is only re-opened when newer result evidence was imported after the
+                          // marker was written (import committed, audit write failed). Without this
+                          // test the same unrepairable row would be re-claimed every backoff window
+                          // and starve the page.
+                          !db.AiRequestLogs.Any(a =>
+                              a.UserId == job.OwnerId && a.ClientRequestId == job.Id &&
+                              a.Purpose == NoteAsrBatchService.AuditPurpose &&
+                              a.ErrorCode == NoteAsrBatchService.BatchUsageUnavailableCode &&
+                              (job.OutputImportedAt == null || a.FinishedAt == null ||
+                               a.FinishedAt >= job.OutputImportedAt)) &&
                           !db.AiRequestLogs.Any(a =>
                               a.UserId == job.OwnerId && a.ClientRequestId == job.Id &&
                               a.Purpose == NoteAsrBatchService.AuditPurpose &&
@@ -100,10 +112,16 @@ public sealed class NoteAsrBatchPollJob(
                            db.AiRequestLogs.Any(a =>
                                a.UserId == job.OwnerId && a.ClientRequestId == job.Id &&
                                a.Purpose == NoteAsrBatchService.AuditPurpose &&
-                               (a.Status != "succeeded" && a.Status != "failed" &&
-                                a.Status != "incomplete" && a.Status != "timed_out" &&
-                                a.Status != "cancelled" ||
-                                a.Status != "succeeded" || a.TotalTokens == null))))
+                               ((a.Status != "succeeded" && a.Status != "failed" &&
+                                 a.Status != "incomplete" && a.Status != "timed_out" &&
+                                 a.Status != "cancelled") ||
+                                (job.Status == "Completed" && a.Status != "succeeded") ||
+                                (job.Status == "Failed" && a.Status != "failed") ||
+                                (job.Status == "Cancelled" && a.Status != "cancelled") ||
+                                ((job.Status == "Expired" || job.Status == "Unknown") &&
+                                 a.Status != "incomplete" && a.Status != "timed_out" &&
+                                 a.Status != "cancelled") ||
+                                a.TotalTokens == null))))
             .OrderBy(job => job.LastPolledAt ?? DateTimeOffset.MinValue)
             .ThenBy(job => job.OutputImportedAt ?? job.UpdatedAt)
             .ThenBy(job => job.Id)

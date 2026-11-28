@@ -410,6 +410,14 @@ public sealed class AiUsageLimitService(
         var costUsed = costKnown.Count == 0 ? null : (decimal?)costKnown.Sum(x => x.EstimatedCost!.Value);
         var running = rows.Count(x => x.Status is "running" or "preparing" or "queued" or "cancelling");
         var incomplete = rows.Count(x => x.Status is "incomplete" or "timed_out" or "cancelled");
+        var partialBatches = providerRows
+            .Where(x => x.Purpose == AiCallPurposes.AsrBatch && x.TotalTokens is not null)
+            .Select(x => AiBatchUsageMetadata.TryRead(x.MetadataJson, out var marker)
+                ? (AiBatchUsageMetadata.Snapshot?)marker
+                : null)
+            .Where(x => x is { Partial: true })
+            .Select(x => x!.Value)
+            .ToList();
         // A running Batch is in-flight, not a terminal unknown. Its token usage is reconciled when
         // the Batch reaches a terminal state. The job row must still be open: if the Batch is
         // already terminal but its audit projection failed, the missing tokens are unknown and
@@ -425,6 +433,13 @@ public sealed class AiUsageLimitService(
         var costStatus = AiUsageLimitStatuses.Unsupported;
         var notes = new List<string>();
         if (tokenUnknown > 0) notes.Add("部分请求未上报Token，累计仅包含已上报值");
+        if (partialBatches.Count > 0)
+        {
+            var failed = partialBatches.Sum(x => (long)x.FailedItems);
+            var unconfirmed = partialBatches.Sum(x => (long)x.UnconfirmedItems);
+            notes.Add($"{partialBatches.Count} 个Batch调用存在未上报Token的条目；累计仅包含已确认条目" +
+                      $"（provider明确失败{failed}条未上报用量、缺少证据{unconfirmed}条保持UNKNOWN）");
+        }
         if (rule.Currency is not null && costUnknown > 0)
             notes.Add("部分请求未提供所选币种的EstimatedCost，累计仅包含已知金额");
         if (running > 0) notes.Add("进行中或排队请求的用量尚待确认");
