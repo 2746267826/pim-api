@@ -14,6 +14,7 @@ import sys
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
@@ -55,8 +56,11 @@ class LedgerCase(unittest.TestCase):
         self.git("symbolic-ref", "HEAD", "refs/heads/master")
         self.git("config", "user.email", "ledger@example.invalid")
         self.git("config", "user.name", "Ledger Fixture")
-        self.commit = self.make_commit("fixture base", "2026-11-28T08:00:00+08:00")
-        self.second_commit = self.make_commit("fixture later", "2026-11-28T09:00:00+08:00")
+        self.make_commit("fixture base", "2026-11-28T08:00:00+08:00")
+        self.commit = self.make_commit("fixture snapshot", "2026-11-28T09:00:00+08:00")
+        self.git("switch", "-q", "-c", "fixture-pr-head")
+        self.second_commit = self.make_commit("fixture PR head", "2026-11-28T10:00:00+08:00")
+        self.git("switch", "-q", "master")
         self.commit_date = subprocess.run(
             ["git", "-C", str(self.git_root), "show", "-s", "--format=%cI", self.commit],
             capture_output=True, text=True, check=True).stdout.strip()
@@ -68,6 +72,13 @@ class LedgerCase(unittest.TestCase):
             "observed_at": SNAPSHOT_TIME,
         })
         self.save(self.ledger_path, ledger)
+        prs = self.load(self.prs_path)
+        for pr in prs["prs"]:
+            if pr.get("repo") == "pim-api" and pr.get("state") == "merged":
+                pr["head"] = self.commit
+                pr["merge_commit"] = self.commit
+                pr["state_verified_by"] = "git-history"
+        self.save(self.prs_path, prs)
         self.render()
         self.assert_baseline_valid()
 
@@ -86,8 +97,12 @@ class LedgerCase(unittest.TestCase):
         env = os.environ.copy()
         env["GIT_AUTHOR_DATE"] = date
         env["GIT_COMMITTER_DATE"] = date
+        (self.git_root / "fixture.txt").write_text(message + "\n", encoding="utf-8")
         subprocess.run(
-            ["git", "-C", str(self.git_root), "commit", "--allow-empty", "-q", "-m", message],
+            ["git", "-C", str(self.git_root), "add", "fixture.txt"],
+            capture_output=True, text=True, check=True)
+        subprocess.run(
+            ["git", "-C", str(self.git_root), "commit", "-q", "-m", message],
             capture_output=True, text=True, check=True, env=env)
         return subprocess.run(
             ["git", "-C", str(self.git_root), "rev-parse", "HEAD"],
@@ -103,7 +118,7 @@ class LedgerCase(unittest.TestCase):
     def render(self):
         proc = subprocess.run(
             [sys.executable, str(self.tmp / "scripts/ci/render-delivery-ledger.py"),
-             "--root", str(self.tmp), "--output", str(self.view_path)],
+             "--root", str(self.tmp)],
             capture_output=True, text=True)
         self.assertEqual(proc.returncode, 0, proc.stderr)
 
@@ -188,8 +203,12 @@ class LedgerCase(unittest.TestCase):
         return ev_id, flow_id
 
     def attach_pr(self, ledger, prs, *, state, repo="pim-api", number=9999,
-                  merge_commit=None, verified_by="github-api"):
+                  head=None, merge_commit=None, verified_by="github-api"):
         pid = f"PR-{repo}-{number}"
+        if head is None:
+            head = self.commit if state == "merged" else self.second_commit
+        if state == "merged" and merge_commit is None:
+            merge_commit = self.commit
         pr = {
             "id": pid,
             "repo": repo,
@@ -197,7 +216,7 @@ class LedgerCase(unittest.TestCase):
             "repository": f"2746267826/{repo}",
             "url": f"https://github.com/2746267826/{repo}/pull/{number}",
             "state": state,
-            "head": self.second_commit,
+            "head": head,
             "merge_commit": merge_commit,
             "observed_at": FIXTURE_TIME,
             "state_freshness": "current",
@@ -240,12 +259,51 @@ class LedgerCase(unittest.TestCase):
         self.item(ledger, item_id)["evidence"].append(f"EV-CI-{run_id}")
         return f"EV-CI-{run_id}"
 
-    def upgrade_to_pass(self, item_id="A10"):
+    def add_open_pr_with_current_ci(self):
+        ledger = self.load(self.ledger_path)
+        prs = self.load(self.prs_path)
+        evidence = self.load(self.evidence_path)
+        ci = self.load(self.ci_path)
+        pr_id = self.attach_pr(ledger, prs, state="open")
+        self.add_current_ci_evidence(ledger, evidence, ci, "A10", pr_id)
+        return ledger, prs, evidence, ci, pr_id
+
+    def authorize_item_only_pass(self, ledger, evidence, decisions, item_id):
+        did = f"DEC-ITEM-ONLY-{item_id}"
+        ev_id = f"EV-DEC-ITEM-ONLY-{item_id}"
+        evidence["evidence"].append({
+            "id": ev_id,
+            "type": "decision",
+            "level": "E0",
+            "freshness": "stale",
+            "claim": f"{item_id} 没有实现 PR，批准以 item-only 真实流程验收",
+            "source": "test fixture approved item-only scope",
+            "observed_at": "2026-11-28",
+            "items": [item_id],
+            "limits": "批准事实不是实现或真实验收证据。",
+        })
+        decisions["decisions"].append({
+            "id": did,
+            "type": "item-only-pass",
+            "status": "approved",
+            "approved_by": "user",
+            "rationale": "fixture: no implementation PR exists for this item",
+            "source": "test fixture approved item-only scope",
+            "items": [item_id],
+            "ac_ids": [],
+            "evidence": ev_id,
+        })
+        item = self.item(ledger, item_id)
+        item["decisions"].append(did)
+        item["evidence"].append(ev_id)
+
+    def upgrade_to_pass(self, item_id="A10", *, authorize_item_only=True):
         ledger = self.load(self.ledger_path)
         item = self.item(ledger, item_id)
         self.assertEqual(item["prs"], [], "fixture item must not depend on PR state")
         evidence = self.load(self.evidence_path)
         flows = self.load(self.flows_path)
+        decisions = self.load(self.decisions_path)
         platforms = [
             platform for platform, role in item["platform_roles"].items()
             if role in {"required", "read_only"}
@@ -266,10 +324,13 @@ class LedgerCase(unittest.TestCase):
             ac.pop("blocked", None)
             ac["verified"] = True
             ac["evidence"] = [ev_id]
+        if authorize_item_only:
+            self.authorize_item_only_pass(ledger, evidence, decisions, item_id)
         self.recount_status(ledger)
         self.save(self.ledger_path, ledger)
         self.save(self.evidence_path, evidence)
         self.save(self.flows_path, flows)
+        self.save(self.decisions_path, decisions)
         self.render()
         return ledger, evidence, flows
 
@@ -320,7 +381,7 @@ class LedgerCase(unittest.TestCase):
         self.save(self.evidence_path, evidence)
         self.save(self.flows_path, flows)
         self.render()
-        self.assert_fails_with("完整 ID 集与冻结权威映射")
+        self.assert_fails_with("完整 ID/text 集与冻结权威映射")
 
     def test_pass_fixture_cannot_swap_ac_id_at_same_count(self):
         ledger, evidence, flows = self.upgrade_to_pass()
@@ -335,7 +396,14 @@ class LedgerCase(unittest.TestCase):
         self.save(self.evidence_path, evidence)
         self.save(self.flows_path, flows)
         self.render()
-        self.assert_fails_with("完整 ID 集与冻结权威映射")
+        self.assert_fails_with("完整 ID/text 集与冻结权威映射")
+
+    def test_acceptance_text_is_frozen(self):
+        ledger = self.load(self.ledger_path)
+        self.item(ledger, "A01")["acceptance_criteria"][0]["text"] += "（被改写）"
+        self.save(self.ledger_path, ledger)
+        self.render()
+        self.assert_fails_with("完整 ID/text 集与冻结权威映射")
 
     # -- basic structural negatives ------------------------------------
     def test_stale_pass_is_rejected(self):
@@ -379,6 +447,41 @@ class LedgerCase(unittest.TestCase):
             ("dependencies=[{}]", "ledger.json",
              lambda data: data["items"][0].__setitem__("dependencies", [{}]),
              "依赖必须写成字符串"),
+            ("item.title=[]", "ledger.json",
+             lambda data: data["items"][0].__setitem__("title", []),
+             "缺少非空字符串 title"),
+            ("item.owner=[]", "ledger.json",
+             lambda data: data["items"][0].__setitem__("owner", []),
+             "缺少非空字符串 owner"),
+            ("item.implementation=[]", "ledger.json",
+             lambda data: data["items"][0].__setitem__("implementation", []),
+             "缺少非空字符串 implementation"),
+            ("item.next={}", "ledger.json",
+             lambda data: data["items"][0].__setitem__("next", {}),
+             "缺少非空字符串 next"),
+            ("flow.environment=[]", "real-flows.json",
+             lambda data: next(
+                 row for row in data["flows"]
+                 if row["result"] in {"passed", "passed_legacy", "failed"}
+             ).__setitem__("environment", []),
+             "流程必须记录 environment"),
+            ("flow.limits=[]", "real-flows.json",
+             lambda data: data["flows"][0].__setitem__("limits", []),
+             "必须写明未验证边界 limits"),
+            ("evidence.limits=[]", "evidence.json",
+             lambda data: data["evidence"][0].__setitem__("limits", []),
+             "缺少 limits"),
+            ("decision.approved_by=[]", "decisions.json",
+             lambda data: next(
+                 row for row in data["decisions"] if row["status"] == "approved"
+             ).__setitem__("approved_by", []),
+             "缺少非空字符串 approved_by"),
+            ("exception.approved_by=[]", "ledger.json",
+             lambda data: next(
+                 row for row in data["items"]
+                 if row["status"] == "APPROVED-EXCEPTION"
+             )["exception"].__setitem__("approved_by", []),
+             "APPROVED-EXCEPTION 无批准：缺少 approved_by"),
         ]
         for label, filename, mutate, expected in cases:
             with self.subTest(label=label):
@@ -437,6 +540,14 @@ class LedgerCase(unittest.TestCase):
         self.save(self.decisions_path, decisions)
         self.render()
         self.assert_fails_with("不是 approved")
+
+    def test_approved_exception_requires_scope_exception_decision(self):
+        decisions = self.load(self.decisions_path)
+        dec = next(d for d in decisions["decisions"] if d["id"] == "DEC-B15")
+        dec["type"] = "product-decision"
+        self.save(self.decisions_path, decisions)
+        self.render()
+        self.assert_fails_with("必须为 type=scope-exception")
 
     def test_dangling_evidence(self):
         ledger = self.load(self.ledger_path)
@@ -599,6 +710,11 @@ class LedgerCase(unittest.TestCase):
     def test_current_pass_positive(self):
         self.upgrade_to_pass()
         self.assert_baseline_valid()
+
+    def test_item_only_pass_after_clearing_prs_requires_authorization(self):
+        ledger, _, _ = self.upgrade_to_pass(authorize_item_only=False)
+        self.assertEqual(self.item(ledger, "A10")["prs"], [])
+        self.assert_fails_with("PASS 没有实现 PR 时必须恰好有一个 approved item-only-pass")
 
     def test_pass_requires_every_acceptance_criterion(self):
         ledger = self.load(self.ledger_path)
@@ -1058,6 +1174,66 @@ class LedgerCase(unittest.TestCase):
         self.render()
         self.assert_fails_with("不是 ISO-8601 时间")
 
+    def test_source_snapshot_rejects_future_observed_at(self):
+        ledger = self.load(self.ledger_path)
+        ledger["source_snapshot"]["observed_at"] = (
+            datetime.now(timezone.utc) + timedelta(days=1)
+        ).isoformat()
+        self.save(self.ledger_path, ledger)
+        self.render()
+        self.assert_fails_with("observed_at 晚于当前 UTC 时间")
+
+    def test_current_flow_and_evidence_reject_future_observed_at(self):
+        _, evidence, flows = self.upgrade_to_pass()
+        future = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
+        ledger = self.load(self.ledger_path)
+        ledger["source_snapshot"]["observed_at"] = (
+            datetime.now(timezone.utc) + timedelta(days=1, hours=1)
+        ).isoformat()
+        next(f for f in flows["flows"] if f["id"] == "RF-TEST-A10")[
+            "observed_at"] = future
+        next(e for e in evidence["evidence"] if e["id"] == "EV-RF-TEST-A10")[
+            "observed_at"] = future
+        self.save(self.ledger_path, ledger)
+        self.save(self.evidence_path, evidence)
+        self.save(self.flows_path, flows)
+        self.render()
+        ok = self.run_validator()
+        self.assertFalse(ok)
+        self.assertIn(
+            "real-flows.json:RF-TEST-A10: observed_at 晚于当前 UTC 时间",
+            self.last_stderr,
+        )
+        self.assertIn(
+            "evidence.json:EV-RF-TEST-A10: observed_at 晚于当前 UTC 时间",
+            self.last_stderr,
+        )
+
+    def test_current_pr_and_ci_reject_future_observed_at(self):
+        ledger, prs, evidence, ci, pr_id = self.add_open_pr_with_current_ci()
+        future = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
+        ledger["source_snapshot"]["observed_at"] = (
+            datetime.now(timezone.utc) + timedelta(days=1, hours=1)
+        ).isoformat()
+        next(pr for pr in prs["prs"] if pr["id"] == pr_id)["observed_at"] = future
+        next(run for run in ci["runs"] if run["run_id"] == "900000")[
+            "observed_at"] = future
+        self.save(self.ledger_path, ledger)
+        self.save(self.prs_path, prs)
+        self.save(self.evidence_path, evidence)
+        self.save(self.ci_path, ci)
+        self.render()
+        ok = self.run_validator()
+        self.assertFalse(ok)
+        self.assertIn(
+            f"prs.json:{pr_id}: observed_at 晚于当前 UTC 时间",
+            self.last_stderr,
+        )
+        self.assertIn(
+            "ci-runs.json:CI-900000: observed_at 晚于当前 UTC 时间",
+            self.last_stderr,
+        )
+
     def test_current_source_head_mismatch_is_rejected(self):
         _, evidence, flows = self.upgrade_to_pass()
         next(f for f in flows["flows"] if f["id"] == "RF-TEST-A10")["source_commit"] = self.second_commit
@@ -1134,15 +1310,53 @@ class LedgerCase(unittest.TestCase):
         self.render()
         self.assert_baseline_valid()
 
-    def test_pass_rejects_merge_commit_after_snapshot(self):
+    def test_pass_rejects_stale_merged_pr(self):
         ledger, _, _ = self.upgrade_to_pass()
         prs = self.load(self.prs_path)
-        self.attach_pr(ledger, prs, state="merged", number=9994,
-                       merge_commit=self.second_commit, verified_by="git-history")
+        pid = self.attach_pr(ledger, prs, state="merged", number=9996,
+                             merge_commit=self.commit, verified_by="git-history")
+        next(pr for pr in prs["prs"] if pr["id"] == pid)["state_freshness"] = "stale"
         self.save(self.ledger_path, ledger)
         self.save(self.prs_path, prs)
         self.render()
-        self.assert_fails_with("merge_commit 晚于 source_snapshot.commit")
+        self.assert_fails_with(f"PASS 依赖的 PR {pid} 不是 current 状态")
+
+    def test_merged_pr_requires_head(self):
+        ledger, _, _ = self.upgrade_to_pass()
+        prs = self.load(self.prs_path)
+        pid = self.attach_pr(ledger, prs, state="merged", number=9996,
+                             merge_commit=self.commit, verified_by="git-history")
+        next(pr for pr in prs["prs"] if pr["id"] == pid)["head"] = None
+        self.save(self.ledger_path, ledger)
+        self.save(self.prs_path, prs)
+        self.render()
+        self.assert_fails_with("merged PR 必须给出非空 head")
+
+    def test_merged_pr_rejects_unresolvable_head(self):
+        ledger, _, _ = self.upgrade_to_pass()
+        prs = self.load(self.prs_path)
+        pid = self.attach_pr(ledger, prs, state="merged", number=9996,
+                             head="deadbeef" * 5,
+                             merge_commit=self.commit, verified_by="git-history")
+        self.save(self.ledger_path, ledger)
+        self.save(self.prs_path, prs)
+        self.render()
+        self.assert_fails_with("merged PR head 无法解析")
+
+    def test_merged_pr_head_must_relate_to_merge_commit(self):
+        ledger, _, _ = self.upgrade_to_pass()
+        prs = self.load(self.prs_path)
+        self.attach_pr(ledger, prs, state="merged", number=9996,
+                       head=self.second_commit, merge_commit=self.commit,
+                       verified_by="git-history")
+        self.save(self.ledger_path, ledger)
+        self.save(self.prs_path, prs)
+        self.render()
+        self.assert_fails_with("merged PR head 与 merge_commit 没有可验证关系")
+
+    def test_snapshot_must_equal_master_tip(self):
+        self.make_commit("fixture newer master", "2026-11-28T10:30:00+08:00")
+        self.assert_fails_with("必须等于声明分支 master 当前 tip")
 
     def test_current_ci_requires_current_head_flag(self):
         ledger = self.load(self.ledger_path)
@@ -1195,6 +1409,61 @@ class LedgerCase(unittest.TestCase):
         self.save(self.ci_path, ci)
         self.render()
         self.assert_fails_with("head_is_current=true 但 head 与当前 PR head 不一致")
+
+    def test_current_ci_rejects_forged_repository(self):
+        ledger, prs, evidence, ci, _ = self.add_open_pr_with_current_ci()
+        next(run for run in ci["runs"] if run["run_id"] == "900000")[
+            "repository"] = "attacker/pim-api"
+        self.save(self.ledger_path, ledger)
+        self.save(self.prs_path, prs)
+        self.save(self.evidence_path, evidence)
+        self.save(self.ci_path, ci)
+        self.render()
+        self.assert_fails_with("repository 必须为 2746267826/pim-api")
+
+    def test_current_ci_rejects_forged_workflow(self):
+        ledger, prs, evidence, ci, _ = self.add_open_pr_with_current_ci()
+        next(run for run in ci["runs"] if run["run_id"] == "900000")[
+            "workflow"] = "Fake workflow"
+        self.save(self.ledger_path, ledger)
+        self.save(self.prs_path, prs)
+        self.save(self.evidence_path, evidence)
+        self.save(self.ci_path, ci)
+        self.render()
+        self.assert_fails_with("current CI workflow 必须为 'CI'")
+
+    def test_current_ci_rejects_unregistered_job(self):
+        ledger, prs, evidence, ci, _ = self.add_open_pr_with_current_ci()
+        next(run for run in ci["runs"] if run["run_id"] == "900000")[
+            "jobs"].append("forged-job")
+        self.save(self.ledger_path, ledger)
+        self.save(self.prs_path, prs)
+        self.save(self.evidence_path, evidence)
+        self.save(self.ci_path, ci)
+        self.render()
+        self.assert_fails_with("current CI jobs 含未登记 job")
+
+    def test_current_ci_requires_ci_gate_job(self):
+        ledger, prs, evidence, ci, _ = self.add_open_pr_with_current_ci()
+        next(run for run in ci["runs"] if run["run_id"] == "900000")[
+            "jobs"] = ["build-api"]
+        self.save(self.ledger_path, ledger)
+        self.save(self.prs_path, prs)
+        self.save(self.evidence_path, evidence)
+        self.save(self.ci_path, ci)
+        self.render()
+        self.assert_fails_with("current CI jobs 必须包含 CI Gate")
+
+    def test_current_ci_requires_current_pr_registry_state(self):
+        ledger, prs, evidence, ci, pr_id = self.add_open_pr_with_current_ci()
+        next(pr for pr in prs["prs"] if pr["id"] == pr_id)[
+            "state_freshness"] = "stale"
+        self.save(self.ledger_path, ledger)
+        self.save(self.prs_path, prs)
+        self.save(self.evidence_path, evidence)
+        self.save(self.ci_path, ci)
+        self.render()
+        self.assert_fails_with("current CI 关联的 PR 必须 state_freshness=current")
 
     def test_pass_rejects_stale_ci_evidence(self):
         ledger, evidence, _ = self.upgrade_to_pass()
@@ -1266,7 +1535,7 @@ class LedgerCase(unittest.TestCase):
 
     def test_snapshot_commit_date_must_match_git(self):
         ledger = self.load(self.ledger_path)
-        ledger["source_snapshot"]["commit_date"] = "2026-11-28T09:00:00+08:00"
+        ledger["source_snapshot"]["commit_date"] = "2026-11-28T08:00:00+08:00"
         self.save(self.ledger_path, ledger)
         self.render()
         self.assert_fails_with("commit_date 与 git 记录不一致")
@@ -1278,6 +1547,20 @@ class LedgerCase(unittest.TestCase):
         self.save(self.ledger_path, ledger)
         self.render()
         self.assert_fails_with("branch 必须属于明确允许集合")
+
+    def test_snapshot_repo_is_fixed(self):
+        ledger = self.load(self.ledger_path)
+        ledger["source_snapshot"]["repo"] = "attacker/pim-api"
+        self.save(self.ledger_path, ledger)
+        self.render()
+        self.assert_fails_with("repo 必须固定为 2746267826/pim-api")
+
+    def test_source_package_sha256_is_fixed(self):
+        ledger = self.load(self.ledger_path)
+        ledger["scope"]["source_package_sha256"] = "0" * 64
+        self.save(self.ledger_path, ledger)
+        self.render()
+        self.assert_fails_with("source_package_sha256 必须固定为")
 
 
 class RendererCase(unittest.TestCase):
@@ -1296,7 +1579,7 @@ class RendererCase(unittest.TestCase):
         output = self.tmp / "docs/product/pim-delivery-ledger.md"
         proc = subprocess.run(
             [sys.executable, str(self.tmp / "scripts/ci/render-delivery-ledger.py"),
-             "--root", str(self.tmp), "--output", str(output)],
+             "--root", str(self.tmp)],
             capture_output=True, text=True)
         self.assertEqual(proc.returncode, 0, proc.stderr)
         return output.read_text(encoding="utf-8")
@@ -1390,23 +1673,71 @@ class RendererCase(unittest.TestCase):
         text = self.render()
         self.assertIn("verified 0/0", text)
 
+    def test_renderer_rejects_arbitrary_output_path(self):
+        outside_dir = Path(tempfile.mkdtemp(prefix="pim-ledger-outside-"))
+        self.addCleanup(shutil.rmtree, outside_dir, True)
+        target = outside_dir / "escape.md"
+        proc = subprocess.run(
+            [sys.executable, str(self.tmp / "scripts/ci/render-delivery-ledger.py"),
+             "--root", str(self.tmp), "--output", str(target)],
+            capture_output=True, text=True)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertFalse(target.exists())
+
+    def test_renderer_ignores_or_rejects_rendered_view_path_escape(self):
+        ledger_path = self.tmp / "docs/product/delivery/ledger.json"
+        ledger = self.load_ledger(ledger_path)
+        outside = self.tmp.parent / "pim-ledger-escape.md"
+        self.addCleanup(outside.unlink, missing_ok=True)
+        for candidate in (str(outside), "../pim-ledger-escape.md"):
+            with self.subTest(candidate=candidate):
+                ledger["rendered_view"]["path"] = candidate
+                ledger_path.write_text(
+                    json.dumps(ledger, ensure_ascii=False, indent=2) + "\n",
+                    encoding="utf-8")
+                proc = subprocess.run(
+                    [sys.executable, str(self.tmp / "scripts/ci/render-delivery-ledger.py"),
+                     "--root", str(self.tmp)],
+                    capture_output=True, text=True)
+                self.assertNotEqual(proc.returncode, 0)
+                self.assertFalse(outside.exists())
+                self.assertFalse((self.tmp / "pim-ledger-escape.md").exists())
+
+    def load_ledger(self, path):
+        return json.loads(path.read_text(encoding="utf-8"))
+
 
 class RealLedgerTest(unittest.TestCase):
+    def isolated_git_root(self, parent):
+        git_root = Path(parent) / "repo.git"
+        subprocess.run(
+            ["git", "clone", "--shared", "--no-checkout", "--quiet",
+             str(REPO), str(git_root)],
+            capture_output=True, text=True, check=True)
+        ledger = json.loads(
+            (REPO / "docs/product/delivery/ledger.json").read_text(encoding="utf-8"))
+        snapshot = ledger["source_snapshot"]["commit"]
+        for ref in ("refs/heads/master", "refs/remotes/origin/master"):
+            subprocess.run(
+                ["git", "-C", str(git_root), "update-ref", ref, snapshot],
+                capture_output=True, text=True, check=True)
+        return git_root
+
     def test_real_ledger_is_valid(self):
-        err = io.StringIO()
-        with redirect_stderr(err):
-            ok = validator_module.Validator(REPO).run()
-        self.assertTrue(ok, err.getvalue())
+        with tempfile.TemporaryDirectory(prefix="pim-ledger-git-") as tmp:
+            git_root = self.isolated_git_root(tmp)
+            err = io.StringIO()
+            with redirect_stderr(err):
+                ok = validator_module.Validator(REPO, git_root=git_root).run()
+            self.assertTrue(ok, err.getvalue())
 
     def test_real_ledger_smoke_counts(self):
-        with tempfile.TemporaryDirectory(prefix="pim-ledger-real-") as tmp:
-            output = Path(tmp) / "ledger.md"
-            proc = subprocess.run(
-                [sys.executable, str(REPO / "scripts/ci/render-delivery-ledger.py"),
-                 "--root", str(REPO), "--output", str(output)],
-                capture_output=True, text=True)
-            self.assertEqual(proc.returncode, 0, proc.stderr)
-            text = output.read_text(encoding="utf-8")
+        proc = subprocess.run(
+            [sys.executable, str(REPO / "scripts/ci/render-delivery-ledger.py"),
+             "--root", str(REPO), "--stdout"],
+            capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        text = proc.stdout
         self.assertIn("- 状态：PASS 0，", text)
         self.assertIn("stale 161", text)
         self.assertIn("真实流程：18 条记录，其中 current 通过 0 条", text)

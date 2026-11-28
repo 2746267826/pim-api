@@ -59,7 +59,7 @@
       "APPROVED-EXCEPTION": 6,
       "BLOCKED": 2
     },
-    "acceptance_scope_version": 1,
+    "acceptance_scope_version": 2,
     "acceptance_criteria_total": 731,
     "source_package": "PIM功能确认-最终交付-20261122.zip",
     "source_package_sha256": "b488a01e6f317a2735f387a918787204791fb32a38ad9ce064a07166f4b8a864"

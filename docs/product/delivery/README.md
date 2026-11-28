@@ -14,13 +14,13 @@
   D 8、E 3、F 11、G 13、H 11、I 4、J 9、K 4、L 14、M 6、N 3、O 6、P 5、Q 8、R 5、
   S 1、Z 2。validator 从实际 items 重算前缀计数、状态计数和总数，不接受只改声明值或
   用另一个合法 ID 替换成员。
-- 验收条件 ID 集另有一层冻结权威：`acceptance_scope_version = 1`、
-  `acceptance_criteria_total = 731`，完整 ID 映射的 SHA-256 为
-  `d3f70db5ba12da6ee0d022f5aace8d060f9720fd08217b5d86a2ad8b7fa519d9`。
-  validator 对“item ID → 排序后的 AC ID 列表”做规范化 JSON 哈希，逐 item 检查完整集合、
-  重复和遗漏。仅保持总数不变、删除一个 AC 再补另一个合法 ID、或删掉子集后只剩一条，
-  都不能通过；新增、删除或替换 AC 必须显式升级版本并更新权威哈希，同时同步全部派生计数和
-  生成视图，不能只改 `acceptance_criteria_total`。
+- 验收条件 ID 与文本另有一层冻结权威：`acceptance_scope_version = 2`、
+  `acceptance_criteria_total = 731`，完整 ID + text 映射的 SHA-256 为
+  `e3402e18b210f89ffaed6e0528c7d43984f570d32fc2d88c71d38c4cae0256b1`。
+  validator 对“item ID → 排序后的 `[AC ID, text]` 列表”做规范化 JSON 哈希，逐 item 检查
+  完整集合、重复和遗漏。仅保持总数不变、删除一个 AC 再补另一个合法 ID、替换 ID，或保留
+  ID 但改写验收文本，都不能通过；新增、删除、替换 AC 或修改文本必须显式升级版本并更新
+  权威哈希，同时同步全部派生计数和生成视图，不能只改 `acceptance_criteria_total`。
 
 ## 文件
 
@@ -67,7 +67,7 @@ decision 最多绑定一个 AC，不能把 `R05-AC05` 的裁决复用到 `R05-AC
 ### 升级为 PASS 的条件
 
 1. `freshness` 为 `current`，且 `implementation_basis` 不是 legacy 快照；
-2. item 的完整 AC ID 集与冻结权威映射一致，全部 `acceptance_criteria[].verified` 为真；
+2. item 的完整 AC ID/text 集与冻结权威映射一致，全部 `acceptance_criteria[].verified` 为真；
 3. 每条 AC 至少引用一条 current、`result=passed` 的 E4/E5/E6 真实流程证据；E1/E2/E3、
    `failed`、`blocked`、`passed_legacy`、`not-run` 或 stale 证据都不能代替 AC proof；
 4. 该流程与 evidence 显式声明同一个 AC，且 flow/evidence 的 `items` 与 `ac_ids` 完全一致；
@@ -78,11 +78,15 @@ decision 最多绑定一个 AC，不能把 `R05-AC05` 的裁决复用到 `R05-AC
    stale `failed`/`blocked` 历史流程，该流程必须通过 `superseded_by` 指向覆盖其全部 AC 的
    current passed 流程；没有明确替代关系的历史失败不能与 PASS 共存，不能用“保留失败同时
    标 PASS”绕过；
-7. item 引用的每个实现 PR 必须是 `state_freshness=current` 的 `merged` PR，并带符合 SHA
-   格式的 `merge_commit`；pim-api 的 merge_commit 还必须能在本地 Git 解析、属于 `master`，
-   且是 `source_snapshot.commit` 的祖先。merge 发生在快照之后时必须先刷新快照再 PASS。
-   Android/Windows 的 merge_commit 只能做结构化存在性校验，外部仓库归属仍需人工/CI 核验；
-8. 关联的 current CI 证据不得是 stale/旧 head；PASS 中 current CI 必须
+7. item 引用的每个实现 PR 必须是 `state_freshness=current` 的 `merged` PR，`head` 与
+   `merge_commit` 都不能为空且必须符合 SHA 格式；pim-api 的 head/merge_commit 还必须能在
+   本地 Git 解析，二者至少满足相等、head 是 merge_commit 祖先、tree 相同或 merge 提交声明
+   该 PR 编号之一，merge_commit 还必须属于 `master` 且不晚于 `source_snapshot.commit`。
+   merge 发生在快照之后时必须先刷新快照再 PASS。Android/Windows 没有本地仓库对象，head
+   只做结构化校验；外部 GitHub 的 head↔merge 关系不能在离线 DB 校验中被声称已证明；
+8. 关联的 current CI 证据不得是 stale/旧 head；current run 必须关联
+   `state_freshness=current` 的 PR，repository 必须是 `2746267826/<repo>`，workflow 必须为
+   登记值 `CI`，jobs 只能来自该仓库固定集合且必须包含 `CI Gate`。PASS 中 current CI 还必须
    `head_is_current=true`、head 与对应 PR head 一致、run 结论为 `success`，且 CI 证据关联的
    item 必须引用该 PR；
 9. 任意 AC 为 BLOCKED、pending，或 AC 引用了 stale/不合格证据时，不得标 PASS。
@@ -93,9 +97,12 @@ PASS 至少要有 `required` 或 `read_only` 平台；把全部适用平台改�
 未声明替代关系的失败，以及覆盖不足或目标不合格的替代关系仍会失败。
 
 **PR-less / item-only 例外**：若一个 item 在结构化源中确实没有关联实现 PR（`prs: []`），
-可以在其他条件全部满足时以 item-only 真实流程验收为 PASS；这是一条显式数据事实，不是
-“没有 PR 就自动通过”的捷径。只要 item 关联了 PR，所有 PR 都必须满足上述 merged/current/
-merge_commit 规则。若当前资料没有定义某项的 PR，不要为了通过门禁伪造 PR 或验收。
+只有在其他条件全部满足，并且 item.decisions 恰好引用一个 approved、`type=item-only-pass`
+的决定时才可升级为 PASS。该决定必须只绑定该 item、`ac_ids` 为空、记录 `approved_by`，
+且其 E0 evidence 已列入 item.evidence；这是一条显式批准事实，不是“没有 PR 就自动通过”
+的捷径。清空 `prs` 后直接标 PASS 仍会失败。只要 item 关联了 PR，所有 PR 都必须满足上述
+merged/current/merge_commit 规则；若当前资料没有定义某项的 PR，不要为了通过门禁伪造 PR
+或验收。
 
 CI 绿、代码合并、`CLEAN`、模拟器、jsdom、组件测试、旧 head 或旧 run 都不等于 PASS。
 
@@ -130,10 +137,17 @@ CI 绿、代码合并、`CLEAN`、模拟器、jsdom、组件测试、旧 head �
 
 `current` 的 `observed_at` 必须是带时区的 ISO-8601 日期时间，且严格晚于
 `source_snapshot.commit_date`、不得晚于 `source_snapshot.observed_at`。当前 PR/CI 记录也只
-能在该时间窗内声称 current。`source_snapshot.commit` 必须能在本地 Git 解析，且属于声明的
-`master` 分支；`source_snapshot.branch` 只允许 `master`，缺少 `origin/master` 或
+能在该时间窗内声称 current。`source_snapshot.commit` 必须能在本地 Git 解析，并严格等于
+声明的 `master` 当前 tip：优先使用 `refs/remotes/origin/master`，否则使用
+`refs/heads/master`。只把旧 snapshot 作为新 master 的祖先不再可通过；`current` 证据、
+流程、PR 与 CI 的 `observed_at` 以及 snapshot 的 `commit_date`/`observed_at` 还必须是过去
+时间（UTC wall clock，允许 5 分钟时钟偏差），未来时间直接失败。
+
+`source_snapshot.branch` 只允许 `master`，缺少 `origin/master` 或
 `refs/heads/master` 引用时提交归属校验 fail-closed，不允许静默降级为 warning 后继续
-current/PASS。旧日期、非法日期、不可解析 commit 或 source head mismatch 都必须失败。
+current/PASS。旧日期、非法日期、不可解析 commit、master tip 不一致或 source head mismatch
+都必须失败。测试日期固定在 2026-11-28，不把本地时区字面值当 UTC；所有比较都使用带时区的
+`datetime`。
 
 `current` 的 `FAIL`/`NOT-VERIFIED` 仍必须引用至少一条与该 item 关联的 current E4–E6
 真实流程证据（可以是 `failed`/`blocked`）；这证明本轮确实运行过，不代表 PASS。
@@ -191,11 +205,19 @@ validator 从实际 item 状态重算批次：有 `FAIL`/`NOT-VERIFIED` 必须 `
 - 不访问生产数据库 `pim_prod`；需要真实数据时只用镜像的 `pim_test`。
 - 本目录只记录仓库、PR 编号、run id、SHA 与流程描述；不写入 token、密钥、生产日志、
   生产数据导出或 GraphEventId/ChangeKey 等敏感字段。
+- `source_snapshot.repo` 固定为 `2746267826/pim-api`，`scope.source_package` 固定为
+  `PIM功能确认-最终交付-20261122.zip`，`scope.source_package_sha256` 固定为
+  `b488a01e6f317a2735f387a918787204791fb32a38ad9ce064a07166f4b8a864`。这些值是冻结契约，
+  证明元数据与已登记交付包一致，不证明外部 zip 仍存在或其字节在运行时被重新哈希。
 - 证据里的 URL 只指向公开 GitHub PR/run 或仓库内文件。
 - 校验与渲染脚本只做本地文件与本地 Git 读取，不访问网络。
+- `render-delivery-ledger.py` 只写 `docs/product/pim-delivery-ledger.md`，不接受任意输出
+  路径；`--stdout` 只用于校验/测试读取生成内容，不落盘。`rendered_view.path` 偏离固定路径
+  会被渲染器拒绝。
 - validator 是结构、关系、元数据门禁：它能证明引用可追溯、字段齐全、状态闭包自洽，
   **不能证明外部 artifact 的真伪、真实设备用户流程或生产部署真的发生**。这些仍需人工/环境
-  核验，并在证据的 `environment`、`artifacts`、`limits` 中如实记录。
+  核验，并在证据的 `environment`、`artifacts`、`limits` 中如实记录。Android/Windows 的
+  PR head↔merge 关系、GitHub API 声称的状态和 CI run 内容也不能靠本仓库离线对象独立复验。
 
 ## 工作流与验证边界
 
@@ -215,6 +237,9 @@ bash scripts/ci/check-delivery-ledger.sh
 `scripts/ci/check-delivery-ledger.sh` 是本地聚焦门禁，**不是**现有 CI Gate 的一部分；当前
 `.github/workflows/*` 没有执行它。通过该脚本只能说明本地结构/关系测试通过，不能写成云端 CI
 通过，也不能替代真实用户验收。修改 JSON 后必须先渲染再校验；校验器会拒绝未同步的生成视图。
+渲染器固定写入当前视图路径；`--stdout` 仅用于无副作用地读取生成结果。聚焦测试中的真实台账
+smoke 用临时共享对象 Git 仓库，并显式把 `master`/`origin/master` 校准到声明 snapshot，
+不依赖调用者本地 `origin/master` 是否新鲜。
 
 `scripts/ci/generate-pim-delivery-ledger.sh` 是兼容旧调用方式的 shim：它不再解析旧源表，
 而是忽略旧参数并转发到 `render-delivery-ledger.py`。它不是第二事实源，也不能生成第二份

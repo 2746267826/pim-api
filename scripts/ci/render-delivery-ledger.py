@@ -14,6 +14,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 ROOT_SENTINEL = "GENERATED FILE - DO NOT EDIT"
+LEDGER_VIEW_PATH = "docs/product/pim-delivery-ledger.md"
 STATUS_ORDER = ["PASS", "FAIL", "NOT-VERIFIED", "BLOCKED", "APPROVED-EXCEPTION"]
 STATUS_LABEL = {
     "PASS": "PASS",
@@ -115,7 +116,11 @@ def acceptance_summary(item: dict) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", default=".")
-    parser.add_argument("--output", default=None)
+    parser.add_argument(
+        "--stdout",
+        action="store_true",
+        help="write the generated view to stdout instead of the fixed ledger path",
+    )
     args = parser.parse_args()
 
     root = Path(args.root).resolve()
@@ -463,13 +468,18 @@ def main() -> int:
 
     w("## 续跑协议 / Resume protocol")
     w("")
-    w("1. 先更新 `source_snapshot`，记录当前 `origin/master` SHA、commit date 与观测时点；旧 head 只能用于定位。")
+    w("1. 先更新 `source_snapshot`，记录当前 `origin/master`（或本地 `master`）的精确 tip、"
+      "commit date 与观测时点；旧 head 只能用于定位，不能继续作为 current 快照。")
     w("2. 只改结构化源：item、真实流程、证据、PR、决策必须双向引用，并重算 scope 计数、批次状态与视图。")
     w("3. `PASS` 需要全部 AC 已验证，每条 AC 都有 current E4/E5/E6 真实流程证据，且覆盖全部 required/read_only 平台。")
-    w("4. 真实流程覆盖从 `real-flows.json` 的 `evidence` 引用反向推导；不得用未声明字段或伪造证据。")
+    w("4. 真实流程覆盖从 `real-flows.json` 的 `evidence` 引用反向推导；不得用未声明字段或伪造证据。"
+      " 无实现 PR 的 PASS 必须另有 approved `item-only-pass` 决定。")
     w("5. `BLOCKED`/AC 级阻塞必须写原因、解除条件与 pending decision；解除后改回 FAIL/NOT-VERIFIED。")
-    w("6. `APPROVED-EXCEPTION` 必须引用 `approved` decision，且不得把验收条件标为 verified。")
+    w("6. `APPROVED-EXCEPTION` 必须引用 approved 的 `type=scope-exception` decision，"
+      "且不得把验收条件标为 verified。")
     w("7. 旧证据保持 `stale`，legacy implementation 文本必须标为旧快照，不得冒充 current implementation。")
+    w("8. current PR/CI 必须有非空合法 head；current CI 必须来自 `CI` workflow、固定 job 集合并包含 "
+      "`CI Gate`，且关联 PR 为 current。未来时间、旧快照和任意输出路径均失败。")
     w("")
     w("---")
     w("")
@@ -485,10 +495,24 @@ def main() -> int:
 
     text = "\n".join(out) + "\n"
     rendered_view = ledger.get("rendered_view")
-    if not isinstance(rendered_view, dict):
-        rendered_view = {}
-    output = Path(args.output) if args.output else root / rendered_view.get(
-        "path", "docs/product/pim-delivery-ledger.md")
+    if rendered_view is not None:
+        if not isinstance(rendered_view, dict) or rendered_view.get("path") != LEDGER_VIEW_PATH:
+            print(
+                f"delivery ledger render failed: rendered_view.path must be {LEDGER_VIEW_PATH}",
+                file=sys.stderr,
+            )
+            return 1
+
+    if args.stdout:
+        sys.stdout.write(text)
+        print(
+            f"rendered {LEDGER_VIEW_PATH} to stdout "
+            f"({len(items)} items, {len(text.splitlines())} lines)",
+            file=sys.stderr,
+        )
+        return 0
+
+    output = root / LEDGER_VIEW_PATH
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(text, encoding="utf-8")
     print(f"rendered {output} ({len(items)} items, {len(text.splitlines())} lines)")

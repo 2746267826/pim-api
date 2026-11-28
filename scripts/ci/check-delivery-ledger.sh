@@ -6,6 +6,7 @@ set -euo pipefail
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$script_dir/../.." && pwd)"
 
+# The renderer has no arbitrary-output option and always writes the fixed view.
 python3 "$script_dir/render-delivery-ledger.py" --root "$repo_root"
 python3 "$script_dir/validate-delivery-ledger.py" --root "$repo_root"
 python3 "$script_dir/test-validate-delivery-ledger.py"

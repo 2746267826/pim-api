@@ -15,9 +15,8 @@ import json
 import re
 import subprocess
 import sys
-import tempfile
 from collections import Counter
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 ITEM_ID = re.compile(r"^[A-RSZ]\d{2}$")
@@ -28,9 +27,16 @@ PR_ID = re.compile(r"^PR-(pim-api|pim-android|pim-windows)-(\d+)$")
 CI_ID = re.compile(r"^CI-(\d+)$")
 FLOW_ID = re.compile(r"^RF-[A-Za-z0-9-]+$")
 HASH = re.compile(r"^[0-9a-fA-F]{7,40}$")
-ACCEPTANCE_SCOPE_VERSION = 1
+ACCEPTANCE_SCOPE_VERSION = 2
 ACCEPTANCE_SCOPE_TOTAL = 731
-ACCEPTANCE_SCOPE_SHA256 = "d3f70db5ba12da6ee0d022f5aace8d060f9720fd08217b5d86a2ad8b7fa519d9"
+ACCEPTANCE_SCOPE_SHA256 = "e3402e18b210f89ffaed6e0528c7d43984f570d32fc2d88c71d38c4cae0256b1"
+EXPECTED_SNAPSHOT_REPO = "2746267826/pim-api"
+EXPECTED_SOURCE_PACKAGE = "PIM功能确认-最终交付-20261122.zip"
+EXPECTED_SOURCE_PACKAGE_SHA256 = (
+    "b488a01e6f317a2735f387a918787204791fb32a38ad9ce064a07166f4b8a864"
+)
+ITEM_ONLY_PASS_DECISION_TYPE = "item-only-pass"
+FUTURE_CLOCK_SKEW = timedelta(minutes=5)
 
 EXPECTED_PREFIX_COUNTS = {
     "A": 10, "B": 16, "C": 22, "D": 8, "E": 3, "F": 11, "G": 13, "H": 11,
@@ -64,6 +70,23 @@ EVIDENCE_TYPES = {"audit-note", "ci", "decision", "real-flow"}
 PR_VERIFIED_BY = {"git-history", "github-api", "legacy-ledger"}
 ALLOWED_SNAPSHOT_BRANCHES = {"master"}
 LEGACY_SNAPSHOT_FILE = "docs/product/pim-delivery-ledger-20261125.md"
+CI_CONTRACT = {
+    "pim-api": {
+        "workflow": "CI",
+        "jobs": {
+            "CI Gate", "6 shards", "build-api", "build-docker", "build-mcp",
+            "release", "web-build",
+        },
+    },
+    "pim-android": {
+        "workflow": "CI",
+        "jobs": {"CI Gate", "Contract freshness", "build-android"},
+    },
+    "pim-windows": {
+        "workflow": "CI",
+        "jobs": {"CI Gate", "build-windows", "contract-freshness"},
+    },
+}
 
 ITEM_FIELDS = [
     "id", "title", "batch", "platform_roles", "platform_scope",
@@ -214,11 +237,20 @@ class Validator:
         parsed = self.parse_current_time(where, value, field)
         if parsed is None:
             return None
+        self.validate_not_future(where, parsed, field)
         if self.snapshot_commit_time and parsed <= self.snapshot_commit_time:
             self.error(where, f"current 的 {field} 必须晚于 source_snapshot.commit_date")
         if self.snapshot_observed_time and parsed > self.snapshot_observed_time:
             self.error(where, f"current 的 {field} 晚于 source_snapshot.observed_at；先刷新快照")
         return parsed
+
+    def validate_not_future(self, where: str, parsed: datetime, field: str) -> None:
+        now = datetime.now(timezone.utc)
+        if parsed.astimezone(timezone.utc) > now + FUTURE_CLOCK_SKEW:
+            self.error(
+                where,
+                f"{field} 晚于当前 UTC 时间 {now.isoformat()}，拒绝未来时间",
+            )
 
     def commit_is_snapshot(self, resolved: str | None) -> bool:
         return bool(resolved and self.snapshot_full_commit and resolved == self.snapshot_full_commit)
@@ -237,6 +269,38 @@ class Validator:
                 return ref
         self.error("git", "找不到 master 引用（origin/master 或 refs/heads/master），归属校验 fail-closed")
         return None
+
+    def check_merged_head_relation(
+        self, where: str, head: str, merge_commit: str, number: int,
+    ) -> None:
+        head_resolved = self.git("rev-parse", "--verify", f"{head}^{{commit}}")
+        if head_resolved.returncode != 0:
+            self.error(where, f"merged PR head 无法解析为本地 git 对象：{head}")
+            return
+        merge_resolved = self.git("rev-parse", "--verify", f"{merge_commit}^{{commit}}")
+        if merge_resolved.returncode != 0:
+            self.error(where, f"merge_commit 无法解析：{merge_commit}")
+            return
+        resolved_head = head_resolved.stdout.strip()
+        resolved_merge = merge_resolved.stdout.strip()
+        if resolved_head == resolved_merge:
+            return
+        if self.git("merge-base", "--is-ancestor",
+                    resolved_head, resolved_merge).returncode == 0:
+            return
+        head_tree = self.git("rev-parse", "--verify", f"{resolved_head}^{{tree}}")
+        merge_tree = self.git("rev-parse", "--verify", f"{resolved_merge}^{{tree}}")
+        if head_tree.returncode == 0 and merge_tree.returncode == 0 \
+                and head_tree.stdout.strip() == merge_tree.stdout.strip():
+            return
+        subject = self.git("show", "-s", "--format=%s", resolved_merge)
+        if subject.returncode == 0 and f"(#{number})" in subject.stdout:
+            return
+        self.error(
+            where,
+            "merged PR head 与 merge_commit 没有可验证关系"
+            "（相等、祖先、相同 tree 或 merge 提交声明该 PR 编号均不成立）",
+        )
 
     def load(self, name: str) -> dict:
         path = self.root / "docs/product/delivery" / name
@@ -441,6 +505,18 @@ class Validator:
             self.error("ledger.json:scope",
                        f"acceptance_criteria_total 必须为 {ACCEPTANCE_SCOPE_TOTAL}，"
                        f"实际 {scope.get('acceptance_criteria_total')!r}")
+        if scope.get("source_package") != EXPECTED_SOURCE_PACKAGE:
+            self.error(
+                "ledger.json:scope",
+                f"source_package 必须固定为 {EXPECTED_SOURCE_PACKAGE!r}，"
+                f"实际 {scope.get('source_package')!r}",
+            )
+        if scope.get("source_package_sha256") != EXPECTED_SOURCE_PACKAGE_SHA256:
+            self.error(
+                "ledger.json:scope",
+                f"source_package_sha256 必须固定为 {EXPECTED_SOURCE_PACKAGE_SHA256}，"
+                f"实际 {scope.get('source_package_sha256')!r}",
+            )
 
         ids = [str(item.get("id")) for item in items]
         id_set = set(ids)
@@ -499,16 +575,22 @@ class Validator:
             if not isinstance(acs, list):
                 self.error(f"ledger.json:item:{item_id}", "acceptance_criteria 必须为数组")
                 continue
+            frozen_acs = []
             ids = []
             for ac in acs:
                 if not isinstance(ac, dict):
                     self.error(f"ledger.json:item:{item_id}", "acceptance_criteria 只能包含对象")
                     continue
                 ac_id = str(ac.get("id"))
+                ac_text = ac.get("text")
+                if not isinstance(ac_text, str) or not ac_text.strip():
+                    self.error(f"ledger.json:item:{item_id}", f"{ac_id} 缺少 text")
+                    ac_text = "<invalid>"
                 ids.append(ac_id)
+                frozen_acs.append([ac_id, ac_text])
                 if ids.count(ac_id) > 1:
                     duplicate_ids.append(ac_id)
-            mapping[item_id] = sorted(ids)
+            mapping[item_id] = sorted(frozen_acs, key=lambda entry: entry[0])
             total += len(ids)
         if total != ACCEPTANCE_SCOPE_TOTAL:
             self.error("ledger.json:scope",
@@ -522,7 +604,8 @@ class Validator:
         if digest != ACCEPTANCE_SCOPE_SHA256:
             self.error(
                 "ledger.json:scope",
-                f"acceptance criteria 完整 ID 集与冻结权威映射 v{ACCEPTANCE_SCOPE_VERSION} 不一致："
+                f"acceptance criteria 完整 ID/text 集与冻结权威映射 "
+                f"v{ACCEPTANCE_SCOPE_VERSION} 不一致："
                 f"期望 {ACCEPTANCE_SCOPE_SHA256}，实际 {digest}；新增/删除/替换 AC 必须显式升级权威映射",
             )
 
@@ -538,6 +621,11 @@ class Validator:
         repo = str(snapshot.get("repo", ""))
         if not re.fullmatch(r"[^/\s]+/[^/\s]+", repo):
             self.error(where, f"repo 必须为 owner/name，实际 {repo!r}")
+        elif repo != EXPECTED_SNAPSHOT_REPO:
+            self.error(
+                where,
+                f"repo 必须固定为 {EXPECTED_SNAPSHOT_REPO}，实际 {repo!r}",
+            )
         branch = str(snapshot.get("branch", ""))
         if not branch:
             return
@@ -554,6 +642,10 @@ class Validator:
         self.parse_date(where, snapshot.get("migrated_at"), "migrated_at")
         self.snapshot_commit_time = commit_time
         self.snapshot_observed_time = observed_time
+        if commit_time:
+            self.validate_not_future(where, commit_time, "commit_date")
+        if observed_time:
+            self.validate_not_future(where, observed_time, "observed_at")
         if commit_time and observed_time and observed_time < commit_time:
             self.error(where, "observed_at 不能早于 commit_date")
 
@@ -578,14 +670,27 @@ class Validator:
             f"refs/remotes/origin/{branch}",
             f"refs/heads/{branch}",
         ]
-        ref = next((candidate for candidate in refs
-                    if self.git("show-ref", "--verify", "--quiet", candidate).returncode == 0), None)
-        if ref is None:
+        available_refs: list[tuple[str, str]] = []
+        for candidate in refs:
+            if self.git("show-ref", "--verify", "--quiet", candidate).returncode != 0:
+                continue
+            resolved_ref = self.git("rev-parse", "--verify", f"{candidate}^{{commit}}")
+            if resolved_ref.returncode != 0:
+                self.error(where, f"无法解析声明分支引用 {candidate}")
+                return
+            available_refs.append((candidate, resolved_ref.stdout.strip()))
+        if not available_refs:
             self.error(where,
                        f"找不到声明分支引用 {branch}（检查 refs/remotes/origin/{branch} 或 refs/heads/{branch}）；"
                        "current/PASS 归属校验失败即关闭")
-        elif self.git("merge-base", "--is-ancestor", full_commit, ref).returncode != 0:
-            self.error(where, f"commit {commit} 不属于声明分支 {branch}")
+            return
+        ref_name, ref_tip = available_refs[0]
+        if full_commit != ref_tip:
+            self.error(
+                where,
+                f"commit {commit} 必须等于声明分支 {branch} 当前 tip "
+                f"{ref_tip}（{ref_name}）；旧快照不能继续用于 current/PASS",
+            )
 
     def check_prs(self, prs):
         for pid, pr in prs.items():
@@ -624,19 +729,26 @@ class Validator:
                 self.error(where, f"非法 state_verified_by：{pr.get('state_verified_by')!r}")
             for field in ("head", "merge_commit"):
                 value = pr.get(field)
-                if value is not None and not HASH.fullmatch(str(value)):
+                if value is not None and (
+                    not isinstance(value, str) or not HASH.fullmatch(value)
+                ):
                     self.error(where, f"{field} 必须是 7–40 位十六进制，实际 {value!r}")
             if state == "merged":
-                if not pr.get("merge_commit"):
+                head = pr.get("head")
+                merge_commit = pr.get("merge_commit")
+                if not isinstance(head, str) or not head.strip():
+                    self.error(where, "merged PR 必须给出非空 head")
+                if not isinstance(merge_commit, str) or not merge_commit.strip():
                     self.error(where, "merged PR 必须给出 merge_commit")
                 if state_freshness == "current" and verified_by == "legacy-ledger":
                     self.error(where, "current 的 merged PR 不能由 legacy-ledger 验证")
-                if verified_by == "git-history" and repo == "pim-api":
-                    merge_commit = str(pr.get("merge_commit", ""))
-                    resolved = self.git("rev-parse", "--verify", f"{merge_commit}^{{commit}}")
-                    if resolved.returncode != 0:
-                        self.error(where, f"merge_commit 无法解析：{merge_commit}")
-                    else:
+                if repo == "pim-api" and isinstance(head, str) and HASH.fullmatch(head) \
+                        and isinstance(merge_commit, str) and HASH.fullmatch(merge_commit):
+                    self.check_merged_head_relation(
+                        where, head, merge_commit, number)
+                    resolved = self.git(
+                        "rev-parse", "--verify", f"{merge_commit}^{{commit}}")
+                    if resolved.returncode == 0:
                         ref = self.master_ref()
                         if ref and self.git("merge-base", "--is-ancestor",
                                             resolved.stdout.strip(), ref).returncode != 0:
@@ -650,6 +762,9 @@ class Validator:
             if state_freshness == "current" and state in {"open", "draft", "closed"} \
                     and not pr.get("head"):
                 self.error(where, "current 实现 PR 必须给出可比较的 head")
+            if state_freshness == "current" and state == "merged" \
+                    and not pr.get("head"):
+                self.error(where, "current merged PR 必须给出非空 head")
 
     def check_ci(self, ci, prs):
         for cid, run in ci.items():
@@ -665,17 +780,29 @@ class Validator:
                     self.error(where, f"缺少必填字段 {field}")
             if run.get("run_id") != m.group(1):
                 self.error(where, "run_id 与 id 不一致")
+            repo = run.get("repo")
+            if not isinstance(repo, str) or not repo.strip():
+                self.error(where, "repo 必须为非空字符串")
+                repo = None
+            expected_repository = f"2746267826/{repo}" if repo else None
+            if expected_repository and run.get("repository") != expected_repository:
+                self.error(where, f"repository 必须为 {expected_repository}")
+            self.required_string(where, run, "workflow")
+            self.required_string(where, run, "source")
             pr_ref = self.enum_value(run.get("pr"))
             if pr_ref is None or pr_ref not in prs:
                 self.error(where, f"引用了不存在的 PR：{run.get('pr')!r}")
             else:
                 pr = prs[pr_ref]
-                if pr.get("repo") != run.get("repo"):
-                    self.error(where, f"repo {run.get('repo')!r} 与 PR 仓库 {pr.get('repo')!r} 不一致")
+                if repo and pr.get("repo") != repo:
+                    self.error(where, f"repo {repo!r} 与 PR 仓库 {pr.get('repo')!r} 不一致")
                 if run.get("head_is_current") and run.get("head") != pr.get("head"):
                     self.error(where, "head_is_current=true 但 head 与当前 PR head 不一致")
                 if run.get("freshness") == "current" and run.get("head") != pr.get("head"):
                     self.error(where, "current CI head 必须与关联 PR head 一致")
+                if run.get("freshness") == "current" \
+                        and pr.get("state_freshness") != "current":
+                    self.error(where, "current CI 关联的 PR 必须 state_freshness=current")
             freshness = self.enum_value(run.get("freshness"))
             conclusion = self.enum_value(run.get("conclusion"))
             if freshness not in FRESHNESS:
@@ -693,11 +820,34 @@ class Validator:
                 self.error(where, f"head 必须是 7–40 位十六进制，实际 {run.get('head')!r}")
             if freshness == "stale" and run.get("head_is_current"):
                 self.error(where, "stale run 不能标记为当前 head")
-            jobs = self.string_list(where, run.get("jobs"), "jobs", allow_empty=False)
-            if len(jobs) != len(run.get("jobs") or []):
+            raw_jobs = run.get("jobs")
+            jobs = self.string_list(where, raw_jobs, "jobs", allow_empty=False)
+            if isinstance(raw_jobs, list) and len(jobs) != len(raw_jobs):
                 self.error(where, "jobs 含非法成员")
             if freshness == "current":
                 self.validate_current_time(where, run.get("observed_at"), "observed_at")
+                contract = CI_CONTRACT.get(repo)
+                if contract is None:
+                    self.error(
+                        where,
+                        f"current CI 的 repo {repo!r} 不在固定允许集合 "
+                        f"{sorted(CI_CONTRACT)}",
+                    )
+                else:
+                    if run.get("workflow") != contract["workflow"]:
+                        self.error(
+                            where,
+                            f"current CI workflow 必须为 {contract['workflow']!r}，"
+                            f"实际 {run.get('workflow')!r}",
+                        )
+                    unknown_jobs = sorted(set(jobs) - contract["jobs"])
+                    if unknown_jobs:
+                        self.error(
+                            where,
+                            f"current CI jobs 含未登记 job：{unknown_jobs}",
+                        )
+                    if "CI Gate" not in jobs:
+                        self.error(where, "current CI jobs 必须包含 CI Gate")
             else:
                 self.required_string(where, run, "observed_at")
 
@@ -747,13 +897,16 @@ class Validator:
                     self.error(where, f"非法 platform：{platform!r}")
             artifacts = self.string_list(where, flow.get("artifacts"), "artifacts")
             if result in {"passed", "passed_legacy", "failed", "blocked"}:
-                if not str(flow.get("environment") or "").strip():
+                environment = flow.get("environment")
+                if not isinstance(environment, str) or not environment.strip():
                     self.error(where, f"{flow.get('result')} 流程必须记录 environment")
                 if not artifacts:
                     self.error(where, f"{flow.get('result')} 流程必须记录非空 artifacts")
-            elif flow.get("environment") is not None and not isinstance(flow.get("environment"), str):
+            elif flow.get("environment") is not None \
+                    and not isinstance(flow.get("environment"), str):
                 self.error(where, "environment 必须为字符串或 null")
-            if not str(flow.get("limits", "")).strip():
+            limits = flow.get("limits")
+            if not isinstance(limits, str) or not limits.strip():
                 self.error(where, "必须写明未验证边界 limits")
 
             evid = flow.get("evidence")
@@ -841,8 +994,11 @@ class Validator:
             self.required_string(where, dec, "type")
             self.required_string(where, dec, "rationale")
             self.required_string(where, dec, "source")
-            if status == "approved" and not dec.get("approved_by"):
-                self.error(where, "approved 决定必须记录 approved_by")
+            if status == "approved":
+                self.required_string(where, dec, "approved_by")
+            elif dec.get("approved_by") is not None \
+                    and not isinstance(dec.get("approved_by"), str):
+                self.error(where, "approved_by 必须为字符串或 null")
             if status == "pending" and dec.get("approved_by"):
                 self.error(where, "pending 决定不应有 approved_by")
             items = self.string_list(where, dec.get("items"), "items")
@@ -946,7 +1102,8 @@ class Validator:
                 self.error(where, f"非法 freshness：{ev.get('freshness')!r}")
             self.required_string(where, ev, "claim")
             self.required_string(where, ev, "source")
-            if not str(ev.get("limits", "")).strip():
+            limits = ev.get("limits")
+            if not isinstance(limits, str) or not limits.strip():
                 self.error(where, "缺少 limits")
             items = self.string_list(where, ev.get("items"), "items")
             if freshness == "current":
@@ -1047,6 +1204,8 @@ class Validator:
             for field in ("id", "title", "goal", "status", "items", "prefixes", "close_criteria"):
                 if not batch.get(field):
                     self.error(where, f"缺少 {field}")
+            for field in ("id", "title", "goal"):
+                self.required_string(where, batch, field)
             batch_status = self.enum_value(batch.get("status"))
             if batch_status not in {"open", "closed", "blocked"}:
                 self.error(where, f"非法 status：{batch.get('status')!r}")
@@ -1156,6 +1315,8 @@ class Validator:
             if not isinstance(item, dict):
                 self.error("ledger.json:items", "items 只能包含对象")
                 continue
+            if not isinstance(item.get("id"), str) or not item.get("id").strip():
+                self.error("ledger.json:items", f"item id 必须为非空字符串：{item.get('id')!r}")
             item_id = str(item.get("id", "<missing>"))
             where = f"ledger.json:item:{item_id}"
             if not ITEM_ID.match(str(item_id)):
@@ -1166,18 +1327,14 @@ class Validator:
             for field in ITEM_FIELDS:
                 if field not in item:
                     self.error(where, f"缺少必填字段 {field}")
-            if not str(item.get("title", "")).strip():
-                self.error(where, "title 不能为空")
-            if not str(item.get("implementation", "")).strip():
-                self.error(where, "implementation 不能为空")
-            if not str(item.get("next", "")).strip():
-                self.error(where, "next 不能为空")
-            if not str(item.get("owner", "")).strip():
-                self.error(where, "owner 不能为空")
-            basis = str(item.get("implementation_basis", "")).strip()
-            if not basis:
-                self.error(where, "implementation_basis 不能为空")
-            elif not (basis.startswith("legacy-snapshot-") or basis.startswith("current-")):
+            self.required_string(where, item, "title")
+            self.required_string(where, item, "implementation")
+            self.required_string(where, item, "next")
+            self.required_string(where, item, "owner")
+            basis = self.required_string(where, item, "implementation_basis").strip()
+            if basis and not (
+                basis.startswith("legacy-snapshot-") or basis.startswith("current-")
+            ):
                 self.error(where, "implementation_basis 必须以 legacy-snapshot- 或 current- 开头")
             if item.get("freshness") == "current" and basis.startswith("legacy-snapshot-"):
                 self.error(where, "current 项不能继续使用 legacy implementation_basis")
@@ -1371,8 +1528,7 @@ class Validator:
             if ac_id in seen:
                 self.error(where, f"验收条件 ID 重复：{ac_id}")
             seen.add(ac_id)
-            if not str(ac.get("text", "")).strip():
-                self.error(where, f"{ac_id} 缺少 text")
+            self.required_string(where, ac, "text")
             if not isinstance(ac.get("verified"), bool):
                 self.error(where, f"{ac_id} verified 必须为布尔值")
             refs = self.string_list(where, ac.get("evidence", []), f"{ac_id}.evidence")
@@ -1394,8 +1550,12 @@ class Validator:
                 blocked_ids.append(ac_id)
                 if ac.get("verified"):
                     self.error(where, f"{ac_id} 已 BLOCKED，不能同时标记 verified")
-                if not str(blocked.get("reason", "")).strip():
-                    self.error(where, f"{ac_id} BLOCKED 无原因：blocked.reason 不能为空")
+                reason = blocked.get("reason")
+                if not isinstance(reason, str) or not reason.strip():
+                    self.error(
+                        where,
+                        f"{ac_id} BLOCKED 无原因：blocked.reason 必须为非空字符串",
+                    )
                 unblock = blocked.get("unblock")
                 if not isinstance(unblock, list) or not unblock:
                     self.error(where, f"{ac_id} BLOCKED 缺少 unblock 条件")
@@ -1535,7 +1695,8 @@ class Validator:
                 if not isinstance(ref, str):
                     continue
                 ev = self.evidence.get(ref, {})
-                if ev.get("freshness") != "current" \
+                if ev.get("type") != "decision" \
+                        and ev.get("freshness") != "current" \
                         and not self.is_superseded_stale_failure(ref, item_id):
                     self.error(where, f"PASS 引用了非 current 证据：{ref}")
                 if ev.get("type") == "ci" and ev.get("freshness") != "current":
@@ -1583,6 +1744,28 @@ class Validator:
             pr_refs = item.get("prs")
             if not isinstance(pr_refs, list):
                 pr_refs = []
+            if not pr_refs:
+                authorized = []
+                for did in item.get("decisions") or []:
+                    if not isinstance(did, str):
+                        continue
+                    dec = self.decisions.get(did)
+                    if not dec or dec.get("type") != ITEM_ONLY_PASS_DECISION_TYPE:
+                        continue
+                    if dec.get("status") != "approved":
+                        continue
+                    if dec.get("items") != [item_id] or dec.get("ac_ids") != []:
+                        continue
+                    if dec.get("evidence") not in refs:
+                        continue
+                    authorized.append(did)
+                if len(authorized) != 1:
+                    self.error(
+                        where,
+                        "PASS 没有实现 PR 时必须恰好有一个 approved "
+                        f"{ITEM_ONLY_PASS_DECISION_TYPE} 决定，且该决定只绑定本 item、"
+                        "无 AC 绑定、证据已列入 item.evidence",
+                    )
             for pid in pr_refs:
                 if not isinstance(pid, str):
                     continue
@@ -1619,10 +1802,13 @@ class Validator:
                             )
 
         if status == "BLOCKED":
-            if not str(item.get("blocked_reason", "")).strip():
+            blocked_reason = item.get("blocked_reason")
+            if not isinstance(blocked_reason, str) or not blocked_reason.strip():
                 self.error(where, "BLOCKED 无原因：blocked_reason 不能为空")
             unblock = item.get("unblock_conditions")
-            if not isinstance(unblock, list) or not [u for u in unblock if str(u).strip()]:
+            if not isinstance(unblock, list) or not any(
+                isinstance(entry, str) and entry.strip() for entry in unblock
+            ):
                 self.error(where, "BLOCKED 缺少可执行的 unblock_conditions")
             else:
                 self.string_list(where, unblock, "unblock_conditions", allow_empty=False)
@@ -1662,9 +1848,19 @@ class Validator:
                 return
             if dec.get("status") != "approved":
                 self.error(where, f"APPROVED-EXCEPTION 的批准记录状态是 {dec.get('status')!r}，不是 approved")
-            if not str(exc.get("approved_by", "")).strip() or not str(dec.get("approved_by", "")).strip():
+            if dec.get("type") != "scope-exception":
+                self.error(
+                    where,
+                    f"APPROVED-EXCEPTION 的批准决定 {did} 必须为 "
+                    f"type=scope-exception，实际 {dec.get('type')!r}",
+                )
+            exc_approved_by = exc.get("approved_by")
+            dec_approved_by = dec.get("approved_by")
+            if not isinstance(exc_approved_by, str) or not exc_approved_by.strip() \
+                    or not isinstance(dec_approved_by, str) or not dec_approved_by.strip():
                 self.error(where, "APPROVED-EXCEPTION 无批准：缺少 approved_by")
-            if not str(exc.get("approved_in", "")).strip():
+            approved_in = exc.get("approved_in")
+            if not isinstance(approved_in, str) or not approved_in.strip():
                 self.error(where, "APPROVED-EXCEPTION 缺少批准出处 approved_in")
             if dec.get("evidence") not in refs:
                 self.error(where, "APPROVED-EXCEPTION 必须在 evidence 中引用批准记录")
@@ -1777,16 +1973,14 @@ class Validator:
         if not renderer.exists():
             self.error("scripts/ci/render-delivery-ledger.py", "缺少渲染器，无法证明视图可重新生成")
             return
-        with tempfile.TemporaryDirectory() as tmp:
-            target = Path(tmp) / "rendered.md"
-            proc = subprocess.run(
-                [sys.executable, str(renderer), "--root", str(self.root), "--output", str(target)],
-                capture_output=True, text=True)
-            if proc.returncode != 0:
-                self.error("scripts/ci/render-delivery-ledger.py",
-                           f"渲染失败：{(proc.stderr or proc.stdout).strip()}")
-                return
-            rendered = target.read_text(encoding="utf-8")
+        proc = subprocess.run(
+            [sys.executable, str(renderer), "--root", str(self.root), "--stdout"],
+            capture_output=True, text=True)
+        if proc.returncode != 0:
+            self.error("scripts/ci/render-delivery-ledger.py",
+                       f"渲染失败：{(proc.stderr or proc.stdout).strip()}")
+            return
+        rendered = proc.stdout
         if rendered != text:
             self.error(str(path), "生成视图与结构化源不同步：请运行 render-delivery-ledger.py 并提交结果")
 

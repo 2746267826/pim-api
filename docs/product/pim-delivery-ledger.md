@@ -485,13 +485,14 @@ source_snapshot 与 PR 注册表已按 2026-11-28 实时状态刷新；item 状�
 
 ## 续跑协议 / Resume protocol
 
-1. 先更新 `source_snapshot`，记录当前 `origin/master` SHA、commit date 与观测时点；旧 head 只能用于定位。
+1. 先更新 `source_snapshot`，记录当前 `origin/master`（或本地 `master`）的精确 tip、commit date 与观测时点；旧 head 只能用于定位，不能继续作为 current 快照。
 2. 只改结构化源：item、真实流程、证据、PR、决策必须双向引用，并重算 scope 计数、批次状态与视图。
 3. `PASS` 需要全部 AC 已验证，每条 AC 都有 current E4/E5/E6 真实流程证据，且覆盖全部 required/read_only 平台。
-4. 真实流程覆盖从 `real-flows.json` 的 `evidence` 引用反向推导；不得用未声明字段或伪造证据。
+4. 真实流程覆盖从 `real-flows.json` 的 `evidence` 引用反向推导；不得用未声明字段或伪造证据。 无实现 PR 的 PASS 必须另有 approved `item-only-pass` 决定。
 5. `BLOCKED`/AC 级阻塞必须写原因、解除条件与 pending decision；解除后改回 FAIL/NOT-VERIFIED。
-6. `APPROVED-EXCEPTION` 必须引用 `approved` decision，且不得把验收条件标为 verified。
+6. `APPROVED-EXCEPTION` 必须引用 approved 的 `type=scope-exception` decision，且不得把验收条件标为 verified。
 7. 旧证据保持 `stale`，legacy implementation 文本必须标为旧快照，不得冒充 current implementation。
+8. current PR/CI 必须有非空合法 head；current CI 必须来自 `CI` workflow、固定 job 集合并包含 `CI Gate`，且关联 PR 为 current。未来时间、旧快照和任意输出路径均失败。
 
 ---
 
