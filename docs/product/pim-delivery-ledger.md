@@ -17,8 +17,9 @@ source_snapshot 与 PR 注册表已按 2026-11-28 实时状态刷新；item 状�
 - 范围：交付包 A–R、Z 共 160 项，加补充项 S01，共 **161** 项。
 - 状态：PASS 0，FAIL 103，NOT-VERIFIED 50，BLOCKED 2，APPROVED-EXCEPTION 6。
 - Freshness：current 0，stale 161。 current 表示已按当前 head 重新复核；stale 仍只能用于定位历史缺口。
-- 证据：211 条（CI 22、真实流程 18、决议 10）。
+- 证据：211 条（审计记录 161、CI 22、真实流程 18、决议 10；分类合计 211）。
 - 真实流程：18 条记录，其中 current 通过 0 条。
+- AC：731 条，verified 0 条。
 - PR：53 条，merged 35，open 17，draft 1。
 
 本视图的产品功能 `PASS` 为 0。`PASS` 只表示逐 AC 的 current E4/E5/E6 真实流程证据与平台覆盖均闭合；CI 绿、合并状态或 legacy 文本不构成验收。
@@ -431,26 +432,26 @@ source_snapshot 与 PR 注册表已按 2026-11-28 实时状态刷新；item 状�
 
 ## 真实流程索引 / Real-flow index
 
-| 流程 | 证据 | 覆盖项 | 平台 | 结果 | freshness | 观测时点 | 环境 | 边界 |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| RF-R04-ISOLATED | EV-RF-R04-ISOLATED | R04 | API、MCP、Web | 历史通过（stale） | stale | 2026-11-24 | 隔离 Docker Test API + PostgreSQL + Chromium | 旧台账记录的真实链路未在本轮重跑；不能证明外部独立 MCP 客户端。 |
-| RF-R04-AC8-EXTERNAL-MCP | EV-RF-R04-AC8-EXTERNAL-MCP | R04 | MCP | 未执行 | not-verified | 2026-11-27 | — | 尚无外部独立 MCP 客户端执行记录，R04 不得记 PASS。 |
-| RF-M05-WINDOWS-TODAY | EV-RF-M05-WINDOWS-TODAY | M05 | Windows | 未执行 | not-verified | 2026-11-27 | — | 登录、托盘点击、刷新、新建与完成任务未在真实桌面执行。 |
-| RF-D04-CROSS-END | EV-RF-D04-CROSS-END | D04 | Android、Windows、Web | 未执行 | not-verified | 2026-11-27 | — | Windows 工具缺口、Web 已保存块不可再编辑、真机与往返回读均未验。 |
-| RF-Z02-CROSS-DEVICE | EV-RF-Z02-CROSS-DEVICE | Z02 | API、Android、Windows、Web | 未执行 | not-verified | 2026-11-27 | — | 真实 provider、Hangfire 多进程、浏览器与客户端换端未执行。 |
-| RF-S01-RELEASE | EV-RF-S01-RELEASE | S01 | Release | 未执行 | not-verified | 2026-11-27 | — | 正式 bump/promote、并发重跑、`:latest` 收敛与生产部署未执行。 |
-| RF-R05-EXTERNAL-MCP | EV-RF-R05-EXTERNAL-MCP | R05 | MCP | 未执行 | not-verified | 2026-11-27 | — | #613 仍 OPEN；外部客户端与真实部署未验。 |
-| RF-Q08-BROWSER | EV-RF-Q08-BROWSER | Q08 | Web | 未执行 | not-verified | 2026-11-27 | — | 双账号、持久索引/重建/离线缓存与字段级定位未验。 |
-| RF-Z01-BROWSER | EV-RF-Z01-BROWSER | Z01 | Web | 未执行 | not-verified | 2026-11-27 | — | 协议/诊断例外仍存在，真实浏览器与客户端呈现未验。 |
-| RF-Q04-PUBLIC-TLS | EV-RF-Q04-PUBLIC-TLS | Q04 | API、Web | 未执行 | not-verified | 2026-11-27 | — | 仅隔离拓扑通过；1Panel/OpenResty/证书链与生产入口未验。 |
-| RF-H03-MULTIMODAL | EV-RF-H03-MULTIMODAL | H03 | API | 未执行 | not-verified | 2026-11-27 | — | 真实 provider 质量/费用、Hangfire 多进程与 PostgreSQL 行锁未验。 |
-| RF-C12-FFMPEG | EV-RF-C12-FFMPEG | C12 | Android、Windows | 未执行 | not-verified | 2026-11-27 | — | 客户端仍为 WAV 分片/整段；runner 无 FFmpeg，相关用例 skipped。 |
-| RF-I03-I04-CLIENTS | EV-RF-I03-I04-CLIENTS | I03、I04 | Android、Windows、Web | 未执行 | not-verified | 2026-11-27 | — | Windows 客户端 PR 仍 OPEN；Android 契约 freshness 红；真实三端未验。 |
-| RF-Q03-CROSS-DEVICE | EV-RF-Q03-CROSS-DEVICE | Q03 | Android、Windows、Web | 未执行 | not-verified | 2026-11-27 | — | Android/Windows 原生回收站未交付，真实浏览器跨端未验。 |
-| RF-P05-BROWSER | EV-RF-P05-BROWSER | P05 | Web | 未执行 | not-verified | 2026-11-27 | — | API/Web 实现 OPEN；真实浏览器 E2E 与客户端只读消费未验。 |
-| RF-Q06-PUSH | EV-RF-Q06-PUSH | Q06 | API、Android、Windows、Web | 未执行 | not-verified | 2026-11-27 | — | FCM/WNS/Web Push、设备级 dismiss/click 与保留策略未验。 |
-| RF-J09-PROVIDER | EV-RF-J09-PROVIDER | J09 | API | 未执行 | not-verified | 2026-11-27 | — | 真实第三方 provider 记账/限额、管理员浏览器与崩溃恢复未验。 |
-| RF-N01-BROWSER | EV-RF-N01-BROWSER | N01 | Web | 未执行 | not-verified | 2026-11-27 | — | 无录音播放器、正文分段 Textarea、已有材料不可删除，真实浏览器未验。 |
+| 流程 | 证据 | 覆盖项 | AC | 平台 | 结果 | freshness | 观测时点 | 环境 | 边界 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| RF-R04-ISOLATED | EV-RF-R04-ISOLATED | R04 | R04-AC01 | API、MCP、Web | 历史通过（stale） | stale | 2026-11-24 | 隔离 Docker Test API + PostgreSQL + Chromium | 旧台账记录的真实链路未在本轮重跑；不能证明外部独立 MCP 客户端。 |
+| RF-R04-AC8-EXTERNAL-MCP | EV-RF-R04-AC8-EXTERNAL-MCP | R04 | R04-AC08 | MCP | 未执行 | not-verified | 2026-11-27 | — | 尚无外部独立 MCP 客户端执行记录，R04 不得记 PASS。 |
+| RF-M05-WINDOWS-TODAY | EV-RF-M05-WINDOWS-TODAY | M05 | M05-AC01 | Windows | 未执行 | not-verified | 2026-11-27 | — | 登录、托盘点击、刷新、新建与完成任务未在真实桌面执行。 |
+| RF-D04-CROSS-END | EV-RF-D04-CROSS-END | D04 | D04-AC01 | Android、Windows、Web | 未执行 | not-verified | 2026-11-27 | — | Windows 工具缺口、Web 已保存块不可再编辑、真机与往返回读均未验。 |
+| RF-Z02-CROSS-DEVICE | EV-RF-Z02-CROSS-DEVICE | Z02 | Z02-AC01 | API、Android、Windows、Web | 未执行 | not-verified | 2026-11-27 | — | 真实 provider、Hangfire 多进程、浏览器与客户端换端未执行。 |
+| RF-S01-RELEASE | EV-RF-S01-RELEASE | S01 | S01-AC01 | Release | 未执行 | not-verified | 2026-11-27 | — | 正式 bump/promote、并发重跑、`:latest` 收敛与生产部署未执行。 |
+| RF-R05-EXTERNAL-MCP | EV-RF-R05-EXTERNAL-MCP | R05 | R05-AC01 | MCP | 未执行 | not-verified | 2026-11-27 | — | #613 仍 OPEN；外部客户端与真实部署未验。 |
+| RF-Q08-BROWSER | EV-RF-Q08-BROWSER | Q08 | Q08-AC10 | Web | 未执行 | not-verified | 2026-11-27 | — | 双账号、持久索引/重建/离线缓存与字段级定位未验。 |
+| RF-Z01-BROWSER | EV-RF-Z01-BROWSER | Z01 | Z01-AC01 | Web | 未执行 | not-verified | 2026-11-27 | — | 协议/诊断例外仍存在，真实浏览器与客户端呈现未验。 |
+| RF-Q04-PUBLIC-TLS | EV-RF-Q04-PUBLIC-TLS | Q04 | Q04-AC09 | API、Web | 未执行 | not-verified | 2026-11-27 | — | 仅隔离拓扑通过；1Panel/OpenResty/证书链与生产入口未验。 |
+| RF-H03-MULTIMODAL | EV-RF-H03-MULTIMODAL | H03 | H03-AC01、H03-AC10 | API | 未执行 | not-verified | 2026-11-27 | — | 真实 provider 质量/费用、Hangfire 多进程与 PostgreSQL 行锁未验。 |
+| RF-C12-FFMPEG | EV-RF-C12-FFMPEG | C12 | C12-AC01 | Android、Windows | 未执行 | not-verified | 2026-11-27 | — | 客户端仍为 WAV 分片/整段；runner 无 FFmpeg，相关用例 skipped。 |
+| RF-I03-I04-CLIENTS | EV-RF-I03-I04-CLIENTS | I03、I04 | I03-AC01、I04-AC01 | Android、Windows、Web | 未执行 | not-verified | 2026-11-27 | — | Windows 客户端 PR 仍 OPEN；Android 契约 freshness 红；真实三端未验。 |
+| RF-Q03-CROSS-DEVICE | EV-RF-Q03-CROSS-DEVICE | Q03 | Q03-AC01 | Android、Windows、Web | 未执行 | not-verified | 2026-11-27 | — | Android/Windows 原生回收站未交付，真实浏览器跨端未验。 |
+| RF-P05-BROWSER | EV-RF-P05-BROWSER | P05 | P05-AC01 | Web | 未执行 | not-verified | 2026-11-27 | — | API/Web 实现 OPEN；真实浏览器 E2E 与客户端只读消费未验。 |
+| RF-Q06-PUSH | EV-RF-Q06-PUSH | Q06 | Q06-AC01 | API、Android、Windows、Web | 未执行 | not-verified | 2026-11-27 | — | FCM/WNS/Web Push、设备级 dismiss/click 与保留策略未验。 |
+| RF-J09-PROVIDER | EV-RF-J09-PROVIDER | J09 | J09-AC01 | API | 未执行 | not-verified | 2026-11-27 | — | 真实第三方 provider 记账/限额、管理员浏览器与崩溃恢复未验。 |
+| RF-N01-BROWSER | EV-RF-N01-BROWSER | N01 | N01-AC01 | Web | 未执行 | not-verified | 2026-11-27 | — | 无录音播放器、正文分段 Textarea、已有材料不可删除，真实浏览器未验。 |
 
 ## 决策索引 / Decision index
 
@@ -469,15 +470,18 @@ source_snapshot 与 PR 注册表已按 2026-11-28 实时状态刷新；item 状�
 
 ## 证据等级 / Evidence levels
 
-| 等级 | 含义 | 条数 |
-| --- | ---: | ---: |
-| E0 | 决议/范围记录：只证明有人批准范围或做出记录，不证明实现。 | 10 |
-| E1 | 源码/文档只读检查：证明代码或文本存在，不证明运行行为。 | 161 |
-| E2 | 单元/组件测试：证明被测切片，不证明端到端或真实环境。 | 0 |
-| E3 | CI 运行：证明该 run 的 head 上自动化通过/失败，不证明用户流程。 | 22 |
-| E4 | 真实环境流程：真实 API/数据库/浏览器/客户端链路，需记录环境与产物。 | 18 |
-| E5 | 真实设备/桌面：Android 实机/OEM、Windows 交互桌面，需记录设备与步骤。 | 0 |
-| E6 | 生产/发布验收：正式发布、生产部署或线上只读验证。 | 0 |
+| 等级 | 含义 | current | stale | not-verified | unknown | 合计 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| E0 | 决议/范围记录：只证明有人批准范围或做出记录，不证明实现。 | 0 | 10 | 0 | 0 | 10 |
+| E1 | 源码/文档只读检查：证明代码或文本存在，不证明运行行为。 | 0 | 161 | 0 | 0 | 161 |
+| E2 | 单元/组件测试：证明被测切片，不证明端到端或真实环境。 | 0 | 0 | 0 | 0 | 0 |
+| E3 | CI 运行：证明该 run 的 head 上自动化通过/失败，不证明用户流程。 | 0 | 22 | 0 | 0 | 22 |
+| E4 | 真实环境流程：真实 API/数据库/浏览器/客户端链路，需记录环境与产物。 | 0 | 1 | 17 | 0 | 18 |
+| E5 | 真实设备/桌面：Android 实机/OEM、Windows 交互桌面，需记录设备与步骤。 | 0 | 0 | 0 | 0 | 0 |
+| E6 | 生产/发布验收：正式发布、生产部署或线上只读验证。 | 0 | 0 | 0 | 0 | 0 |
+
+等级条数是存量统计，不等于 current 通过证据；必须结合 freshness 列阅读，
+`stale`/`not-verified`/`unknown` 均不能支撑 PASS。
 
 ## 续跑协议 / Resume protocol
 

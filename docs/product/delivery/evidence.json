@@ -1056,7 +1056,7 @@
       "id": "EV-DEC-B15",
       "type": "decision",
       "level": "E0",
-      "freshness": "current",
+      "freshness": "stale",
       "claim": "不做 100 分钟长笔记性能验收，仅登记性能风险。",
       "source": "PIM功能确认-最终交付-20261122/01-讨论记录/B08-B16-编辑器基础能力.md",
       "observed_at": "2026-11-22",
@@ -1069,7 +1069,7 @@
       "id": "EV-DEC-C14",
       "type": "decision",
       "level": "E0",
-      "freshness": "current",
+      "freshness": "stale",
       "claim": "由 C12 直接采集 Opus/Ogg 取代结束后 WAV 合成，随 C12 验收。",
       "source": "PIM功能确认-最终交付-20261122/01-讨论记录/C12-压缩录音格式与处理链路.md",
       "observed_at": "2026-11-22",
@@ -1082,7 +1082,7 @@
       "id": "EV-DEC-C21",
       "type": "decision",
       "level": "E0",
-      "freshness": "current",
+      "freshness": "stale",
       "claim": "实时转写暂缓，仅保留本地小模型定义勘误。",
       "source": "PIM功能确认-最终交付-20261122/01-讨论记录/C21-实时转写.md",
       "observed_at": "2026-11-22",
@@ -1095,7 +1095,7 @@
       "id": "EV-DEC-E03",
       "type": "decision",
       "level": "E0",
-      "freshness": "current",
+      "freshness": "stale",
       "claim": "不做通用 PDF/文档附件，仅保留 Markdown、照片、手写和录音。",
       "source": "PIM功能确认-最终交付-20261122/01-讨论记录/E03-文档附件.md",
       "observed_at": "2026-11-22",
@@ -1108,7 +1108,7 @@
       "id": "EV-DEC-MIGRATION-STRUCTURE",
       "type": "decision",
       "level": "E0",
-      "freshness": "current",
+      "freshness": "stale",
       "claim": "把 2026-11-25 文本台账迁移为结构化源；旧证据保持 stale，不重新认定为当前通过。",
       "source": "docs/product/pim-delivery-ledger-20261125.md",
       "observed_at": "2026-11-22",
@@ -1119,7 +1119,7 @@
       "id": "EV-DEC-O04",
       "type": "decision",
       "level": "E0",
-      "freshness": "current",
+      "freshness": "stale",
       "claim": "跳过 OPPO 笔记动画和字体采用，原素材清单移出接入计划。",
       "source": "PIM功能确认-最终交付-20261122/01-讨论记录/O03-Android视觉组件接入.md",
       "observed_at": "2026-11-22",
@@ -1132,7 +1132,7 @@
       "id": "EV-DEC-Q01",
       "type": "decision",
       "level": "E0",
-      "freshness": "current",
+      "freshness": "stale",
       "claim": "Q01 平台范围与验收口径未确认，保持 BLOCKED。",
       "source": "PIM功能确认-最终交付-20261122/README.md",
       "observed_at": "2026-11-22",
@@ -1145,7 +1145,7 @@
       "id": "EV-DEC-Q02",
       "type": "decision",
       "level": "E0",
-      "freshness": "current",
+      "freshness": "stale",
       "claim": "当前不做全量备份与导出，Kopia 仅保留为早期文件基础能力。",
       "source": "PIM功能确认-最终交付-20261122/01-讨论记录/Q02-全量备份与导出.md",
       "observed_at": "2026-11-22",
@@ -1158,7 +1158,7 @@
       "id": "EV-DEC-Q07",
       "type": "decision",
       "level": "E0",
-      "freshness": "current",
+      "freshness": "stale",
       "claim": "Conflict 终态清理语义需用户裁决，保持 BLOCKED。",
       "source": "PIM功能确认-最终交付-20261122/01-讨论记录/Q07-本地缓存清理.md",
       "observed_at": "2026-11-22",
@@ -1171,7 +1171,7 @@
       "id": "EV-DEC-R05-AC05",
       "type": "decision",
       "level": "E0",
-      "freshness": "current",
+      "freshness": "stale",
       "claim": "R05 永久身份墓碑容量策略未获产品/运营批准，AC-05 保持 BLOCKED。",
       "source": "docs/product/pim-delivery-ledger-20261125.md",
       "observed_at": "2026-11-22",
@@ -2517,6 +2517,9 @@
       "items": [
         "C12"
       ],
+      "ac_ids": [
+        "C12-AC01"
+      ],
       "limits": "客户端仍为 WAV 分片/整段；runner 无 FFmpeg，相关用例 skipped。"
     },
     {
@@ -2530,6 +2533,9 @@
       "items": [
         "D04"
       ],
+      "ac_ids": [
+        "D04-AC01"
+      ],
       "limits": "Windows 工具缺口、Web 已保存块不可再编辑、真机与往返回读均未验。"
     },
     {
@@ -2542,6 +2548,10 @@
       "observed_at": "2026-11-27",
       "items": [
         "H03"
+      ],
+      "ac_ids": [
+        "H03-AC01",
+        "H03-AC10"
       ],
       "limits": "真实 provider 质量/费用、Hangfire 多进程与 PostgreSQL 行锁未验。"
     },
@@ -2557,6 +2567,10 @@
         "I03",
         "I04"
       ],
+      "ac_ids": [
+        "I03-AC01",
+        "I04-AC01"
+      ],
       "limits": "Windows 客户端 PR 仍 OPEN；Android 契约 freshness 红；真实三端未验。"
     },
     {
@@ -2569,6 +2583,9 @@
       "observed_at": "2026-11-27",
       "items": [
         "J09"
+      ],
+      "ac_ids": [
+        "J09-AC01"
       ],
       "limits": "真实第三方 provider 记账/限额、管理员浏览器与崩溃恢复未验。"
     },
@@ -2583,6 +2600,9 @@
       "items": [
         "M05"
       ],
+      "ac_ids": [
+        "M05-AC01"
+      ],
       "limits": "登录、托盘点击、刷新、新建与完成任务未在真实桌面执行。"
     },
     {
@@ -2595,6 +2615,9 @@
       "observed_at": "2026-11-27",
       "items": [
         "N01"
+      ],
+      "ac_ids": [
+        "N01-AC01"
       ],
       "limits": "无录音播放器、正文分段 Textarea、已有材料不可删除，真实浏览器未验。"
     },
@@ -2609,6 +2632,9 @@
       "items": [
         "P05"
       ],
+      "ac_ids": [
+        "P05-AC01"
+      ],
       "limits": "API/Web 实现 OPEN；真实浏览器 E2E 与客户端只读消费未验。"
     },
     {
@@ -2621,6 +2647,9 @@
       "observed_at": "2026-11-27",
       "items": [
         "Q03"
+      ],
+      "ac_ids": [
+        "Q03-AC01"
       ],
       "limits": "Android/Windows 原生回收站未交付，真实浏览器跨端未验。"
     },
@@ -2635,6 +2664,9 @@
       "items": [
         "Q04"
       ],
+      "ac_ids": [
+        "Q04-AC09"
+      ],
       "limits": "仅隔离拓扑通过；1Panel/OpenResty/证书链与生产入口未验。"
     },
     {
@@ -2647,6 +2679,9 @@
       "observed_at": "2026-11-27",
       "items": [
         "Q06"
+      ],
+      "ac_ids": [
+        "Q06-AC01"
       ],
       "limits": "FCM/WNS/Web Push、设备级 dismiss/click 与保留策略未验。"
     },
@@ -2661,6 +2696,9 @@
       "items": [
         "Q08"
       ],
+      "ac_ids": [
+        "Q08-AC10"
+      ],
       "limits": "双账号、持久索引/重建/离线缓存与字段级定位未验。"
     },
     {
@@ -2673,6 +2711,9 @@
       "observed_at": "2026-11-27",
       "items": [
         "R04"
+      ],
+      "ac_ids": [
+        "R04-AC08"
       ],
       "limits": "尚无外部独立 MCP 客户端执行记录，R04 不得记 PASS。"
     },
@@ -2687,6 +2728,9 @@
       "items": [
         "R04"
       ],
+      "ac_ids": [
+        "R04-AC01"
+      ],
       "limits": "旧台账记录的真实链路未在本轮重跑；不能证明外部独立 MCP 客户端。 环境：隔离 Docker Test API + PostgreSQL + Chromium；产物：REST 19/19, MCP 14/14, HTTP/Chromium 用例通过。"
     },
     {
@@ -2699,6 +2743,9 @@
       "observed_at": "2026-11-27",
       "items": [
         "R05"
+      ],
+      "ac_ids": [
+        "R05-AC01"
       ],
       "limits": "#613 仍 OPEN；外部客户端与真实部署未验。"
     },
@@ -2713,6 +2760,9 @@
       "items": [
         "S01"
       ],
+      "ac_ids": [
+        "S01-AC01"
+      ],
       "limits": "正式 bump/promote、并发重跑、`:latest` 收敛与生产部署未执行。"
     },
     {
@@ -2726,6 +2776,9 @@
       "items": [
         "Z01"
       ],
+      "ac_ids": [
+        "Z01-AC01"
+      ],
       "limits": "协议/诊断例外仍存在，真实浏览器与客户端呈现未验。"
     },
     {
@@ -2738,6 +2791,9 @@
       "observed_at": "2026-11-27",
       "items": [
         "Z02"
+      ],
+      "ac_ids": [
+        "Z02-AC01"
       ],
       "limits": "真实 provider、Hangfire 多进程、浏览器与客户端换端未执行。"
     },

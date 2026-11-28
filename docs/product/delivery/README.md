@@ -1,35 +1,47 @@
 # PIM 全量交付台账：结构化事实源
 
-本目录是 PIM 全量交付状态的唯一结构化事实源。`docs/product/pim-delivery-ledger.md` 是由
-`scripts/ci/render-delivery-ledger.py` 生成的当前视图，不得手工编辑。
+本目录的 JSON 是 PIM 全量交付状态的唯一当前事实源。`docs/product/pim-delivery-ledger.md`
+是由 `scripts/ci/render-delivery-ledger.py` 生成的当前视图，不得手工编辑。
+`docs/product/pim-delivery-ledger-20261125.md` 等旧文本只保留历史追溯；若旧文本、旧表格与
+结构化 JSON 冲突，一律以结构化 JSON 为准，不能把旧文本当作当前事实或第二事实源。
 
-## 范围
+## 范围与验收条件冻结
 
 - 交付包 A–R、Z 共 **160** 项，加 Release/版本与发布安全补充项 **S01**，合计 **161** 项。
 - 交付包：`PIM功能确认-最终交付-20261122.zip`，SHA-256
   `b488a01e6f317a2735f387a918787204791fb32a38ad9ce064a07166f4b8a864`。
-- 前缀计数固定为：A 10、B 16、C 22、D 8、E 3、F 11、G 13、H 11、I 4、J 9、K 4、
-  L 14、M 6、N 3、O 6、P 5、Q 8、R 5、S 1、Z 2。校验器按此硬校验，增删范围必须显式改
-  `scope.counts_by_prefix`、`scope.counts_by_status` 与 `scope.total` 并同步 README。
-- 精确 ID 集固定为每个前缀的 `01..count`，加 `S01`；不允许用另一个合法 ID 替换范围成员。
-  校验器从 `items` 重算前缀计数与状态计数，并拒绝声明值与实际值不一致。
+- item ID 集固定为每个前缀的 `01..count`，加 `S01`。前缀计数固定为：A 10、B 16、C 22、
+  D 8、E 3、F 11、G 13、H 11、I 4、J 9、K 4、L 14、M 6、N 3、O 6、P 5、Q 8、R 5、
+  S 1、Z 2。validator 从实际 items 重算前缀计数、状态计数和总数，不接受只改声明值或
+  用另一个合法 ID 替换成员。
+- 验收条件 ID 集另有一层冻结权威：`acceptance_scope_version = 1`、
+  `acceptance_criteria_total = 731`，完整 ID 映射的 SHA-256 为
+  `d3f70db5ba12da6ee0d022f5aace8d060f9720fd08217b5d86a2ad8b7fa519d9`。
+  validator 对“item ID → 排序后的 AC ID 列表”做规范化 JSON 哈希，逐 item 检查完整集合、
+  重复和遗漏。仅保持总数不变、删除一个 AC 再补另一个合法 ID、或删掉子集后只剩一条，
+  都不能通过；新增、删除或替换 AC 必须显式升级版本并更新权威哈希，同时同步全部派生计数和
+  生成视图，不能只改 `acceptance_criteria_total`。
 
 ## 文件
 
 | 文件 | 内容 |
 | --- | --- |
-| `ledger.json` | 入口：范围、快照、批次、161 个 item、渲染目标 |
-| `prs.json` | PR 注册表：仓库、编号、状态、head、merge、状态 freshness、观测时点 |
-| `ci-runs.json` | CI run 注册表：PR、head、结论、关键 job、freshness |
-| `real-flows.json` | 真实 API/浏览器/设备/桌面/发布流程记录；每条流程必须引用唯一对应证据 |
-| `evidence.json` | E0–E6 证据，含 claim、source、freshness、limits |
+| `ledger.json` | 入口：范围、冻结 AC 范围、快照、批次、161 个 item、渲染目标 |
+| `prs.json` | PR 注册表：仓库、编号、状态、head、merge_commit、状态 freshness、观测时点 |
+| `ci-runs.json` | CI run 注册表：PR、head、结论、关键 job、freshness、`head_is_current` |
+| `real-flows.json` | 真实 API/浏览器/设备/桌面/发布流程；每条流程显式声明 `items` 与 `ac_ids` |
+| `evidence.json` | E0–E6 证据，含 claim、source、source_commit、observed_at、freshness、limits |
 | `decisions.json` | 范围例外、阻塞裁决与迁移记录 |
+
+所有数组字段都必须是 JSON 数组，成员必须是非空字符串或对象，并按字段语义拒绝重复。
+item 的 `prs`、`evidence`、`decisions`，AC 的 `evidence`，以及 flow/evidence 的
+`items`、`ac_ids`、`platforms`、`artifacts` 都做显式类型和唯一性检查。
 
 ## 状态规则
 
 | 状态 | 含义 |
 | --- | --- |
-| `PASS` | 当前 head、全部 AC、全部适用平台、正常与异常分支均有 current 真实证据 |
+| `PASS` | 当前 head、全部冻结 AC、全部适用平台、正常与异常分支均有 current 真实证据 |
 | `FAIL` | 当前产品仍有确认缺口，或实现未合并 |
 | `NOT-VERIFIED` | 实现可能存在，但当前 head 没有完整真实验收 |
 | `BLOCKED` | 缺产品裁决或外部前提；必须写 `blocked_reason` 与 `unblock_conditions` |
@@ -38,21 +50,42 @@
 不使用 `PARTIAL`。部分实现写进 `implementation`，不发明新状态。`implementation` 与
 `legacy_status` 保留旧台账原文，并带 `implementation_basis`；它们不是当前 head 的实现证明。
 
+`legacy_source` 必须指向仓库内历史文本的有效文件与行，行首必须是对应 item ID，且该行旧状态
+必须等于 `legacy_status`；`section` 也必须是非空定位信息。`stale` item 的 `status` 必须等于
+`legacy_status`，不能静默改写历史。历史文件中的旧文本不是当前事实源。
+
 单项还可以在某个验收条件上记录 `blocked`（原因、解除条件、决策 ID），用于“条目没有整体
 BLOCKED、但某条 AC 缺产品裁决”的情况，例如 `R05-AC05` 的永久墓碑容量策略。AC 级阻塞
-不得与 `verified: true` 同时存在。
+不得与 `verified: true` 同时存在，且 blocked decision 必须是 `pending`、双向引用 item，并把
+decision evidence 列入 item.evidence。整体 `BLOCKED` item 同样必须引用至少一个 pending
+decision。
 
 ### 升级为 PASS 的条件
 
 1. `freshness` 为 `current`，且 `implementation_basis` 不是 legacy 快照；
-2. 全部 `acceptance_criteria[].verified` 为真，且每条 AC 都至少引用一条 current E4/E5/E6
-   真实流程证据；
-3. 该真实流程必须 `result=passed`、`freshness=current`，并在 `real-flows.json` 中反向引用
-   本 item；平台覆盖从该流程的 `platforms` 字段推导，不使用 evidence 中未声明的
-   `platforms`/`flows` 字段；
-4. 每个 `required` 与 `read_only` 平台都被至少一条上述流程覆盖；
-5. 依赖的 PR 为 `state_freshness: current`，且不得把 stale CI 当作通过证据；
-6. 任意 AC 为 BLOCKED、pending，或 AC 引用了 stale/不合格证据时，不得标 PASS。
+2. item 的完整 AC ID 集与冻结权威映射一致，全部 `acceptance_criteria[].verified` 为真；
+3. 每条 AC 至少引用一条 current、`result=passed` 的 E4/E5/E6 真实流程证据；E1/E2/E3、
+   `failed`、`blocked`、`passed_legacy`、`not-run` 或 stale 证据都不能代替 AC proof；
+4. 该流程与 evidence 显式声明同一个 AC，且 flow/evidence 的 `items` 与 `ac_ids` 完全一致；
+   平台覆盖只从这些 AC 关联的 passed flow 的 `platforms` 字段推导，不能被未声明 AC 的
+   item-level flow 单独满足；
+5. 每个 `required` 与 `read_only` 平台都被至少一条上述 AC 关联 passed flow 覆盖；
+6. 同一 item 不得同时存在 current `failed` 或 `blocked` 真实流程。PASS item 若仍保留
+   stale `failed`/`blocked` 历史流程，该流程必须通过 `superseded_by` 指向覆盖其全部 AC 的
+   current passed 流程；没有明确替代关系的历史失败不能与 PASS 共存，不能用“保留失败同时
+   标 PASS”绕过；
+7. item 引用的每个实现 PR 必须是 `state_freshness=current` 的 `merged` PR，并带符合 SHA
+   格式的 `merge_commit`；pim-api 的 merge_commit 还必须能在本地 Git 解析且属于 `master`。
+   Android/Windows 的 merge_commit 只能做结构化存在性校验，外部仓库归属仍需人工/CI 核验；
+8. 关联的 current CI 证据不得是 stale/旧 head；PASS 中 current CI 必须
+   `head_is_current=true`、head 与对应 PR head 一致、run 结论为 `success`，且 CI 证据关联的
+   item 必须引用该 PR；
+9. 任意 AC 为 BLOCKED、pending，或 AC 引用了 stale/不合格证据时，不得标 PASS。
+
+**PR-less / item-only 例外**：若一个 item 在结构化源中确实没有关联实现 PR（`prs: []`），
+可以在其他条件全部满足时以 item-only 真实流程验收为 PASS；这是一条显式数据事实，不是
+“没有 PR 就自动通过”的捷径。只要 item 关联了 PR，所有 PR 都必须满足上述 merged/current/
+merge_commit 规则。若当前资料没有定义某项的 PR，不要为了通过门禁伪造 PR 或验收。
 
 CI 绿、代码合并、`CLEAN`、模拟器、jsdom、组件测试、旧 head 或旧 run 都不等于 PASS。
 
@@ -60,7 +93,7 @@ CI 绿、代码合并、`CLEAN`、模拟器、jsdom、组件测试、旧 head �
 
 | 等级 | 用途 | 不能证明 |
 | --- | --- | --- |
-| `E0` | 决议、范围批准、迁移记录 | 任何实现或运行行为 |
+| `E0` | 决议、范围批准、迁移记录 | 任何实现或运行行为；decision evidence 保持 stale，不能冒充 current 执行证据 |
 | `E1` | 源码/文档只读检查 | 运行行为、端到端流程 |
 | `E2` | 单元/组件/集成测试 | 真实环境、真实设备、用户流程 |
 | `E3` | CI run（记录 run id 与 head） | 当前 head、合并、真实验收 |
@@ -68,29 +101,34 @@ CI 绿、代码合并、`CLEAN`、模拟器、jsdom、组件测试、旧 head �
 | `E5` | 真实 Android 实机/OEM、Windows 交互桌面 | 生产部署 |
 | `E6` | 正式发布、生产部署或线上只读验证 | 未执行的分支 |
 
-每条证据必须有 `source`、`observed_at`、`freshness`；真实流程还必须有 `environment` 与
-`artifacts`，未执行项必须写 `limits`。
+每条证据必须有 `source`、`observed_at`、`freshness`；current 证据还必须有可解析的
+`source_commit`，且等于 `source_snapshot.commit`。真实流程还必须有 `environment` 与
+非空 `artifacts`（`passed`、`passed_legacy`、`failed`、`blocked` 均适用），未执行项必须写
+非空 `limits`。`passed_legacy` 必须是 `stale`；`not-run` 必须是 `not-verified`。
 
 `real-flows.json` 与 `evidence.json` 是 1:1 关系：每个 `EV-RF-*` 证据只能被一个流程引用，
-流程的 `items` 必须与证据 `items` 完全一致，且 item 必须反向引用该证据。`passed` 流程必须
-current；历史通过只能是 `passed_legacy` + `stale`；未执行只能是 `not-run` + `not-verified`。
+流程与证据的 `items`、`ac_ids`、`source_commit`、`freshness` 必须一致；流程覆盖的每个 AC
+都必须属于 `items` 中的条目，item 必须反向引用该流程证据。不能用一个未声明 AC 的通用流程
+证明多个 item/AC，也不能让 evidence 额外声明 item 后逃避反向引用。
 
-## Freshness
+## Freshness 与 current 时间
 
 - `current`：对应当前 `source_snapshot` 的 head/版本，可在本轮复核。
-- `stale`：来自旧台账或旧 head，只能用于定位缺口。
-- `not-verified`：明确未验证的流程占位。
+- `stale`：来自旧台账或旧 head，只能用于定位缺口；`passed_legacy` 只能使用此值。
+- `not-verified`：明确未验证的流程占位；`not-run` 必须使用此值。
 - `unknown`：来源不明，必须补证。
 
-`current` 的 `FAIL`/`NOT-VERIFIED` 仍必须至少引用一条与该 item 关联的 current E4–E6
+`current` 的 `observed_at` 必须是带时区的 ISO-8601 日期时间，且严格晚于
+`source_snapshot.commit_date`、不得晚于 `source_snapshot.observed_at`。当前 PR/CI 记录也只
+能在该时间窗内声称 current。`source_snapshot.commit` 必须能在本地 Git 解析，且属于声明的
+`master` 分支；`source_snapshot.branch` 只允许 `master`，缺少 `origin/master` 或
+`refs/heads/master` 引用时提交归属校验 fail-closed，不允许静默降级为 warning 后继续
+current/PASS。旧日期、非法日期、不可解析 commit 或 source head mismatch 都必须失败。
+
+`current` 的 `FAIL`/`NOT-VERIFIED` 仍必须引用至少一条与该 item 关联的 current E4–E6
 真实流程证据（可以是 `failed`/`blocked`）；这证明本轮确实运行过，不代表 PASS。
 
-迁移时全部 item 初始为 `stale`，并保留 `legacy_status` 与 `legacy_source`。`stale` item 的
-`status` 必须等于 `legacy_status`，禁止静默改写历史。
-
-PR 注册表每行必须带 `observed_at`。当前状态由 `git-history` 或 `github-api` 验证；无法重新
-观测的旧记录必须显式标为 `stale`，不得保留旧 head/SHA 却声称 current。`source_snapshot` 的
-`commit` 必须能在本地 Git 解析、属于声明的 `master` 分支，并与 `commit_date` 一致。
+迁移时全部 item 初始为 `stale`，并保留 `legacy_status` 与 `legacy_source`。
 
 ## 平台角色
 
@@ -106,16 +144,36 @@ PR 注册表每行必须带 `observed_at`。当前状态由 `git-history` 或 `g
 
 ## 批次
 
-批次 B1–B7 覆盖全部 161 项，每项恰属一个批次。关闭条件：
+B1–B7 覆盖全部 161 项，每项恰属一个批次。前缀/成员映射是固定契约：
 
-1. 批次内全部 item 的 `required` 平台都有 current 真实证据；
-2. 没有未说明的 `stale` 依赖；
-3. `BLOCKED` 项解除前批次不得关闭，`APPROVED-EXCEPTION` 保持原决议；
-4. 仍有 `FAIL`/`NOT-VERIFIED` 时批次保持 `open`。
+| 批次 | 固定前缀 |
+| --- | --- |
+| B1 | A、B、C |
+| B2 | D、E、F |
+| B3 | G、H、I |
+| B4 | J、K |
+| B5 | L、M、N |
+| B6 | O、P、Q |
+| B7 | R、S、Z |
 
-校验器从实际 item 状态重算批次：有 `FAIL`/`NOT-VERIFIED` 必须是 `open`；没有前两者但仍有
-`BLOCKED` 必须是 `blocked`；只有全部为 current `PASS` 或有效 `APPROVED-EXCEPTION` 才能
-`closed`。批次 items 必须恰好覆盖全部 161 项一次，`prefixes` 必须与成员一致。
+每批的 `prefixes` 必须与成员实际前缀一致，成员集合必须恰好是该批固定前缀下的全部 item；
+不能仅移动一个成员而保留合法前缀和计数。`close_criteria` 当前只要求非空、无重复的描述性
+条件，具体文案不是冻结契约；真正关闭门禁由状态重算、AC/证据规则和依赖闭包执行。
+
+关闭条件：
+
+1. 批次内全部 item 为 current `PASS` 或有效 `APPROVED-EXCEPTION`，且没有
+   `FAIL`/`NOT-VERIFIED`/`BLOCKED`；
+2. 每个 item 的 `required`/`read_only` 平台都有 current 真实证据；
+3. `BLOCKED` 项解除前批次不得关闭；`APPROVED-EXCEPTION` 保持原决议；
+4. 批次依赖必须覆盖所有成员（包括 `APPROVED-EXCEPTION`），不能只检查 PASS 项的一跳：
+   依赖目标必须是 `PASS` 或 `APPROVED-EXCEPTION`；跨批次依赖的目标批次必须已 `closed`，
+   并递归检查整条传递依赖；全局依赖环也必须拒绝；
+5. 没有任何未说明的 `stale` 依赖或未满足的外部前提。
+
+validator 从实际 item 状态重算批次：有 `FAIL`/`NOT-VERIFIED` 必须 `open`；没有前两者但仍有
+`BLOCKED` 必须 `blocked`；只有全部为 current `PASS` 或有效 `APPROVED-EXCEPTION` 才能
+`closed`。
 
 ## 安全边界
 
@@ -124,8 +182,11 @@ PR 注册表每行必须带 `observed_at`。当前状态由 `git-history` 或 `g
   生产数据导出或 GraphEventId/ChangeKey 等敏感字段。
 - 证据里的 URL 只指向公开 GitHub PR/run 或仓库内文件。
 - 校验与渲染脚本只做本地文件与本地 Git 读取，不访问网络。
+- validator 是结构、关系、元数据门禁：它能证明引用可追溯、字段齐全、状态闭包自洽，
+  **不能证明外部 artifact 的真伪、真实设备用户流程或生产部署真的发生**。这些仍需人工/环境
+  核验，并在证据的 `environment`、`artifacts`、`limits` 中如实记录。
 
-## 工作流
+## 工作流与验证边界
 
 ```bash
 # 1. 修改 docs/product/delivery/*.json
@@ -135,21 +196,26 @@ python3 scripts/ci/render-delivery-ledger.py
 python3 scripts/ci/validate-delivery-ledger.py
 # 4. 聚焦测试
 python3 scripts/ci/test-validate-delivery-ledger.py
+
+# 本地聚焦门禁：重渲染 → 校验 → 聚焦测试
+bash scripts/ci/check-delivery-ledger.sh
 ```
 
-修改 JSON 后必须先渲染再校验；校验器会拒绝未同步的生成视图，这是为了阻止手工编辑
-`docs/product/pim-delivery-ledger.md`。一键门禁脚本按“渲染 → 校验 → 测试”执行。
+`scripts/ci/check-delivery-ledger.sh` 是本地聚焦门禁，**不是**现有 CI Gate 的一部分；当前
+`.github/workflows/*` 没有执行它。通过该脚本只能说明本地结构/关系测试通过，不能写成云端 CI
+通过，也不能替代真实用户验收。修改 JSON 后必须先渲染再校验；校验器会拒绝未同步的生成视图。
 
-`scripts/ci/generate-pim-delivery-ledger.sh` 是旧 awk 生成器，只保留历史用途，不再产出
-当前台账；当前视图统一由 `render-delivery-ledger.py` 生成。
+`scripts/ci/generate-pim-delivery-ledger.sh` 是兼容旧调用方式的 shim：它不再解析旧源表，
+而是忽略旧参数并转发到 `render-delivery-ledger.py`。它不是第二事实源，也不能生成第二份
+可编辑台账。
 
-`implementation_basis` 必须以 `legacy-snapshot-` 或 `current-` 开头。渲染视图会把 legacy
-标为“旧台账快照（非 current）”，并把 AC 级 BLOCKED 的原因、解除条件与 decision 单独列出。
+渲染视图的证据分类合计包含 `audit-note`、CI、真实流程和决议四类；证据等级表必须同时显示
+current、stale、not-verified、unknown，等级总条数不能被读成 current 通过证据。
 
 ## 历史快照
 
 - `docs/product/pim-delivery-ledger-20261125.md`：2026-11-25 的逐项文本快照，保留作历史追溯。
 - `docs/product/pim-delivery-ledger.md`：当前生成视图，由本目录渲染。
 
-两份文本都不再是事实源；出现冲突时以 `stale` 标注与 `legacy_source` 指向的历史原文为准，
-新增事实只写结构化源。
+两份文本都不是当前事实源；出现冲突时以结构化 JSON 为准。当前结构化事实必须持续保持
+真实状态，不能为了门禁通过而伪造真实用户流程或把旧证据升级为 current。

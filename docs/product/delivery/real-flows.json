@@ -7,6 +7,9 @@
       "items": [
         "R04"
       ],
+      "ac_ids": [
+        "R04-AC01"
+      ],
       "platforms": [
         "api",
         "mcp",
@@ -30,6 +33,9 @@
       "items": [
         "R04"
       ],
+      "ac_ids": [
+        "R04-AC08"
+      ],
       "platforms": [
         "mcp"
       ],
@@ -47,6 +53,9 @@
       "items": [
         "M05"
       ],
+      "ac_ids": [
+        "M05-AC01"
+      ],
       "platforms": [
         "windows"
       ],
@@ -63,6 +72,9 @@
       "title": "D04 Android/Windows/Web 手写跨端闭环",
       "items": [
         "D04"
+      ],
+      "ac_ids": [
+        "D04-AC01"
       ],
       "platforms": [
         "android",
@@ -82,6 +94,9 @@
       "title": "Z02 换端恢复与真实 provider",
       "items": [
         "Z02"
+      ],
+      "ac_ids": [
+        "Z02-AC01"
       ],
       "platforms": [
         "api",
@@ -103,6 +118,9 @@
       "items": [
         "S01"
       ],
+      "ac_ids": [
+        "S01-AC01"
+      ],
       "platforms": [
         "release"
       ],
@@ -119,6 +137,9 @@
       "title": "R05 外部独立 MCP 客户端 19 工具",
       "items": [
         "R05"
+      ],
+      "ac_ids": [
+        "R05-AC01"
       ],
       "platforms": [
         "mcp"
@@ -137,6 +158,9 @@
       "items": [
         "Q08"
       ],
+      "ac_ids": [
+        "Q08-AC10"
+      ],
       "platforms": [
         "web"
       ],
@@ -154,6 +178,9 @@
       "items": [
         "Z01"
       ],
+      "ac_ids": [
+        "Z01-AC01"
+      ],
       "platforms": [
         "web"
       ],
@@ -170,6 +197,9 @@
       "title": "Q04 公网 TLS 与生产反代",
       "items": [
         "Q04"
+      ],
+      "ac_ids": [
+        "Q04-AC09"
       ],
       "platforms": [
         "api",
@@ -189,6 +219,10 @@
       "items": [
         "H03"
       ],
+      "ac_ids": [
+        "H03-AC01",
+        "H03-AC10"
+      ],
       "platforms": [
         "api"
       ],
@@ -205,6 +239,9 @@
       "title": "C12 真实 FFmpeg 解码与客户端分片",
       "items": [
         "C12"
+      ],
+      "ac_ids": [
+        "C12-AC01"
       ],
       "platforms": [
         "android",
@@ -225,6 +262,10 @@
         "I03",
         "I04"
       ],
+      "ac_ids": [
+        "I03-AC01",
+        "I04-AC01"
+      ],
       "platforms": [
         "android",
         "windows",
@@ -243,6 +284,9 @@
       "title": "Q03 回收站跨端流程",
       "items": [
         "Q03"
+      ],
+      "ac_ids": [
+        "Q03-AC01"
       ],
       "platforms": [
         "android",
@@ -263,6 +307,9 @@
       "items": [
         "P05"
       ],
+      "ac_ids": [
+        "P05-AC01"
+      ],
       "platforms": [
         "web"
       ],
@@ -279,6 +326,9 @@
       "title": "Q06 真实推送通道",
       "items": [
         "Q06"
+      ],
+      "ac_ids": [
+        "Q06-AC01"
       ],
       "platforms": [
         "api",
@@ -300,6 +350,9 @@
       "items": [
         "J09"
       ],
+      "ac_ids": [
+        "J09-AC01"
+      ],
       "platforms": [
         "api"
       ],
@@ -316,6 +369,9 @@
       "title": "N01 Web 笔记完整编辑与回放",
       "items": [
         "N01"
+      ],
+      "ac_ids": [
+        "N01-AC01"
       ],
       "platforms": [
         "web"

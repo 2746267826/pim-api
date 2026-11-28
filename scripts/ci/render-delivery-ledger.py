@@ -46,7 +46,19 @@ FLOW_LABEL = {
 
 
 def load(root: Path, name: str) -> dict:
-    return json.loads((root / "docs/product/delivery" / name).read_text(encoding="utf-8"))
+    data = json.loads((root / "docs/product/delivery" / name).read_text(encoding="utf-8"))
+    return data if isinstance(data, dict) else {}
+
+
+def rows_by_id(data: dict, key: str):
+    rows = data.get(key)
+    if not isinstance(rows, list):
+        return {}
+    return {
+        str(row.get("id")): row
+        for row in rows
+        if isinstance(row, dict) and isinstance(row.get("id"), str)
+    }
 
 
 def esc(value: str) -> str:
@@ -54,7 +66,7 @@ def esc(value: str) -> str:
 
 
 def short_list(values, limit=None):
-    values = [v for v in values if v]
+    values = [str(v) for v in values if v is not None and str(v)]
     if limit and len(values) > limit:
         return ", ".join(values[:limit]) + f" 等 {len(values)} 项"
     return "、".join(values) if values else "—"
@@ -62,6 +74,8 @@ def short_list(values, limit=None):
 
 def platform_summary(roles: dict) -> str:
     parts = []
+    if not isinstance(roles, dict):
+        roles = {}
     for platform in ("api", "mcp", "web", "android", "windows", "release"):
         role = roles.get(platform, "not_applicable")
         if role == "required":
@@ -84,8 +98,10 @@ def implementation_basis_label(item: dict) -> str:
 
 def acceptance_summary(item: dict) -> str:
     acs = item.get("acceptance_criteria") or []
-    verified = sum(1 for ac in acs if ac.get("verified"))
-    blocked = sum(1 for ac in acs if ac.get("blocked"))
+    if not isinstance(acs, list):
+        acs = []
+    verified = sum(1 for ac in acs if isinstance(ac, dict) and ac.get("verified"))
+    blocked = sum(1 for ac in acs if isinstance(ac, dict) and ac.get("blocked"))
     summary = f"verified {verified}/{len(acs)}"
     if blocked:
         summary += f"；blocked {blocked}"
@@ -100,16 +116,19 @@ def main() -> int:
 
     root = Path(args.root).resolve()
     ledger = load(root, "ledger.json")
-    prs = {p["id"]: p for p in load(root, "prs.json")["prs"]}
-    runs = {r["id"]: r for r in load(root, "ci-runs.json")["runs"]}
-    flows = {f["id"]: f for f in load(root, "real-flows.json")["flows"]}
-    evidence = {e["id"]: e for e in load(root, "evidence.json")["evidence"]}
-    decisions = {d["id"]: d for d in load(root, "decisions.json")["decisions"]}
+    prs = rows_by_id(load(root, "prs.json"), "prs")
+    runs = rows_by_id(load(root, "ci-runs.json"), "runs")
+    flows = rows_by_id(load(root, "real-flows.json"), "flows")
+    evidence = rows_by_id(load(root, "evidence.json"), "evidence")
+    decisions = rows_by_id(load(root, "decisions.json"), "decisions")
 
-    items = ledger["items"]
-    scope = ledger["scope"]
-    snapshot = ledger["source_snapshot"]
-    batches = ledger["batches"]
+    raw_items = ledger.get("items")
+    items = [i for i in raw_items if isinstance(i, dict)] if isinstance(raw_items, list) else []
+    item_by_id = {str(i.get("id")): i for i in items if isinstance(i.get("id"), str)}
+    scope = ledger.get("scope") if isinstance(ledger.get("scope"), dict) else {}
+    snapshot = ledger.get("source_snapshot") if isinstance(ledger.get("source_snapshot"), dict) else {}
+    batch_rows = ledger.get("batches")
+    batches = batch_rows if isinstance(batch_rows, list) else []
 
     out = []
     w = out.append
@@ -124,31 +143,52 @@ def main() -> int:
     w(f"> - `docs/product/delivery/prs.json`、`ci-runs.json`、`real-flows.json`、`evidence.json`、`decisions.json`")
     w(f"> - 规则说明：`docs/product/delivery/README.md`")
     w("")
-    w(f"数据快照：`{snapshot['repo']}@{snapshot['commit']}`（{snapshot['commit_date']}）。"
-      f"迁移时间 {snapshot['migrated_at']}。")
+    w(f"数据快照：`{snapshot.get('repo', '—')}@{snapshot.get('commit', '—')}`"
+      f"（{snapshot.get('commit_date', '—')}）。迁移时间 {snapshot.get('migrated_at', '—')}。")
     w("")
-    w(f"{snapshot['note']}")
+    w(f"{snapshot.get('note', '—')}")
     w("")
 
-    status_counts = Counter(i["status"] for i in items)
-    freshness_counts = Counter(i["freshness"] for i in items)
+    status_counts = Counter(i.get("status") for i in items)
+    freshness_counts = Counter(i.get("freshness") for i in items)
 
     w("## 摘要 / Summary")
     w("")
-    w(f"- 范围：交付包 A–R、Z 共 {scope['core_total']} 项，加补充项 S01，共 **{scope['total']}** 项。")
+    w(f"- 范围：交付包 A–R、Z 共 {scope.get('core_total', '—')} 项，加补充项 S01，"
+      f"共 **{scope.get('total', '—')}** 项。")
     w(f"- 状态：PASS {status_counts.get('PASS', 0)}，FAIL {status_counts.get('FAIL', 0)}，"
       f"NOT-VERIFIED {status_counts.get('NOT-VERIFIED', 0)}，BLOCKED {status_counts.get('BLOCKED', 0)}，"
       f"APPROVED-EXCEPTION {status_counts.get('APPROVED-EXCEPTION', 0)}。")
     w(f"- Freshness：current {freshness_counts.get('current', 0)}，stale {freshness_counts.get('stale', 0)}。"
       " current 表示已按当前 head 重新复核；stale 仍只能用于定位历史缺口。")
-    w(f"- 证据：{len(evidence)} 条（CI {sum(1 for e in evidence.values() if e['type'] == 'ci')}、"
-      f"真实流程 {sum(1 for e in evidence.values() if e['type'] == 'real-flow')}、"
-      f"决议 {sum(1 for e in evidence.values() if e['type'] == 'decision')}）。")
+    evidence_by_type = Counter(e.get("type") for e in evidence.values())
+    evidence_type_text = "、".join(
+        f"{label} {evidence_by_type.get(kind, 0)}"
+        for kind, label in (
+            ("audit-note", "审计记录"),
+            ("ci", "CI"),
+            ("real-flow", "真实流程"),
+            ("decision", "决议"),
+        )
+    )
+    w(f"- 证据：{len(evidence)} 条（{evidence_type_text}；分类合计 "
+      f"{sum(evidence_by_type.values())}）。")
     w(f"- 真实流程：{len(flows)} 条记录，其中 current 通过 "
-      f"{sum(1 for f in flows.values() if f['result'] == 'passed')} 条。")
-    w(f"- PR：{len(prs)} 条，merged {sum(1 for p in prs.values() if p['state'] == 'merged')}，"
-      f"open {sum(1 for p in prs.values() if p['state'] == 'open')}，"
-      f"draft {sum(1 for p in prs.values() if p['state'] == 'draft')}。")
+      f"{sum(1 for f in flows.values() if f.get('result') == 'passed')} 条。")
+    ac_total = sum(
+        len(i.get("acceptance_criteria") or [])
+        for i in items
+        if isinstance(i.get("acceptance_criteria"), list)
+    )
+    ac_verified = sum(
+        1 for item in items
+        for ac in (item.get("acceptance_criteria") or [])
+        if isinstance(ac, dict) and ac.get("verified")
+    )
+    w(f"- AC：{ac_total} 条，verified {ac_verified} 条。")
+    w(f"- PR：{len(prs)} 条，merged {sum(1 for p in prs.values() if p.get('state') == 'merged')}，"
+      f"open {sum(1 for p in prs.values() if p.get('state') == 'open')}，"
+      f"draft {sum(1 for p in prs.values() if p.get('state') == 'draft')}。")
     w("")
     w(f"本视图的产品功能 `PASS` 为 {status_counts.get('PASS', 0)}。"
       "`PASS` 只表示逐 AC 的 current E4/E5/E6 真实流程证据与平台覆盖均闭合；"
@@ -175,17 +215,27 @@ def main() -> int:
         ("Z", "反向要求"),
     ]
     for prefix, label in groups:
-        w(f"| {prefix} | {label} | {scope['counts_by_prefix'].get(prefix, 0)} |")
-    w(f"| **合计** | A–R、Z + S01 | **{scope['total']}** |")
+        prefix_counts = scope.get("counts_by_prefix")
+        if not isinstance(prefix_counts, dict):
+            prefix_counts = {}
+        w(f"| {prefix} | {label} | {prefix_counts.get(prefix, 0)} |")
+    w(f"| **合计** | A–R、Z + S01 | **{scope.get('total', '—')}** |")
     w("")
 
     w("## 平台矩阵 / Platform matrix")
     w("")
     w("| 平台 | 必需 required | 只读 read_only | 协调 coordination | 不适用 not_applicable |")
     w("| --- | ---: | ---: | ---: | ---: |")
-    for platform in ledger["platforms"]:
-        counts = Counter(i["platform_roles"].get(platform) for i in items)
-        w(f"| {PLATFORM_LABEL[platform]} | {counts.get('required', 0)} | {counts.get('read_only', 0)} | "
+    for platform in (
+        ledger.get("platforms") if isinstance(ledger.get("platforms"), list) else PLATFORM_LABEL
+    ):
+        counts = Counter(
+            i.get("platform_roles", {}).get(platform)
+            for i in items
+            if isinstance(i.get("platform_roles"), dict)
+        )
+        platform_label = PLATFORM_LABEL.get(str(platform), str(platform))
+        w(f"| {platform_label} | {counts.get('required', 0)} | {counts.get('read_only', 0)} | "
           f"{counts.get('coordination', 0)} | {counts.get('not_applicable', 0)} |")
     w("")
     w("角色含义：`required` 必须在当前 head 验收；`read_only` 只消费不产出；"
@@ -197,19 +247,39 @@ def main() -> int:
     w("| 批次 | 主题 | 项数 | 状态 | 关闭条件 |")
     w("| --- | --- | ---: | --- | --- |")
     for batch in batches:
-        w(f"| {batch['id']} | {esc(batch['title'])} | {len(batch['items'])} | {batch['status']} | "
-          f"{esc('；'.join(batch['close_criteria']))} |")
+        if not isinstance(batch, dict):
+            continue
+        close_criteria = batch.get("close_criteria")
+        if not isinstance(close_criteria, list):
+            close_criteria = []
+        batch_items = batch.get("items")
+        if not isinstance(batch_items, list):
+            batch_items = []
+        w(f"| {batch.get('id', '—')} | {esc(batch.get('title', '—'))} | {len(batch_items)} | "
+          f"{batch.get('status', '—')} | {esc('；'.join(str(c) for c in close_criteria))} |")
     w("")
     for batch in batches:
-        status = Counter(next(i for i in items if i["id"] == item_id)["status"] for item_id in batch["items"])
-        w(f"### {batch['id']} {batch['title']}")
+        if not isinstance(batch, dict):
+            continue
+        batch_items = batch.get("items")
+        if not isinstance(batch_items, list):
+            batch_items = []
+        status = Counter(
+            item_by_id[str(item_id)].get("status")
+            for item_id in batch_items
+            if str(item_id) in item_by_id
+        )
+        w(f"### {batch.get('id', '—')} {batch.get('title', '—')}")
         w("")
-        w(f"目标：{batch['goal']}")
+        w(f"目标：{batch.get('goal', '—')}")
         w("")
         w("状态分布：" + "，".join(f"{s} {status.get(s, 0)}" for s in STATUS_ORDER))
         w("")
         w("关闭条件：")
-        for criterion in batch["close_criteria"]:
+        close_criteria = batch.get("close_criteria")
+        if not isinstance(close_criteria, list):
+            close_criteria = []
+        for criterion in close_criteria:
             w(f"- {criterion}")
         w("")
 
@@ -222,12 +292,22 @@ def main() -> int:
     w("| 编号 | 标题 | 批次 | 平台角色 | 状态 | Freshness | 实现依据 | AC | PR | 证据 | 下一工单 |")
     w("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |")
     for item in items:
-        prs_text = short_list([f"#{prs[p]['number']}" if p in prs else p for p in item["prs"]], limit=4)
-        ev_text = short_list(item["evidence"], limit=3)
-        w(f"| {item['id']} | {esc(item['title'])} | {item['batch']} | "
-          f"{esc(platform_summary(item['platform_roles']))} | {item['status']} | {item['freshness']} | "
+        item_prs = item.get("prs")
+        if not isinstance(item_prs, list):
+            item_prs = []
+        item_evidence = item.get("evidence")
+        if not isinstance(item_evidence, list):
+            item_evidence = []
+        prs_text = short_list([
+            f"#{prs[p].get('number', '—')}" if p in prs else p
+            for p in item_prs if isinstance(p, str)
+        ], limit=4)
+        ev_text = short_list(item_evidence, limit=3)
+        w(f"| {item.get('id', '—')} | {esc(item.get('title', '—'))} | {item.get('batch', '—')} | "
+          f"{esc(platform_summary(item.get('platform_roles')))} | {item.get('status', '—')} | "
+          f"{item.get('freshness', '—')} | "
           f"{esc(implementation_basis_label(item))} | {esc(acceptance_summary(item))} | "
-          f"{esc(prs_text)} | {esc(ev_text)} | {esc(item['next'])} |")
+          f"{esc(prs_text)} | {esc(ev_text)} | {esc(item.get('next', '—'))} |")
     w("")
 
     w("## 阻塞与例外 / Blocked and exceptions")
@@ -235,29 +315,40 @@ def main() -> int:
     w("| 编号 | 状态 | 原因 | 解除 / 批准 |")
     w("| --- | --- | --- | --- |")
     for item in items:
-        if item["status"] == "BLOCKED":
-            w(f"| {item['id']} | BLOCKED | {esc(item['blocked_reason'])} | "
-              f"{esc('；'.join(item['unblock_conditions']))} |")
-        elif item["status"] == "APPROVED-EXCEPTION":
-            exc = item["exception"]
-            approval = f"{exc['approved_by']} / {exc['approved_in']}"
-            w(f"| {item['id']} | APPROVED-EXCEPTION | {esc(exc['rationale'])} | {esc(approval)} |")
+        if item.get("status") == "BLOCKED":
+            unblock_conditions = item.get("unblock_conditions")
+            if not isinstance(unblock_conditions, list):
+                unblock_conditions = []
+            w(f"| {item.get('id', '—')} | BLOCKED | {esc(item.get('blocked_reason', '—'))} | "
+              f"{esc('；'.join(str(c) for c in unblock_conditions))} |")
+        elif item.get("status") == "APPROVED-EXCEPTION":
+            exc = item.get("exception")
+            if not isinstance(exc, dict):
+                exc = {}
+            approval = f"{exc.get('approved_by', '—')} / {exc.get('approved_in', '—')}"
+            w(f"| {item.get('id', '—')} | APPROVED-EXCEPTION | {esc(exc.get('rationale', '—'))} | {esc(approval)} |")
     w("")
     w("### AC 级阻塞 / Blocked acceptance criteria")
     w("")
     blocked_acs = [
         (item, ac)
         for item in items
-        for ac in item["acceptance_criteria"]
-        if ac.get("blocked")
+        for ac in (item.get("acceptance_criteria") if isinstance(item.get("acceptance_criteria"), list) else [])
+        if isinstance(ac, dict) and ac.get("blocked")
     ]
     if blocked_acs:
         w("| 条目 | 验收条件 | 条件 | 原因 | 解除条件 | 决策 |")
         w("| --- | --- | --- | --- | --- | --- |")
         for item, ac in blocked_acs:
-            blocked = ac["blocked"]
-            w(f"| {item['id']} | {ac['id']} | {esc(ac['text'])} | {esc(blocked['reason'])} | "
-              f"{esc('；'.join(blocked.get('unblock', [])))} | {esc(blocked.get('decision_id'))} |")
+            blocked = ac.get("blocked")
+            if not isinstance(blocked, dict):
+                blocked = {}
+            unblock = blocked.get("unblock")
+            if not isinstance(unblock, list):
+                unblock = []
+            w(f"| {item.get('id', '—')} | {ac.get('id', '—')} | {esc(ac.get('text', '—'))} | "
+              f"{esc(blocked.get('reason', '—'))} | "
+              f"{esc('；'.join(str(c) for c in unblock))} | {esc(blocked.get('decision_id', '—'))} |")
     else:
         w("无 / None")
     w("")
@@ -266,10 +357,23 @@ def main() -> int:
     w("")
     w("| PR | 仓库 | 状态 | head | merge | 状态 freshness | 观测时点 | 引用项 |")
     w("| --- | --- | --- | --- | --- | --- | --- | --- |")
-    for pr in sorted(prs.values(), key=lambda p: (p["repo"], p["number"])):
-        used = [i["id"] for i in items if pr["id"] in i["prs"]]
-        w(f"| [#{pr['number']}]({pr['url']}) | {pr['repo']} | {pr['state']} | "
-          f"`{pr['head'] or '—'}` | `{pr['merge_commit'] or '—'}` | {pr['state_freshness']} | "
+    def pr_sort_key(pr):
+        try:
+            number = int(str(pr.get("number", "")))
+        except ValueError:
+            number = -1
+        return str(pr.get("repo", "")), number
+
+    for pr in sorted(prs.values(), key=pr_sort_key):
+        pr_id = pr.get("id")
+        used = []
+        for item in items:
+            item_prs = item.get("prs")
+            if isinstance(item_prs, list) and pr_id in item_prs:
+                used.append(str(item.get("id", "—")))
+        w(f"| [#{pr.get('number', '—')}]({pr.get('url', '—')}) | {pr.get('repo', '—')} | "
+          f"{pr.get('state', '—')} | `{pr.get('head') or '—'}` | `{pr.get('merge_commit') or '—'}` | "
+          f"{pr.get('state_freshness', '—')} | "
           f"{esc(pr.get('observed_at', '—'))} | {esc(short_list(used, limit=6))} |")
     w("")
 
@@ -277,20 +381,41 @@ def main() -> int:
     w("")
     w("| Run | PR | head | 结论 | 关键 job | freshness | 观测时点 |")
     w("| --- | --- | --- | --- | --- | --- | --- |")
-    for run in sorted(runs.values(), key=lambda r: int(r["run_id"]), reverse=True):
-        w(f"| `{run['run_id']}` | {run['pr']} | `{run['head']}` | {run['conclusion']} | "
-          f"{esc(', '.join(run['jobs']))} | {run['freshness']} | {esc(run.get('observed_at', '—'))} |")
+    def run_sort_key(run):
+        try:
+            return int(str(run.get("run_id", "")))
+        except ValueError:
+            return -1
+    for run in sorted(runs.values(), key=run_sort_key, reverse=True):
+        jobs = run.get("jobs")
+        if not isinstance(jobs, list):
+            jobs = []
+        w(f"| `{run.get('run_id', '—')}` | {run.get('pr', '—')} | `{run.get('head', '—')}` | "
+          f"{run.get('conclusion', '—')} | {esc(', '.join(str(j) for j in jobs))} | "
+          f"{run.get('freshness', '—')} | {esc(run.get('observed_at', '—'))} |")
     w("")
 
     w("## 真实流程索引 / Real-flow index")
     w("")
-    w("| 流程 | 证据 | 覆盖项 | 平台 | 结果 | freshness | 观测时点 | 环境 | 边界 |")
-    w("| --- | --- | --- | --- | --- | --- | --- | --- | --- |")
+    w("| 流程 | 证据 | 覆盖项 | AC | 平台 | 结果 | freshness | 观测时点 | 环境 | 边界 |")
+    w("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |")
     for flow in flows.values():
-        w(f"| {flow['id']} | {flow['evidence']} | {esc(short_list(flow['items']))} | "
-          f"{esc(short_list([PLATFORM_LABEL[p] for p in flow['platforms']]))} | "
-          f"{FLOW_LABEL.get(flow['result'], flow['result'])} | {flow['freshness']} | "
-          f"{esc(flow.get('observed_at', '—'))} | {esc(flow['environment'] or '—')} | {esc(flow['limits'])} |")
+        flow_items = flow.get("items")
+        if not isinstance(flow_items, list):
+            flow_items = []
+        flow_ac_ids = flow.get("ac_ids")
+        if not isinstance(flow_ac_ids, list):
+            flow_ac_ids = []
+        flow_platforms = flow.get("platforms")
+        if not isinstance(flow_platforms, list):
+            flow_platforms = []
+        result = flow.get("result")
+        w(f"| {flow.get('id', '—')} | {flow.get('evidence', '—')} | "
+          f"{esc(short_list(flow_items))} | {esc(short_list(flow_ac_ids))} | "
+          f"{esc(short_list([PLATFORM_LABEL.get(p, str(p)) for p in flow_platforms]))} | "
+          f"{FLOW_LABEL.get(result, result or '—')} | {flow.get('freshness', '—')} | "
+          f"{esc(flow.get('observed_at', '—'))} | {esc(flow.get('environment') or '—')} | "
+          f"{esc(flow.get('limits', '—'))} |")
     w("")
 
     w("## 决策索引 / Decision index")
@@ -298,17 +423,29 @@ def main() -> int:
     w("| 决定 | 类型 | 状态 | 批准人 | 涉及项 | 依据 |")
     w("| --- | --- | --- | --- | --- | --- |")
     for dec in decisions.values():
-        w(f"| {dec['id']} | {dec['type']} | {dec['status']} | {dec['approved_by'] or '—'} | "
-          f"{esc(short_list(dec['items']))} | {esc(dec['source'])} |")
+        dec_items = dec.get("items")
+        if not isinstance(dec_items, list):
+            dec_items = []
+        w(f"| {dec.get('id', '—')} | {dec.get('type', '—')} | {dec.get('status', '—')} | "
+          f"{dec.get('approved_by') or '—'} | {esc(short_list(dec_items))} | {esc(dec.get('source', '—'))} |")
     w("")
 
     w("## 证据等级 / Evidence levels")
     w("")
-    w("| 等级 | 含义 | 条数 |")
-    w("| --- | ---: | ---: |")
-    level_counts = Counter(e["level"] for e in evidence.values())
-    for level, meaning in ledger["evidence_levels"].items():
-        w(f"| {level} | {esc(meaning)} | {level_counts.get(level, 0)} |")
+    w("| 等级 | 含义 | current | stale | not-verified | unknown | 合计 |")
+    w("| --- | --- | ---: | ---: | ---: | ---: | ---: |")
+    level_counts = Counter(e.get("level") for e in evidence.values())
+    evidence_levels = ledger.get("evidence_levels")
+    if not isinstance(evidence_levels, dict):
+        evidence_levels = {}
+    for level, meaning in evidence_levels.items():
+        rows = [e for e in evidence.values() if e.get("level") == level]
+        fresh = Counter(e.get("freshness") for e in rows)
+        w(f"| {level} | {esc(meaning)} | {fresh.get('current', 0)} | {fresh.get('stale', 0)} | "
+          f"{fresh.get('not-verified', 0)} | {fresh.get('unknown', 0)} | {level_counts.get(level, 0)} |")
+    w("")
+    w("等级条数是存量统计，不等于 current 通过证据；必须结合 freshness 列阅读，")
+    w("`stale`/`not-verified`/`unknown` 均不能支撑 PASS。")
     w("")
 
     w("## 续跑协议 / Resume protocol")
@@ -334,7 +471,11 @@ def main() -> int:
     w("脚本按“重渲染 → 校验 → 聚焦测试”执行；单独运行 validator 时会拒绝未同步的生成视图。")
 
     text = "\n".join(out) + "\n"
-    output = Path(args.output) if args.output else root / ledger["rendered_view"]["path"]
+    rendered_view = ledger.get("rendered_view")
+    if not isinstance(rendered_view, dict):
+        rendered_view = {}
+    output = Path(args.output) if args.output else root / rendered_view.get(
+        "path", "docs/product/pim-delivery-ledger.md")
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(text, encoding="utf-8")
     print(f"rendered {output} ({len(items)} items, {len(text.splitlines())} lines)")
