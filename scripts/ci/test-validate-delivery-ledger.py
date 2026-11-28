@@ -1571,6 +1571,8 @@ class RendererCase(unittest.TestCase):
         (self.tmp / "scripts/ci").mkdir(parents=True, exist_ok=True)
         shutil.copy(REPO / "scripts/ci/render-delivery-ledger.py",
                     self.tmp / "scripts/ci/render-delivery-ledger.py")
+        shutil.copy(REPO / "scripts/ci/generate-pim-delivery-ledger.sh",
+                    self.tmp / "scripts/ci/generate-pim-delivery-ledger.sh")
 
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
@@ -1683,6 +1685,19 @@ class RendererCase(unittest.TestCase):
             capture_output=True, text=True)
         self.assertNotEqual(proc.returncode, 0)
         self.assertFalse(target.exists())
+
+    def test_generator_shim_ignores_legacy_output_path(self):
+        outside_dir = Path(tempfile.mkdtemp(prefix="pim-ledger-outside-"))
+        self.addCleanup(shutil.rmtree, outside_dir, True)
+        target = outside_dir / "legacy-output.md"
+        proc = subprocess.run(
+            ["bash", str(self.tmp / "scripts/ci/generate-pim-delivery-ledger.sh"),
+             "ignored-source", str(target)],
+            capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertFalse(target.exists())
+        self.assertTrue(
+            (self.tmp / "docs/product/pim-delivery-ledger.md").is_file())
 
     def test_renderer_ignores_or_rejects_rendered_view_path_escape(self):
         ledger_path = self.tmp / "docs/product/delivery/ledger.json"

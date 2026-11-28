@@ -246,8 +246,8 @@ merged PR 的 head/merge_commit 仍需在当前 Git object DB 可解析；缺少
 fail-closed，而不是降级成“看起来通过”。
 
 `scripts/ci/generate-pim-delivery-ledger.sh` 是兼容旧调用方式的 shim：它不再解析旧源表，
-而是忽略旧参数并转发到 `render-delivery-ledger.py`。它不是第二事实源，也不能生成第二份
-可编辑台账。
+而是忽略旧源表与旧输出参数并转发到 `render-delivery-ledger.py`，只写固定视图。它不是
+第二事实源，也不能生成第二份可编辑台账或写到调用者指定路径。
 
 渲染视图的证据分类合计包含 `audit-note`、CI、真实流程和决议四类；证据等级表必须同时显示
 current、stale、not-verified、unknown，等级总条数不能被读成 current 通过证据。

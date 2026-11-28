@@ -12,8 +12,8 @@
 # 并转发到新的 renderer；手工编辑生成视图会被 validate-delivery-ledger.py 拒绝。
 #
 # 用法：
-#   scripts/ci/generate-pim-delivery-ledger.sh                    # 渲染当前视图
-#   scripts/ci/generate-pim-delivery-ledger.sh <ignored> <out.md> # 兼容旧参数，忽略源表，输出到 <out.md>
+#   scripts/ci/generate-pim-delivery-ledger.sh                         # 渲染当前视图
+#   scripts/ci/generate-pim-delivery-ledger.sh <ignored> <ignored-out> # 兼容旧参数，两个参数都忽略
 # ---------------------------------------------------------------------------
 set -euo pipefail
 
@@ -27,9 +27,9 @@ if [[ $# -eq 0 ]]; then
 fi
 
 if [[ $# -ne 2 ]]; then
-  echo "用法：$0 [<已忽略的源表> <输出台账.md>]" >&2
+  echo "用法：$0 [<已忽略的源表> <已忽略的输出路径>]" >&2
   exit 2
 fi
 
-echo "警告：源表参数 '$1' 已忽略；只按结构化源渲染。" >&2
-exec python3 "$script_dir/render-delivery-ledger.py" --root "$repo_root" --output "$2"
+echo "警告：源表参数 '$1' 与输出参数 '$2' 均已忽略；只按结构化源渲染固定视图。" >&2
+exec python3 "$script_dir/render-delivery-ledger.py" --root "$repo_root"
