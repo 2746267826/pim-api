@@ -8,6 +8,7 @@ import { ModelEditor } from './model-editor'
 import type { AsrPreset, Model, ModelSettings } from './api'
 import { ApiError } from '@/api/client'
 import { STORAGE_KEYS } from '@/lib/storage'
+import { clearObjectUrlCache } from '@/lib/object-url-cache'
 
 const api = vi.hoisted(() => ({ asrPresets: vi.fn(), asrJobSubmit: vi.fn(), asrJobLookup: vi.fn(), asrJobCancel: vi.fn(), asrTransportObserve: vi.fn(), asrUrlCall: vi.fn(), asrUrlLookup: vi.fn(), detail: vi.fn(), audio: vi.fn(), audioContent: vi.fn() }))
 vi.mock('./api', () => ({ aiApi: api }))
@@ -26,7 +27,7 @@ async function chooseAudio() {
   await userEvent.upload(screen.getByLabelText('本次音频'), new File([wave], '示例.wav', { type: 'audio/wav' }))
 }
 beforeEach(() => {
-  vi.resetAllMocks(); localStorage.clear(); Object.defineProperties(URL, { createObjectURL: { configurable: true, value: vi.fn(() => 'blob:synthetic-audio') }, revokeObjectURL: { configurable: true, value: vi.fn() } })
+  vi.resetAllMocks(); localStorage.clear(); clearObjectUrlCache(); Object.defineProperties(URL, { createObjectURL: { configurable: true, value: vi.fn(() => 'blob:synthetic-audio') }, revokeObjectURL: { configurable: true, value: vi.fn() } })
   // jsdom lacks pointer-capture/scroll APIs used by the real Radix Select. Browser QA uses the native APIs.
   Object.defineProperties(HTMLElement.prototype, { hasPointerCapture: { configurable: true, value: () => false },
     setPointerCapture: { configurable: true, value: () => undefined }, releasePointerCapture: { configurable: true, value: () => undefined },
@@ -382,12 +383,13 @@ describe('ASR预设和调用', () => {
     expect(api.detail).toHaveBeenCalledWith(logId, expect.any(AbortSignal))
   })
 
-  it('原音频只为发起账号读取并在关闭时释放URL', async () => {
+  it('原音频只为发起账号读取，URL 留在播放器缓存直到缓存清理', async () => {
     const denied = render(wrap(<CallAudio logId={logId} owner="another" viewer={owner} />))
     expect(screen.getByText('原音频仅调用发起账号可查看。')).toBeTruthy(); expect(api.audio).not.toHaveBeenCalled(); denied.unmount()
     api.audio.mockResolvedValue({ id: model.id, name: '示例.wav', contentType: 'audio/wav', sizeBytes: wave.length, sha256: 'synthetic', stored: true })
     api.audioContent.mockResolvedValue(new Blob([wave], { type: 'audio/wav' }))
     const own = render(wrap(<CallAudio logId={logId} owner={owner} viewer={owner} />)); await screen.findByLabelText('本次原音频')
-    expect(api.audioContent).toHaveBeenCalledOnce(); own.unmount(); expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:synthetic-audio')
+    expect(api.audioContent).toHaveBeenCalledOnce(); own.unmount(); expect(URL.revokeObjectURL).not.toHaveBeenCalled()
+    clearObjectUrlCache('player'); expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:synthetic-audio')
   })
 })

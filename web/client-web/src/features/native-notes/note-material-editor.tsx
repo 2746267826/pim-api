@@ -18,6 +18,8 @@ import type { PromoteVersionOutcome } from './note-version-panel'
 import { uploadMaterialBundle, type MaterialUploadProgress } from './upload-engine'
 import { InkCanvasEditor } from './ink-canvas-editor'
 import { exportAndroidNotePackage } from './material-package'
+import { useUnsavedDraft } from '@/lib/unsaved-drafts'
+import { noteDraftRegistrations } from './note-draft-protection'
 
 export interface NoteEditorSeed {
   noteId: string
@@ -197,6 +199,7 @@ function LoadedEditor({
   const [message, setMessage] = useState('')
   const [storageConsent, setStorageConsent] = useState(false)
   const [dirty, setDirty] = useState(false)
+  const [textDirty, setTextDirty] = useState(false)
   const [inkPending, setInkPending] = useState(false)
   const [inkEditor, setInkEditor] = useState<{ id: string; ink: Record<string, unknown>; sessionId: string } | null>(null)
   const inkEditorRef = useRef<{ id: string; ink: Record<string, unknown>; sessionId: string } | null>(null)
@@ -208,6 +211,20 @@ function LoadedEditor({
     editableRef.current = editable
   }, [editable])
   const canSubmit = editable && blocks.length > 0 && storageConsent && !inkEditor && !inkPending
+  const noteDrafts = noteDraftRegistrations({
+    noteId,
+    title,
+    baseVersionId,
+    textDirty,
+    dirty,
+    blocks,
+    inkPending,
+    inkEditorOpen: Boolean(inkEditor),
+  })
+  useUnsavedDraft(noteDrafts.text.active, noteDrafts.text.descriptor)
+  useUnsavedDraft(noteDrafts.photos.active, noteDrafts.photos.descriptor)
+  useUnsavedDraft(noteDrafts.ink.active, noteDrafts.ink.descriptor)
+  useUnsavedDraft(noteDrafts.material.active, noteDrafts.material.descriptor)
 
   const requireUploadSession = useCallback(() => {
     const session = uploadSessionRef.current
@@ -325,6 +342,7 @@ function LoadedEditor({
         ? '内容已完整保存，但另一端也保存了修改；两份内容均已保留，请选择采用哪一份。'
         : '正文已同步。')
       setDirty(false)
+      setTextDirty(false)
       onSaved(upload)
     } catch (failure) {
       if (!isUploadSessionActive(session)) return
@@ -465,6 +483,7 @@ function LoadedEditor({
     setBlocks((current) => current.map((block) => block.id === id && block.kind === 'markdown'
       ? { ...block, text }
       : block))
+    setTextDirty(true)
     setDirty(true)
   }
 
@@ -519,6 +538,7 @@ function LoadedEditor({
         <Input id="native-note-title" aria-label="笔记标题" className="mt-1" maxLength={500} value={title}
           disabled={!editable} onChange={(event) => {
             setTitle(event.target.value)
+            setTextDirty(true)
             setDirty(true)
           }} />
       </div>

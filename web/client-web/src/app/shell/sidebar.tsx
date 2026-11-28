@@ -4,6 +4,7 @@ import { LogOut, PanelLeftClose, PanelLeftOpen, Server } from 'lucide-react'
 import { useAuth } from '@/features/auth/auth-context'
 import { useStatusSummary } from '@/api/version'
 import { CalendarBooksManager } from '@/features/calendar/components/calendar-books-manager'
+import { StorageCacheLauncher } from '@/features/settings/storage-cache/storage-cache-dialog'
 import { getApiBase } from '@/lib/apiBase'
 import { HEALTH_LABEL, normalizeHealthStatus } from '@/lib/enums'
 import { cn } from '@/lib/utils'
@@ -205,6 +206,7 @@ function SidebarContent({
         {compact ? (
           <div className="flex flex-col items-center gap-2">
             <SidebarStatusDot compact />
+            <StorageCacheLauncher compact />
             <button
               type="button"
               title={`退出登录（${(user?.displayName ?? user?.username) || ''}）`}
@@ -239,6 +241,7 @@ function SidebarContent({
                 <LogOut className="size-4" aria-hidden />
               </button>
             </div>
+            <StorageCacheLauncher className="mt-1" />
           </>
         )}
       </div>
