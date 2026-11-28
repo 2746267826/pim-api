@@ -68,6 +68,20 @@ public class NoteErrorSanitizerTests
     }
 
     [Theory]
+    [InlineData(40401, 404)]
+    [InlineData(40901, 409)]
+    [InlineData(41301, 413)]
+    [InlineData(42901, 429)]
+    [InlineData(50303, 503)]
+    public void OperationMessageFallbackUsesTheSameStatusMappingAsTheApi(int errorCode,
+        int expectedStatus)
+    {
+        Assert.Equal(NoteErrorSanitizer.FallbackMessage(expectedStatus),
+            NoteErrorSanitizer.SanitizeOperationMessage(
+                "provider https://internal.example/v1 failed", errorCode));
+    }
+
+    [Theory]
     [InlineData("user", true, false)]
     [InlineData("admin", true, true)]
     [InlineData("admin", false, false)]

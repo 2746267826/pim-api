@@ -38,9 +38,9 @@ public static class NoteErrorSanitizer
     /// </summary>
     public static int StatusForErrorCode(int errorCode) => errorCode switch
     {
+        40401 or 4004 or 4006 or 5104 or 5300 or 5304 or 5305 => StatusCodes.Status404NotFound,
         40101 => StatusCodes.Status401Unauthorized,
         40301 or 40302 or 40303 => StatusCodes.Status403Forbidden,
-        40401 => StatusCodes.Status404NotFound,
         40901 or 40902 or 40903 or 40904 => StatusCodes.Status409Conflict,
         41301 => StatusCodes.Status413PayloadTooLarge,
         42901 => StatusCodes.Status429TooManyRequests,

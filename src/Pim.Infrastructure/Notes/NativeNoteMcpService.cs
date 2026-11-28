@@ -23,7 +23,10 @@ public sealed class NativeNoteMcpService(
     TimeProvider? clock = null)
 {
     public const int MaxPackageBytes = 64 * 1024 * 1024;
-    internal const int MaxPackageEntries = 512;
+    // Keep the MCP package at the same file-count ceiling as the material manifest. A 15-second
+    // recording chunk can legitimately produce hundreds of entries, so a smaller transport cap
+    // would reject packages the REST material contract accepts.
+    internal const int MaxPackageEntries = 20_000;
     private const int MaxBase64Characters = ((MaxPackageBytes + 2) / 3) * 4 + 16;
     private static readonly string[] PackageMetadataPaths = ["material-version.json", "materials.json"];
     private readonly TimeProvider _clock = clock ?? TimeProvider.System;

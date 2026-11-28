@@ -3109,7 +3109,7 @@ async def get_version(-) -> Any: ...
 | `confirm_native_note_suggestion` | `POST .../{noteId}/suggestions/{suggestionId}/confirm` | 采用建议 |
 | `dismiss_native_note_suggestion` | `POST .../{noteId}/suggestions/{suggestionId}/dismiss` | 忽略建议 |
 
-> 原生笔记没有 archive/Archived 状态：文件夹用于日常归档，删除只进回收站。请求体上限：`/mcp` 为 96 MiB（覆盖 64 MB ZIP 的 base64 JSON-RPC），反向代理需同步放宽。所有写操作返回 `operationId`（`nop_...`）；失败/未知结果不猜测成功，可用 `get_native_note_operation` 按 requestId 对账。
+> 原生笔记没有 archive/Archived 状态：文件夹用于日常归档，删除只进回收站。请求体上限：`/mcp` 为 96 MiB（覆盖 64 MB ZIP 的 base64 JSON-RPC），反向代理需同步放宽。整包 ZIP 条目数与 `NativeNotes:MaxFiles` 的默认上限 20,000 对齐，并在逐项解压前拒绝超限包；解压后总字节仍不得超过 64 MiB。所有写操作返回 `operationId`（`nop_...`）；失败/未知结果不猜测成功，可用 `get_native_note_operation` 按 requestId 对账。
 >
 > **幂等账本边界 / Ledger boundary**：当前 requestId 账本是按账号保存在 API 本机存储的 JSON 文件（`mcp-operations/*.json` + 进程内文件锁），只保证**单 API 实例内**的重放幂等，不保证多实例/多节点之间的跨实例幂等。跨实例能力依赖后续 #621 的 PostgreSQL ledger。已完成的请求在 30 天或 200 条后清理；`pending`/`unknown` 不按 30 天清理，容量超限时转为有界 tombstone，之后同一 requestId 会 fail-closed 返回 unknown，而不会作为新操作重放；tombstone 本身也有上限，因此不能替代数据库账本。
 >
