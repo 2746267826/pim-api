@@ -9,6 +9,7 @@ import { Button, Card, CardTitle, EmptyState, Spinner, StatusBadge, Textarea } f
 import { notifyError, notifySuccess } from '@/lib/notify'
 import { formatTime } from '@/lib/datetime'
 import { cn } from '@/lib/utils'
+import { useUnsavedDraft } from '@/lib/unsaved-drafts'
 
 /** 文件预览面板：图片（blob）/ 可编辑文本（含快照）/ Office 在线预览 */
 export function FilePreview({ item, onClose, providerKey }: { item: FileItem; onClose: () => void; providerKey?: ProviderKey }) {
@@ -54,6 +55,14 @@ export function FilePreview({ item, onClose, providerKey }: { item: FileItem; on
   }, [item.id, isImage, isText])
 
   const dirty = text != null && text !== original
+  useUnsavedDraft(dirty, {
+    id: `file-preview:${item.id}`,
+    kind: 'file',
+    title: `文件「${item.name}」的文本编辑`,
+    detail: '当前文本修改尚未保存到文件。',
+    saveHint: '在文件预览底部点击“保存”，再清理临时缓存。',
+    saveHref: '/files',
+  })
 
   return (
     <Card className="flex h-full min-h-0 flex-col">

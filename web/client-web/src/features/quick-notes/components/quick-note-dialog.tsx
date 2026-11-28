@@ -8,6 +8,7 @@ import type { QuickNoteAttachment, QuickNoteDetail } from '../types'
 import { STORAGE_KEYS, getJSON, setJSON } from '@/lib/storage'
 import { cn } from '@/lib/utils'
 import { ConfirmDialog, Button, Select } from '@/components/ui'
+import { useUnsavedDraft } from '@/lib/unsaved-drafts'
 
 /**
  * 弹窗目标：
@@ -44,6 +45,21 @@ export function QuickNoteDialog({ target, onClose }: QuickNoteDialogProps) {
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [saving, setSaving] = useState(false)
   const dragRef = useRef<HTMLDivElement>(null)
+  const initialMarkdown = target
+    ? (target.mode === 'edit' ? target.note.contentMarkdown : target.initialMarkdown)
+    : ''
+  const initialAttachmentIds = target?.mode === 'edit'
+    ? (target.note.attachments ?? []).map((attachment) => attachment.id).join('|')
+    : ''
+  const attachmentIds = attachments.map((attachment) => attachment.id).join('|')
+  const unsaved = Boolean(target) && (markdown !== initialMarkdown || attachmentIds !== initialAttachmentIds)
+  useUnsavedDraft(unsaved, {
+    id: `quick-note:${target?.mode === 'edit' ? target.note.id : 'draft'}`,
+    kind: 'quick-note',
+    title: target?.mode === 'edit' ? '闪念编辑' : '新建闪念草稿',
+    detail: '闪念正文或附件仍在弹窗中，尚未保存到服务器。',
+    saveHint: '在闪念弹窗底部点击“保存”；有内容的草稿关闭时会自动保存。',
+  })
 
   /* 弹窗位置记忆 */
   /*

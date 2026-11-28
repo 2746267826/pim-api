@@ -36,6 +36,7 @@ import { uploadEngine } from '../upload-engine'
 import { formatBytes } from '../upload-chunk-plan'
 import { STORAGE_KEYS, getJSON, setJSON } from '@/lib/storage'
 import { notifySuccess, notifyError } from '@/lib/notify'
+import { useCachedBlobUrl } from '@/lib/object-url-cache'
 import { Button, Card, Chip, EmptyState, Input, PageHeader, Segmented, Skeleton } from '@/components/ui'
 import { cn } from '@/lib/utils'
 import { providerLabel, type FileItem } from '../types'
@@ -573,31 +574,18 @@ function SortHeader({ label, active, order, onClick }: { label: string; active: 
 }
 
 function Thumbnail({ item }: { item: FileItem }) {
-  const [url, setUrl] = useState<string | null>(null)
   const isImage = item.mimeType?.startsWith('image/')
-
-  useEffect(() => {
-    if (!isImage || item.itemType === 'folder') return
-    let revoked: string | null = null
-    let cancelled = false
-    void fetchBlob(`/api/v1/files/items/${item.id}/thumbnail?size=medium`)
-      .then((blob) => {
-        if (cancelled) return
-        const u = URL.createObjectURL(blob)
-        revoked = u
-        setUrl(u)
-      })
-      .catch(() => {})
-    return () => {
-      cancelled = true
-      if (revoked) URL.revokeObjectURL(revoked)
-    }
-  }, [item.id, isImage, item.itemType])
+  const imageUrl = useCachedBlobUrl(
+    'thumbnail',
+    `files-thumbnail:${item.id}`,
+    (signal) => fetchBlob(`/api/v1/files/items/${item.id}/thumbnail?size=medium`, signal),
+    Boolean(isImage && item.itemType !== 'folder'),
+  )
 
   if (item.itemType === 'folder') {
     return <span className="grid size-10 place-items-center rounded-ctl bg-surface-2 text-text-3"><FolderPlus className="size-5" aria-hidden /></span>
   }
-  if (url) return <img src={url} alt="" className="size-10 rounded-ctl object-cover" />
+  if (imageUrl.url) return <img src={imageUrl.url} alt="" className="size-10 rounded-ctl object-cover" />
   return <span className="grid size-10 place-items-center rounded-ctl bg-surface-2 text-text-3"><FileIcon className="size-5" aria-hidden /></span>
 }
 

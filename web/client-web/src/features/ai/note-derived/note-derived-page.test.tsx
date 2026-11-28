@@ -3,11 +3,19 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { MemoryRouter } from 'react-router'
+import { MemoryRouter, Route, Routes } from 'react-router'
 import { NAV_GROUPS } from '@/app/nav'
+import { StorageCachePage } from '@/features/settings/pages/storage-cache-page'
 import { NoteDerivedPage } from './note-derived-page'
 import type { NoteDerivedArtifact, NoteDerivedTask, NoteDerivedVersion } from './api'
 import type { NoteAsrTask } from '../api'
+import {
+  canonicalServerBinding,
+  createStoredDraft,
+  editStoredDraft,
+  persistStoredDraft,
+  type NoteDerivedDraftScope,
+} from './draft-storage'
 
 const auth = vi.hoisted(() => ({ user: { id: '11111111-1111-4111-8111-111111111111', role: 'user' } }))
 const derived = vi.hoisted(() => ({
@@ -467,6 +475,134 @@ it('preselects the linked material version and preserves it in the return-to-not
   expect(sourcePicker.textContent).toContain('零录音材料')
   expect(await screen.findByRole('heading', { name: '1 · 整理并生成' })).toBeTruthy()
   expect(screen.getByRole('link', { name: '返回所选笔记' }).getAttribute('href')).toBe(`/native-notes?version=${sourceVersionId}&from=processing`)
+})
+
+it('opens the linked ordinary AI draft from settings and selects its note and result version', async () => {
+  auth.user.role = 'user'
+  const candidateVersionId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+  const candidateArtifact: NoteDerivedArtifact = {
+    ...artifact,
+    headVersionId: versionId,
+    versions: [
+      { ...artifact.versions[0]!, isHead: true },
+      {
+        ...artifact.versions[0]!,
+        versionId: candidateVersionId,
+        createdAt: '2026-10-29T00:01:00Z',
+        isHead: false,
+      },
+    ],
+  }
+  derived.artifacts.mockResolvedValue([candidateArtifact])
+  derived.version.mockImplementation((_artifactId: string, id: string) => Promise.resolve(id === candidateVersionId
+    ? {
+        ...version,
+        versionId: candidateVersionId,
+        contentMarkdown: '候选整理正文',
+        createdAt: '2026-10-29T00:01:00Z',
+        isHead: false,
+      }
+    : version))
+  const draftScope: NoteDerivedDraftScope = {
+    ownerId: owner,
+    serverBinding: canonicalServerBinding(),
+    artifactId,
+    sourceVersionId,
+    kind: 'CompleteRecord',
+    artifactVersionId: candidateVersionId,
+    noteId,
+  }
+  const clean = persistStoredDraft(createStoredDraft(draftScope, '候选整理正文', candidateVersionId))
+  expect(clean.ok).toBe(true)
+  if (!clean.ok) return
+  const edited = editStoredDraft(clean.value, '普通账号尚未保存的候选草稿')
+  expect(edited.ok).toBe(true)
+  if (!edited.ok) return
+  expect(persistStoredDraft(edited.value).ok).toBe(true)
+  window.history.replaceState({}, '', '/settings/storage')
+  client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 }, mutations: { retry: false } } })
+
+  render(
+    <MemoryRouter initialEntries={['/settings/storage']}>
+      <QueryClientProvider client={client}>
+        <Routes>
+          <Route path="/settings/storage" element={<StorageCachePage />} />
+          <Route path="/native-notes/processing" element={<NoteDerivedPage />} />
+        </Routes>
+      </QueryClientProvider>
+    </MemoryRouter>,
+  )
+
+  await userEvent.click(await screen.findByRole('link', { name: '去处理页核对' }))
+
+  expect(await screen.findByRole('heading', { name: '继续处理这篇笔记' })).toBeTruthy()
+  await waitFor(() => expect(screen.getByRole('combobox', { name: '选择笔记内容' }).textContent).toContain('零录音材料'))
+  expect(await screen.findByDisplayValue('普通账号尚未保存的候选草稿')).toBeTruthy()
+  expect(derived.version).toHaveBeenCalledWith(artifactId, candidateVersionId, expect.any(AbortSignal))
+})
+
+it('reports an ordinary AI draft without a note binding as manual verification instead of guessing', () => {
+  auth.user.role = 'user'
+  localStorage.setItem('pim.apiBase', 'https://pim-a.example')
+  const unboundScope: NoteDerivedDraftScope = {
+    ownerId: owner,
+    serverBinding: canonicalServerBinding(),
+    artifactId,
+    sourceVersionId,
+    kind: 'CompleteRecord',
+    artifactVersionId: versionId,
+  }
+  const dirty = editStoredDraft(createStoredDraft(unboundScope, '已保存正文', versionId), '未保存正文')
+  expect(dirty.ok).toBe(true)
+  if (!dirty.ok) return
+  expect(persistStoredDraft(dirty.value).ok).toBe(true)
+  client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } })
+
+  render(
+    <MemoryRouter initialEntries={['/settings/storage']}>
+      <QueryClientProvider client={client}>
+        <Routes>
+          <Route path="/settings/storage" element={<StorageCachePage />} />
+        </Routes>
+      </QueryClientProvider>
+    </MemoryRouter>,
+  )
+
+  const link = screen.getByRole('link', { name: '去处理页手动核对' })
+  expect(link.getAttribute('href')).toBe('/native-notes/processing')
+})
+
+it('falls back to the current result version when an ordinary draft result version is no longer listed', async () => {
+  auth.user.role = 'user'
+  const missingVersionId = 'abababab-abab-4bab-8bab-abababababab'
+  derived.artifacts.mockResolvedValue([artifact])
+  window.history.replaceState({}, '', `/native-notes/processing?noteId=${noteId}&artifactVersionId=${missingVersionId}`)
+
+  page()
+
+  expect(await screen.findByText(/关联的结果版本已不在服务器返回的列表中/)).toBeTruthy()
+  await waitFor(() => expect(screen.getByRole('combobox', { name: '选择笔记内容' }).textContent).toContain('零录音材料'))
+  expect(await screen.findByDisplayValue('服务端生成正文')).toBeTruthy()
+  expect(derived.version).toHaveBeenCalledWith(artifactId, versionId, expect.any(AbortSignal))
+  expect(derived.version).not.toHaveBeenCalledWith(artifactId, missingVersionId, expect.any(AbortSignal))
+})
+
+it('does not silently open a historical source version from an ordinary draft link', async () => {
+  auth.user.role = 'user'
+  const historyVersionId = 'abababab-abab-4bab-8bab-abababababab'
+  derived.sources.mockResolvedValue({
+    total: 2,
+    offset: 0,
+    items: [{ ...source, versionId: historyVersionId, title: '历史材料不应出现', isCurrent: false }, source],
+  })
+  window.history.replaceState({}, '', `/native-notes/processing?noteId=${noteId}&version=${historyVersionId}&artifactVersionId=${versionId}`)
+
+  page()
+
+  expect(await screen.findByText(/关联的材料版本已不是当前内容/)).toBeTruthy()
+  await waitFor(() => expect(screen.getByRole('combobox', { name: '选择笔记内容' }).textContent).toContain('零录音材料'))
+  expect(screen.queryByText('历史材料不应出现')).toBeNull()
+  expect(screen.queryByText(new RegExp(historyVersionId))).toBeNull()
 })
 
 it('consumes note and action context, selects its current version and focuses the requested next step', async () => {

@@ -91,6 +91,7 @@ const SECTIONS: SettingSection[] = [
   {
     label: '数据',
     cards: [
+      { to: '/settings/storage', title: '存储与缓存', description: '清理查询、缩略图、播放器与传输历史', icon: HardDrive },
       { to: '/settings/data-reliability', title: '数据可信度', description: '13 规则数据体检', icon: ShieldCheck },
       { to: '/settings/calendar-data', title: '日程数据管理', description: '事件批量管理与 ICS 导入导出', icon: CalendarCog },
       { to: '/settings/recycle-bin', title: '回收站', description: '日历域回收站与恢复预览', icon: Trash2 },

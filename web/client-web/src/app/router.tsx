@@ -22,6 +22,7 @@ const LoginPage = lazyPage(() => import('@/features/auth/pages/login-page'), 'Lo
 const SetupPage = lazyPage(() => import('@/features/server/pages/setup-page'), 'SetupPage')
 const ServerSettingsPage = lazyPage(() => import('@/features/server/pages/server-settings-page'), 'ServerSettingsPage')
 const SettingsHubPage = lazyPage(() => import('@/features/settings/pages/settings-hub-page'), 'SettingsHubPage')
+const StorageCachePage = lazyPage(() => import('@/features/settings/pages/storage-cache-page'), 'StorageCachePage')
 
 const TodayPage = lazyPage(() => import('@/features/today/pages/today-page'), 'TodayPage')
 const GlobalSearchPage = lazyPage(() => import('@/features/search/pages/global-search-page'), 'GlobalSearchPage')
@@ -134,6 +135,7 @@ export const router = createBrowserRouter([
           { path: 'status', element: <StatusPage /> },
           { path: 'settings', element: <SettingsHubPage /> },
           { path: 'settings/server', element: <ServerSettingsPage /> },
+          { path: 'settings/storage', element: <StorageCachePage /> },
           { path: 'settings/microsoft', element: <MicrosoftPage /> },
           { path: 'settings/google', element: <GoogleDrivePage /> },
           { path: 'settings/data-reliability', element: <DataReliabilityPage /> },
