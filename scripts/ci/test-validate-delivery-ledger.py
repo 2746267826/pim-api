@@ -1708,27 +1708,79 @@ class RendererCase(unittest.TestCase):
 
 
 class RealLedgerTest(unittest.TestCase):
-    def isolated_git_root(self, parent):
+    def real_ledger_fixture(self, parent):
+        root = Path(parent) / "ledger-root"
+        shutil.copytree(REPO / "docs/product/delivery",
+                        root / "docs/product/delivery")
+        for name in ("pim-delivery-ledger.md", "pim-delivery-ledger-20261125.md"):
+            shutil.copy(REPO / "docs/product" / name, root / "docs/product" / name)
+        (root / "scripts/ci").mkdir(parents=True)
+        shutil.copy(REPO / "scripts/ci/render-delivery-ledger.py",
+                    root / "scripts/ci/render-delivery-ledger.py")
+
         git_root = Path(parent) / "repo.git"
-        subprocess.run(
-            ["git", "clone", "--shared", "--no-checkout", "--quiet",
-             str(REPO), str(git_root)],
-            capture_output=True, text=True, check=True)
-        ledger = json.loads(
-            (REPO / "docs/product/delivery/ledger.json").read_text(encoding="utf-8"))
-        snapshot = ledger["source_snapshot"]["commit"]
-        for ref in ("refs/heads/master", "refs/remotes/origin/master"):
-            subprocess.run(
-                ["git", "-C", str(git_root), "update-ref", ref, snapshot],
-                capture_output=True, text=True, check=True)
-        return git_root
+        git_root.mkdir()
+
+        def git(*args, date="2026-11-28T08:00:00+08:00"):
+            env = os.environ.copy()
+            env["GIT_AUTHOR_DATE"] = date
+            env["GIT_COMMITTER_DATE"] = date
+            return subprocess.run(
+                ["git", "-C", str(git_root), *args],
+                capture_output=True, text=True, check=True, env=env)
+
+        def commit(message, date):
+            (git_root / "fixture.txt").write_text(message + "\n", encoding="utf-8")
+            git("add", "fixture.txt")
+            git("commit", "-q", "-m", message, date=date)
+            return git("rev-parse", "HEAD").stdout.strip()
+
+        git("init", "-q")
+        git("symbolic-ref", "HEAD", "refs/heads/master")
+        git("config", "user.email", "ledger@example.invalid")
+        git("config", "user.name", "Ledger Fixture")
+        commit("fixture base", "2026-11-28T08:00:00+08:00")
+        snapshot_commit = commit(
+            "fixture snapshot", "2026-11-28T11:51:45+08:00")
+        snapshot_date = git(
+            "show", "-s", "--format=%cI", snapshot_commit).stdout.strip()
+        git("update-ref", "refs/remotes/origin/master", snapshot_commit)
+
+        ledger_path = root / "docs/product/delivery/ledger.json"
+        ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+        ledger["source_snapshot"].update({
+            "commit": snapshot_commit,
+            "commit_date": snapshot_date,
+        })
+        ledger_path.write_text(
+            json.dumps(ledger, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8")
+
+        prs_path = root / "docs/product/delivery/prs.json"
+        prs = json.loads(prs_path.read_text(encoding="utf-8"))
+        for pr in prs["prs"]:
+            if pr.get("repo") == "pim-api" and pr.get("state") == "merged":
+                pr["head"] = snapshot_commit
+                pr["merge_commit"] = snapshot_commit
+                pr["state_verified_by"] = "git-history"
+        prs_path.write_text(
+            json.dumps(prs, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8")
+
+        proc = subprocess.run(
+            [sys.executable, str(root / "scripts/ci/render-delivery-ledger.py"),
+             "--root", str(root)],
+            capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        return root, git_root
 
     def test_real_ledger_is_valid(self):
         with tempfile.TemporaryDirectory(prefix="pim-ledger-git-") as tmp:
-            git_root = self.isolated_git_root(tmp)
+            root, git_root = self.real_ledger_fixture(tmp)
             err = io.StringIO()
             with redirect_stderr(err):
-                ok = validator_module.Validator(REPO, git_root=git_root).run()
+                ok = validator_module.Validator(
+                    root, git_root=git_root).run()
             self.assertTrue(ok, err.getvalue())
 
     def test_real_ledger_smoke_counts(self):

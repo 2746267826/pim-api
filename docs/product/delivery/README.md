@@ -238,8 +238,12 @@ bash scripts/ci/check-delivery-ledger.sh
 `.github/workflows/*` 没有执行它。通过该脚本只能说明本地结构/关系测试通过，不能写成云端 CI
 通过，也不能替代真实用户验收。修改 JSON 后必须先渲染再校验；校验器会拒绝未同步的生成视图。
 渲染器固定写入当前视图路径；`--stdout` 仅用于无副作用地读取生成结果。聚焦测试中的真实台账
-smoke 用临时共享对象 Git 仓库，并显式把 `master`/`origin/master` 校准到声明 snapshot，
-不依赖调用者本地 `origin/master` 是否新鲜。
+smoke 在临时副本上运行：建立独立 Git fixture，并把 pim-api merged PR 的 head/merge_commit
+与 `source_snapshot` 校准到 fixture commit，保留全部真实 item/evidence/flow 计数，不依赖
+调用者的 `origin/master`、PR refs 或悬空对象。该 fixture 只证明台账结构可在干净 clone 中
+复验，不证明外部 GitHub 的 head↔merge 关系。直接对实际台账运行 validator 时，pim-api
+merged PR 的 head/merge_commit 仍需在当前 Git object DB 可解析；缺少 PR refs 的 clone 会
+fail-closed，而不是降级成“看起来通过”。
 
 `scripts/ci/generate-pim-delivery-ledger.sh` 是兼容旧调用方式的 shim：它不再解析旧源表，
 而是忽略旧参数并转发到 `render-delivery-ledger.py`。它不是第二事实源，也不能生成第二份
