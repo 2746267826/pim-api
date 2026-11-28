@@ -7,6 +7,7 @@ import {
   clearTokens,
   fetchBoundedDownload,
   fetchBlob,
+  fetchEventStream,
   resetRefreshState,
   setTokens,
 } from './client'
@@ -366,6 +367,85 @@ describe('有界原始材料下载', () => {
 })
 
 describe('401 单飞刷新', () => {
+  it('事件流 401 时只刷新一次并用新令牌重放', async () => {
+    setTokens('tok1', 'rt1')
+    let refreshCount = 0
+    let streamCalls = 0
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      const auth = new Headers(init?.headers).get('Authorization') ?? ''
+      if (url.includes('/auth/refresh')) {
+        refreshCount++
+        return jsonResponse({
+          code: 0,
+          message: 'ok',
+          data: { accessToken: 'tok2', refreshToken: 'rt2' },
+          timestamp: 't',
+        })
+      }
+      if (auth === 'Bearer tok2') {
+        streamCalls++
+        return new Response(new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode(': keep-alive\n\n'))
+            controller.close()
+          },
+        }), { status: 200, headers: { 'content-type': 'text/event-stream' } })
+      }
+      return new Response(null, { status: 401 })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const response = await fetchEventStream('/api/v1/notifications/stream?after=9')
+
+    expect(response.status).toBe(200)
+    expect(refreshCount).toBe(1)
+    expect(streamCalls).toBe(1)
+    expect(getString(STORAGE_KEYS.accessToken)).toBe('tok2')
+    expect(getString(STORAGE_KEYS.refreshToken)).toBe('rt2')
+  })
+
+  it('事件流刷新失败时按浏览器登出处理，不会每 3 秒用旧令牌重连', async () => {
+    setTokens('tok1', 'rt1')
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes('/auth/refresh')) {
+        return jsonResponse({ code: 40101, message: 'refresh expired', data: null }, 401)
+      }
+      return new Response(null, { status: 401 })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const error = await fetchEventStream('/api/v1/notifications/stream').catch((e) => e)
+
+    expect(error).toBeInstanceOf(ApiError)
+    expect(error.code).toBe(401)
+    expect(error.message).toContain('登录已过期')
+    expect(getString(STORAGE_KEYS.accessToken)).toBeNull()
+  })
+
+  it('host 通道事件流不读取浏览器令牌，刷新失败也不清理浏览器会话', async () => {
+    vi.stubGlobal('__PIM_HOST_CHANNEL__', { v: 1, product: 'pim-host-windows' })
+    setTokens('tok1', 'rt1')
+    const authorization: (string | null)[] = []
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).includes('/auth/refresh')) {
+        throw new Error('host channel must not call the browser refresh endpoint')
+      }
+      authorization.push(new Headers(init?.headers).get('Authorization'))
+      return new Response(null, { status: 401 })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const error = await fetchEventStream('/api/v1/notifications/stream').catch((e) => e)
+
+    expect(error).toBeInstanceOf(ApiError)
+    expect(error.status).toBe(401)
+    expect(error.message).toContain('宿主会话刷新失败')
+    expect(authorization).toEqual([null])
+    expect(getString(STORAGE_KEYS.accessToken)).toBe('tok1')
+    expect(getString(STORAGE_KEYS.refreshToken)).toBe('rt1')
+  })
+
   it('并发 401 只触发一次 refresh，重放均成功', async () => {
     setTokens('tok1', 'rt1')
     let refreshCount = 0

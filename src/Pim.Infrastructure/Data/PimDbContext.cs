@@ -7,6 +7,7 @@ using Pim.Infrastructure.Audit;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data.Entities;
 using Pim.Infrastructure.Endpoints;
+using Pim.Infrastructure.Notifications;
 
 namespace Pim.Infrastructure.Data;
 
@@ -87,6 +88,10 @@ public class PimDbContext : DbContext
     public DbSet<NoteAsrAckReceiptEntity> NoteAsrAckReceipts => Set<NoteAsrAckReceiptEntity>();
     public DbSet<NoteAsrSegmentEvidenceEntity> NoteAsrSegmentEvidence => Set<NoteAsrSegmentEvidenceEntity>();
     public DbSet<NoteAsrBatchJobEntity> NoteAsrBatchJobs => Set<NoteAsrBatchJobEntity>();
+    public DbSet<NotificationPreferenceEntity> NotificationPreferences => Set<NotificationPreferenceEntity>();
+    public DbSet<NotificationSubscriptionEntity> NotificationSubscriptions => Set<NotificationSubscriptionEntity>();
+    public DbSet<NotificationEventEntity> NotificationEvents => Set<NotificationEventEntity>();
+    public DbSet<NotificationDeliveryEntity> NotificationDeliveries => Set<NotificationDeliveryEntity>();
 
     public override int SaveChanges()
     {
@@ -364,6 +369,46 @@ public class PimDbContext : DbContext
             e.HasIndex(x => new { x.OwnerId, x.TaskId }).IsUnique();
             e.HasIndex(x => new { x.OwnerId, x.Status, x.UpdatedAt });
             e.HasIndex(x => x.BatchId).IsUnique().HasFilter("\"batch_id\" IS NOT NULL");
+        });
+
+        modelBuilder.Entity<NotificationPreferenceEntity>(e =>
+        {
+            e.HasKey(x => x.UserId);
+            e.Property(x => x.DeviceOverridesJson).HasDefaultValue("{}");
+            e.Property(x => x.CreatedAt).HasDefaultValueSql("now()");
+            e.Property(x => x.UpdatedAt).HasDefaultValueSql("now()");
+        });
+
+        modelBuilder.Entity<NotificationSubscriptionEntity>(e =>
+        {
+            e.HasIndex(x => new { x.Channel, x.EndpointHash }).IsUnique();
+            e.HasIndex(x => new { x.UserId, x.Status });
+            e.Property(x => x.CreatedAt).HasDefaultValueSql("now()");
+            e.Property(x => x.UpdatedAt).HasDefaultValueSql("now()");
+        });
+
+        modelBuilder.Entity<NotificationEventEntity>(e =>
+        {
+            e.Property(x => x.Sequence).ValueGeneratedOnAdd().UseIdentityAlwaysColumn();
+            e.Property(x => x.EligibleSubscriptionIdsJson).HasColumnType("text");
+            e.HasIndex(x => x.Sequence).IsUnique();
+            e.HasIndex(x => new { x.UserId, x.DedupeKey }).IsUnique();
+            e.HasIndex(x => new { x.UserId, x.CreatedAt });
+            e.HasIndex(x => new { x.FanoutStatus, x.NextFanoutAt });
+            e.Property(x => x.CreatedAt).HasDefaultValueSql("now()");
+        });
+
+        modelBuilder.Entity<NotificationDeliveryEntity>(e =>
+        {
+            e.HasIndex(x => new { x.EventId, x.SubscriptionId }).IsUnique();
+            e.HasIndex(x => new { x.Status, x.NextAttemptAt });
+            e.HasIndex(x => new { x.UserId, x.CreatedAt });
+            e.Property(x => x.CreatedAt).HasDefaultValueSql("now()");
+            e.Property(x => x.UpdatedAt).HasDefaultValueSql("now()");
+            e.HasOne(x => x.Event).WithMany().HasForeignKey(x => x.EventId)
+                .OnDelete(DeleteBehavior.Cascade);
+            e.HasOne<NotificationSubscriptionEntity>().WithMany()
+                .HasForeignKey(x => x.SubscriptionId).OnDelete(DeleteBehavior.Restrict);
         });
 
         Assembly[] moduleAssemblies;

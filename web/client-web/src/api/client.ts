@@ -100,6 +100,8 @@ export interface FetchOptions {
   signal?: AbortSignal
   /** Additional session fence for long-lived flows that must not cross owner/server changes. */
   assertActive?: () => void
+  /** 额外请求头（用于不进 OpenAPI 的设备协商字段等）。 */
+  headers?: Record<string, string>
 }
 
 interface RawInit {
@@ -113,6 +115,9 @@ interface RawInit {
 async function rawFetch(path: string, init: RawInit, opts: FetchOptions): Promise<Response> {
   assertRequestActive(opts)
   const headers = new Headers(init.headers)
+  for (const [name, value] of Object.entries(opts.headers ?? {})) {
+    headers.set(name, value)
+  }
   const isForm = init.bodyKind === 'form' ||
     (init.bodyKind == null && typeof FormData !== 'undefined' && init.body instanceof FormData)
   const isBinary = init.bodyKind === 'binary'
@@ -604,6 +609,77 @@ async function fetchDownloadResponse(
     throw new ApiError(`下载失败（HTTP ${res.status}）`, -1, res.status)
   }
   return res
+}
+
+export interface EventStreamOptions {
+  signal?: AbortSignal
+  assertActive?: () => void
+}
+
+/**
+ * 认证事件流（SSE）的唯一入口：与 `apiFetch` 共用 401 单飞刷新。
+ * - 浏览器通道：首次 401 → 一次共享 refresh → 用新令牌重放一次；刷新失败按登出处理，
+ *   不会让页面每 3 秒拿旧令牌重连。
+ * - host 通道：不带 Authorization（宿主过滤器加 Bearer），401 走同一套宿主刷新。
+ * 返回的是原始 `Response`，由调用方读取 SSE 正文。
+ */
+export async function fetchEventStream(
+  path: string,
+  opts: EventStreamOptions = {},
+): Promise<Response> {
+  const requestOptions = { signal: opts.signal, assertActive: opts.assertActive }
+  const host = detectHostChannel() === 'host'
+  const requestSession = captureAuthSession()
+  assertRequestActive(requestOptions)
+  let res = await fetch(apiUrl(path), {
+    headers: host ? {} : bearerHeaders(),
+    signal: opts.signal,
+  })
+  assertRequestActive(requestOptions)
+  if (res.status !== 401) {
+    assertEventStreamResponse(res)
+    return res
+  }
+
+  discardDownloadBody(res)
+  const refreshed = await refreshOnce(requestSession)
+  assertRequestActive(requestOptions)
+  if (refreshed.status !== 'ok') throwRefreshFailure(refreshed)
+  if (!sessionStillCurrent(refreshed.session)) throwRefreshFailure(refreshed)
+  res = await fetch(apiUrl(path), {
+    headers: host ? {} : bearerHeaders(),
+    signal: opts.signal,
+  })
+  assertRequestActive(requestOptions)
+  if (res.status === 401) {
+    discardDownloadBody(res)
+    if (!host) {
+      clearTokens()
+      broadcastUnauthorized()
+    }
+    throw new ApiError(
+      host ? '宿主会话刷新失败，请重试或重新登录' : '登录已过期，请重新登录',
+      401,
+      401,
+    )
+  }
+  assertEventStreamResponse(res)
+  return res
+}
+
+function bearerHeaders(): Record<string, string> {
+  const token = getAccessToken()
+  return token ? { Authorization: `Bearer ${token}` } : {}
+}
+
+function assertEventStreamResponse(res: Response): void {
+  if (!res.ok) {
+    discardDownloadBody(res)
+    throw new ApiError(`事件流连接失败（HTTP ${res.status}）`, -1, res.status)
+  }
+  if (!res.body) {
+    throw new ApiError('事件流连接失败：响应缺少正文', -1, res.status)
+  }
 }
 
 function parseDownloadFilename(disposition: string | null): string {

@@ -18,6 +18,7 @@ using Pim.Core.Common;
 using Pim.Core.Today;
 using Pim.Infrastructure.Extensions;
 using Pim.Infrastructure.Metrics;
+using Pim.Infrastructure.Notifications;
 using Pim.Infrastructure.Operations;
 using Pim.Module.Mcp.Services;
 using Prometheus;
@@ -120,6 +121,29 @@ builder.Services.AddHostedService<Pim.Infrastructure.Metrics.MetricsRefreshServi
 
 // Infrastructure
 builder.Services.AddPimInfrastructure(builder.Configuration);
+builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.Configure<NotificationDispatcherOptions>(
+    builder.Configuration.GetSection("Notifications:Dispatcher"));
+builder.Services.Configure<WebPushOptions>(
+    builder.Configuration.GetSection("Notifications:WebPush"));
+builder.Services.AddScoped<NotificationEventWriter>();
+builder.Services.AddScoped<NotificationPreferenceService>();
+builder.Services.AddScoped<NotificationSubscriptionService>();
+builder.Services.AddScoped<NotificationQueryService>();
+builder.Services.AddScoped<NotificationDeliveryWorker>();
+builder.Services.AddScoped<NotificationEventScanner>();
+builder.Services.AddHttpClient("web-push", client =>
+    {
+        client.Timeout = TimeSpan.FromSeconds(30);
+    })
+    // 推送端点和 VAPID 授权头不能进入 HttpClient 默认诊断日志。
+    .RemoveAllLoggers()
+    .ConfigurePrimaryHttpMessageHandler(() => WebPushNotificationProvider.CreateHttpHandler());
+builder.Services.AddSingleton<IWebPushTransport>(sp => new WebPushNotificationProvider(
+    sp.GetRequiredService<IHttpClientFactory>().CreateClient("web-push"),
+    sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<WebPushOptions>>(),
+    sp.GetRequiredService<ILogger<WebPushNotificationProvider>>()));
+builder.Services.AddHostedService<NotificationDispatchBackgroundService>();
 builder.Services.Configure<Microsoft.AspNetCore.Http.Features.FormOptions>(options =>
 {
     // Raised only as a parser ceiling. Every endpoint keeps its own finite RequestSizeLimit,
@@ -471,6 +495,7 @@ app.MapNoteAsrReprocessEndpoints();
 app.MapNoteAsrRoutingEndpoints();
 app.MapNoteDerivedEndpoints();
 app.MapNoteProcessingEndpoints();
+app.MapNotificationEndpoints();
 app.MapClientShell();
 app.MapTileEndpoints();
 
