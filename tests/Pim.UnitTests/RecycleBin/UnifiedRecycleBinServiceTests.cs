@@ -492,7 +492,8 @@ public sealed class UnifiedRecycleBinServiceTests : IDisposable
         _db.Set<FileItemEntity>().Remove(
             await _db.Set<FileItemEntity>().SingleAsync(row => row.Id == localFile.Id));
         _db.Set<EventEntity>().Remove(
-            await _db.Set<EventEntity>().SingleAsync(row => row.Id == evt.Id));
+            await _db.Set<EventEntity>().IgnoreQueryFilters()
+                .SingleAsync(row => row.Id == evt.Id));
         await _db.SaveChangesAsync();
 
         var second = await _service.PurgeAsync(Batch(
