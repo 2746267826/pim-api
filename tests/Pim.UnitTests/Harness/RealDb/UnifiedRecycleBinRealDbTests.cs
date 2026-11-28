@@ -300,6 +300,7 @@ public sealed class UnifiedRecycleBinRealDbTests : IAsyncLifetime
             Size = childBytes.Length
         };
         db.Set<FileVersionEntity>().AddRange(historyVersion, currentVersion);
+        await db.SaveChangesAsync();
         child.CurrentVersionId = currentVersion.Id;
         var indexJob = new FileIndexJobEntity
         {
