@@ -100,7 +100,9 @@ PASS 至少要有 `required` 或 `read_only` 平台；把全部适用平台改�
 只有在其他条件全部满足，并且 item.decisions 恰好引用一个 approved、`type=item-only-pass`
 的决定时才可升级为 PASS。该决定必须只绑定该 item、`ac_ids` 为空、记录 `approved_by`，
 且其 E0 evidence 已列入 item.evidence；这是一条显式批准事实，不是“没有 PR 就自动通过”
-的捷径。清空 `prs` 后直接标 PASS 仍会失败。只要 item 关联了 PR，所有 PR 都必须满足上述
+的捷径。清空 `prs` 后直接标 PASS 仍会失败。除该条 approved item-only 授权可引用
+E0/stale decision evidence 外，PASS 引用的其他 decision 证据也必须为 current；
+stale/unknown decision 不能作为 PASS 依据。只要 item 关联了 PR，所有 PR 都必须满足上述
 merged/current/merge_commit 规则；若当前资料没有定义某项的 PR，不要为了通过门禁伪造 PR
 或验收。
 
