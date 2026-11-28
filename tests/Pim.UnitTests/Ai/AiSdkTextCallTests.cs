@@ -175,13 +175,106 @@ public sealed class AiSdkTextCallTests : IDisposable
                 "Asia/Shanghai"), default);
         var current = await settings.GetSettingsAsync(default);
         await settings.SaveSettingsAsync(new(current.Revision, true, model.Id, null, null), default);
+        var markerObservedBeforeSend = false;
+        _wire.OnSend = async () =>
+        {
+            var providerRow = await _db.AiRequestLogs.AsNoTracking()
+                .SingleAsync(x => x.Status == "running");
+            Assert.Equal("running", providerRow.Status);
+            using var metadata = JsonDocument.Parse(providerRow.MetadataJson);
+            Assert.True(metadata.RootElement.GetProperty("providerAttempted").GetBoolean());
+            markerObservedBeforeSend = true;
+        };
 
         var result = await LimitedCaller.CallAsync(Request(model: model.Id), default);
 
         Assert.Equal(AiRequestStatus.Succeeded, result.Status);
+        Assert.True(markerObservedBeforeSend);
         Assert.Equal(1, _wire.Calls);
         Assert.Equal(model.Id, (await _db.AiRequestLogs.AsNoTracking()
             .SingleAsync(x => x.Id == result.LogId)).ModelProfileId);
+    }
+
+    [Fact]
+    public async Task UsageLimitRejectionReleasesTextGate()
+    {
+        var settings = new AiModelSettingsService(_db, _secrets, usageLimits: UsageLimits);
+        var model = await settings.SaveAsync(null, new("限额门禁文字模型", "https://fixture.invalid/v1",
+            "fixture-model", true, [AiModelCapability.Text], 60, 123, Key), default);
+        var current = await settings.GetSettingsAsync(default);
+        await settings.SaveSettingsAsync(new(current.Revision, true, model.Id, null, null), default);
+        var profile = await _db.AiModelProfiles.AsNoTracking().SingleAsync(x => x.Id == model.Id);
+        var connectionId = profile.ProviderConnectionId!.Value;
+        var limit = await UsageLimits.GetRuleAsync(connectionId, default);
+        await UsageLimits.SaveRuleAsync(connectionId,
+            new(limit.Revision, true, AiUsageLimitPeriods.Month, 80, 100, null, null,
+                "Asia/Shanghai"), default);
+        _db.AiRequestLogs.Add(new AiRequestLogEntity
+        {
+            UserId = _owner.UserId,
+            Purpose = "ai.text-call",
+            ProviderConnectionId = connectionId,
+            Status = "succeeded",
+            StartedAt = DateTimeOffset.UtcNow,
+            InitiatedAt = DateTimeOffset.UtcNow,
+            CorrelationId = Guid.NewGuid().ToString("N"),
+            MetadataJson = """{"providerAttempted":true}""",
+            TotalTokens = 100
+        });
+        await _db.SaveChangesAsync();
+
+        var gate = new AiTextCallGate();
+        for (var index = 0; index < 3; index++) Assert.True(gate.TryEnter());
+        var caller = new AiTextCallService(_db, _secrets, new AiProfileChatClientFactory(_wire),
+            _owner, gate, usageLimits: UsageLimits);
+
+        var blocked = await caller.CallAsync(Request(model: model.Id), default);
+
+        Assert.Equal(AiRequestStatus.Blocked, blocked.Status);
+        Assert.Equal("usage_limit_reached",
+            (await _db.AiRequestLogs.AsNoTracking().SingleAsync(x => x.Id == blocked.LogId)).ErrorCode);
+        Assert.Equal(0, _wire.Calls);
+        Assert.True(gate.TryEnter());
+        for (var index = 0; index < 4; index++) gate.Exit();
+    }
+
+    [Fact]
+    public async Task UsageLimitRejectsTextModelWithoutProviderConnectionBeforeProvider()
+    {
+        var settings = new AiModelSettingsService(_db, _secrets, usageLimits: UsageLimits);
+        var model = await settings.SaveAsync(null, new("未绑定文字模型", "https://fixture.invalid/v1",
+            "fixture-model", true, [AiModelCapability.Text], 60, 123, Key), default);
+        var profile = await _db.AiModelProfiles.SingleAsync(x => x.Id == model.Id);
+        profile.ProviderConnectionId = null;
+        await _db.SaveChangesAsync();
+        var current = await settings.GetSettingsAsync(default);
+        await settings.SaveSettingsAsync(new(current.Revision, true, model.Id, null, null), default);
+
+        var blocked = await LimitedCaller.CallAsync(Request(model: model.Id), default);
+
+        Assert.Equal(AiRequestStatus.Blocked, blocked.Status);
+        var oldRow = await _db.AiRequestLogs.AsNoTracking().SingleAsync();
+        Assert.Equal("usage_limit_unbound", oldRow.ErrorCode);
+        Assert.Equal(0, _wire.Calls);
+    }
+
+    [Fact]
+    public async Task EditingLegacyUnboundModelRestoresItsDedicatedConnection()
+    {
+        var settings = new AiModelSettingsService(_db, _secrets, usageLimits: UsageLimits);
+        var model = await settings.SaveAsync(null, new("旧未绑定模型", "https://fixture.invalid/v1",
+            "fixture-model", true, [AiModelCapability.Text], 60, 123, Key), default);
+        var profile = await _db.AiModelProfiles.SingleAsync(x => x.Id == model.Id);
+        var connectionId = profile.ProviderConnectionId!.Value;
+        profile.ProviderConnectionId = null;
+        await _db.SaveChangesAsync();
+
+        var saved = await settings.SaveAsync(model.Id, new(model.Name, model.BaseUrl, model.Model, true,
+            model.Capabilities, model.TimeoutSeconds, model.MaxOutputTokens, null, model.Revision), default);
+
+        Assert.Equal(connectionId, saved.ProviderConnectionId);
+        Assert.Equal(connectionId, (await _db.AiModelProfiles.AsNoTracking()
+            .SingleAsync(x => x.Id == model.Id)).ProviderConnectionId);
     }
 
     [Fact]
@@ -364,7 +457,10 @@ public sealed class AiSdkTextCallTests : IDisposable
         await _db.SaveChangesAsync();
         var result = await Caller.CallAsync(request, default);
         Assert.Equal(AiRequestStatus.Incomplete, result.Status); Assert.True(result.Replayed); Assert.Equal(0, _wire.Calls);
-        Assert.Equal("outcome_unknown", (await _db.AiRequestLogs.AsNoTracking().SingleAsync()).ErrorCode);
+        var recovered = await _db.AiRequestLogs.AsNoTracking().SingleAsync();
+        Assert.Equal("outcome_unknown", recovered.ErrorCode);
+        using var metadata = JsonDocument.Parse(recovered.MetadataJson);
+        Assert.True(metadata.RootElement.GetProperty("providerAttempted").GetBoolean());
     }
 
     public void Dispose() { _db.Dispose(); _wire.Dispose(); }
@@ -403,9 +499,11 @@ public sealed class AiSdkTextCallTests : IDisposable
         public bool IncludeUsage { get; set; } = true;
         public bool WaitForCancellation { get; set; }
         public string? RawBody { get; set; }
+        public Func<Task>? OnSend { get; set; }
         public HttpClient CreateClient(string name) => new(new AiTextResponseLimitHandler { InnerHandler = this }, false) { Timeout = Timeout.InfiniteTimeSpan };
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
         {
+            if (OnSend is not null) await OnSend();
             Calls++; LastUrl = request.RequestUri!.ToString(); Authorization = request.Headers.Authorization?.ToString();
             Requests.Add(await request.Content!.ReadAsStringAsync(ct));
             if (WaitForCancellation) await Task.Delay(Timeout.Infinite, ct);

@@ -43,6 +43,7 @@ public sealed class AiTextWireCapture : IDisposable
     public bool ResponseTooLarge { get; private set; }
     public bool RequestRejected { get; private set; }
     public bool ProviderAttempted { get; private set; }
+    public Func<CancellationToken, Task>? AttemptMarker { get; set; }
     private IReadOnlyList<AiVisionAuditImage>? _images;
     private readonly IReadOnlyList<AiAudioContextInput>? _audio;
     private Func<byte[], string>? _requestAudit;
@@ -110,6 +111,11 @@ public sealed class AiTextWireCapture : IDisposable
         throw new InvalidDataException("SDK音频清单与固定材料不一致，本次未发送模型");
     }
     public void Attempt() => ProviderAttempted = true;
+    public async Task MarkAttemptAsync(CancellationToken ct)
+    {
+        if (AttemptMarker is { } markAttempt) await markAttempt(ct);
+        Attempt();
+    }
     public void Response(byte[] bytes) => ResponseBody = System.Text.Encoding.UTF8.GetString(bytes);
     public void TooLarge() => ResponseTooLarge = true;
     public void Dispose() => Slot.Value = _previous;
@@ -219,7 +225,7 @@ public sealed class AiTextResponseLimitHandler : DelegatingHandler
             foreach (var header in requestContent.Headers) replacement.Headers.TryAddWithoutValidation(header.Key, header.Value);
             request.Content = replacement; requestContent.Dispose();
         }
-        capture?.Attempt();
+        if (capture is not null) await capture.MarkAttemptAsync(ct);
         var response = await base.SendAsync(request, ct);
         try
         {

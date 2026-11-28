@@ -11,6 +11,7 @@ using Microsoft.Extensions.Options;
 using Pim.Core.Ai;
 using Pim.Core.Exceptions;
 using Pim.Core.Notes;
+using Pim.Infrastructure.Ai;
 using Pim.Infrastructure.Ai.Asr;
 using Pim.Infrastructure.Ai.Asr.Mimo;
 using Pim.Infrastructure.Auth;
@@ -22,7 +23,11 @@ using Xunit;
 
 namespace Pim.UnitTests.Notes;
 
-/// <summary>Synthetic PostgreSQL/HTTP only: no paid request, credential, or real audio.</summary>
+/// <summary>
+/// Synthetic PostgreSQL/HTTP only: no paid request, credential, or real audio. The database comes
+/// from <c>PIM_ASR516_PG</c> when configured, otherwise from the disposable CI
+/// <c>PIM_TEST_CONN</c> database; production is never used.
+/// </summary>
 [Collection("NoteAsrBatchSyntheticPg")]
 public sealed class NoteAsrBatchPersistenceTests
 {
@@ -30,9 +35,17 @@ public sealed class NoteAsrBatchPersistenceTests
     // PIM_ASR516_PG remains the dedicated local/reviewer switch. CI provisions the same
     // disposable PostgreSQL through PIM_TEST_CONN, so the Batch suite must run there rather
     // than disappearing as skipped evidence. Both point at throwaway databases only.
-    private static string? ConnectionString =>
-        Environment.GetEnvironmentVariable("PIM_ASR516_PG") ??
-        Environment.GetEnvironmentVariable("PIM_TEST_CONN");
+    private static readonly JsonSerializerOptions BatchJson = new(JsonSerializerDefaults.Web);
+    private static string? ConnectionString
+    {
+        get
+        {
+            var dedicated = Environment.GetEnvironmentVariable("PIM_ASR516_PG");
+            return string.IsNullOrWhiteSpace(dedicated)
+                ? Environment.GetEnvironmentVariable("PIM_TEST_CONN")
+                : dedicated;
+        }
+    }
 
     [SkippableFact]
     public async Task Input_is_bounded_and_custom_ids_cannot_escape_attempt_segments()
@@ -540,6 +553,19 @@ public sealed class NoteAsrBatchPersistenceTests
                 .Select(x => x.ReceiptKind).SingleAsync());
             Assert.Equal("Failed", await db.NoteAsrAttempts.Where(x => x.Id == seed.AttemptId)
                 .Select(x => x.State).SingleAsync());
+            var audit = await db.AiRequestLogs.AsNoTracking().SingleAsync(x =>
+                x.UserId == seed.Owner && x.ClientRequestId == jobId &&
+                x.Purpose == NoteAsrBatchService.AuditPurpose);
+            Assert.Equal("succeeded", audit.Status);
+            // The provider explicitly failed one item and billed the other, so the confirmed sum is
+            // persisted and the failed item is counted instead of dropping the Batch to unknown.
+            Assert.Equal(12, audit.TotalTokens);
+            using var metadata = JsonDocument.Parse(audit.MetadataJson);
+            var usage = metadata.RootElement.GetProperty("batchUsage");
+            Assert.Equal(1, usage.GetProperty("reportedItems").GetInt32());
+            Assert.Equal(1, usage.GetProperty("failedItems").GetInt32());
+            Assert.Equal(0, usage.GetProperty("unconfirmedItems").GetInt32());
+            Assert.Equal(12, usage.GetProperty("confirmedTokens").GetInt64());
         }
 
         var downloadCount = factory.ContentCalls;
@@ -613,6 +639,13 @@ public sealed class NoteAsrBatchPersistenceTests
                 x.OwnerId == seed.Owner && x.AttemptId == seed.AttemptId));
             Assert.Equal("Succeeded", await db.NoteAsrAttempts.Where(x => x.Id == seed.AttemptId)
                 .Select(x => x.State).SingleAsync());
+            var audit = await db.AiRequestLogs.AsNoTracking().SingleAsync(x =>
+                x.UserId == seed.Owner && x.ClientRequestId == started.Id &&
+                x.Purpose == NoteAsrBatchService.AuditPurpose);
+            Assert.Equal("succeeded", audit.Status);
+            Assert.Equal(20, audit.PromptTokens);
+            Assert.Equal(4, audit.CompletionTokens);
+            Assert.Equal(24, audit.TotalTokens);
         }
 
         await CleanupAsync(seed.Owner);
@@ -897,6 +930,42 @@ public sealed class NoteAsrBatchPersistenceTests
             Assert.Equal(1, factory.ContentCalls);
             Assert.Contains(factory.Requests, x => x.Path == "/v1/files/file-err/content");
             Assert.DoesNotContain(factory.Requests, x => x.Path.StartsWith("/v1/files/file-out", StringComparison.Ordinal));
+            // Every item is an explicit provider failure, so the ledger records zero confirmed
+            // tokens plus a visible failed-item count instead of claiming an unknown cost.
+            var audit = await db.AiRequestLogs.AsNoTracking().SingleAsync(x =>
+                x.UserId == seed.Owner && x.ClientRequestId == jobId &&
+                x.Purpose == NoteAsrBatchService.AuditPurpose);
+            Assert.Equal("failed", audit.Status);
+            Assert.Equal(0, audit.TotalTokens);
+            using var metadata = JsonDocument.Parse(audit.MetadataJson);
+            var usage = metadata.RootElement.GetProperty("batchUsage");
+            Assert.Equal(0, usage.GetProperty("reportedItems").GetInt32());
+            Assert.Equal(2, usage.GetProperty("failedItems").GetInt32());
+            Assert.Equal(0, usage.GetProperty("unconfirmedItems").GetInt32());
+            Assert.Equal(0, usage.GetProperty("confirmedTokens").GetInt64());
+            Assert.True(usage.GetProperty("partial").GetBoolean());
+        }
+
+        // A Batch where every item is an explicit provider failure must not poison the shared
+        // connection as usage_limit_unknown, otherwise its own failed-slice retry is blocked.
+        Guid connectionId;
+        await using (var db = NewDb(seed.Owner))
+        {
+            var profile = await db.AiModelProfiles.AsNoTracking().SingleAsync(x => x.Id == seed.ProfileId);
+            connectionId = profile.ProviderConnectionId
+                ?? throw new InvalidOperationException("synthetic profile has no provider connection");
+            var rule = await db.AiUsageLimitRules.SingleAsync(x => x.ConnectionId == connectionId);
+            rule.Enabled = true;
+            rule.TokenLimit = 1_000;
+            await db.SaveChangesAsync();
+        }
+        await using (var db = NewDb(seed.Owner))
+        {
+            var limits = new AiUsageLimitService(db, new AdminUser(seed.Owner));
+            var decision = await limits.TryBeginAsync(connectionId, "all-failed-batch-unrelated",
+                "ai.text-call", TimeSpan.FromMinutes(1), CancellationToken.None);
+            Assert.True(decision.Allowed);
+            await limits.EndAsync(decision.Lease, CancellationToken.None);
         }
 
         await CleanupAsync(seed.Owner);
@@ -1117,6 +1186,506 @@ public sealed class NoteAsrBatchPersistenceTests
             Assert.Equal(0, await pollJob.RunPageAsync(DateTimeOffset.UtcNow, settings, CancellationToken.None));
         }
         Assert.Equal(1, polls);
+        await CleanupAsync(seed.Owner);
+    }
+
+    [SkippableFact]
+    public async Task Audit_write_failure_after_terminal_import_is_repaired_and_fails_closed()
+    {
+        Skip.If(string.IsNullOrWhiteSpace(ConnectionString), "PIM_ASR516_PG is not configured");
+        var seed = await SeedAsync();
+        var factory = new SyntheticFactory((request, _) =>
+        {
+            if (request.Method == HttpMethod.Post && request.Path.EndsWith("/v1/files", StringComparison.Ordinal))
+                return Task.FromResult(UploadOk());
+            if (request.Method == HttpMethod.Post && request.Path.EndsWith("/v1/batches", StringComparison.Ordinal))
+                return Task.FromResult(BatchOk("batch-audit-repair"));
+            if (request.Method == HttpMethod.Get && request.Path == "/v1/batches/batch-audit-repair")
+                return Task.FromResult(BatchOk("batch-audit-repair", "completed", "file-out", null, 2, 2));
+            if (request.Method == HttpMethod.Get && request.Path == "/v1/files/file-out/content")
+                return Task.FromResult(FileContent(SuccessJsonl("seg-0", "seg-1")));
+            throw new InvalidOperationException("unexpected synthetic request " + request.Path);
+        });
+        Guid jobId;
+        await using (var db = NewDb(seed.Owner))
+            jobId = (await StartAsync(NewService(db, seed.Owner, factory), seed)).Id;
+        Assert.Equal(1, factory.UploadCalls);
+        Assert.Equal(1, factory.CreateCalls);
+
+        Guid connectionId;
+        await using (var db = NewDb(seed.Owner))
+        {
+            var profile = await db.AiModelProfiles.AsNoTracking()
+                .SingleAsync(x => x.Id == seed.ProfileId);
+            connectionId = profile.ProviderConnectionId
+                ?? throw new InvalidOperationException("synthetic profile has no provider connection");
+            var rule = await db.AiUsageLimitRules.SingleAsync(x => x.ConnectionId == connectionId);
+            rule.Enabled = true;
+            rule.TokenLimit = 1_000;
+            rule.WarningPercent = 80;
+            await db.SaveChangesAsync();
+        }
+
+        await using (var db = NewDb(seed.Owner))
+        {
+            var audit = await db.AiRequestLogs.AsNoTracking().SingleAsync(x =>
+                x.UserId == seed.Owner && x.ClientRequestId == jobId &&
+                x.Purpose == NoteAsrBatchService.AuditPurpose);
+            Assert.Equal("running", audit.Status);
+            Assert.Null(audit.TotalTokens);
+        }
+
+        await using (var db = NewDb(seed.Owner))
+        {
+            await db.Database.ExecuteSqlRawAsync(
+                "CREATE OR REPLACE FUNCTION pim_test_fail_batch_audit_write() RETURNS trigger " +
+                "LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'synthetic audit write timeout'; END $$");
+            await db.Database.ExecuteSqlRawAsync(
+                "DROP TRIGGER IF EXISTS pim_test_fail_batch_audit_write ON ai_request_logs");
+            await db.Database.ExecuteSqlRawAsync($"""
+                CREATE TRIGGER pim_test_fail_batch_audit_write
+                BEFORE INSERT OR UPDATE ON ai_request_logs
+                FOR EACH ROW
+                WHEN (NEW.client_request_id = '{jobId:D}'::uuid)
+                EXECUTE FUNCTION pim_test_fail_batch_audit_write()
+                """);
+        }
+
+        try
+        {
+            await using (var db = NewDb(seed.Owner))
+            {
+                var service = NewService(db, seed.Owner, factory);
+                var error = await Assert.ThrowsAnyAsync<Exception>(() =>
+                    service.PollAsync(jobId, CancellationToken.None));
+                Assert.Contains("synthetic audit write timeout", error.ToString(), StringComparison.Ordinal);
+            }
+
+            await using (var db = NewDb(seed.Owner))
+            {
+                var job = await db.NoteAsrBatchJobs.AsNoTracking().SingleAsync(x => x.Id == jobId);
+                Assert.Equal("Completed", job.Status);
+                Assert.NotNull(job.OutputImportedAt);
+                var audit = await db.AiRequestLogs.AsNoTracking().SingleAsync(x =>
+                    x.UserId == seed.Owner && x.ClientRequestId == jobId &&
+                    x.Purpose == NoteAsrBatchService.AuditPurpose);
+                Assert.Equal("running", audit.Status);
+                await db.AiUsageLimitLeases.ExecuteDeleteAsync();
+                var limits = new AiUsageLimitService(db, new FixedUser(seed.Owner));
+                var blocked = await limits.TryBeginAsync(connectionId, "before-audit-repair", "ai.text-call",
+                    TimeSpan.FromMinutes(1), CancellationToken.None);
+                Assert.False(blocked.Allowed);
+                Assert.Equal("usage_limit_unknown", blocked.ErrorCode);
+            }
+
+            await using (var db = NewDb(seed.Owner))
+                await db.Database.ExecuteSqlRawAsync(
+                    "DROP TRIGGER IF EXISTS pim_test_fail_batch_audit_write ON ai_request_logs");
+
+            var providerCallsBeforeRepair = factory.Requests.Count;
+            var settings = new NoteAsrBatchPollOptions
+            {
+                PageSize = 25, PerJobTimeout = TimeSpan.FromSeconds(10), AuditRepairBackoff = TimeSpan.Zero
+            };
+            await using (var db = NewDb(seed.Owner))
+            {
+                var pollJob = NewPollJob(NewService(db, seed.Owner, factory), db, settings);
+                await pollJob.RunAsync(CancellationToken.None);
+            }
+            Assert.Equal(providerCallsBeforeRepair, factory.Requests.Count);
+
+            await using (var db = NewDb(seed.Owner))
+            {
+                var audit = await db.AiRequestLogs.AsNoTracking().SingleAsync(x =>
+                    x.UserId == seed.Owner && x.ClientRequestId == jobId &&
+                    x.Purpose == NoteAsrBatchService.AuditPurpose);
+                Assert.Equal("succeeded", audit.Status);
+                Assert.Equal(24, audit.TotalTokens);
+                Assert.Null(audit.ExecutionExpiresAt);
+                var limits = new AiUsageLimitService(db, new FixedUser(seed.Owner));
+                var allowed = await limits.TryBeginAsync(connectionId, "after-audit-repair", "ai.text-call",
+                    TimeSpan.FromMinutes(1), CancellationToken.None);
+                Assert.True(allowed.Allowed);
+                await limits.EndAsync(allowed.Lease, CancellationToken.None);
+            }
+
+            await using (var db = NewDb(seed.Owner))
+            {
+                var rule = await db.AiUsageLimitRules.SingleAsync(x => x.ConnectionId == connectionId);
+                rule.TokenLimit = 10;
+                await db.SaveChangesAsync();
+            }
+            await using (var db = NewDb(seed.Owner))
+            {
+                var limits = new AiUsageLimitService(db, new FixedUser(seed.Owner));
+                var reached = await limits.TryBeginAsync(connectionId, "after-audit-repair-limit", "ai.text-call",
+                    TimeSpan.FromMinutes(1), CancellationToken.None);
+                Assert.False(reached.Allowed);
+                Assert.Equal("usage_limit_reached", reached.ErrorCode);
+            }
+        }
+        finally
+        {
+            await using var db = NewDb(seed.Owner);
+            await db.Database.ExecuteSqlRawAsync(
+                "DROP TRIGGER IF EXISTS pim_test_fail_batch_audit_write ON ai_request_logs");
+            await db.Database.ExecuteSqlRawAsync(
+                "DROP FUNCTION IF EXISTS pim_test_fail_batch_audit_write()");
+            await CleanupAsync(seed.Owner);
+        }
+    }
+
+    [SkippableFact]
+    public async Task Expired_batch_audit_survives_generic_recovery_and_repairs_after_terminal_import()
+    {
+        Skip.If(string.IsNullOrWhiteSpace(ConnectionString), "PIM_ASR516_PG is not configured");
+        var seed = await SeedAsync();
+        var factory = new SyntheticFactory((request, _) =>
+        {
+            if (request.Method == HttpMethod.Post && request.Path.EndsWith("/v1/files", StringComparison.Ordinal))
+                return Task.FromResult(UploadOk());
+            if (request.Method == HttpMethod.Post && request.Path.EndsWith("/v1/batches", StringComparison.Ordinal))
+                return Task.FromResult(BatchOk("batch-expired-audit"));
+            if (request.Method == HttpMethod.Get && request.Path == "/v1/batches/batch-expired-audit")
+                return Task.FromResult(BatchOk("batch-expired-audit", "completed", "file-out", null, 2, 2));
+            if (request.Method == HttpMethod.Get && request.Path == "/v1/files/file-out/content")
+                return Task.FromResult(FileContent(SuccessJsonl("seg-0", "seg-1")));
+            throw new InvalidOperationException("unexpected synthetic request " + request.Path);
+        });
+        Guid jobId;
+        await using (var db = NewDb(seed.Owner))
+            jobId = (await StartAsync(NewService(db, seed.Owner, factory), seed)).Id;
+
+        Guid connectionId;
+        await using (var db = NewDb(seed.Owner))
+        {
+            var profile = await db.AiModelProfiles.AsNoTracking()
+                .SingleAsync(x => x.Id == seed.ProfileId);
+            connectionId = profile.ProviderConnectionId
+                ?? throw new InvalidOperationException("synthetic profile has no provider connection");
+            var rule = await db.AiUsageLimitRules.SingleAsync(x => x.ConnectionId == connectionId);
+            rule.Enabled = true;
+            rule.TokenLimit = 1_000;
+            rule.WarningPercent = 80;
+            rule.Period = AiUsageLimitPeriods.Month;
+            rule.TimeZoneId = "Asia/Shanghai";
+            await db.SaveChangesAsync();
+        }
+
+        // Simulate an audit row whose 1h submission expiry was never cleared because a previous
+        // projection failed after the provider handle was persisted.
+        await using (var db = NewDb(seed.Owner))
+        {
+            var audit = await db.AiRequestLogs.SingleAsync(x =>
+                x.UserId == seed.Owner && x.ClientRequestId == jobId &&
+                x.Purpose == NoteAsrBatchService.AuditPurpose);
+            audit.ExecutionExpiresAt = DateTimeOffset.UtcNow.AddMinutes(-1);
+            await db.SaveChangesAsync();
+        }
+
+        const string triggerName = "pim_test_expired_batch_audit_write";
+        await using (var db = NewDb(seed.Owner))
+            await CreateAuditWriteFailureTriggerAsync(db, jobId, triggerName);
+        try
+        {
+            await using (var db = NewDb(seed.Owner))
+            {
+                var service = NewService(db, seed.Owner, factory);
+                var error = await Assert.ThrowsAnyAsync<Exception>(() =>
+                    service.PollAsync(jobId, CancellationToken.None));
+                Assert.Contains("synthetic audit write timeout", error.ToString(), StringComparison.Ordinal);
+            }
+
+            await using (var db = NewDb(seed.Owner))
+            {
+                var job = await db.NoteAsrBatchJobs.AsNoTracking().SingleAsync(x => x.Id == jobId);
+                Assert.Equal("Completed", job.Status);
+                Assert.NotNull(job.OutputImportedAt);
+                var audit = await db.AiRequestLogs.AsNoTracking().SingleAsync(x =>
+                    x.UserId == seed.Owner && x.ClientRequestId == jobId &&
+                    x.Purpose == NoteAsrBatchService.AuditPurpose);
+                Assert.Equal("running", audit.Status);
+                Assert.NotNull(audit.ExecutionExpiresAt);
+                await db.AiUsageLimitLeases.ExecuteDeleteAsync();
+                var limits = new AiUsageLimitService(db, new FixedUser(seed.Owner));
+                var blocked = await limits.TryBeginAsync(connectionId, "before-expired-audit-repair",
+                    "ai.text-call", TimeSpan.FromMinutes(1), CancellationToken.None);
+                Assert.False(blocked.Allowed);
+                Assert.Equal("usage_limit_unknown", blocked.ErrorCode);
+            }
+
+            // The generic recovery must not claim an audit row owned by a persisted Batch job.
+            await using (var db = NewDb(seed.Owner))
+            {
+                await AiCallRecovery.RecoverExpiredAsync(db, CancellationToken.None);
+                db.ChangeTracker.Clear();
+                var audit = await db.AiRequestLogs.AsNoTracking().SingleAsync(x =>
+                    x.UserId == seed.Owner && x.ClientRequestId == jobId &&
+                    x.Purpose == NoteAsrBatchService.AuditPurpose);
+                Assert.Equal("running", audit.Status);
+                Assert.NotNull(audit.ExecutionExpiresAt);
+            }
+
+            await using (var db = NewDb(seed.Owner))
+                await DropAuditWriteFailureTriggerAsync(db, triggerName);
+
+            var settings = new NoteAsrBatchPollOptions
+            {
+                PageSize = 25, PerJobTimeout = TimeSpan.FromSeconds(10), AuditRepairBackoff = TimeSpan.Zero
+            };
+            var providerCallsBeforeRepair = factory.Requests.Count;
+            // After expiry plus generic recovery the audit is still running, so the repair scan
+            // must project the imported result without any provider call.
+            await using (var db = NewDb(seed.Owner))
+            {
+                var pollJob = NewPollJob(NewService(db, seed.Owner, factory), db, settings);
+                Assert.Equal(1, await pollJob.RepairTerminalAuditsAsync(settings, CancellationToken.None));
+            }
+            await using (var db = NewDb(seed.Owner))
+            {
+                var audit = await db.AiRequestLogs.AsNoTracking().SingleAsync(x =>
+                    x.UserId == seed.Owner && x.ClientRequestId == jobId &&
+                    x.Purpose == NoteAsrBatchService.AuditPurpose);
+                Assert.Equal("succeeded", audit.Status);
+                Assert.Equal(24, audit.TotalTokens);
+                Assert.Null(audit.ExecutionExpiresAt);
+            }
+
+            // Also cover the already-poisoned shape: a terminal audit row that was closed before
+            // the Batch usage projection, with no tokens ever written.
+            await using (var db = NewDb(seed.Owner))
+            {
+                var audit = await db.AiRequestLogs.SingleAsync(x =>
+                    x.UserId == seed.Owner && x.ClientRequestId == jobId &&
+                    x.Purpose == NoteAsrBatchService.AuditPurpose);
+                audit.Status = "incomplete";
+                audit.ErrorCode = "outcome_unknown";
+                audit.FinishedAt = DateTimeOffset.UtcNow;
+                audit.ExecutionExpiresAt = null;
+                audit.PromptTokens = null;
+                audit.CompletionTokens = null;
+                audit.TotalTokens = null;
+                await db.SaveChangesAsync();
+                await db.NoteAsrBatchJobs.Where(x => x.Id == jobId).ExecuteUpdateAsync(update => update
+                    .SetProperty(x => x.LastPolledAt, (DateTimeOffset?)null));
+            }
+
+            await using (var db = NewDb(seed.Owner))
+            {
+                var pollJob = NewPollJob(NewService(db, seed.Owner, factory), db, settings);
+                Assert.Equal(1, await pollJob.RepairTerminalAuditsAsync(settings, CancellationToken.None));
+            }
+            Assert.Equal(providerCallsBeforeRepair, factory.Requests.Count);
+
+            await using (var db = NewDb(seed.Owner))
+            {
+                var audit = await db.AiRequestLogs.AsNoTracking().SingleAsync(x =>
+                    x.UserId == seed.Owner && x.ClientRequestId == jobId &&
+                    x.Purpose == NoteAsrBatchService.AuditPurpose);
+                Assert.Equal("succeeded", audit.Status);
+                Assert.Equal(24, audit.TotalTokens);
+                Assert.Null(audit.ExecutionExpiresAt);
+                await db.AiUsageLimitLeases.ExecuteDeleteAsync();
+                var limits = new AiUsageLimitService(db, new FixedUser(seed.Owner));
+                var allowed = await limits.TryBeginAsync(connectionId, "after-expired-audit-repair",
+                    "ai.text-call", TimeSpan.FromMinutes(1), CancellationToken.None);
+                Assert.True(allowed.Allowed);
+                await limits.EndAsync(allowed.Lease, CancellationToken.None);
+            }
+
+            // A terminal succeeded row that lost only its tokens must be re-projected too.
+            await using (var db = NewDb(seed.Owner))
+            {
+                var audit = await db.AiRequestLogs.SingleAsync(x =>
+                    x.UserId == seed.Owner && x.ClientRequestId == jobId &&
+                    x.Purpose == NoteAsrBatchService.AuditPurpose);
+                audit.Status = "succeeded";
+                audit.PromptTokens = null;
+                audit.CompletionTokens = null;
+                audit.TotalTokens = null;
+                await db.SaveChangesAsync();
+                await db.NoteAsrBatchJobs.Where(x => x.Id == jobId).ExecuteUpdateAsync(update => update
+                    .SetProperty(x => x.LastPolledAt, (DateTimeOffset?)null));
+            }
+            await using (var db = NewDb(seed.Owner))
+            {
+                var pollJob = NewPollJob(NewService(db, seed.Owner, factory), db, settings);
+                Assert.Equal(1, await pollJob.RepairTerminalAuditsAsync(settings, CancellationToken.None));
+            }
+            await using (var db = NewDb(seed.Owner))
+            {
+                var audit = await db.AiRequestLogs.AsNoTracking().SingleAsync(x =>
+                    x.UserId == seed.Owner && x.ClientRequestId == jobId &&
+                    x.Purpose == NoteAsrBatchService.AuditPurpose);
+                Assert.Equal("succeeded", audit.Status);
+                Assert.Equal(24, audit.TotalTokens);
+            }
+        }
+        finally
+        {
+            await using var db = NewDb(seed.Owner);
+            await DropAuditWriteFailureTriggerAsync(db, triggerName);
+            await CleanupAsync(seed.Owner);
+        }
+    }
+
+    [SkippableFact]
+    public async Task Unknown_to_in_progress_reopens_the_audit_instead_of_leaving_it_incomplete()
+    {
+        Skip.If(string.IsNullOrWhiteSpace(ConnectionString), "PIM_ASR516_PG is not configured");
+        var seed = await SeedAsync();
+        var polls = 0;
+        var factory = new SyntheticFactory((request, _) =>
+        {
+            if (request.Method == HttpMethod.Post && request.Path.EndsWith("/v1/files", StringComparison.Ordinal))
+                return Task.FromResult(UploadOk());
+            if (request.Method == HttpMethod.Post && request.Path.EndsWith("/v1/batches", StringComparison.Ordinal))
+                return Task.FromResult(BatchOk("batch-unknown-in-progress"));
+            if (request.Method == HttpMethod.Get && request.Path == "/v1/batches/batch-unknown-in-progress")
+            {
+                return Task.FromResult(Interlocked.Increment(ref polls) switch
+                {
+                    1 => BatchOk("batch-unknown-in-progress", "unknown", total: 2, completed: 0),
+                    2 => BatchOk("batch-unknown-in-progress", "in_progress", total: 2, completed: 0),
+                    _ => BatchOk("batch-unknown-in-progress", "completed", "file-out", null, 2, 2, 0)
+                });
+            }
+            if (request.Method == HttpMethod.Get && request.Path == "/v1/files/file-out/content")
+                return Task.FromResult(FileContent(SuccessJsonl("seg-0", "seg-1")));
+            throw new InvalidOperationException("unexpected synthetic request " + request.Path);
+        });
+
+        NoteAsrBatchJobDto started;
+        await using (var db = NewDb(seed.Owner))
+        {
+            started = await StartAsync(NewService(db, seed.Owner, factory), seed);
+            Assert.Equal("Validating", started.Status);
+        }
+        Assert.Equal("running", await AuditStatusAsync(seed.Owner, started.Id));
+
+        await using (var db = NewDb(seed.Owner))
+        {
+            var unknown = await NewService(db, seed.Owner, factory)
+                .PollAsync(started.Id, CancellationToken.None);
+            Assert.Equal("Unknown", unknown.Status);
+        }
+        Assert.Equal("incomplete", await AuditStatusAsync(seed.Owner, started.Id));
+
+        await using (var db = NewDb(seed.Owner))
+        {
+            var running = await NewService(db, seed.Owner, factory)
+                .PollAsync(started.Id, CancellationToken.None);
+            Assert.Equal("InProgress", running.Status);
+        }
+        // An expired/unknown audit must not pin the connection to usage_limit_unknown after the
+        // verified handle reports in_progress again.
+        Assert.Equal("running", await AuditStatusAsync(seed.Owner, started.Id));
+
+        await using (var db = NewDb(seed.Owner))
+        {
+            var completed = await NewService(db, seed.Owner, factory)
+                .PollAsync(started.Id, CancellationToken.None);
+            Assert.Equal("Completed", completed.Status);
+        }
+        Assert.Equal("succeeded", await AuditStatusAsync(seed.Owner, started.Id));
+        Assert.Equal(24, (await AuditTotalTokensAsync(seed.Owner, started.Id)) ?? -1);
+        await CleanupAsync(seed.Owner);
+    }
+
+    [SkippableFact]
+    public async Task Repair_reprojects_legacy_terminal_audit_without_tokens_instead_of_failing_open()
+    {
+        Skip.If(string.IsNullOrWhiteSpace(ConnectionString), "PIM_ASR516_PG is not configured");
+        var seed = await SeedAsync();
+        var jobId = await SeedTerminalAuditJobAsync(seed, "batch-legacy-terminal-audit",
+            DateTimeOffset.UtcNow.AddMinutes(-1), auditStatus: "failed");
+        await using (var db = NewDb(seed.Owner))
+        {
+            var audit = await db.AiRequestLogs.SingleAsync(x =>
+                x.UserId == seed.Owner && x.ClientRequestId == jobId &&
+                x.Purpose == NoteAsrBatchService.AuditPurpose);
+            audit.MetadataJson = """{"providerAttempted":false}""";
+            audit.PromptTokens = null;
+            audit.CompletionTokens = null;
+            audit.TotalTokens = null;
+            await db.SaveChangesAsync();
+        }
+
+        var settings = new NoteAsrBatchPollOptions
+        {
+            PageSize = 25, PerJobTimeout = TimeSpan.FromSeconds(10), AuditRepairBackoff = TimeSpan.Zero
+        };
+        await using (var db = NewDb(seed.Owner))
+        {
+            var pollJob = NewPollJob(NewService(db, seed.Owner, new SyntheticFactory((_, _) =>
+                throw new InvalidOperationException("repair must not call the provider"))), db, settings);
+            Assert.Equal(1, await pollJob.RepairTerminalAuditsAsync(settings, CancellationToken.None));
+        }
+        Assert.Equal("succeeded", await AuditStatusAsync(seed.Owner, jobId));
+        Assert.Equal(24, (await AuditTotalTokensAsync(seed.Owner, jobId)) ?? -1);
+        await using (var db = NewDb(seed.Owner))
+        {
+            var audit = await db.AiRequestLogs.AsNoTracking().SingleAsync(x =>
+                x.UserId == seed.Owner && x.ClientRequestId == jobId &&
+                x.Purpose == NoteAsrBatchService.AuditPurpose);
+            using var metadata = JsonDocument.Parse(audit.MetadataJson);
+            Assert.True(metadata.RootElement.GetProperty("providerAttempted").GetBoolean());
+        }
+        await CleanupAsync(seed.Owner);
+    }
+
+    [SkippableFact]
+    public async Task Repair_scan_backs_off_a_failed_candidate_and_reaches_the_next_job()
+    {
+        Skip.If(string.IsNullOrWhiteSpace(ConnectionString), "PIM_ASR516_PG is not configured");
+        var seed = await SeedAsync();
+        var now = DateTimeOffset.UtcNow;
+        var firstJobId = await SeedTerminalAuditJobAsync(seed, "batch-repair-first", now.AddMinutes(-2));
+        var secondJobId = await SeedTerminalAuditJobAsync(seed, "batch-repair-second", now.AddMinutes(-1));
+
+        const string triggerName = "pim_test_repair_scan_failure";
+        await using (var db = NewDb(seed.Owner))
+            await CreateAuditWriteFailureTriggerAsync(db, firstJobId, triggerName);
+        try
+        {
+            var settings = new NoteAsrBatchPollOptions
+            {
+                PageSize = 1, PerJobTimeout = TimeSpan.FromSeconds(10),
+                AuditRepairBackoff = TimeSpan.FromMinutes(5)
+            };
+            await using (var db = NewDb(seed.Owner))
+            {
+                var pollJob = NewPollJob(NewService(db, seed.Owner, new SyntheticFactory((_, _) =>
+                    throw new InvalidOperationException("repair must not call the provider"))), db, settings);
+                Assert.Equal(0, await pollJob.RepairTerminalAuditsAsync(settings, CancellationToken.None));
+                // The failed row is leased out; the next scan must reach the newer job. Without a
+                // clean shared context the rejected first audit would be retried with the second.
+                Assert.Equal(1, await pollJob.RepairTerminalAuditsAsync(settings, CancellationToken.None));
+                Assert.Equal(0, await pollJob.RepairTerminalAuditsAsync(settings, CancellationToken.None));
+            }
+            Assert.Equal(24, (await AuditTotalTokensAsync(seed.Owner, secondJobId)) ?? -1);
+            Assert.Equal("running", await AuditStatusAsync(seed.Owner, firstJobId));
+        }
+        finally
+        {
+            await using (var db = NewDb(seed.Owner))
+                await DropAuditWriteFailureTriggerAsync(db, triggerName);
+        }
+
+        await using (var db = NewDb(seed.Owner))
+            await db.NoteAsrBatchJobs.Where(x => x.Id == firstJobId).ExecuteUpdateAsync(update => update
+                .SetProperty(x => x.LastPolledAt, (DateTimeOffset?)null));
+        var retrySettings = new NoteAsrBatchPollOptions
+        {
+            PageSize = 1, PerJobTimeout = TimeSpan.FromSeconds(10), AuditRepairBackoff = TimeSpan.Zero
+        };
+        await using (var db = NewDb(seed.Owner))
+        {
+            var pollJob = NewPollJob(NewService(db, seed.Owner, new SyntheticFactory((_, _) =>
+                throw new InvalidOperationException("repair must not call the provider"))), db, retrySettings);
+            Assert.Equal(1, await pollJob.RepairTerminalAuditsAsync(retrySettings, CancellationToken.None));
+        }
+        Assert.Equal(24, (await AuditTotalTokensAsync(seed.Owner, firstJobId)) ?? -1);
         await CleanupAsync(seed.Owner);
     }
 
@@ -1472,13 +2041,15 @@ public sealed class NoteAsrBatchPersistenceTests
             Id = owner, Username = "real-" + suffix, Email = suffix + "@example.invalid",
             PasswordHash = "synthetic", IsActive = true
         });
+        var connectionId = await AddBatchProviderConnectionAsync(db, suffix);
         var profile = new AiModelProfileEntity
         {
             Id = Guid.NewGuid(), Revision = Guid.NewGuid(), Name = "Batch Real " + suffix,
             NormalizedName = "batch-real-" + suffix, BaseUrl = "https://api.example.invalid/v1/",
             Model = "mimo-v2.6-pro", Enabled = true, Capabilities = AiModelCapabilityFlags.Transcription,
             AsrPresetId = MimoMultimodalPreset.PresetId, AsrBatchBaseUrl = Origin.AbsoluteUri,
-            ApiKeySecret = "synthetic-key", CreatedAt = now, UpdatedAt = now
+            ApiKeySecret = "synthetic-key", CreatedAt = now, UpdatedAt = now,
+            ProviderConnectionId = connectionId
         };
         await db.AiModelProfiles.AddAsync(profile);
         var runtime = await db.AiModelRuntime.SingleOrDefaultAsync(x => x.Id == AiModelRuntimeEntity.SingletonId);
@@ -1684,6 +2255,7 @@ public sealed class NoteAsrBatchPersistenceTests
         await seedDb.NoteAsrAttempts.Where(x => x.OwnerId != owner).ExecuteDeleteAsync();
         var suffix = owner.ToString("N")[..8];
         var now = DateTimeOffset.UtcNow;
+        var connectionId = await AddBatchProviderConnectionAsync(seedDb, suffix);
         await seedDb.Users.AddAsync(new UserEntity
         {
             Id = owner, Username = "initial-" + suffix, Email = suffix + "@example.invalid",
@@ -1695,7 +2267,8 @@ public sealed class NoteAsrBatchPersistenceTests
             NormalizedName = "batch-initial-" + suffix, BaseUrl = "https://api.example.invalid/v1/",
             Model = "mimo-v2.6-pro", Enabled = true, Capabilities = AiModelCapabilityFlags.Transcription,
             AsrPresetId = MimoMultimodalPreset.PresetId, AsrBatchBaseUrl = Origin.AbsoluteUri,
-            ApiKeySecret = "synthetic-key", CreatedAt = now, UpdatedAt = now
+            ApiKeySecret = "synthetic-key", CreatedAt = now, UpdatedAt = now,
+            ProviderConnectionId = connectionId
         };
         await seedDb.AiModelProfiles.AddAsync(profile);
         var runtime = await seedDb.AiModelRuntime.SingleOrDefaultAsync(x => x.Id == AiModelRuntimeEntity.SingletonId);
@@ -2009,6 +2582,326 @@ public sealed class NoteAsrBatchPersistenceTests
         await CleanupAsync(seed.Owner);
     }
 
+    [SkippableFact]
+    public async Task Partial_batch_usage_stays_known_and_failed_items_can_retry_under_the_limit()
+    {
+        Skip.If(string.IsNullOrWhiteSpace(ConnectionString), "PIM_ASR516_PG is not configured");
+        var seed = await SeedAsync();
+        var routeConfig = await AddRouteConfigAsync(seed.Owner, seed.ProfileId, "route-partial-consent");
+        Guid connectionId;
+        await using (var db = NewDb(seed.Owner))
+        {
+            var profile = await db.AiModelProfiles.AsNoTracking().SingleAsync(x => x.Id == seed.ProfileId);
+            connectionId = profile.ProviderConnectionId
+                ?? throw new InvalidOperationException("synthetic profile has no provider connection");
+            var rule = await db.AiUsageLimitRules.SingleAsync(x => x.ConnectionId == connectionId);
+            rule.Enabled = true;
+            rule.TokenLimit = 1_000;
+            rule.WarningPercent = 80;
+            rule.Period = AiUsageLimitPeriods.Month;
+            rule.TimeZoneId = "Asia/Shanghai";
+            await db.SaveChangesAsync();
+        }
+
+        var parentPolls = 0;
+        var childPolls = 0;
+        var creates = 0;
+        var factory = new SyntheticFactory((request, _) =>
+        {
+            if (request.Method == HttpMethod.Post && request.Path == "/v1/files")
+                return Task.FromResult(UploadOk());
+            if (request.Method == HttpMethod.Post && request.Path == "/v1/batches")
+                return Task.FromResult(Interlocked.Increment(ref creates) == 1
+                    ? BatchOk("batch-partial-parent", total: 2)
+                    : BatchOk("batch-partial-child", total: 1));
+            if (request.Method == HttpMethod.Get && request.Path == "/v1/batches/batch-partial-parent")
+                return Task.FromResult(Interlocked.Increment(ref parentPolls) == 1
+                    ? BatchOk("batch-partial-parent", "in_progress", total: 2, completed: 0, failed: 0)
+                    : BatchOk("batch-partial-parent", "completed", "file-partial-out", "file-partial-err",
+                        2, 1, 1));
+            if (request.Method == HttpMethod.Get && request.Path == "/v1/batches/batch-partial-child")
+                return Task.FromResult(Interlocked.Increment(ref childPolls) == 1
+                    ? BatchOk("batch-partial-child", "completed", "file-child-out", null, 1, 1, 0)
+                    : BatchOk("batch-partial-child", "completed", "file-child-out", null, 1, 1, 0));
+            if (request.Method == HttpMethod.Get && request.Path == "/v1/files/file-partial-out/content")
+                return Task.FromResult(FileContent(SuccessJsonl("seg-0")));
+            if (request.Method == HttpMethod.Get && request.Path == "/v1/files/file-partial-err/content")
+                return Task.FromResult(FileContent(ErrorJsonl()));
+            if (request.Method == HttpMethod.Get && request.Path == "/v1/files/file-child-out/content")
+                return Task.FromResult(FileContent(SuccessJsonl("seg-1")));
+            throw new InvalidOperationException("unexpected synthetic request " + request.Path);
+        });
+
+        Guid parentJobId;
+        await using (var db = NewDb(seed.Owner))
+        {
+            var service = NewService(db, seed.Owner, factory, noteAsr: RealNoteAsr(db, seed.Owner));
+            var parent = await StartAsync(service, seed);
+            parentJobId = parent.Id;
+            await service.PollAsync(parent.Id, CancellationToken.None);
+            var completed = await service.PollAsync(parent.Id, CancellationToken.None);
+            Assert.Equal("Completed", completed.Status);
+            Assert.Equal(1, completed.FailedItems);
+        }
+
+        // Confirmed successful items remain billed; the failed item is marked partial instead of
+        // dropping the whole Batch to an open-ended unknown that blocks the connection forever.
+        await using (var db = NewDb(seed.Owner))
+        {
+            var audit = await db.AiRequestLogs.AsNoTracking().SingleAsync(x =>
+                x.UserId == seed.Owner && x.ClientRequestId == parentJobId &&
+                x.Purpose == NoteAsrBatchService.AuditPurpose);
+            Assert.Equal("succeeded", audit.Status);
+            Assert.Equal(12, audit.TotalTokens);
+            using var metadata = JsonDocument.Parse(audit.MetadataJson);
+            var usage = metadata.RootElement.GetProperty("batchUsage");
+            Assert.Equal(1, usage.GetProperty("reportedItems").GetInt32());
+            Assert.Equal(1, usage.GetProperty("failedItems").GetInt32());
+            Assert.Equal(0, usage.GetProperty("unconfirmedItems").GetInt32());
+            Assert.Equal(12, usage.GetProperty("confirmedTokens").GetInt64());
+            Assert.True(usage.GetProperty("partial").GetBoolean());
+
+            var limits = new AiUsageLimitService(db, new AdminUser(seed.Owner));
+            var usageView = await limits.GetUsageAsync(connectionId, AiUsageLimitPeriods.Month, null,
+                CancellationToken.None);
+            Assert.Equal(12L, usageView.TotalTokens);
+            Assert.Equal(0, usageView.TokenUnknownRequestCount);
+            Assert.Contains(usageView.CoverageNotes,
+                note => note.Contains("Batch", StringComparison.Ordinal) &&
+                        note.Contains("未上报", StringComparison.Ordinal));
+            await db.AiUsageLimitLeases.Where(x => x.ConnectionId == connectionId).ExecuteDeleteAsync();
+            var unrelated = await limits.TryBeginAsync(connectionId, "partial-batch-unrelated",
+                "ai.text-call", TimeSpan.FromMinutes(1), CancellationToken.None);
+            Assert.True(unrelated.Allowed);
+            await limits.EndAsync(unrelated.Lease, CancellationToken.None);
+        }
+
+        // The global Token limit still applies to the retry: at 12 confirmed tokens a 12-token
+        // limit blocks it with usage_limit_reached, never with usage_limit_unknown.
+        await using (var db = NewDb(seed.Owner))
+        {
+            var rule = await db.AiUsageLimitRules.SingleAsync(x => x.ConnectionId == connectionId);
+            rule.TokenLimit = 12;
+            await db.SaveChangesAsync();
+        }
+        var retryRequest = new RetryFailedNoteAsrBatchRequest(
+            Guid.NewGuid(), parentJobId, seed.Owner,
+            new NoteAsrReprocessRoute(NoteAsrRoute.CloudMultimodal, routeConfig.Revision,
+                routeConfig.ConsentVersion, NoteAsrExecutionMode.Batch, true, true),
+            new NoteAsrBatchTarget(seed.ProfileId, seed.ProfileRevision, "consent-1", true, true),
+            new NoteAsrReprocessReason(NoteAsrReprocessReasonKind.Quality, "retry partial slice"));
+        await using (var db = NewDb(seed.Owner))
+        {
+            var service = NewService(db, seed.Owner, factory, noteAsr: RealNoteAsr(db, seed.Owner));
+            var blocked = await Assert.ThrowsAsync<DomainException>(() =>
+                service.RetryFailedItemsAsync(retryRequest, CancellationToken.None));
+            Assert.Equal(42901, blocked.ErrorCode);
+            var blockedAudit = await db.AiRequestLogs.AsNoTracking()
+                .Where(x => x.UserId == seed.Owner && x.Purpose == NoteAsrBatchService.AuditPurpose &&
+                            x.Status == "blocked" && x.ErrorCode == "usage_limit_reached")
+                .OrderByDescending(x => x.StartedAt)
+                .FirstAsync();
+            using var metadata = JsonDocument.Parse(blockedAudit.MetadataJson);
+            Assert.Equal(1, metadata.RootElement.GetProperty("batchRetryDepth").GetInt32());
+        }
+
+        await using (var db = NewDb(seed.Owner))
+        {
+            var rule = await db.AiUsageLimitRules.SingleAsync(x => x.ConnectionId == connectionId);
+            rule.TokenLimit = 1_000;
+            await db.SaveChangesAsync();
+        }
+        Guid childJobId;
+        await using (var db = NewDb(seed.Owner))
+        {
+            var service = NewService(db, seed.Owner, factory, noteAsr: RealNoteAsr(db, seed.Owner));
+            var result = await service.RetryFailedItemsAsync(
+                retryRequest with { ClientTaskId = Guid.NewGuid() }, CancellationToken.None);
+            childJobId = result.Job.Id;
+            Assert.Equal(1, result.Job.TotalItems);
+            var childJob = await db.NoteAsrBatchJobs.AsNoTracking().SingleAsync(x => x.Id == childJobId);
+            Assert.Equal(new[] { "seg-1" },
+                JsonSerializer.Deserialize<string[]>(childJob.ExpectedCustomIdsJson) ?? []);
+            await service.PollAsync(childJobId, CancellationToken.None);
+            var completed = await service.PollAsync(childJobId, CancellationToken.None);
+            Assert.Equal("Completed", completed.Status);
+            Assert.Equal(0, completed.FailedItems);
+        }
+
+        await using (var db = NewDb(seed.Owner))
+        {
+            var audit = await db.AiRequestLogs.AsNoTracking().SingleAsync(x =>
+                x.UserId == seed.Owner && x.ClientRequestId == childJobId &&
+                x.Purpose == NoteAsrBatchService.AuditPurpose);
+            Assert.Equal("succeeded", audit.Status);
+            Assert.Equal(12, audit.TotalTokens);
+            using var metadata = JsonDocument.Parse(audit.MetadataJson);
+            Assert.Equal(0, metadata.RootElement.GetProperty("batchUsage")
+                .GetProperty("failedItems").GetInt32());
+            Assert.Equal(0, metadata.RootElement.GetProperty("batchUsage")
+                .GetProperty("unconfirmedItems").GetInt32());
+            Assert.Equal(12, metadata.RootElement.GetProperty("batchUsage")
+                .GetProperty("confirmedTokens").GetInt64());
+            Assert.False(metadata.RootElement.GetProperty("batchUsage")
+                .GetProperty("partial").GetBoolean());
+            var limits = new AiUsageLimitService(db, new AdminUser(seed.Owner));
+            var usageView = await limits.GetUsageAsync(connectionId, AiUsageLimitPeriods.Month, null,
+                CancellationToken.None);
+            Assert.Equal(24L, usageView.TotalTokens);
+            Assert.Equal(0, usageView.TokenUnknownRequestCount);
+        }
+
+        // The retry chain is explicitly bounded and auditable.
+        await using (var db = NewDb(seed.Owner))
+        {
+            var audit = await db.AiRequestLogs.SingleAsync(x =>
+                x.UserId == seed.Owner && x.ClientRequestId == parentJobId &&
+                x.Purpose == NoteAsrBatchService.AuditPurpose);
+            audit.MetadataJson = """{"providerAttempted":true,"batchRetryDepth":5}""";
+            await db.SaveChangesAsync();
+            var service = NewService(db, seed.Owner, factory, noteAsr: RealNoteAsr(db, seed.Owner));
+            var bounded = await Assert.ThrowsAsync<DomainException>(() => service.RetryFailedItemsAsync(
+                retryRequest with { ClientTaskId = Guid.NewGuid() }, CancellationToken.None));
+            Assert.Equal(40901, bounded.ErrorCode);
+            Assert.Contains("重试已达上限", bounded.Message, StringComparison.Ordinal);
+        }
+
+        await CleanupAsync(seed.Owner);
+    }
+
+    [SkippableFact]
+    public async Task Repair_scan_converges_partial_and_unrebuildable_terminal_audits()
+    {
+        Skip.If(string.IsNullOrWhiteSpace(ConnectionString), "PIM_ASR516_PG is not configured");
+        var seed = await SeedAsync();
+        var partialJobId = await SeedTerminalAuditJobAsync(seed, "batch-partial-repair",
+            DateTimeOffset.UtcNow.AddMinutes(-2));
+        var unknownJobId = await SeedTerminalAuditJobAsync(seed, "batch-unknown-repair",
+            DateTimeOffset.UtcNow.AddMinutes(-1));
+        var missingUsageJobId = await SeedTerminalAuditJobAsync(seed, "batch-missing-usage-repair",
+            DateTimeOffset.UtcNow.AddSeconds(-30));
+        var unknownCustomIdJobId = await SeedTerminalAuditJobAsync(seed, "batch-unknown-custom-id-repair",
+            DateTimeOffset.UtcNow.AddSeconds(-15));
+        await using (var db = NewDb(seed.Owner))
+        {
+            var partialReconciliation = MimoBatchResultParser.Reconcile(["seg-0", "seg-1"],
+                SuccessJsonl("seg-0"), ErrorJsonl());
+            var partial = await db.NoteAsrBatchJobs.SingleAsync(x => x.Id == partialJobId);
+            partial.ResultJson = JsonSerializer.Serialize(partialReconciliation, BatchJson);
+            partial.FailedItems = 1;
+            var unknown = await db.NoteAsrBatchJobs.SingleAsync(x => x.Id == unknownJobId);
+            unknown.ResultJson = null;
+            var missingUsage = await db.NoteAsrBatchJobs.SingleAsync(x => x.Id == missingUsageJobId);
+            missingUsage.ResultJson = JsonSerializer.Serialize(
+                MimoBatchResultParser.Reconcile(["seg-0", "seg-1"],
+                    SuccessJsonl("seg-0") + SuccessWithoutUsageJsonl("seg-1")), BatchJson);
+            var unknownCustomId = await db.NoteAsrBatchJobs.SingleAsync(x => x.Id == unknownCustomIdJobId);
+            unknownCustomId.ResultJson = JsonSerializer.Serialize(
+                MimoBatchResultParser.Reconcile(["seg-0", "seg-1"],
+                    SuccessJsonl("seg-0", "seg-1", "seg-extra")), BatchJson);
+            await db.SaveChangesAsync();
+        }
+
+        var settings = new NoteAsrBatchPollOptions
+        {
+            PageSize = 25, PerJobTimeout = TimeSpan.FromSeconds(10), AuditRepairBackoff = TimeSpan.Zero
+        };
+        await using (var db = NewDb(seed.Owner))
+        {
+            var pollJob = NewPollJob(NewService(db, seed.Owner, new SyntheticFactory((_, _) =>
+                throw new InvalidOperationException("repair must not call the provider"))), db, settings);
+            Assert.Equal(4, await pollJob.RepairTerminalAuditsAsync(settings, CancellationToken.None));
+        }
+
+        DateTimeOffset? partialLease;
+        Guid connectionId;
+        await using (var db = NewDb(seed.Owner))
+        {
+            var partialAudit = await db.AiRequestLogs.AsNoTracking().SingleAsync(x =>
+                x.UserId == seed.Owner && x.ClientRequestId == partialJobId &&
+                x.Purpose == NoteAsrBatchService.AuditPurpose);
+            Assert.Equal("succeeded", partialAudit.Status);
+            Assert.Equal(12, partialAudit.TotalTokens);
+            using var metadata = JsonDocument.Parse(partialAudit.MetadataJson);
+            Assert.True(metadata.RootElement.GetProperty("batchUsage")
+                .GetProperty("partial").GetBoolean());
+            partialLease = await db.NoteAsrBatchJobs.Where(x => x.Id == partialJobId)
+                .Select(x => x.LastPolledAt).SingleAsync();
+
+            var unknownAudit = await db.AiRequestLogs.AsNoTracking().SingleAsync(x =>
+                x.UserId == seed.Owner && x.ClientRequestId == unknownJobId &&
+                x.Purpose == NoteAsrBatchService.AuditPurpose);
+            Assert.Equal("batch_usage_unavailable", unknownAudit.ErrorCode);
+            Assert.Null(unknownAudit.TotalTokens);
+
+            // A successful item with usage is not enough: a sibling with no billing evidence keeps
+            // the whole submission UNKNOWN instead of persisting a partial sum as if it were final.
+            var missingUsageAudit = await db.AiRequestLogs.AsNoTracking().SingleAsync(x =>
+                x.UserId == seed.Owner && x.ClientRequestId == missingUsageJobId &&
+                x.Purpose == NoteAsrBatchService.AuditPurpose);
+            Assert.Equal("succeeded", missingUsageAudit.Status);
+            Assert.Null(missingUsageAudit.TotalTokens);
+            Assert.Equal("batch_usage_unavailable", missingUsageAudit.ErrorCode);
+            using (var missingUsageMetadata = JsonDocument.Parse(missingUsageAudit.MetadataJson))
+            {
+                var usage = missingUsageMetadata.RootElement.GetProperty("batchUsage");
+                Assert.Equal(1, usage.GetProperty("reportedItems").GetInt32());
+                Assert.Equal(1, usage.GetProperty("unconfirmedItems").GetInt32());
+            }
+
+            // An extra provider record with an unknown custom_id is billed evidence we cannot
+            // attribute; it must not be silently skipped.
+            var unknownCustomIdAudit = await db.AiRequestLogs.AsNoTracking().SingleAsync(x =>
+                x.UserId == seed.Owner && x.ClientRequestId == unknownCustomIdJobId &&
+                x.Purpose == NoteAsrBatchService.AuditPurpose);
+            Assert.Equal("succeeded", unknownCustomIdAudit.Status);
+            Assert.Null(unknownCustomIdAudit.TotalTokens);
+            Assert.Equal("batch_usage_unavailable", unknownCustomIdAudit.ErrorCode);
+            using (var unknownCustomIdMetadata = JsonDocument.Parse(unknownCustomIdAudit.MetadataJson))
+            {
+                var usage = unknownCustomIdMetadata.RootElement.GetProperty("batchUsage");
+                Assert.Equal(2, usage.GetProperty("reportedItems").GetInt32());
+                Assert.Equal(1, usage.GetProperty("unconfirmedItems").GetInt32());
+            }
+
+            var profile = await db.AiModelProfiles.AsNoTracking().SingleAsync(x => x.Id == seed.ProfileId);
+            connectionId = profile.ProviderConnectionId
+                ?? throw new InvalidOperationException("synthetic profile has no provider connection");
+            var rule = await db.AiUsageLimitRules.SingleAsync(x => x.ConnectionId == connectionId);
+            rule.Enabled = true;
+            rule.TokenLimit = 1_000;
+            await db.SaveChangesAsync();
+        }
+
+        // Unconfirmed usage keeps the connection fail-closed: the retry must be blocked by the
+        // global unknown-usage rule, never silently allowed because the sibling sum looked small.
+        await using (var db = NewDb(seed.Owner))
+        {
+            var limits = new AiUsageLimitService(db, new AdminUser(seed.Owner));
+            var usageView = await limits.GetUsageAsync(connectionId, AiUsageLimitPeriods.Month, null,
+                CancellationToken.None);
+            Assert.Equal(12L, usageView.TotalTokens);
+            Assert.Equal(3, usageView.TokenUnknownRequestCount);
+            var denied = await limits.TryBeginAsync(connectionId, "missing-usage-retry",
+                NoteAsrBatchService.AuditPurpose, TimeSpan.FromMinutes(1), CancellationToken.None);
+            Assert.False(denied.Allowed);
+            Assert.Equal("usage_limit_unknown", denied.ErrorCode);
+        }
+
+        // A second scan must not claim any converged row again, including the unrepairable
+        // terminal row that has no persisted result evidence.
+        await using (var db = NewDb(seed.Owner))
+        {
+            var pollJob = NewPollJob(NewService(db, seed.Owner, new SyntheticFactory((_, _) =>
+                throw new InvalidOperationException("repair must not call the provider"))), db, settings);
+            Assert.Equal(0, await pollJob.RepairTerminalAuditsAsync(settings, CancellationToken.None));
+            var unchanged = await db.NoteAsrBatchJobs.Where(x => x.Id == partialJobId)
+                .Select(x => x.LastPolledAt).SingleAsync();
+            Assert.Equal(partialLease, unchanged);
+        }
+        await CleanupAsync(seed.Owner);
+    }
+
     private static NoteAsrBatchJobEntity NewBatchJobRow(Guid owner, string? batchId, string status,
         string? statusRaw, DateTimeOffset updatedAt) => new()
     {
@@ -2021,6 +2914,83 @@ public sealed class NoteAsrBatchPersistenceTests
     private static NoteAsrBatchPollJob NewPollJob(NoteAsrBatchService service, PimDbContext db,
         NoteAsrBatchPollOptions settings) =>
         new(service, db, Options.Create(settings), NullLogger<NoteAsrBatchPollJob>.Instance);
+
+    private static string BatchResultJson(params string[] customIds) =>
+        JsonSerializer.Serialize(MimoBatchResultParser.Reconcile(customIds, SuccessJsonl(customIds)), BatchJson);
+
+    private static async Task<Guid> SeedTerminalAuditJobAsync(Seeded seed, string providerId,
+        DateTimeOffset outputImportedAt, string auditStatus = "running")
+    {
+        await using var db = NewDb(seed.Owner);
+        var profile = await db.AiModelProfiles.AsNoTracking().SingleAsync(x => x.Id == seed.ProfileId);
+        var job = new NoteAsrBatchJobEntity
+        {
+            OwnerId = seed.Owner, TaskId = Guid.NewGuid(), Status = "Completed", StatusRaw = "completed",
+            BatchId = providerId, InputFileId = "file-in-1", Model = profile.Model,
+            BaseUrl = Origin.AbsoluteUri, ProfileRevision = seed.ProfileRevision,
+            CredentialSecret = "synthetic-key", ConsentRef = "consent-1",
+            ExpectedCustomIdsJson = JsonSerializer.Serialize(new[] { "seg-0", "seg-1" }),
+            TotalItems = 2, CompletedItems = 2, ResultJson = BatchResultJson("seg-0", "seg-1"),
+            OutputImportedAt = outputImportedAt, CreatedAt = outputImportedAt.AddMinutes(-5),
+            UpdatedAt = outputImportedAt.AddMinutes(-1)
+        };
+        var audit = new AiRequestLogEntity
+        {
+            UserId = seed.Owner, ClientRequestId = job.Id, ProviderConnectionId = profile.ProviderConnectionId,
+            ModelProfileId = profile.Id, ModelProfileName = profile.Name, ModelRevision = profile.Revision,
+            ModelEndpoint = Origin.AbsoluteUri, Module = "notes", Purpose = NoteAsrBatchService.AuditPurpose,
+            SourceObjectType = "note-asr-batch", SourceObjectId = job.Id.ToString("D"),
+            Provider = MimoMultimodalPreset.PresetId, Model = profile.Model,
+            CorrelationId = Guid.NewGuid().ToString("N"), Status = auditStatus, AttemptNumber = 1,
+            MaxAttempts = 1, StartedAt = outputImportedAt.AddMinutes(-5),
+            InitiatedAt = outputImportedAt.AddMinutes(-5),
+            FinishedAt = auditStatus == "running" ? null : outputImportedAt,
+            MetadataJson = """{"providerAttempted":true}"""
+        };
+        db.NoteAsrBatchJobs.Add(job);
+        db.AiRequestLogs.Add(audit);
+        await db.SaveChangesAsync();
+        return job.Id;
+    }
+
+    private static async Task CreateAuditWriteFailureTriggerAsync(PimDbContext db, Guid jobId, string name)
+    {
+        await db.Database.ExecuteSqlRawAsync(
+            $"CREATE OR REPLACE FUNCTION {name}() RETURNS trigger " +
+            "LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'synthetic audit write timeout'; END $$");
+        await db.Database.ExecuteSqlRawAsync($"DROP TRIGGER IF EXISTS {name} ON ai_request_logs");
+        await db.Database.ExecuteSqlRawAsync($"""
+            CREATE TRIGGER {name}
+            BEFORE INSERT OR UPDATE ON ai_request_logs
+            FOR EACH ROW
+            WHEN (NEW.client_request_id = '{jobId:D}'::uuid)
+            EXECUTE FUNCTION {name}()
+            """);
+    }
+
+    private static async Task DropAuditWriteFailureTriggerAsync(PimDbContext db, string name)
+    {
+        await db.Database.ExecuteSqlRawAsync($"DROP TRIGGER IF EXISTS {name} ON ai_request_logs");
+        await db.Database.ExecuteSqlRawAsync($"DROP FUNCTION IF EXISTS {name}()");
+    }
+
+    private static async Task<string> AuditStatusAsync(Guid owner, Guid jobId)
+    {
+        await using var db = NewDb(owner);
+        return await db.AiRequestLogs.AsNoTracking()
+            .Where(x => x.UserId == owner && x.ClientRequestId == jobId &&
+                        x.Purpose == NoteAsrBatchService.AuditPurpose)
+            .Select(x => x.Status).SingleAsync();
+    }
+
+    private static async Task<int?> AuditTotalTokensAsync(Guid owner, Guid jobId)
+    {
+        await using var db = NewDb(owner);
+        return await db.AiRequestLogs.AsNoTracking()
+            .Where(x => x.UserId == owner && x.ClientRequestId == jobId &&
+                        x.Purpose == NoteAsrBatchService.AuditPurpose)
+            .Select(x => x.TotalTokens).SingleAsync();
+    }
 
     private static AiAsrDestinationConsent Consent(AiModelProfileEntity profile) =>
         new(profile.Id, profile.Revision, "https://api.example.invalid/v1/chat/completions",
@@ -2076,13 +3046,15 @@ public sealed class NoteAsrBatchPersistenceTests
             Id = owner, Username = tag + "-" + suffix, Email = suffix + "@example.invalid",
             PasswordHash = "synthetic", IsActive = true
         });
+        var connectionId = await AddBatchProviderConnectionAsync(db, suffix);
         var profile = new AiModelProfileEntity
         {
             Id = Guid.NewGuid(), Revision = Guid.NewGuid(), Name = "Batch " + tag + " " + suffix,
             NormalizedName = "batch-" + tag + "-" + suffix, BaseUrl = "https://api.example.invalid/v1/",
             Model = "mimo-v2.6-pro", Enabled = true, Capabilities = AiModelCapabilityFlags.Transcription,
             AsrPresetId = MimoMultimodalPreset.PresetId, AsrBatchBaseUrl = Origin.AbsoluteUri,
-            ApiKeySecret = "synthetic-key", CreatedAt = now, UpdatedAt = now
+            ApiKeySecret = "synthetic-key", CreatedAt = now, UpdatedAt = now,
+            ProviderConnectionId = connectionId
         };
         await db.AiModelProfiles.AddAsync(profile);
         var runtime = await db.AiModelRuntime.SingleOrDefaultAsync(x => x.Id == AiModelRuntimeEntity.SingletonId);
@@ -2161,6 +3133,22 @@ public sealed class NoteAsrBatchPersistenceTests
         }
     }
 
+    private static async Task<Guid> AddBatchProviderConnectionAsync(PimDbContext db, string suffix)
+    {
+        var connectionId = Guid.NewGuid();
+        await db.AiProviderConnections.AddAsync(new AiProviderConnectionEntity
+        {
+            Id = connectionId, Name = "Batch connection " + suffix,
+            NormalizedName = "BATCH-CONNECTION-" + suffix
+        });
+        await db.AiUsageLimitRules.AddAsync(new AiUsageLimitRuleEntity
+        {
+            ConnectionId = connectionId, Enabled = false, Period = AiUsageLimitPeriods.Month,
+            WarningPercent = 80, TimeZoneId = "Asia/Shanghai"
+        });
+        return connectionId;
+    }
+
     private static async Task<(NoteAsrTaskDto Task, NoteAsrRouteConfigDto Route)> StartViaRealServiceAsync(Guid owner,
         NoteMaterialVersionDto version, Guid taskId,
         AiModelProfileEntity profile)
@@ -2236,6 +3224,7 @@ public sealed class NoteAsrBatchPersistenceTests
         await db.NoteAsrAttempts.Where(x => x.OwnerId != owner).ExecuteDeleteAsync();
         var now = DateTimeOffset.UtcNow;
         var suffix = owner.ToString("N")[..8];
+        var connectionId = await AddBatchProviderConnectionAsync(db, suffix);
         await db.Users.AddAsync(new UserEntity
         {
             Id = owner, Username = "synthetic-" + suffix, Email = suffix + "@example.invalid",
@@ -2248,7 +3237,7 @@ public sealed class NoteAsrBatchPersistenceTests
             Model = "mimo-v2.6-pro", Enabled = true,
             Capabilities = AiModelCapabilityFlags.Transcription, AsrPresetId = MimoMultimodalPreset.PresetId,
             AsrBatchBaseUrl = Origin.AbsoluteUri, ApiKeySecret = "synthetic-key", CreatedAt = now, UpdatedAt = now,
-            MaxOutputTokens = maxOutputTokens
+            MaxOutputTokens = maxOutputTokens, ProviderConnectionId = connectionId
         };
         await db.AiModelProfiles.AddAsync(profile);
         var runtime = await db.AiModelRuntime.SingleOrDefaultAsync(x => x.Id == AiModelRuntimeEntity.SingletonId);
@@ -2512,7 +3501,8 @@ public sealed class NoteAsrBatchPersistenceTests
             {
                 AllowUnverifiedAudioBatch = allowBatch,
                 MaxJsonlBytes = checked((int)MimoBatchDefaults.MaxJsonlBytes)
-            }), noteAsr, presets ?? new AiAsrPresetRegistry([new MimoMultimodalPreset(_ => new HttpClient())]));
+            }), new AiUsageLimitService(db, new FixedUser(owner)), new AiTextCallGate(),
+            noteAsr, presets ?? new AiAsrPresetRegistry([new MimoMultimodalPreset(_ => new HttpClient())]));
 
     private static async Task CleanupAsync(Guid owner)
     {
@@ -2523,7 +3513,13 @@ public sealed class NoteAsrBatchPersistenceTests
         await using var db = NewDb(owner);
         try
         {
-            var profileIds = await db.AiModelProfiles.Where(x => x.Name.StartsWith(prefix))
+            var suffix = owner.ToString("N")[..8];
+            var connectionName = "BATCH-CONNECTION-" + suffix;
+            var connectionIds = await db.AiProviderConnections
+                .Where(x => x.NormalizedName == connectionName)
+                .Select(x => x.Id).ToListAsync();
+            var profileIds = await db.AiModelProfiles.Where(x => x.Name.StartsWith(prefix) ||
+                    x.ProviderConnectionId != null && connectionIds.Contains(x.ProviderConnectionId.Value))
                 .Select(x => x.Id).ToListAsync();
             var runtime = await db.AiModelRuntime.SingleOrDefaultAsync(x => x.Id == AiModelRuntimeEntity.SingletonId);
             if (runtime is not null && (runtime.TextModelId is { } text && profileIds.Contains(text) ||
@@ -2540,7 +3536,8 @@ public sealed class NoteAsrBatchPersistenceTests
             }
             await db.NoteAsrBatchJobs.Where(x => x.OwnerId == owner).ExecuteDeleteAsync();
             await db.NoteAsrAttempts.Where(x => x.OwnerId == owner).ExecuteDeleteAsync();
-            await db.AiModelProfiles.Where(x => x.Name.StartsWith(prefix)).ExecuteDeleteAsync();
+            await db.AiModelProfiles.Where(x => profileIds.Contains(x.Id)).ExecuteDeleteAsync();
+            await db.AiProviderConnections.Where(x => connectionIds.Contains(x.Id)).ExecuteDeleteAsync();
             await db.Users.Where(x => x.Id == owner).ExecuteDeleteAsync();
         }
         catch (Exception error) when (error is Npgsql.PostgresException { SqlState: "42P01" }) { }
@@ -2553,6 +3550,12 @@ public sealed class NoteAsrBatchPersistenceTests
     {
         public Guid? UserId => id;
         public string? Role => "user";
+    }
+
+    private sealed class AdminUser(Guid id) : ICurrentUserService
+    {
+        public Guid? UserId => id;
+        public string? Role => "admin";
     }
 
     private sealed class PassthroughSecrets : ISecretProtector
@@ -2664,6 +3667,12 @@ public sealed class NoteAsrBatchPersistenceTests
             "{\"status_code\":200,\"body\":{\"choices\":[{\"message\":{\"content\":\"0-1 | A: synthetic\"}," +
             "\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":2," +
             "\"total_tokens\":12,\"prompt_tokens_details\":{\"audio_tokens\":5}}}},\"error\":null}")) + "\n";
+
+    private static string SuccessWithoutUsageJsonl(params string[] customIds) => string.Join('\n',
+        customIds.Select((id, index) =>
+            $"{{\"id\":\"no-usage-{index}\",\"custom_id\":{JsonSerializer.Serialize(id)},\"response\":" +
+            "{\"status_code\":200,\"body\":{\"choices\":[{\"message\":{\"content\":\"0-1 | A: synthetic\"}," +
+            "\"finish_reason\":\"stop\"}]}},\"error\":null}")) + "\n";
 
     private static string ErrorJsonl() =>
         "{\"id\":\"r2\",\"custom_id\":\"seg-1\",\"response\":null,\"error\":{\"code\":\"inference_failed\",\"message\":\"synthetic\"}}\n";

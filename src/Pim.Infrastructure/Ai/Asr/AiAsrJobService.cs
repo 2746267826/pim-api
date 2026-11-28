@@ -34,6 +34,7 @@ public sealed class AiAsrJobService(
     ILogger<AiAsrJobService> logger,
     AiUsageLimitService? usageLimits = null)
 {
+    internal const string AuditPurpose = "ai.asr-job";
     // Measured from the #552 reproduction: 2,318 completion tokens for 507.924 seconds of audio.
     private const double EstimatedCompletionTokensPerAudioSecond = 2318d / 507.924d;
     private static readonly TimeSpan PreparationLease = TimeSpan.FromMinutes(10);
@@ -67,7 +68,7 @@ public sealed class AiAsrJobService(
             ClientRequestId = request.ClientRequestId,
             InputHash = prepared.Fingerprint,
             Module = "system",
-            Purpose = "ai.asr-job",
+            Purpose = AuditPurpose,
             SourceObjectType = "ai-model",
             SourceObjectId = prepared.Profile.Id.ToString(),
             Provider = prepared.Description.Id,
@@ -416,8 +417,16 @@ public sealed class AiAsrJobService(
                 return;
             }
 
-            if (usageLimits is not null && log.ProviderConnectionId is { } connectionId)
+            if (usageLimits is not null)
             {
+                if (log.ProviderConnectionId is not { } connectionId)
+                {
+                    await CompleteAsync(job, log, "blocked", "usage_limit_unbound",
+                        "ASR模型未绑定AI服务连接，无法纳入用量限制；请管理员重新保存模型后再试",
+                        "usage_limit", true, "核对模型连接后明确新建请求", null, false, false, false, null,
+                        CancellationToken.None);
+                    return;
+                }
                 var decision = await usageLimits.TryBeginAsync(connectionId, log.CorrelationId,
                     log.Purpose, TimeSpan.FromSeconds(job.TimeoutSeconds + 120), ct);
                 if (!decision.Allowed)
@@ -742,7 +751,7 @@ public sealed class AiAsrJobService(
                 if (won)
                 {
                     var logUpdated = await db.AiRequestLogs.Where(x => x.ClientRequestId == clientRequestId &&
-                            x.UserId == owner && x.Purpose == "ai.asr-job" && x.Status == "queued")
+                            x.UserId == owner && x.Purpose == AuditPurpose && x.Status == "queued")
                         .ExecuteUpdateAsync(update => update
                             .SetProperty(x => x.Status, "running")
                             .SetProperty(x => x.StartedAt, now)
@@ -759,7 +768,7 @@ public sealed class AiAsrJobService(
             x.OwnerId == owner && x.ClientRequestId == clientRequestId, ct);
         if (job is null || job.Status != "queued") return false;
         var log = await db.AiRequestLogs.SingleAsync(x => x.ClientRequestId == clientRequestId &&
-            x.UserId == owner && x.Purpose == "ai.asr-job", ct);
+            x.UserId == owner && x.Purpose == AuditPurpose, ct);
         if (log.Status != "queued") return false;
         job.Status = "running";
         job.StartedAt = now;
@@ -958,6 +967,28 @@ public sealed class AiAsrJobService(
         }
         root["providerAttempted"] = attempted;
         return root.ToJsonString(Json);
+    }
+
+    /// <summary>Reads only an explicit JSON boolean; missing, malformed or non-boolean values stay unknown.</summary>
+    internal static bool? ProviderAttemptedMetadata(string? metadata)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(metadata ?? "{}");
+            if (document.RootElement.ValueKind != JsonValueKind.Object ||
+                !document.RootElement.TryGetProperty("providerAttempted", out var value))
+                return null;
+            return value.ValueKind switch
+            {
+                JsonValueKind.True => true,
+                JsonValueKind.False => false,
+                _ => null
+            };
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
     }
 
     private async Task CompleteAsync(AiAsrJobEntity job, AiRequestLogEntity log, string status,

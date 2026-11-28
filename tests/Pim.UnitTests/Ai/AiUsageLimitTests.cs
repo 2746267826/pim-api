@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Pim.Core.Ai;
 using Pim.Core.Exceptions;
@@ -55,13 +56,20 @@ public sealed class AiUsageLimitTests
     }
 
     [Fact]
-    public async Task Usage_KeepsUnknownUnknown_AndNeverMixesCurrencies()
+    public async Task Usage_KeepsUnknownUnknown_AndCostLimitIsUnsupported()
     {
         await using var db = Db();
         var service = Service(db, new AdminUser());
         var connection = await service.CreateConnectionAsync("费用连接", default);
         await service.SaveRuleAsync(connection.Id, new(connection.Limit.Revision, true,
-            AiUsageLimitPeriods.Month, 80, 100, 10m, "CNY", "Asia/Shanghai"), default);
+            AiUsageLimitPeriods.Month, 80, 100, null, null, "Asia/Shanghai"), default);
+        // Simulate a cost rule persisted before J09 disabled cost limits. Historical values remain
+        // readable but must never block a call or produce a cost reminder.
+        var rule = await db.AiUsageLimitRules.SingleAsync(x => x.ConnectionId == connection.Id);
+        rule.CostLimit = 10m;
+        rule.Currency = "CNY";
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
         var at = new DateTimeOffset(2026, 11, 24, 10, 0, 0, TimeSpan.Zero);
         db.AiRequestLogs.AddRange(
             Log(connection.Id, at, 30, 2m, "CNY"),
@@ -78,10 +86,13 @@ public sealed class AiUsageLimitTests
         Assert.Equal(2, usage.CostKnownRequestCount);
         Assert.Equal(2, usage.CostUnknownRequestCount);
         Assert.Equal(AiUsageLimitStatuses.Unknown, usage.TokenStatus);
-        Assert.Equal(AiUsageLimitStatuses.Unknown, usage.CostStatus);
+        Assert.Equal(AiUsageLimitStatuses.Unsupported, usage.CostStatus);
+        Assert.Equal(10m, usage.CostLimit);
+        Assert.Equal("CNY", usage.Currency);
         Assert.Contains(usage.CoverageNotes, note => note.Contains("Token", StringComparison.Ordinal));
         Assert.Contains(usage.CoverageNotes, note => note.Contains("金额", StringComparison.Ordinal) ||
             note.Contains("费用", StringComparison.Ordinal));
+        Assert.Contains(usage.CoverageNotes, note => note.Contains("费用上限", StringComparison.Ordinal));
 
         var blocked = await service.TryBeginAsync(connection.Id, "unknown-history", "test",
             TimeSpan.FromMinutes(1), default);
@@ -90,14 +101,66 @@ public sealed class AiUsageLimitTests
 
         var unknown = await service.CreateConnectionAsync("全未知连接", default);
         await service.SaveRuleAsync(unknown.Id, new(unknown.Limit.Revision, false,
-            AiUsageLimitPeriods.Month, 80, 100, 10m, "CNY", "Asia/Shanghai"), default);
+            AiUsageLimitPeriods.Month, 80, 100, null, null, "Asia/Shanghai"), default);
         db.AiRequestLogs.Add(Log(unknown.Id, at, null, null));
         await db.SaveChangesAsync();
         var unknownUsage = await service.GetUsageAsync(unknown.Id, AiUsageLimitPeriods.Month, "2026-11", default);
         Assert.Null(unknownUsage.TotalTokens);
         Assert.Null(unknownUsage.EstimatedCost);
         Assert.Equal(AiUsageLimitStatuses.Unknown, unknownUsage.TokenStatus);
-        Assert.Equal(AiUsageLimitStatuses.Unknown, unknownUsage.CostStatus);
+        Assert.Equal(AiUsageLimitStatuses.Unsupported, unknownUsage.CostStatus);
+    }
+
+    [Fact]
+    public async Task SaveRule_RejectsCostLimits_AndClearsHistoricalCostColumns()
+    {
+        await using var db = Db();
+        var service = Service(db, new AdminUser());
+        var connection = await service.CreateConnectionAsync("费用规则连接", default);
+        var rule = await db.AiUsageLimitRules.SingleAsync(x => x.ConnectionId == connection.Id);
+        rule.CostLimit = 5m;
+        rule.Currency = "USD";
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+
+        var rejected = await Assert.ThrowsAsync<DomainException>(() => service.SaveRuleAsync(connection.Id,
+            new(connection.Limit.Revision, true, AiUsageLimitPeriods.Month, 80, 100, 5m, "USD",
+                "Asia/Shanghai"), default));
+        Assert.Equal(40001, rejected.ErrorCode);
+
+        var saved = await service.SaveRuleAsync(connection.Id, new(connection.Limit.Revision, true,
+            AiUsageLimitPeriods.Month, 80, 100, null, null, "Asia/Shanghai"), default);
+        Assert.Null(saved.CostLimit);
+        Assert.Null(saved.Currency);
+        var persisted = await db.AiUsageLimitRules.AsNoTracking()
+            .SingleAsync(x => x.ConnectionId == connection.Id);
+        Assert.Null(persisted.CostLimit);
+        Assert.Null(persisted.Currency);
+        var noTokens = await Assert.ThrowsAsync<DomainException>(() => service.SaveRuleAsync(connection.Id,
+            new(saved.Revision, true, AiUsageLimitPeriods.Month, 80, null, null, null, "Asia/Shanghai"), default));
+        Assert.Equal(40001, noTokens.ErrorCode);
+    }
+
+    [Fact]
+    public async Task TryBegin_RejectsLegacyEnabledRuleWithoutTokenLimit()
+    {
+        await using var db = Db();
+        var service = Service(db, new AdminUser());
+        var connection = await service.CreateConnectionAsync("旧费用规则连接", default);
+        var rule = await db.AiUsageLimitRules.SingleAsync(x => x.ConnectionId == connection.Id);
+        rule.Enabled = true;
+        rule.TokenLimit = null;
+        rule.CostLimit = 10m;
+        rule.Currency = "CNY";
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+
+        var decision = await service.TryBeginAsync(connection.Id, "legacy-cost-rule", "ai.text-call",
+            TimeSpan.FromMinutes(1), default);
+
+        Assert.False(decision.Allowed);
+        Assert.Equal("usage_limit_invalid", decision.ErrorCode);
+        Assert.Null(decision.Lease);
     }
 
     [Fact]
@@ -107,7 +170,7 @@ public sealed class AiUsageLimitTests
         var service = Service(db, new AdminUser());
         var connection = await service.CreateConnectionAsync("占位调用连接", default);
         await service.SaveRuleAsync(connection.Id, new(connection.Limit.Revision, true,
-            AiUsageLimitPeriods.Month, 80, 100, 10m, "CNY", "Asia/Shanghai"), default);
+            AiUsageLimitPeriods.Month, 80, 100, null, null, "Asia/Shanghai"), default);
 
         const string currentRequestKey = "current-placeholder";
         db.AiRequestLogs.Add(new AiRequestLogEntity
@@ -180,8 +243,14 @@ public sealed class AiUsageLimitTests
         Assert.Equal(AiUsageLimitStatuses.Unknown, usage.TokenStatus);
     }
 
-    [Fact]
-    public async Task TryBegin_TreatsNonObjectProviderMetadataAsUnknown()
+    [Theory]
+    [InlineData("[]")]
+    [InlineData("null")]
+    [InlineData("\"false\"")]
+    [InlineData("{\"providerAttempted\":1}")]
+    [InlineData("{")]
+    [InlineData("")]
+    public async Task TryBegin_TreatsMalformedOrNonObjectProviderMetadataAsUnknown(string metadata)
     {
         await using var db = Db();
         var service = Service(db, new AdminUser());
@@ -189,7 +258,7 @@ public sealed class AiUsageLimitTests
         await service.SaveRuleAsync(connection.Id, new(connection.Limit.Revision, true,
             AiUsageLimitPeriods.Month, 80, 100, null, null, "Asia/Shanghai"), default);
         var row = Log(connection.Id, Now, null, null);
-        row.MetadataJson = "[]";
+        row.MetadataJson = metadata;
         db.AiRequestLogs.Add(row);
         await db.SaveChangesAsync();
 
@@ -201,6 +270,285 @@ public sealed class AiUsageLimitTests
     }
 
     [Fact]
+    public async Task TryBegin_IgnoresQueuedPlaceholders()
+    {
+        await using var db = Db();
+        var service = Service(db, new AdminUser());
+        var connection = await service.CreateConnectionAsync("异步占位连接", default);
+        await service.SaveRuleAsync(connection.Id, new(connection.Limit.Revision, true,
+            AiUsageLimitPeriods.Month, 80, 100, null, null, "Asia/Shanghai"), default);
+        db.AiRequestLogs.AddRange(
+            Log(connection.Id, Now, null, null, status: "queued",
+                metadataJson: """{"providerAttempted":false}"""),
+            Log(connection.Id, Now, null, null, status: "preparing",
+                metadataJson: """{"providerAttempted":false}"""));
+        await db.SaveChangesAsync();
+
+        var beforeProvider = await service.TryBeginAsync(connection.Id, "queued-only", "test",
+            TimeSpan.FromMinutes(1), default);
+        Assert.True(beforeProvider.Allowed);
+        await service.EndAsync(beforeProvider.Lease, default);
+    }
+
+    [Theory]
+    [InlineData("incomplete")]
+    [InlineData("timed_out")]
+    public async Task TryBegin_ExplicitPreProviderTerminalOutcomeDoesNotBecomeUnknown(string status)
+    {
+        await using var db = Db();
+        var service = Service(db, new AdminUser());
+        var connection = await service.CreateConnectionAsync("前置超时连接", default);
+        await service.SaveRuleAsync(connection.Id, new(connection.Limit.Revision, true,
+            AiUsageLimitPeriods.Month, 80, 100, null, null, "Asia/Shanghai"), default);
+        db.AiRequestLogs.Add(Log(connection.Id, Now, null, null, status: status,
+            metadataJson: """{"providerAttempted":false}"""));
+        await db.SaveChangesAsync();
+
+        var decision = await service.TryBeginAsync(connection.Id, "pre-provider-terminal",
+            "test", TimeSpan.FromMinutes(1), default);
+
+        Assert.True(decision.Allowed);
+        await service.EndAsync(decision.Lease, default);
+        var usage = await service.GetUsageAsync(connection.Id, AiUsageLimitPeriods.Month, "2026-11", default);
+        Assert.Equal(0, usage.TokenUnknownRequestCount);
+    }
+
+    [Theory]
+    [InlineData("incomplete")]
+    [InlineData("timed_out")]
+    public async Task TryBegin_ExplicitProviderAttemptedTerminalWithoutTokensFailsClosed(string status)
+    {
+        await using var db = Db();
+        var service = Service(db, new AdminUser());
+        var connection = await service.CreateConnectionAsync("服务商已尝试连接", default);
+        await service.SaveRuleAsync(connection.Id, new(connection.Limit.Revision, true,
+            AiUsageLimitPeriods.Month, 80, 100, null, null, "Asia/Shanghai"), default);
+        db.AiRequestLogs.Add(Log(connection.Id, Now, null, null, status: status,
+            metadataJson: """{"providerAttempted":true}"""));
+        await db.SaveChangesAsync();
+
+        var decision = await service.TryBeginAsync(connection.Id, "provider-terminal",
+            "test", TimeSpan.FromMinutes(1), default);
+
+        Assert.False(decision.Allowed);
+        Assert.Equal("usage_limit_unknown", decision.ErrorCode);
+    }
+
+    [Fact]
+    public async Task TryBegin_TreatsRunningBatchUsageAsPendingNotUnknown()
+    {
+        await using var db = Db();
+        var service = Service(db, new AdminUser());
+        var connection = await service.CreateConnectionAsync("运行中Batch连接", default);
+        await service.SaveRuleAsync(connection.Id, new(connection.Limit.Revision, true,
+            AiUsageLimitPeriods.Month, 80, 100, null, null, "Asia/Shanghai"), default);
+        var jobId = Guid.NewGuid();
+        var batch = Log(connection.Id, Now, null, null, status: "running",
+            metadataJson: """{"providerAttempted":true}""", purpose: AiCallPurposes.AsrBatch);
+        batch.ClientRequestId = jobId;
+        db.AiRequestLogs.Add(batch);
+        db.NoteAsrBatchJobs.Add(BatchJob(jobId, "InProgress", "in_progress"));
+        await db.SaveChangesAsync();
+
+        var whileRunning = await service.TryBeginAsync(connection.Id, "while-batch-running",
+            "ai.text-call", TimeSpan.FromMinutes(1), default);
+        Assert.True(whileRunning.Allowed);
+        await service.EndAsync(whileRunning.Lease, default);
+        var runningUsage = await service.GetUsageAsync(connection.Id, AiUsageLimitPeriods.Month,
+            "2026-11", default);
+        Assert.Equal(1, runningUsage.RequestCount);
+        Assert.Equal(1, runningUsage.RunningRequestCount);
+        Assert.Equal(0, runningUsage.TokenUnknownRequestCount);
+
+        batch.Status = "incomplete";
+        batch.FinishedAt = Now;
+        await db.SaveChangesAsync();
+        var afterTerminal = await service.TryBeginAsync(connection.Id, "after-batch-terminal",
+            "ai.text-call", TimeSpan.FromMinutes(1), default);
+
+        Assert.False(afterTerminal.Allowed);
+        Assert.Equal("usage_limit_unknown", afterTerminal.ErrorCode);
+    }
+
+    [Fact]
+    public async Task TryBegin_TerminalBatchJobWithRunningAuditFailsClosed()
+    {
+        await using var db = Db();
+        var service = Service(db, new AdminUser());
+        var connection = await service.CreateConnectionAsync("终态Batch审计未收敛连接", default);
+        await service.SaveRuleAsync(connection.Id, new(connection.Limit.Revision, true,
+            AiUsageLimitPeriods.Month, 80, 100, null, null, "Asia/Shanghai"), default);
+        var jobId = Guid.NewGuid();
+        var audit = Log(connection.Id, Now, null, null, status: "running",
+            metadataJson: """{"providerAttempted":false}""", purpose: AiCallPurposes.AsrBatch);
+        audit.ClientRequestId = jobId;
+        db.AiRequestLogs.Add(audit);
+        var job = BatchJob(jobId, "Completed", "completed");
+        job.BatchId = "batch-provider-evidence";
+        job.OutputImportedAt = Now;
+        db.NoteAsrBatchJobs.Add(job);
+        await db.SaveChangesAsync();
+
+        var decision = await service.TryBeginAsync(connection.Id, "terminal-unsynced-batch",
+            "ai.text-call", TimeSpan.FromMinutes(1), default);
+
+        Assert.False(decision.Allowed);
+        Assert.Equal("usage_limit_unknown", decision.ErrorCode);
+    }
+
+    [Fact]
+    public async Task ExpiredRunningCallRecoveryPreservesExplicitFalseAndAllowsNextCall()
+    {
+        await using var db = Db();
+        var service = Service(db, new AdminUser());
+        var connection = await service.CreateConnectionAsync("恢复连接", default);
+        await service.SaveRuleAsync(connection.Id, new(connection.Limit.Revision, true,
+            AiUsageLimitPeriods.Month, 80, 100, null, null, "Asia/Shanghai"), default);
+        var row = Log(connection.Id, Now.AddMinutes(-5), null, null, status: "running",
+            metadataJson: """{"providerAttempted":false}""",
+            executionExpiresAt: Now.AddMinutes(-1));
+        db.AiRequestLogs.Add(row);
+        await db.SaveChangesAsync();
+
+        await AiCallRecovery.RecoverExpiredAsync(db, default);
+
+        var recovered = await db.AiRequestLogs.AsNoTracking().SingleAsync(x => x.Id == row.Id);
+        Assert.Equal("incomplete", recovered.Status);
+        using (var metadata = JsonDocument.Parse(recovered.MetadataJson))
+            Assert.False(metadata.RootElement.GetProperty("providerAttempted").GetBoolean());
+        var decision = await service.TryBeginAsync(connection.Id, "after-recovery", "test",
+            TimeSpan.FromMinutes(1), default);
+        Assert.True(decision.Allowed);
+        await service.EndAsync(decision.Lease, default);
+    }
+
+    [SkippableFact]
+    [Trait("DataSource", "RealDb")]
+    public async Task PostgresExpiredRunningRecoveryPreservesExplicitFalse()
+    {
+        await using var database = await TempMigrationDatabase.CreateAsync("test_j09_recovery_false");
+        await database.MigrateAsync();
+        var service = Service(database.Db, new AdminUser(), new FixedTimeProvider(Now));
+        var connection = await service.CreateConnectionAsync("PostgreSQL前置超时连接", default);
+        await service.SaveRuleAsync(connection.Id, new(connection.Limit.Revision, true,
+            AiUsageLimitPeriods.Month, 80, 100, null, null, "Asia/Shanghai"), default);
+        var row = Log(connection.Id, DateTimeOffset.UtcNow.AddMinutes(-5), null, null,
+            status: "running", metadataJson: """{"providerAttempted":false}""",
+            executionExpiresAt: DateTimeOffset.UtcNow.AddMinutes(-1));
+        database.Db.AiRequestLogs.Add(row);
+        await database.Db.SaveChangesAsync();
+
+        await AiCallRecovery.RecoverExpiredAsync(database.Db, default);
+
+        database.Db.ChangeTracker.Clear();
+        var recovered = await database.Db.AiRequestLogs.AsNoTracking()
+            .SingleAsync(x => x.Id == row.Id);
+        Assert.Equal("incomplete", recovered.Status);
+        using (var metadata = JsonDocument.Parse(recovered.MetadataJson))
+            Assert.False(metadata.RootElement.GetProperty("providerAttempted").GetBoolean());
+        var decision = await service.TryBeginAsync(connection.Id, "after-postgres-recovery-false",
+            "test", TimeSpan.FromMinutes(1), default);
+        Assert.True(decision.Allowed);
+        await service.EndAsync(decision.Lease, default);
+    }
+
+    [SkippableFact]
+    [Trait("DataSource", "RealDb")]
+    public async Task PostgresExpiredRunningRecoveryNormalizesMetadataAndFailsClosed()
+    {
+        await using var database = await TempMigrationDatabase.CreateAsync("test_j09_recovery");
+        await database.MigrateAsync();
+        var service = Service(database.Db, new AdminUser(), new FixedTimeProvider(Now));
+        var connection = await service.CreateConnectionAsync("PostgreSQL恢复连接", default);
+        await service.SaveRuleAsync(connection.Id, new(connection.Limit.Revision, true,
+            AiUsageLimitPeriods.Month, 80, 100, null, null, "Asia/Shanghai"), default);
+        var row = Log(connection.Id, DateTimeOffset.UtcNow.AddMinutes(-5), null, null,
+            status: "running", metadataJson: "[]",
+            executionExpiresAt: DateTimeOffset.UtcNow.AddMinutes(-1));
+        database.Db.AiRequestLogs.Add(row);
+        await database.Db.SaveChangesAsync();
+
+        await AiCallRecovery.RecoverExpiredAsync(database.Db, default);
+
+        database.Db.ChangeTracker.Clear();
+        var recovered = await database.Db.AiRequestLogs.AsNoTracking()
+            .SingleAsync(x => x.Id == row.Id);
+        Assert.Equal("incomplete", recovered.Status);
+        Assert.Equal("outcome_unknown", recovered.ErrorCode);
+        using (var metadata = JsonDocument.Parse(recovered.MetadataJson))
+            Assert.True(metadata.RootElement.GetProperty("providerAttempted").GetBoolean());
+        var decision = await service.TryBeginAsync(connection.Id, "after-postgres-recovery",
+            "test", TimeSpan.FromMinutes(1), default);
+        Assert.False(decision.Allowed);
+        Assert.Equal("usage_limit_unknown", decision.ErrorCode);
+    }
+
+    [SkippableFact]
+    [Trait("DataSource", "RealDb")]
+    public async Task PostgresProviderAttemptMarkerUpdatesTheRunningRowAndCountsAsUnknownUsage()
+    {
+        await using var database = await TempMigrationDatabase.CreateAsync("test_j09_marker");
+        await database.MigrateAsync();
+        var connectionId = Guid.NewGuid();
+        await using (var seed = Open(database.ConnectionString))
+        {
+            seed.AiProviderConnections.Add(new AiProviderConnectionEntity
+            {
+                Id = connectionId, Name = "标记连接", NormalizedName = "标记连接"
+            });
+            seed.AiUsageLimitRules.Add(new AiUsageLimitRuleEntity
+            {
+                ConnectionId = connectionId, Enabled = true, Period = AiUsageLimitPeriods.Month,
+                WarningPercent = 80, TokenLimit = 100, TimeZoneId = "Asia/Shanghai"
+            });
+            await seed.SaveChangesAsync();
+        }
+
+        await using var db = Open(database.ConnectionString);
+        var row = Log(connectionId, Now, null, null, status: "running", metadataJson: "[]");
+        row.UserId = Guid.NewGuid();
+        row.ExecutionExpiresAt = Now.AddMinutes(5);
+        db.AiRequestLogs.Add(row);
+        await db.SaveChangesAsync();
+
+        await AiProviderAttemptMarker.MarkAsync(db, row, default);
+
+        db.ChangeTracker.Clear();
+        var marked = await db.AiRequestLogs.AsNoTracking().SingleAsync(x => x.Id == row.Id);
+        Assert.Equal("running", marked.Status);
+        using (var metadata = JsonDocument.Parse(marked.MetadataJson))
+            Assert.True(metadata.RootElement.GetProperty("providerAttempted").GetBoolean());
+
+        var decision = await Service(db, new AdminUser(), new FixedTimeProvider(Now))
+            .TryBeginAsync(connectionId, "after-marker", "test", TimeSpan.FromMinutes(1), default);
+        Assert.False(decision.Allowed);
+        Assert.Equal("usage_limit_unknown", decision.ErrorCode);
+    }
+
+    [SkippableFact]
+    [Trait("DataSource", "RealDb")]
+    public async Task PostgresProviderAttemptMarkerRefusesANonRunningRowWithoutSending()
+    {
+        await using var database = await TempMigrationDatabase.CreateAsync("test_j09_marker_guard");
+        await database.MigrateAsync();
+        await using var db = Open(database.ConnectionString);
+        var row = Log(Guid.NewGuid(), Now, null, null, status: "queued", metadataJson: "[]");
+        row.UserId = Guid.NewGuid();
+        row.ProviderConnectionId = null;
+        db.AiRequestLogs.Add(row);
+        await db.SaveChangesAsync();
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            AiProviderAttemptMarker.MarkAsync(db, row, default));
+
+        Assert.Contains("refusing to send", error.Message, StringComparison.Ordinal);
+        db.ChangeTracker.Clear();
+        var unchanged = await db.AiRequestLogs.AsNoTracking().SingleAsync(x => x.Id == row.Id);
+        Assert.Equal("queued", unchanged.Status);
+        Assert.Equal("[]", unchanged.MetadataJson);
+    }
+
+    [Fact]
     public async Task ReminderEvents_MergeMetrics_DirectReachedSkipsWarning_AndReadsArePerAccount()
     {
         await using var db = Db();
@@ -209,7 +557,7 @@ public sealed class AiUsageLimitTests
         var service = Service(db, firstAdmin);
         var connection = await service.CreateConnectionAsync("提醒连接", default);
         await service.SaveRuleAsync(connection.Id, new(connection.Limit.Revision, true,
-            AiUsageLimitPeriods.Month, 80, 100, 10m, "CNY", "Asia/Shanghai"), default);
+            AiUsageLimitPeriods.Month, 80, 100, null, null, "Asia/Shanghai"), default);
         var at = new DateTimeOffset(2026, 11, 24, 10, 0, 0, TimeSpan.Zero);
         db.AiRequestLogs.Add(Log(connection.Id, at, 85, 8m, "CNY"));
         await db.SaveChangesAsync();
@@ -220,7 +568,6 @@ public sealed class AiUsageLimitTests
         var warning = Assert.Single(warnings);
         Assert.Equal(AiUsageLimitLevels.Warning, warning.Level);
         Assert.Contains("tokens", warning.Metrics);
-        Assert.Contains("cost-CNY", warning.Metrics);
         Assert.False(warning.Read);
 
         Assert.True(await service.MarkReminderReadAsync(warning.Id, default));
@@ -396,25 +743,36 @@ public sealed class AiUsageLimitTests
         new(db, user, clock ?? new FixedTimeProvider(Now), isolatedOptions);
 
     private static AiRequestLogEntity Log(Guid connectionId, DateTimeOffset startedAt, int? tokens,
-        decimal? cost, string? currency = null, DateTimeOffset? initiatedAt = default) => new()
+        decimal? cost, string? currency = null, DateTimeOffset? initiatedAt = default,
+        string status = "succeeded", string? metadataJson = null,
+        DateTimeOffset? executionExpiresAt = null, string? purpose = null) => new()
         {
             Id = Guid.NewGuid(),
             Module = "system",
-            Purpose = "ai.text-call",
+            Purpose = purpose ?? "ai.text-call",
             SourceObjectType = "ai-model",
             SourceObjectId = "synthetic",
             Provider = "openai-compatible",
             Model = "fixture",
             CorrelationId = Guid.NewGuid().ToString("N"),
-            Status = "succeeded",
+            Status = status,
             StartedAt = startedAt,
             InitiatedAt = initiatedAt,
-            FinishedAt = startedAt.AddSeconds(1),
+            FinishedAt = status == "running" ? null : startedAt.AddSeconds(1),
+            ExecutionExpiresAt = executionExpiresAt,
             TotalTokens = tokens,
             EstimatedCost = cost,
             Currency = cost is null ? null : currency,
-            ProviderConnectionId = connectionId
+            ProviderConnectionId = connectionId,
+            MetadataJson = metadataJson ?? "{}"
         };
+
+    private static NoteAsrBatchJobEntity BatchJob(Guid id, string status, string? statusRaw) => new()
+    {
+        Id = id, OwnerId = Guid.NewGuid(), TaskId = Guid.NewGuid(), Status = status, StatusRaw = statusRaw,
+        Model = "fixture", BaseUrl = "https://batch-api.example.invalid/v1/",
+        CreatedAt = Now.AddMinutes(-5), UpdatedAt = Now
+    };
 
     private sealed class AdminUser : ICurrentUserService
     {

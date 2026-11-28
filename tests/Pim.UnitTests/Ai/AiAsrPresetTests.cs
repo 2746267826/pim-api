@@ -67,10 +67,20 @@ public sealed class AiAsrPresetTests : IDisposable
         await UsageLimits.SaveRuleAsync(profile.ProviderConnectionId.Value,
             new(limit.Revision, true, AiUsageLimitPeriods.Month, 80, 100, null, null,
                 "Asia/Shanghai"), default);
+        var markerObservedBeforeSend = false;
+        _wire.OnSend = async () =>
+        {
+            var providerRow = await _db.AiRequestLogs.AsNoTracking()
+                .SingleAsync(x => x.Status == "running");
+            using var metadata = JsonDocument.Parse(providerRow.MetadataJson);
+            Assert.True(metadata.RootElement.GetProperty("providerAttempted").GetBoolean());
+            markerObservedBeforeSend = true;
+        };
 
         var result = await LimitedCaller.CallAsync(request, default);
 
         Assert.Equal(AiRequestStatus.Succeeded, result.Status);
+        Assert.True(markerObservedBeforeSend);
         Assert.Equal(1, _wire.Calls);
         Assert.Equal(21, (await _db.AiRequestLogs.AsNoTracking()
             .SingleAsync(x => x.Id == result.LogId)).TotalTokens);
@@ -100,11 +110,15 @@ public sealed class AiAsrPresetTests : IDisposable
         });
         await _db.SaveChangesAsync();
 
+        Assert.True(_gate.TryEnter(asr: true));
         var blocked = await LimitedCaller.CallAsync(request, default);
         Assert.Equal(AiRequestStatus.Blocked, blocked.Status);
         Assert.Equal("usage_limit_reached",
             (await _db.AiRequestLogs.AsNoTracking().SingleAsync(x => x.Id == blocked.LogId)).ErrorCode);
         Assert.Equal(0, _wire.Calls);
+        Assert.True(_gate.TryEnter(asr: true));
+        _gate.Exit(asr: true);
+        _gate.Exit(asr: true);
 
         var current = await UsageLimits.GetRuleAsync(connectionId, default);
         await UsageLimits.SaveRuleAsync(connectionId,
@@ -246,7 +260,7 @@ public sealed class AiAsrPresetTests : IDisposable
         var (request, _) = await Setup(); _wire.Block = true; using var cancel = new CancellationTokenSource();
         var running = Caller.CallAsync(request, cancel.Token); await _wire.Started.Task.WaitAsync(TimeSpan.FromSeconds(10));
         using (var intent = JsonDocument.Parse((await _db.AiRequestLogs.AsNoTracking().SingleAsync()).MetadataJson))
-            Assert.Equal(JsonValueKind.Null, intent.RootElement.GetProperty("providerAttempted").ValueKind);
+            Assert.True(intent.RootElement.GetProperty("providerAttempted").GetBoolean());
         cancel.Cancel(); var result = await running;
         Assert.Equal(AiRequestStatus.Incomplete, result.Status); Assert.Equal(1, _wire.Calls);
         Assert.Equal("caller_disconnect", result.Diagnostics?.AbortSource);
@@ -300,12 +314,14 @@ public sealed class AiAsrPresetTests : IDisposable
     private sealed class Wire : IHttpClientFactory
     {
         public List<string> Bodies { get; } = []; public int Calls; public string? Reply = "识别结果"; public string Finish = "stop"; public int Status = 200; public bool Block;
+        public Func<Task>? OnSend { get; set; }
         public TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public HttpClient CreateClient(string name) => new(new AiTextResponseLimitHandler { InnerHandler = new Handler(this) });
         private sealed class Handler(Wire owner) : HttpMessageHandler
         {
             protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
             {
+                if (owner.OnSend is not null) await owner.OnSend();
                 owner.Calls++; owner.Bodies.Add(await request.Content!.ReadAsStringAsync(ct));
                 owner.Started.TrySetResult(); if (owner.Block) await Task.Delay(Timeout.InfiniteTimeSpan, ct);
                 object body = owner.Status == 200 ? new { id = "synthetic-asr", @object = "chat.completion", created = 1780000000, model = "mimo-v2.5-asr",

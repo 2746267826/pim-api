@@ -19,6 +19,7 @@ public static class AiUsageLimitLevels
 public static class AiUsageLimitStatuses
 {
     public const string Unknown = "unknown";
+    public const string Unsupported = "unsupported";
     public const string Normal = "normal";
     public const string Warning = "warning";
     public const string Reached = "reached";

@@ -415,12 +415,32 @@ describe('AI文字调用完整页面', () => {
     expect(await screen.findByText('连接级用量限制')).toBeTruthy()
     expect(await screen.findByText('共享模型连接')).toBeTruthy()
     expect(await screen.findByText('当前周期用量')).toBeTruthy()
+    expect((screen.getByLabelText('费用上限（不可用）') as HTMLInputElement).disabled).toBe(true)
+    expect((screen.getByLabelText('费用币种（不可用）') as HTMLInputElement).disabled).toBe(true)
     expect(fixture.api.connectionUsage).toHaveBeenCalledWith(
       connections[0].id, 'month', undefined, expect.any(AbortSignal),
     )
     expect(fixture.api.usageReminders).toHaveBeenCalledWith(
       { connectionId: connections[0].id, limit: 50 }, expect.any(AbortSignal),
     )
+
+    await userEvent.type(screen.getByLabelText('Token 上限（可选）'), '500')
+    await userEvent.click(screen.getByRole('switch', { name: '启用用量限制' }))
+    await userEvent.click(screen.getByRole('button', { name: '保存用量限制' }))
+    await waitFor(() => expect(fixture.api.saveConnectionUsageLimit).toHaveBeenCalledWith(
+      connections[0].id,
+      expect.objectContaining({ tokenLimit: 500, costLimit: null, currency: null, enabled: true }),
+    ))
+  })
+
+  it('阻止保存已启用但没有Token上限的连接规则', async () => {
+    open('/settings/ai?tab=usage')
+    expect(await screen.findByText('连接级用量限制')).toBeTruthy()
+
+    await userEvent.click(await screen.findByRole('switch', { name: '启用用量限制' }))
+    await userEvent.click(await screen.findByRole('button', { name: '保存用量限制' }))
+
+    await waitFor(() => expect(fixture.api.saveConnectionUsageLimit).not.toHaveBeenCalled())
   })
 
   it('marks ASR readiness as undetermined while presets load or fail', async () => {
@@ -483,6 +503,60 @@ describe('AI文字调用完整页面', () => {
       asrPrompt: '逐字转写，不要分析或总结',
       asrBatchBaseUrl: 'https://batch-api-test.xiaomimimo.com/v1',
       expectedRevision: revision,
+    }))
+  })
+
+  it('clearing the MiMo multimodal prompt sends an empty string so the server resets to the default template', async () => {
+    const multimodal = { ...preset, id: 'mimo-multimodal', name: 'MiMo 多模态', defaultModel: 'mimo-v2.6-flash',
+      models: ['mimo-v2.6-flash', 'mimo-v2.6-pro'], formats: ['wav', 'mp3', 'flac', 'm4a', 'ogg'],
+      maxAudioBytes: 50 * 1024 * 1024 }
+    fixture.api.asrPresets.mockResolvedValue([multimodal])
+    models = [...models, { id: asrId, revision, name: 'MiMo Flash 长音频', baseUrl: multimodal.defaultBaseUrl,
+      model: 'mimo-v2.6-flash', enabled: true, capabilities: ['Transcription'], hasApiKey: true,
+      timeoutSeconds: 600, maxOutputTokens: 8192, asrPresetId: multimodal.id,
+      asrPrompt: '旧的转写提示词', asrPromptRevision: 'prompt-rev-1',
+      createdAt: '2026-10-27T00:00:00Z', updatedAt: '2026-10-27T00:00:00Z' }]
+    settings = { ...settings, transcriptionModelId: asrId }
+    open('/settings/ai?tab=asr')
+
+    await userEvent.click(await screen.findByRole('button', { name: '编辑 ASR MiMo Flash 长音频' }))
+    const dialog = screen.getByRole('dialog')
+    await userEvent.clear(within(dialog).getByLabelText('转写提示词'))
+    await userEvent.click(within(dialog).getByRole('button', { name: '保存模型' }))
+    await waitFor(() => expect(fixture.api.saveModel).toHaveBeenCalledOnce())
+    expect(fixture.api.saveModel).toHaveBeenCalledWith(asrId, expect.objectContaining({
+      asrPresetId: 'mimo-multimodal',
+      asrPrompt: '',
+      expectedRevision: revision,
+    }))
+  })
+
+  it('requires a new API key when switching ASR presets instead of reusing the old credential', async () => {
+    const multimodal = { ...preset, id: 'mimo-multimodal', name: 'MiMo 多模态', defaultModel: 'mimo-v2.6-flash',
+      models: ['mimo-v2.6-flash', 'mimo-v2.6-pro'], formats: ['wav', 'mp3', 'flac', 'm4a', 'ogg'],
+      maxAudioBytes: 50 * 1024 * 1024 }
+    fixture.api.asrPresets.mockResolvedValue([preset, multimodal])
+    models = [...models, { id: asrId, revision, name: '课堂语音模型', baseUrl: preset.defaultBaseUrl,
+      model: preset.defaultModel, enabled: true, capabilities: ['Transcription'], hasApiKey: true,
+      timeoutSeconds: 60, maxOutputTokens: 1024, asrPresetId: preset.id,
+      createdAt: '2026-10-27T00:00:00Z', updatedAt: '2026-10-27T00:00:00Z' }]
+    settings = { ...settings, transcriptionModelId: asrId }
+    open('/settings/ai?tab=asr')
+
+    await userEvent.click(await screen.findByRole('button', { name: '编辑 ASR 课堂语音模型' }))
+    const dialog = screen.getByRole('dialog')
+    await userEvent.click(within(dialog).getByRole('combobox', { name: 'ASR接入预设' }))
+    await userEvent.click(await screen.findByRole('option', { name: /MiMo 多模态/ }))
+    await userEvent.click(within(dialog).getByRole('button', { name: '保存模型' }))
+    expect(fixture.api.saveModel).not.toHaveBeenCalled()
+    expect(screen.getByRole('dialog')).toBeTruthy()
+
+    await userEvent.type(within(dialog).getByLabelText('API Key（已保存）'), 'replacement-preset-key')
+    await userEvent.click(within(dialog).getByRole('button', { name: '保存模型' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(fixture.api.saveModel).toHaveBeenCalledWith(asrId, expect.objectContaining({
+      asrPresetId: 'mimo-multimodal',
+      apiKey: 'replacement-preset-key',
     }))
   })
 

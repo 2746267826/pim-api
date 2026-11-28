@@ -181,6 +181,16 @@ public sealed class AiAsrJobServiceTests
                 "Asia/Shanghai"), default);
 
         var preset = new ScriptedPreset();
+        var markerObservedBeforeProvider = false;
+        preset.OnCall = async () =>
+        {
+            var providerJob = await fixture.Db.AiAsrJobs.AsNoTracking().SingleAsync();
+            var providerLog = await fixture.Db.AiRequestLogs.AsNoTracking().SingleAsync();
+            Assert.True(providerJob.ProviderAttempted);
+            using var metadata = JsonDocument.Parse(providerLog.MetadataJson);
+            Assert.True(metadata.RootElement.GetProperty("providerAttempted").GetBoolean());
+            markerObservedBeforeProvider = true;
+        };
         var service = fixture.Service(fixture.Owner, preset, limits);
         var accepted = await service.SubmitAsync(fixture.Request(), CancellationToken.None);
         var queuedLog = await fixture.Db.AiRequestLogs.AsNoTracking()
@@ -193,7 +203,116 @@ public sealed class AiAsrJobServiceTests
 
         var result = await service.GetAsync(accepted.ClientRequestId, CancellationToken.None);
         Assert.Equal(AiAsrJobStatus.Succeeded, result.Status);
+        Assert.True(markerObservedBeforeProvider);
         Assert.Equal(1, preset.Calls);
+    }
+
+    [Fact]
+    public async Task UsageLimitRejectionReleasesAsyncAsrGate()
+    {
+        await using var fixture = await InMemoryFixture.CreateAsync();
+        var limits = new AiUsageLimitService(fixture.Db, fixture.Owner);
+        var connection = await limits.CreateConnectionAsync("异步ASR门禁连接", default);
+        fixture.Profile.ProviderConnectionId = connection.Id;
+        await fixture.Db.SaveChangesAsync();
+        var rule = await limits.GetRuleAsync(connection.Id, default);
+        await limits.SaveRuleAsync(connection.Id,
+            new(rule.Revision, true, AiUsageLimitPeriods.Month, 80, 100, null, null,
+                "Asia/Shanghai"), default);
+
+        var preset = new ScriptedPreset();
+        var gate = new AiTextCallGate();
+        var service = fixture.Service(fixture.Owner, preset, limits, gate);
+        var accepted = await service.SubmitAsync(fixture.Request(), CancellationToken.None);
+        fixture.Db.AiRequestLogs.Add(new AiRequestLogEntity
+        {
+            UserId = fixture.Owner.UserId,
+            Purpose = "ai.asr-job",
+            ProviderConnectionId = connection.Id,
+            Status = "succeeded",
+            StartedAt = DateTimeOffset.UtcNow,
+            InitiatedAt = DateTimeOffset.UtcNow,
+            CorrelationId = Guid.NewGuid().ToString("N"),
+            MetadataJson = """{"providerAttempted":true}""",
+            TotalTokens = 100
+        });
+        await fixture.Db.SaveChangesAsync();
+        Assert.True(gate.TryEnter(asr: true));
+
+        await service.ProcessAsync(fixture.Owner.UserId!.Value, accepted.ClientRequestId,
+            CancellationToken.None);
+
+        var result = await service.GetAsync(accepted.ClientRequestId, CancellationToken.None);
+        Assert.Equal(AiAsrJobStatus.Blocked, result.Status);
+        Assert.Equal("usage_limit_reached", result.ErrorCode);
+        Assert.Equal(0, preset.Calls);
+        Assert.True(gate.TryEnter(asr: true));
+        gate.Exit(asr: true);
+        gate.Exit(asr: true);
+    }
+
+    [Fact]
+    public async Task UsageLimitRejectsAsyncAsrModelWithoutProviderConnectionBeforeProvider()
+    {
+        await using var fixture = await InMemoryFixture.CreateAsync();
+        var limits = new AiUsageLimitService(fixture.Db, fixture.Owner);
+        fixture.Profile.ProviderConnectionId = null;
+        await fixture.Db.SaveChangesAsync();
+        var preset = new ScriptedPreset();
+        var service = fixture.Service(fixture.Owner, preset, limits);
+        var accepted = await service.SubmitAsync(fixture.Request(), CancellationToken.None);
+
+        await service.ProcessAsync(fixture.Owner.UserId!.Value, accepted.ClientRequestId,
+            CancellationToken.None);
+
+        var result = await service.GetAsync(accepted.ClientRequestId, CancellationToken.None);
+        Assert.Equal(AiAsrJobStatus.Blocked, result.Status);
+        Assert.Equal("usage_limit_unbound", result.ErrorCode);
+        Assert.Equal(0, preset.Calls);
+        Assert.True(fixture.Db.AiRequestLogs.AsNoTracking()
+            .Any(x => x.Id == accepted.LogId && x.Status == "blocked"));
+    }
+
+    [Fact]
+    public async Task ExpiredRunningJobRecoveryCountsAsProviderAttemptedAndFailsClosed()
+    {
+        await using var fixture = await InMemoryFixture.CreateAsync();
+        var limits = new AiUsageLimitService(fixture.Db, fixture.Owner);
+        var connection = await limits.CreateConnectionAsync("异步恢复连接", default);
+        fixture.Profile.ProviderConnectionId = connection.Id;
+        await fixture.Db.SaveChangesAsync();
+        var rule = await limits.GetRuleAsync(connection.Id, default);
+        await limits.SaveRuleAsync(connection.Id,
+            new(rule.Revision, true, AiUsageLimitPeriods.Month, 80, 100, null, null,
+                "Asia/Shanghai"), default);
+        var service = fixture.Service(fixture.Owner, new ScriptedPreset(), limits);
+        var accepted = await service.SubmitAsync(fixture.Request(), CancellationToken.None);
+        var job = await fixture.Db.AiAsrJobs.SingleAsync();
+        var log = await fixture.Db.AiRequestLogs.SingleAsync(x => x.Id == accepted.LogId);
+        var startedAt = DateTimeOffset.UtcNow.AddMinutes(-5);
+        job.Status = "running";
+        job.StartedAt = startedAt;
+        job.ExecutionExpiresAt = DateTimeOffset.UtcNow.AddMinutes(-1);
+        job.ProviderAttempted = false;
+        log.Status = "running";
+        log.StartedAt = startedAt;
+        log.ExecutionExpiresAt = job.ExecutionExpiresAt;
+        log.MetadataJson = """{"providerAttempted":false}""";
+        await fixture.Db.SaveChangesAsync();
+
+        await AiAsrJobRecovery.RecoverExpiredAsync(fixture.Db, CancellationToken.None);
+
+        var recoveredJob = await fixture.Db.AiAsrJobs.AsNoTracking().SingleAsync();
+        var recoveredLog = await fixture.Db.AiRequestLogs.AsNoTracking()
+            .SingleAsync(x => x.Id == accepted.LogId);
+        Assert.Equal("incomplete", recoveredJob.Status);
+        Assert.True(recoveredJob.ProviderAttempted);
+        using (var metadata = JsonDocument.Parse(recoveredLog.MetadataJson))
+            Assert.True(metadata.RootElement.GetProperty("providerAttempted").GetBoolean());
+        var decision = await limits.TryBeginAsync(connection.Id, "after-async-recovery",
+            "ai.text-call", TimeSpan.FromMinutes(1), default);
+        Assert.False(decision.Allowed);
+        Assert.Equal("usage_limit_unknown", decision.ErrorCode);
     }
 
     [Fact]
@@ -575,6 +694,288 @@ public sealed class AiAsrJobServiceTests
 
     [SkippableFact]
     [Trait("DataSource", "RealDb")]
+    public async Task Postgres_generic_call_recovery_leaves_expired_asr_audit_to_job_recovery()
+    {
+        await using var database = await TempMigrationDatabase.CreateAsync(
+            "test_ai_asr_job_cross_recovery");
+        await database.MigrateAsync();
+        var owner = new Owner();
+        ISecretProtector secrets =
+            new DataProtectionSecretProtector(new EphemeralDataProtectionProvider());
+        var profile = await SeedPostgresAsync(database.Db, owner, secrets);
+        var now = DateTimeOffset.UtcNow;
+        var log = new AiRequestLogEntity
+        {
+            UserId = owner.UserId,
+            ClientRequestId = Guid.NewGuid(),
+            InputHash = "synthetic",
+            Module = "system",
+            Purpose = AiAsrJobService.AuditPurpose,
+            SourceObjectType = "ai-model",
+            SourceObjectId = profile.Id.ToString("D"),
+            Provider = ScriptedPreset.PresetId,
+            Model = profile.Model,
+            ModelProfileId = profile.Id,
+            ModelRevision = profile.Revision,
+            CorrelationId = Guid.NewGuid().ToString("N"),
+            Status = "running",
+            AttemptNumber = 1,
+            MaxAttempts = 1,
+            StartedAt = now.AddMinutes(-10),
+            InitiatedAt = now.AddMinutes(-10),
+            ExecutionExpiresAt = now.AddMinutes(-1),
+            MetadataJson = """{"providerAttempted":true}"""
+        };
+        var job = new AiAsrJobEntity
+        {
+            OwnerId = owner.UserId!.Value,
+            ClientRequestId = log.ClientRequestId!.Value,
+            LogId = log.Id,
+            Status = "running",
+            ModelProfileId = profile.Id,
+            ModelRevision = profile.Revision,
+            PresetId = ScriptedPreset.PresetId,
+            PresetVersion = ScriptedPreset.Dto.Version,
+            Model = profile.Model,
+            Endpoint = AiAsrPresetRegistry.OperationEndpoint(profile.BaseUrl, ScriptedPreset.Dto),
+            ProviderAttempted = true,
+            CreatedAt = now.AddMinutes(-10),
+            StartedAt = now.AddMinutes(-9),
+            ExecutionExpiresAt = now.AddMinutes(-1)
+        };
+        database.Db.AiRequestLogs.Add(log);
+        database.Db.AiAsrJobs.Add(job);
+        await database.Db.SaveChangesAsync();
+
+        await AiCallRecovery.RecoverExpiredAsync(database.Db, CancellationToken.None);
+
+        database.Db.ChangeTracker.Clear();
+        Assert.Equal("running", (await database.Db.AiRequestLogs.AsNoTracking()
+            .SingleAsync(x => x.Id == log.Id)).Status);
+        Assert.Equal("running", (await database.Db.AiAsrJobs.AsNoTracking()
+            .SingleAsync(x => x.Id == job.Id)).Status);
+
+        await AiAsrJobRecovery.RecoverExpiredAsync(database.Db, CancellationToken.None);
+
+        database.Db.ChangeTracker.Clear();
+        var recoveredJob = await database.Db.AiAsrJobs.AsNoTracking()
+            .SingleAsync(x => x.Id == job.Id);
+        var recoveredLog = await database.Db.AiRequestLogs.AsNoTracking()
+            .SingleAsync(x => x.Id == log.Id);
+        Assert.Equal("incomplete", recoveredJob.Status);
+        Assert.Equal("worker_lost", recoveredJob.AbortSource);
+        Assert.True(recoveredJob.ProviderAttempted);
+        Assert.Equal(recoveredJob.Status, recoveredLog.Status);
+        Assert.Equal(recoveredJob.ErrorCode, recoveredLog.ErrorCode);
+        using var metadata = JsonDocument.Parse(recoveredLog.MetadataJson);
+        Assert.True(metadata.RootElement.GetProperty("providerAttempted").GetBoolean());
+    }
+
+    [SkippableFact]
+    [Trait("DataSource", "RealDb")]
+    public async Task Postgres_job_recovery_overwrites_a_legacy_premature_audit_terminal_state()
+    {
+        await using var database = await TempMigrationDatabase.CreateAsync(
+            "test_ai_asr_job_premature_audit");
+        await database.MigrateAsync();
+        var owner = new Owner();
+        ISecretProtector secrets =
+            new DataProtectionSecretProtector(new EphemeralDataProtectionProvider());
+        var profile = await SeedPostgresAsync(database.Db, owner, secrets);
+        var now = DateTimeOffset.UtcNow;
+        var log = new AiRequestLogEntity
+        {
+            UserId = owner.UserId,
+            ClientRequestId = Guid.NewGuid(),
+            InputHash = "synthetic",
+            Module = "system",
+            Purpose = AiAsrJobService.AuditPurpose,
+            SourceObjectType = "ai-model",
+            SourceObjectId = profile.Id.ToString("D"),
+            Provider = ScriptedPreset.PresetId,
+            Model = profile.Model,
+            ModelProfileId = profile.Id,
+            ModelRevision = profile.Revision,
+            CorrelationId = Guid.NewGuid().ToString("N"),
+            Status = "incomplete",
+            ErrorCode = "outcome_unknown",
+            StartedAt = now.AddMinutes(-10),
+            InitiatedAt = now.AddMinutes(-10),
+            FinishedAt = now.AddMinutes(-1),
+            ExecutionExpiresAt = now.AddMinutes(-1),
+            MetadataJson = """{"providerAttempted":true}"""
+        };
+        var job = new AiAsrJobEntity
+        {
+            OwnerId = owner.UserId!.Value,
+            ClientRequestId = log.ClientRequestId!.Value,
+            LogId = log.Id,
+            Status = "running",
+            ModelProfileId = profile.Id,
+            ModelRevision = profile.Revision,
+            PresetId = ScriptedPreset.PresetId,
+            PresetVersion = ScriptedPreset.Dto.Version,
+            Model = profile.Model,
+            Endpoint = AiAsrPresetRegistry.OperationEndpoint(profile.BaseUrl, ScriptedPreset.Dto),
+            ProviderAttempted = true,
+            CreatedAt = now.AddMinutes(-10),
+            StartedAt = now.AddMinutes(-9),
+            ExecutionExpiresAt = now.AddMinutes(-1)
+        };
+        database.Db.AiRequestLogs.Add(log);
+        database.Db.AiAsrJobs.Add(job);
+        await database.Db.SaveChangesAsync();
+
+        await AiAsrJobRecovery.RecoverExpiredAsync(database.Db, CancellationToken.None);
+
+        database.Db.ChangeTracker.Clear();
+        var recoveredJob = await database.Db.AiAsrJobs.AsNoTracking()
+            .SingleAsync(x => x.Id == job.Id);
+        var recoveredLog = await database.Db.AiRequestLogs.AsNoTracking()
+            .SingleAsync(x => x.Id == log.Id);
+        Assert.Equal("incomplete", recoveredJob.Status);
+        Assert.Equal("incomplete", recoveredLog.Status);
+        Assert.Equal("worker_lost_outcome_unknown", recoveredJob.ErrorCode);
+        Assert.Equal(recoveredJob.ErrorCode, recoveredLog.ErrorCode);
+        Assert.Equal("worker_lost_outcome_unknown", recoveredLog.ErrorCode);
+    }
+
+    [SkippableFact]
+    [Trait("DataSource", "RealDb")]
+    public async Task Postgres_recovery_isolates_a_terminal_audit_from_the_rest_of_the_batch()
+    {
+        await using var database = await TempMigrationDatabase.CreateAsync(
+            "test_ai_asr_job_recovery_isolation");
+        await database.MigrateAsync();
+        var owner = new Owner();
+        ISecretProtector secrets =
+            new DataProtectionSecretProtector(new EphemeralDataProtectionProvider());
+        var profile = await SeedPostgresAsync(database.Db, owner, secrets);
+        var now = DateTimeOffset.UtcNow;
+
+        var goodLog = NewRecoveryLog(owner, profile, "running", now);
+        var goodJob = NewRecoveryJob(owner, profile, goodLog, "running", now);
+        var terminalLog = NewRecoveryLog(owner, profile, "succeeded", now);
+        terminalLog.TotalTokens = 7;
+        var terminalJob = NewRecoveryJob(owner, profile, terminalLog, "running", now);
+        database.Db.AiRequestLogs.AddRange(goodLog, terminalLog);
+        database.Db.AiAsrJobs.AddRange(goodJob, terminalJob);
+        await database.Db.SaveChangesAsync();
+
+        await AiAsrJobRecovery.RecoverExpiredAsync(database.Db, CancellationToken.None);
+
+        database.Db.ChangeTracker.Clear();
+        var recoveredJob = await database.Db.AiAsrJobs.AsNoTracking()
+            .SingleAsync(x => x.Id == goodJob.Id);
+        var recoveredLog = await database.Db.AiRequestLogs.AsNoTracking()
+            .SingleAsync(x => x.Id == goodLog.Id);
+        Assert.Equal("incomplete", recoveredJob.Status);
+        Assert.Equal("incomplete", recoveredLog.Status);
+        Assert.Equal("worker_lost", recoveredJob.AbortSource);
+
+        // The already-terminal audit row cannot be overwritten, but it must not roll back the
+        // recovery of later/earlier candidates in the same scan.
+        var skippedJob = await database.Db.AiAsrJobs.AsNoTracking()
+            .SingleAsync(x => x.Id == terminalJob.Id);
+        var skippedLog = await database.Db.AiRequestLogs.AsNoTracking()
+            .SingleAsync(x => x.Id == terminalLog.Id);
+        Assert.Equal("running", skippedJob.Status);
+        Assert.Equal("succeeded", skippedLog.Status);
+        Assert.Equal(7, skippedLog.TotalTokens);
+    }
+
+    private static AiRequestLogEntity NewRecoveryLog(Owner owner, AiModelProfileEntity profile,
+        string status, DateTimeOffset now) => new()
+    {
+        UserId = owner.UserId,
+        ClientRequestId = Guid.NewGuid(),
+        InputHash = "synthetic",
+        Module = "system",
+        Purpose = AiAsrJobService.AuditPurpose,
+        SourceObjectType = "ai-model",
+        SourceObjectId = profile.Id.ToString("D"),
+        Provider = ScriptedPreset.PresetId,
+        Model = profile.Model,
+        ModelProfileId = profile.Id,
+        ModelRevision = profile.Revision,
+        CorrelationId = Guid.NewGuid().ToString("N"),
+        Status = status,
+        AttemptNumber = 1,
+        MaxAttempts = 1,
+        StartedAt = now.AddMinutes(-10),
+        InitiatedAt = now.AddMinutes(-10),
+        FinishedAt = status == "running" ? null : now.AddMinutes(-2),
+        ExecutionExpiresAt = now.AddMinutes(-1),
+        MetadataJson = """{"providerAttempted":true}"""
+    };
+
+    private static AiAsrJobEntity NewRecoveryJob(Owner owner, AiModelProfileEntity profile,
+        AiRequestLogEntity log, string status, DateTimeOffset now) => new()
+    {
+        OwnerId = owner.UserId!.Value,
+        ClientRequestId = log.ClientRequestId!.Value,
+        LogId = log.Id,
+        Status = status,
+        ModelProfileId = profile.Id,
+        ModelRevision = profile.Revision,
+        PresetId = ScriptedPreset.PresetId,
+        PresetVersion = ScriptedPreset.Dto.Version,
+        Model = profile.Model,
+        Endpoint = AiAsrPresetRegistry.OperationEndpoint(profile.BaseUrl, ScriptedPreset.Dto),
+        ProviderAttempted = true,
+        CreatedAt = now.AddMinutes(-10),
+        StartedAt = now.AddMinutes(-9),
+        ExecutionExpiresAt = now.AddMinutes(-1)
+    };
+
+    [SkippableFact]
+    [Trait("DataSource", "RealDb")]
+    public async Task Postgres_generic_recovery_closes_an_orphaned_asr_audit_without_a_job()
+    {
+        await using var database = await TempMigrationDatabase.CreateAsync(
+            "test_ai_asr_orphan_audit");
+        await database.MigrateAsync();
+        var owner = new Owner();
+        ISecretProtector secrets =
+            new DataProtectionSecretProtector(new EphemeralDataProtectionProvider());
+        var profile = await SeedPostgresAsync(database.Db, owner, secrets);
+        var now = DateTimeOffset.UtcNow;
+        database.Db.AiRequestLogs.Add(new AiRequestLogEntity
+        {
+            UserId = owner.UserId,
+            ClientRequestId = Guid.NewGuid(),
+            InputHash = "synthetic",
+            Module = "system",
+            Purpose = AiAsrJobService.AuditPurpose,
+            SourceObjectType = "ai-model",
+            SourceObjectId = profile.Id.ToString("D"),
+            Provider = ScriptedPreset.PresetId,
+            Model = profile.Model,
+            ModelProfileId = profile.Id,
+            ModelRevision = profile.Revision,
+            CorrelationId = Guid.NewGuid().ToString("N"),
+            Status = "running",
+            AttemptNumber = 1,
+            MaxAttempts = 1,
+            StartedAt = now.AddMinutes(-10),
+            InitiatedAt = now.AddMinutes(-10),
+            ExecutionExpiresAt = now.AddMinutes(-1),
+            MetadataJson = """{"providerAttempted":false}"""
+        });
+        await database.Db.SaveChangesAsync();
+
+        await AiCallRecovery.RecoverExpiredAsync(database.Db, CancellationToken.None);
+
+        database.Db.ChangeTracker.Clear();
+        var recovered = await database.Db.AiRequestLogs.AsNoTracking().SingleAsync();
+        Assert.Equal("incomplete", recovered.Status);
+        Assert.Equal("outcome_unknown", recovered.ErrorCode);
+        using var metadata = JsonDocument.Parse(recovered.MetadataJson);
+        Assert.False(metadata.RootElement.GetProperty("providerAttempted").GetBoolean());
+    }
+
+    [SkippableFact]
+    [Trait("DataSource", "RealDb")]
     public async Task Postgres_cancel_and_claim_races_never_split_job_and_audit_terminal_state()
     {
         await using var database = await TempMigrationDatabase.CreateAsync(
@@ -715,8 +1116,9 @@ public sealed class AiAsrJobServiceTests
 
     private static AiAsrJobService Service(PimDbContext db, Owner owner, IFileAttachmentStore files,
         ISecretProtector secrets, AiAsrPresetRegistry registry, IAsrJobDispatcher dispatcher,
-        IServiceScopeFactory scopes, AiUsageLimitService? usageLimits = null) =>
-        new(db, secrets, owner, new AiTextCallGate(), registry,
+        IServiceScopeFactory scopes, AiUsageLimitService? usageLimits = null,
+        AiTextCallGate? gate = null) =>
+        new(db, secrets, owner, gate ?? new AiTextCallGate(), registry,
             new AiAsrMaterialService(db, files, owner, registry), dispatcher, scopes,
             NullLogger<AiAsrJobService>.Instance, usageLimits);
 
@@ -869,10 +1271,10 @@ public sealed class AiAsrJobServiceTests
         }
 
         public AiAsrJobService Service(Owner owner, ScriptedPreset? preset = null,
-            AiUsageLimitService? usageLimits = null) =>
+            AiUsageLimitService? usageLimits = null, AiTextCallGate? gate = null) =>
             AiAsrJobServiceTests.Service(Db, owner, Files, Secrets,
                 new AiAsrPresetRegistry([preset ?? new ScriptedPreset()]), Dispatcher,
-                _scopes.GetRequiredService<IServiceScopeFactory>(), usageLimits);
+                _scopes.GetRequiredService<IServiceScopeFactory>(), usageLimits, gate);
 
         public AiAsrCallRequest Request(Owner? owner = null, byte[]? bytes = null) =>
             AiAsrJobServiceTests.Request(owner ?? Owner, Profile, bytes);
@@ -915,6 +1317,7 @@ public sealed class AiAsrJobServiceTests
         public TaskCompletionSource? Release { get; init; }
         public bool IgnoreCancellation { get; init; }
         public bool BlockUntilCancelled { get; init; }
+        public Func<Task>? OnCall { get; set; }
 
         public string NormalizeEndpoint(string value) =>
             value.EndsWith('/') ? value : value + "/";
@@ -931,6 +1334,7 @@ public sealed class AiAsrJobServiceTests
             AiAsrInput audio, string language, CancellationToken ct,
             AiAsrPromptSnapshot? prompt = null)
         {
+            if (OnCall is not null) await OnCall();
             Calls++;
             LastConnection = connection;
             AiTextWireCapture.Current?.Attempt();

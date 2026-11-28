@@ -6,6 +6,7 @@ using Pim.Infrastructure.Data;
 using Pim.Infrastructure.Data.Entities;
 using Pim.Infrastructure.Secrets;
 using Pim.Infrastructure.Ai.Asr;
+using Pim.Infrastructure.Ai.Asr.Mimo;
 
 namespace Pim.Infrastructure.Ai;
 
@@ -21,12 +22,15 @@ public sealed class AiModelSettingsService(PimDbContext db, ISecretProtector sec
         var model = Clean(request.Model, 128, "模型标识");
         var endpoint = Endpoint(request.BaseUrl);
         var capabilities = ToFlags(request.Capabilities);
+        if ((capabilities & AiModelCapabilityFlags.Transcription) != 0 &&
+            capabilities != AiModelCapabilityFlags.Transcription)
+            throw Invalid("语音转写必须使用独立ASR配置，不能与文本/视觉共用");
         var presetId = string.IsNullOrWhiteSpace(request.AsrPresetId) ? null : request.AsrPresetId.Trim();
         var batchBaseUrl = string.IsNullOrWhiteSpace(request.AsrBatchBaseUrl) ? null : Endpoint(request.AsrBatchBaseUrl);
         var prompt = request.AsrPrompt is null ? null : AiAsrPromptTemplate.Normalize(request.AsrPrompt);
         if (request.TimeoutSeconds is < 1 or > 600 || request.MaxOutputTokens is < 1 or > 131072)
             throw Invalid("超时须为1–600秒，输出上限须为1–131072 token");
-        var key = request.ApiKey?.Trim();
+        var key = string.IsNullOrWhiteSpace(request.ApiKey) ? null : request.ApiKey.Trim();
         if (key is not null && (key.Length is < 1 or > 4096 || key.Any(c => c < 33 || c > 126)))
             throw Invalid("API Key格式无效，请填写非空可打印字符");
         if (request.ProviderConnectionId is { } requestedConnection &&
@@ -62,11 +66,15 @@ public sealed class AiModelSettingsService(PimDbContext db, ISecretProtector sec
         if (row.AsrPresetId is not null && capabilities != AiModelCapabilityFlags.Transcription)
             throw Invalid("ASR独立配置不可改为文本/视觉配置，请另建模型以隔离凭据");
         var isAsr = capabilities == AiModelCapabilityFlags.Transcription;
+        var wasAsr = id is not null &&
+            (row.Capabilities == AiModelCapabilityFlags.Transcription || row.AsrPresetId is not null);
         if (isAsr && presetId is null) presetId = row.AsrPresetId;
-        if (isAsr && id is null && presetId is null) throw Invalid("新建ASR配置需要选择接入预设");
+        if (isAsr && presetId is null) throw Invalid("ASR配置需要选择接入预设");
+        if (isAsr && id is not null && !wasAsr && key is null)
+            throw Invalid("把现有模型转换为ASR配置需要重新填写API Key，不能沿用原模型凭据");
         if (batchBaseUrl is not null)
         {
-            if (!isAsr || presetId != "mimo-multimodal")
+            if (!isAsr || presetId != MimoMultimodalPreset.PresetId)
                 throw Invalid("Batch 地址仅用于独立的 MiMo 多模态 ASR 配置");
             if (!new Uri(batchBaseUrl).Host.Contains("batch-api-", StringComparison.OrdinalIgnoreCase))
                 throw Invalid("MiMo Batch 必须填写 batch-api-* 专用 origin，不能复用实时 ASR 地址");
@@ -74,7 +82,7 @@ public sealed class AiModelSettingsService(PimDbContext db, ISecretProtector sec
         if (request.AsrPrompt is not null && !isAsr)
             throw Invalid("自定义转写提示词只能保存到独立ASR配置");
         if (request.AsrPrompt is not null && prompt!.Text != AiAsrPromptTemplate.DefaultText &&
-            presetId != "mimo-multimodal")
+            presetId != MimoMultimodalPreset.PresetId)
             throw Invalid("仅 MiMo 多模态预设支持可修改转写提示词；旧ASR保持固定协议");
         if (presetId is not null)
         {
@@ -99,15 +107,23 @@ public sealed class AiModelSettingsService(PimDbContext db, ISecretProtector sec
         row.Enabled = request.Enabled; row.Capabilities = capabilities; row.TimeoutSeconds = request.TimeoutSeconds;
         if (request.ProviderConnectionId is { } connectionId)
             row.ProviderConnectionId = connectionId;
-        else if (id is null && row.ProviderConnectionId is null && usageLimits is not null)
+        else if (row.ProviderConnectionId is null && usageLimits is not null)
         {
             dedicatedConnection = await usageLimits.CreateDedicatedConnectionForModelAsync(name, row.Id, ct);
             row.ProviderConnectionId = dedicatedConnection.Id;
         }
         row.AsrPresetId = presetId;
         row.AsrBatchBaseUrl = batchBaseUrl;
-        if (request.AsrPrompt is not null)
+        if (!isAsr || presetId != MimoMultimodalPreset.PresetId)
+        {
+            // A custom prompt is only meaningful for the MiMo multimodal preset. Switching to
+            // another preset (or away from ASR) must not resurrect the old custom instructions.
+            row.AsrPrompt = null;
+        }
+        else if (request.AsrPrompt is not null)
+        {
             row.AsrPrompt = prompt!.Text == AiAsrPromptTemplate.DefaultText ? null : prompt.Text;
+        }
         row.MaxOutputTokens = request.MaxOutputTokens; row.Revision = Guid.NewGuid(); row.UpdatedAt = DateTimeOffset.UtcNow;
         if (key is not null) row.ApiKeySecret = secrets.Protect(key);
         try { await db.SaveChangesAsync(ct); }

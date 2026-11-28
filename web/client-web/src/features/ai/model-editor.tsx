@@ -34,7 +34,8 @@ export function ModelEditor({ model, save, close, initialAsr = false, connection
   const estimatedAsrMinutes = tokens > 0 ? Math.floor(tokens / (2318 / 507.924) / 60) : 0
   const editedPrompt = prompt.trim() || null
   const endpointChanged = Boolean(model && baseUrl.trim().replace(/\/+$/, '') !== model.baseUrl.trim().replace(/\/+$/, ''))
-  const keyRequired = !model || endpointChanged || !model.hasApiKey
+  const presetChanged = Boolean(model && asr && model.asrPresetId !== presetId)
+  const keyRequired = !model || endpointChanged || presetChanged || !model.hasApiKey
   const presets = useQuery({ queryKey: ['ai-asr-presets'], queryFn: ({ signal }) => aiApi.asrPresets(signal), enabled: asr })
   const preset = presets.data?.find((p) => p.id === presetId)
   function choosePreset(value: string) {
@@ -55,13 +56,15 @@ export function ModelEditor({ model, save, close, initialAsr = false, connection
         if (batchBaseUrl.trim() && !multimodal) { notifyError('Batch 地址仅用于 MiMo 多模态 ASR 配置'); return }
         if (editedPrompt && editedPrompt.length > 4000) { notifyError('转写提示词不能超过4000个字符'); return }
         if (editedPrompt && !multimodal) { notifyError('仅 MiMo 多模态预设支持自定义转写提示词'); return }
-        if (keyRequired && !key.trim()) { notifyError('API地址已变化，必须重新输入 API Key；不会沿用旧地址的凭据'); return }
+        if (keyRequired && !key.trim()) { notifyError(endpointChanged
+          ? 'API地址已变化，必须重新输入 API Key；不会沿用旧地址的凭据'
+          : presetChanged ? '切换ASR预设后必须重新输入 API Key；不会沿用旧预设的凭据' : '请填写 API Key'); return }
         setSaving(true)
         void save({ name, baseUrl, model: modelId, enabled, capabilities: caps, timeoutSeconds: timeout, maxOutputTokens: tokens,
           apiKey: key || null, expectedRevision: model?.revision ?? null,
           providerConnectionId: providerConnectionId || null,
           ...(asr ? { asrPresetId: presetId } : {}),
-          ...(multimodal ? { asrBatchBaseUrl: batchBaseUrl.trim() || null, asrPrompt: editedPrompt } : {}) })
+          ...(multimodal ? { asrBatchBaseUrl: batchBaseUrl.trim() || null, asrPrompt: prompt.trim() } : {}) })
           .then(() => { setKey(''); close() })
           .catch((error: unknown) => notifyError(error instanceof Error ? error.message : '保存失败'))
           .finally(() => setSaving(false))
@@ -90,7 +93,9 @@ export function ModelEditor({ model, save, close, initialAsr = false, connection
             <p className="mt-1 text-xs text-text-3">{connectionsLoading ? '正在读取连接配置…' : connections.length ? '同一连接下的文字、视觉和 ASR 调用共享用量限制。' : '暂无共享连接，留空会为新模型自动创建独立连接；也可先在统计页新建连接。'}</p>
           </div>}
           <div><Label htmlFor="ai-model-key">API Key{model?.hasApiKey ? '（已保存）' : ''}</Label><Input id="ai-model-key" required={keyRequired} type="password" autoComplete="new-password" maxLength={4096} value={key} onChange={(e) => setKey(e.target.value)} />
-            <p className="mt-1 text-xs text-text-3">{endpointChanged ? 'API 地址已变化，必须重新输入 API Key；不会沿用旧地址的凭据。' : '保存后不再回显；地址不变时编辑可留空保留原凭据。无鉴权的本地服务可填写非空占位值。'}</p></div>
+            <p className="mt-1 text-xs text-text-3">{endpointChanged ? 'API 地址已变化，必须重新输入 API Key；不会沿用旧地址的凭据。'
+              : presetChanged ? '切换 ASR 预设后必须重新输入 API Key；不会沿用旧预设的凭据。'
+                : '保存后不再回显；地址与预设不变时编辑可留空保留原凭据。无鉴权的本地服务可填写非空占位值。'}</p></div>
           {multimodal && <div className="space-y-2 rounded-ctl border border-border p-3">
             <div><Label htmlFor="ai-asr-prompt">转写提示词</Label>
               <textarea id="ai-asr-prompt" aria-label="转写提示词" maxLength={4000} rows={4}

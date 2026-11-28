@@ -60,12 +60,79 @@ public sealed class AiVisionCallTests : IDisposable
         await UsageLimits.SaveRuleAsync(profile.ProviderConnectionId.Value,
             new(limit.Revision, true, AiUsageLimitPeriods.Month, 80, 100, null, null,
                 "Asia/Shanghai"), default);
+        var markerObservedBeforeSend = false;
+        _wire.OnSend = async () =>
+        {
+            var providerRow = await _db.AiRequestLogs.AsNoTracking()
+                .SingleAsync(x => x.Status == "running");
+            using var metadata = JsonDocument.Parse(providerRow.MetadataJson);
+            Assert.True(metadata.RootElement.GetProperty("providerAttempted").GetBoolean());
+            markerObservedBeforeSend = true;
+        };
 
         var result = await LimitedCaller().CallVisionAsync(request, default);
 
         Assert.Equal(AiRequestStatus.Succeeded, result.Status);
+        Assert.True(markerObservedBeforeSend);
         Assert.Equal(1, _wire.Calls);
         Assert.Equal(2, _files.Writes);
+    }
+
+    [Fact]
+    public async Task UsageLimitRejectionReleasesVisionGate()
+    {
+        var request = await Request(useUsageLimits: true);
+        var profile = await _db.AiModelProfiles.AsNoTracking()
+            .SingleAsync(x => x.Id == request.Consent.ModelId);
+        var connectionId = profile.ProviderConnectionId!.Value;
+        var limit = await UsageLimits.GetRuleAsync(connectionId, default);
+        await UsageLimits.SaveRuleAsync(connectionId,
+            new(limit.Revision, true, AiUsageLimitPeriods.Month, 80, 100, null, null,
+                "Asia/Shanghai"), default);
+        _db.AiRequestLogs.Add(new Pim.Infrastructure.Data.Entities.AiRequestLogEntity
+        {
+            UserId = _user.UserId,
+            Purpose = "ai.vision-call",
+            ProviderConnectionId = connectionId,
+            Status = "succeeded",
+            StartedAt = DateTimeOffset.UtcNow,
+            InitiatedAt = DateTimeOffset.UtcNow,
+            CorrelationId = Guid.NewGuid().ToString("N"),
+            MetadataJson = """{"providerAttempted":true}""",
+            TotalTokens = 100
+        });
+        await _db.SaveChangesAsync();
+
+        var gate = new AiTextCallGate();
+        Assert.True(gate.TryEnter(vision: true));
+        var caller = new AiTextCallService(_db, _secrets, new AiProfileChatClientFactory(_wire),
+            _user, gate, Materials, UsageLimits);
+
+        var blocked = await caller.CallVisionAsync(request, default);
+
+        Assert.Equal(AiRequestStatus.Blocked, blocked.Status);
+        Assert.Equal(0, _wire.Calls);
+        Assert.Equal(0, _files.Writes);
+        Assert.True(gate.TryEnter(vision: true));
+        gate.Exit(vision: true);
+        gate.Exit(vision: true);
+    }
+
+    [Fact]
+    public async Task UsageLimitRejectsVisionModelWithoutProviderConnectionBeforeProvider()
+    {
+        var request = await Request(useUsageLimits: true);
+        var profile = await _db.AiModelProfiles.SingleAsync(x => x.Id == request.Consent.ModelId);
+        profile.ProviderConnectionId = null;
+        await _db.SaveChangesAsync();
+
+        var blocked = await LimitedCaller().CallVisionAsync(request, default);
+
+        Assert.Equal(AiRequestStatus.Blocked, blocked.Status);
+        Assert.Equal("usage_limit_unbound", (await _db.AiRequestLogs.AsNoTracking()
+            .SingleAsync(x => x.Id == blocked.LogId)).ErrorCode);
+        Assert.Equal(0, _wire.Calls);
+        Assert.Equal(0, _files.Writes);
     }
 
     [Fact]
@@ -167,9 +234,9 @@ public sealed class AiVisionCallTests : IDisposable
         var request = await Request(); _wire.Block = true;
         using var cancel = new CancellationTokenSource(); var running = Caller().CallVisionAsync(request, cancel.Token);
         await _wire.Started.Task.WaitAsync(TimeSpan.FromSeconds(10));
-        // If the process disappears before final persistence, a surviving intent must not claim "not sent".
+        // The durable marker must already say "attempted" before the transport is entered.
         using (var pending = JsonDocument.Parse((await _db.AiRequestLogs.AsNoTracking().SingleAsync()).MetadataJson))
-            Assert.Equal(JsonValueKind.Null, pending.RootElement.GetProperty("providerAttempted").ValueKind);
+            Assert.True(pending.RootElement.GetProperty("providerAttempted").GetBoolean());
         cancel.Cancel();
         var result = await running;
         Assert.Equal(AiRequestStatus.Cancelled, result.Status);
@@ -213,12 +280,14 @@ public sealed class AiVisionCallTests : IDisposable
     private sealed class Wire : IHttpClientFactory
     {
         public List<string> Bodies { get; } = []; public int Calls; public bool Block;
+        public Func<Task>? OnSend { get; set; }
         public TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public HttpClient CreateClient(string name) => new(new AiTextResponseLimitHandler { InnerHandler = new Handler(this) });
         private sealed class Handler(Wire owner) : HttpMessageHandler
         {
             protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
             {
+                if (owner.OnSend is not null) await owner.OnSend();
                 owner.Calls++; owner.Bodies.Add(await request.Content!.ReadAsStringAsync(ct)); owner.Started.TrySetResult();
                 if (owner.Block) await Task.Delay(Timeout.InfiniteTimeSpan, ct);
                 return new(HttpStatusCode.OK) { Content = new StringContent("{\"id\":\"synthetic-vision\",\"object\":\"chat.completion\",\"created\":1780000000,\"model\":\"fixture-vision\",\"choices\":[{\"index\":0,\"finish_reason\":\"stop\",\"message\":{\"role\":\"assistant\",\"content\":\"完整视觉回执\"}}]}", Encoding.UTF8, "application/json") };

@@ -16,6 +16,7 @@ const statusLabels: Record<string, string> = {
   warning: '接近上限',
   reached: '已达到上限',
   unknown: '用量未知',
+  unsupported: '不参与限制',
 }
 
 function statusTone(value: string): 'ok' | 'warn' | 'crit' | 'neutral' {
@@ -123,14 +124,19 @@ export function AiUsageLimits({ userId }: { userId: string }) {
       notifyError('提前提醒比例须为1–99的整数')
       return
     }
+    if (enabled && limitValue(tokenLimit) == null) {
+      notifyError('启用用量限制时必须填写Token上限；费用上限当前不可用')
+      return
+    }
     const body: SaveAiUsageLimitRule = {
       expectedRevision: selected.limit.revision,
       enabled,
       period,
       warningPercent: warning,
       tokenLimit: limitValue(tokenLimit),
-      costLimit: limitValue(costLimit),
-      currency: costLimit.trim() ? currency.trim().toUpperCase() || null : null,
+      // J09 is Token-only until a trusted EstimatedCost/Currency source exists.
+      costLimit: null,
+      currency: null,
       timeZoneId: timeZoneId.trim(),
     }
     setBusy(true)
@@ -158,7 +164,7 @@ export function AiUsageLimits({ userId }: { userId: string }) {
     <div className="flex flex-wrap items-start justify-between gap-3">
       <div>
         <h2 className="text-sm font-semibold text-text-1">连接级用量限制</h2>
-        <p className="mt-1 max-w-[720px] text-xs leading-5 text-text-3">同一 AI 服务连接下的文字、视觉和 ASR 调用共享周期用量。缺少服务商 Token 或所选币种费用时，启用的限制会暂停新调用。</p>
+        <p className="mt-1 max-w-[720px] text-xs leading-5 text-text-3">同一 AI 服务连接下的文字、视觉和 ASR（含 Batch）调用共享周期用量。当前版本仅支持 Token 上限；缺少可信的 EstimatedCost/Currency 来源，费用上限不可用。缺少服务商 Token 时，启用的限制会暂停新调用。</p>
       </div>
       <Button size="sm" variant="ghost" onClick={() => void refresh()}><RefreshCw className="size-4" aria-hidden />刷新</Button>
     </div>
@@ -178,10 +184,11 @@ export function AiUsageLimits({ userId }: { userId: string }) {
           <p className="mt-2 text-xs text-text-3">绑定模型数 {selected.modelCount} · 版本 {selected.revision.slice(0, 8)}</p>
         </div>
         <div className="space-y-3 rounded-ctl border border-border p-4">
-          <div className="flex items-center justify-between gap-3"><div><Label htmlFor="ai-usage-limit-enabled">启用用量限制</Label><p className="mt-1 text-xs text-text-3">达到任一上限或用量未知时，服务端会在发送模型前阻断请求。</p></div><Switch id="ai-usage-limit-enabled" checked={enabled} disabled={busy} onCheckedChange={setEnabled} /></div>
+          <div className="flex items-center justify-between gap-3"><div><Label htmlFor="ai-usage-limit-enabled">启用用量限制</Label><p className="mt-1 text-xs text-text-3">达到Token上限或用量未知时，服务端会在发送模型前阻断请求。</p></div><Switch id="ai-usage-limit-enabled" checked={enabled} disabled={busy} onCheckedChange={setEnabled} /></div>
           <div className="grid gap-3 sm:grid-cols-2"><div><Label htmlFor="ai-usage-period">统计周期</Label><Select id="ai-usage-period" ariaLabel="统计周期" value={period} disabled={busy} options={[{ value: 'day', label: '每日' }, { value: 'month', label: '每月' }]} onValueChange={(value) => setPeriod(value as 'day' | 'month')} /></div><div><Label htmlFor="ai-usage-warning">提前提醒比例</Label><Input id="ai-usage-warning" inputMode="numeric" value={warningPercent} disabled={busy} onChange={(event) => setWarningPercent(event.target.value)} /></div></div>
-          <div className="grid gap-3 sm:grid-cols-2"><div><Label htmlFor="ai-token-limit">Token 上限（可选）</Label><Input id="ai-token-limit" inputMode="numeric" value={tokenLimit} disabled={busy} onChange={(event) => setTokenLimit(event.target.value)} placeholder="留空表示不按 Token 限制" /></div><div><Label htmlFor="ai-cost-limit">费用上限（可选）</Label><Input id="ai-cost-limit" inputMode="decimal" value={costLimit} disabled={busy} onChange={(event) => setCostLimit(event.target.value)} placeholder="留空表示不按费用限制" /></div></div>
-          <div className="grid gap-3 sm:grid-cols-2"><div><Label htmlFor="ai-cost-currency">费用币种</Label><Input id="ai-cost-currency" maxLength={3} value={currency} disabled={busy} onChange={(event) => setCurrency(event.target.value.toUpperCase())} placeholder="例如 CNY" /></div><div><Label htmlFor="ai-usage-time-zone">连接时区</Label><Input id="ai-usage-time-zone" value={timeZoneId} disabled={busy} onChange={(event) => setTimeZoneId(event.target.value)} /></div></div>
+          <div className="grid gap-3 sm:grid-cols-2"><div><Label htmlFor="ai-token-limit">Token 上限（可选）</Label><Input id="ai-token-limit" inputMode="numeric" value={tokenLimit} disabled={busy} onChange={(event) => setTokenLimit(event.target.value)} placeholder="留空表示不按 Token 限制" /></div><div><Label htmlFor="ai-cost-limit">费用上限（不可用）</Label><Input id="ai-cost-limit" inputMode="decimal" value={costLimit} disabled placeholder="当前版本仅支持 Token 上限" /></div></div>
+          <div className="grid gap-3 sm:grid-cols-2"><div><Label htmlFor="ai-cost-currency">费用币种（不可用）</Label><Input id="ai-cost-currency" maxLength={3} value={currency} disabled placeholder="费用上限不可用" /></div><div><Label htmlFor="ai-usage-time-zone">连接时区</Label><Input id="ai-usage-time-zone" value={timeZoneId} disabled={busy} onChange={(event) => setTimeZoneId(event.target.value)} /></div></div>
+          <p className="text-xs leading-5 text-text-3">费用上限已停用：服务商调用记录没有可信的 EstimatedCost/Currency 来源。历史费用值仅展示；保存规则时会清除费用设置，避免开启后所有调用因费用未知被永久阻断。</p>
           <div className="flex justify-end"><Button variant="primary" disabled={busy} loading={busy} onClick={() => void saveLimit()}>保存用量限制</Button></div>
         </div>
       </div>
@@ -199,7 +206,7 @@ function UsageSummary({ usage, loading, error, retry }: { usage?: AiUsageLimitUs
     <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">{[
       ['请求数', String(usage.requestCount)],
       ['Token', usageText(usage.totalTokens, '')],
-      ['费用', usage.estimatedCost == null ? '未知' : `${usage.estimatedCost} ${usage.currency ?? ''}`.trim()],
+      ['费用（仅展示）', usage.estimatedCost == null ? '未知' : `${usage.estimatedCost} ${usage.currency ?? ''}`.trim()],
       ['进行中', String(usage.runningRequestCount)],
     ].map(([label, value]) => <div key={label} className="rounded-ctl bg-surface p-3"><p className="text-xs text-text-3">{label}</p><p className="mt-1 text-sm font-semibold text-text-1">{value}</p></div>)}</div>
     <p className="text-xs leading-5 text-text-3">Token 状态 {statusLabels[usage.tokenStatus] ?? usage.tokenStatus} · 费用状态 {statusLabels[usage.costStatus] ?? usage.costStatus} · 未知 Token {usage.tokenUnknownRequestCount} 条 · 未知费用 {usage.costUnknownRequestCount} 条</p>

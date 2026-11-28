@@ -5,6 +5,8 @@ using Microsoft.EntityFrameworkCore;
 using Npgsql;
 using Pim.Core.Ai;
 using Pim.Core.Exceptions;
+using Pim.Infrastructure.Ai.Asr;
+using Pim.Infrastructure.Ai.Asr.Mimo;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
 using Pim.Infrastructure.Data.Entities;
@@ -12,9 +14,11 @@ using Pim.Infrastructure.Data.Entities;
 namespace Pim.Infrastructure.Ai;
 
 /// <summary>
-/// J09 connection-scoped usage limits. The only accounting facts are the already persisted
-/// <c>TotalTokens</c>, <c>EstimatedCost</c> and <c>Currency</c> on <see cref="AiRequestLogEntity"/>.
-/// This service never derives a price from a model rate or treats a missing value as zero.
+/// J09 connection-scoped usage limits. Token limits are enforced from the already persisted
+/// <c>TotalTokens</c> on <see cref="AiRequestLogEntity"/>; a missing value stays unknown and fails
+/// closed. Cost columns remain diagnostic only because provider calls do not supply a trusted
+/// <c>EstimatedCost</c>/<c>Currency</c>; this service never derives a price from a model rate or
+/// treats a missing value as zero.
 /// </summary>
 public sealed class AiUsageLimitService(
     PimDbContext db,
@@ -129,20 +133,21 @@ public sealed class AiUsageLimitService(
         if (request.WarningPercent is < 1 or > 99) throw Invalid("提前提醒比例须为1–99的整数");
         if (request.TokenLimit is <= 0) throw Invalid("Token提醒值须为正整数");
         if (request.CostLimit is <= 0) throw Invalid("费用提醒值须为正数");
-        if (request.Enabled && request.TokenLimit is null && request.CostLimit is null)
-            throw Invalid("启用提醒时至少填写Token或费用提醒值");
+        // J09 currently has no trustworthy EstimatedCost/Currency source for SDK calls.
+        // Keep the persisted columns readable for history, but refuse new cost rules so an
+        // enabled limit can never turn every future call into an unknown-usage block.
+        if (request.CostLimit is not null || !string.IsNullOrWhiteSpace(request.Currency))
+            throw Invalid("当前版本仅支持Token上限；缺少可信的EstimatedCost/Currency来源，费用上限不可用");
+        if (request.Enabled && request.TokenLimit is null)
+            throw Invalid("启用提醒时必须填写Token上限；费用上限当前不可用");
         var timeZone = ValidateTimeZone(request.TimeZoneId);
-        var currency = NormalizeCurrency(request.Currency);
-        if (request.CostLimit is not null && currency is null)
-            throw Invalid("填写费用提醒值时必须选择3位大写币种代码");
-        if (request.CostLimit is null) currency = null;
 
         rule.Enabled = request.Enabled;
         rule.Period = period;
         rule.WarningPercent = request.WarningPercent;
         rule.TokenLimit = request.TokenLimit;
-        rule.CostLimit = request.CostLimit;
-        rule.Currency = currency;
+        rule.CostLimit = null;
+        rule.Currency = null;
         rule.TimeZoneId = timeZone;
         rule.Revision = Guid.NewGuid();
         rule.UpdatedAt = Now;
@@ -238,24 +243,20 @@ public sealed class AiUsageLimitService(
             {
                 var rule = await lockDb.AiUsageLimitRules.AsNoTracking()
                     .SingleOrDefaultAsync(x => x.ConnectionId == id, ct);
-                if (rule is null || !rule.Enabled ||
-                    (rule.TokenLimit is null && rule.CostLimit is null))
+                if (rule is null || !rule.Enabled)
                     return AiUsageLimitDecision.Allow();
+                if (rule.TokenLimit is not { } tokenLimit)
+                    return AiUsageLimitDecision.Deny("usage_limit_invalid",
+                        "该连接的用量限制没有Token上限，无法执行；请管理员补充Token上限或关闭限制");
 
                 var scope = ResolvePeriod(rule.Period, null, now, rule.TimeZoneId);
                 var usage = await ComputeUsageAsync(lockDb, id, "", rule, scope, key, ct);
-                if (rule.TokenLimit is { } tokenLimit && usage.TotalTokens >= tokenLimit)
+                if (usage.TotalTokens >= tokenLimit)
                     return AiUsageLimitDecision.Deny("usage_limit_reached",
                         "本周期已记录的Token用量已达到该连接上限，未发送模型请求");
-                if (rule.CostLimit is { } costLimit && usage.EstimatedCost >= costLimit)
-                    return AiUsageLimitDecision.Deny("usage_limit_reached",
-                        "本周期已记录的费用已达到该连接上限，未发送模型请求");
-                if (rule.TokenLimit is not null && usage.TokenUnknownRequestCount > 0)
+                if (usage.TokenUnknownRequestCount > 0)
                     return AiUsageLimitDecision.Deny("usage_limit_unknown",
                         "本周期存在未上报Token的调用记录，无法确认是否低于上限；本次未发送模型请求");
-                if (rule.CostLimit is not null && usage.CostUnknownRequestCount > 0)
-                    return AiUsageLimitDecision.Deny("usage_limit_unknown",
-                        "本周期存在缺少所选币种费用的调用记录，无法确认是否低于上限；本次未发送模型请求");
 
                 await RemoveExpiredLeasesAsync(lockDb, now, ct);
                 if (await lockDb.AiUsageLimitLeases.AsNoTracking()
@@ -316,8 +317,7 @@ public sealed class AiUsageLimitService(
             var scope = ResolvePeriod(rule.Period, null, now, rule.TimeZoneId);
             var usage = await ComputeUsageAsync(lockDb, connectionId, "", rule, scope, null, ct);
             var tokenLevel = Level(usage.TotalTokens, rule.TokenLimit, rule.WarningPercent);
-            var costLevel = Level(usage.EstimatedCost, rule.CostLimit, rule.WarningPercent);
-            var highest = Highest(tokenLevel, costLevel);
+            var highest = Highest(tokenLevel, null);
             if (highest is null) return true;
 
             if (highest == AiUsageLimitLevels.Warning &&
@@ -326,7 +326,7 @@ public sealed class AiUsageLimitService(
                     x.CycleKey == usage.CycleKey && x.Level == AiUsageLimitLevels.Reached, ct))
                 return true;
 
-            var metrics = MetricsFor(highest, tokenLevel, costLevel, usage.Currency);
+            var metrics = MetricsFor(highest, tokenLevel, null, usage.Currency);
             var snapshot = Snapshot(usage);
             var existing = await lockDb.AiUsageReminderEvents.SingleOrDefaultAsync(x =>
                 x.ConnectionId == connectionId && x.Period == rule.Period &&
@@ -358,6 +358,8 @@ public sealed class AiUsageLimitService(
     internal async Task<AiProviderConnectionEntity> CreateDedicatedConnectionForModelAsync(
         string modelName, Guid modelId, CancellationToken ct = default)
     {
+        var existing = await db.AiProviderConnections.FirstOrDefaultAsync(x => x.Id == modelId, ct);
+        if (existing is not null) return existing;
         var basis = CleanName(modelName);
         var name = basis;
         var normalized = name.ToUpperInvariant();
@@ -393,10 +395,12 @@ public sealed class AiUsageLimitService(
                         (excludedRequestKey == null || x.CorrelationId != excludedRequestKey) &&
                         (x.InitiatedAt ?? x.StartedAt) >= scope.StartsAt &&
                         (x.InitiatedAt ?? x.StartedAt) < scope.EndsAt)
-            .Select(x => new UsageRow(x.Status, x.TotalTokens, x.EstimatedCost, x.Currency, x.MetadataJson))
+            .Select(x => new UsageRow(x.Status, x.Purpose, x.TotalTokens, x.EstimatedCost, x.Currency,
+                x.MetadataJson, x.ClientRequestId))
             .ToListAsync(ct);
 
-        var providerRows = rows.Where(x => ProviderAttempted(x.MetadataJson) != false).ToList();
+        var batchJobs = await BatchJobUsageStatesAsync(usageDb, rows, ct);
+        var providerRows = rows.Where(x => WasProviderAttempted(x, batchJobs)).ToList();
         var tokenKnown = providerRows.Where(x => x.TotalTokens is not null).ToList();
         var totalTokens = tokenKnown.Count == 0 ? null : (long?)tokenKnown.Sum(x => (long)x.TotalTokens!);
         var costKnown = rule.Currency is null
@@ -406,20 +410,49 @@ public sealed class AiUsageLimitService(
         var costUsed = costKnown.Count == 0 ? null : (decimal?)costKnown.Sum(x => x.EstimatedCost!.Value);
         var running = rows.Count(x => x.Status is "running" or "preparing" or "queued" or "cancelling");
         var incomplete = rows.Count(x => x.Status is "incomplete" or "timed_out" or "cancelled");
-        var tokenUnknown = providerRows.Count - tokenKnown.Count;
+        var partialBatches = providerRows
+            .Where(x => x.Purpose == AiCallPurposes.AsrBatch && x.TotalTokens is not null)
+            .Select(x => AiBatchUsageMetadata.TryRead(x.MetadataJson, out var marker)
+                ? (AiBatchUsageMetadata.Snapshot?)marker
+                : null)
+            .Where(x => x is { Partial: true })
+            .Select(x => x!.Value)
+            .ToList();
+        // A running Batch is in-flight, not a terminal unknown. Its token usage is reconciled when
+        // the Batch reaches a terminal state. The job row must still be open: if the Batch is
+        // already terminal but its audit projection failed, the missing tokens are unknown and
+        // must fail closed until the durable repair scan projects them.
+        var tokenUnknown = providerRows.Count(x =>
+            x.TotalTokens is null && !IsPendingBatch(x, batchJobs));
         var costUnknown = providerRows.Count - costKnown.Count;
         var tokenStatus = rule.TokenLimit is not null && tokenUnknown > 0
             ? AiUsageLimitStatuses.Unknown
             : Status(totalTokens, rule.TokenLimit, rule.WarningPercent);
-        var costStatus = rule.CostLimit is not null && costUnknown > 0
-            ? AiUsageLimitStatuses.Unknown
-            : Status(costUsed, rule.CostLimit, rule.WarningPercent);
+        // Cost limits are intentionally unsupported until a trusted EstimatedCost/Currency
+        // source exists. Historical cost values stay visible, but never drive a block/event.
+        var costStatus = AiUsageLimitStatuses.Unsupported;
         var notes = new List<string>();
         if (tokenUnknown > 0) notes.Add("部分请求未上报Token，累计仅包含已上报值");
-        if (costUnknown > 0) notes.Add("部分请求未提供所选币种的EstimatedCost，累计仅包含已知金额");
+        if (partialBatches.Count > 0)
+        {
+            var failed = partialBatches.Sum(x => (long)x.FailedItems);
+            var unconfirmed = partialBatches.Sum(x => (long)x.UnconfirmedItems);
+            notes.Add($"{partialBatches.Count} 个Batch调用存在未上报Token的条目；累计仅包含已确认条目" +
+                      $"（provider明确失败{failed}条未上报用量、缺少证据{unconfirmed}条保持UNKNOWN）");
+        }
+        if (rule.Currency is not null && costUnknown > 0)
+            notes.Add("部分请求未提供所选币种的EstimatedCost，累计仅包含已知金额");
         if (running > 0) notes.Add("进行中或排队请求的用量尚待确认");
         if (rule.Currency is not null && providerRows.Count > costKnown.Count)
             notes.Add("其他币种或缺失币种费用不计入" + rule.Currency);
+        if (rule.CostLimit is not null)
+            notes.Add(rule.TokenLimit is null
+                ? "历史费用上限已停用；当前版本缺少可信的EstimatedCost/Currency来源且未配置Token上限，该规则无效并会拒绝新调用"
+                : "历史费用上限已停用：当前版本缺少可信的EstimatedCost/Currency来源，仅按Token限制");
+        else
+            notes.Add("当前版本仅支持Token上限；费用数据只展示，不参与限制");
+        if (rule.Enabled && rule.TokenLimit is null)
+            notes.Add("已启用的规则没有Token上限，当前配置无效；新调用会在发送前被拒绝，请补充Token上限或关闭限制");
         notes.Add("费用只使用调用记录中的EstimatedCost，不做模型费率估算");
 
         return new AiUsageLimitUsageDto(
@@ -539,15 +572,6 @@ public sealed class AiUsageLimitService(
             : throw Invalid("周期仅支持每日或每月");
     }
 
-    private static string? NormalizeCurrency(string? value)
-    {
-        if (string.IsNullOrWhiteSpace(value)) return null;
-        var currency = value.Trim().ToUpperInvariant();
-        if (currency.Length != 3 || currency.Any(c => c is < 'A' or > 'Z'))
-            throw Invalid("币种须为3位大写字母代码，例如CNY或USD");
-        return currency;
-    }
-
     private static string CleanName(string? value)
     {
         if (string.IsNullOrWhiteSpace(value) || value.Trim().Length > 120 || value.Any(char.IsControl))
@@ -569,23 +593,10 @@ public sealed class AiUsageLimitService(
         return level ?? AiUsageLimitStatuses.Normal;
     }
 
-    private static string Status(decimal? used, decimal? limit, int warningPercent)
-    {
-        if (used is null || limit is null) return AiUsageLimitStatuses.Unknown;
-        var level = Level(used, limit, warningPercent);
-        return level ?? AiUsageLimitStatuses.Normal;
-    }
-
     private static string? Level(long? used, long? limit, int warningPercent)
         => used is null || limit is null ? null
             : used >= limit ? AiUsageLimitLevels.Reached
             : (decimal)used * 100 >= (decimal)limit * warningPercent ? AiUsageLimitLevels.Warning
-            : null;
-
-    private static string? Level(decimal? used, decimal? limit, int warningPercent)
-        => used is null || limit is null ? null
-            : used >= limit ? AiUsageLimitLevels.Reached
-            : used * 100 >= limit * warningPercent ? AiUsageLimitLevels.Warning
             : null;
 
     private static string? Highest(string? first, string? second)
@@ -668,26 +679,52 @@ public sealed class AiUsageLimitService(
     private static AiUsageLimitSnapshotDto EmptySnapshot() =>
         new(null, null, null, null, null, 0, 0, 0, default, default);
 
-    private static bool? ProviderAttempted(string? metadata)
+    private static bool WasProviderAttempted(UsageRow row,
+        IReadOnlyDictionary<Guid, BatchJobUsageState> batchJobs)
     {
-        try
-        {
-            using var document = JsonDocument.Parse(metadata ?? "{}");
-            if (document.RootElement.ValueKind != JsonValueKind.Object)
-                return null;
-            if (!document.RootElement.TryGetProperty("providerAttempted", out var value))
-                return null;
-            return value.ValueKind switch
-            {
-                JsonValueKind.True => true,
-                JsonValueKind.False => false,
-                _ => null
-            };
-        }
-        catch (Exception error) when (error is JsonException or InvalidOperationException)
-        {
-            return null;
-        }
+        if (row.Purpose == AiCallPurposes.AsrBatch && row.ClientRequestId is { } jobId &&
+            batchJobs.TryGetValue(jobId, out var job) && job.HasProviderEvidence)
+            return true;
+        var marker = AiAsrJobService.ProviderAttemptedMetadata(row.MetadataJson);
+        if (marker is { } attempted) return attempted || row.Status == "succeeded";
+        // Missing or malformed metadata is unknown usage and must fail closed. Explicit false is
+        // authoritative for timed_out/incomplete rows: recovery can close a request that never
+        // reached the provider without manufacturing a usage_limit_unknown block.
+        return true;
+    }
+
+    private static async Task<IReadOnlyDictionary<Guid, BatchJobUsageState>> BatchJobUsageStatesAsync(
+        PimDbContext usageDb,
+        IReadOnlyList<UsageRow> rows, CancellationToken ct)
+    {
+        var ids = rows.Where(x => x.Purpose == AiCallPurposes.AsrBatch && x.ClientRequestId is not null)
+            .Select(x => x.ClientRequestId!.Value).Distinct().ToArray();
+        if (ids.Length == 0) return new Dictionary<Guid, BatchJobUsageState>();
+        var jobs = await usageDb.NoteAsrBatchJobs.AsNoTracking()
+            .Where(x => ids.Contains(x.Id))
+            .Select(x => new { x.Id, x.Status, x.StatusRaw, x.OutputImportedAt, x.BatchId, x.InputFileId })
+            .ToListAsync(ct);
+        return jobs.ToDictionary(x => x.Id,
+            x => new BatchJobUsageState(x.Status, x.StatusRaw, x.OutputImportedAt, x.BatchId, x.InputFileId));
+    }
+
+    private static bool IsPendingBatch(UsageRow row,
+        IReadOnlyDictionary<Guid, BatchJobUsageState> batchJobs) =>
+        row.Purpose == AiCallPurposes.AsrBatch && row.Status == "running" &&
+        row.ClientRequestId is { } jobId && batchJobs.TryGetValue(jobId, out var job) &&
+        IsOpenBatchJob(job.Status, job.StatusRaw, job.OutputImportedAt);
+
+    private static bool IsOpenBatchJob(string status, string? statusRaw,
+        DateTimeOffset? outputImportedAt)
+    {
+        if (outputImportedAt is not null) return false;
+        if (status is "Deleted" or "Completed" or "Failed" or "Expired" or "Cancelled" or "Unknown")
+            return false;
+        var raw = MimoBatchStatus.Normalize(statusRaw);
+        if (MimoBatchStatus.IsTerminal(raw)) return false;
+        return status is "Creating" or "Validating" or "InProgress" or "Cancelling" ||
+               raw is MimoBatchStatusKind.Validating or MimoBatchStatusKind.InProgress
+                   or MimoBatchStatusKind.Cancelling;
     }
 
     private static AiUsageLimitRuleEntity DefaultRule(Guid connectionId) => new()
@@ -717,6 +754,11 @@ public sealed class AiUsageLimitService(
     private static DomainException Stale() => new(40901, "用量设置已被修改，请刷新核对后再保存");
 
     private sealed record PeriodScope(string Period, string CycleKey, DateTimeOffset StartsAt, DateTimeOffset EndsAt);
-    private sealed record UsageRow(string Status, int? TotalTokens, decimal? EstimatedCost, string? Currency,
-        string MetadataJson);
+    private sealed record UsageRow(string Status, string Purpose, int? TotalTokens, decimal? EstimatedCost,
+        string? Currency, string MetadataJson, Guid? ClientRequestId);
+    private sealed record BatchJobUsageState(string Status, string? StatusRaw,
+        DateTimeOffset? OutputImportedAt, string? BatchId, string? InputFileId)
+    {
+        public bool HasProviderEvidence => BatchId is not null || InputFileId is not null;
+    }
 }
