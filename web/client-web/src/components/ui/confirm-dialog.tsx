@@ -55,8 +55,14 @@ export function ConfirmDialog({
   const armed = !requireText || input === requireText
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-[440px]">
+    <Dialog
+      open={open}
+      onOpenChange={(nextOpen) => {
+        if (loading && !nextOpen) return
+        onOpenChange(nextOpen)
+      }}
+    >
+      <DialogContent className="max-w-[440px]" showClose={!loading}>
         <DialogHeader
           title={<span className={cn(tone === 'danger' && 'text-crit')}>{title}</span>}
           description={description}

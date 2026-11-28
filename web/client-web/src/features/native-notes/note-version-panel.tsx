@@ -32,6 +32,7 @@ export interface NoteVersionPanelProps {
   current: NoteMaterialVersion | undefined
   currentLoading: boolean
   currentError: unknown
+  currentUnavailable?: boolean
   selectedVersionId: string
   conflictMaterials: Record<string, ConflictMaterialState | undefined>
   promoteInFlight: boolean
@@ -53,6 +54,7 @@ export function NoteVersionPanel({
   current,
   currentLoading,
   currentError,
+  currentUnavailable = false,
   selectedVersionId,
   conflictMaterials,
   promoteInFlight,
@@ -184,9 +186,13 @@ export function NoteVersionPanel({
       )}
 
       {currentLoading ? <Skeleton className="h-20" />
+        : currentUnavailable ? null
         : currentError ? (
           <InlineAlert tone="crit" title="当前版本读取失败">
-            {errorText(currentError)}。版本历史可能仍可查看，请刷新后重试。
+            <p>{errorText(currentError)}。版本历史可能仍可查看；重试只重新读取服务器状态，不会替换本页草稿。</p>
+            <Button className="mt-2" size="sm" variant="secondary" disabled={promoteInFlight} onClick={onRefresh}>
+              重新读取当前版本
+            </Button>
           </InlineAlert>
         ) : current ? (
           <div className="rounded-ctl border border-border bg-surface p-3 text-xs leading-5 text-text-2">

@@ -20,6 +20,7 @@ import {
   type MaterialBundle,
   type MaterialDraftBlock,
   type NoteMaterialUpload,
+  type NoteMaterialVersion,
   type ParsedNoteMaterial,
 } from './material-model'
 import type { NativeNotesClient } from './api'
@@ -79,6 +80,15 @@ interface LoadedEditorProps {
   onPromoteVersion: (versionId: string) => Promise<PromoteVersionOutcome>
 }
 
+interface AcceptedEditorLoad {
+  versionId: string
+  material: NoteMaterialVersion
+  hydrated: {
+    parsed: ParsedNoteMaterial
+    blocks: MaterialDraftBlock[]
+  }
+}
+
 export function NoteEditorPane({
   ownerId,
   serverBinding,
@@ -114,6 +124,25 @@ export function NoteEditorPane({
     },
     enabled: Boolean(material.data),
   })
+  const dirtyRef = useRef(false)
+  const [acceptedLoad, setAcceptedLoad] = useState<AcceptedEditorLoad | null>(null)
+
+  useEffect(() => {
+    if (!versionId || !material.data || !hydrated.data) return
+    setAcceptedLoad((current) => {
+      if (current?.versionId === versionId && dirtyRef.current) return current
+      if (current?.versionId === versionId &&
+          current.material === material.data && current.hydrated === hydrated.data) {
+        return current
+      }
+      return { versionId, material: material.data, hydrated: hydrated.data }
+    })
+  }, [hydrated.data, material.data, versionId])
+
+  const updateDirty = useCallback((dirty: boolean) => {
+    dirtyRef.current = dirty
+    onDirtyChange?.(dirty)
+  }, [onDirtyChange])
 
   if (!versionId) {
     if (!seed) return <EmptyEditor />
@@ -130,7 +159,7 @@ export function NoteEditorPane({
       serverBinding={serverBinding}
       api={api}
       showVersionDetails={showVersionDetails}
-      onDirtyChange={onDirtyChange}
+      onDirtyChange={updateDirty}
       onSaved={onSaved}
       onEnded={onEnded}
       onBack={onBack}
@@ -140,50 +169,78 @@ export function NoteEditorPane({
     />
   }
 
-  if (material.isPending || hydrated.isPending) {
+  const acceptedForVersion = acceptedLoad?.versionId === versionId ? acceptedLoad : null
+  if (!acceptedForVersion) {
+    if (material.isError) {
+      return <LoadFailureCard
+        title="笔记读取失败"
+        detail={errorText(material.error)}
+        retrying={material.isFetching}
+        onRetry={() => void material.refetch()}
+      />
+    }
+    if (hydrated.isError) {
+      return <LoadFailureCard
+        title={showVersionDetails ? '材料原字节核对失败' : '笔记内容读取失败'}
+        detail={errorText(hydrated.error)}
+        retrying={hydrated.isFetching}
+        onRetry={() => void hydrated.refetch()}
+      />
+    }
     return <Card className="space-y-3 p-5"><Skeleton className="h-9 w-2/3" /><Skeleton className="h-56" /><p className="text-xs text-text-3">{showVersionDetails ? '正在核对固定材料、正文块和图片原字节…' : '正在载入笔记内容…'}</p></Card>
   }
-  if (material.isError) {
-    return <LoadFailureCard
-      title="笔记读取失败"
-      detail={errorText(material.error)}
-      retrying={material.isFetching}
-      onRetry={() => void material.refetch()}
-    />
-  }
-  if (hydrated.isError || !hydrated.data) {
-    return <LoadFailureCard
-      title={showVersionDetails ? '材料原字节核对失败' : '笔记内容读取失败'}
-      detail={errorText(hydrated.error)}
-      retrying={hydrated.isFetching}
-      onRetry={() => void hydrated.refetch()}
-    />
+
+  const parsed = acceptedForVersion.hydrated.parsed
+  const refreshFailures = [
+    material.isError ? `版本：${errorText(material.error)}` : '',
+    hydrated.isError ? `正文材料：${errorText(hydrated.error)}` : '',
+  ].filter(Boolean)
+
+  async function retryRefresh() {
+    if (material.isError) {
+      const result = await material.refetch()
+      if (result.isError) return
+    }
+    if (hydrated.isError) await hydrated.refetch()
   }
 
-  const parsed = hydrated.data.parsed
-  return <LoadedEditor
-    key={`${parsed.versionId}/${parsed.revision}`}
-    noteId={parsed.noteId}
-    title={parsed.title}
-    blocks={hydrated.data.blocks}
-    revision={parsed.revision}
-    noteCreatedAtMillis={parsed.createdAtMillis}
-    baseVersionId={parsed.versionId}
-    isCurrent={material.data.upload.isCurrent}
-    preservedRecordings={parsed.recordingEntries}
-    preservedFiles={parsed.manifestFiles}
-    sourceInputJson={parsed.sourceInputJson}
-    serverBinding={serverBinding}
-    api={api}
-    showVersionDetails={showVersionDetails}
-    onDirtyChange={onDirtyChange}
-    onSaved={onSaved}
-    onEnded={onEnded}
-    onBack={onBack}
-    promoteInFlight={promoteInFlight}
-    promotingVersionId={promotingVersionId}
-    onPromoteVersion={onPromoteVersion}
-  />
+  return <>
+    {refreshFailures.length > 0 && <InlineAlert className="mb-3" tone="crit" title="笔记刷新失败，当前草稿已保留">
+      <p>{refreshFailures.join('；')}。正文、材料节点和未确认提交仍保留在本页，没有被替换。</p>
+      <Button
+        className="mt-2"
+        size="sm"
+        variant="secondary"
+        loading={material.isFetching || hydrated.isFetching}
+        onClick={() => void retryRefresh()}
+      >
+        就地重试
+      </Button>
+    </InlineAlert>}
+    <LoadedEditor
+      key={`${parsed.versionId}/${parsed.revision}`}
+      noteId={parsed.noteId}
+      title={parsed.title}
+      blocks={acceptedForVersion.hydrated.blocks}
+      revision={parsed.revision}
+      noteCreatedAtMillis={parsed.createdAtMillis}
+      baseVersionId={parsed.versionId}
+      isCurrent={acceptedForVersion.material.upload.isCurrent}
+      preservedRecordings={parsed.recordingEntries}
+      preservedFiles={parsed.manifestFiles}
+      sourceInputJson={parsed.sourceInputJson}
+      serverBinding={serverBinding}
+      api={api}
+      showVersionDetails={showVersionDetails}
+      onDirtyChange={updateDirty}
+      onSaved={onSaved}
+      onEnded={onEnded}
+      onBack={onBack}
+      promoteInFlight={promoteInFlight}
+      promotingVersionId={promotingVersionId}
+      onPromoteVersion={onPromoteVersion}
+    />
+  </>
 }
 
 function EmptyEditor() {

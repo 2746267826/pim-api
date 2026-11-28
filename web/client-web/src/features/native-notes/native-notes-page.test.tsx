@@ -398,7 +398,7 @@ describe('NativeNotesPage', () => {
 
     const editorPane = screen.getByTestId('note-editor-pane')
     await within(editorPane).findByRole('button', { name: '就地重试' })
-    expect(within(editorPane).getAllByText('当前版本读取失败').length).toBeGreaterThan(0)
+    expect(within(editorPane).getAllByText('当前版本读取失败')).toHaveLength(1)
     expect(within(editorPane).getAllByText('当前笔记暂时不可读取').length).toBeGreaterThan(0)
     await userEvent.click(within(editorPane).getByRole('button', { name: '就地重试' }))
 
@@ -457,7 +457,7 @@ describe('NativeNotesPage', () => {
     expect(await screen.findByText(/结束保存网络失败/)).toBeTruthy()
     expect(testRouter.state.location.search).toBe(`?note=${noteId}`)
     expect((screen.getByLabelText('笔记正文')).textContent).toContain('结束保存失败仍保留')
-    expect(screen.getByText('有未保存更改')).toBeTruthy()
+    expect(screen.getAllByText('有未保存更改').length).toBeGreaterThan(0)
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
 
     await userEvent.click(screen.getByRole('button', { name: '结束' }))
@@ -466,6 +466,37 @@ describe('NativeNotesPage', () => {
     await waitFor(() => expect(nativeApi.clone).toHaveBeenCalledTimes(2))
     await waitFor(() => expect(testRouter.state.location.search).toBe(''))
     expect(await screen.findByText(/本次记录已结束/)).toBeTruthy()
+  })
+
+  it('keeps the end confirmation and frozen submission when Escape is pressed during submission', async () => {
+    page()
+    await userEvent.click(await screen.findByText('课堂笔记').then((node) => node.closest('button')!))
+    await screen.findByRole('heading', { name: '继续写这篇笔记' })
+    await typeBody('提交中不能因 Esc 丢失冻结状态')
+    await consentToStorage()
+
+    let rejectClone!: (reason?: unknown) => void
+    nativeApi.clone.mockImplementationOnce(() => new Promise<NoteMaterialUpload>((_resolve, reject) => {
+      rejectClone = reject
+    }))
+    await userEvent.click(screen.getByRole('button', { name: '结束' }))
+    const dialog = within(await screen.findByRole('dialog'))
+    await userEvent.click(dialog.getByRole('button', { name: '结束并保存' }))
+    await waitFor(() => expect(nativeApi.clone).toHaveBeenCalledOnce())
+
+    expect(screen.getByRole('dialog')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: '关闭' })).toBeNull()
+    await userEvent.keyboard('{Escape}')
+    expect(screen.getByRole('dialog')).toBeTruthy()
+    expect(testRouter.state.location.search).toBe(`?note=${noteId}`)
+    expect(screen.getByLabelText('笔记正文').textContent).toContain('提交中不能因 Esc 丢失冻结状态')
+
+    rejectClone(new Error('结束提交网络失败'))
+    expect(await screen.findByText(/结束提交网络失败/)).toBeTruthy()
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(screen.getByLabelText('笔记正文').textContent).toContain('提交中不能因 Esc 丢失冻结状态')
+    expect(screen.getAllByRole('button', { name: '重试同一提交' }).length).toBeGreaterThan(0)
+    expect(testRouter.state.location.search).toBe(`?note=${noteId}`)
   })
 
   it('keeps daily note actions primary and labels offline restore as optional', async () => {
@@ -1208,6 +1239,10 @@ describe('NativeNotesPage', () => {
     page()
     await userEvent.click(await screen.findByText('课堂笔记').then((node) => node.closest('button')!))
     expect(await screen.findByText('历史版')).toBeTruthy()
+    const title = screen.getByLabelText('笔记标题') as HTMLInputElement
+    await userEvent.clear(title)
+    await userEvent.type(title, '刷新失败仍保留')
+    await typeBody('当前版本刷新失败也不能替换草稿')
     const versionCalls = nativeApi.versions.mock.calls.length
 
     nativeApi.current.mockRejectedValueOnce(new ApiError('当前版本暂时不可读取', 50301, 503))
@@ -1218,6 +1253,49 @@ describe('NativeNotesPage', () => {
     expect(screen.getByRole('list', { name: '版本历史列表' })).toBeTruthy()
     expect(screen.getByText('历史版')).toBeTruthy()
     expect(screen.queryByText('版本历史读取失败')).toBeNull()
+    expect((screen.getByLabelText('笔记标题') as HTMLInputElement).value).toBe('刷新失败仍保留')
+    expect(screen.getByLabelText('笔记正文').textContent).toContain('当前版本刷新失败也不能替换草稿')
+    expect(screen.getAllByText('有未保存更改').length).toBeGreaterThan(0)
+
+    await userEvent.click(screen.getByRole('button', { name: '重新读取当前版本' }))
+    await waitFor(() => expect(screen.queryByText('当前版本读取失败')).toBeNull())
+    expect((screen.getByLabelText('笔记标题') as HTMLInputElement).value).toBe('刷新失败仍保留')
+    expect(screen.getByLabelText('笔记正文').textContent).toContain('当前版本刷新失败也不能替换草稿')
+  })
+
+  it('warns without replacing a dirty draft when the server current version advances', async () => {
+    const nextMaterial: NoteMaterialVersion = {
+      ...conflictMaterial,
+      upload: {
+        ...conflictMaterial.upload,
+        currentVersionId: conflictVersionId,
+        isCurrent: true,
+        hasConflict: false,
+      },
+    }
+    nativeApi.current.mockResolvedValueOnce(nextMaterial)
+    nativeApi.version.mockImplementation(async (id: string) =>
+      id === conflictVersionId ? nextMaterial : material)
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    page()
+    await userEvent.click(await screen.findByText('课堂笔记').then((node) => node.closest('button')!))
+    const title = await screen.findByLabelText('笔记标题') as HTMLInputElement
+    await userEvent.clear(title)
+    await userEvent.type(title, '本机未保存草稿')
+    await typeBody('服务器版本更新也不能静默换稿')
+
+    await userEvent.click(screen.getByRole('button', { name: '刷新版本历史' }))
+
+    expect(await screen.findByText('服务器当前版本已更新')).toBeTruthy()
+    expect(screen.getByText(/没有自动替换/)).toBeTruthy()
+    expect((screen.getByLabelText('笔记标题') as HTMLInputElement).value).toBe('本机未保存草稿')
+    expect(screen.getByLabelText('笔记正文').textContent).toContain('服务器版本更新也不能静默换稿')
+    expect(screen.getAllByText('有未保存更改').length).toBeGreaterThan(0)
+
+    await userEvent.click(screen.getByRole('button', { name: '载入服务器最新版本' }))
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('替换本页未保存草稿'))
+    expect(await screen.findByDisplayValue('冲突候选笔记')).toBeTruthy()
+    expect(screen.queryByText('服务器当前版本已更新')).toBeNull()
   })
 
   it('shows an explicit empty version history instead of a blank panel', async () => {
@@ -1516,6 +1594,38 @@ describe('NativeNotesPage', () => {
     await waitFor(() => expect(nativeApi.begin).toHaveBeenCalledTimes(2))
     await waitFor(() => expect(nativeApi.complete).toHaveBeenCalledOnce())
     expect(await screen.findByText(/已保存/)).toBeTruthy()
+  })
+
+  it('keeps the frozen submission, draft and material node when version refresh fails', async () => {
+    page()
+    await userEvent.click(await screen.findByText('课堂笔记').then((node) => node.closest('button')!))
+    await screen.findByRole('heading', { name: '继续写这篇笔记' })
+    await typeBody('冻结提交与材料节点都要保留')
+    const photo = new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3])], 'refresh.png', { type: 'image/png' })
+    await userEvent.upload(screen.getByLabelText('添加照片'), photo)
+    expect(await screen.findByAltText('正文照片')).toBeTruthy()
+    await consentToStorage()
+
+    nativeApi.clone.mockRejectedValueOnce(new Error('首次固定提交失败'))
+    await userEvent.click(screen.getAllByRole('button', { name: '保存笔记' })[0]!)
+    expect(await screen.findByText(/首次固定提交失败/)).toBeTruthy()
+    expect(screen.getAllByRole('button', { name: '重试同一提交' }).length).toBeGreaterThan(0)
+
+    nativeApi.current.mockRejectedValueOnce(new Error('刷新当前版本失败'))
+    nativeApi.version.mockRejectedValueOnce(new Error('刷新材料失败'))
+    await userEvent.click(screen.getByRole('button', { name: '刷新版本历史' }))
+
+    expect(await screen.findByText('笔记刷新失败，当前草稿已保留')).toBeTruthy()
+    expect(screen.getByText(/刷新材料失败/)).toBeTruthy()
+    expect(screen.getByLabelText('笔记正文').textContent).toContain('冻结提交与材料节点都要保留')
+    expect(screen.getByAltText('正文照片')).toBeTruthy()
+    expect(screen.getAllByRole('button', { name: '重试同一提交' }).length).toBeGreaterThan(0)
+
+    nativeApi.version.mockResolvedValueOnce(material)
+    await userEvent.click(screen.getByRole('button', { name: '就地重试' }))
+    await waitFor(() => expect(screen.queryByText('笔记刷新失败，当前草稿已保留')).toBeNull())
+    expect(screen.getByAltText('正文照片')).toBeTruthy()
+    expect(screen.getAllByRole('button', { name: '重试同一提交' }).length).toBeGreaterThan(0)
   })
 
   it('aborts the previous upload closure before it can send later parts after a switch', async () => {
