@@ -27,6 +27,14 @@ public sealed class NoteMaterialUploadStoreTests : IDisposable
     };
 
     [Fact]
+    public async Task NoteWithoutLifecycleLedgerEntry_RemainsActiveForLegacyProcessing()
+    {
+        var status = await Store().GetMcpNoteStatusAsync(_user, Guid.NewGuid());
+
+        Assert.Equal("Active", status);
+    }
+
+    [Fact]
     public async Task Batch_jsonl_uses_and_validates_the_profile_output_token_limit()
     {
         var fixture = Fixture.Create();
@@ -425,6 +433,25 @@ public sealed class NoteMaterialUploadStoreTests : IDisposable
         Assert.True((await Store().CompleteAsync(_user, fixture.Request.VersionId)).IsCurrent);
         Assert.Equal(fixture.Request.InputJson, (await Store().GetAsync(_user, fixture.Request.VersionId)).InputJson);
         await Error(41301, () => Store().BeginAsync(_user, Fixture.Create().Request));
+    }
+
+    [Fact]
+    public async Task CompletedBundleBytesAreStableAcrossWrites()
+    {
+        var fixture = Fixture.Create();
+        var store = Store();
+        await store.BeginAsync(_user, fixture.Request);
+        await UploadAll(store, fixture);
+        await store.CompleteAsync(_user, fixture.Request.VersionId);
+
+        var first = await BundleAsync(store, fixture.Request.VersionId);
+        // DOS zip timestamps have two-second resolution; cross that window to prove the bytes
+        // no longer depend on when the package is generated.
+        await Task.Delay(TimeSpan.FromSeconds(2.2));
+        var second = await BundleAsync(store, fixture.Request.VersionId);
+
+        Assert.Equal(Hash(first), Hash(second));
+        Assert.Equal(first, second);
     }
 
     [Fact]
@@ -1110,6 +1137,12 @@ public sealed class NoteMaterialUploadStoreTests : IDisposable
     }
 
     private static async Task Error(int code, Func<Task> action) => Assert.Equal(code, (await Assert.ThrowsAsync<DomainException>(action)).ErrorCode);
+    private async Task<byte[]> BundleAsync(NoteMaterialUploadStore store, Guid versionId)
+    {
+        using var output = new MemoryStream();
+        await store.WriteBundleAsync(_user, versionId, output, CancellationToken.None);
+        return output.ToArray();
+    }
     private async Task UploadAll(NoteMaterialUploadStore store, Fixture fixture)
     {
         for (var file = 0; file < fixture.Content.Count; file++)

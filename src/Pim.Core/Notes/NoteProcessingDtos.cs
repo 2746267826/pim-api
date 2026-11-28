@@ -59,7 +59,11 @@ public sealed record NoteProcessingChainDto(
     int FailedItems,
     bool HasResult,
     IReadOnlyList<string> Errors,
-    string? WaitingReason);
+    string? WaitingReason,
+    IReadOnlyList<NoteProcessingItemDto> Items);
+
+/// <summary>Stable logical step key and state; never an internal row or attempt identifier.</summary>
+public sealed record NoteProcessingItemDto(string Key, string State, string? Error);
 
 public sealed record NoteProcessingArtifactDto(
     Guid ArtifactId,
@@ -82,4 +86,6 @@ public sealed record NoteProcessingStatusDto(
     IReadOnlyList<NoteProcessingArtifactDto> Artifacts,
     IReadOnlyList<NoteProcessingIssueDto> Issues,
     DateTimeOffset CreatedAt,
-    DateTimeOffset UpdatedAt);
+    DateTimeOffset UpdatedAt,
+    bool RecycleStopped = false,
+    bool ResumePending = false);

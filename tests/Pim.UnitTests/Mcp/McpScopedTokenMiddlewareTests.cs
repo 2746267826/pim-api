@@ -84,6 +84,39 @@ public sealed class McpScopedTokenMiddlewareTests
     }
 
     [Fact]
+    public async Task GenericReadTokens_DeniedOnNativeNoteRoutes()
+    {
+        Assert.Equal(403, await RunAsync("get_tasks", "GET", "/api/v1/native-notes/mcp/notes"));
+        Assert.Equal(403, await RunAsync("get_events", "GET",
+            "/api/v1/native-notes/mcp/notes/note-1"));
+        Assert.Equal(403, await RunAsync("get_quick_notes", "GET",
+            "/api/v1/native-notes/note-1/current"));
+    }
+
+    [Fact]
+    public async Task NativeNoteReadTokens_AreBoundToTheirOwnRoute()
+    {
+        Assert.Equal(200, await RunAsync("get_native_notes", "GET",
+            "/api/v1/native-notes/mcp/notes"));
+        Assert.Equal(403, await RunAsync("get_native_notes", "GET",
+            "/api/v1/native-notes/mcp/notes/note-1"));
+        Assert.Equal(200, await RunAsync("get_native_note", "GET",
+            "/api/v1/native-notes/mcp/notes/note-1"));
+        Assert.Equal(403, await RunAsync("get_native_note", "GET",
+            "/api/v1/native-notes/mcp/notes/note-1/versions"));
+        Assert.Equal(200, await RunAsync("get_native_note_versions", "GET",
+            "/api/v1/native-notes/mcp/notes/note-1/versions"));
+        Assert.Equal(200, await RunAsync("get_native_note_operation", "GET",
+            "/api/v1/native-notes/mcp/notes/note-1/operations/request-1"));
+        Assert.Equal(403, await RunAsync("get_native_note_versions", "GET",
+            "/api/v1/native-notes/mcp/notes/note-1/package"));
+        Assert.Equal(403, await RunAsync("get_native_note", "GET",
+            "/api/v1/native-notes/mcp/notes/note-1/operations/request-1"));
+        Assert.Equal(403, await RunAsync("get_native_note", "GET",
+            "/api/v1/native-notes/mcp/notes/note-1/unmapped"));
+    }
+
+    [Fact]
     public async Task WriteToken_TrailingSlash_IsNormalized()
     {
         Assert.Equal(200, await RunAsync("create_task", "POST", "/api/v1/calendar/tasks/"));

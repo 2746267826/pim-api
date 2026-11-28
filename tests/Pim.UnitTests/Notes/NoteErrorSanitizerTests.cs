@@ -5,6 +5,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Pim.Api.Middleware;
 using Pim.Core.Exceptions;
+using Pim.Core.Notes;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
 using Pim.Infrastructure.Data.Entities;
@@ -64,6 +65,20 @@ public class NoteErrorSanitizerTests
     {
         Assert.Equal("请求参数格式无效", NoteErrorSanitizer.BadRequestMessage("line 1", false));
         Assert.Equal("请求参数格式无效: line 1", NoteErrorSanitizer.BadRequestMessage("line 1", true));
+    }
+
+    [Theory]
+    [InlineData(40401, 404)]
+    [InlineData(40901, 409)]
+    [InlineData(41301, 413)]
+    [InlineData(42901, 429)]
+    [InlineData(50303, 503)]
+    public void OperationMessageFallbackUsesTheSameStatusMappingAsTheApi(int errorCode,
+        int expectedStatus)
+    {
+        Assert.Equal(NoteErrorSanitizer.FallbackMessage(expectedStatus),
+            NoteErrorSanitizer.SanitizeOperationMessage(
+                "provider https://internal.example/v1 failed", errorCode));
     }
 
     [Theory]

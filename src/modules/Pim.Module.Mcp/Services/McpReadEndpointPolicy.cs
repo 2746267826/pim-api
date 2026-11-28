@@ -8,7 +8,7 @@ namespace Pim.Module.Mcp.Services;
 /// POST endpoints (data-center query/preview, recycle-bin preview, schedule preview).
 /// Every other method/path — including high-risk writes such as
 /// <c>POST /api/v1/calendar/data-center/batch/execute</c> — is denied. This closes the gap
-/// left by <see cref="McpWriteEndpointMap"/> which only knows the 50 MCP write endpoints.
+/// left by <see cref="McpWriteEndpointMap"/> which only knows the mapped MCP write endpoints.
 /// </summary>
 public static class McpReadEndpointPolicy
 {
@@ -25,10 +25,14 @@ public static class McpReadEndpointPolicy
         .Select(p => new Regex(p, RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
         .ToArray();
 
-    public static bool IsReadAllowed(string method, string path)
+    public static bool IsReadAllowed(string tool, string method, string path)
     {
         var normalizedMethod = method.ToUpperInvariant();
         var normalizedPath = path.TrimEnd('/');
+        // Native-note GET routes are individually tool-scoped. A generic read token must not
+        // inherit access just because the target uses GET; an unmapped route is denied.
+        if (McpReadEndpointMap.IsNativeNotePath(normalizedPath))
+            return McpReadEndpointMap.IsAllowedForTool(tool, normalizedMethod, normalizedPath);
         if (normalizedMethod == "GET")
         {
             // All GETs under the API plus the root health probe.

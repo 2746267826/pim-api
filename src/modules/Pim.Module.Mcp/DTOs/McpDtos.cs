@@ -1,6 +1,6 @@
 namespace Pim.Module.Mcp.DTOs;
 
-/// <summary>One entry of the embedded 148-tool wire contract (dumped from the Python reference).</summary>
+/// <summary>One entry of the embedded 167-tool wire contract (dumped from the Python reference).</summary>
 public sealed class McpToolContract
 {
     public string Name { get; set; } = string.Empty;
@@ -8,7 +8,8 @@ public sealed class McpToolContract
     public System.Text.Json.JsonElement InputSchema { get; set; }
 }
 
-public sealed record McpToolInfo(string Name, string Group, string Description, bool IsWrite);
+public sealed record McpToolInfo(string Name, string Group, string Description, bool IsWrite,
+    bool DefaultEnabled);
 
 public sealed record McpCatalogDto(List<McpToolInfo> Read, List<McpToolInfo> Write);
 

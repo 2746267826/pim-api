@@ -7,18 +7,19 @@ namespace Pim.UnitTests.Mcp;
 /// <summary>
 /// Equivalence contract tests: the embedded wire contract (dumped from the Python
 /// reference, extended by the keepalive phase-1 read tool; WO-PC-BACKEND-20261001 REQ-6 removed
-/// get_pc_aw_heatmap → 149 tools; J05 removed the obsolete AI gateway status tool → 148)
-/// must match the .NET catalog and tool table exactly —
+/// get_pc_aw_heatmap → 149 tools; J05 removed the obsolete AI gateway status tool → 148;
+/// R05 native-note MCP adds 19 → 167 tools) must match the .NET
+/// catalog and tool table exactly —
 /// names, counts, schemas.
 /// </summary>
 public sealed class McpToolContractTests
 {
     [Fact]
-    public void Contract_ContainsExactly148Tools()
+    public void Contract_ContainsExactly167Tools()
     {
-        // WO-PC-BACKEND-20261001 REQ-6（#379）：get_pc_aw_heatmap 随遗留端点下线，150 → 149；
-        // J05 移除 LiteLLM 状态工具后为 148。
-        Assert.Equal(148, McpToolExecutor.ToolContract.Count);
+        // WO-PC-BACKEND-20261001 REQ-6（#379）：150 → 149；J05 移除状态工具后为 148；
+        // R05：新增 8 个 native-note 读工具 + 11 个写工具，148 → 167。
+        Assert.Equal(167, McpToolExecutor.ToolContract.Count);
     }
 
     [Fact]
@@ -29,9 +30,10 @@ public sealed class McpToolContractTests
         var readNames = McpToolCatalog.ReadTools.Select(t => t.Name).ToHashSet(StringComparer.Ordinal);
         var writeNames = McpToolCatalog.WriteTools.Select(t => t.Name).ToHashSet(StringComparer.Ordinal);
 
-        // WO-PC-BACKEND-20261001 REQ-6：读工具 101 → 100；J05 移除 AI 网关状态工具后为 99。
-        Assert.Equal(99, readNames.Count);
-        Assert.Equal(49, writeNames.Count);
+        // WO-PC-BACKEND-20261001 REQ-6：读工具 101 → 100；J05 移除 AI 网关状态工具后为 99；
+        // R05：99 + 8 = 107。
+        Assert.Equal(107, readNames.Count);
+        Assert.Equal(60, writeNames.Count);
         Assert.Equal(contractNames, readNames.Union(writeNames).ToHashSet(StringComparer.Ordinal));
         Assert.Empty(contractNames.Intersect(writeNames).Intersect(readNames));
     }
@@ -175,5 +177,41 @@ public sealed class McpToolContractTests
         Assert.Equal(
             spec.QueryParams.Where(p => p != "redactUrls").OrderBy(p => p, StringComparer.Ordinal),
             properties.EnumerateObject().Select(p => p.Name).Where(n => n != "redactUrls").OrderBy(n => n, StringComparer.Ordinal));
+    }
+
+    [Fact]
+    public void Contract_NativeNotePackageExposesBoundedChunkDownload()
+    {
+        // 上传上限是 64 MB，下载不能仍停在 16 MB 整包；offset/maxBytes 让调用方按
+        // 16 MB 上限分块拉取，整包摘要与当前块摘要在字段上分开。
+        var package = McpToolExecutor.ToolContract.Single(t => t.Name == "get_native_note_package");
+        var properties = package.InputSchema.GetProperty("properties");
+        Assert.Equal(0, properties.GetProperty("offset").GetProperty("default").GetInt32());
+        Assert.Equal(16 * 1024 * 1024,
+            properties.GetProperty("maxBytes").GetProperty("default").GetInt32());
+        Assert.Equal(0, properties.GetProperty("offset").GetProperty("minimum").GetInt32());
+        Assert.Equal(16 * 1024 * 1024,
+            properties.GetProperty("maxBytes").GetProperty("maximum").GetInt32());
+        Assert.Contains("chunkSha256", package.Description, StringComparison.Ordinal);
+        Assert.Contains("contentSha256", package.Description, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Contract_NativeNoteRetryExposesOptionalExpectedRevisionCas()
+    {
+        var retry = McpToolExecutor.ToolContract.Single(
+            t => t.Name == "retry_native_note_processing");
+        var properties = retry.InputSchema.GetProperty("properties");
+        Assert.True(properties.TryGetProperty("expectedRevision", out var expectedRevision));
+        Assert.True(expectedRevision.GetProperty("anyOf").EnumerateArray()
+            .Any(item => item.GetProperty("type").GetString() == "null"));
+        Assert.Contains("expectedRevision", retry.Description, StringComparison.Ordinal);
+        Assert.Contains("snapshot revision", retry.Description, StringComparison.Ordinal);
+        Assert.Contains("task revision", retry.Description, StringComparison.Ordinal);
+        Assert.DoesNotContain("expectedRevision",
+            retry.InputSchema.GetProperty("required").EnumerateArray()
+                .Select(item => item.GetString()));
+        Assert.DoesNotContain("expectedRevision",
+            McpToolTable.TryGet("retry_native_note_processing")!.Required);
     }
 }

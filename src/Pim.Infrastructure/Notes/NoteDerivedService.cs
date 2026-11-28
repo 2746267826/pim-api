@@ -113,14 +113,18 @@ public sealed class NoteDerivedService(
     public async Task<NoteDerivedTaskDto> GetAsync(Guid taskId, CancellationToken ct)
     {
         var owner = await RequireActiveOwnerAsync(ct);
-        await job.ReconcileAsync(owner, taskId, ct);
+        var before = await store.ReadTaskAsync(owner, taskId, ct);
+        if (await materials.GetMcpNoteStatusAsync(owner, before.NoteId, ct) == "Active")
+            await job.ReconcileAsync(owner, taskId, ct);
         return await DescribeAsync(await store.ReadTaskAsync(owner, taskId, ct), ct);
     }
 
     public async Task<NoteDerivedTaskReceiptDto> ReceiptAsync(Guid taskId, CancellationToken ct)
     {
         var owner = await RequireActiveOwnerAsync(ct);
-        await job.ReconcileAsync(owner, taskId, ct);
+        var before = await store.ReadTaskAsync(owner, taskId, ct);
+        if (await materials.GetMcpNoteStatusAsync(owner, before.NoteId, ct) == "Active")
+            await job.ReconcileAsync(owner, taskId, ct);
         return NoteResponsePrivacy.RedactReceipt(
             await job.ReceiptAsync(owner, taskId, ct), _includeDiagnostics);
     }
@@ -139,7 +143,48 @@ public sealed class NoteDerivedService(
     public async Task<NoteDerivedTaskDto> StopAsync(Guid taskId, CancellationToken ct)
     {
         var owner = await RequireActiveOwnerAsync(ct);
-        var state = await store.UpdateTaskAsync(owner, taskId, current => current.StopRequested = true, ct);
+        return await StopForOwnerAsync(owner, taskId, ct);
+    }
+
+    internal async Task<NoteDerivedTaskDto> StopForOwnerAsync(Guid owner, Guid taskId,
+        CancellationToken ct)
+    {
+        var state = await store.UpdateTaskAsync(owner, taskId, current =>
+        {
+            current.StopRequested = true;
+            // Stop is a durable checkpoint, not just a queue hint. Cancel work that has not
+            // started so no dispatcher can enqueue it after a restore; an in-flight step is
+            // stopped by the job's post-call checkpoint.
+            foreach (var step in current.Steps.Where(step => step.Current.Status == "Queued"))
+            {
+                step.Current.Status = "Cancelled";
+                step.Current.ErrorCode = "stopped_by_user";
+                step.Current.ErrorMessage = "任务已停止，此步骤尚未发送";
+            }
+        }, ct);
+        return await DescribeAsync(state, ct);
+    }
+
+    /// <summary>
+    /// Clears the stop marker only when the user explicitly resumes processing after a restore.
+    /// Queued steps that were cancelled by the stop checkpoint are put back in the queue; failed
+    /// steps keep their failure history and remain visible for an explicit retry.
+    /// </summary>
+    internal async Task<NoteDerivedTaskDto> ResumeForOwnerAsync(Guid owner, Guid taskId,
+        CancellationToken ct)
+    {
+        var state = await store.UpdateTaskAsync(owner, taskId, current =>
+        {
+            current.StopRequested = false;
+            foreach (var step in current.Steps.Where(step =>
+                         step.Current.Status == "Cancelled" &&
+                         step.Current.ErrorCode == "stopped_by_user"))
+            {
+                step.Current.Status = "Queued";
+                step.Current.ErrorCode = null;
+                step.Current.ErrorMessage = null;
+            }
+        }, ct);
         return await DescribeAsync(state, ct);
     }
 
@@ -156,6 +201,8 @@ public sealed class NoteDerivedService(
             request.StepKeys.Any(string.IsNullOrWhiteSpace))
             throw Invalid("请选择待恢复步骤，核对原目标，并确认重试可能重复计费");
 
+        var lifecycle = await store.ReadTaskAsync(owner, taskId, ct);
+        await RequireActiveNoteAsync(owner, lifecycle.NoteId, "恢复派生处理", ct);
         using var lease = store.TryRunLease(owner, taskId);
         if (lease is null)
             throw Conflict("派生任务正在执行，请先核对当前回执状态");
@@ -263,6 +310,8 @@ public sealed class NoteDerivedService(
         SaveNoteDerivedManualRevisionRequest request, CancellationToken ct)
     {
         var owner = await RequireActiveOwnerAsync(ct);
+        var artifact = await store.DescribeArtifactAsync(owner, artifactId, ct);
+        await RequireActiveNoteAsync(owner, artifact.NoteId, "创建人工修订", ct);
         var mutation = await store.AppendManualAsync(owner, artifactId, request, ct);
         return NoteResponsePrivacy.RedactMutation(mutation with
         {
@@ -274,8 +323,17 @@ public sealed class NoteDerivedService(
         SelectNoteDerivedVersionRequest request, CancellationToken ct)
     {
         var owner = await RequireActiveOwnerAsync(ct);
+        var artifact = await store.DescribeArtifactAsync(owner, artifactId, ct);
+        await RequireActiveNoteAsync(owner, artifact.NoteId, "选择派生结果版本", ct);
         return NoteResponsePrivacy.RedactArtifact(
             await store.SelectHeadAsync(owner, artifactId, request, ct), _includeDiagnostics);
+    }
+
+    private async Task RequireActiveNoteAsync(Guid owner, Guid noteId, string action,
+        CancellationToken ct)
+    {
+        if (await materials.GetMcpNoteStatusAsync(owner, noteId, ct) != "Active")
+            throw Conflict($"笔记在回收站，请先恢复后再{action}");
     }
 
     private async Task<NoteDerivedInputSnapshot> BuildSnapshotAsync(Guid owner, NoteMaterialVersionDto version,

@@ -13,10 +13,14 @@ public static class McpToolCatalog
 
     public static IReadOnlyList<McpToolInfo> WriteTools { get; } = BuildWrite();
 
-    /// <summary>Default template: read all on, write all off (safe baseline).</summary>
+    /// <summary>
+    /// Default template: ordinary reads on, writes off. Native-note reads are off because the
+    /// R05 permission model requires an explicit opt-in; a legacy client whose permission map
+    /// predates these tools must not gain notes.read merely by upgrading the server.
+    /// </summary>
     public static Dictionary<string, Dictionary<string, bool>> DefaultPermissions()
     {
-        var read = ReadTools.ToDictionary(t => t.Name, _ => true);
+        var read = ReadTools.ToDictionary(t => t.Name, t => t.DefaultEnabled);
         var write = WriteTools.ToDictionary(t => t.Name, _ => false);
         return new Dictionary<string, Dictionary<string, bool>>
         {
@@ -27,6 +31,10 @@ public static class McpToolCatalog
 
     /// <summary>True if the tool name is a write tool.</summary>
     public static bool IsWrite(string toolName) => _writeNames.Contains(toolName);
+
+    /// <summary>Default permission used when a client permission map has no key for a tool.</summary>
+    public static bool IsEnabledByDefault(string toolName) => _allNames.Contains(toolName) &&
+        (ReadTools.FirstOrDefault(t => t.Name == toolName)?.DefaultEnabled ?? false);
 
     /// <summary>True if the tool name exists in the catalog.</summary>
     public static bool Contains(string toolName) => _allNames.Contains(toolName);
@@ -131,6 +139,24 @@ public static class McpToolCatalog
         Add(tools, "quicknotes", "get_quick_note", "Get a quick note by id.");
         Add(tools, "quicknotes", "get_quick_note_attachment_meta", "Quick note attachment metadata.");
 
+        // NativeNotes 8：服务器唯一的原生笔记事实源，按当前 MCP 用户隔离。
+        Add(tools, "native-notes", "get_native_notes",
+            "List the current user's native notes with recycle-bin status, revision and conflict counts. Never returns another account's notes.");
+        Add(tools, "native-notes", "get_native_note",
+            "Get one native note aggregate (current version, conflict candidates, processing, derived tasks/results) with a user-visible receipt.");
+        Add(tools, "native-notes", "get_native_note_versions",
+            "Get the current version and every conflict candidate for one native note, plus the revision required for CAS writes.");
+        Add(tools, "native-notes", "get_native_note_results",
+            "Get derived processing tasks and result artifacts for one native note, including failure/retry visibility.");
+        Add(tools, "native-notes", "get_native_note_processing",
+            "Get the high-level processing status for one native note version (or the current version when omitted).");
+        Add(tools, "native-notes", "get_native_note_operation",
+            "Look up the receipt and logical state of a failed, unknown or succeeded native-note operation by its caller-supplied requestId.");
+        Add(tools, "native-notes", "get_native_note_package",
+            "Download a native-note material package as bounded base64 ZIP chunks (offset/maxBytes, at most 16 MB per call) up to the 64 MB upload limit. contentSha256/byteLength describe the whole package; chunkSha256/chunkByteLength describe the returned contentBase64 chunk. Follow nextOffset until hasMore=false.");
+        Add(tools, "native-notes", "get_native_note_suggestions",
+            "List task/calendar suggestions extracted from one native note with their status and revision.");
+
         // Files 7
         Add(tools, "files", "get_file_providers", "List file providers.");
         Add(tools, "files", "get_files", "List files.");
@@ -212,6 +238,30 @@ public static class McpToolCatalog
         AddW(tools, "quicknotes", "upload_quick_note_attachment", "Upload a quick note attachment.");
         AddW(tools, "quicknotes", "delete_quick_note_attachment", "Delete a quick note attachment.");
 
+        // NativeNotes 12：全部写入都要求 requestId，用于幂等重放与 requestId 冲突检测。
+        AddW(tools, "native-notes", "upload_native_note_package",
+            "Upload a complete native-note material package (base64 ZIP) and optionally promote it to current. Requires requestId; CAS via expectedCurrentVersionId/expectedRevision.");
+        AddW(tools, "native-notes", "promote_native_note_version",
+            "Explicitly choose a verified native-note material version as current; the previous head and conflict candidates stay on disk.");
+        AddW(tools, "native-notes", "cancel_native_note_upload",
+            "Cancel an unfinished (Uploading) native-note material upload; completed versions are never removed.");
+        AddW(tools, "native-notes", "restore_native_note",
+            "Restore a recycled native note to Active; processing stays stopped until the user explicitly continues.");
+        AddW(tools, "native-notes", "delete_native_note",
+            "Move a native note to the recycle bin; queued and in-flight processing is stopped and materials stay recoverable until restored.");
+        AddW(tools, "native-notes", "start_native_note_processing",
+            "Start the server-side high-level processing chain for one complete native-note version. Returns an explicit error when AI runtime is unavailable instead of faking success.");
+        AddW(tools, "native-notes", "retry_native_note_processing",
+            "Retry selected failed native-note processing steps with duplicate-charge acknowledgement. Optional expectedRevision CAS accepts the current note snapshot revision or organization task revision; stale values return 409.");
+        AddW(tools, "native-notes", "adopt_native_note_result",
+            "Adopt one derived result version as the artifact head with expected-head-revision CAS.");
+        AddW(tools, "native-notes", "extract_native_note_suggestions",
+            "Queue task/calendar suggestion extraction from one fixed derived result version with explicit consent.");
+        AddW(tools, "native-notes", "confirm_native_note_suggestion",
+            "Confirm a draft task/calendar suggestion and create the corresponding task or event; requestId is idempotent.");
+        AddW(tools, "native-notes", "dismiss_native_note_suggestion",
+            "Dismiss a draft task/calendar suggestion; requestId is idempotent.");
+
         // Files 5
         AddW(tools, "files", "upload_file", "Upload a file to a provider path.");
         AddW(tools, "files", "move_file", "Move a file to another path.");
@@ -236,8 +286,9 @@ public static class McpToolCatalog
         => Add(list, group, name, description, isWrite: true);
 
     private static void Add(List<McpToolInfo> list, string group, string name, string description, bool isWrite)
-        => list.Add(new McpToolInfo(name, group, description, isWrite));
+        => list.Add(new McpToolInfo(name, group, description, isWrite, false));
 
     private static void Add(List<McpToolInfo> list, string group, string name, string description)
-        => Add(list, group, name, description, false);
+        => list.Add(new McpToolInfo(name, group, description, false,
+            !string.Equals(group, "native-notes", StringComparison.Ordinal)));
 }

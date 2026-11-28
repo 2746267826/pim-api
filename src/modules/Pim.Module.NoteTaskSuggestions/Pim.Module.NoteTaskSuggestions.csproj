@@ -5,6 +5,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="Pim.Api" />
     <InternalsVisibleTo Include="Pim.UnitTests" />
   </ItemGroup>
 

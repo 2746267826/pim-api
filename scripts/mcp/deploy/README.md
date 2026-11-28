@@ -60,7 +60,7 @@ curl -k -X POST https://home.hsww.party:15858/mcp \
   -H "Accept: application/json, text/event-stream" \
   -H "Authorization: Bearer pim_mcp_<token>" \
   -d '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}'
-# 期望: 148 个工具（当前 .NET 契约；退役 Python 基准为 147）
+# 期望: 167 个工具（当前 .NET 契约；退役 Python 基准为 147）
 ```
 
 ## 回滚

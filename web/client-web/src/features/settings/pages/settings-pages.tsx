@@ -15,6 +15,8 @@ import type { EventResponse } from '@/features/calendar/types'
 import { buildCalendarDataEventsPath, buildCalendarDataWindow } from '@/features/settings/calendar-data-window'
 import { cn } from '@/lib/utils'
 
+import { initialMcpPermissions } from './mcp-permission-state'
+
 /* ── /settings/data-reliability 数据可信度 ─────────────────── */
 
 interface InspectionRule {
@@ -414,7 +416,7 @@ export function McpSettingsPage() {
       {/* 新建客户端抽屉（一次性 token） */}
       <Dialog open={newOpen} onOpenChange={setNewOpen}>
         <DialogContent className="max-w-[480px]">
-          <DialogHeader title="新建 MCP 客户端" description="新客户端默认读权限全开、写权限全关" />
+          <DialogHeader title="新建 MCP 客户端" description="新客户端默认普通读权限开启、原生笔记读权限关闭、写权限全关" />
           <DialogBody className="space-y-3">
             <div>
               <Label htmlFor="mcp-name">名称</Label>
@@ -541,12 +543,12 @@ function McpPermissionDialog({
   onSaved,
 }: {
   client: McpClient
-  catalog: { read: { name: string; group: string }[]; write: { name: string; group: string }[] }
+  catalog: { read: { name: string; group: string; defaultEnabled?: boolean }[]; write: { name: string; group: string }[] }
   onClose: () => void
   onSaved: () => void
 }) {
-  const [read, setRead] = useState<Record<string, boolean>>(() => ({ ...Object.fromEntries(catalog.read.map((t) => [t.name, true])), ...client.permissions.read }))
-  const [write, setWrite] = useState<Record<string, boolean>>(() => ({ ...Object.fromEntries(catalog.write.map((t) => [t.name, false])), ...client.permissions.write }))
+  const [read, setRead] = useState<Record<string, boolean>>(() => initialMcpPermissions(catalog.read, client.permissions.read))
+  const [write, setWrite] = useState<Record<string, boolean>>(() => initialMcpPermissions(catalog.write, client.permissions.write))
   const [tab, setTab] = useState<'read' | 'write'>('read')
 
   const tools = tab === 'read' ? catalog.read : catalog.write

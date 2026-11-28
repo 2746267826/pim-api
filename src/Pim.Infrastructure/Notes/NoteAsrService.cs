@@ -36,6 +36,9 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
         if ((request.ParentTaskId is null) != string.IsNullOrWhiteSpace(request.ReprocessReason) ||
             request.ReprocessReason is { Length: > 240 })
             throw new DomainException(40001, "重跑来源和原因必须同时提供，原因最多240字");
+        // Validate the material lifecycle before replay. A recycled note must not regain
+        // processing merely because its old task id is replayed.
+        var version = await materials.GetAsync(owner, request.VersionId, ct);
         // A lost HTTP response replays an already persisted intent even after configuration changes.
         try
         {
@@ -46,7 +49,6 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
             return Describe(await tasks.ReadAsync(owner, request.TaskId, ct));
         }
         catch (DomainException error) when (error.ErrorCode == 40401) { }
-        var version = await materials.GetAsync(owner, request.VersionId, ct);
         var resolved = await ResolveRouteAsync(owner, request, ct);
         var samplesPerCall = resolved?.SamplesPerCall ?? NoteAsrPlan.SamplesPerCall;
         if (resolved is null) await ValidateDestinationAsync(request.Consent, request.Language, ct);
@@ -128,7 +130,10 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
     public async Task<NoteAsrTaskDto> GetAsync(Guid id, CancellationToken ct)
     {
         var owner = await RequireActiveOwnerAsync(ct);
-        return Describe(await ReconcileAsync(owner, id, ct));
+        var state = await tasks.ReadAsync(owner, id, ct);
+        if (await IsActiveNoteAsync(owner, state.NoteId, ct))
+            state = await ReconcileAsync(owner, id, ct);
+        return Describe(state);
     }
 
     /// <summary>
@@ -145,7 +150,9 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
     {
         var owner = await RequireActiveOwnerAsync(ct);
         if (offset < 0 || limit is < 1 or > 20) throw new DomainException(40001, "分片分页范围无效，单页最多20片");
-        var state = await ReconcileAsync(owner, id, ct);
+        var state = await tasks.ReadAsync(owner, id, ct);
+        if (await IsActiveNoteAsync(owner, state.NoteId, ct))
+            state = await ReconcileAsync(owner, id, ct);
         var page = state.Steps.Skip(offset).Take(limit).ToArray();
         var logIds = page.Select(x => x.Current.LogId).Where(x => x.HasValue).Select(x => x!.Value).ToArray();
         var logs = await db.AiRequestLogs.AsNoTracking().Where(x => x.UserId == owner && logIds.Contains(x.Id))
@@ -161,6 +168,17 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
     public async Task<NoteAsrTaskDto> StopAsync(Guid id, CancellationToken ct)
     {
         var owner = await RequireActiveOwnerAsync(ct);
+        return await StopForOwnerAsync(owner, id, ct);
+    }
+
+    /// <summary>
+    /// Stops a task without requiring the interactive current user. Used by the note recycle
+    /// lifecycle, which must stop queued and in-flight work for every material version before
+    /// the note becomes read-only.
+    /// </summary>
+    internal async Task<NoteAsrTaskDto> StopForOwnerAsync(Guid owner, Guid id,
+        CancellationToken ct)
+    {
         return await tasks.WithLockAsync(owner, async lockedCt =>
         {
             var updated = await tasks.UpdateLockedAsync(owner, id,
@@ -182,7 +200,12 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
         if (request.RetryId == Guid.Empty || request.SegmentIndexes is not { Count: > 0 and <= 5_000 } ||
             request.SegmentIndexes.Distinct().Count() != request.SegmentIndexes.Count)
             throw new DomainException(40001, "请选择待恢复分片，核对原目标，并确认重试可能重复计费");
+        // The lifecycle gate must run before reconciliation and before the idempotent replay
+        // branch. A recycled note must not requeue an old attempt or clear its stop marker.
+        var initial = await tasks.ReadAsync(owner, id, ct);
+        await RequireActiveNoteAsync(owner, initial.NoteId, "恢复转写任务", ct);
         var before = await ReconcileAsync(owner, id, ct);
+        await RequireActiveNoteAsync(owner, before.NoteId, "恢复转写任务", ct);
         if (before.Route == NoteAsrRoute.Local && request.Consent is not null)
             throw new DomainException(40901, "本机重跑不涉及云端外发，不需要云端确认");
         if (before.Route != NoteAsrRoute.Local &&
@@ -208,6 +231,7 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
         if (before.Route != NoteAsrRoute.Local)
             await ValidateDestinationAsync(request.Consent, before.Request.Language, ct);
         _ = await materials.GetAsync(owner, before.Request.VersionId, ct);
+        await RequireActiveNoteAsync(owner, before.NoteId, "恢复转写任务", ct);
         // Validate every retry precondition before any mutation: a rejected request must leave both
         // the task file and the routing attempt exactly as it found them.
         NoteAsrAttemptEntity? retryAttempt = null;
@@ -257,6 +281,14 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
             state.Retries.Add(request.RetryId, fingerprint); state.StopRequested = false;
             if (retryIntent is not null) state.RetryIntents[request.RetryId] = retryIntent;
         }, ct);
+        // A recycle can land between the pre-check and the task-file commit above. Re-check
+        // after the write and restore the stop marker; the retry intent itself is left intact
+        // so an explicit post-restore retry can still be reconciled.
+        if (!await IsActiveNoteAsync(owner, updated.NoteId, ct))
+        {
+            await tasks.UpdateAsync(owner, id, state => state.StopRequested = true, ct);
+            throw new DomainException(40901, "笔记在回收站，请先恢复后再恢复转写任务");
+        }
         // The task file is committed first; only then requeue the durable attempt against the exact
         // pre-intent attempt epoch. A crash between the two is replayable without clearing a new stop.
         if (retryIntent is not null) await RequireRetryAttemptAsync(owner, updated, retryIntent, ct);
@@ -695,6 +727,9 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
     private async Task<NoteAsrState> ReconcileAsync(Guid owner, Guid id, CancellationToken ct)
     {
         var state = await tasks.ReadAsync(owner, id, ct);
+        // GET/segments may be used to inspect a recycled note, but they must stay read-only:
+        // reconciliation and receipt recovery can write the task file, attempt and call log.
+        if (!await IsActiveNoteAsync(owner, state.NoteId, ct)) return state;
         var evidence = await CurrentEvidenceAsync(owner, state, ct);
         if (evidence.Count > 0)
         {
@@ -739,6 +774,17 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
                 step.Current.LogId = result.LogId; step.Current.Status = result.Status.ToString(); step.Current.ErrorMessage = result.ErrorMessage;
             }
         }, ct);
+    }
+
+    private async Task<bool> IsActiveNoteAsync(Guid owner, Guid noteId, CancellationToken ct)
+        => string.Equals(await materials.GetMcpNoteStatusAsync(owner, noteId, ct), "Active",
+            StringComparison.Ordinal);
+
+    private async Task RequireActiveNoteAsync(Guid owner, Guid noteId, string action,
+        CancellationToken ct)
+    {
+        if (!await IsActiveNoteAsync(owner, noteId, ct))
+            throw new DomainException(40901, $"笔记在回收站，请先恢复后再{action}");
     }
 
     private async Task<Dictionary<int, NoteAsrSegmentEvidenceEntity>> CurrentEvidenceAsync(Guid owner,

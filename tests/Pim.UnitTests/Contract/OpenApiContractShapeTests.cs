@@ -184,6 +184,49 @@ public sealed class OpenApiContractShapeTests
     }
 
     [Fact]
+    public void NativeNoteMcpPackageDocumentsRangeResponsesAndBindingHeaders()
+    {
+        var operation = Document.Paths[
+            "/api/v1/native-notes/mcp/notes/{noteId}/package"]
+            .Operations[OperationType.Get];
+        Assert.NotEmpty(operation.Security);
+
+        foreach (var status in new[] { "200", "206" })
+        {
+            var response = operation.Responses[status];
+            var content = Assert.Single(response.Content);
+            Assert.Equal("application/zip", content.Key);
+            Assert.Equal("string", content.Value.Schema.Type);
+            Assert.Equal("binary", content.Value.Schema.Format);
+            foreach (var header in new[]
+                     {
+                         "Accept-Ranges", "Content-Disposition", "Cache-Control",
+                         "X-PIM-Note-Id", "X-PIM-Version-Id", "X-PIM-Package-Sha256",
+                         "X-PIM-Package-Byte-Length",
+                     })
+                Assert.True(response.Headers.ContainsKey(header),
+                    $"{status} package response header missing: {header}");
+            Assert.Equal("^[0-9a-f]{64}$",
+                response.Headers["X-PIM-Package-Sha256"].Schema.Pattern);
+            Assert.Equal("int64",
+                response.Headers["X-PIM-Package-Byte-Length"].Schema.Format);
+            if (status == "206")
+                Assert.True(response.Headers.ContainsKey("Content-Range"));
+        }
+
+        var unsatisfiable = operation.Responses["416"];
+        Assert.True(unsatisfiable.Headers.ContainsKey("Content-Range"));
+        foreach (var header in new[]
+                 {
+                     "Accept-Ranges", "Content-Disposition", "Cache-Control",
+                     "X-PIM-Note-Id", "X-PIM-Version-Id", "X-PIM-Package-Sha256",
+                     "X-PIM-Package-Byte-Length",
+                 })
+            Assert.True(unsatisfiable.Headers.ContainsKey(header),
+                $"416 package response header missing: {header}");
+    }
+
+    [Fact]
     public void UrlTranscriptionEndpointsExposeTypedCreateReadAndReplayShapes()
     {
         var create = Document.Paths["/api/v1/ai/asr-url-calls"].Operations[OperationType.Post];

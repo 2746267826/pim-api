@@ -67,6 +67,19 @@ public static class McpWriteEndpointMap
         Add(map, "upload_quick_note_attachment", "POST", "/api/v1/quick-notes/attachments");
         Add(map, "delete_quick_note_attachment", "DELETE", "/api/v1/quick-notes/attachments/{id}");
 
+        // NativeNotes
+        Add(map, "upload_native_note_package", "POST", "/api/v1/native-notes/mcp/notes/{id}/package");
+        Add(map, "promote_native_note_version", "POST", "/api/v1/native-notes/mcp/notes/{id}/promote");
+        Add(map, "cancel_native_note_upload", "POST", "/api/v1/native-notes/mcp/notes/{id}/cancel-upload");
+        Add(map, "restore_native_note", "POST", "/api/v1/native-notes/mcp/notes/{id}/restore");
+        Add(map, "delete_native_note", "POST", "/api/v1/native-notes/mcp/notes/{id}/recycle");
+        Add(map, "start_native_note_processing", "POST", "/api/v1/native-notes/mcp/notes/{id}/processing/start");
+        Add(map, "retry_native_note_processing", "POST", "/api/v1/native-notes/mcp/notes/{id}/processing/retry");
+        Add(map, "adopt_native_note_result", "POST", "/api/v1/native-notes/mcp/notes/{id}/results/{artifactId}/adopt");
+        Add(map, "extract_native_note_suggestions", "POST", "/api/v1/native-notes/mcp/notes/{id}/suggestions/extractions");
+        Add(map, "confirm_native_note_suggestion", "POST", "/api/v1/native-notes/mcp/notes/{id}/suggestions/{suggestionId}/confirm");
+        Add(map, "dismiss_native_note_suggestion", "POST", "/api/v1/native-notes/mcp/notes/{id}/suggestions/{suggestionId}/dismiss");
+
         // Files
         Add(map, "upload_file", "POST", "/api/v1/files/items/upload");
         Add(map, "move_file", "POST", "/api/v1/files/items/{id}/move");

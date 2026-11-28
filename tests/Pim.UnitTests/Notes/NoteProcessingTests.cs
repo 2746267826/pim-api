@@ -465,6 +465,227 @@ public sealed class NoteProcessingTests(NoteProcessingFixture host)
     }
 
     [Fact]
+    public async Task RecycleStopsQueuedProcessing_AndRestoreRequiresExplicitManualResume()
+    {
+        var owner = await OwnerAsync("recycle-stop");
+        using var client = AuthRegistrationTestHost.Authed(host.Factory, owner.AccessToken);
+        _ = await ConfigureAsync(client, auto: true);
+        host.Models.Reset();
+        var material = await CompleteMaterialAsync(owner, client, withAudio: true);
+        var started = await StatusAsync(client, material.NoteId, material.VersionId);
+        Assert.True(started.Asr.TaskCreated);
+        Assert.True(started.Derived.TaskCreated);
+        Assert.Contains(started.Derived.Items,
+            item => item.Key == "record-synthesis");
+        var asrTaskId = started.Asr.TaskId!.Value;
+        var derivedTaskId = started.Derived.TaskId!.Value;
+
+        var materials = host.Factory.Services.GetRequiredService<NoteMaterialUploadStore>();
+        using var scope = host.Factory.Services.CreateScope();
+        var processing = scope.ServiceProvider.GetRequiredService<NoteProcessingService>();
+        var processingStore = scope.ServiceProvider.GetRequiredService<NoteProcessingStore>();
+        await processing.StopForRecycleAsync(owner.UserId, material.NoteId,
+            [material.VersionId], CancellationToken.None);
+
+        var stoppedRecord = await processingStore.ReadAsync(owner.UserId,
+            started.ProcessingId, CancellationToken.None);
+        Assert.True(stoppedRecord.RecycleStopped);
+        Assert.False(stoppedRecord.ResumePending);
+        Assert.True((await AsrTaskAsync(owner.UserId, asrTaskId)).StopRequested);
+        var stoppedDerived = await DerivedTaskAsync(owner.UserId, derivedTaskId);
+        Assert.True(stoppedDerived.StopRequested);
+        Assert.DoesNotContain(stoppedDerived.Steps,
+            step => step.Current.Status == "Queued");
+
+        await materials.RecycleAsync(owner.UserId, material.NoteId, null);
+        var startWhileRecycled = await client.PostAsJsonAsync(Processing + "/start",
+            new StartNoteProcessingRequest(material.NoteId, material.VersionId));
+        Assert.Equal(HttpStatusCode.Conflict, startWhileRecycled.StatusCode);
+        Assert.Equal(40901, (await startWhileRecycled.Content.ReadFromJsonAsync<ApiResponse<string>>())!
+            .Code);
+
+        var asrReplay = await client.PostAsJsonAsync("/api/v1/native-notes/asr-tasks",
+            (await AsrTaskAsync(owner.UserId, asrTaskId)).Request);
+        Assert.Equal(HttpStatusCode.Conflict, asrReplay.StatusCode);
+        Assert.Equal(40901,
+            (await asrReplay.Content.ReadFromJsonAsync<ApiResponse<string>>())!.Code);
+
+        var derivedBeforeRetry = await DerivedTaskAsync(owner.UserId, derivedTaskId);
+        var derivedRetry = await client.PostAsJsonAsync(
+            $"/api/v1/native-notes/derived-tasks/{derivedTaskId}/retry",
+            new RetryNoteDerivedTaskRequest(
+                Guid.NewGuid(),
+                owner.UserId,
+                derivedBeforeRetry.Revision,
+                [derivedBeforeRetry.Steps[0].Key],
+                derivedBeforeRetry.Request.Consent!,
+                AcknowledgePossibleDuplicateCharge: true));
+        Assert.Equal(HttpStatusCode.Conflict, derivedRetry.StatusCode);
+        Assert.Equal(40901,
+            (await derivedRetry.Content.ReadFromJsonAsync<ApiResponse<string>>())!.Code);
+
+        var jobs = new RecordingJobs();
+        var asrDispatch = new NoteAsrDispatchJob(AsrStore(),
+            scope.ServiceProvider.GetRequiredService<NoteAsrService>(), materials, jobs,
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<NoteAsrDispatchJob>.Instance);
+        var derivedDispatch = new NoteDerivedDispatchJob(DerivedStore(), materials, jobs,
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<NoteDerivedDispatchJob>.Instance);
+        var processingDispatch = host.Factory.Services.GetRequiredService<NoteProcessingDispatchJob>();
+        await asrDispatch.RunAsync(CancellationToken.None);
+        await derivedDispatch.RunAsync(CancellationToken.None);
+        await processingDispatch.RunAsync(CancellationToken.None);
+        await host.Factory.Services.GetRequiredService<NoteAsrJob>()
+            .RunAsync(owner.UserId, asrTaskId, CancellationToken.None);
+        await host.Factory.Services.GetRequiredService<NoteDerivedJob>()
+            .RunAsync(owner.UserId, derivedTaskId, CancellationToken.None);
+        Assert.DoesNotContain(jobs.Items,
+            item => item.Args.Count > 0 && item.Args[0] is Guid jobOwner &&
+                jobOwner == owner.UserId);
+        Assert.Equal(0, host.Models.Calls);
+        Assert.Equal(0, await AiCallCountAsync(owner.UserId));
+
+        await materials.RestoreAsync(owner.UserId, material.NoteId, null);
+        await processing.MarkRestoredAsync(owner.UserId, material.NoteId, CancellationToken.None);
+        var restoredRecord = await processingStore.ReadAsync(owner.UserId,
+            started.ProcessingId, CancellationToken.None);
+        Assert.False(restoredRecord.RecycleStopped);
+        Assert.True(restoredRecord.ResumePending);
+        var restoredStatus = await StatusAsync(client, material.NoteId, material.VersionId);
+        Assert.True(restoredStatus.ResumePending);
+        Assert.False(restoredStatus.RecycleStopped);
+        Assert.True(restoredStatus.ManualStartAvailable);
+        Assert.True((await AsrTaskAsync(owner.UserId, asrTaskId)).StopRequested);
+        Assert.True((await DerivedTaskAsync(owner.UserId, derivedTaskId)).StopRequested);
+
+        var restoredJobs = new RecordingJobs();
+        var restoredAsrDispatch = new NoteAsrDispatchJob(AsrStore(),
+            scope.ServiceProvider.GetRequiredService<NoteAsrService>(), materials, restoredJobs,
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<NoteAsrDispatchJob>.Instance);
+        var restoredDerivedDispatch = new NoteDerivedDispatchJob(DerivedStore(), materials,
+            restoredJobs,
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<NoteDerivedDispatchJob>.Instance);
+        await restoredAsrDispatch.RunAsync(CancellationToken.None);
+        await restoredDerivedDispatch.RunAsync(CancellationToken.None);
+        Assert.DoesNotContain(restoredJobs.Items,
+            item => item.Args.Count > 0 && item.Args[0] is Guid jobOwner &&
+                jobOwner == owner.UserId);
+
+        _ = await Data<NoteProcessingStatusDto>(await client.PostAsJsonAsync(Processing + "/start",
+            new StartNoteProcessingRequest(material.NoteId, material.VersionId)));
+        var resumed = await StatusAsync(client, material.NoteId, material.VersionId);
+        Assert.False(resumed.ResumePending);
+        Assert.False(resumed.RecycleStopped);
+        Assert.False((await AsrTaskAsync(owner.UserId, asrTaskId)).StopRequested);
+        var resumedDerived = await DerivedTaskAsync(owner.UserId, derivedTaskId);
+        Assert.False(resumedDerived.StopRequested);
+        Assert.DoesNotContain(resumedDerived.Steps,
+            step => step.Current.Status == "Cancelled" &&
+                step.Current.ErrorCode == "stopped_by_user");
+        Assert.Equal(0, host.Models.Calls);
+    }
+
+    [Fact]
+    public async Task RecycledNoteAsrReadsAndRetryReplayNeverMutateOrClearStop()
+    {
+        var owner = await OwnerAsync("recycle-asr-readonly");
+        using var client = AuthRegistrationTestHost.Authed(host.Factory, owner.AccessToken);
+        var models = await ConfigureAsync(client, auto: true);
+        _ = await ConfigureCloudRouteAsync(client, models.Asr.Id);
+        host.Models.Reset();
+        var material = await CompleteMaterialAsync(owner, client, withAudio: true);
+        var started = await StatusAsync(client, material.NoteId, material.VersionId);
+        var asrTaskId = started.Asr.TaskId!.Value;
+        var asr = await AsrTaskAsync(owner.UserId, asrTaskId);
+        Assert.NotNull(asr.AttemptId);
+
+        using var scope = host.Factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
+        var attempt = await db.NoteAsrAttempts.SingleAsync(x =>
+            x.Id == asr.AttemptId && x.OwnerId == owner.UserId);
+        attempt.State = "Failed";
+        attempt.StopRequested = false;
+        var first = asr.Steps[0].Current;
+        db.AiRequestLogs.Add(new AiRequestLogEntity
+        {
+            ClientRequestId = first.RequestId,
+            UserId = owner.UserId,
+            Module = "notes",
+            Purpose = "ai.asr-call",
+            SourceObjectType = "native-note-asr-task",
+            SourceObjectId = asrTaskId.ToString("D"),
+            Provider = "synthetic",
+            Model = "mimo-v2.5-asr",
+            CorrelationId = "recycle-readonly",
+            Status = "succeeded",
+            AttemptNumber = 1,
+            MaxAttempts = 1,
+            ResponseText = "回收站中的旧结果",
+            FinishedAt = DateTimeOffset.UtcNow,
+        });
+        await db.SaveChangesAsync();
+
+        var retryId = Guid.NewGuid();
+        var retry = new RetryNoteAsrRequest(retryId, owner.UserId, asr.Revision,
+            [0], asr.Request.Consent, true);
+        var fingerprint = NoteMaterialManifestValidator.Hash(JsonSerializer.Serialize(
+            retry, Json));
+        await AsrStore().UpdateAsync(owner.UserId, asrTaskId, state =>
+        {
+            state.Steps[0].Current.Status = "Running";
+            state.Steps[0].Current.ErrorMessage = null;
+            state.Retries[retryId] = fingerprint;
+            state.RetryIntents[retryId] = new NoteAsrRetryIntent
+            {
+                Fingerprint = fingerprint,
+                AttemptId = attempt.Id,
+                TaskId = attempt.TaskId,
+                VersionId = attempt.VersionId,
+                InputSha256 = attempt.InputSha256,
+                Route = attempt.Route,
+                AttemptState = attempt.State,
+                AttemptStopRequested = attempt.StopRequested,
+                FencingToken = attempt.FencingToken,
+                AttemptUpdatedAt = attempt.UpdatedAt,
+            };
+            state.StopRequested = true;
+        }, CancellationToken.None);
+        var materials = scope.ServiceProvider.GetRequiredService<NoteMaterialUploadStore>();
+        await materials.RecycleAsync(owner.UserId, material.NoteId, null);
+
+        var beforeRead = await AsrTaskAsync(owner.UserId, asrTaskId);
+        var taskResponse = await client.GetAsync(
+            $"/api/v1/native-notes/asr-tasks/{asrTaskId}");
+        var taskView = await Data<NoteAsrTaskDto>(taskResponse);
+        Assert.Equal("Stopped", taskView.Phase);
+        var segments = await Data<NoteAsrSegmentsDto>(await client.GetAsync(
+            $"/api/v1/native-notes/asr-tasks/{asrTaskId}/segments"));
+        Assert.Equal("Running", segments.Items[0].Status);
+        var afterRead = await AsrTaskAsync(owner.UserId, asrTaskId);
+        Assert.Equal(beforeRead.Revision, afterRead.Revision);
+        Assert.Equal("Running", afterRead.Steps[0].Current.Status);
+        Assert.True(afterRead.StopRequested);
+
+        var aiCallsBeforeRetry = await db.AiRequestLogs.CountAsync(x =>
+            x.UserId == owner.UserId);
+        var retryResponse = await client.PostAsJsonAsync(
+            $"/api/v1/native-notes/asr-tasks/{asrTaskId}/retry", retry);
+        Assert.Equal(HttpStatusCode.Conflict, retryResponse.StatusCode);
+        Assert.Equal(40901,
+            (await retryResponse.Content.ReadFromJsonAsync<ApiResponse<string>>())!.Code);
+        var afterRetry = await AsrTaskAsync(owner.UserId, asrTaskId);
+        Assert.Equal(afterRead.Revision, afterRetry.Revision);
+        Assert.True(afterRetry.StopRequested);
+        Assert.Equal("Running", afterRetry.Steps[0].Current.Status);
+        var attemptAfter = await db.NoteAsrAttempts.AsNoTracking().SingleAsync(x =>
+            x.Id == attempt.Id && x.OwnerId == owner.UserId);
+        Assert.Equal("Failed", attemptAfter.State);
+        Assert.False(attemptAfter.StopRequested);
+        Assert.Equal(0, host.Models.Calls);
+        Assert.Equal(aiCallsBeforeRetry, await db.AiRequestLogs.CountAsync(x =>
+            x.UserId == owner.UserId));
+    }
+
+    [Fact]
     public async Task FileCommittedAsrIntentWithoutAttemptIsRecoveredByCompensationScanAndRemainsStable()
     {
         var owner = await OwnerAsync("asr-attempt-recovery");
@@ -508,7 +729,8 @@ public sealed class NoteProcessingTests(NoteProcessingFixture host)
         var revision = asr.Revision;
 
         var jobs = new RecordingJobs();
-        var asrDispatch = new NoteAsrDispatchJob(AsrStore(), asrService, jobs,
+        var asrDispatch = new NoteAsrDispatchJob(AsrStore(), asrService,
+            host.Factory.Services.GetRequiredService<NoteMaterialUploadStore>(), jobs,
             Microsoft.Extensions.Logging.Abstractions.NullLogger<NoteAsrDispatchJob>.Instance);
         await asrDispatch.RunAsync(CancellationToken.None);
         var job = Assert.Single(jobs.Items.Where(item =>

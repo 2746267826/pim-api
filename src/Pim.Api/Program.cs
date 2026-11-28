@@ -104,6 +104,9 @@ builder.Services.AddSwaggerGen(c =>
     // Native-note material download streams immutable source bytes with an integrity header.
     // Document the actual binary schema and headers so generated Windows clients can consume it.
     c.OperationFilter<Pim.Api.Infrastructure.OpenApi.NoteMaterialFileContentOperationFilter>();
+    // Native-note MCP packages are range-capable ZIP streams; 206/416 and integrity headers
+    // cannot be inferred from Results.File.
+    c.OperationFilter<Pim.Api.Infrastructure.OpenApi.NoteMcpPackageContentOperationFilter>();
     // Batch upload binds a real [FromForm] StartNoteAsrBatchForm; flatten its typed fields and
     // binary file into the multipart root rather than emitting one nested "form" part.
     c.OperationFilter<Pim.Api.Infrastructure.OpenApi.NoteAsrBatchFormOperationFilter>();
@@ -136,6 +139,7 @@ builder.Services.AddOptions<Pim.Infrastructure.Notes.NoteDerivedAudioContextOpti
     .Validate(options => options.IsValid(), "NativeNotes audio-context allowlist is invalid")
     .ValidateOnStart();
 builder.Services.AddSingleton<Pim.Infrastructure.Notes.NoteMaterialUploadStore>();
+builder.Services.AddSingleton<Pim.Infrastructure.Notes.NoteMcpOperationStore>();
 builder.Services.AddSingleton<Pim.Infrastructure.Notes.NoteAsrTaskStore>();
 builder.Services.AddSingleton<Pim.Infrastructure.Notes.NoteDerivedStore>();
 builder.Services.AddScoped<Pim.Core.Modules.ISearchProvider, Pim.Infrastructure.Notes.NoteSearchProvider>();
@@ -156,6 +160,7 @@ builder.Services.AddSingleton<Pim.Infrastructure.Ai.Asr.Mimo.IMimoBatchClientFac
     Pim.Infrastructure.Ai.Asr.Mimo.MimoBatchClientFactory>();
 builder.Services.AddScoped<Pim.Infrastructure.Notes.NoteDerivedService>();
 builder.Services.AddScoped<Pim.Infrastructure.Notes.NoteProcessingService>();
+builder.Services.AddScoped<Pim.Infrastructure.Notes.NativeNoteMcpService>();
 builder.Services.AddScoped<Pim.Infrastructure.Notes.NoteProcessingPreferencesService>();
 builder.Services.AddScoped<Pim.Infrastructure.Notes.NoteProcessingDispatchJob>();
 builder.Services.AddScoped<Pim.Infrastructure.Notes.NoteAsrJob>();
@@ -471,6 +476,7 @@ app.MapNoteAsrReprocessEndpoints();
 app.MapNoteAsrRoutingEndpoints();
 app.MapNoteDerivedEndpoints();
 app.MapNoteProcessingEndpoints();
+app.MapNoteMcpEndpoints();
 app.MapClientShell();
 app.MapTileEndpoints();
 

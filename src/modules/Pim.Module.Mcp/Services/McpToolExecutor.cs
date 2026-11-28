@@ -55,7 +55,7 @@ public sealed class McpToolExecutor
         _httpContext = httpContext;
     }
 
-    /// <summary>Loaded 148-tool contract (name/description/inputSchema) from the embedded JSON.</summary>
+    /// <summary>Loaded 167-tool contract (name/description/inputSchema) from the embedded JSON.</summary>
     public static IReadOnlyList<McpToolContract> ToolContract => Contract.Value;
 
     /// <summary>Read-only snapshot of recent tool calls, newest first.</summary>
@@ -105,11 +105,10 @@ public sealed class McpToolExecutor
 
     private void RecordActivity(long startedAt, string toolName, int statusCode, JsonObject? args)
     {
-        var summary = args is null || args.Count == 0
+        var auditableArgs = args is null ? null : SanitizeForAudit(args);
+        var summary = auditableArgs is null || auditableArgs.Count == 0
             ? string.Empty
-            : JsonSerializer.Serialize(args, SerializerOptions);
-        if (summary.Length > ActivityParamsSummaryMaxChars)
-            summary = summary[..ActivityParamsSummaryMaxChars];
+            : SummarizeForActivity(auditableArgs);
 
         var durationMs = (long)Math.Round(Stopwatch.GetElapsedTime(startedAt).TotalMilliseconds);
         RecentActivity.Enqueue(new McpActivityEntry(
@@ -324,9 +323,59 @@ public sealed class McpToolExecutor
     {
         if (args is null || args.Count == 0)
             return null;
-        var text = JsonSerializer.Serialize(args, SerializerOptions);
+        var text = JsonSerializer.Serialize(SanitizeForAudit(args), SerializerOptions);
         return text.Length <= ParamsSummaryMaxChars ? text : text[..ParamsSummaryMaxChars];
     }
+
+    /// <summary>
+    /// Keeps large inline payloads out of MCP activity history and verification records.
+    /// The native-note/quick-note write tools accept base64 ZIPs and attachments; only a
+    /// length marker is needed for support, the content itself must never be audited.
+    /// </summary>
+    private static JsonObject SanitizeForAudit(JsonObject args)
+    {
+        var result = new JsonObject();
+        foreach (var (key, value) in args)
+        {
+            if (key.EndsWith("Base64", StringComparison.OrdinalIgnoreCase))
+            {
+                var length = value is JsonValue jsonValue && jsonValue.TryGetValue<string>(out var text)
+                    ? text.Length
+                    : 0;
+                result[key] = $"[redacted base64, {length} chars]";
+                continue;
+            }
+            result[key] = value?.DeepClone();
+        }
+        return result;
+    }
+
+    private static string SummarizeForActivity(JsonObject sanitizedArgs)
+    {
+        var summary = JsonSerializer.Serialize(sanitizedArgs, SerializerOptions);
+        if (summary.Length <= ActivityParamsSummaryMaxChars)
+            return summary;
+
+        // Put redacted fields first so the 120-character preview proves the payload was
+        // masked instead of merely cutting it off before the marker appears.
+        var prioritized = new JsonObject();
+        foreach (var (key, value) in sanitizedArgs)
+        {
+            if (IsRedacted(value)) prioritized[key] = value?.DeepClone();
+        }
+        foreach (var (key, value) in sanitizedArgs)
+        {
+            if (!IsRedacted(value)) prioritized[key] = value?.DeepClone();
+        }
+        summary = JsonSerializer.Serialize(prioritized, SerializerOptions);
+        return summary.Length <= ActivityParamsSummaryMaxChars
+            ? summary
+            : summary[..ActivityParamsSummaryMaxChars];
+    }
+
+    private static bool IsRedacted(JsonNode? value)
+        => value is JsonValue jsonValue && jsonValue.TryGetValue<string>(out var text) &&
+           text.StartsWith("[redacted base64", StringComparison.Ordinal);
 
     // ===================== dispatch =====================
 
@@ -361,6 +410,8 @@ public sealed class McpToolExecutor
                 return await CallAsync(spec, args, accessToken, redact: false, ct);
             case McpToolKind.ExportIcs:
                 return await ExportIcsAsync(spec, args, accessToken, ct);
+            case McpToolKind.NativeNotePackage:
+                return await NativeNotePackageAsync(spec, args, accessToken, ct);
             default:
                 var redact = spec.RedactUrls && !(args.TryGetPropertyValue("redactUrls", out var redactArg) && redactArg is JsonValue redactValue && redactValue.TryGetValue<bool>(out var redactBool) && !redactBool);
                 return await CallAsync(spec, args, accessToken, redact, ct);
@@ -1087,6 +1138,151 @@ public sealed class McpToolExecutor
         };
         return await CallAsync(icsSpec, queryArgs, accessToken, redact: false, ct);
     }
+
+    private const long MaxNativeNotePackageBytes = 64L * 1024 * 1024;
+    private const int MaxNativeNotePackageChunkBytes = 16 * 1024 * 1024;
+    private const string PackageSha256Header = "X-PIM-Package-Sha256";
+    private const string PackageByteLengthHeader = "X-PIM-Package-Byte-Length";
+
+    private static async Task<byte[]?> ReadAtMostAsync(HttpContent content, long limit,
+        CancellationToken ct)
+    {
+        await using var stream = await content.ReadAsStreamAsync(ct);
+        using var buffer = new MemoryStream();
+        var block = new byte[64 * 1024];
+        while (true)
+        {
+            var read = await stream.ReadAsync(block, ct);
+            if (read == 0) break;
+            if (buffer.Length + read > limit) return null;
+            buffer.Write(block, 0, read);
+        }
+        return buffer.ToArray();
+    }
+
+    /// <summary>
+    /// Native-note packages are ZIP archives. Reading them through the normal text path would
+    /// corrupt the binary, so fetch bytes and return a base64 envelope with integrity metadata.
+    /// Packages up to the same 64 MB cap as upload are returned in bounded HTTP Range chunks;
+    /// callers request the next offset until <c>hasMore=false</c>. The API supplies the complete
+    /// package digest and length headers so a chunk never needs to buffer the whole ZIP.
+    /// </summary>
+    private async Task<JsonNode?> NativeNotePackageAsync(McpToolSpec spec, JsonObject args,
+        string accessToken, CancellationToken ct)
+    {
+        var offset = GetInt(args, "offset") ?? 0;
+        var maxBytes = GetInt(args, "maxBytes") ?? MaxNativeNotePackageChunkBytes;
+        if (offset < 0)
+            return Error("offset must be >=0", 400);
+        if (maxBytes is < 1 or > MaxNativeNotePackageChunkBytes)
+            return Error($"maxBytes must be between 1 and {MaxNativeNotePackageChunkBytes}", 400);
+
+        var (query, _) = BuildQueryAndBody(spec, args);
+        var path = BuildPath(spec.Route, args) + (query.Length > 0 ? "?" + query : string.Empty);
+        using var request = new HttpRequestMessage(HttpMethod.Get, path);
+        request.Headers.TryAddWithoutValidation("Authorization", $"Bearer {accessToken}");
+        request.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(
+            offset, (long)offset + maxBytes - 1);
+        using var response = await _client.SendAsync(request, ct);
+        var status = (int)response.StatusCode;
+        var packageLength = ReadPackageLength(response);
+        if (status == 416)
+        {
+            return Error(packageLength is { } length
+                ? $"offset must be >=0 and < {length}"
+                : "offset is outside the native-note package", 400);
+        }
+        if (status >= 400)
+        {
+            var text = await response.Content.ReadAsStringAsync(ct);
+            var data = TryParseJson(text);
+            if (data is JsonObject obj && obj.ContainsKey("error"))
+            {
+                if (!obj.ContainsKey("code")) obj["code"] = status;
+                return obj;
+            }
+            return new JsonObject
+            {
+                ["error"] = $"HTTP {status}: {Truncate(text, 800)}",
+                ["details"] = data?.DeepClone() ?? JsonValue.Create(Truncate(text, 2000)),
+                ["code"] = status,
+            };
+        }
+
+        if (packageLength is not { } totalBytes ||
+            totalBytes is < 1 or > MaxNativeNotePackageBytes)
+        {
+            return Error(
+                $"native-note package metadata is missing or exceeds the MCP download limit of " +
+                $"{MaxNativeNotePackageBytes} bytes. Use GET {spec.Route} via REST for the ZIP stream.",
+                413);
+        }
+        if (offset >= totalBytes)
+            return Error($"offset must be >=0 and < {totalBytes}", 400);
+
+        var bytes = await ReadAtMostAsync(response.Content, maxBytes, ct);
+        if (bytes is null)
+        {
+            return Error(
+                $"native-note package range exceeded maxBytes={maxBytes}. " +
+                $"Use GET {spec.Route} via REST for the ZIP stream.",
+                413);
+        }
+        if (status == 200 && offset != 0)
+            return Error("server ignored the native-note package byte range", 502);
+        if (response.Content.Headers.ContentRange is { } range &&
+            (range.From != offset || range.To != offset + bytes.LongLength - 1 ||
+             range.Length != totalBytes))
+            return Error("server returned a different native-note package byte range", 502);
+        var nextOffset = (long)offset + bytes.Length < totalBytes
+            ? offset + bytes.Length
+            : (int?)null;
+        var packageSha256 = ReadPackageSha256(response);
+        if (packageSha256 is null)
+            return Error("native-note package digest header is missing", 502);
+
+        var fileName = response.Content.Headers.ContentDisposition?.FileNameStar
+            ?? response.Content.Headers.ContentDisposition?.FileName?.Trim('"')
+            ?? $"{GetString(args, "noteId") ?? "note"}.pimnote.zip";
+        var chunkSha256 = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+        return new JsonObject
+        {
+            ["code"] = 0,
+            ["data"] = new JsonObject
+            {
+                ["fileName"] = fileName,
+                ["contentType"] = response.Content.Headers.ContentType?.ToString() ?? "application/zip",
+                // Keep the original whole-package fields stable for callers that already verify
+                // contentSha256/byteLength before this tool gained chunking.
+                ["contentSha256"] = packageSha256,
+                ["packageSha256"] = packageSha256,
+                ["byteLength"] = totalBytes,
+                ["totalByteLength"] = totalBytes,
+                ["chunkSha256"] = chunkSha256,
+                ["chunkByteLength"] = bytes.LongLength,
+                ["offset"] = offset,
+                ["nextOffset"] = nextOffset,
+                ["hasMore"] = nextOffset is not null,
+                ["contentBase64"] = Convert.ToBase64String(bytes),
+            },
+        };
+    }
+
+    private static long? ReadPackageLength(HttpResponseMessage response)
+    {
+        if (response.Content.Headers.ContentRange?.Length is { } rangedLength)
+            return rangedLength;
+        if (response.Headers.TryGetValues(PackageByteLengthHeader, out var values) &&
+            long.TryParse(values.FirstOrDefault(), System.Globalization.NumberStyles.None,
+                System.Globalization.CultureInfo.InvariantCulture, out var explicitLength))
+            return explicitLength;
+        return null;
+    }
+
+    private static string? ReadPackageSha256(HttpResponseMessage response)
+        => response.Headers.TryGetValues(PackageSha256Header, out var values)
+            ? values.FirstOrDefault()
+            : null;
 
     // ---- stdio 401 refresh (Python _refresh_access_token parity) ----
 
