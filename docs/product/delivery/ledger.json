@@ -67,7 +67,7 @@
     "branch": "master",
     "commit": "337ca06d",
     "commit_date": "2026-11-28T11:51:45+08:00",
-    "observed_at": "2026-11-28T13:22:15+08:00",
+    "observed_at": "2026-11-28T14:13:10+08:00",
     "legacy_ledger": "docs/product/pim-delivery-ledger-20261125.md",
     "migrated_at": "2026-11-28",
     "note": "source_snapshot 与 PR 注册表已按 2026-11-28 实时状态刷新；item 状态与证据仍来自旧台账快照，未重跑真实设备/浏览器/provider 验收，PASS 为 0。"

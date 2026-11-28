@@ -370,6 +370,48 @@ class LedgerCase(unittest.TestCase):
         ledger = self.load(self.ledger_path)
         self.assertEqual(next(i for i in ledger["items"] if i["id"] == "A10")["status"], "PASS")
 
+    def test_current_failed_flow_can_keep_item_current(self):
+        ledger = self.load(self.ledger_path)
+        item = self.item(ledger, "A10")
+        item["status"] = "FAIL"
+        item["freshness"] = "current"
+        item["implementation_basis"] = "current-real-flow-A10-failed"
+        evidence = self.load(self.evidence_path)
+        flows = self.load(self.flows_path)
+        ev_id = "EV-RF-TEST-A10-FAILED"
+        evidence["evidence"].append({
+            "id": ev_id,
+            "type": "real-flow",
+            "level": "E4",
+            "freshness": "current",
+            "claim": "A10 current failed-flow fixture",
+            "source": "test fixture",
+            "observed_at": "2026-11-28T13:00:00+08:00",
+            "items": ["A10"],
+            "limits": "test fixture only",
+        })
+        flows["flows"].append({
+            "id": "RF-TEST-A10-FAILED",
+            "title": "A10 current failed flow",
+            "items": ["A10"],
+            "platforms": ["api"],
+            "result": "failed",
+            "freshness": "current",
+            "environment": "test fixture",
+            "observed_at": "2026-11-28T13:00:00+08:00",
+            "artifacts": [],
+            "limits": "test fixture only",
+            "evidence": ev_id,
+        })
+        item["evidence"].append(ev_id)
+        self.recount_status(ledger)
+        self.save(self.ledger_path, ledger)
+        self.save(self.evidence_path, evidence)
+        self.save(self.flows_path, flows)
+        self.render()
+        ok = self.run_validator()
+        self.assertTrue(ok, self.last_stderr)
+
 
 class RendererCase(unittest.TestCase):
     def setUp(self):

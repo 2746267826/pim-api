@@ -326,10 +326,12 @@ def main() -> int:
     w("验证命令：")
     w("")
     w("```bash")
-    w("python3 scripts/ci/validate-delivery-ledger.py")
     w("python3 scripts/ci/render-delivery-ledger.py")
     w("python3 scripts/ci/validate-delivery-ledger.py")
+    w("python3 scripts/ci/test-validate-delivery-ledger.py")
     w("```")
+    w("")
+    w("脚本按“重渲染 → 校验 → 聚焦测试”执行；单独运行 validator 时会拒绝未同步的生成视图。")
 
     text = "\n".join(out) + "\n"
     output = Path(args.output) if args.output else root / ledger["rendered_view"]["path"]

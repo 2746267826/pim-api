@@ -127,7 +127,7 @@ class Validator:
             self.error(where, f"{field} 不是 ISO 日期：{value!r}")
             return None
 
-    def is_current_proof(self, evidence_id: str, item_id: str) -> bool:
+    def is_current_real_evidence(self, evidence_id: str, item_id: str) -> bool:
         ev = self.evidence.get(evidence_id)
         if not ev:
             return False
@@ -140,10 +140,14 @@ class Validator:
             return False
         flow = matches[0]
         return (
-            flow.get("result") == "passed"
-            and flow.get("freshness") == "current"
+            flow.get("freshness") == "current"
             and item_id in (flow.get("items") or [])
         )
+
+    def is_current_proof(self, evidence_id: str, item_id: str) -> bool:
+        if not self.is_current_real_evidence(evidence_id, item_id):
+            return False
+        return self.flow_by_evidence[evidence_id][0].get("result") == "passed"
 
     def proof_platforms(self, evidence_id: str, item_id: str) -> set[str]:
         if not self.is_current_proof(evidence_id, item_id):
@@ -863,8 +867,11 @@ class Validator:
         elif item.get("exception"):
             self.error(where, "只有 APPROVED-EXCEPTION 项可以包含 exception")
 
-        current_proof = [ref for ref in refs if self.is_current_proof(ref, str(item.get("id")))]
-        if status in {"FAIL", "NOT-VERIFIED"} and item.get("freshness") == "current" and not current_proof:
+        current_real = [
+            ref for ref in refs
+            if self.is_current_real_evidence(ref, str(item.get("id")))
+        ]
+        if status in {"FAIL", "NOT-VERIFIED"} and item.get("freshness") == "current" and not current_real:
             self.error(where, "current freshness 但没有 current 真实证据")
 
     def check_batch_membership(self, where, item, ledger):

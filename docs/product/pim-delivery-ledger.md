@@ -382,7 +382,7 @@ source_snapshot 与 PR 注册表已按 2026-11-28 实时状态刷新；item 状�
 | [#610](https://github.com/2746267826/pim-api/pull/610) | pim-api | open | `c807f72c2e0c10c7656ab82c9bf0bc17c9b4475a` | `—` | current | 2026-11-28T13:22:15+08:00 | R02 |
 | [#611](https://github.com/2746267826/pim-api/pull/611) | pim-api | merged | `b5677143d034ae9c477c45f736d04c103ccdb05c` | `e460623c8afc9f20073768fdb422c0ac562f5e9e` | current | 2026-11-28T13:22:15+08:00 | Q07 |
 | [#612](https://github.com/2746267826/pim-api/pull/612) | pim-api | open | `f12c4c23381b1438c3c59995f25371e810ef08fd` | `—` | current | 2026-11-28T13:22:15+08:00 | H03 |
-| [#613](https://github.com/2746267826/pim-api/pull/613) | pim-api | open | `add843e93627d5c48dc23ea307a01c2f338ee875` | `—` | current | 2026-11-28T13:22:15+08:00 | R05 |
+| [#613](https://github.com/2746267826/pim-api/pull/613) | pim-api | open | `33c9e06df19ec710b684e260ec66d303ad39cfd8` | `—` | stale | 2026-11-28T14:13:10+08:00 | R05 |
 | [#614](https://github.com/2746267826/pim-api/pull/614) | pim-api | open | `f913940c3975f50337e14dff0f64d56deb1caf82` | `—` | current | 2026-11-28T13:22:15+08:00 | A07、Q03 |
 | [#615](https://github.com/2746267826/pim-api/pull/615) | pim-api | merged | `234f17ab16e1bdd5f3f8ed779e6176f4342fdcb1` | `555b5d4d485fa0a0b1c49d43491561766d197b10` | current | 2026-11-28T13:22:15+08:00 | R03 |
 | [#616](https://github.com/2746267826/pim-api/pull/616) | pim-api | open | `c4fefeb2e65b53f45716719403728fa71358fd04` | `—` | current | 2026-11-28T13:31:19+08:00 | H08、Q06 |
@@ -494,7 +494,9 @@ source_snapshot 与 PR 注册表已按 2026-11-28 实时状态刷新；item 状�
 验证命令：
 
 ```bash
-python3 scripts/ci/validate-delivery-ledger.py
 python3 scripts/ci/render-delivery-ledger.py
 python3 scripts/ci/validate-delivery-ledger.py
+python3 scripts/ci/test-validate-delivery-ledger.py
 ```
+
+脚本按“重渲染 → 校验 → 聚焦测试”执行；单独运行 validator 时会拒绝未同步的生成视图。

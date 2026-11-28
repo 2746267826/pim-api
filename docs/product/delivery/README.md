@@ -82,6 +82,9 @@ current；历史通过只能是 `passed_legacy` + `stale`；未执行只能是 `
 - `not-verified`：明确未验证的流程占位。
 - `unknown`：来源不明，必须补证。
 
+`current` 的 `FAIL`/`NOT-VERIFIED` 仍必须至少引用一条与该 item 关联的 current E4–E6
+真实流程证据（可以是 `failed`/`blocked`）；这证明本轮确实运行过，不代表 PASS。
+
 迁移时全部 item 初始为 `stale`，并保留 `legacy_status` 与 `legacy_source`。`stale` item 的
 `status` 必须等于 `legacy_status`，禁止静默改写历史。
 
@@ -126,15 +129,16 @@ PR 注册表每行必须带 `observed_at`。当前状态由 `git-history` 或 `g
 
 ```bash
 # 1. 修改 docs/product/delivery/*.json
-# 2. 校验
-python3 scripts/ci/validate-delivery-ledger.py
-# 3. 重新生成当前视图
+# 2. 重新生成当前视图
 python3 scripts/ci/render-delivery-ledger.py
-# 4. 再校验（校验器会检查视图是否为生成产物且恰好 161 项）
+# 3. 校验（同时检查视图是否为生成产物且恰好 161 项）
 python3 scripts/ci/validate-delivery-ledger.py
-# 5. 负例测试
+# 4. 聚焦测试
 python3 scripts/ci/test-validate-delivery-ledger.py
 ```
+
+修改 JSON 后必须先渲染再校验；校验器会拒绝未同步的生成视图，这是为了阻止手工编辑
+`docs/product/pim-delivery-ledger.md`。一键门禁脚本按“渲染 → 校验 → 测试”执行。
 
 `scripts/ci/generate-pim-delivery-ledger.sh` 是旧 awk 生成器，只保留历史用途，不再产出
 当前台账；当前视图统一由 `render-delivery-ledger.py` 生成。
