@@ -423,6 +423,29 @@ describe('401 单飞刷新', () => {
     expect(getString(STORAGE_KEYS.accessToken)).toBeNull()
   })
 
+  it('host 通道事件流不读取浏览器令牌，刷新失败也不清理浏览器会话', async () => {
+    vi.stubGlobal('__PIM_HOST_CHANNEL__', { v: 1, product: 'pim-host-windows' })
+    setTokens('tok1', 'rt1')
+    const authorization: (string | null)[] = []
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).includes('/auth/refresh')) {
+        throw new Error('host channel must not call the browser refresh endpoint')
+      }
+      authorization.push(new Headers(init?.headers).get('Authorization'))
+      return new Response(null, { status: 401 })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const error = await fetchEventStream('/api/v1/notifications/stream').catch((e) => e)
+
+    expect(error).toBeInstanceOf(ApiError)
+    expect(error.status).toBe(401)
+    expect(error.message).toContain('宿主会话刷新失败')
+    expect(authorization).toEqual([null])
+    expect(getString(STORAGE_KEYS.accessToken)).toBe('tok1')
+    expect(getString(STORAGE_KEYS.refreshToken)).toBe('rt1')
+  })
+
   it('并发 401 只触发一次 refresh，重放均成功', async () => {
     setTokens('tok1', 'rt1')
     let refreshCount = 0
