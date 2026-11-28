@@ -8,6 +8,10 @@ rule_files:
 scrape_configs:
   - job_name: pim-api
     metrics_path: /metrics
+    # /metrics 只豁免传输门禁，不豁免鉴权：下面的 bearer_token_file 必须存在且
+    # 内容等于 API 的 PIM_OPS_KEY 之一，否则抓取会得到 401。
+    # 生产 API 数据路径仍要求可信 X-Forwarded-Proto: https；不要为此把 /metrics
+    # 之外的路径改成明文抓取。
     scheme: http
     # 生产 compose 中 API 服务名为 pim；其他部署形态改为实际主机:端口
     targets:

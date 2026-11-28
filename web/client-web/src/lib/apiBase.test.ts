@@ -7,8 +7,9 @@ import {
   needsServerSetup,
   normalizeApiBaseInput,
   setApiBase,
+  validateApiBaseInput,
 } from './apiBase'
-import { STORAGE_KEYS, remove, setJSON } from './storage'
+import { STORAGE_KEYS, remove, setJSON, setString } from './storage'
 
 beforeEach(() => {
   remove(STORAGE_KEYS.apiBase)
@@ -42,8 +43,8 @@ describe('normalizeApiBaseInput（base 恒为源地址）', () => {
 
 describe('setApiBase / getApiBase', () => {
   it('去除尾部斜杠', () => {
-    setApiBase('http://192.168.1.10:5858///')
-    expect(getApiBase()).toBe('http://192.168.1.10:5858')
+    setApiBase('https://pim.example.com:5858///')
+    expect(getApiBase()).toBe('https://pim.example.com:5858')
   })
 
   it('空值表示同源', () => {
@@ -63,27 +64,27 @@ describe('apiUrl / candidateUrl', () => {
   })
 
   it('配置后拼接绝对地址', () => {
-    setApiBase('http://10.0.0.2:5858')
-    expect(apiUrl('/api/v1/status')).toBe('http://10.0.0.2:5858/api/v1/status')
+    setApiBase('http://127.0.0.1:5858')
+    expect(apiUrl('/api/v1/status')).toBe('http://127.0.0.1:5858/api/v1/status')
   })
 
   it('candidateUrl 不影响当前生效地址', () => {
-    setApiBase('http://a.example')
-    expect(candidateUrl('http://b.example/', '/api/version')).toBe('http://b.example/api/version')
-    expect(getApiBase()).toBe('http://a.example')
+    setApiBase('https://a.example')
+    expect(candidateUrl('https://b.example/', '/api/version')).toBe('https://b.example/api/version')
+    expect(getApiBase()).toBe('https://a.example')
   })
 })
 
 describe('历史记录', () => {
   it('去重并置顶，最多 5 条', () => {
-    for (const b of ['http://a', 'http://b', 'http://c', 'http://d', 'http://e', 'http://f']) {
+    for (const b of ['https://a.example', 'https://b.example', 'https://c.example', 'https://d.example', 'https://e.example', 'https://f.example']) {
       setApiBase(b)
     }
     let hist = getApiBaseHistory()
-    expect(hist).toEqual(['http://f', 'http://e', 'http://d', 'http://c', 'http://b'])
-    setApiBase('http://d')
+    expect(hist).toEqual(['https://f.example', 'https://e.example', 'https://d.example', 'https://c.example', 'https://b.example'])
+    setApiBase('https://d.example')
     hist = getApiBaseHistory()
-    expect(hist[0]).toBe('http://d')
+    expect(hist[0]).toBe('https://d.example')
     expect(hist).toHaveLength(5)
   })
 
@@ -94,6 +95,67 @@ describe('历史记录', () => {
       'bad value',
     ])
     expect(getApiBaseHistory()).toEqual(['https://pim.example.com:15860'])
+  })
+})
+
+describe('validateApiBaseInput（Q04 传输门禁）', () => {
+  it('远程 HTTP 在保存和测试连接前被阻止', () => {
+    const validation = validateApiBaseInput('http://notes.example.com:5858/api/v1')
+
+    expect(validation.ok).toBe(false)
+    expect(validation.reasonCode).toBe('remote-http-blocked')
+    expect(validation.message).toContain('HTTPS')
+    expect(() => setApiBase('http://notes.example.com:5858')).toThrow('HTTPS')
+  })
+
+  it('本机回环 HTTP 保留为开发例外', () => {
+    for (const base of ['http://127.0.0.1:5858', 'http://localhost:5858', 'http://[::1]:5858', 'http://10.0.2.2:5858']) {
+      const validation = validateApiBaseInput(base)
+      expect(validation.ok, base).toBe(true)
+      expect(validation.isLoopback, base).toBe(true)
+      expect(() => setApiBase(base)).not.toThrow()
+      expect(getApiBase()).toBe(base.replace(/\/$/, ''))
+    }
+  })
+
+  it('局域网 IP 仍按远程地址处理', () => {
+    expect(validateApiBaseInput('http://192.168.1.15:5858')).toMatchObject({
+      ok: false,
+      reasonCode: 'remote-http-blocked',
+    })
+  })
+
+  it('HTTPS 远程地址允许保存', () => {
+    const validation = validateApiBaseInput('https://notes.example.com/api/v1/')
+
+    expect(validation).toMatchObject({
+      ok: true,
+      value: 'https://notes.example.com',
+      isLoopback: false,
+    })
+    expect(() => setApiBase(validation.value)).not.toThrow()
+  })
+
+  it('拒绝账号、查询参数和片段，避免把凭据写进基址', () => {
+    for (const raw of [
+      'https://user:secret@notes.example.com',
+      'https://notes.example.com?token=secret',
+      'https://notes.example.com#fragment',
+    ]) {
+      expect(validateApiBaseInput(raw).ok, raw).toBe(false)
+    }
+  })
+
+  it('历史遗留的远程 HTTP 不会再被读取为生效基址或历史项', () => {
+    setString(STORAGE_KEYS.apiBase, 'http://notes.example.com:5858')
+    setJSON(STORAGE_KEYS.apiBaseHistory, [
+      'http://notes.example.com:5858',
+      'https://notes.example.com',
+      'http://127.0.0.1:5858',
+    ])
+
+    expect(getApiBase()).toBe('')
+    expect(getApiBaseHistory()).toEqual(['https://notes.example.com', 'http://127.0.0.1:5858'])
   })
 })
 

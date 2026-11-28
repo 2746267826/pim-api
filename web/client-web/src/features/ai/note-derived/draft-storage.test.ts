@@ -158,12 +158,12 @@ describe('note-derived local draft storage', () => {
     expect(canonicalServerBinding('http://document.example')).toBe('https://pim-a.example/custom-base')
   })
 
-  it('uses actual apiUrl host rules and strips credentials, query and fragment', () => {
+  it('ignores unsafe stored apiBase instead of hiding credentials or accepting a non-http scheme', () => {
     localStorage.setItem('pim.apiBase', 'https://draft-user:draft-pass@pim-a.example/custom-base?x=1#fragment')
-    expect(canonicalServerBinding('http://document.example/app')).toBe('https://pim-a.example/custom-base')
+    expect(canonicalServerBinding('http://document.example/app')).toBe('http://document.example')
 
     localStorage.setItem('pim.apiBase', 'ftp://pim-a.example/custom-base')
-    expect(canonicalServerBinding('http://document.example')).toBe('')
+    expect(canonicalServerBinding('http://document.example')).toBe('http://document.example')
   })
 
   it('uses the document origin, not configured apiBase, in host channel', () => {

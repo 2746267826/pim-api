@@ -37,6 +37,7 @@ Conventions:
 
 import base64
 import hashlib
+import ipaddress
 import json
 import os
 import re
@@ -47,6 +48,7 @@ import contextvars
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 try:
@@ -69,7 +71,32 @@ except ImportError:
     from mcp.server.fastmcp import FastMCP
     _MCP_SDK_V2 = False
 
-PIM_API_URL = os.getenv("PIM_API_URL", "http://127.0.0.1:5858").rstrip("/")
+def _validate_pim_api_url(raw: str) -> str:
+    """Q04：远程 PIM API 必须使用 HTTPS；本机回环 HTTP 仅用于本地开发。"""
+    candidate = (raw or "").strip().rstrip("/")
+    parsed = urlsplit(candidate)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        raise RuntimeError("PIM_API_URL 必须是 http(s):// 绝对地址")
+    if parsed.username is not None or parsed.password is not None:
+        raise RuntimeError("PIM_API_URL 不能包含账号或密码")
+    if parsed.query or parsed.fragment:
+        raise RuntimeError("PIM_API_URL 不能包含查询参数或片段")
+    if parsed.scheme == "http":
+        host = parsed.hostname.lower()
+        loopback = host == "localhost"
+        if not loopback:
+            try:
+                loopback = ipaddress.ip_address(host).is_loopback
+            except ValueError:
+                loopback = False
+        if not loopback:
+            raise RuntimeError(
+                "PIM_API_URL 远程地址必须使用 HTTPS；只有 127.0.0.1、::1、localhost 允许 HTTP"
+            )
+    return candidate
+
+
+PIM_API_URL = _validate_pim_api_url(os.getenv("PIM_API_URL", "http://127.0.0.1:5858"))
 DEFAULT_TIMEZONE = "Asia/Shanghai"
 
 # HTTP transport settings (Streamable HTTP). Only used when PIM_MCP_TRANSPORT=http.

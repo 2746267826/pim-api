@@ -7,7 +7,7 @@ import { clearTokens, setTokens } from '@/api/client'
 import { setApiBase } from '@/lib/apiBase'
 import { mobileApi } from './api'
 
-const BASE = 'http://192.0.2.10:5858'
+const BASE = 'https://192.0.2.10:5858'
 let calls: { url: string; method: string; auth: string | null }[] = []
 
 function envelope(data: unknown): Response {

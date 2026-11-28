@@ -6,6 +6,7 @@ using Pim.Api;
 using Pim.Api.Endpoints;
 using Pim.Api.Health;
 using Pim.Api.Infrastructure;
+using Pim.Api.Infrastructure.Http;
 using Pim.Api.Infrastructure.Ops;
 using Pim.Api.Middleware;
 using Pim.Api.Modules.ClientShell;
@@ -111,6 +112,10 @@ builder.Services.AddSwaggerGen(c =>
     c.OperationFilter<Pim.Api.Infrastructure.OpenApi.MobileProcessingResponseOperationFilter>();
     // R04：任务列表的重复 status 查询参数（OR 集合 + 四值 enum）超出 Swashbuckle 推断能力。
     c.OperationFilter<Pim.Api.Infrastructure.OpenApi.TaskStatusQueryOperationFilter>();
+    // Q04：传输门禁由中间件统一执行，这里把手写契约与运行时实际返回对齐：
+    // 非豁免操作显式声明 426/42600，文档级扩展记录全局传输头与豁免路径。
+    c.OperationFilter<Pim.Api.Infrastructure.OpenApi.TransportSecurityOperationFilter>();
+    c.DocumentFilter<Pim.Api.Infrastructure.OpenApi.TransportSecurityDocumentFilter>();
     c.DocumentFilter<Pim.Api.Infrastructure.OpenApi.SecuritySchemesDocumentFilter>();
 });
 
@@ -199,11 +204,14 @@ builder.Services.AddCors(options =>
             raw = "http://localhost:5173,http://127.0.0.1:5173,http://localhost:5858,http://127.0.0.1:5858";
         }
 
-        var allowedOrigins = raw
-            .Split([',', ';'], StringSplitOptions.RemoveEmptyEntries)
-            .Select(o => o.Trim())
-            .Where(o => !string.IsNullOrWhiteSpace(o))
-            .ToArray();
+        var filteredOrigins = CorsOriginPolicy.Filter(raw);
+        if (filteredOrigins.RejectedOrigins.Count > 0)
+        {
+            // 原始白名单项可能误带账号密码/查询串，日志只记录数量。
+            Log.Warning("CORS 白名单忽略了 {RejectedCount} 个非 HTTPS 或无效来源", filteredOrigins.RejectedOrigins.Count);
+        }
+
+        var allowedOrigins = filteredOrigins.AllowedOrigins.ToArray();
 
         if (allowedOrigins.Length > 0)
         {
@@ -295,12 +303,21 @@ builder.Services.AddSingleton(sp =>
 
 var app = builder.Build();
 
-app.UseForwardedHeaders(new ForwardedHeadersOptions
-{
-    ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto,
-    KnownProxies = { System.Net.IPAddress.Parse("127.0.0.1"), System.Net.IPAddress.Parse("::1") },
-    KnownNetworks = { new Microsoft.AspNetCore.HttpOverrides.IPNetwork(System.Net.IPAddress.Parse("127.0.0.1"), 32), new Microsoft.AspNetCore.HttpOverrides.IPNetwork(System.Net.IPAddress.Parse("::1"), 128) }
-});
+var forwardedHeadersOptions = ForwardedHeadersConfigurator.Create(
+    builder.Configuration[ForwardedHeadersConfigurator.ConfigurationKey]
+    ?? Environment.GetEnvironmentVariable(ForwardedHeadersConfigurator.EnvironmentVariable),
+    builder.Configuration[ForwardedHeadersConfigurator.NetworkSubnetEnvironmentVariable]
+    ?? Environment.GetEnvironmentVariable(ForwardedHeadersConfigurator.NetworkSubnetEnvironmentVariable));
+var transportSecurityOptions = TransportSecurityOptions.FromConfiguration(
+    builder.Configuration,
+    app.Environment);
+Log.Information(
+    "传输安全门禁：EnforceHttps={EnforceHttps}, AllowLoopbackCleartext={AllowLoopbackCleartext}, HstsMaxAgeSeconds={HstsMaxAgeSeconds}",
+    transportSecurityOptions.EnforceHttps,
+    transportSecurityOptions.AllowLoopbackCleartext,
+    transportSecurityOptions.HstsMaxAgeSeconds);
+app.UseForwardedHeaders(forwardedHeadersOptions);
+app.UseMiddleware<RequestSchemeHeaderMiddleware>();
 app.UseMiddleware<CorrelationIdMiddleware>();
 // 指标中间件必须挂在 ExceptionMiddleware 外侧（此处）：它在请求结束时按响应上的
 // StatusCode 打标签，而异常是在 ExceptionMiddleware 里才被转成 502/500 的。
@@ -314,6 +331,7 @@ app.UseSerilogRequestLogging(options =>
     options.MessageTemplate = "{RemoteIpAddress} {RequestMethod} {RequestPath} responded {StatusCode} in {Elapsed:0.000} ms";
 });
 app.UseMiddleware<ExceptionMiddleware>();
+app.UseMiddleware<TransportSecurityMiddleware>(transportSecurityOptions);
 app.UseCors();
 app.UseAuthentication();
 app.UseMiddleware<OpsRateLimitMiddleware>();
@@ -421,27 +439,10 @@ app.MapHealthChecks("/health/ready", new Microsoft.AspNetCore.Diagnostics.Health
     ResponseWriter = Pim.Api.Health.PimHealthChecks.WriteReadyResponse
 }).AllowAnonymous();
 
-// Prometheus 指标端点：admin JWT 或 OpsKey（X-PIM-Ops-Key / Bearer）鉴权，不公开
-app.MapMetrics("/metrics").AddEndpointFilter(async (context, next) =>
-{
-    var http = context.HttpContext;
-    if (http.User.IsInRole("admin"))
-        return await next(context);
-
-    var cfg = http.RequestServices.GetRequiredService<IConfiguration>();
-    var validator = new OpsKeyValidator(cfg["PIM_OPS_KEY"] ?? cfg["Ops:Key"]);
-    var key = http.Request.Headers["X-PIM-Ops-Key"].FirstOrDefault();
-    if (string.IsNullOrWhiteSpace(key))
-    {
-        var auth = http.Request.Headers.Authorization.FirstOrDefault();
-        if (auth?.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase) == true)
-            key = auth["Bearer ".Length..];
-    }
-    if (validator.HasKeys && validator.IsValid(key))
-        return await next(context);
-
-    return Results.Text("{\"code\":40101,\"message\":\"MetricsAuthRequired\"}", "application/json", statusCode: 401);
-});
+// Prometheus 指标端点：admin JWT 或 OpsKey（X-PIM-Ops-Key / Bearer）鉴权，不公开。
+// 传输门禁将 /metrics 视为运营端点豁免明文（见 TransportSecurityPolicy），
+// 但鉴权仍由该过滤器强制执行——Prometheus 以 HTTP 抓取时也必须携带 OpsKey。
+app.MapMetrics("/metrics").AddEndpointFilter(MetricsAuthorizationFilter.InvokeAsync);
 
 // Ops endpoints
 app.MapOpsLogsEndpoints();

@@ -9,6 +9,7 @@
  * - >2GB：直接拒绝
  */
 import { STORAGE_KEYS, getJSON, remove, setJSON } from '@/lib/storage'
+import { apiUrl } from '@/lib/apiBase'
 import { filesApi } from './api'
 import {
   contentRangeHeader,
@@ -63,6 +64,48 @@ function readPersistedHistory(): PersistedTransfer[] {
 function readClearEpoch(): number {
   const value = getJSON<number>(STORAGE_KEYS.transferHistoryClearEpoch, 0)
   return Number.isSafeInteger(value) && value >= 0 ? value : 0
+}
+
+interface SafeUploadTarget {
+  url: string
+  host: string
+}
+
+/**
+ * Q04：预授权直传地址必须是 HTTPS。浏览器直传不经 PIM API，因此必须在发出第一个
+ * 分片前自行拦住远程 HTTP；错误与日志只保留主机名，不包含签名查询参数。
+ */
+function resolveUploadTarget(raw: string): SafeUploadTarget {
+  if (!raw.trim()) {
+    throw new Error('云盘预授权上传地址为空，已停止上传')
+  }
+  const relative = !/^[a-z][a-z0-9+.-]*:/i.test(raw)
+  const resolutionBase = uploadResolutionBase()
+  let parsed: URL
+  try {
+    parsed = new URL(raw, resolutionBase)
+  } catch {
+    throw new Error('云盘预授权上传地址格式无效，已停止上传')
+  }
+  if (relative && parsed.origin !== new URL(resolutionBase).origin) {
+    throw new Error(`云盘预授权上传地址必须是同源相对地址或 HTTPS（${parsed.host}），已停止上传`)
+  }
+  if (parsed.username || parsed.password) {
+    throw new Error('云盘预授权上传地址包含账号或密码，已停止上传')
+  }
+  // 内置存储可返回同源相对地址；绝对预授权 URL 一律必须是 HTTPS。
+  if (!relative && parsed.protocol !== 'https:') {
+    throw new Error(`云盘预授权上传地址必须使用 HTTPS（${parsed.host}），已停止上传`)
+  }
+  // 签名 URL 必须原样发送，不能经 URL 序列化重写查询参数；相对地址按当前 API 源解析。
+  return { url: relative ? apiUrl(raw) : raw, host: parsed.host }
+}
+
+function uploadResolutionBase(): string {
+  const apiRoot = apiUrl('/')
+  return typeof window !== 'undefined'
+    ? new URL(apiRoot, window.location.href).href
+    : new URL(apiRoot, 'http://localhost/').href
 }
 
 export class UploadEngine {
@@ -231,6 +274,19 @@ export class UploadEngine {
   /** Provider 会话分片上传：云盘直传或内置存储；PUT 只使用返回的资源授权 URL。 */
   private async uploadBySession(item: TransferItem) {
     const session = await filesApi.createUploadSession(item.targetPath, item.fileName, item.providerId)
+    let target: SafeUploadTarget
+    try {
+      target = resolveUploadTarget(session.uploadUrl)
+    } catch (err) {
+      console.warn('[pim:upload] preauthorized upload URL blocked', {
+        providerId: item.providerId,
+        fileId: item.id,
+        stage: 'preauthorize-url',
+        host: safeHostForLog(session.uploadUrl),
+        reason: err instanceof Error ? err.message : String(err),
+      })
+      throw err
+    }
     let offset = 0
     let uploadedItemId: string | undefined
 
@@ -243,12 +299,30 @@ export class UploadEngine {
       let attempt = 0
       let handled = false
       for (;;) {
-        const res = await fetch(session.uploadUrl, {
-          method: 'PUT',
-          // 不带账号 Authorization；只向服务端返回的临时会话地址发送分片。
-          headers: { 'Content-Range': contentRangeHeader(item.fileSize, chunk), 'Content-Type': 'application/octet-stream' },
-          body: blob,
-        })
+        let res: Response
+        try {
+          res = await fetch(target.url, {
+            method: 'PUT',
+            // 不跟随服务端返回的重定向：初始地址即使为 HTTPS，也不能让 3xx
+            // 把分片带到 HTTP、其他主机或未知协议。
+            redirect: 'error',
+            // 不带账号 Authorization；只向服务端返回的临时会话地址发送分片。
+            headers: { 'Content-Range': contentRangeHeader(item.fileSize, chunk), 'Content-Type': 'application/octet-stream' },
+            body: blob,
+          })
+        } catch (err) {
+          console.warn('[pim:upload] preauthorized upload request failed', {
+            providerId: item.providerId,
+            fileId: item.id,
+            stage: 'chunk-put',
+            host: target.host,
+            reason: err instanceof Error ? err.name : 'unknown',
+          })
+          throw new Error(
+            `云盘直传失败（阶段：分片上传，主机 ${target.host}）：网络或 TLS 校验失败，`
+            + '浏览器未提供证书细节',
+          )
+        }
         if (res.status === 201 || res.status === 200) {
           const body = (await res.json().catch(() => null)) as { id?: string } | null
           uploadedItemId = body?.id
@@ -276,6 +350,14 @@ export class UploadEngine {
     await filesApi.completeUploadSession(item.targetPath, item.fileName, item.providerId, uploadedItemId)
     item.progress = 1
     this.emit()
+  }
+}
+
+function safeHostForLog(raw: string): string {
+  try {
+    return new URL(raw, uploadResolutionBase()).host
+  } catch {
+    return '<invalid>'
   }
 }
 

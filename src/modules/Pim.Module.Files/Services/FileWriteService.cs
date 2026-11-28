@@ -6,6 +6,7 @@ using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
 using Pim.Module.Files.Entities;
 using Pim.Module.Files.Providers.Abstractions;
+using Pim.Module.Files.Providers.Local;
 
 namespace Pim.Module.Files.Services;
 
@@ -380,7 +381,14 @@ public sealed class FileWriteService
         FileNameValidator.EnsureValidName(fileName);
         var (provider, session) = await LoadConnectedAccountAsync(providerId, ct);
         var folder = await ResolveFolderRefAsync(provider, session, destinationFolderPath, ct);
-        return await session.Writer.CreateUploadSessionAsync(folder, fileName, ct);
+        var upload = await session.Writer.CreateUploadSessionAsync(folder, fileName, ct);
+        var safeUrl = UploadUrlSecurity.EnsureSecure(
+            upload.UploadUrl,
+            provider.Provider,
+            fileName,
+            allowRelative: string.Equals(provider.Provider, LocalFileProvider.Key, StringComparison.OrdinalIgnoreCase),
+            _logger);
+        return upload with { UploadUrl = safeUrl };
     }
 
     /// <summary>

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -13,7 +13,7 @@ import {
 } from '@/features/ai/note-derived/draft-storage'
 import { clearObjectUrlCache, objectUrlCacheCounts, putCachedObjectUrl } from '@/lib/object-url-cache'
 import { listUnsavedDrafts, registerUnsavedDraft, resetUnsavedDraftsForTests } from '@/lib/unsaved-drafts'
-import { STORAGE_KEYS } from '@/lib/storage'
+import { STORAGE_KEYS, remove } from '@/lib/storage'
 import { ServerForm } from './server-form'
 
 vi.mock('@/lib/notify', () => ({ notifySuccess: vi.fn() }))
@@ -41,6 +41,19 @@ function seedDirtyAiDraft(): string {
   return key
 }
 
+function renderForm() {
+  client = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  })
+  return render(
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <ServerForm mode="settings" />
+      </QueryClientProvider>
+    </MemoryRouter>,
+  )
+}
+
 beforeEach(() => {
   localStorage.clear()
   resetUnsavedDraftsForTests()
@@ -57,6 +70,7 @@ afterEach(() => {
   resetUnsavedDraftsForTests()
   clearObjectUrlCache()
   localStorage.clear()
+  vi.unstubAllGlobals()
   vi.restoreAllMocks()
 })
 
@@ -107,4 +121,47 @@ describe('服务器切换', () => {
     expect(localStorage.getItem(draftKey)).not.toBeNull()
     expect(listUnsavedDrafts()).toHaveLength(1)
   }, 30_000)
+})
+
+describe('服务器连接表单传输门禁（Q04）', () => {
+  beforeEach(() => {
+    remove(STORAGE_KEYS.apiBase)
+    remove(STORAGE_KEYS.apiBaseHistory)
+  })
+
+  it('远程 HTTP 在测试连接与保存前即被禁用并显示原因', async () => {
+    renderForm()
+
+    const input = screen.getByLabelText('API 地址')
+    fireEvent.change(input, { target: { value: 'http://notes.example.com:5858' } })
+
+    expect(screen.getByRole('alert').textContent).toContain('远程服务器必须使用 HTTPS')
+    expect((screen.getByRole('button', { name: '测试连接' }) as HTMLButtonElement).disabled).toBe(true)
+    expect((screen.getByRole('button', { name: '保存并重新登录' }) as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('同源默认与 HTTPS 地址仍可测试和保存', async () => {
+    renderForm()
+
+    expect((screen.getByRole('button', { name: '测试连接' }) as HTMLButtonElement).disabled).toBe(false)
+
+    const input = screen.getByLabelText('API 地址')
+    fireEvent.change(input, { target: { value: 'https://notes.example.com' } })
+
+    expect((screen.getByRole('button', { name: '测试连接' }) as HTMLButtonElement).disabled).toBe(false)
+    expect((screen.getByRole('button', { name: '保存并重新登录' }) as HTMLButtonElement).disabled).toBe(false)
+  })
+
+  it('HTTPS 连接失败时提示核对证书链、域名与有效期', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')))
+    renderForm()
+
+    fireEvent.change(screen.getByLabelText('API 地址'), { target: { value: 'https://notes.example.com' } })
+    fireEvent.click(screen.getByRole('button', { name: '测试连接' }))
+
+    const alert = await screen.findByText(/HTTPS 连接被浏览器阻止/)
+    expect(alert.textContent).toContain('证书链')
+    expect(alert.textContent).toContain('域名')
+    expect(alert.textContent).toContain('有效期')
+  })
 })

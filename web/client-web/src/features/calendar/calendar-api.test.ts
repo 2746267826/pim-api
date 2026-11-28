@@ -7,7 +7,7 @@ import { setApiBase } from '@/lib/apiBase'
 import { calendarsApi, eventsApi, tasksApi } from './api'
 import { TASK_STATUS } from './types'
 
-const BASE = 'http://192.0.2.10:5858'
+const BASE = 'https://192.0.2.10:5858'
 let calls: { url: string; method: string; body: unknown }[] = []
 
 function envelope(data: unknown): Response {

@@ -145,8 +145,8 @@ internal sealed class FakeGraphServer : IAsyncDisposable
                 uploadUrl = $"{BaseUrl}/upload/{sessionId}",
                 expirationDateTime = DateTimeOffset.UtcNow.AddHours(1).ToString("o"),
             });
-            await WriteAsync(context, 200, body);
             Record(method, path, null, 0);
+            await WriteAsync(context, 200, body);
             return;
         }
 
@@ -208,8 +208,8 @@ internal sealed class FakeGraphServer : IAsyncDisposable
         {
             var sessionId = path["/v1.0/upload/".Length..];
             var state = _sessions.TryGetValue(sessionId, out var s) ? s : new UploadSessionState();
-            await WriteAsync(context, 200, $"{{\"nextExpectedRanges\":[\"{state.Received}-\"]}}");
             Record(method, path, null, 0);
+            await WriteAsync(context, 200, $"{{\"nextExpectedRanges\":[\"{state.Received}-\"]}}");
             return;
         }
 
@@ -238,8 +238,8 @@ internal sealed class FakeGraphServer : IAsyncDisposable
             if (parentPath is null)
             {
                 // 复刻真实账号的 400 invalidRequest
-                await WriteAsync(context, 400, """{"error":{"code":"invalidRequest","message":"The request is malformed or incorrect."}}""");
                 Record(method, path, null, LastRequestBody.Length);
+                await WriteAsync(context, 400, """{"error":{"code":"invalidRequest","message":"The request is malformed or incorrect."}}""");
                 return;
             }
 
@@ -253,8 +253,8 @@ internal sealed class FakeGraphServer : IAsyncDisposable
             {
                 if (conflict != "rename")
                 {
-                    await WriteAsync(context, 409, """{"error":{"code":"nameAlreadyExists"}}""");
                     Record(method, path, null, LastRequestBody.Length);
+                    await WriteAsync(context, 409, """{"error":{"code":"nameAlreadyExists"}}""");
                     return;
                 }
 
@@ -270,6 +270,7 @@ internal sealed class FakeGraphServer : IAsyncDisposable
 
             var folderId = $"folder-{Guid.NewGuid():N}";
             _idToName[folderId] = (finalName, parentPath);
+            Record(method, path, null, LastRequestBody.Length);
             await WriteAsync(context, 201, JsonSerializer.Serialize(new
             {
                 id = folderId,
@@ -277,7 +278,6 @@ internal sealed class FakeGraphServer : IAsyncDisposable
                 folder = new { childCount = 0 },
                 parentReference = new { path = parentPath == "/" ? "/drive/root:" : $"/drive/root:{parentPath}" },
             }));
-            Record(method, path, null, LastRequestBody.Length);
             return;
         }
 

@@ -117,6 +117,11 @@ PIM_ACCESS_TOKEN=<jwt> dotnet src/Pim.Api.dll --mcp-stdio
   }
 }
 ```
+- Q04：远程 MCP/API 地址必须使用 HTTPS（例如上面的 `https://home.hsww.party:15858/mcp`）。
+  仅本机回环（`127.0.0.1`、`::1`、`localhost`）允许 HTTP，用于本地开发；
+  `PIM_API_URL` 填远程 HTTP 会在 MCP 进程启动时被拒绝。生产 API 对未经过可信
+  `X-Forwarded-Proto: https` 的明文数据请求返回 `426`、`42600` 和
+  `X-Pim-Transport: https-required`；先修反代和 `PIM_TRUSTED_PROXIES`，不要降级为 HTTP。
 - Token 获取：WebUI 设置 → **MCP 管理** → 新建客户端 → 生成一次性 Token（`pim_mcp_` 前缀，只显示一次）。默认权限：读取全开、写入全关。
 
 **`claude_desktop_config.json`**

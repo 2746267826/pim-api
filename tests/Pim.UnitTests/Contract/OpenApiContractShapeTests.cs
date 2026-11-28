@@ -76,6 +76,69 @@ public sealed class OpenApiContractShapeTests
     }
 
     [Fact]
+    public void TransportSecurityGateIsDocumentedOnProtectedOperations()
+    {
+        var operation = Document.Paths["/api/v1/auth/login"].Operations[OperationType.Post];
+
+        Assert.True(operation.Responses.TryGetValue("426", out var response));
+        Assert.Equal(
+            "#/components/responses/PimHttpsRequired",
+            response!.Reference?.ReferenceV3);
+        var shared = Document.Components.Responses["PimHttpsRequired"];
+        Assert.Equal(
+            "#/components/schemas/StringApiResponse",
+            shared.Content["application/json"].Schema.Reference?.ReferenceV3);
+        Assert.True(shared.Headers.ContainsKey("X-Pim-Transport"));
+        Assert.Equal(
+            "#/components/headers/X-Pim-Transport",
+            shared.Headers["X-Pim-Transport"].Reference?.ReferenceV3);
+        var transportValues = Document.Components.Headers["X-Pim-Transport"].Schema.Enum
+            .OfType<OpenApiString>()
+            .Select(item => item.Value)
+            .ToList();
+        Assert.Contains("cleartext", transportValues);
+        Assert.Contains("https-required", transportValues);
+        Assert.True(shared.Headers.ContainsKey("X-Pim-Request-Scheme"));
+        Assert.True(shared.Headers.ContainsKey("Upgrade"));
+        Assert.True(shared.Headers.ContainsKey("Cache-Control"));
+        var example = Assert.IsType<OpenApiObject>(
+            shared.Content["application/json"].Example);
+        Assert.Equal(42600, Assert.IsType<OpenApiInteger>(example["code"]).Value);
+    }
+
+    [Fact]
+    public void TransportSecurityGlobalMetadataCoversHeadersAndExemptions()
+    {
+        Assert.True(Document.Extensions.TryGetValue(
+            "x-pim-transport-security",
+            out var raw));
+        var metadata = Assert.IsType<OpenApiObject>(raw);
+        var rejection = Assert.IsType<OpenApiObject>(metadata["rejection"]);
+        Assert.Equal(426, Assert.IsType<OpenApiInteger>(rejection["status"]).Value);
+        Assert.Equal(42600, Assert.IsType<OpenApiInteger>(rejection["bodyCode"]).Value);
+        var exempt = Assert.IsType<OpenApiArray>(metadata["exemptPaths"])
+            .OfType<OpenApiString>()
+            .Select(item => item.Value)
+            .ToList();
+        Assert.Contains("/health", exempt);
+        Assert.Contains("/metrics", exempt);
+        Assert.DoesNotContain("/api/v1/auth/login", exempt);
+        Assert.True(Document.Components.Headers.ContainsKey("X-Pim-Request-Scheme"));
+        Assert.True(Document.Components.Headers.ContainsKey("X-Pim-Transport"));
+        Assert.True(Document.Components.Headers.ContainsKey("Strict-Transport-Security"));
+    }
+
+    [Theory]
+    [InlineData("/health")]
+    [InlineData("/api/version")]
+    public void TransportSecurityGateIsNotDocumentedOnExemptOperations(string path)
+    {
+        var operation = Document.Paths[path].Operations[OperationType.Get];
+
+        Assert.False(operation.Responses.ContainsKey("426"));
+    }
+
+    [Fact]
     public void NoteAsrBatchMimeContractExportsEveryTypedMultipartField()
     {
         var operation = Document.Paths["/api/v1/native-notes/asr-routing/batches"].Operations[OperationType.Post];

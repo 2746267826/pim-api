@@ -1,5 +1,74 @@
 {
   "components": {
+    "headers": {
+      "Strict-Transport-Security": {
+        "description": "HSTS on HTTPS responses when PIM_HSTS_MAX_AGE_SECONDS is greater than 0; defaults to 31536000 outside Development/Test.",
+        "schema": {
+          "example": "max-age=31536000",
+          "type": "string"
+        }
+      },
+      "X-Pim-Request-Scheme": {
+        "description": "Effective request scheme after trusted X-Forwarded-Proto processing. Present on every HTTP response, including transport rejections.",
+        "schema": {
+          "enum": [
+            "http",
+            "https"
+          ],
+          "type": "string"
+        }
+      },
+      "X-Pim-Transport": {
+        "description": "Transport marker: cleartext on cleartext requests while HTTPS enforcement is enabled, https-required on every HTTP 426 transport rejection.",
+        "schema": {
+          "enum": [
+            "cleartext",
+            "https-required"
+          ],
+          "type": "string"
+        }
+      }
+    },
+    "responses": {
+      "PimHttpsRequired": {
+        "content": {
+          "application/json": {
+            "example": {
+              "code": 42600,
+              "data": null,
+              "message": "该接口要求 HTTPS：请通过 HTTPS 入口访问，或检查反向代理的 X-Forwarded-Proto 与可信代理配置。",
+              "timestamp": "2026-01-01T00:00:00+00:00"
+            },
+            "schema": {
+              "$ref": "#/components/schemas/StringApiResponse"
+            }
+          }
+        },
+        "description": "HTTPS required. Production-like environments reject cleartext requests to protected endpoints with HTTP 426 and envelope code 42600 unless a trusted reverse proxy supplies X-Forwarded-Proto: https. Exempt operations are listed in x-pim-transport-security.exemptPaths.",
+        "headers": {
+          "Cache-Control": {
+            "description": "Transport rejections must not be cached.",
+            "schema": {
+              "example": "no-store",
+              "type": "string"
+            }
+          },
+          "Upgrade": {
+            "description": "Upgrade hint advertised with the HTTPS-required rejection.",
+            "schema": {
+              "example": "TLS/1.2",
+              "type": "string"
+            }
+          },
+          "X-Pim-Request-Scheme": {
+            "$ref": "#/components/headers/X-Pim-Request-Scheme"
+          },
+          "X-Pim-Transport": {
+            "$ref": "#/components/headers/X-Pim-Transport"
+          }
+        }
+      }
+    },
     "schemas": {
       "AcceptActivityClassificationSuggestionRequest": {
         "additionalProperties": false,
@@ -26850,6 +26919,9 @@
             },
             "description": "OK"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -26884,6 +26956,9 @@
           },
           "403": {
             "description": "Forbidden"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -26952,6 +27027,9 @@
               }
             },
             "description": "Conflict"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -27034,6 +27112,9 @@
             },
             "description": "Not Found"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -27114,6 +27195,9 @@
               }
             },
             "description": "Not Found"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -27196,6 +27280,9 @@
             },
             "description": "Not Found"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -27255,6 +27342,9 @@
           "413": {
             "description": "Content Too Large"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "503": {
             "description": "Service Unavailable"
           }
@@ -27301,6 +27391,9 @@
           },
           "404": {
             "description": "Not Found"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -27351,6 +27444,9 @@
           "413": {
             "description": "Content Too Large"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "503": {
             "description": "Service Unavailable"
           }
@@ -27397,6 +27493,9 @@
           },
           "404": {
             "description": "Not Found"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -27439,6 +27538,9 @@
           },
           "404": {
             "description": "Not Found"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -27469,6 +27571,9 @@
           },
           "403": {
             "description": "Forbidden"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -27515,6 +27620,9 @@
           },
           "404": {
             "description": "Not Found"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -27565,6 +27673,9 @@
           "413": {
             "description": "Content Too Large"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "503": {
             "description": "Service Unavailable"
           }
@@ -27611,6 +27722,9 @@
           },
           "404": {
             "description": "Not Found"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -27641,6 +27755,9 @@
           },
           "403": {
             "description": "Forbidden"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -27688,6 +27805,9 @@
           },
           "413": {
             "description": "Content Too Large"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -27751,6 +27871,9 @@
           },
           "413": {
             "description": "Content Too Large"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -27812,6 +27935,9 @@
           },
           "404": {
             "description": "Not Found"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -27856,6 +27982,9 @@
           },
           "404": {
             "description": "Not Found"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -27917,6 +28046,9 @@
           },
           "413": {
             "description": "Content Too Large"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -27947,6 +28079,9 @@
           },
           "403": {
             "description": "Forbidden"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -27991,6 +28126,9 @@
           },
           "409": {
             "description": "Conflict"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -28021,6 +28159,9 @@
           },
           "403": {
             "description": "Forbidden"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -28065,6 +28206,9 @@
           },
           "409": {
             "description": "Conflict"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -28095,6 +28239,9 @@
           },
           "403": {
             "description": "Forbidden"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -28151,6 +28298,9 @@
           },
           "409": {
             "description": "Conflict"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -28209,6 +28359,9 @@
           },
           "409": {
             "description": "Conflict"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -28272,6 +28425,9 @@
           },
           "413": {
             "description": "Content Too Large"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "503": {
             "description": "Service Unavailable"
@@ -28354,6 +28510,9 @@
               }
             },
             "description": "Not Found"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -28479,6 +28638,9 @@
           "403": {
             "description": "Forbidden"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -28540,6 +28702,9 @@
             },
             "description": "Not Found"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -28593,6 +28758,9 @@
           },
           "404": {
             "description": "Not Found"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -28633,6 +28801,9 @@
           },
           "409": {
             "description": "Conflict"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -28677,6 +28848,9 @@
           },
           "404": {
             "description": "Not Found"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -28726,6 +28900,9 @@
           },
           "409": {
             "description": "Conflict"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -28776,6 +28953,9 @@
           "413": {
             "description": "Content Too Large"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "503": {
             "description": "Service Unavailable"
           }
@@ -28822,6 +29002,9 @@
           },
           "404": {
             "description": "Not Found"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -28880,6 +29063,9 @@
           },
           "403": {
             "description": "Forbidden"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -28924,6 +29110,9 @@
           },
           "404": {
             "description": "Not Found"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -28982,6 +29171,9 @@
           },
           "403": {
             "description": "Forbidden"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -29042,6 +29234,9 @@
           "413": {
             "description": "Content Too Large"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "503": {
             "description": "Service Unavailable"
           }
@@ -29088,6 +29283,9 @@
           },
           "404": {
             "description": "Not Found"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -29146,6 +29344,9 @@
             },
             "description": "Forbidden"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "429": {
             "description": "Too Many Requests"
           },
@@ -29180,6 +29381,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -29238,6 +29442,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -29294,6 +29501,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -29364,6 +29574,9 @@
             },
             "description": "Conflict"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -29414,6 +29627,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -29470,6 +29686,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -29525,6 +29744,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -29584,6 +29806,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -29642,6 +29867,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -29688,6 +29916,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -29743,6 +29974,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -29800,6 +30034,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -29854,6 +30091,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -29912,6 +30152,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -29979,6 +30222,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -30036,6 +30282,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -30105,6 +30354,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -30162,6 +30414,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -30231,6 +30486,9 @@
           "403": {
             "description": "Forbidden"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -30290,6 +30548,9 @@
           },
           "403": {
             "description": "Forbidden"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -30351,6 +30612,9 @@
           "403": {
             "description": "Forbidden"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -30411,6 +30675,9 @@
           "403": {
             "description": "Forbidden"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -30467,6 +30734,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -30528,6 +30798,9 @@
           "403": {
             "description": "Forbidden"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -30587,6 +30860,9 @@
           },
           "403": {
             "description": "Forbidden"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -30685,6 +30961,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -30791,6 +31070,9 @@
             },
             "description": "Conflict"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -30857,6 +31139,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -30937,6 +31222,9 @@
               }
             },
             "description": "Conflict"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -31063,6 +31351,9 @@
             },
             "description": "Conflict"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "429": {
             "content": {
               "application/json": {
@@ -31148,6 +31439,9 @@
               }
             },
             "description": "Not Found"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -31282,6 +31576,9 @@
             },
             "description": "Conflict"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "429": {
             "content": {
               "application/json": {
@@ -31379,6 +31676,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -31452,6 +31752,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -31498,6 +31801,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -31553,6 +31859,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -31612,6 +31921,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -31667,6 +31979,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -31734,6 +32049,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -31791,6 +32109,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -31860,6 +32181,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -31916,6 +32240,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -32005,6 +32332,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -32052,6 +32382,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -32098,6 +32431,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -32156,6 +32492,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -32203,6 +32542,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -32249,6 +32591,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -32317,6 +32662,9 @@
             },
             "description": "Not Found"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -32375,6 +32723,9 @@
             },
             "description": "Not Found"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -32421,6 +32772,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -32508,6 +32862,9 @@
               }
             },
             "description": "Conflict"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "429": {
             "content": {
@@ -32627,6 +32984,9 @@
             },
             "description": "Conflict"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "429": {
             "content": {
               "application/json": {
@@ -32704,6 +33064,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -32751,6 +33114,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -32797,6 +33163,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -32852,6 +33221,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -32909,6 +33281,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -32974,6 +33349,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -33043,6 +33421,9 @@
             },
             "description": "Not Found"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -33089,6 +33470,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -33144,6 +33528,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -33240,6 +33627,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -33315,6 +33705,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -33381,6 +33774,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -33427,6 +33823,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -33483,6 +33882,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -33529,6 +33931,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -33596,6 +34001,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -33653,6 +34061,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -33720,6 +34131,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -33766,6 +34180,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -33823,6 +34240,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -33882,6 +34302,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -33939,6 +34362,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -33998,6 +34424,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -34055,6 +34484,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -34101,6 +34533,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -34156,6 +34591,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -34302,6 +34740,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -34356,6 +34797,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -34414,6 +34858,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -34470,6 +34917,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -34529,6 +34979,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -34584,6 +35037,9 @@
               }
             },
             "description": "Not Found"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -34651,6 +35107,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -34708,6 +35167,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -34775,6 +35237,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -34841,6 +35306,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -34917,6 +35385,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -34984,6 +35455,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -35053,6 +35527,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -35120,6 +35597,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -35177,6 +35657,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -35244,6 +35727,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -35301,6 +35787,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -35360,6 +35849,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -35418,6 +35910,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -35475,6 +35970,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -35543,6 +36041,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -35576,6 +36077,9 @@
               }
             },
             "description": "OK"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -35629,6 +36133,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -35675,6 +36182,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -35733,6 +36243,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -35770,6 +36283,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -35806,6 +36322,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -35872,6 +36391,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -35908,6 +36430,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -35955,6 +36480,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -36023,6 +36551,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -36089,6 +36620,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -36157,6 +36691,9 @@
             },
             "description": "Not Found"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "429": {
             "content": {
               "application/json": {
@@ -36206,6 +36743,9 @@
           },
           "400": {
             "description": "Bad Request"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "tags": [
@@ -36300,6 +36840,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -36356,6 +36899,9 @@
               }
             },
             "description": "Not Found"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "429": {
             "content": {
@@ -36444,6 +36990,9 @@
             },
             "description": "Not Found"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "429": {
             "content": {
               "application/json": {
@@ -36531,6 +37080,9 @@
             },
             "description": "Not Found"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -36598,6 +37150,9 @@
               }
             },
             "description": "Not Found"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "429": {
             "content": {
@@ -36675,6 +37230,9 @@
             },
             "description": "Not Found"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -36738,6 +37296,9 @@
               }
             },
             "description": "Not Found"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "429": {
             "content": {
@@ -36819,6 +37380,9 @@
               }
             },
             "description": "Not Found"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "429": {
             "content": {
@@ -36907,6 +37471,9 @@
               }
             },
             "description": "Not Found"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "429": {
             "content": {
@@ -37007,6 +37574,9 @@
             },
             "description": "Not Found"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "429": {
             "content": {
               "application/json": {
@@ -37105,6 +37675,9 @@
             },
             "description": "Not Found"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "429": {
             "content": {
               "application/json": {
@@ -37196,6 +37769,9 @@
             },
             "description": "Not Found"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "429": {
             "content": {
               "application/json": {
@@ -37286,6 +37862,9 @@
               }
             },
             "description": "Not Found"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "429": {
             "content": {
@@ -37385,6 +37964,9 @@
             },
             "description": "Not Found"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "429": {
             "content": {
               "application/json": {
@@ -37472,6 +38054,9 @@
               }
             },
             "description": "Not Found"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "429": {
             "content": {
@@ -37574,6 +38159,9 @@
             },
             "description": "Not Found"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "429": {
             "content": {
               "application/json": {
@@ -37662,6 +38250,9 @@
             },
             "description": "Not Found"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "429": {
             "content": {
               "application/json": {
@@ -37748,6 +38339,9 @@
             },
             "description": "Not Found"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "429": {
             "content": {
               "application/json": {
@@ -37828,6 +38422,9 @@
               }
             },
             "description": "Not Found"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "429": {
             "content": {
@@ -37929,6 +38526,9 @@
             },
             "description": "Not Found"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "429": {
             "content": {
               "application/json": {
@@ -38019,6 +38619,9 @@
               }
             },
             "description": "Not Found"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "429": {
             "content": {
@@ -38119,6 +38722,9 @@
             },
             "description": "Not Found"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "429": {
             "content": {
               "application/json": {
@@ -38210,6 +38816,9 @@
             },
             "description": "Not Found"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "429": {
             "content": {
               "application/json": {
@@ -38275,6 +38884,9 @@
           },
           "404": {
             "description": "Not Found"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "tags": [
@@ -38349,6 +38961,9 @@
           },
           "413": {
             "description": "Content Too Large"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "tags": [
@@ -38371,6 +38986,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -38418,6 +39036,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -38485,6 +39106,9 @@
               }
             },
             "description": "Not Found"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "429": {
             "content": {
@@ -38574,6 +39198,9 @@
             },
             "description": "Not Found"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "429": {
             "content": {
               "application/json": {
@@ -38662,6 +39289,9 @@
             },
             "description": "Not Found"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "429": {
             "content": {
               "application/json": {
@@ -38740,6 +39370,9 @@
             },
             "description": "Not Found"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -38807,6 +39440,9 @@
               }
             },
             "description": "Not Found"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "429": {
             "content": {
@@ -38896,6 +39532,9 @@
             },
             "description": "Not Found"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -38983,6 +39622,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -39040,6 +39682,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -39076,6 +39721,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -39145,6 +39793,9 @@
             },
             "description": "Not Found"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -39213,6 +39864,9 @@
             },
             "description": "Not Found"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -39249,6 +39903,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -39287,6 +39944,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -39323,6 +39983,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -39379,6 +40042,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -39432,6 +40098,9 @@
               }
             },
             "description": "Not Found"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -39512,6 +40181,9 @@
             },
             "description": "Not Found"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -39572,6 +40244,9 @@
               }
             },
             "description": "Not Found"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -39646,6 +40321,9 @@
               }
             },
             "description": "Forbidden"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "429": {
             "content": {
@@ -39805,6 +40483,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -39851,6 +40532,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -39906,6 +40590,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -39963,6 +40650,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -40117,6 +40807,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -40270,6 +40963,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -40326,6 +41022,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -40480,6 +41179,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -40633,6 +41335,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -40679,6 +41384,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -40734,6 +41442,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -40792,6 +41503,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -40857,6 +41571,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -40903,6 +41620,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -40958,6 +41678,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -41015,6 +41738,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -41080,6 +41806,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -41161,6 +41890,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -41207,6 +41939,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -41263,6 +41998,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -41321,6 +42059,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -41377,6 +42118,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -41435,6 +42179,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -41491,6 +42238,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -41549,6 +42299,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -41605,6 +42358,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -41679,6 +42435,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -41736,6 +42495,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -41819,6 +42581,9 @@
               }
             },
             "description": "Not Found"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -41909,6 +42674,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -41976,6 +42744,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -42032,6 +42803,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -42097,6 +42871,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -42215,6 +42992,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -42332,6 +43112,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -42448,6 +43231,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -42584,6 +43370,9 @@
             },
             "description": "Not Found"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -42700,6 +43489,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -42818,6 +43610,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -42914,6 +43709,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -42971,6 +43769,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -43027,6 +43828,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -43107,6 +43911,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -43186,6 +43993,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -43242,6 +44052,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -43338,6 +44151,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -43415,6 +44231,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -43474,6 +44293,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -43514,6 +44336,9 @@
           },
           "403": {
             "description": "Forbidden"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -43561,6 +44386,9 @@
           },
           "409": {
             "description": "Conflict"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -43605,6 +44433,9 @@
           },
           "404": {
             "description": "Not Found"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -43652,6 +44483,9 @@
           },
           "409": {
             "description": "Conflict"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -43682,6 +44516,9 @@
           },
           "403": {
             "description": "Forbidden"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -43789,6 +44626,9 @@
           },
           "413": {
             "description": "Content Too Large"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -43829,6 +44669,9 @@
           },
           "409": {
             "description": "Conflict"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -43871,6 +44714,9 @@
           },
           "404": {
             "description": "Not Found"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -43918,6 +44764,9 @@
           },
           "409": {
             "description": "Conflict"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -43965,6 +44814,9 @@
           },
           "409": {
             "description": "Conflict"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -43995,6 +44847,9 @@
           },
           "403": {
             "description": "Forbidden"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -44039,6 +44894,9 @@
           },
           "409": {
             "description": "Conflict"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -44085,6 +44943,9 @@
           },
           "404": {
             "description": "Not Found"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -44145,6 +45006,9 @@
           },
           "409": {
             "description": "Conflict"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -44205,6 +45069,9 @@
           },
           "409": {
             "description": "Conflict"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -44362,6 +45229,9 @@
           },
           "409": {
             "description": "Conflict"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -44392,6 +45262,9 @@
           },
           "403": {
             "description": "Forbidden"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -44438,6 +45311,9 @@
           },
           "404": {
             "description": "Not Found"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -44495,6 +45371,9 @@
           },
           "404": {
             "description": "Not Found"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -44539,6 +45418,9 @@
           },
           "404": {
             "description": "Not Found"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -44569,6 +45451,9 @@
           },
           "403": {
             "description": "Forbidden"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -44619,6 +45504,9 @@
           },
           "413": {
             "description": "Content Too Large"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -44649,6 +45537,9 @@
           },
           "403": {
             "description": "Forbidden"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -44702,6 +45593,9 @@
           },
           "403": {
             "description": "Forbidden"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -44765,6 +45659,9 @@
           },
           "413": {
             "description": "Content Too Large"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -44828,6 +45725,9 @@
           },
           "413": {
             "description": "Content Too Large"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -44891,6 +45791,9 @@
           },
           "413": {
             "description": "Content Too Large"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -44965,6 +45868,9 @@
           },
           "404": {
             "description": "Not Found"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -45009,6 +45915,9 @@
           },
           "404": {
             "description": "Not Found"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -45072,6 +45981,9 @@
           },
           "413": {
             "description": "Content Too Large"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -45137,6 +46049,9 @@
           },
           "404": {
             "description": "Not Found"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -45181,6 +46096,9 @@
           },
           "404": {
             "description": "Not Found"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -45225,6 +46143,9 @@
           },
           "403": {
             "description": "Forbidden"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -45269,6 +46190,9 @@
           },
           "404": {
             "description": "Not Found"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -45332,6 +46256,9 @@
           },
           "413": {
             "description": "Content Too Large"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -45392,6 +46319,9 @@
           },
           "409": {
             "description": "Conflict"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -45445,6 +46375,9 @@
           },
           "404": {
             "description": "Not Found"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -45485,6 +46418,9 @@
           },
           "403": {
             "description": "Forbidden"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -45536,6 +46472,9 @@
           "413": {
             "description": "Content Too Large"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "503": {
             "description": "Service Unavailable"
           }
@@ -45580,6 +46519,9 @@
           },
           "403": {
             "description": "Forbidden"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -45607,6 +46549,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -45660,6 +46605,9 @@
           },
           "403": {
             "description": "Forbidden"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -45704,6 +46652,9 @@
           },
           "404": {
             "description": "Not Found"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -45748,6 +46699,9 @@
           },
           "404": {
             "description": "Not Found"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -45811,6 +46765,9 @@
           },
           "413": {
             "description": "Content Too Large"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -45876,6 +46833,9 @@
           },
           "404": {
             "description": "Not Found"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -45920,6 +46880,9 @@
           },
           "404": {
             "description": "Not Found"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -45976,6 +46939,9 @@
           },
           "404": {
             "description": "Not Found"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -46006,6 +46972,9 @@
           },
           "403": {
             "description": "Forbidden"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -46050,6 +47019,9 @@
           },
           "409": {
             "description": "Conflict"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -46103,6 +47075,9 @@
           "413": {
             "description": "Content Too Large"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "503": {
             "description": "Service Unavailable"
           }
@@ -46152,6 +47127,9 @@
           },
           "404": {
             "description": "Not Found"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -46206,6 +47184,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -46294,6 +47275,9 @@
             },
             "description": "Content Too Large"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -46362,6 +47346,9 @@
             },
             "description": "Not Found"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -46419,6 +47406,9 @@
               }
             },
             "description": "Not Found"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -46505,6 +47495,9 @@
               }
             },
             "description": "Conflict"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -46594,6 +47587,9 @@
             },
             "description": "Conflict"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -46672,6 +47668,9 @@
             },
             "description": "Conflict"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -46708,6 +47707,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -46775,6 +47777,9 @@
               }
             },
             "description": "Content Too Large"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -46856,6 +47861,9 @@
               }
             },
             "description": "Content Too Large"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -46904,6 +47912,9 @@
               }
             },
             "description": "Conflict"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -46950,6 +47961,9 @@
               }
             },
             "description": "Not Found"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -47009,6 +48023,9 @@
               }
             },
             "description": "Conflict"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -47077,6 +48094,9 @@
               }
             },
             "description": "Conflict"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -47214,6 +48234,9 @@
               }
             },
             "description": "Conflict"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -47300,6 +48323,9 @@
               }
             },
             "description": "Conflict"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -47413,6 +48439,9 @@
               }
             },
             "description": "Content Too Large"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -47491,6 +48520,9 @@
               }
             },
             "description": "Conflict"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -47539,6 +48571,9 @@
               }
             },
             "description": "Not Found"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -47577,6 +48612,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -47635,6 +48673,9 @@
           },
           "403": {
             "description": "Forbidden"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -47696,6 +48737,9 @@
           },
           "403": {
             "description": "Forbidden"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -47766,6 +48810,9 @@
           "403": {
             "description": "Forbidden"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -47812,6 +48859,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -47871,6 +48921,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -47928,6 +48981,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -47987,6 +49043,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -48045,6 +49104,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -48102,6 +49164,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -48172,6 +49237,9 @@
               }
             },
             "description": "Not Found"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "429": {
             "description": "Too Many Requests"
@@ -48249,6 +49317,9 @@
           "403": {
             "description": "Forbidden"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "429": {
             "description": "Too Many Requests"
           },
@@ -48294,6 +49365,9 @@
           },
           "403": {
             "description": "Forbidden"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "429": {
             "description": "Too Many Requests"
@@ -48341,6 +49415,9 @@
           "403": {
             "description": "Forbidden"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "429": {
             "description": "Too Many Requests"
           },
@@ -48383,6 +49460,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "429": {
             "description": "Too Many Requests"
@@ -48510,6 +49590,9 @@
             },
             "description": "Not Found"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "429": {
             "description": "Too Many Requests"
           },
@@ -48615,6 +49698,9 @@
             },
             "description": "Not Found"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "429": {
             "description": "Too Many Requests"
           },
@@ -48689,6 +49775,9 @@
               }
             },
             "description": "Bad Request"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -48780,6 +49869,9 @@
             },
             "description": "Bad Request"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -48861,6 +49953,9 @@
               }
             },
             "description": "Bad Request"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -48944,6 +50039,9 @@
             },
             "description": "Bad Request"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -49025,6 +50123,9 @@
               }
             },
             "description": "Bad Request"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -49108,6 +50209,9 @@
             },
             "description": "Bad Request"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -49164,6 +50268,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -49233,6 +50340,9 @@
             },
             "description": "Not Found"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -49288,6 +50398,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -49347,6 +50460,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -49403,6 +50519,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -49471,6 +50590,9 @@
               }
             },
             "description": "Not Found"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -49560,6 +50682,9 @@
             },
             "description": "Conflict"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -49648,6 +50773,9 @@
             },
             "description": "Conflict"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -49704,6 +50832,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -49759,6 +50890,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -49806,6 +50940,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -49852,6 +50989,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -49912,6 +51052,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -49980,6 +51123,9 @@
             },
             "description": "Not Found"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -50047,6 +51193,9 @@
             },
             "description": "Not Found"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -50104,6 +51253,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -50166,6 +51318,9 @@
             },
             "description": "Bad Request"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -50223,6 +51378,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -50279,6 +51437,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -50347,6 +51508,9 @@
             },
             "description": "Bad Request"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -50403,6 +51567,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -50471,6 +51638,9 @@
             },
             "description": "Bad Request"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -50524,6 +51694,9 @@
               }
             },
             "description": "Bad Request"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -50582,6 +51755,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -50615,6 +51791,9 @@
               }
             },
             "description": "OK"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -50671,6 +51850,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -50717,6 +51899,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -50775,6 +51960,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -50811,6 +51999,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -50858,6 +52049,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -50927,6 +52121,9 @@
             },
             "description": "Conflict"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -50984,6 +52181,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -51017,6 +52217,9 @@
               }
             },
             "description": "OK"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -51080,6 +52283,9 @@
             },
             "description": "Bad Request"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -51137,6 +52343,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -51170,6 +52379,9 @@
               }
             },
             "description": "OK"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -51235,6 +52447,9 @@
               }
             },
             "description": "Conflict"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -51303,6 +52518,9 @@
             },
             "description": "Conflict"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -51360,6 +52578,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -51393,6 +52614,9 @@
               }
             },
             "description": "OK"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -51449,6 +52673,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -51501,6 +52728,9 @@
               }
             },
             "description": "Bad Request"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -51559,6 +52789,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -51592,6 +52825,9 @@
               }
             },
             "description": "OK"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -51681,6 +52917,9 @@
             },
             "description": "Conflict"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -51768,6 +53007,9 @@
               }
             },
             "description": "Conflict"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -51857,6 +53099,9 @@
             },
             "description": "Conflict"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -51934,6 +53179,9 @@
               }
             },
             "description": "Conflict"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -52097,6 +53345,9 @@
             },
             "description": "Bad Request"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -52173,6 +53424,9 @@
             },
             "description": "Bad Request"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -52241,6 +53495,9 @@
             },
             "description": "Bad Request"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -52298,6 +53555,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -52354,6 +53614,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -52419,6 +53682,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -52452,6 +53718,9 @@
               }
             },
             "description": "OK"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -52507,6 +53776,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -52578,6 +53850,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -52654,6 +53929,9 @@
             },
             "description": "Bad Request"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -52715,6 +53993,9 @@
             },
             "description": "Bad Request"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -52775,6 +54056,9 @@
               }
             },
             "description": "Bad Request"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -52840,6 +54124,9 @@
             },
             "description": "Not Found"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -52895,6 +54182,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -52938,6 +54228,9 @@
               }
             },
             "description": "Not Found"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -52995,6 +54288,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -53075,6 +54371,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -53130,6 +54429,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -53176,6 +54478,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -53244,6 +54549,9 @@
               }
             },
             "description": "Not Found"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -53327,6 +54635,9 @@
             },
             "description": "Not Found"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -53385,6 +54696,9 @@
             },
             "description": "Not Found"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -53440,6 +54754,9 @@
               }
             },
             "description": "Not Found"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -53517,6 +54834,9 @@
             },
             "description": "Not Found"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -53574,6 +54894,9 @@
               }
             },
             "description": "Not Found"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -53642,6 +54965,9 @@
               }
             },
             "description": "Not Found"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -53720,6 +55046,9 @@
               }
             },
             "description": "Not Found"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -53829,6 +55158,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -53866,6 +55198,9 @@
           "401": {
             "description": "Unauthorized"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -53902,6 +55237,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -53974,6 +55312,9 @@
             },
             "description": "Bad Request"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "description": "Internal Server Error"
           },
@@ -54028,6 +55369,9 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -54111,6 +55455,9 @@
             },
             "description": "Not Found"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -54174,6 +55521,9 @@
             },
             "description": "Not Found"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -54200,6 +55550,9 @@
               }
             },
             "description": "Not Found"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -54228,6 +55581,9 @@
             },
             "description": "Not Found"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -54254,6 +55610,9 @@
               }
             },
             "description": "Not Found"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -54282,6 +55641,9 @@
             },
             "description": "Not Found"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -54309,6 +55671,9 @@
             },
             "description": "Not Found"
           },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -54335,6 +55700,9 @@
               }
             },
             "description": "Not Found"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           },
           "500": {
             "content": {
@@ -54386,6 +55754,9 @@
         "responses": {
           "200": {
             "description": "OK"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -54401,6 +55772,9 @@
         "responses": {
           "200": {
             "description": "OK"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -54416,6 +55790,9 @@
         "responses": {
           "200": {
             "description": "OK"
+          },
+          "426": {
+            "$ref": "#/components/responses/PimHttpsRequired"
           }
         },
         "security": [
@@ -54427,6 +55804,47 @@
           "Pim.Api"
         ]
       }
+    }
+  },
+  "x-pim-transport-security": {
+    "enforcement": "Non-Development/Test environments default to PIM_REQUIRE_HTTPS=true, PIM_ALLOW_LOOPBACK_CLEARTEXT=false and a 31536000-second HSTS age. Cleartext requests to non-exempt paths return HTTP 426 with envelope code 42600 when a trusted reverse proxy does not supply X-Forwarded-Proto: https.",
+    "exemptPathPrefixes": [
+      "/.well-known/acme-challenge/"
+    ],
+    "exemptPaths": [
+      "/health",
+      "/health/live",
+      "/health/ready",
+      "/api/version",
+      "/metrics"
+    ],
+    "hsts": {
+      "name": "Strict-Transport-Security",
+      "value": "max-age=<PIM_HSTS_MAX_AGE_SECONDS>; default 31536000 outside Development/Test, omitted when 0"
+    },
+    "rejection": {
+      "bodyCode": 42600,
+      "contentType": "application/json",
+      "headers": [
+        "X-Pim-Request-Scheme",
+        "X-Pim-Transport",
+        "Upgrade",
+        "Cache-Control"
+      ],
+      "status": 426
+    },
+    "requestSchemeHeader": {
+      "name": "X-Pim-Request-Scheme",
+      "presentOn": "every HTTP response",
+      "value": "effective request scheme after trusted X-Forwarded-Proto processing (http or https)"
+    },
+    "transportHeader": {
+      "name": "X-Pim-Transport",
+      "presentOn": "cleartext requests while PIM_REQUIRE_HTTPS=true, and every HTTP 426 transport rejection",
+      "values": [
+        "cleartext",
+        "https-required"
+      ]
     }
   }
 }

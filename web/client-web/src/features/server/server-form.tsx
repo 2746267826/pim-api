@@ -4,7 +4,13 @@ import { useQueryClient } from '@tanstack/react-query'
 import { ApiError, clearTokens } from '@/api/client'
 import { Button, Chip, InlineAlert, Input, Label } from '@/components/ui'
 import { detectHostChannel } from '@/lib/host-channel'
-import { candidateUrl, getApiBase, getApiBaseHistory, setApiBase } from '@/lib/apiBase'
+import {
+  candidateUrl,
+  getApiBase,
+  getApiBaseHistory,
+  setApiBase,
+  validateApiBaseInput,
+} from '@/lib/apiBase'
 import { notifySuccess } from '@/lib/notify'
 import { clearTemporaryWebCache } from '@/features/settings/storage-cache/cache-cleanup'
 
@@ -23,16 +29,21 @@ function failureMessage(err: unknown, url: string): string {
     return '连接超时（8 秒）：请检查地址与网络'
   }
   const detail = err instanceof Error ? err.message : String(err)
+  const https = /^https:\/\//i.test(url)
   const crossOrigin =
     err instanceof TypeError &&
     typeof window !== 'undefined' &&
     /^https?:\/\//i.test(url) &&
     !url.startsWith(window.location.origin)
+  if (https && err instanceof TypeError) {
+    return `HTTPS 连接被浏览器阻止（${detail}）。请核对证书链、证书域名与有效期；`
+      + '浏览器不会向页面暴露具体 TLS 错误，可在地址栏直接打开该地址查看证书提示。'
+      + (crossOrigin ? ' 跨域使用时还须把当前来源加入服务器的 CORS 白名单。' : '')
+  }
   if (crossOrigin) {
     return `浏览器直连被拦截（${detail}）。该源不在服务器的 CORS 白名单里：`
       + '同源部署请留空地址（走当前部署源）；App/桌面壳不受此限制；'
-      + `浏览器跨域使用需服务端把本源（${window.location.origin}）加入 CORS 白名单`
-      + '（测试 API 已放行 http://127.0.0.1:3000）。'
+      + `浏览器跨域必须使用 HTTPS，且服务端需把本源（${window.location.origin}）加入 CORS 白名单。`
   }
   return `无法连接：${detail}`
 }
@@ -51,14 +62,21 @@ export function ServerForm({ mode }: { mode: 'setup' | 'settings' }) {
   const [params] = useSearchParams()
   const redirect = params.get('redirect') ?? (mode === 'setup' ? '/login' : undefined)
   const history = getApiBaseHistory()
+  const validation = validateApiBaseInput(value)
 
   async function testConnection() {
+    const candidate = validateApiBaseInput(value)
+    if (!candidate.ok) {
+      setResult({ ok: false, message: candidate.message })
+      return
+    }
     setTesting(true)
     setResult(null)
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), 8_000)
+    const target = candidateUrl(candidate.value, '/api/version')
     try {
-      const res = await fetch(candidateUrl(value, '/api/version'), {
+      const res = await fetch(target, {
         signal: controller.signal,
       })
       if (!res.ok) {
@@ -77,7 +95,7 @@ export function ServerForm({ mode }: { mode: 'setup' | 'settings' }) {
         capabilities: info.capabilities ?? [],
       })
     } catch (err) {
-      setResult({ ok: false, message: failureMessage(err, candidateUrl(value, '/api/version')) })
+      setResult({ ok: false, message: failureMessage(err, target) })
     } finally {
       clearTimeout(timer)
       setTesting(false)
@@ -96,9 +114,14 @@ export function ServerForm({ mode }: { mode: 'setup' | 'settings' }) {
       })
       return
     }
+    const candidate = validateApiBaseInput(value)
+    if (!candidate.ok) {
+      setResult({ ok: false, message: candidate.message })
+      return
+    }
     setSaving(true)
     try {
-      setApiBase(value)
+      setApiBase(candidate.value)
     } catch (err) {
       setResult({ ok: false, message: err instanceof Error ? err.message : String(err) })
       setSaving(false)
@@ -119,19 +142,27 @@ export function ServerForm({ mode }: { mode: 'setup' | 'settings' }) {
         <Input
           id="api-base"
           className="mono"
-          placeholder="http://192.168.1.10:5858"
+          placeholder="https://pim.example.com"
           value={value}
-          onChange={(e) => setValue(e.target.value)}
+          onChange={(e) => {
+            setValue(e.target.value)
+            setResult(null)
+          }}
           onKeyDown={(e) => {
             if (e.key === 'Enter') void testConnection()
           }}
         />
         <p className="mt-1.5 text-xs text-text-3">
-          留空 = 使用当前部署源（浏览器同源场景默认）。填服务器源地址（协议://主机:端口，
-          例如<span className="mono mx-1">http://192.168.1.10:5858</span>；误带
+          留空 = 使用当前部署源（Web 同源默认）。远程服务器必须使用 HTTPS，例如
+          <span className="mono mx-1">https://pim.example.com</span>；本机回环 HTTP 仅用于开发。
+          误带
           <span className="mono mx-1">/api/v1</span>后缀会自动去掉。
         </p>
       </div>
+
+      {!validation.ok && value.trim() && (
+        <InlineAlert tone="crit">{validation.message}</InlineAlert>
+      )}
 
       {history.length > 0 && (
         <div className="flex flex-wrap items-center gap-1.5">
@@ -160,10 +191,20 @@ export function ServerForm({ mode }: { mode: 'setup' | 'settings' }) {
       )}
 
       <div className="flex gap-2">
-        <Button variant="secondary" loading={testing} onClick={() => void testConnection()}>
+        <Button
+          variant="secondary"
+          loading={testing}
+          disabled={!validation.ok}
+          onClick={() => void testConnection()}
+        >
           测试连接
         </Button>
-        <Button variant="primary" loading={saving} onClick={() => void save()}>
+        <Button
+          variant="primary"
+          loading={saving}
+          disabled={!validation.ok}
+          onClick={() => void save()}
+        >
           保存并重新登录
         </Button>
       </div>

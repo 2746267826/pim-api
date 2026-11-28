@@ -93,7 +93,7 @@ function page(entry = '/search?q=%E7%A0%94%E7%A9%B6') {
 
 beforeEach(() => {
   vi.resetAllMocks()
-  setApiBase('http://192.0.2.10:5858')
+  setApiBase('https://192.0.2.10:5858')
 })
 
 afterEach(() => {
@@ -302,7 +302,7 @@ describe('GlobalSearchPage', () => {
     const retrySignal = searchApiMock.query.mock.calls[1]![1]!.signal as AbortSignal
     expect(retrySignal.aborted).toBe(false)
 
-    act(() => setApiBase('http://198.51.100.20:5858'))
+    act(() => setApiBase('https://198.51.100.20:5858'))
     await waitFor(() => expect(searchApiMock.query).toHaveBeenCalledTimes(3))
     await waitFor(() => expect(retrySignal.aborted).toBe(true))
 
