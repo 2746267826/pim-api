@@ -1175,7 +1175,9 @@
       "claim": "R05 永久身份墓碑容量策略未获产品/运营批准，AC-05 保持 BLOCKED。",
       "source": "docs/product/pim-delivery-ledger-20261125.md",
       "observed_at": "2026-11-22",
-      "items": [],
+      "items": [
+        "R05"
+      ],
       "limits": "待裁决，不构成批准。"
     },
     {

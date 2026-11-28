@@ -113,7 +113,9 @@
       "approved_in": null,
       "rationale": "R05 永久身份墓碑容量策略未获产品/运营批准，AC-05 保持 BLOCKED。",
       "source": "docs/product/pim-delivery-ledger-20261125.md",
-      "items": [],
+      "items": [
+        "R05"
+      ],
       "evidence": "EV-DEC-R05-AC05"
     },
     {

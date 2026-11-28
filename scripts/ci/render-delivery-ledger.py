@@ -73,6 +73,25 @@ def platform_summary(roles: dict) -> str:
     return "；".join(parts) if parts else "—"
 
 
+def implementation_basis_label(item: dict) -> str:
+    basis = str(item.get("implementation_basis", "")).strip()
+    if basis.startswith("legacy-snapshot-"):
+        return "旧台账快照（非 current）"
+    if basis.startswith("current-"):
+        return "当前复核"
+    return "未识别"
+
+
+def acceptance_summary(item: dict) -> str:
+    acs = item.get("acceptance_criteria") or []
+    verified = sum(1 for ac in acs if ac.get("verified"))
+    blocked = sum(1 for ac in acs if ac.get("blocked"))
+    summary = f"verified {verified}/{len(acs)}"
+    if blocked:
+        summary += f"；blocked {blocked}"
+    return summary
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", default=".")
@@ -121,16 +140,19 @@ def main() -> int:
       f"NOT-VERIFIED {status_counts.get('NOT-VERIFIED', 0)}，BLOCKED {status_counts.get('BLOCKED', 0)}，"
       f"APPROVED-EXCEPTION {status_counts.get('APPROVED-EXCEPTION', 0)}。")
     w(f"- Freshness：current {freshness_counts.get('current', 0)}，stale {freshness_counts.get('stale', 0)}。"
-      " 所有迁移项均为 stale：旧台账证据没有被重新认定为当前通过。")
+      " current 表示已按当前 head 重新复核；stale 仍只能用于定位历史缺口。")
     w(f"- 证据：{len(evidence)} 条（CI {sum(1 for e in evidence.values() if e['type'] == 'ci')}、"
       f"真实流程 {sum(1 for e in evidence.values() if e['type'] == 'real-flow')}、"
       f"决议 {sum(1 for e in evidence.values() if e['type'] == 'decision')}）。")
     w(f"- 真实流程：{len(flows)} 条记录，其中 current 通过 "
       f"{sum(1 for f in flows.values() if f['result'] == 'passed')} 条。")
     w(f"- PR：{len(prs)} 条，merged {sum(1 for p in prs.values() if p['state'] == 'merged')}，"
-      f"open {sum(1 for p in prs.values() if p['state'] == 'open')}。")
+      f"open {sum(1 for p in prs.values() if p['state'] == 'open')}，"
+      f"draft {sum(1 for p in prs.values() if p['state'] == 'draft')}。")
     w("")
-    w("本视图不宣称任何产品功能完成；`PASS 0` 表示当前结构中没有可用的 current 端到端证据。")
+    w(f"本视图的产品功能 `PASS` 为 {status_counts.get('PASS', 0)}。"
+      "`PASS` 只表示逐 AC 的 current E4/E5/E6 真实流程证据与平台覆盖均闭合；"
+      "CI 绿、合并状态或 legacy 文本不构成验收。")
     w("")
 
     w("## 状态计数 / Status counts")
@@ -194,15 +216,17 @@ def main() -> int:
     w("## 全量表 / Full table")
     w("")
     w("`implementation` 与 `legacy_status` 保留旧台账原文（历史基线），不代表当前 head 已完成实现；"
-      "当前判断以 `status`、`freshness` 与证据为准。")
+      "`实现依据` 会明确标出 legacy 快照，不能把旧文本冒充 current implementation。"
+      "`NOT-VERIFIED` 表示当前 head 尚未验收，而不是“已经完成”。")
     w("")
-    w("| 编号 | 标题 | 批次 | 平台角色 | 状态 | Freshness | PR | 证据 | 下一工单 |")
-    w("| --- | --- | --- | --- | --- | --- | --- | --- | --- |")
+    w("| 编号 | 标题 | 批次 | 平台角色 | 状态 | Freshness | 实现依据 | AC | PR | 证据 | 下一工单 |")
+    w("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |")
     for item in items:
         prs_text = short_list([f"#{prs[p]['number']}" if p in prs else p for p in item["prs"]], limit=4)
         ev_text = short_list(item["evidence"], limit=3)
         w(f"| {item['id']} | {esc(item['title'])} | {item['batch']} | "
           f"{esc(platform_summary(item['platform_roles']))} | {item['status']} | {item['freshness']} | "
+          f"{esc(implementation_basis_label(item))} | {esc(acceptance_summary(item))} | "
           f"{esc(prs_text)} | {esc(ev_text)} | {esc(item['next'])} |")
     w("")
 
@@ -219,36 +243,54 @@ def main() -> int:
             approval = f"{exc['approved_by']} / {exc['approved_in']}"
             w(f"| {item['id']} | APPROVED-EXCEPTION | {esc(exc['rationale'])} | {esc(approval)} |")
     w("")
+    w("### AC 级阻塞 / Blocked acceptance criteria")
+    w("")
+    blocked_acs = [
+        (item, ac)
+        for item in items
+        for ac in item["acceptance_criteria"]
+        if ac.get("blocked")
+    ]
+    if blocked_acs:
+        w("| 条目 | 验收条件 | 条件 | 原因 | 解除条件 | 决策 |")
+        w("| --- | --- | --- | --- | --- | --- |")
+        for item, ac in blocked_acs:
+            blocked = ac["blocked"]
+            w(f"| {item['id']} | {ac['id']} | {esc(ac['text'])} | {esc(blocked['reason'])} | "
+              f"{esc('；'.join(blocked.get('unblock', [])))} | {esc(blocked.get('decision_id'))} |")
+    else:
+        w("无 / None")
+    w("")
 
     w("## PR 索引 / PR index")
     w("")
-    w("| PR | 仓库 | 状态 | head | merge | 状态 freshness | 引用项 |")
-    w("| --- | --- | --- | --- | --- | --- | --- |")
+    w("| PR | 仓库 | 状态 | head | merge | 状态 freshness | 观测时点 | 引用项 |")
+    w("| --- | --- | --- | --- | --- | --- | --- | --- |")
     for pr in sorted(prs.values(), key=lambda p: (p["repo"], p["number"])):
         used = [i["id"] for i in items if pr["id"] in i["prs"]]
         w(f"| [#{pr['number']}]({pr['url']}) | {pr['repo']} | {pr['state']} | "
           f"`{pr['head'] or '—'}` | `{pr['merge_commit'] or '—'}` | {pr['state_freshness']} | "
-          f"{esc(short_list(used, limit=6))} |")
+          f"{esc(pr.get('observed_at', '—'))} | {esc(short_list(used, limit=6))} |")
     w("")
 
     w("## CI 索引 / CI index")
     w("")
-    w("| Run | PR | head | 结论 | 关键 job | freshness |")
-    w("| --- | --- | --- | --- | --- | --- |")
+    w("| Run | PR | head | 结论 | 关键 job | freshness | 观测时点 |")
+    w("| --- | --- | --- | --- | --- | --- | --- |")
     for run in sorted(runs.values(), key=lambda r: int(r["run_id"]), reverse=True):
         w(f"| `{run['run_id']}` | {run['pr']} | `{run['head']}` | {run['conclusion']} | "
-          f"{esc(', '.join(run['jobs']))} | {run['freshness']} |")
+          f"{esc(', '.join(run['jobs']))} | {run['freshness']} | {esc(run.get('observed_at', '—'))} |")
     w("")
 
     w("## 真实流程索引 / Real-flow index")
     w("")
-    w("| 流程 | 覆盖项 | 平台 | 结果 | freshness | 环境 | 边界 |")
-    w("| --- | --- | --- | --- | --- | --- | --- |")
+    w("| 流程 | 证据 | 覆盖项 | 平台 | 结果 | freshness | 观测时点 | 环境 | 边界 |")
+    w("| --- | --- | --- | --- | --- | --- | --- | --- | --- |")
     for flow in flows.values():
-        w(f"| {flow['id']} | {esc(short_list(flow['items']))} | "
+        w(f"| {flow['id']} | {flow['evidence']} | {esc(short_list(flow['items']))} | "
           f"{esc(short_list([PLATFORM_LABEL[p] for p in flow['platforms']]))} | "
           f"{FLOW_LABEL.get(flow['result'], flow['result'])} | {flow['freshness']} | "
-          f"{esc(flow['environment'] or '—')} | {esc(flow['limits'])} |")
+          f"{esc(flow.get('observed_at', '—'))} | {esc(flow['environment'] or '—')} | {esc(flow['limits'])} |")
     w("")
 
     w("## 决策索引 / Decision index")
@@ -271,12 +313,13 @@ def main() -> int:
 
     w("## 续跑协议 / Resume protocol")
     w("")
-    w("1. 先更新 `source_snapshot`，记录三仓 `origin/master` SHA；旧 head 只能用于定位。")
-    w("2. 只改结构化源：item 的 `status`、`freshness`、`evidence`、`prs`、`next`，然后重新渲染。")
-    w("3. `PASS` 需要 current freshness 的 E4/E5/E6 证据覆盖全部 required 平台；CI 绿不算 PASS。")
-    w("4. `BLOCKED` 必须写 `blocked_reason` 与 `unblock_conditions`；解除后改回 FAIL/NOT-VERIFIED。")
-    w("5. `APPROVED-EXCEPTION` 必须引用 `approved` 状态的 decision，且不得把验收条件标为 verified。")
-    w("6. 旧证据保持 `stale`，迁移时保留 `legacy_status` 与 `legacy_source`，不得静默改写。")
+    w("1. 先更新 `source_snapshot`，记录当前 `origin/master` SHA、commit date 与观测时点；旧 head 只能用于定位。")
+    w("2. 只改结构化源：item、真实流程、证据、PR、决策必须双向引用，并重算 scope 计数、批次状态与视图。")
+    w("3. `PASS` 需要全部 AC 已验证，每条 AC 都有 current E4/E5/E6 真实流程证据，且覆盖全部 required/read_only 平台。")
+    w("4. 真实流程覆盖从 `real-flows.json` 的 `evidence` 引用反向推导；不得用未声明字段或伪造证据。")
+    w("5. `BLOCKED`/AC 级阻塞必须写原因、解除条件与 pending decision；解除后改回 FAIL/NOT-VERIFIED。")
+    w("6. `APPROVED-EXCEPTION` 必须引用 `approved` decision，且不得把验收条件标为 verified。")
+    w("7. 旧证据保持 `stale`，legacy implementation 文本必须标为旧快照，不得冒充 current implementation。")
     w("")
     w("---")
     w("")
