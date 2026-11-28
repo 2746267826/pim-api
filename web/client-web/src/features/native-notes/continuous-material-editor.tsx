@@ -390,7 +390,7 @@ export const ContinuousMaterialEditor = forwardRef<
     },
     onCreate: ({ editor: created }) => {
       const document = buildMaterialDocument(created, initialDocument)
-      created.commands.setContent(document.toJSON(), { emitUpdate: false })
+      created.commands.setContent(document.content, { emitUpdate: false })
       created.commands.setTextSelection(TextSelection.near(created.state.doc.resolve(1), 1).from)
       initialContentRef.current = snapshotMarkdownBlocks(created)
       lastSelectionRef.current = selectionPoint(created)
@@ -802,7 +802,7 @@ function insertMaterialBlocks(
   }
   selectionPos = Math.min(selectionPos + 2, transaction.doc.content.size)
   transaction.setSelection(TextSelection.near(transaction.doc.resolve(selectionPos), 1))
-  editor.view.dispatch(transaction.scrollIntoView())
+  editor.view.dispatch(transaction)
   editor.commands.focus()
 }
 
