@@ -179,7 +179,7 @@ public sealed class NotificationNoteScanTests
                 File.Exists(WatermarkPath(storage)),
                 "读任务失败必须保留水位，否则坏任务会在下一轮被静默跳过");
 
-            await File.Delete(brokenPath);
+            File.Delete(brokenPath);
             clock.Advance(TimeSpan.FromMinutes(1));
             await using (var db = NotificationTestSupport.NewDbContext(temp.ConnectionString))
             {
