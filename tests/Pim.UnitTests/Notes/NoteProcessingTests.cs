@@ -1398,6 +1398,215 @@ public sealed class NoteProcessingTests(NoteProcessingFixture host)
     }
 
     [Fact]
+    public async Task RoutedAsrTaskWithMissingAttemptIsRecoveredByAutomaticDispatch()
+    {
+        var owner = await OwnerAsync("routed-attempt-recovery");
+        using var client = AuthRegistrationTestHost.Authed(host.Factory, owner.AccessToken);
+        _ = await ConfigureAsync(client, auto: true, cloudRoute: true);
+        host.Models.Reset();
+        var material = await CompleteMaterialAsync(owner, client, withAudio: true);
+
+        var started = await StatusAsync(client, material.NoteId, material.VersionId);
+        Assert.True(started.AutoStarted);
+        Assert.True(started.Asr.TaskCreated);
+        Assert.True(started.Derived.TaskCreated);
+        var asrBefore = await AsrTaskAsync(owner.UserId, started.Asr.TaskId!.Value);
+        Assert.NotNull(asrBefore.Route);
+        Assert.NotNull(asrBefore.AttemptId);
+        var processingRevision = (await host.Factory.Services
+            .GetRequiredService<NoteProcessingStore>()
+            .ReadAsync(owner.UserId, started.ProcessingId, default)).Revision;
+
+        // Crash window: the routed task and its authorization exist, but the durable attempt insert
+        // never landed. The compensation scan must recreate exactly that attempt.
+        using (var scope = host.Factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
+            db.NoteAsrAttempts.RemoveRange(await db.NoteAsrAttempts.Where(x =>
+                x.OwnerId == owner.UserId && x.TaskId == started.Asr.TaskId!.Value)
+                .ToListAsync());
+            await db.SaveChangesAsync();
+        }
+        await AsrStore().UpdateAsync(owner.UserId, started.Asr.TaskId!.Value, state =>
+        {
+            state.AttemptId = null;
+        }, CancellationToken.None);
+        Assert.Equal(0, await AttemptCountAsync(owner.UserId, started.Asr.TaskId!.Value));
+
+        var dispatch = host.Factory.Services.GetRequiredService<NoteProcessingDispatchJob>();
+        await dispatch.RunAsync(default);
+
+        var recovered = await AsrTaskAsync(owner.UserId, started.Asr.TaskId!.Value);
+        Assert.NotNull(recovered.AttemptId);
+        Assert.Equal(1, await AttemptCountAsync(owner.UserId, started.Asr.TaskId!.Value));
+        var status = await StatusAsync(client, material.NoteId, material.VersionId);
+        Assert.True(status.Asr.TaskCreated);
+        Assert.True(status.Derived.TaskCreated);
+        Assert.Equal(started.Asr.TaskId, status.Asr.TaskId);
+        Assert.Equal(started.Derived.TaskId, status.Derived.TaskId);
+        Assert.NotEqual(NoteProcessingState.PendingProcessing, status.State);
+        Assert.DoesNotContain(status.Issues, issue => issue.Code == "asr_attempt_recovery");
+        Assert.Equal((Asr: 1, Derived: 1), TaskCounts(owner));
+        Assert.Equal(processingRevision,
+            (await host.Factory.Services.GetRequiredService<NoteProcessingStore>()
+                .ReadAsync(owner.UserId, started.ProcessingId, default)).Revision);
+        Assert.Equal(0, host.Models.Calls);
+        Assert.Equal(0, await AiCallCountAsync(owner.UserId));
+
+        // A second scan must not mint another chain or attempt.
+        await dispatch.RunAsync(default);
+        await dispatch.RunAsync(default);
+        Assert.Equal(1, await AttemptCountAsync(owner.UserId, started.Asr.TaskId!.Value));
+        Assert.Equal((Asr: 1, Derived: 1), TaskCounts(owner));
+        Assert.Equal((await AsrTaskAsync(owner.UserId, started.Asr.TaskId!.Value)).Revision,
+            recovered.Revision);
+    }
+
+    [Fact]
+    public async Task RoutedAsrTaskWithUnrecoverableAttemptStaysVisibleAndRetryable()
+    {
+        var owner = await OwnerAsync("routed-attempt-blocked");
+        using var client = AuthRegistrationTestHost.Authed(host.Factory, owner.AccessToken);
+        var models = await ConfigureAsync(client, auto: true, cloudRoute: true);
+        var material = await CompleteMaterialAsync(owner, client, withAudio: true);
+        var started = await StatusAsync(client, material.NoteId, material.VersionId);
+        Assert.NotNull(started.Asr.TaskId);
+
+        // Ambiguous checkpoint: the attempt is gone but a durable ASR call exists, so the attempt
+        // must not be minted again. The material keeps its created chains and says why.
+        using (var scope = host.Factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
+            db.NoteAsrAttempts.RemoveRange(await db.NoteAsrAttempts.Where(x =>
+                x.OwnerId == owner.UserId && x.TaskId == started.Asr.TaskId!.Value)
+                .ToListAsync());
+            db.AiRequestLogs.Add(new AiRequestLogEntity
+            {
+                ClientRequestId = Guid.NewGuid(),
+                UserId = owner.UserId,
+                Module = "notes",
+                Purpose = "ai.asr-call",
+                SourceObjectType = "native-note-asr-task",
+                SourceObjectId = started.Asr.TaskId!.Value.ToString("D"),
+                Provider = "synthetic",
+                Model = models.Asr.Model,
+                CorrelationId = "synthetic-stale-asr",
+                Status = "timed_out",
+                AttemptNumber = 1,
+                MaxAttempts = 1
+            });
+            await db.SaveChangesAsync();
+        }
+        await AsrStore().UpdateAsync(owner.UserId, started.Asr.TaskId!.Value, state =>
+        {
+            state.AttemptId = null;
+        }, CancellationToken.None);
+        var callsBefore = await AiCallCountAsync(owner.UserId);
+
+        var dispatch = host.Factory.Services.GetRequiredService<NoteProcessingDispatchJob>();
+        await dispatch.RunAsync(default);
+
+        var blocked = await StatusAsync(client, material.NoteId, material.VersionId);
+        Assert.True(blocked.Asr.TaskCreated);
+        Assert.True(blocked.Derived.TaskCreated);
+        Assert.Equal(started.Asr.TaskId, blocked.Asr.TaskId);
+        Assert.NotEqual(NoteProcessingState.PendingProcessing, blocked.State);
+        Assert.Contains(blocked.Issues, issue => issue.Code == "asr_attempt_recovery" &&
+            issue.Task == NoteProcessingTaskKind.Asr);
+        Assert.Equal(0, await AttemptCountAsync(owner.UserId, started.Asr.TaskId!.Value));
+        Assert.Equal((Asr: 1, Derived: 1), TaskCounts(owner));
+        Assert.Equal(0, host.Models.Calls);
+        Assert.Equal(callsBefore, await AiCallCountAsync(owner.UserId));
+
+        // The refusal is retried by later compensation scans and stays visible instead of
+        // silently creating a second chain or attempting a paid call.
+        await dispatch.RunAsync(default);
+        var stillBlocked = await StatusAsync(client, material.NoteId, material.VersionId);
+        Assert.Contains(stillBlocked.Issues, issue => issue.Code == "asr_attempt_recovery" &&
+            issue.Task == NoteProcessingTaskKind.Asr);
+        Assert.Equal(0, await AttemptCountAsync(owner.UserId, started.Asr.TaskId!.Value));
+        Assert.Equal((Asr: 1, Derived: 1), TaskCounts(owner));
+        Assert.Equal(callsBefore, await AiCallCountAsync(owner.UserId));
+    }
+
+    [Fact]
+    public async Task UnconfiguredRouteWithMimoGlobalModelShowsTheEffectiveMultimodalRoute()
+    {
+        var owner = await OwnerAsync("unconfigured-route-mimo");
+        using var client = AuthRegistrationTestHost.Authed(host.Factory, owner.AccessToken);
+        var defaults = await ConfigureAsync(client, auto: false);
+        try
+        {
+            // No route config row at all: the legacy shape, where only the global transcription
+            // preset decides whether the audio goes to dedicated ASR or the multimodal route.
+            using (var scope = host.Factory.Services.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
+                Assert.Empty(await db.NoteAsrRouteConfigs.Where(x =>
+                    x.OwnerId == owner.UserId).ToListAsync());
+            }
+
+            var models = await Data<IReadOnlyList<AiModelDto>>(
+                await client.GetAsync("/api/v1/ai/models"));
+            var multimodal = await SaveOrResetModelAsync(client, models,
+                "多模态无路由 note-processing", "http://multimodal-unrouted.invalid/v1/",
+                "mimo-v2.6-flash", [AiModelCapability.Transcription], 1024,
+                "synthetic-multimodal-unrouted-key", "mimo-multimodal");
+            var settings = await Data<AiModelSettingsDto>(
+                await client.GetAsync("/api/v1/ai/model-settings"));
+            _ = await Data<AiModelSettingsDto>(await client.PutAsJsonAsync(
+                "/api/v1/ai/model-settings",
+                new SaveAiModelSettingsRequest(settings.Revision, true, defaults.Derived.Id,
+                    defaults.Derived.Id, multimodal.Id)));
+
+            var preferences = await Data<NoteProcessingPreferencesDto>(
+                await client.GetAsync(Processing + "/preferences"));
+            Assert.Contains(preferences.DefaultTargets, value =>
+                value.Contains(NoteAsrRoute.CloudMultimodal, StringComparison.Ordinal) &&
+                value.Contains("多模态无路由 note-processing", StringComparison.Ordinal));
+            Assert.DoesNotContain(preferences.DefaultTargets, value =>
+                value.Contains(NoteAsrRoute.CloudAsr, StringComparison.Ordinal));
+
+            // Same source as the route settings' effective-route resolution.
+            var routeConfig = await Data<NoteAsrRouteConfigDto>(
+                await client.GetAsync("/api/v1/native-notes/asr-routing/config"));
+            Assert.Null(routeConfig.CloudModelId);
+            Assert.Equal(NoteAsrRoute.CloudMultimodal, routeConfig.EffectiveCloudRoute);
+
+            var material = await CompleteMaterialAsync(owner, client, withAudio: true);
+            var plan = await PlanAsync(client, material);
+            var asr = Assert.Single(plan.Targets.Where(target =>
+                target.Kind == NoteProcessingTaskKind.Asr));
+            Assert.Equal(multimodal.Id, asr.ModelId);
+
+            // The legacy no-route-config shape still has no route consent on the task, but the
+            // consent target is the multimodal profile the target policy reports.
+            using var asrScope = host.Factory.Services.CreateScope();
+            var asrService = asrScope.ServiceProvider.GetRequiredService<NoteAsrService>();
+            var materials = asrScope.ServiceProvider.GetRequiredService<NoteMaterialUploadStore>();
+            var version = await materials.GetAsync(owner.UserId, material.VersionId,
+                CancellationToken.None);
+            var request = await asrService.BuildDefaultRequestForProcessingAsync(owner.UserId,
+                version, confirmed: false, CancellationToken.None);
+            Assert.Null(request.Route);
+            Assert.Equal(multimodal.Id, request.Consent?.ModelId);
+            Assert.Equal("mimo-multimodal", request.Consent?.PresetId);
+        }
+        finally
+        {
+            var restored = await Data<AiModelSettingsDto>(
+                await client.GetAsync("/api/v1/ai/model-settings"));
+            _ = await Data<AiModelSettingsDto>(await client.PutAsJsonAsync(
+                "/api/v1/ai/model-settings",
+                new SaveAiModelSettingsRequest(restored.Revision, restored.Enabled,
+                    defaults.Derived.Id, defaults.Derived.Id, defaults.Asr.Id)
+                {
+                    NoteOrganizationModelId = Guid.Empty
+                }));
+        }
+    }
+
+    [Fact]
     public async Task EffectiveAsrRouteMatchesGlobalTranscriptionPresetInTargetPolicy()
     {
         var owner = await OwnerAsync("effective-route-drift");

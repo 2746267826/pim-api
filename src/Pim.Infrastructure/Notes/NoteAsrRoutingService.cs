@@ -57,8 +57,8 @@ public sealed class NoteAsrRoutingService(PimDbContext db, ICurrentUserService u
         if (request.CloudModelId is { } cloudId) await ValidateCloudDestinationAsync(cloudId, ct);
         var effectiveGlobal = request.CloudModelId is null ? await GlobalCloudProfileAsync(ct) : null;
         if (route != NoteAsrRoute.Local && request.CloudModelId is null && effectiveGlobal is not null)
-            route = effectiveGlobal.AsrPresetId == "mimo-multimodal"
-                ? NoteAsrRoute.CloudMultimodal : NoteAsrRoute.CloudAsr;
+            route = NoteAsrRouteResolution.EffectiveCloudRoute(route, null,
+                effectiveGlobal.AsrPresetId);
         return await ExecuteDbTransactionAsync(async token =>
         {
             var current = await db.NoteAsrRouteConfigs.SingleOrDefaultAsync(x => x.OwnerId == owner, token);
@@ -1457,9 +1457,13 @@ public sealed class NoteAsrRoutingService(PimDbContext db, ICurrentUserService u
             : global;
         var effectiveRoute = RouteOf(effective);
         var globalRoute = RouteOf(global);
-        var defaultRoute = x?.DefaultRoute ?? NoteAsrRoute.Local;
-        if (x?.CloudModelId is null && NoteAsrRoute.IsCloud(defaultRoute) && effectiveRoute is not null)
-            defaultRoute = effectiveRoute;
+        var configuredRoute = x?.DefaultRoute ?? NoteAsrRoute.Local;
+        // The displayed default route must be the one that will actually carry the audio; the
+        // override/no-override rule lives in the shared resolver used by the ASR task builder too.
+        var defaultRoute = NoteAsrRoute.IsCloud(configuredRoute)
+            ? NoteAsrRouteResolution.EffectiveCloudRoute(configuredRoute, x?.CloudModelId,
+                effective?.AsrPresetId)
+            : configuredRoute;
         return new(x?.Revision ?? Guid.Empty, defaultRoute,
             x?.LocalModelId, x?.LocalModelRevision, x?.CloudModelId is not null,
             x?.ConsentVersion ?? "", x?.UpdatedAt ?? DateTimeOffset.MinValue, x?.CloudModelId,

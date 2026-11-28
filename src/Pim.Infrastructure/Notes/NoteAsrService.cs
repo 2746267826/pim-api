@@ -131,9 +131,8 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
         var (cloudConsent, descriptor) = await DefaultCloudConsentAsync(owner, config.CloudModelId,
             confirmed, ct);
         var isMultimodal = descriptor.Id == MimoMultimodalPreset.PresetId;
-        var effectiveRoute = config.CloudModelId is null
-            ? isMultimodal ? NoteAsrRoute.CloudMultimodal : NoteAsrRoute.CloudAsr
-            : route;
+        var effectiveRoute = NoteAsrRouteResolution.EffectiveCloudRoute(route,
+            config.CloudModelId, descriptor.Id);
         routeConsent = routeConsent with { Route = effectiveRoute };
         if (effectiveRoute == NoteAsrRoute.CloudMultimodal && !isMultimodal)
             throw new DomainException(40901,
@@ -478,9 +477,8 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
         if (request.Consent.ModelId == Guid.Empty)
             throw new DomainException(40901, "云端目标未选择，请刷新后重新确认");
         var descriptor = await ValidateDestinationAsync(request.Consent, request.Language, ct);
-        if (config.CloudModelId is null)
-            route = descriptor.Id == MimoMultimodalPreset.PresetId
-                ? NoteAsrRoute.CloudMultimodal : NoteAsrRoute.CloudAsr;
+        route = NoteAsrRouteResolution.EffectiveCloudRoute(route, config.CloudModelId,
+            descriptor.Id);
         if (route == NoteAsrRoute.CloudMultimodal && descriptor.Id != MimoMultimodalPreset.PresetId)
             throw new DomainException(40901, "多模态执行位置尚未配置 MiMo 多模态预设");
         if (route == NoteAsrRoute.CloudAsr && descriptor.Id == MimoMultimodalPreset.PresetId)

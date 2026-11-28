@@ -7,7 +7,6 @@ using Pim.Core.Exceptions;
 using Pim.Core.Notes;
 using Pim.Infrastructure.Ai;
 using Pim.Infrastructure.Ai.Asr;
-using Pim.Infrastructure.Ai.Asr.Mimo;
 using Pim.Infrastructure.Data;
 using Pim.Infrastructure.Data.Entities;
 
@@ -26,12 +25,15 @@ public sealed class NoteProcessingTargetPolicyService(
         var runtime = await db.AiModelRuntime.AsNoTracking().SingleOrDefaultAsync(ct);
         var route = await db.NoteAsrRouteConfigs.AsNoTracking()
             .SingleOrDefaultAsync(x => x.OwnerId == owner, ct);
-        var routeName = route is null ? NoteAsrRoute.CloudAsr : route.DefaultRoute.Trim();
-        var asrModelId = route is null
-            ? runtime?.TranscriptionModelId
-            : routeName == NoteAsrRoute.Local
-                ? null
-                : route.CloudModelId ?? runtime?.TranscriptionModelId;
+        // No route config still means the legacy cloud ASR shape, but the displayed route must be
+        // the one the audio would actually take. Both cases therefore resolve through the same
+        // helper the ASR service and the route settings use.
+        var configuredRoute = route?.DefaultRoute.Trim();
+        var localRoute = configuredRoute == NoteAsrRoute.Local ? route : null;
+        var isLocal = localRoute is not null;
+        var asrModelId = isLocal
+            ? null
+            : route?.CloudModelId ?? runtime?.TranscriptionModelId;
         var textModelId = AiPurposeModelResolver.ResolveId(runtime,
             AiPurpose.NoteOrganization, hasImages: false);
         var visionModelId = AiPurposeModelResolver.ResolveId(runtime,
@@ -52,20 +54,21 @@ public sealed class NoteProcessingTargetPolicyService(
 
         var targets = new List<object>();
         var descriptions = new List<string>();
-        if (route is not null && routeName == NoteAsrRoute.Local)
+        var routeName = NoteAsrRoute.Local;
+        if (localRoute is not null)
         {
             targets.Add(new
             {
                 key = "Asr",
-                route = routeName,
-                routeRevision = route.Revision,
-                routeConsentVersion = route.ConsentVersion,
-                localModelId = route.LocalModelId,
-                localModelRevision = route.LocalModelRevision,
+                route = NoteAsrRoute.Local,
+                routeRevision = localRoute.Revision,
+                routeConsentVersion = localRoute.ConsentVersion,
+                localModelId = localRoute.LocalModelId,
+                localModelRevision = localRoute.LocalModelRevision,
                 executionMode = NoteAsrExecutionMode.Realtime
             });
             descriptions.Add(
-                $"转写：本机模型 {route.LocalModelId ?? "未配置"}；模型 revision {route.LocalModelRevision ?? "未配置"}；执行模式 realtime；路由 revision {route.Revision}");
+                $"转写：本机模型 {localRoute.LocalModelId ?? "未配置"}；模型 revision {localRoute.LocalModelRevision ?? "未配置"}；执行模式 realtime；路由 revision {localRoute.Revision}");
         }
         else
         {
@@ -73,19 +76,9 @@ public sealed class NoteProcessingTargetPolicyService(
             var profile = asrModelId is { } selected && profiles.TryGetValue(selected, out var found)
                 ? found
                 : null;
-            // Follow the same effective-route resolution as the ASR service and route settings:
-            // a cloud route with no account override is described by the preset of the global
-            // transcription model that will actually receive the audio.
-            if (route is not null && route.CloudModelId is null &&
-                NoteAsrRoute.IsCloud(routeName) && profile is
-                {
-                    Enabled: true,
-                    AsrPresetId: not null
-                } && AiModelCapabilityFlags.Has(profile.Capabilities,
-                    AiModelCapability.Transcription))
-                routeName = profile.AsrPresetId == MimoMultimodalPreset.PresetId
-                    ? NoteAsrRoute.CloudMultimodal
-                    : NoteAsrRoute.CloudAsr;
+            routeName = NoteAsrRouteResolution.EffectiveCloudRoute(
+                configuredRoute ?? NoteAsrRoute.CloudAsr,
+                route?.CloudModelId, EffectivePresetId(profile));
             var endpoint = AsrEndpoint(profile);
             targets.Add(new
             {
@@ -136,7 +129,7 @@ public sealed class NoteProcessingTargetPolicyService(
             {
                 route.Revision,
                 configuredRoute = route.DefaultRoute,
-                effectiveRoute = routeName,
+                effectiveRoute = isLocal ? NoteAsrRoute.Local : routeName,
                 route.LocalModelId,
                 route.LocalModelRevision,
                 route.CloudModelId,
@@ -178,6 +171,17 @@ public sealed class NoteProcessingTargetPolicyService(
         try { return profile is null ? null : presets.Resolve(profile.AsrPresetId).Descriptor.Version; }
         catch (DomainException) { return null; }
     }
+
+    /// <summary>
+    /// Only an enabled transcription-capable profile with a resolvable preset can decide the
+    /// effective cloud route; anything else keeps the configured route instead of guessing.
+    /// Mirrors <c>NoteAsrRoutingService.GlobalCloudProfileAsync</c>.
+    /// </summary>
+    private static string? EffectivePresetId(AiModelProfileEntity? profile) =>
+        profile is { Enabled: true, AsrPresetId: not null } &&
+        AiModelCapabilityFlags.Has(profile.Capabilities, AiModelCapability.Transcription)
+            ? profile.AsrPresetId
+            : null;
 
     private static AiModelProfileEntity? FindProfile(Guid? id,
         IReadOnlyDictionary<Guid, AiModelProfileEntity> profiles) =>

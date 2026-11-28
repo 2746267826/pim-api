@@ -28,6 +28,7 @@ public sealed class NoteProcessingService(
     ILogger<NoteProcessingService> logger)
 {
     internal const string FullVersionScope = "FullVersion";
+    private const string AttemptRecoveryIssue = "asr_attempt_recovery";
     internal Func<CancellationToken, Task>? BeforePlanResolutionForTests { get; set; }
     private Guid Owner => user.UserId ?? throw new DomainException(40101, "请先登录");
 
@@ -143,7 +144,17 @@ public sealed class NoteProcessingService(
             // Out-of-band chains without either marker still use the validating path below.
             if (automatic && allRequiredCreated &&
                 (state.Authorization is not null || state.StartedAt is not null))
+            {
+                // The child chains are authoritative, but a routed ASR task without its durable
+                // attempt is not dispatchable: the executor skips route tasks with no attempt, so
+                // a crash between persisting the authorization/task and inserting the attempt
+                // would otherwise leave the material "created" forever. Repair only that missing
+                // attempt here; no chain is re-created and a refusal stays visible and retryable.
+                if (asrState is { Route: not null, AttemptId: null })
+                    asrState = await RecoverExistingAsrAttemptAsync(owner, version, state, asrState,
+                        lockedCt);
                 return await BuildStatusAsync(owner, version, state, autoEnabled, lockedCt);
+            }
             if (automatic && !autoEnabled)
                 return await SavePendingAsync(state, "auto_processing_disabled",
                     "自动笔记处理未开启；材料已完整，可在笔记处理页手动发起", lockedCt);
@@ -252,7 +263,7 @@ public sealed class NoteProcessingService(
                     state.PendingReason = error.Message;
                     state.Issues =
                     [
-                        new("asr_attempt_recovery", error.Message, NoteProcessingTaskKind.Asr)
+                        new(AttemptRecoveryIssue, error.Message, NoteProcessingTaskKind.Asr)
                     ];
                     _ = await processing.SaveLockedAsync(state, lockedCt);
                     if (!automatic) throw;
@@ -370,6 +381,47 @@ public sealed class NoteProcessingService(
                 version.Upload.VersionId, ct) ?? value;
         if (value is not null) state.AsrTaskId = value.Request.TaskId;
         return value;
+    }
+
+    /// <summary>
+    /// The ASR chain already exists, so only its durable attempt may still be missing after a
+    /// crash between persisting the authorization/task and inserting the attempt. Rebuild exactly
+    /// that attempt through the ASR authority; a refusal stays fail-closed, visible and retryable
+    /// on the next compensation scan instead of silently reporting a created-but-never-dispatched
+    /// task. No child task is created here and completed material is never rewritten to pending.
+    /// </summary>
+    private async Task<NoteAsrState> RecoverExistingAsrAttemptAsync(Guid owner,
+        NoteMaterialVersionDto version, NoteProcessingRecord state, NoteAsrState asrState,
+        CancellationToken ct)
+    {
+        try
+        {
+            var recovered = await asr.EnsureAttemptForOwnerAsync(owner,
+                asrState.Request.TaskId, version.Upload.VersionId, ct);
+            state.AsrTaskId = recovered.Request.TaskId;
+            await ClearAttemptRecoveryIssueAsync(state, ct);
+            return recovered;
+        }
+        catch (DomainException error)
+        {
+            state.Issues = state.Issues
+                .Where(issue => issue.Code != AttemptRecoveryIssue)
+                .Append(new(AttemptRecoveryIssue, error.Message, NoteProcessingTaskKind.Asr))
+                .ToList();
+            _ = await processing.SaveLockedAsync(state, ct);
+            logger.LogWarning(
+                "Routed ASR task {TaskId} still has no durable attempt ({ErrorType}); the created chain remains authoritative and the recovery stays retryable",
+                asrState.Request.TaskId, error.GetType().Name);
+            return asrState;
+        }
+    }
+
+    private async Task ClearAttemptRecoveryIssueAsync(NoteProcessingRecord state,
+        CancellationToken ct)
+    {
+        if (!state.Issues.Any(issue => issue.Code == AttemptRecoveryIssue)) return;
+        state.Issues = state.Issues.Where(issue => issue.Code != AttemptRecoveryIssue).ToList();
+        _ = await processing.SaveLockedAsync(state, ct);
     }
 
     private async Task<NoteDerivedTaskState?> ResolveDerivedStateAsync(Guid owner,
