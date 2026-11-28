@@ -6,6 +6,8 @@ interface CacheEntry {
   kind: ObjectUrlKind
   url: string
   lastUsed: number
+  /** clear 时仍有挂载消费者，标记为待清理；最后一个消费者释放后再撤销。 */
+  pendingClear?: boolean
 }
 
 const limits: Record<ObjectUrlKind, number> = {
@@ -36,7 +38,14 @@ function release(kind: ObjectUrlKind, key: string) {
   }
   activeConsumers.delete(id)
   const entry = entries.get(key)
-  if (entry?.kind === kind && trim(kind, '')) notify()
+  if (!entry || entry.kind !== kind) return
+  if (entry.pendingClear) {
+    revoke(entry.url)
+    entries.delete(key)
+    notify()
+    return
+  }
+  if (trim(kind, '')) notify()
 }
 
 function notify() {
@@ -102,7 +111,9 @@ export function objectUrlCacheRevision(): number {
 
 /**
  * 清理缩略图或播放器对象 URL；返回实际撤销的条目数。重复调用返回 0。
- * 即使当前没有缓存条目或撤销数量为 0，也要推进清理代次并通知订阅者：
+ * 仍被挂载组件/播放器使用的条目会保留并标记为待清理，等最后一个消费者释放后
+ * 再由 release() 撤销，避免正在显示的内容变成永久空白。
+ * 即使当前没有可立即撤销的条目，也要推进清理代次并通知订阅者：
  * 否则清理前已在途的读取会在稍后完成并把对象 URL 重新放回缓存。
  */
 export function clearObjectUrlCache(kind?: ObjectUrlKind): number {
@@ -110,6 +121,10 @@ export function clearObjectUrlCache(kind?: ObjectUrlKind): number {
   let cleared = 0
   for (const [key, entry] of [...entries.entries()]) {
     if (kind && entry.kind !== kind) continue
+    if (isInUse(entry.kind, key)) {
+      entry.pendingClear = true
+      continue
+    }
     revoke(entry.url)
     entries.delete(key)
     cleared += 1

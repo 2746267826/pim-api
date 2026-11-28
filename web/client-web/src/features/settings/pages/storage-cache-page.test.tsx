@@ -28,6 +28,7 @@ const scope: NoteDerivedDraftScope = {
   artifactId: '22222222-2222-4222-8222-222222222222',
   sourceVersionId: '33333333-3333-4333-8333-333333333333',
   kind: 'CompleteRecord',
+  noteId: '44444444-4444-4444-8444-444444444444',
 }
 
 let client: QueryClient
@@ -155,12 +156,17 @@ describe('存储与缓存页面', () => {
 
   it('普通账号的 AI 草稿只提供处理页入口，不暴露历史版本链接', () => {
     localStorage.setItem('pim.apiBase', 'https://pim-a.example')
-    seedDirtyAiDraft()
+    seedDirtyAiDraft({ ...scope, artifactVersionId: '55555555-5555-4555-8555-555555555555' })
     authState.user = { id: scope.ownerId, role: 'user' }
 
     renderPage()
 
-    expect(screen.getByRole('link', { name: '去处理页核对' }).getAttribute('href')).toBe('/native-notes/processing')
+    const href = screen.getByRole('link', { name: '去处理页核对' }).getAttribute('href')
+    const target = new URL(href ?? '', 'https://pim-web.example')
+    expect(target.pathname).toBe('/native-notes/processing')
+    expect(target.searchParams.get('noteId')).toBe(scope.noteId)
+    expect(target.searchParams.get('artifactVersionId')).toBe('55555555-5555-4555-8555-555555555555')
+    expect(target.searchParams.has('version')).toBe(false)
     expect(screen.queryByText('去保存')).toBeNull()
     expect(screen.queryByText(/来源版本/)).toBeNull()
   })

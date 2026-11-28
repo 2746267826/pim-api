@@ -61,20 +61,82 @@ describe('object URL 临时缓存', () => {
     expect(epoch.result.current).toBeGreaterThan(initial)
   })
 
-  it('清理后仍挂载的消费者重新读取并替换已撤销的 URL', async () => {
-    const load = vi.fn(async () => new Blob(['reload']))
-    const hook = renderHook(() => useCachedBlobUrl('thumbnail', 'reload-1', load))
+  it('清理跳过仍挂载的缩略图与播放器消费者，释放归零后才撤销', async () => {
+    const thumbnailLoad = vi.fn(async () => new Blob(['thumbnail']))
+    const playerLoad = vi.fn(async () => new Blob(['player']))
+    const thumbnail = renderHook(() => useCachedBlobUrl('thumbnail', 'active-thumbnail', thumbnailLoad))
+    const player = renderHook(() => useCachedBlobUrl('player', 'active-player', playerLoad))
 
-    await waitFor(() => expect(hook.result.current.url).toBe('blob:test-1'))
+    await waitFor(() => expect(thumbnail.result.current.url).not.toBeNull())
+    await waitFor(() => expect(player.result.current.url).not.toBeNull())
+    const thumbnailUrl = thumbnail.result.current.url!
+    const playerUrl = player.result.current.url!
+
+    act(() => {
+      expect(clearObjectUrlCache('thumbnail')).toBe(0)
+      expect(clearObjectUrlCache('player')).toBe(0)
+    })
+    expect(URL.revokeObjectURL).not.toHaveBeenCalled()
+    expect(getCachedObjectUrl('thumbnail', 'active-thumbnail')).toBe(thumbnailUrl)
+    expect(getCachedObjectUrl('player', 'active-player')).toBe(playerUrl)
+    expect(objectUrlCacheCounts()).toEqual({ thumbnail: 1, player: 1 })
+    expect(thumbnailLoad).toHaveBeenCalledTimes(1)
+    expect(playerLoad).toHaveBeenCalledTimes(1)
+
+    act(() => thumbnail.unmount())
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith(thumbnailUrl)
+    expect(objectUrlCacheCounts()).toEqual({ thumbnail: 0, player: 1 })
+
+    act(() => player.unmount())
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith(playerUrl)
+    expect(objectUrlCacheCounts()).toEqual({ thumbnail: 0, player: 0 })
+  })
+
+  it('清理后释放的 URL 不留在缓存，重新挂载会重新读取', async () => {
+    const load = vi.fn(async () => new Blob(['reload']))
+    const first = renderHook(() => useCachedBlobUrl('thumbnail', 'reload-1', load))
+
+    await waitFor(() => expect(first.result.current.url).not.toBeNull())
+    const staleUrl = first.result.current.url!
     expect(load).toHaveBeenCalledTimes(1)
 
     act(() => {
-      clearObjectUrlCache()
+      expect(clearObjectUrlCache()).toBe(0)
     })
+    act(() => first.unmount())
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith(staleUrl)
+    expect(objectUrlCacheCounts()).toEqual({ thumbnail: 0, player: 0 })
 
-    await waitFor(() => expect(hook.result.current.url).toBe('blob:test-2'))
+    const second = renderHook(() => useCachedBlobUrl('thumbnail', 'reload-1', load))
+    await waitFor(() => expect(second.result.current.url).not.toBeNull())
+    expect(second.result.current.url).not.toBe(staleUrl)
     expect(load).toHaveBeenCalledTimes(2)
-    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:test-1')
+  })
+
+  it('同一 URL 有多个消费者时，最后一个释放后才撤销', async () => {
+    const load = vi.fn(async () => new Blob(['shared']))
+    const first = renderHook(() => useCachedBlobUrl('thumbnail', 'shared-thumb', load))
+
+    await waitFor(() => expect(first.result.current.url).not.toBeNull())
+    const url = first.result.current.url!
+    expect(load).toHaveBeenCalledTimes(1)
+
+    const second = renderHook(() => useCachedBlobUrl('thumbnail', 'shared-thumb', load))
+    await waitFor(() => expect(second.result.current.url).toBe(url))
+    expect(load).toHaveBeenCalledTimes(1)
+
+    act(() => {
+      expect(clearObjectUrlCache('thumbnail')).toBe(0)
+    })
+    expect(URL.revokeObjectURL).not.toHaveBeenCalled()
+
+    act(() => first.unmount())
+    expect(URL.revokeObjectURL).not.toHaveBeenCalled()
+    expect(getCachedObjectUrl('thumbnail', 'shared-thumb')).toBe(url)
+
+    act(() => second.unmount())
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith(url)
+    expect(objectUrlCacheCounts()).toEqual({ thumbnail: 0, player: 0 })
   })
 
   it('清理会失效清理前启动的读取，晚到结果不会重新放回缓存', async () => {

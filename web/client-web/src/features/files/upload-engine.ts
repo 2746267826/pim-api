@@ -48,17 +48,29 @@ interface PersistedTransfer {
   error?: string
   startedAt: number
   finishedAt?: number
+  /** 完成时的清理纪元；合并时丢弃早于当前纪元的记录。 */
+  clearEpoch?: number
 }
 
 type Listener = (items: TransferItem[]) => void
 
 const CHUNK_MAX_RETRY = 2
 
+function readPersistedHistory(): PersistedTransfer[] {
+  return getJSON<PersistedTransfer[]>(STORAGE_KEYS.transferHistory, [])
+}
+
+function readClearEpoch(): number {
+  const value = getJSON<number>(STORAGE_KEYS.transferHistoryClearEpoch, 0)
+  return Number.isSafeInteger(value) && value >= 0 ? value : 0
+}
+
 export class UploadEngine {
   private queue: TransferItem[] = []
   private running = false
   private listeners = new Set<Listener>()
-  private history: PersistedTransfer[] = getJSON<PersistedTransfer[]>(STORAGE_KEYS.transferHistory, [])
+  /** 每个任务完成时的清理纪元，避免旧实例把已清理记录重新写回。 */
+  private completionEpochs = new Map<string, number>()
 
   subscribe(fn: Listener): () => void {
     this.listeners.add(fn)
@@ -76,27 +88,36 @@ export class UploadEngine {
   }
 
   historyList(): PersistedTransfer[] {
-    return this.history
+    const epoch = readClearEpoch()
+    return readPersistedHistory().filter((item) => (item.clearEpoch ?? 0) >= epoch)
   }
 
   historyCount(): number {
-    return this.history.length
+    return this.historyList().length
   }
 
   /** 只清理普通文件传输历史；进行中的上传队列和内存中的 File 继续保留。 */
   clearHistory(): number {
-    const cleared = this.history.length
+    const cleared = this.historyList().length
     const before = this.queue.length
+    const epoch = readClearEpoch() + 1
+    setJSON(STORAGE_KEYS.transferHistoryClearEpoch, epoch)
+    for (const item of this.queue) {
+      if (item.status === 'done' || item.status === 'failed' || item.status === 'rejected') {
+        this.completionEpochs.delete(item.id)
+      }
+    }
     this.queue = this.queue.filter((item) => item.status === 'queued' || item.status === 'uploading')
-    this.history = []
     remove(STORAGE_KEYS.transferHistory)
     if (cleared > 0 || this.queue.length !== before) this.emit()
     return cleared
   }
 
   private persist() {
+    const epoch = readClearEpoch()
     const done = this.queue
-      .filter((t) => t.status === 'done' || t.status === 'failed' || t.status === 'rejected')
+      .filter((t) => (t.status === 'done' || t.status === 'failed' || t.status === 'rejected') &&
+        (this.completionEpochs.get(t.id) ?? 0) >= epoch)
       .map<PersistedTransfer>((t) => ({
         id: t.id,
         fileName: t.fileName,
@@ -107,10 +128,20 @@ export class UploadEngine {
         error: t.error,
         startedAt: t.startedAt,
         finishedAt: t.finishedAt,
+        clearEpoch: this.completionEpochs.get(t.id) ?? epoch,
       }))
-    // 队列中未完成的也保留（页面刷新后仅作历史展示）
-    this.history = [...done, ...this.history].slice(0, 100)
-    setJSON(STORAGE_KEYS.transferHistory, this.history)
+    // 写前重读：另一标签页可能刚清理历史或新增了完成记录。
+    // 只合并当前清理纪元及之后的记录，旧纪元记录不会被重新写回。
+    const merged = new Map<string, PersistedTransfer>()
+    for (const item of done) merged.set(item.id, item)
+    for (const item of readPersistedHistory()) {
+      if ((item.clearEpoch ?? 0) >= epoch && !merged.has(item.id)) merged.set(item.id, item)
+    }
+    const next = [...merged.values()]
+      .sort((left, right) => right.startedAt - left.startedAt)
+      .slice(0, 100)
+    if (next.length) setJSON(STORAGE_KEYS.transferHistory, next)
+    else remove(STORAGE_KEYS.transferHistory)
   }
 
   /** 入队（唯一入口；>2GB 直接标 rejected） */
@@ -133,6 +164,7 @@ export class UploadEngine {
       item.status = 'rejected'
       item.error = `文件 ${formatBytes(file.size)} 超过 2GB 上限`
       item.finishedAt = Date.now()
+      this.completionEpochs.set(item.id, readClearEpoch())
     }
     this.queue.push(item)
     this.emit()
@@ -150,6 +182,9 @@ export class UploadEngine {
   }
 
   clearFinished() {
+    for (const item of this.queue) {
+      if (item.status !== 'queued' && item.status !== 'uploading') this.completionEpochs.delete(item.id)
+    }
     this.queue = this.queue.filter((t) => t.status === 'queued' || t.status === 'uploading')
     this.persist()
     this.emit()
@@ -174,6 +209,7 @@ export class UploadEngine {
           next.error = err instanceof Error ? err.message : String(err)
         }
         next.finishedAt = Date.now()
+        this.completionEpochs.set(next.id, readClearEpoch())
         this.persist()
         this.emit()
       }

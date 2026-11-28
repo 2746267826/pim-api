@@ -36,7 +36,7 @@ import {
   snapshotTemporaryCache,
   type TemporaryCacheClearResult,
 } from '../storage-cache/cache-cleanup'
-import { belongsToOtherServer, serverLabel } from '../storage-cache/display'
+import { belongsToOtherServer, ordinaryDraftProcessingHref, serverLabel } from '../storage-cache/display'
 
 function CountCard({
   icon: Icon,
@@ -142,7 +142,7 @@ export function StorageCachePage() {
               <p className="mt-1 text-xs text-text-3">
                 共 {clearableCount} 项可清理；
                 {snapshot.inUseQueryEntries > 0 && `当前页面使用中的 ${snapshot.inUseQueryEntries} 条查询会保留；`}
-                清理后页面会按需重新读取服务器。
+                使用中的缩略图/播放器对象 URL 会保留到组件释放后再撤销；清理后页面会按需重新读取服务器。
               </p>
             </div>
             <Button variant="primary" size="sm" onClick={openCleanup}>
@@ -162,14 +162,14 @@ export function StorageCachePage() {
               title="图片缩略图"
               count={snapshot.thumbnailEntries}
               unit="项"
-              description="文件列表缩略图的对象 URL 缓存；不包含笔记照片草稿。"
+              description="文件列表缩略图的对象 URL 缓存；使用中的缩略图会保留到组件释放后撤销。"
             />
             <CountCard
               icon={Play}
               title="播放器缓存"
               count={snapshot.playerEntries}
               unit="项"
-              description="已读取音频的对象 URL 缓存；不包含待上传录音。"
+              description="已读取音频的对象 URL 缓存；正在播放或挂载的播放器会保留到释放后撤销。"
             />
             <CountCard
               icon={FileClock}
@@ -236,7 +236,9 @@ export function StorageCachePage() {
                         <p className="mt-1 text-xs leading-5 text-text-3">
                           {otherServer
                             ? '此草稿属于其他服务器；请先切换到该服务器，再从笔记处理页核对保存。'
-                            : 'AI 草稿已保存在本机。普通账号不显示历史材料版本；请从处理页选择当前笔记内容核对并保存。'}
+                            : draft.binding.noteId
+                              ? 'AI 草稿已保存在本机。普通账号不显示历史材料版本；将打开关联笔记的当前内容与对应整理结果版本。'
+                              : '这份旧草稿缺少笔记定位信息；请从处理页手动选择当前笔记核对并保存，草稿不会被清理。'}
                         </p>
                       )}
                       {!otherServer && (canViewVersionDrafts
@@ -249,8 +251,8 @@ export function StorageCachePage() {
                           </Link>
                         )
                         : (
-                          <Link className="mt-1 inline-block text-xs text-primary hover:underline" to="/native-notes/processing">
-                            去处理页核对
+                          <Link className="mt-1 inline-block text-xs text-primary hover:underline" to={ordinaryDraftProcessingHref(draft)}>
+                            {draft.binding.noteId ? '去处理页核对' : '去处理页手动核对'}
                           </Link>
                         ))}
                     </li>
@@ -297,6 +299,9 @@ export function StorageCachePage() {
             <div className="rounded-ctl border border-border bg-surface px-3 py-2.5 text-[13px] text-text-2">
               将清理查询缓存 {snapshot.queryEntries} 条、缩略图 {snapshot.thumbnailEntries} 项、播放器缓存 {snapshot.playerEntries} 项、传输历史 {snapshot.transferHistoryEntries} 条。
             </div>
+            <p className="text-xs leading-5 text-text-3">
+              缩略图与播放器缓存中仍被页面组件使用的对象 URL 会保留到组件释放后再撤销，不会让当前画面变空白。
+            </p>
             {protectedCount > 0 ? (
               <>
                 <div className="rounded-ctl border border-warn-border bg-warn-soft px-3 py-2.5 text-[13px] leading-5 text-text-2">
@@ -339,13 +344,17 @@ export function StorageCachePage() {
                           <div className="mt-1 text-text-3">请先切换到该服务器，再从笔记处理页保存。</div>
                         ) : (
                           <>
-                            <div className="mt-1 text-text-3">AI 草稿已保存在本机。普通账号不显示历史材料版本；请从处理页选择当前笔记内容核对并保存。</div>
+                            <div className="mt-1 text-text-3">
+                              {draft.binding.noteId
+                                ? 'AI 草稿已保存在本机。普通账号不显示历史材料版本；将打开关联笔记的当前内容与对应整理结果版本。'
+                                : '这份旧草稿缺少笔记定位信息；请从处理页手动选择当前笔记核对并保存，草稿不会被清理。'}
+                            </div>
                             <Link
                               className="mt-1 inline-block text-primary hover:underline"
-                              to="/native-notes/processing"
+                              to={ordinaryDraftProcessingHref(draft)}
                               onClick={() => setDialogOpen(false)}
                             >
-                              去处理页核对
+                              {draft.binding.noteId ? '去处理页核对' : '去处理页手动核对'}
                             </Link>
                           </>
                         )}

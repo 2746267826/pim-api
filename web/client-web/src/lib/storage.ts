@@ -48,6 +48,7 @@ export const STORAGE_KEYS = {
   /** 文件页当前选中的网盘账号 id（多账号并存时记住选择） */
   fileAccountId: 'pim.fileAccountId',
   transferHistory: 'pim.transferHistory',
+  transferHistoryClearEpoch: 'pim.transferHistoryClearEpoch',
   labelingCustomCategories: 'pim.labelingCategories',
   quickNoteDialogPosition: 'pim.quickNoteDialog',
   exhibition: 'pim.exhibition',

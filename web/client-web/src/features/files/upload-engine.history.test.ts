@@ -103,4 +103,76 @@ describe('文件传输历史清理', () => {
     expect(engine.historyCount()).toBe(1)
     expect(engine.historyList().map((item) => item.fileName)).toEqual(['second.txt'])
   })
+
+  it('另一实例清理历史后，本实例使用旧内存历史完成上传不会复活记录', async () => {
+    setJSON(STORAGE_KEYS.transferHistory, history)
+    filesApi.uploadSimple.mockResolvedValue(undefined)
+    const stale = new UploadEngine()
+    const cleaner = new UploadEngine()
+
+    expect(cleaner.clearHistory()).toBe(2)
+    expect(localStorage.getItem(STORAGE_KEYS.transferHistory)).toBeNull()
+
+    stale.enqueue({
+      providerId: 'provider-1',
+      file: new File(['new'], 'new.txt', { type: 'text/plain' }),
+      targetPath: '/',
+    })
+    await vi.waitFor(() => expect(stale.snapshot()[0]?.status).toBe('done'))
+
+    expect(stale.historyList().map((item) => item.fileName)).toEqual(['new.txt'])
+    expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.transferHistory) ?? '[]')).toEqual([
+      expect.objectContaining({ fileName: 'new.txt' }),
+    ])
+  })
+
+  it('另一实例清理历史后，本实例队列中清理前完成的任务不会复活', async () => {
+    filesApi.uploadSimple.mockResolvedValue(undefined)
+    const stale = new UploadEngine()
+    const cleaner = new UploadEngine()
+
+    stale.enqueue({
+      providerId: 'provider-1',
+      file: new File(['old'], 'old.txt', { type: 'text/plain' }),
+      targetPath: '/',
+    })
+    await vi.waitFor(() => expect(stale.snapshot()[0]?.status).toBe('done'))
+    expect(cleaner.clearHistory()).toBe(1)
+
+    stale.enqueue({
+      providerId: 'provider-1',
+      file: new File(['new'], 'new.txt', { type: 'text/plain' }),
+      targetPath: '/',
+    })
+    await vi.waitFor(() => expect(stale.snapshot()[0]?.status).toBe('done'))
+
+    expect(stale.historyList().map((item) => item.fileName)).toEqual(['new.txt'])
+    expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.transferHistory) ?? '[]')).toEqual([
+      expect.objectContaining({ fileName: 'new.txt' }),
+    ])
+  })
+
+  it('落盘前合并另一实例新增的历史，不会只用构造时读到的旧副本覆盖', async () => {
+    filesApi.uploadSimple.mockResolvedValue(undefined)
+    const engine = new UploadEngine()
+    setJSON(STORAGE_KEYS.transferHistory, [{
+      id: 'other-tab',
+      fileName: 'other.txt',
+      fileSize: 1,
+      targetPath: '/',
+      fullPath: '/other.txt',
+      status: 'done',
+      startedAt: 1,
+      finishedAt: 2,
+    }])
+
+    engine.enqueue({
+      providerId: 'provider-1',
+      file: new File(['new'], 'new.txt', { type: 'text/plain' }),
+      targetPath: '/',
+    })
+    await vi.waitFor(() => expect(engine.snapshot()[0]?.status).toBe('done'))
+
+    expect(engine.historyList().map((item) => item.fileName).sort()).toEqual(['new.txt', 'other.txt'])
+  })
 })

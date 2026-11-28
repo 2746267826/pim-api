@@ -68,7 +68,7 @@ export function snapshotTemporaryCache(queryClient: QueryClient, ownerId = ''): 
 /**
  * 普通 Web 临时缓存清理：
  * - 查询缓存（保留 mutation cache 与正在进行的保存/上传）
- * - 缩略图与播放器对象 URL
+ * - 缩略图与播放器对象 URL（仍挂载消费者使用的保留，释放归零后撤销）
  * - 普通文件传输历史
  *
  * 不触碰：未保存编辑器状态、手写/图片草稿、AI 草稿、笔记索引/材料、令牌、服务器配置。

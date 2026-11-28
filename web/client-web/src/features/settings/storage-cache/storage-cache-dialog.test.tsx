@@ -29,6 +29,7 @@ const ownerADraftScope: NoteDerivedDraftScope = {
   artifactId: '22222222-2222-4222-8222-222222222222',
   sourceVersionId: '33333333-3333-4333-8333-333333333333',
   kind: 'CompleteRecord',
+  noteId: '44444444-4444-4444-8444-444444444444',
 }
 
 function DirtyEditor() {
@@ -130,7 +131,11 @@ describe('常驻存储与缓存入口', () => {
   it('普通账号的 AI 草稿提供可用的处理页入口，不暴露不可达的历史版本链接', async () => {
     const user = userEvent.setup()
     localStorage.setItem('pim.apiBase', 'https://pim-a.example')
-    const clean = persistStoredDraft(createStoredDraft(ownerADraftScope, '已保存正文', 'head-a'))
+    const ordinaryScope = {
+      ...ownerADraftScope,
+      artifactVersionId: '55555555-5555-4555-8555-555555555555',
+    }
+    const clean = persistStoredDraft(createStoredDraft(ordinaryScope, '已保存正文', 'head-a'))
     expect(clean.ok).toBe(true)
     if (!clean.ok) throw new Error('failed to seed draft')
     const edited = editStoredDraft(clean.value, '尚未保存的人工正文')
@@ -150,8 +155,46 @@ describe('常驻存储与缓存入口', () => {
 
     await user.click(screen.getByRole('button', { name: '存储与缓存' }))
     const link = await screen.findByRole('link', { name: '去处理页核对' })
-    expect(link.getAttribute('href')).toBe('/native-notes/processing')
+    const target = new URL(link.getAttribute('href') ?? '', 'https://pim-web.example')
+    expect(target.pathname).toBe('/native-notes/processing')
+    expect(target.searchParams.get('noteId')).toBe(ownerADraftScope.noteId)
+    expect(target.searchParams.get('artifactVersionId')).toBe('55555555-5555-4555-8555-555555555555')
+    expect(target.searchParams.has('version')).toBe(false)
     expect(screen.queryByText('去保存')).toBeNull()
     expect(screen.queryByText(/来源版本/)).toBeNull()
+  })
+
+  it('缺少笔记定位的旧 AI 草稿降级为手动核对入口', async () => {
+    const user = userEvent.setup()
+    localStorage.setItem('pim.apiBase', 'https://pim-a.example')
+    const legacyScope: NoteDerivedDraftScope = {
+      ownerId: ownerADraftScope.ownerId,
+      serverBinding: ownerADraftScope.serverBinding,
+      artifactId: ownerADraftScope.artifactId,
+      sourceVersionId: ownerADraftScope.sourceVersionId,
+      kind: 'CompleteRecord',
+    }
+    const clean = persistStoredDraft(createStoredDraft(legacyScope, '旧版已保存正文', 'head-a'))
+    expect(clean.ok).toBe(true)
+    if (!clean.ok) throw new Error('failed to seed draft')
+    const edited = editStoredDraft(clean.value, '旧版未保存正文')
+    expect(edited.ok).toBe(true)
+    if (!edited.ok) throw new Error('failed to edit draft')
+    expect(persistStoredDraft(edited.value).ok).toBe(true)
+
+    authState.user = { id: ownerADraftScope.ownerId, role: 'user' }
+    client = new QueryClient()
+    render(
+      <QueryClientProvider client={client}>
+        <MemoryRouter>
+          <StorageCacheLauncher />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+
+    await user.click(screen.getByRole('button', { name: '存储与缓存' }))
+    const link = await screen.findByRole('link', { name: '去处理页手动核对' })
+    expect(link.getAttribute('href')).toBe('/native-notes/processing')
+    expect(screen.getByText(/缺少笔记定位信息/)).toBeTruthy()
   })
 })

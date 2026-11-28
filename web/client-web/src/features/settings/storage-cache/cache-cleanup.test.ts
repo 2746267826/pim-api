@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
 import { QueryClient } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { NoteDerivedDraftScope } from '@/features/ai/note-derived/draft-storage'
@@ -36,6 +37,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  cleanup()
   queryClient?.clear()
   vi.restoreAllMocks()
 })
@@ -140,4 +142,29 @@ describe('Web 临时缓存清理', () => {
 
     modules.unsaved.resetUnsavedDraftsForTests()
   }, 30_000)
+
+  it('清理回执只统计实际撤销的对象 URL，仍挂载的消费者释放后才撤销', async () => {
+    const modules = await loadModules()
+    const hook = renderHook(() => modules.objectUrls.useCachedBlobUrl(
+      'thumbnail',
+      'active-thumbnail',
+      async () => new Blob(['thumbnail']),
+    ))
+    await waitFor(() => expect(hook.result.current.url).not.toBeNull())
+    const url = hook.result.current.url!
+
+    queryClient = new QueryClient()
+    let result: Awaited<ReturnType<typeof modules.clearTemporaryWebCache>> | undefined
+    await act(async () => {
+      result = await modules.clearTemporaryWebCache(queryClient)
+    })
+
+    expect(result?.thumbnailEntries).toBe(0)
+    expect(modules.objectUrls.objectUrlCacheCounts()).toMatchObject({ thumbnail: 1 })
+    expect(URL.revokeObjectURL).not.toHaveBeenCalledWith(url)
+
+    act(() => hook.unmount())
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith(url)
+    expect(modules.objectUrls.objectUrlCacheCounts()).toMatchObject({ thumbnail: 0 })
+  })
 })

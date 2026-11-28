@@ -63,6 +63,16 @@ describe('note-derived local draft storage', () => {
     expect(loadStoredDraft({ ...scope, kind: 'IndependentAnalysis' })).toEqual({ ok: true, value: null })
   })
 
+  it('keeps noteId as navigation metadata without changing the draft identity or key', () => {
+    const noteId = '44444444-4444-4444-8444-444444444444'
+    expect(noteDerivedDraftStorageKey({ ...scope, noteId })).toBe(noteDerivedDraftStorageKey(scope))
+    expect(persistStoredDraft(createStoredDraft(scope, '旧版本地草稿')).ok).toBe(true)
+
+    const loaded = loadStoredDraft({ ...scope, noteId })
+    expect(loaded.ok && loaded.value?.draft.text).toBe('旧版本地草稿')
+    expect(loaded.ok && loaded.value?.binding.noteId).toBe(noteId)
+  })
+
   it('isolates ordinary-user drafts by the selected result version', () => {
     const headScope = { ...scope, artifactVersionId: 'version-head' }
     const candidateScope = { ...scope, artifactVersionId: 'version-candidate' }

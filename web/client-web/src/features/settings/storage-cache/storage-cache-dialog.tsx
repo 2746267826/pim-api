@@ -24,7 +24,7 @@ import {
   snapshotTemporaryCache,
   type TemporaryCacheClearResult,
 } from './cache-cleanup'
-import { belongsToOtherServer, serverLabel } from './display'
+import { belongsToOtherServer, ordinaryDraftProcessingHref, serverLabel } from './display'
 
 /**
  * 常驻入口：设置页是独立路由，离开编辑器后内存草稿会注销；
@@ -138,7 +138,7 @@ export function StorageCacheDialog({
           <p className="text-xs leading-5 text-text-3">
             共 {clearableCount} 项可清理；
             {snapshot.inUseQueryEntries > 0 && `当前页面使用中的 ${snapshot.inUseQueryEntries} 条查询会保留；`}
-            清理后页面会按需重新读取服务器。
+            使用中的缩略图/播放器对象 URL 会保留到组件释放后再撤销；清理后页面会按需重新读取服务器。
           </p>
 
           <section aria-labelledby="storage-dialog-protected-heading">
@@ -205,7 +205,9 @@ export function StorageCacheDialog({
                         <p className="mt-1 text-xs leading-5 text-text-3">
                           {otherServer
                             ? '此草稿属于其他服务器；请先切换到该服务器，再从笔记处理页核对保存。'
-                            : 'AI 草稿已保存在本机。普通账号不显示历史材料版本；请从处理页选择当前笔记内容核对并保存。'}
+                            : draft.binding.noteId
+                              ? 'AI 草稿已保存在本机。普通账号不显示历史材料版本；将打开关联笔记的当前内容与对应整理结果版本。'
+                              : '这份旧草稿缺少笔记定位信息；请从处理页手动选择当前笔记核对并保存，草稿不会被清理。'}
                         </p>
                       )}
                       {!otherServer && (canViewVersionDrafts
@@ -221,10 +223,10 @@ export function StorageCacheDialog({
                         : (
                           <Link
                             className="mt-1 inline-block text-xs text-primary hover:underline"
-                            to="/native-notes/processing"
+                            to={ordinaryDraftProcessingHref(draft)}
                             onClick={() => handleOpenChange(false)}
                           >
-                            去处理页核对
+                            {draft.binding.noteId ? '去处理页核对' : '去处理页手动核对'}
                           </Link>
                         ))}
                     </li>
