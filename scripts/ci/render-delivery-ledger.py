@@ -75,11 +75,12 @@ def count_key(value):
 
 def open_fixed_directory(root: Path) -> tuple[int, str]:
     relative = Path(LEDGER_VIEW_PATH)
+    if not hasattr(os, "O_NOFOLLOW"):
+        raise OSError("当前平台不支持 O_NOFOLLOW，拒绝执行固定视图写入")
     flags = os.O_RDONLY
     if hasattr(os, "O_DIRECTORY"):
         flags |= os.O_DIRECTORY
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
+    flags |= os.O_NOFOLLOW
 
     directory_fd = os.open(root, flags)
     for part in relative.parts[:-1]:
@@ -109,9 +110,7 @@ def write_fixed_output(root: Path, text: str) -> Path:
             if existing.st_nlink != 1:
                 raise ValueError(f"固定视图路径不能是硬链接：{root / LEDGER_VIEW_PATH}")
 
-        temporary_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-        if hasattr(os, "O_NOFOLLOW"):
-            temporary_flags |= os.O_NOFOLLOW
+        temporary_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
         for _ in range(10):
             candidate = f".{filename}.{os.getpid()}.{secrets.token_hex(8)}.tmp"
             try:
