@@ -63,6 +63,7 @@ FLOW_RESULTS = {"passed", "passed_legacy", "failed", "not-run", "blocked"}
 EVIDENCE_TYPES = {"audit-note", "ci", "decision", "real-flow"}
 PR_VERIFIED_BY = {"git-history", "github-api", "legacy-ledger"}
 ALLOWED_SNAPSHOT_BRANCHES = {"master"}
+LEGACY_SNAPSHOT_FILE = "docs/product/pim-delivery-ledger-20261125.md"
 
 ITEM_FIELDS = [
     "id", "title", "batch", "platform_roles", "platform_scope",
@@ -135,6 +136,58 @@ class Validator:
         if len(result) != len(set(result)):
             self.error(where, f"{field} 含重复值")
         return result
+
+    def enum_value(self, value) -> str | None:
+        return value if isinstance(value, str) else None
+
+    def item_required_platforms(self, item: dict) -> list[str]:
+        roles = item.get("platform_roles")
+        if not isinstance(roles, dict):
+            return []
+        return [
+            str(platform)
+            for platform, role in roles.items()
+            if isinstance(role, str) and role in {"required", "read_only"}
+        ]
+
+    def current_passed_flow_platforms(self, item_id: str) -> set[str]:
+        covered: set[str] = set()
+        for flow in self.flows.values():
+            if flow.get("freshness") != "current" or flow.get("result") != "passed":
+                continue
+            flow_items = flow.get("items")
+            if not isinstance(flow_items, list) or item_id not in flow_items:
+                continue
+            platforms = flow.get("platforms")
+            if isinstance(platforms, list):
+                covered.update(p for p in platforms if isinstance(p, str))
+        return covered
+
+    def is_superseded_stale_failure(self, evidence_id: str, item_id: str) -> bool:
+        ev = self.evidence.get(evidence_id)
+        if not ev or ev.get("type") != "real-flow" or ev.get("freshness") != "stale":
+            return False
+        matches = self.flow_by_evidence.get(evidence_id, [])
+        if len(matches) != 1:
+            return False
+        flow = matches[0]
+        if item_id not in (flow.get("items") or []):
+            return False
+        if self.enum_value(flow.get("result")) not in {"failed", "blocked"}:
+            return False
+        target_id = flow.get("superseded_by")
+        if not isinstance(target_id, str):
+            return False
+        target = self.flows.get(target_id)
+        if target is None or target.get("freshness") != "current" or target.get("result") != "passed":
+            return False
+        source_ac_ids = flow.get("ac_ids")
+        target_ac_ids = target.get("ac_ids")
+        if not isinstance(source_ac_ids, list) or not isinstance(target_ac_ids, list):
+            return False
+        source_acs = {ac_id for ac_id in source_ac_ids if isinstance(ac_id, str)}
+        target_acs = {ac_id for ac_id in target_ac_ids if isinstance(ac_id, str)}
+        return bool(source_acs) and source_acs.issubset(target_acs)
 
     def resolve_commit(self, where: str, value, field: str = "source_commit") -> str | None:
         commit = str(value or "")
@@ -242,7 +295,7 @@ class Validator:
         ev = self.evidence.get(evidence_id)
         if not ev:
             return False
-        if ev.get("type") != "real-flow" or ev.get("level") not in PROOF_LEVELS:
+        if ev.get("type") != "real-flow" or self.enum_value(ev.get("level")) not in PROOF_LEVELS:
             return False
         if ev.get("freshness") != "current":
             return False
@@ -271,10 +324,23 @@ class Validator:
         if not self.is_current_proof(evidence_id, item_id, ac_id):
             return set()
         flow = self.flow_by_evidence[evidence_id][0]
-        return set(flow.get("platforms") or [])
+        platforms = flow.get("platforms")
+        if not isinstance(platforms, list):
+            return set()
+        return {platform for platform in platforms if isinstance(platform, str)}
 
     # -- checks ----------------------------------------------------------
     def run(self) -> bool:
+        try:
+            return self._run()
+        except (AttributeError, KeyError, TypeError, ValueError) as exc:
+            self.error(
+                "validator",
+                f"数据结构畸形，校验中止：{type(exc).__name__}: {exc}；请修复字段类型后重试",
+            )
+            return self.report()
+
+    def _run(self) -> bool:
         ledger = self.load("ledger.json")
         prs_doc = self.load("prs.json")
         ci_doc = self.load("ci-runs.json")
@@ -282,7 +348,11 @@ class Validator:
         evidence_doc = self.load("evidence.json")
         decisions_doc = self.load("decisions.json")
         if not ledger:
-            return self.report()
+            self.error(
+                "ledger.json",
+                "台账为空或缺少必需结构；至少需要 scope、source_snapshot、batches、items，"
+                "不能把空对象当作成功",
+            )
 
         self.prs = self.index(prs_doc.get("prs", []), "id", "prs.json")
         self.ci = self.index(ci_doc.get("runs", []), "id", "ci-runs.json")
@@ -352,9 +422,13 @@ class Validator:
         if scope.get("supplemental_ids") != ["S01"]:
             self.error("ledger.json:scope", "supplemental_ids 必须恰为 ['S01']")
         expected_core = sorted(prefix for prefix in EXPECTED_PREFIX_COUNTS if prefix not in {"S", "Z"})
-        if sorted(scope.get("core_prefixes", [])) != expected_core:
+        core_prefixes = self.string_list(
+            "ledger.json:scope", scope.get("core_prefixes"), "core_prefixes")
+        if sorted(core_prefixes) != expected_core:
             self.error("ledger.json:scope", f"core_prefixes 必须为 {expected_core}")
-        if scope.get("reverse_prefixes") != ["Z"]:
+        reverse_prefixes = self.string_list(
+            "ledger.json:scope", scope.get("reverse_prefixes"), "reverse_prefixes")
+        if reverse_prefixes != ["Z"]:
             self.error("ledger.json:scope", "reverse_prefixes 必须为 ['Z']")
         if scope.get("counts_by_prefix") != EXPECTED_PREFIX_COUNTS:
             self.error("ledger.json:scope",
@@ -382,7 +456,13 @@ class Validator:
         if dict(actual_prefix_counts) != scope.get("counts_by_prefix"):
             self.error("ledger.json:scope",
                        f"counts_by_prefix 与 items 实际计数不符：实际 {dict(actual_prefix_counts)}")
-        actual_status_counts = Counter(item.get("status") for item in items)
+        raw_statuses = [item.get("status") for item in items]
+        if any(not isinstance(status, str) for status in raw_statuses):
+            self.error("ledger.json:items", "status 必须为非空字符串")
+        actual_status_counts = Counter(
+            status for status in raw_statuses if isinstance(status, str))
+        if not isinstance(scope.get("counts_by_status"), dict):
+            self.error("ledger.json:scope", "counts_by_status 必须为对象")
         expected_status_counts = {status: actual_status_counts.get(status, 0) for status in sorted(STATUSES)}
         if scope.get("counts_by_status") != expected_status_counts:
             self.error("ledger.json:scope",
@@ -390,11 +470,16 @@ class Validator:
                        f"实际 {scope.get('counts_by_status')}")
         self.check_acceptance_scope(items)
 
-        if sorted(ledger.get("platforms", [])) != sorted(PLATFORMS):
+        platforms = self.string_list(
+            "ledger.json:platforms", ledger.get("platforms"), "platforms", allow_empty=False)
+        if sorted(platforms) != sorted(PLATFORMS):
             self.error("ledger.json:platforms", f"平台列表必须为 {PLATFORMS}")
-        if ledger.get("platform_role_values") != sorted(ROLES):
+        role_values = self.string_list(
+            "ledger.json:platform_role_values",
+            ledger.get("platform_role_values"), "platform_role_values", allow_empty=False)
+        if role_values != sorted(ROLES):
             self.error("ledger.json:platform_role_values", f"角色枚举必须为 {sorted(ROLES)}")
-        if not ledger.get("batch_close_rules"):
+        if not isinstance(ledger.get("batch_close_rules"), list) or not ledger.get("batch_close_rules"):
             self.error("ledger.json:batch_close_rules", "批次关闭条件不能为空")
         evidence_levels = ledger.get("evidence_levels")
         if not isinstance(evidence_levels, dict) or set(evidence_levels) != LEVELS:
@@ -524,26 +609,29 @@ class Validator:
                 self.error(where, f"repository 必须为 {expected_repo}")
             if pr.get("url") != f"https://github.com/{expected_repo}/pull/{number}":
                 self.error(where, "url 与仓库/编号不一致")
-            if pr.get("state") not in PR_STATES:
+            state = self.enum_value(pr.get("state"))
+            state_freshness = self.enum_value(pr.get("state_freshness"))
+            verified_by = self.enum_value(pr.get("state_verified_by"))
+            if state not in PR_STATES:
                 self.error(where, f"非法 state：{pr.get('state')!r}")
-            if pr.get("state_freshness") not in {"current", "stale"}:
+            if state_freshness not in {"current", "stale"}:
                 self.error(where, f"state_freshness 必须为 current/stale，实际 {pr.get('state_freshness')!r}")
-            if pr.get("state_freshness") == "current":
+            if state_freshness == "current":
                 self.validate_current_time(where, pr.get("observed_at"), "observed_at")
             else:
                 self.required_string(where, pr, "observed_at")
-            if pr.get("state_verified_by") not in PR_VERIFIED_BY:
+            if verified_by not in PR_VERIFIED_BY:
                 self.error(where, f"非法 state_verified_by：{pr.get('state_verified_by')!r}")
             for field in ("head", "merge_commit"):
                 value = pr.get(field)
                 if value is not None and not HASH.fullmatch(str(value)):
                     self.error(where, f"{field} 必须是 7–40 位十六进制，实际 {value!r}")
-            if pr.get("state") == "merged":
+            if state == "merged":
                 if not pr.get("merge_commit"):
                     self.error(where, "merged PR 必须给出 merge_commit")
-                if pr.get("state_freshness") == "current" and pr.get("state_verified_by") == "legacy-ledger":
+                if state_freshness == "current" and verified_by == "legacy-ledger":
                     self.error(where, "current 的 merged PR 不能由 legacy-ledger 验证")
-                if pr.get("state_verified_by") == "git-history" and repo == "pim-api":
+                if verified_by == "git-history" and repo == "pim-api":
                     merge_commit = str(pr.get("merge_commit", ""))
                     resolved = self.git("rev-parse", "--verify", f"{merge_commit}^{{commit}}")
                     if resolved.returncode != 0:
@@ -555,11 +643,11 @@ class Validator:
                             self.error(where, "merge_commit 不属于 master")
             elif pr.get("merge_commit"):
                 self.error(where, f"{pr.get('state')} PR 不应带 merge_commit")
-            if pr.get("state") in {"open", "draft"} and not pr.get("head"):
+            if state in {"open", "draft"} and not pr.get("head"):
                 self.error(where, f"{pr.get('state')} PR 必须给出 head")
-            if pr.get("state_freshness") == "current" and pr.get("state_verified_by") == "legacy-ledger":
+            if state_freshness == "current" and verified_by == "legacy-ledger":
                 self.error(where, "current 状态必须由 git-history 或 github-api 验证")
-            if pr.get("state_freshness") == "current" and pr.get("state") in {"open", "draft", "closed"} \
+            if state_freshness == "current" and state in {"open", "draft", "closed"} \
                     and not pr.get("head"):
                 self.error(where, "current 实现 PR 必须给出可比较的 head")
 
@@ -577,34 +665,38 @@ class Validator:
                     self.error(where, f"缺少必填字段 {field}")
             if run.get("run_id") != m.group(1):
                 self.error(where, "run_id 与 id 不一致")
-            if run.get("pr") not in prs:
+            pr_ref = self.enum_value(run.get("pr"))
+            if pr_ref is None or pr_ref not in prs:
                 self.error(where, f"引用了不存在的 PR：{run.get('pr')!r}")
             else:
-                pr = prs[run["pr"]]
+                pr = prs[pr_ref]
                 if pr.get("repo") != run.get("repo"):
                     self.error(where, f"repo {run.get('repo')!r} 与 PR 仓库 {pr.get('repo')!r} 不一致")
                 if run.get("head_is_current") and run.get("head") != pr.get("head"):
                     self.error(where, "head_is_current=true 但 head 与当前 PR head 不一致")
                 if run.get("freshness") == "current" and run.get("head") != pr.get("head"):
                     self.error(where, "current CI head 必须与关联 PR head 一致")
-            if run.get("freshness") not in FRESHNESS:
+            freshness = self.enum_value(run.get("freshness"))
+            conclusion = self.enum_value(run.get("conclusion"))
+            if freshness not in FRESHNESS:
                 self.error(where, f"非法 freshness：{run.get('freshness')!r}")
-            if run.get("conclusion") not in {"success", "failure", "cancelled", "in_progress", "skipped"}:
+            if conclusion not in {"success", "failure", "cancelled", "in_progress", "skipped"}:
                 self.error(where, f"非法 conclusion：{run.get('conclusion')!r}")
             if not isinstance(run.get("head_is_current"), bool):
                 self.error(where, "head_is_current 必须为布尔值")
-            if run.get("freshness") == "current" and run.get("head_is_current") is not True:
+            if freshness == "current" and run.get("head_is_current") is not True:
                 self.error(where, "current CI 必须 head_is_current=true")
-            if not str(run.get("head", "")).strip():
+            head = run.get("head")
+            if not isinstance(head, str) or not head.strip():
                 self.error(where, "head 不能为空")
-            elif not HASH.fullmatch(str(run.get("head"))):
+            elif not HASH.fullmatch(head):
                 self.error(where, f"head 必须是 7–40 位十六进制，实际 {run.get('head')!r}")
-            if run.get("freshness") == "stale" and run.get("head_is_current"):
+            if freshness == "stale" and run.get("head_is_current"):
                 self.error(where, "stale run 不能标记为当前 head")
             jobs = self.string_list(where, run.get("jobs"), "jobs", allow_empty=False)
             if len(jobs) != len(run.get("jobs") or []):
                 self.error(where, "jobs 含非法成员")
-            if run.get("freshness") == "current":
+            if freshness == "current":
                 self.validate_current_time(where, run.get("observed_at"), "observed_at")
             else:
                 self.required_string(where, run, "observed_at")
@@ -620,11 +712,13 @@ class Validator:
                 if field not in flow:
                     self.error(where, f"缺少必填字段 {field}")
             self.required_string(where, flow, "title")
-            if flow.get("result") not in FLOW_RESULTS:
+            result = self.enum_value(flow.get("result"))
+            freshness = self.enum_value(flow.get("freshness"))
+            if result not in FLOW_RESULTS:
                 self.error(where, f"非法 result：{flow.get('result')!r}")
-            if flow.get("freshness") not in FRESHNESS:
+            if freshness not in FRESHNESS:
                 self.error(where, f"非法 freshness：{flow.get('freshness')!r}")
-            if flow.get("freshness") == "current":
+            if freshness == "current":
                 self.validate_current_time(where, flow.get("observed_at"), "observed_at")
                 resolved = self.resolve_commit(where, flow.get("source_commit"))
                 if resolved and not self.commit_is_snapshot(resolved):
@@ -652,7 +746,7 @@ class Validator:
                 if platform not in PLATFORMS:
                     self.error(where, f"非法 platform：{platform!r}")
             artifacts = self.string_list(where, flow.get("artifacts"), "artifacts")
-            if flow.get("result") in {"passed", "passed_legacy", "failed", "blocked"}:
+            if result in {"passed", "passed_legacy", "failed", "blocked"}:
                 if not str(flow.get("environment") or "").strip():
                     self.error(where, f"{flow.get('result')} 流程必须记录 environment")
                 if not artifacts:
@@ -672,9 +766,9 @@ class Validator:
                 continue
             if ev.get("type") != "real-flow":
                 self.error(where, f"evidence {evid} 类型不是 real-flow")
-            if ev.get("level") not in PROOF_LEVELS:
+            if self.enum_value(ev.get("level")) not in PROOF_LEVELS:
                 self.error(where, f"evidence {evid} 必须是 E4/E5/E6")
-            if ev.get("freshness") != flow.get("freshness"):
+            if ev.get("freshness") != freshness:
                 self.error(where, "flow 与 evidence 的 freshness 不一致")
             ev_items = self.string_list(f"{where}:evidence", ev.get("items"), "items")
             if set(ev_items) != set(items):
@@ -688,8 +782,8 @@ class Validator:
                 item = self.items_by_id.get(item_id)
                 if item is not None and evid not in (item.get("evidence") or []):
                     self.error(where, f"item {item_id} 未反向引用流程证据 {evid}")
-            if flow.get("result") == "passed":
-                if flow.get("freshness") != "current":
+            if result == "passed":
+                if freshness != "current":
                     self.error(where, "passed 真实流程必须是 current freshness")
                 if ev.get("freshness") != "current":
                     self.error(where, "passed 真实流程的 evidence 必须是 current")
@@ -697,12 +791,12 @@ class Validator:
                     self.error(where, "passed 真实流程必须记录环境")
                 if not artifacts:
                     self.error(where, "passed 真实流程必须记录产物")
-            if flow.get("result") == "passed_legacy":
-                if flow.get("freshness") != "stale":
+            if result == "passed_legacy":
+                if freshness != "stale":
                     self.error(where, "passed_legacy 必须是 stale freshness")
                 if not flow.get("environment"):
                     self.error(where, "passed_legacy 必须记录当时的执行环境")
-            if flow.get("result") == "not-run" and flow.get("freshness") != "not-verified":
+            if result == "not-run" and freshness != "not-verified":
                 self.error(where, "not-run 流程必须是 not-verified freshness")
             superseded_by = flow.get("superseded_by")
             if superseded_by is not None:
@@ -710,7 +804,7 @@ class Validator:
                 if target is None:
                     self.error(where, f"superseded_by 指向不存在的流程：{superseded_by!r}")
                 else:
-                    if flow.get("freshness") != "stale":
+                    if freshness != "stale":
                         self.error(where, "superseded_by 只能用于 stale 的旧流程")
                     if target.get("freshness") != "current" or target.get("result") != "passed":
                         self.error(where, "superseded_by 必须指向 current passed 流程")
@@ -738,17 +832,18 @@ class Validator:
             if not DECISION_ID.match(did):
                 self.error(where, "decision id 必须为 DEC-*")
             for field in ("id", "type", "status", "approved_by", "rationale",
-                          "source", "items", "evidence"):
+                          "source", "items", "ac_ids", "evidence"):
                 if field not in dec:
                     self.error(where, f"缺少必填字段 {field}")
-            if dec.get("status") not in {"approved", "pending", "recorded", "rejected"}:
+            status = self.enum_value(dec.get("status"))
+            if status not in {"approved", "pending", "recorded", "rejected"}:
                 self.error(where, f"非法 status：{dec.get('status')!r}")
             self.required_string(where, dec, "type")
             self.required_string(where, dec, "rationale")
             self.required_string(where, dec, "source")
-            if dec.get("status") == "approved" and not dec.get("approved_by"):
+            if status == "approved" and not dec.get("approved_by"):
                 self.error(where, "approved 决定必须记录 approved_by")
-            if dec.get("status") == "pending" and dec.get("approved_by"):
+            if status == "pending" and dec.get("approved_by"):
                 self.error(where, "pending 决定不应有 approved_by")
             items = self.string_list(where, dec.get("items"), "items")
             for item_id in items:
@@ -759,6 +854,27 @@ class Validator:
             for item_id in referenced_by_items.get(did, set()):
                 if item_id not in items:
                     self.error(where, f"item {item_id} 引用了决定，但决定 items 未包含该 item")
+            ac_ids = self.string_list(where, dec.get("ac_ids"), "ac_ids")
+            known_ac_ids = self.known_ac_ids()
+            ac_owners: set[str] = set()
+            for ac_id in ac_ids:
+                if not AC_ID.match(ac_id):
+                    self.error(where, f"非法 AC ID：{ac_id!r}")
+                    continue
+                if ac_id not in known_ac_ids:
+                    self.error(where, f"悬空 AC：{ac_id}")
+                    continue
+                ac_owners.add(ac_id.split("-AC", 1)[0])
+            if not ac_owners.issubset(set(items)):
+                self.error(
+                    where,
+                    f"ac_ids 的归属 item 未包含在 items 中：{sorted(ac_owners - set(items))}",
+                )
+            if status == "pending" and len(ac_ids) > 1:
+                self.error(
+                    where,
+                    f"pending 决定不能绑定多个 AC，实际 {ac_ids}；请拆分待裁决事项",
+                )
             evid = dec.get("evidence")
             if not isinstance(evid, str) or not evid:
                 self.error(where, "缺少非空 evidence 引用")
@@ -780,9 +896,37 @@ class Validator:
                     item = self.items_by_id.get(item_id)
                     if item is not None and evid not in (item.get("evidence") or []):
                         self.error(where, f"item {item_id} 未在 evidence 中引用决定证据 {evid}")
+        for did, dec in self.decisions.items():
+            if dec.get("status") != "pending":
+                continue
+            where = f"decisions.json:{did}"
+            ac_ids = dec.get("ac_ids")
+            if not isinstance(ac_ids, list):
+                continue
+            for ac_id in ac_ids:
+                if not isinstance(ac_id, str) or not AC_ID.match(ac_id):
+                    continue
+                item_id = ac_id.split("-AC", 1)[0]
+                item = self.items_by_id.get(item_id)
+                if item is None:
+                    continue
+                ac = next(
+                    (candidate for candidate in self.item_acceptance_criteria(item)
+                     if isinstance(candidate, dict) and candidate.get("id") == ac_id),
+                    None,
+                )
+                blocked = ac.get("blocked") if isinstance(ac, dict) else None
+                if not isinstance(blocked, dict) or blocked.get("decision_id") != did:
+                    self.error(
+                        where,
+                        f"pending 决定绑定 {ac_id}，但该 AC 的 blocked.decision_id 不是 {did}",
+                    )
 
     def check_evidence(self, ci):
-        decision_evidence = {dec.get("evidence") for dec in self.decisions.values()}
+        decision_evidence = {
+            dec.get("evidence") for dec in self.decisions.values()
+            if isinstance(dec.get("evidence"), str)
+        }
         for evid, ev in self.evidence.items():
             where = f"evidence.json:{evid}"
             if not EVIDENCE_ID.match(evid):
@@ -791,19 +935,21 @@ class Validator:
                           "observed_at", "items", "limits"):
                 if field not in ev:
                     self.error(where, f"缺少必填字段 {field}")
-            ev_type = ev.get("type")
+            ev_type = self.enum_value(ev.get("type"))
+            level = self.enum_value(ev.get("level"))
+            freshness = self.enum_value(ev.get("freshness"))
             if ev_type not in EVIDENCE_TYPES:
                 self.error(where, f"非法 evidence type：{ev_type!r}")
-            if ev.get("level") not in LEVELS:
+            if level not in LEVELS:
                 self.error(where, f"非法 evidence level：{ev.get('level')!r}")
-            if ev.get("freshness") not in FRESHNESS:
+            if freshness not in FRESHNESS:
                 self.error(where, f"非法 freshness：{ev.get('freshness')!r}")
             self.required_string(where, ev, "claim")
             self.required_string(where, ev, "source")
             if not str(ev.get("limits", "")).strip():
                 self.error(where, "缺少 limits")
             items = self.string_list(where, ev.get("items"), "items")
-            if ev.get("freshness") == "current":
+            if freshness == "current":
                 self.validate_current_time(where, ev.get("observed_at"), "observed_at")
                 resolved = self.resolve_commit(where, ev.get("source_commit"))
                 if resolved and not self.commit_is_snapshot(resolved):
@@ -820,10 +966,10 @@ class Validator:
                     self.error(where,
                                f"证据不得声明未文档化的 {forbidden} 字段；平台覆盖只能来自 real-flows.json")
             if ev_type == "ci":
-                if ev.get("level") != "E3":
+                if level != "E3":
                     self.error(where, "CI 证据必须为 E3")
-                ci_run = ev.get("ci_run")
-                run = ci.get(ci_run) if isinstance(ci_run, str) else None
+                ci_run = self.enum_value(ev.get("ci_run"))
+                run = ci.get(ci_run) if ci_run else None
                 if run is None:
                     self.error(where, f"悬空 ci_run：{ev.get('ci_run')!r}")
                 else:
@@ -833,11 +979,11 @@ class Validator:
                         item = self.items_by_id.get(item_id)
                         if item is not None and run.get("pr") not in (item.get("prs") or []):
                             self.error(where, f"CI 证据关联了未引用该 PR 的 item：{item_id}")
-                    if ev.get("freshness") == "current":
+                    if freshness == "current":
                         if run.get("freshness") != "current" or run.get("head_is_current") is not True:
                             self.error(where, "current CI 证据必须指向 current 且 head_is_current=true 的 run")
             if ev_type == "real-flow":
-                if ev.get("level") not in PROOF_LEVELS:
+                if level not in PROOF_LEVELS:
                     self.error(where, "real-flow 证据必须为 E4/E5/E6")
                 ac_ids = self.string_list(where, ev.get("ac_ids"), "ac_ids", allow_empty=False)
                 actual_ac_ids = self.known_ac_ids()
@@ -856,18 +1002,26 @@ class Validator:
                     flow = matches[0]
                     flow_items = flow.get("items")
                     flow_ac_ids = flow.get("ac_ids")
-                    if not isinstance(flow_items, list) or set(flow_items) != set(items):
+                    normalized_flow_items = {
+                        item_id for item_id in flow_items
+                        if isinstance(item_id, str)
+                    } if isinstance(flow_items, list) else set()
+                    normalized_flow_ac_ids = {
+                        ac_id for ac_id in flow_ac_ids
+                        if isinstance(ac_id, str)
+                    } if isinstance(flow_ac_ids, list) else set()
+                    if normalized_flow_items != set(items):
                         self.error(where, "real-flow evidence.items 与流程 items 不一致")
-                    if not isinstance(flow_ac_ids, list) or set(flow_ac_ids) != set(ac_ids):
+                    if normalized_flow_ac_ids != set(ac_ids):
                         self.error(where, "real-flow evidence.ac_ids 与流程 ac_ids 不一致")
             if ev_type == "decision":
-                if ev.get("level") != "E0":
+                if level != "E0":
                     self.error(where, "decision 证据必须为 E0")
                 if evid not in decision_evidence:
                     self.error(where, "decision 证据未被任何 decision 引用")
-                if ev.get("freshness") == "current":
+                if freshness == "current":
                     self.error(where, "decision E0 证据不得冒充 current 执行证据；请使用 stale 并保留决议来源")
-            if ev.get("level") in PROOF_LEVELS and ev_type != "real-flow":
+            if level in PROOF_LEVELS and ev_type != "real-flow":
                 self.error(where, "E4/E5/E6 证据必须是 real-flow")
 
     def check_batches(self, ledger):
@@ -879,7 +1033,10 @@ class Validator:
             self.error("ledger.json:batches", "batches 只能包含对象")
             batches = [batch for batch in batches if isinstance(batch, dict)]
         self.batches_by_id = {str(batch.get("id")): batch for batch in batches}
-        ids = [b.get("id") for b in batches]
+        bad_ids = [batch.get("id") for batch in batches if not isinstance(batch.get("id"), str)]
+        if bad_ids:
+            self.error("ledger.json:batches", f"批次 id 必须为非空字符串：{bad_ids!r}")
+        ids = [batch.get("id") for batch in batches if isinstance(batch.get("id"), str)]
         if len(ids) != len(set(ids)):
             self.error("ledger.json:batches", "批次 id 重复")
         if set(ids) != EXPECTED_BATCH_IDS:
@@ -890,7 +1047,8 @@ class Validator:
             for field in ("id", "title", "goal", "status", "items", "prefixes", "close_criteria"):
                 if not batch.get(field):
                     self.error(where, f"缺少 {field}")
-            if batch.get("status") not in {"open", "closed", "blocked"}:
+            batch_status = self.enum_value(batch.get("status"))
+            if batch_status not in {"open", "closed", "blocked"}:
                 self.error(where, f"非法 status：{batch.get('status')!r}")
             batch_items = self.string_list(where, batch.get("items"), "items", allow_empty=False)
             members.extend(batch_items)
@@ -908,9 +1066,9 @@ class Validator:
             self.string_list(where, batch.get("close_criteria"), "close_criteria", allow_empty=False)
             present = [self.items_by_id[item_id] for item_id in batch_items if item_id in self.items_by_id]
             expected_status = self.expected_batch_status(present)
-            if batch.get("status") != expected_status:
+            if batch_status != expected_status:
                 self.error(where, f"status 与 items 重算结果不符：期望 {expected_status}，实际 {batch.get('status')!r}")
-            if batch.get("status") == "closed":
+            if batch_status == "closed":
                 self.check_closed_batch(where, present)
 
         if len(members) != len(set(members)):
@@ -921,7 +1079,10 @@ class Validator:
                        f"多出 {sorted(set(members) - set(self.items_by_id))}")
 
     def expected_batch_status(self, items):
-        statuses = [item.get("status") for item in items]
+        statuses = [
+            status for item in items
+            if isinstance((status := item.get("status")), str)
+        ]
         if any(status in {"FAIL", "NOT-VERIFIED"} for status in statuses):
             return "open"
         if any(status == "BLOCKED" for status in statuses):
@@ -933,6 +1094,15 @@ class Validator:
     def check_closed_batch(self, where, items):
         for item in items:
             self.check_closed_dependencies(where, item, set())
+            item_id = str(item.get("id"))
+            required = self.item_required_platforms(item)
+            if not required:
+                self.error(
+                    where,
+                    f"closed 批次中的 {item_id} 必须至少声明一个 required/read_only 平台，"
+                    "不能把全部适用平台改为 coordination",
+                )
+                continue
             if item.get("status") == "PASS":
                 if item.get("freshness") != "current":
                     self.error(where, f"PASS 项 {item.get('id')} 不是 current freshness，批次不能关闭")
@@ -941,6 +1111,15 @@ class Validator:
                     self.error(where, f"PASS 项 {item.get('id')} 仍有 AC 级 BLOCKED，批次不能关闭")
                 if not all(ac.get("verified") for ac in acs if isinstance(ac, dict)):
                     self.error(where, f"PASS 项 {item.get('id')} 仍有未验证 AC，批次不能关闭")
+            elif item.get("status") == "APPROVED-EXCEPTION":
+                covered = self.current_passed_flow_platforms(item_id)
+                missing = [platform for platform in required if platform not in covered]
+                if missing:
+                    self.error(
+                        where,
+                        f"APPROVED-EXCEPTION 项 {item_id} 缺少 current passed 平台证据：{missing}；"
+                        "范围例外不能绕过批次关闭门禁",
+                    )
 
     def check_closed_dependencies(self, where: str, item: dict, stack: set[str]) -> None:
         """Walk the whole dependency closure, including approved exceptions."""
@@ -955,7 +1134,7 @@ class Validator:
         for dep in deps:
             target_id = str(dep).split(":", 1)[-1]
             target = self.items_by_id.get(target_id)
-            if target is None or target.get("status") not in {"PASS", "APPROVED-EXCEPTION"}:
+            if target is None or self.enum_value(target.get("status")) not in {"PASS", "APPROVED-EXCEPTION"}:
                 self.error(where, f"closed 批次中 {item_id} 的依赖 {dep} 未满足")
                 continue
             target_batch = target.get("batch")
@@ -977,7 +1156,7 @@ class Validator:
             if not isinstance(item, dict):
                 self.error("ledger.json:items", "items 只能包含对象")
                 continue
-            item_id = item.get("id", "<missing>")
+            item_id = str(item.get("id", "<missing>"))
             where = f"ledger.json:item:{item_id}"
             if not ITEM_ID.match(str(item_id)):
                 self.error(where, f"非法 ID：{item_id!r}")
@@ -1006,11 +1185,14 @@ class Validator:
                 self.error(where, "collaborators 必须为数组")
             else:
                 self.string_list(where, item.get("collaborators"), "collaborators")
-            if item.get("status") not in STATUSES:
+            status = self.enum_value(item.get("status"))
+            legacy_status = self.enum_value(item.get("legacy_status"))
+            freshness = self.enum_value(item.get("freshness"))
+            if status not in STATUSES:
                 self.error(where, f"非法 status：{item.get('status')!r}")
-            if item.get("legacy_status") not in STATUSES:
+            if legacy_status not in STATUSES:
                 self.error(where, f"非法 legacy_status：{item.get('legacy_status')!r}")
-            if item.get("freshness") not in FRESHNESS:
+            if freshness not in FRESHNESS:
                 self.error(where, f"非法 freshness：{item.get('freshness')!r}")
             legacy_source = item.get("legacy_source")
             if not isinstance(legacy_source, dict):
@@ -1020,7 +1202,7 @@ class Validator:
                     if field not in legacy_source:
                         self.error(where, f"legacy_source 缺少 {field}")
                 self.check_legacy_source(where, item_id, item.get("legacy_status"), legacy_source)
-            if item.get("freshness") == "stale" and item.get("status") != item.get("legacy_status"):
+            if freshness == "stale" and status != legacy_status:
                 self.error(where, "stale 项的 status 必须等于 legacy_status，不能静默改写历史")
             self.check_platforms(where, item, ledger)
             self.check_acceptance(where, item)
@@ -1037,6 +1219,12 @@ class Validator:
         if not isinstance(file_value, str) or not file_value.strip():
             self.error(where, "legacy_source.file 必须为非空字符串")
             return
+        if file_value != LEGACY_SNAPSHOT_FILE:
+            self.error(
+                where,
+                f"legacy_source.file 必须固定为历史快照 {LEGACY_SNAPSHOT_FILE}，实际 {file_value!r}",
+            )
+            return
         path = (self.root / file_value).resolve()
         try:
             path.relative_to(self.root.resolve())
@@ -1052,6 +1240,7 @@ class Validator:
         section_value = source.get("section")
         if not isinstance(section_value, str) or not section_value.strip():
             self.error(where, "legacy_source.section 必须为非空字符串")
+            return
         lines = path.read_text(encoding="utf-8").splitlines()
         if line_value > len(lines):
             self.error(where, f"legacy_source.line 超出行数：{line_value} > {len(lines)}")
@@ -1060,11 +1249,50 @@ class Validator:
         if not row.startswith(f"| {item_id} |"):
             self.error(where, f"legacy_source 行 {line_value} 不是 {item_id} 的旧台账行")
             return
+        actual_section = self.section_at_line(lines, line_value)
+        if actual_section != section_value:
+            self.error(
+                where,
+                f"legacy_source.section 与第 {line_value} 行所在章节不符："
+                f"{section_value!r} != {actual_section!r}",
+            )
         fields = row.split("|")
         actual = fields[-3].strip() if len(fields) >= 3 else ""
         if actual != legacy_status:
             self.error(where,
                        f"legacy_status 与旧快照不一致：台账 {actual!r} != legacy_status {legacy_status!r}")
+        audit_line = source.get("audit_line")
+        audit_section = source.get("audit_section")
+        if audit_line is None and audit_section is None:
+            return
+        if not isinstance(audit_line, int) or audit_line < 1:
+            self.error(where, "legacy_source.audit_line 必须为正整数")
+            return
+        if not isinstance(audit_section, str) or not audit_section.strip():
+            self.error(where, "legacy_source.audit_section 必须为非空字符串")
+            return
+        if audit_line > len(lines):
+            self.error(where, f"legacy_source.audit_line 超出行数：{audit_line} > {len(lines)}")
+            return
+        audit_row = lines[audit_line - 1]
+        if not audit_row.startswith(f"| {item_id} |"):
+            self.error(where, f"legacy_source.audit_line {audit_line} 不是 {item_id} 的审计行")
+            return
+        actual_audit_section = self.section_at_line(lines, audit_line)
+        if actual_audit_section != audit_section:
+            self.error(
+                where,
+                f"legacy_source.audit_section 与第 {audit_line} 行所在章节不符："
+                f"{audit_section!r} != {actual_audit_section!r}",
+            )
+
+    @staticmethod
+    def section_at_line(lines: list[str], line_number: int) -> str | None:
+        for index in range(line_number - 1, -1, -1):
+            match = re.match(r"^#{2,6}\s+(.+?)\s*$", lines[index])
+            if match:
+                return match.group(1)
+        return None
 
     def check_dependency_cycles(self):
         visited: set[str] = set()
@@ -1096,21 +1324,29 @@ class Validator:
         if not isinstance(roles, dict):
             self.error(where, "platform_roles 必须为对象")
             return
-        missing = set(ledger.get("platforms", PLATFORMS)) - set(roles)
-        extra = set(roles) - set(ledger.get("platforms", PLATFORMS))
+        declared_raw = ledger.get("platforms")
+        declared = set(PLATFORMS)
+        if isinstance(declared_raw, list):
+            declared = {platform for platform in declared_raw if isinstance(platform, str)}
+        missing = declared - set(roles)
+        extra = set(roles) - declared
         if missing:
             self.error(where, f"platform_roles 缺少平台：{sorted(missing)}")
         if extra:
             self.error(where, f"platform_roles 含未知平台：{sorted(extra)}")
         for platform, role in roles.items():
-            if role not in ROLES:
+            if not isinstance(role, str) or role not in ROLES:
                 self.error(where, f"平台 {platform} 的角色非法：{role!r}")
-        active = [p for p, r in roles.items() if r in {"required", "read_only"}]
-        if not active and not any(r == "coordination" for r in roles.values()):
+        active = [
+            platform for platform, role in roles.items()
+            if isinstance(role, str) and role in {"required", "read_only"}
+        ]
+        if not active and not any(role == "coordination" for role in roles.values()):
             self.error(where, "至少一个平台必须是 required/read_only/coordination")
-        if item.get("platform_scope") not in {"declared", "unconfirmed"}:
+        platform_scope = self.enum_value(item.get("platform_scope"))
+        if platform_scope not in {"declared", "unconfirmed"}:
             self.error(where, f"非法 platform_scope：{item.get('platform_scope')!r}")
-        if item.get("platform_scope") == "unconfirmed" and item.get("status") != "BLOCKED":
+        if platform_scope == "unconfirmed" and item.get("status") != "BLOCKED":
             self.error(where, "平台范围未确认的项必须为 BLOCKED")
 
     def check_acceptance(self, where, item):
@@ -1174,6 +1410,13 @@ class Validator:
                 if dec is None:
                     self.error(where, f"{ac_id} 的 blocked.decision_id 悬空：{did!r}")
                 else:
+                    bound_ac_ids = dec.get("ac_ids")
+                    if bound_ac_ids != [ac_id]:
+                        self.error(
+                            where,
+                            f"{ac_id} 的阻塞决定 {did} 必须精确绑定该 AC："
+                            f"ac_ids={bound_ac_ids!r} != {[ac_id]!r}",
+                        )
                     if dec.get("status") != "pending":
                         self.error(where, f"{ac_id} 的阻塞决定 {did} 必须为 pending，实际 {dec.get('status')!r}")
                     if item_id not in (dec.get("items") or []):
@@ -1230,10 +1473,14 @@ class Validator:
         if not isinstance(deps, list):
             self.error(where, "dependencies 必须为数组")
             return
+        invalid = [dep for dep in deps if not isinstance(dep, str)]
+        if invalid:
+            self.error(where, f"依赖必须写成字符串 ITEM:<id>，实际 {invalid!r}")
+            deps = [dep for dep in deps if isinstance(dep, str)]
         if len(deps) != len(set(deps)):
             self.error(where, "dependencies 含重复值")
         for dep in deps:
-            if not isinstance(dep, str) or not dep.startswith("ITEM:"):
+            if not dep.startswith("ITEM:"):
                 self.error(where, f"依赖必须写成 ITEM:<id>，实际 {dep!r}")
                 continue
             target = dep.split(":", 1)[1]
@@ -1251,7 +1498,7 @@ class Validator:
                 self.error(where, f"悬空 PR：{pid!r}")
             else:
                 pr = prs[pid]
-                if pr.get("state") not in PR_STATES:
+                if self.enum_value(pr.get("state")) not in PR_STATES:
                     self.error(where, f"PR {pid} 状态非法")
         for evid in ev_refs:
             if evid not in self.evidence:
@@ -1288,7 +1535,8 @@ class Validator:
                 if not isinstance(ref, str):
                     continue
                 ev = self.evidence.get(ref, {})
-                if ev.get("freshness") != "current":
+                if ev.get("freshness") != "current" \
+                        and not self.is_superseded_stale_failure(ref, item_id):
                     self.error(where, f"PASS 引用了非 current 证据：{ref}")
                 if ev.get("type") == "ci" and ev.get("freshness") != "current":
                     self.error(where, f"PASS 使用了 stale CI：{ref}")
@@ -1304,21 +1552,24 @@ class Validator:
                     flow_items = []
                 if item_id in flow_items \
                         and flow.get("freshness") == "current" \
-                        and flow.get("result") in {"failed", "blocked"}:
+                        and self.enum_value(flow.get("result")) in {"failed", "blocked"}:
                     self.error(where,
                                f"PASS 不能与同一 item 的 current {flow.get('result')} 流程共存："
                                f"{flow.get('id')}；旧失败必须标为 stale/superseded")
                 if item_id in flow_items \
                         and flow.get("freshness") == "stale" \
-                        and flow.get("result") in {"failed", "blocked"} \
+                        and self.enum_value(flow.get("result")) in {"failed", "blocked"} \
                         and not flow.get("superseded_by"):
                     self.error(where,
                                f"PASS 仍有未声明 superseded_by 的 stale {flow.get('result')} 流程："
                                f"{flow.get('id')}")
-            roles = item.get("platform_roles")
-            if not isinstance(roles, dict):
-                roles = {}
-            required = [p for p, r in roles.items() if r in {"required", "read_only"}]
+            required = self.item_required_platforms(item)
+            if not required:
+                self.error(
+                    where,
+                    "PASS 必须至少声明一个 required/read_only 平台；"
+                    "不能把全部适用平台改为 coordination 来清空覆盖集合",
+                )
             covered = set()
             for ac in self.item_acceptance_criteria(item):
                 if not isinstance(ac, dict):
@@ -1352,6 +1603,20 @@ class Validator:
                         if ref and self.git("merge-base", "--is-ancestor",
                                             resolved.stdout.strip(), ref).returncode != 0:
                             self.error(where, f"PASS 依赖的 PR {pid} merge_commit 不属于 master")
+                        if self.snapshot_full_commit is None:
+                            self.error(
+                                where,
+                                f"PASS 依赖的 PR {pid} merge_commit 无法对照 source_snapshot.commit",
+                            )
+                        elif self.git(
+                            "merge-base", "--is-ancestor",
+                            resolved.stdout.strip(), self.snapshot_full_commit,
+                        ).returncode != 0:
+                            self.error(
+                                where,
+                                f"PASS 依赖的 PR {pid} merge_commit 晚于 source_snapshot.commit；"
+                                "必须先刷新快照再 PASS",
+                            )
 
         if status == "BLOCKED":
             if not str(item.get("blocked_reason", "")).strip():

@@ -12,6 +12,7 @@
       "items": [
         "B15"
       ],
+      "ac_ids": [],
       "evidence": "EV-DEC-B15"
     },
     {
@@ -25,6 +26,7 @@
       "items": [
         "C14"
       ],
+      "ac_ids": [],
       "evidence": "EV-DEC-C14"
     },
     {
@@ -38,6 +40,7 @@
       "items": [
         "C21"
       ],
+      "ac_ids": [],
       "evidence": "EV-DEC-C21"
     },
     {
@@ -51,6 +54,7 @@
       "items": [
         "E03"
       ],
+      "ac_ids": [],
       "evidence": "EV-DEC-E03"
     },
     {
@@ -64,6 +68,7 @@
       "items": [
         "O04"
       ],
+      "ac_ids": [],
       "evidence": "EV-DEC-O04"
     },
     {
@@ -77,6 +82,7 @@
       "items": [
         "Q02"
       ],
+      "ac_ids": [],
       "evidence": "EV-DEC-Q02"
     },
     {
@@ -90,6 +96,7 @@
       "items": [
         "Q01"
       ],
+      "ac_ids": [],
       "evidence": "EV-DEC-Q01"
     },
     {
@@ -103,6 +110,7 @@
       "items": [
         "Q07"
       ],
+      "ac_ids": [],
       "evidence": "EV-DEC-Q07"
     },
     {
@@ -116,6 +124,9 @@
       "items": [
         "R05"
       ],
+      "ac_ids": [
+        "R05-AC05"
+      ],
       "evidence": "EV-DEC-R05-AC05"
     },
     {
@@ -127,6 +138,7 @@
       "rationale": "把 2026-11-25 文本台账迁移为结构化源；旧证据保持 stale，不重新认定为当前通过。",
       "source": "docs/product/pim-delivery-ledger-20261125.md",
       "items": [],
+      "ac_ids": [],
       "evidence": "EV-DEC-MIGRATION-STRUCTURE"
     }
   ]

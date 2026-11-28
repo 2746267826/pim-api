@@ -455,18 +455,18 @@ source_snapshot 与 PR 注册表已按 2026-11-28 实时状态刷新；item 状�
 
 ## 决策索引 / Decision index
 
-| 决定 | 类型 | 状态 | 批准人 | 涉及项 | 依据 |
-| --- | --- | --- | --- | --- | --- |
-| DEC-B15 | scope-exception | approved | user | B15 | PIM功能确认-最终交付-20261122/01-讨论记录/B08-B16-编辑器基础能力.md |
-| DEC-C14 | scope-exception | approved | user | C14 | PIM功能确认-最终交付-20261122/01-讨论记录/C12-压缩录音格式与处理链路.md |
-| DEC-C21 | scope-exception | approved | user | C21 | PIM功能确认-最终交付-20261122/01-讨论记录/C21-实时转写.md |
-| DEC-E03 | scope-exception | approved | user | E03 | PIM功能确认-最终交付-20261122/01-讨论记录/E03-文档附件.md |
-| DEC-O04 | scope-exception | approved | user | O04 | PIM功能确认-最终交付-20261122/01-讨论记录/O03-Android视觉组件接入.md |
-| DEC-Q02 | scope-exception | approved | user | Q02 | PIM功能确认-最终交付-20261122/01-讨论记录/Q02-全量备份与导出.md |
-| DEC-Q01 | product-decision | pending | — | Q01 | PIM功能确认-最终交付-20261122/README.md |
-| DEC-Q07 | product-decision | pending | — | Q07 | PIM功能确认-最终交付-20261122/01-讨论记录/Q07-本地缓存清理.md |
-| DEC-R05-AC05 | product-decision | pending | — | R05 | docs/product/pim-delivery-ledger-20261125.md |
-| DEC-MIGRATION-STRUCTURE | migration | recorded | — | — | docs/product/pim-delivery-ledger-20261125.md |
+| 决定 | 类型 | 状态 | 批准人 | 涉及项 | 绑定 AC | 依据 |
+| --- | --- | --- | --- | --- | --- | --- |
+| DEC-B15 | scope-exception | approved | user | B15 | — | PIM功能确认-最终交付-20261122/01-讨论记录/B08-B16-编辑器基础能力.md |
+| DEC-C14 | scope-exception | approved | user | C14 | — | PIM功能确认-最终交付-20261122/01-讨论记录/C12-压缩录音格式与处理链路.md |
+| DEC-C21 | scope-exception | approved | user | C21 | — | PIM功能确认-最终交付-20261122/01-讨论记录/C21-实时转写.md |
+| DEC-E03 | scope-exception | approved | user | E03 | — | PIM功能确认-最终交付-20261122/01-讨论记录/E03-文档附件.md |
+| DEC-O04 | scope-exception | approved | user | O04 | — | PIM功能确认-最终交付-20261122/01-讨论记录/O03-Android视觉组件接入.md |
+| DEC-Q02 | scope-exception | approved | user | Q02 | — | PIM功能确认-最终交付-20261122/01-讨论记录/Q02-全量备份与导出.md |
+| DEC-Q01 | product-decision | pending | — | Q01 | — | PIM功能确认-最终交付-20261122/README.md |
+| DEC-Q07 | product-decision | pending | — | Q07 | — | PIM功能确认-最终交付-20261122/01-讨论记录/Q07-本地缓存清理.md |
+| DEC-R05-AC05 | product-decision | pending | — | R05 | R05-AC05 | docs/product/pim-delivery-ledger-20261125.md |
+| DEC-MIGRATION-STRUCTURE | migration | recorded | — | — | — | docs/product/pim-delivery-ledger-20261125.md |
 
 ## 证据等级 / Evidence levels
 

@@ -31,7 +31,7 @@
 | `ci-runs.json` | CI run 注册表：PR、head、结论、关键 job、freshness、`head_is_current` |
 | `real-flows.json` | 真实 API/浏览器/设备/桌面/发布流程；每条流程显式声明 `items` 与 `ac_ids` |
 | `evidence.json` | E0–E6 证据，含 claim、source、source_commit、observed_at、freshness、limits |
-| `decisions.json` | 范围例外、阻塞裁决与迁移记录 |
+| `decisions.json` | 范围例外、阻塞裁决与迁移记录；每条记录显式声明绑定的 `ac_ids` |
 
 所有数组字段都必须是 JSON 数组，成员必须是非空字符串或对象，并按字段语义拒绝重复。
 item 的 `prs`、`evidence`、`decisions`，AC 的 `evidence`，以及 flow/evidence 的
@@ -50,15 +50,19 @@ item 的 `prs`、`evidence`、`decisions`，AC 的 `evidence`，以及 flow/evid
 不使用 `PARTIAL`。部分实现写进 `implementation`，不发明新状态。`implementation` 与
 `legacy_status` 保留旧台账原文，并带 `implementation_basis`；它们不是当前 head 的实现证明。
 
-`legacy_source` 必须指向仓库内历史文本的有效文件与行，行首必须是对应 item ID，且该行旧状态
-必须等于 `legacy_status`；`section` 也必须是非空定位信息。`stale` item 的 `status` 必须等于
-`legacy_status`，不能静默改写历史。历史文件中的旧文本不是当前事实源。
+`legacy_source.file` 必须固定为历史快照
+`docs/product/pim-delivery-ledger-20261125.md`；`line` 必须命中对应 item 行，且该行旧状态
+必须等于 `legacy_status`。`section` 必须是该行向上最近的 Markdown 章节标题；若带
+`audit_line`/`audit_section`，也同样校验审计行与章节标题。`stale` item 的 `status` 必须等于
+`legacy_status`，不能静默改写历史。这里只证明仓库内历史快照的行定位，不证明交付包外部
+artifact 的真伪。历史文件中的旧文本不是当前事实源。
 
 单项还可以在某个验收条件上记录 `blocked`（原因、解除条件、决策 ID），用于“条目没有整体
 BLOCKED、但某条 AC 缺产品裁决”的情况，例如 `R05-AC05` 的永久墓碑容量策略。AC 级阻塞
 不得与 `verified: true` 同时存在，且 blocked decision 必须是 `pending`、双向引用 item，并把
-decision evidence 列入 item.evidence。整体 `BLOCKED` item 同样必须引用至少一个 pending
-decision。
+decision evidence 列入 item.evidence；该 decision 的 `ac_ids` 必须恰为当前 AC。一个 pending
+decision 最多绑定一个 AC，不能把 `R05-AC05` 的裁决复用到 `R05-AC06`。整体 `BLOCKED` item
+同样必须引用至少一个 pending decision。
 
 ### 升级为 PASS 的条件
 
@@ -75,12 +79,18 @@ decision。
    current passed 流程；没有明确替代关系的历史失败不能与 PASS 共存，不能用“保留失败同时
    标 PASS”绕过；
 7. item 引用的每个实现 PR 必须是 `state_freshness=current` 的 `merged` PR，并带符合 SHA
-   格式的 `merge_commit`；pim-api 的 merge_commit 还必须能在本地 Git 解析且属于 `master`。
+   格式的 `merge_commit`；pim-api 的 merge_commit 还必须能在本地 Git 解析、属于 `master`，
+   且是 `source_snapshot.commit` 的祖先。merge 发生在快照之后时必须先刷新快照再 PASS。
    Android/Windows 的 merge_commit 只能做结构化存在性校验，外部仓库归属仍需人工/CI 核验；
 8. 关联的 current CI 证据不得是 stale/旧 head；PASS 中 current CI 必须
    `head_is_current=true`、head 与对应 PR head 一致、run 结论为 `success`，且 CI 证据关联的
    item 必须引用该 PR；
 9. 任意 AC 为 BLOCKED、pending，或 AC 引用了 stale/不合格证据时，不得标 PASS。
+
+PASS 至少要有 `required` 或 `read_only` 平台；把全部适用平台改成 `coordination` 会清空平台
+覆盖集合，不能据此升级为 PASS。合法 supersede 只放行 stale `failed`/`blocked` 历史流程：
+其 `superseded_by` 必须指向覆盖该流程全部 AC 的 current `passed` 流程；其他 stale 证据、
+未声明替代关系的失败，以及覆盖不足或目标不合格的替代关系仍会失败。
 
 **PR-less / item-only 例外**：若一个 item 在结构化源中确实没有关联实现 PR（`prs: []`），
 可以在其他条件全部满足时以 item-only 真实流程验收为 PASS；这是一条显式数据事实，不是
@@ -164,7 +174,8 @@ B1–B7 覆盖全部 161 项，每项恰属一个批次。前缀/成员映射是
 
 1. 批次内全部 item 为 current `PASS` 或有效 `APPROVED-EXCEPTION`，且没有
    `FAIL`/`NOT-VERIFIED`/`BLOCKED`；
-2. 每个 item 的 `required`/`read_only` 平台都有 current 真实证据；
+2. 每个 item 的 `required`/`read_only` 平台都有 current 真实证据；`APPROVED-EXCEPTION`
+   也必须由 current `passed` 真实流程覆盖这些平台，不能靠“例外”标签跳过批次平台门禁；
 3. `BLOCKED` 项解除前批次不得关闭；`APPROVED-EXCEPTION` 保持原决议；
 4. 批次依赖必须覆盖所有成员（包括 `APPROVED-EXCEPTION`），不能只检查 PASS 项的一跳：
    依赖目标必须是 `PASS` 或 `APPROVED-EXCEPTION`；跨批次依赖的目标批次必须已 `closed`，
@@ -172,8 +183,8 @@ B1–B7 覆盖全部 161 项，每项恰属一个批次。前缀/成员映射是
 5. 没有任何未说明的 `stale` 依赖或未满足的外部前提。
 
 validator 从实际 item 状态重算批次：有 `FAIL`/`NOT-VERIFIED` 必须 `open`；没有前两者但仍有
-`BLOCKED` 必须 `blocked`；只有全部为 current `PASS` 或有效 `APPROVED-EXCEPTION` 才能
-`closed`。
+`BLOCKED` 必须 `blocked`；全部为 current `PASS` 或有效 `APPROVED-EXCEPTION` 只是状态前提，
+仍需通过上述平台与依赖门禁才能 `closed`。
 
 ## 安全边界
 

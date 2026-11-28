@@ -65,6 +65,10 @@ def esc(value: str) -> str:
     return str(value).replace("|", "\\|").replace("\n", " ").strip()
 
 
+def count_key(value):
+    return value if isinstance(value, str) else "<invalid>"
+
+
 def short_list(values, limit=None):
     values = [str(v) for v in values if v is not None and str(v)]
     if limit and len(values) > limit:
@@ -149,8 +153,8 @@ def main() -> int:
     w(f"{snapshot.get('note', '—')}")
     w("")
 
-    status_counts = Counter(i.get("status") for i in items)
-    freshness_counts = Counter(i.get("freshness") for i in items)
+    status_counts = Counter(count_key(i.get("status")) for i in items)
+    freshness_counts = Counter(count_key(i.get("freshness")) for i in items)
 
     w("## 摘要 / Summary")
     w("")
@@ -161,7 +165,7 @@ def main() -> int:
       f"APPROVED-EXCEPTION {status_counts.get('APPROVED-EXCEPTION', 0)}。")
     w(f"- Freshness：current {freshness_counts.get('current', 0)}，stale {freshness_counts.get('stale', 0)}。"
       " current 表示已按当前 head 重新复核；stale 仍只能用于定位历史缺口。")
-    evidence_by_type = Counter(e.get("type") for e in evidence.values())
+    evidence_by_type = Counter(count_key(e.get("type")) for e in evidence.values())
     evidence_type_text = "、".join(
         f"{label} {evidence_by_type.get(kind, 0)}"
         for kind, label in (
@@ -175,14 +179,17 @@ def main() -> int:
       f"{sum(evidence_by_type.values())}）。")
     w(f"- 真实流程：{len(flows)} 条记录，其中 current 通过 "
       f"{sum(1 for f in flows.values() if f.get('result') == 'passed')} 条。")
-    ac_total = sum(
-        len(i.get("acceptance_criteria") or [])
-        for i in items
-        if isinstance(i.get("acceptance_criteria"), list)
-    )
+    item_acs = [
+        acs for item in items
+        if isinstance((acs := item.get("acceptance_criteria")), list)
+    ]
+    ac_total = sum(len(acs) for acs in item_acs)
     ac_verified = sum(
         1 for item in items
-        for ac in (item.get("acceptance_criteria") or [])
+        for ac in (
+            item.get("acceptance_criteria")
+            if isinstance(item.get("acceptance_criteria"), list) else []
+        )
         if isinstance(ac, dict) and ac.get("verified")
     )
     w(f"- AC：{ac_total} 条，verified {ac_verified} 条。")
@@ -230,9 +237,11 @@ def main() -> int:
         ledger.get("platforms") if isinstance(ledger.get("platforms"), list) else PLATFORM_LABEL
     ):
         counts = Counter(
-            i.get("platform_roles", {}).get(platform)
+            count_key(
+                (i.get("platform_roles") or {}).get(platform)
+                if isinstance(i.get("platform_roles"), dict) else None
+            )
             for i in items
-            if isinstance(i.get("platform_roles"), dict)
         )
         platform_label = PLATFORM_LABEL.get(str(platform), str(platform))
         w(f"| {platform_label} | {counts.get('required', 0)} | {counts.get('read_only', 0)} | "
@@ -265,7 +274,7 @@ def main() -> int:
         if not isinstance(batch_items, list):
             batch_items = []
         status = Counter(
-            item_by_id[str(item_id)].get("status")
+            count_key(item_by_id[str(item_id)].get("status"))
             for item_id in batch_items
             if str(item_id) in item_by_id
         )
@@ -409,10 +418,10 @@ def main() -> int:
         flow_platforms = flow.get("platforms")
         if not isinstance(flow_platforms, list):
             flow_platforms = []
-        result = flow.get("result")
+        result = flow.get("result") if isinstance(flow.get("result"), str) else None
         w(f"| {flow.get('id', '—')} | {flow.get('evidence', '—')} | "
           f"{esc(short_list(flow_items))} | {esc(short_list(flow_ac_ids))} | "
-          f"{esc(short_list([PLATFORM_LABEL.get(p, str(p)) for p in flow_platforms]))} | "
+          f"{esc(short_list([PLATFORM_LABEL.get(p, p) if isinstance(p, str) else str(p) for p in flow_platforms]))} | "
           f"{FLOW_LABEL.get(result, result or '—')} | {flow.get('freshness', '—')} | "
           f"{esc(flow.get('observed_at', '—'))} | {esc(flow.get('environment') or '—')} | "
           f"{esc(flow.get('limits', '—'))} |")
@@ -420,27 +429,31 @@ def main() -> int:
 
     w("## 决策索引 / Decision index")
     w("")
-    w("| 决定 | 类型 | 状态 | 批准人 | 涉及项 | 依据 |")
-    w("| --- | --- | --- | --- | --- | --- |")
+    w("| 决定 | 类型 | 状态 | 批准人 | 涉及项 | 绑定 AC | 依据 |")
+    w("| --- | --- | --- | --- | --- | --- | --- |")
     for dec in decisions.values():
         dec_items = dec.get("items")
         if not isinstance(dec_items, list):
             dec_items = []
+        dec_ac_ids = dec.get("ac_ids")
+        if not isinstance(dec_ac_ids, list):
+            dec_ac_ids = []
         w(f"| {dec.get('id', '—')} | {dec.get('type', '—')} | {dec.get('status', '—')} | "
-          f"{dec.get('approved_by') or '—'} | {esc(short_list(dec_items))} | {esc(dec.get('source', '—'))} |")
+          f"{dec.get('approved_by') or '—'} | {esc(short_list(dec_items))} | "
+          f"{esc(short_list(dec_ac_ids))} | {esc(dec.get('source', '—'))} |")
     w("")
 
     w("## 证据等级 / Evidence levels")
     w("")
     w("| 等级 | 含义 | current | stale | not-verified | unknown | 合计 |")
     w("| --- | --- | ---: | ---: | ---: | ---: | ---: |")
-    level_counts = Counter(e.get("level") for e in evidence.values())
+    level_counts = Counter(count_key(e.get("level")) for e in evidence.values())
     evidence_levels = ledger.get("evidence_levels")
     if not isinstance(evidence_levels, dict):
         evidence_levels = {}
     for level, meaning in evidence_levels.items():
         rows = [e for e in evidence.values() if e.get("level") == level]
-        fresh = Counter(e.get("freshness") for e in rows)
+        fresh = Counter(count_key(e.get("freshness")) for e in rows)
         w(f"| {level} | {esc(meaning)} | {fresh.get('current', 0)} | {fresh.get('stale', 0)} | "
           f"{fresh.get('not-verified', 0)} | {fresh.get('unknown', 0)} | {level_counts.get(level, 0)} |")
     w("")
@@ -483,4 +496,12 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except (AttributeError, KeyError, TypeError, ValueError) as exc:
+        print(
+            f"delivery ledger render failed: malformed data: "
+            f"{type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+        sys.exit(1)

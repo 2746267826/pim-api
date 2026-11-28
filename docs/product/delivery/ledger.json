@@ -111,7 +111,7 @@
     "E6": "生产/发布验收：正式发布、生产部署或线上只读验证。"
   },
   "batch_close_rules": [
-    "批次只有在全部 item 的 required 平台都有 current freshness 证据时才可关闭。",
+    "批次只有在全部 item 的 required/read_only 平台都有 current passed 真实流程证据时才可关闭；APPROVED-EXCEPTION 也不能绕过平台门禁。",
     "BLOCKED 项解除前不得移出批次；APPROVED-EXCEPTION 项保留原决议，不得改记为 PASS。",
     "stale 证据只能用于定位缺口，不能作为批次关闭或 PASS 依据。"
   ],

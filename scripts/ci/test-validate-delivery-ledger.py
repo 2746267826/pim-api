@@ -172,6 +172,21 @@ class LedgerCase(unittest.TestCase):
             self.item(ledger, item_id)["evidence"].append(ev_id)
         return ev_id, flow_id
 
+    def add_stale_flow(self, ledger, evidence, flows, item_id, *,
+                       suffix, result, ac_ids, platforms, superseded_by=None,
+                       include_in_item_evidence=True):
+        ev_id, flow_id = self.add_current_flow(
+            ledger, evidence, flows, item_id,
+            suffix=suffix, result=result, ac_ids=ac_ids, platforms=platforms,
+            include_in_item_evidence=include_in_item_evidence)
+        ev = next(row for row in evidence["evidence"] if row["id"] == ev_id)
+        flow = next(row for row in flows["flows"] if row["id"] == flow_id)
+        ev["freshness"] = "stale"
+        flow["freshness"] = "stale"
+        if superseded_by is not None:
+            flow["superseded_by"] = superseded_by
+        return ev_id, flow_id
+
     def attach_pr(self, ledger, prs, *, state, repo="pim-api", number=9999,
                   merge_commit=None, verified_by="github-api"):
         pid = f"PR-{repo}-{number}"
@@ -330,6 +345,65 @@ class LedgerCase(unittest.TestCase):
         self.render()
         self.assert_fails_with("stale PASS")
 
+    def test_empty_ledger_fails_closed(self):
+        self.save(self.ledger_path, {})
+        self.render()
+        ok = self.run_validator()
+        self.assertFalse(ok)
+        self.assertIn("台账为空或缺少必需结构", self.last_stderr)
+        self.assertNotIn("Traceback", self.last_stderr)
+
+    def test_malformed_types_fail_closed_without_traceback(self):
+        cases = [
+            ("scope.core_prefixes=null", "ledger.json",
+             lambda data: data["scope"].__setitem__("core_prefixes", None),
+             "core_prefixes 必须为数组"),
+            ("item.status=[]", "ledger.json",
+             lambda data: data["items"][0].__setitem__("status", []),
+             "status 必须为非空字符串"),
+            ("PR state=[]", "prs.json",
+             lambda data: data["prs"][0].__setitem__("state", []),
+             "非法 state"),
+            ("CI pr=[]", "ci-runs.json",
+             lambda data: data["runs"][0].__setitem__("pr", []),
+             "引用了不存在的 PR"),
+            ("flow result=[]", "real-flows.json",
+             lambda data: data["flows"][0].__setitem__("result", []),
+             "非法 result"),
+            ("evidence type=[]", "evidence.json",
+             lambda data: data["evidence"][0].__setitem__("type", []),
+             "非法 evidence type"),
+            ("batch id=[]", "ledger.json",
+             lambda data: data["batches"][0].__setitem__("id", []),
+             "批次 id 必须为非空字符串"),
+            ("dependencies=[{}]", "ledger.json",
+             lambda data: data["items"][0].__setitem__("dependencies", [{}]),
+             "依赖必须写成字符串"),
+        ]
+        for label, filename, mutate, expected in cases:
+            with self.subTest(label=label):
+                shutil.rmtree(self.tmp / "docs/product/delivery")
+                shutil.copytree(REPO / "docs/product/delivery",
+                                self.tmp / "docs/product/delivery")
+                ledger = self.load(self.ledger_path)
+                ledger["source_snapshot"].update({
+                    "branch": "master",
+                    "commit": self.commit,
+                    "commit_date": self.commit_date,
+                    "observed_at": SNAPSHOT_TIME,
+                })
+                self.save(self.ledger_path, ledger)
+                self.render()
+                path = self.tmp / "docs/product/delivery" / filename
+                data = self.load(path)
+                mutate(data)
+                self.save(path, data)
+                self.render()
+                ok = self.run_validator()
+                self.assertFalse(ok, label)
+                self.assertIn(expected, self.last_stderr, label)
+                self.assertNotIn("Traceback", self.last_stderr, label)
+
     def test_blocked_without_reason(self):
         ledger = self.load(self.ledger_path)
         self.item(ledger, "Q01")["blocked_reason"] = ""
@@ -447,6 +521,27 @@ class LedgerCase(unittest.TestCase):
         self.render()
         self.assert_fails_with("legacy_source.section 必须为非空字符串")
 
+    def test_legacy_source_file_is_fixed_to_historical_snapshot(self):
+        ledger = self.load(self.ledger_path)
+        self.item(ledger, "A01")["legacy_source"]["file"] = "docs/product/pim-delivery-ledger.md"
+        self.save(self.ledger_path, ledger)
+        self.render()
+        self.assert_fails_with("legacy_source.file 必须固定为历史快照")
+
+    def test_legacy_source_section_must_match_row_heading(self):
+        ledger = self.load(self.ledger_path)
+        self.item(ledger, "A01")["legacy_source"]["section"] = "B 编辑器"
+        self.save(self.ledger_path, ledger)
+        self.render()
+        self.assert_fails_with("legacy_source.section 与第")
+
+    def test_legacy_audit_section_must_match_row_heading(self):
+        ledger = self.load(self.ledger_path)
+        self.item(ledger, "A01")["legacy_source"]["audit_section"] = "D–F 手写、材料、上传"
+        self.save(self.ledger_path, ledger)
+        self.render()
+        self.assert_fails_with("legacy_source.audit_section 与第")
+
     def test_batches_must_be_array_without_renderer_crash(self):
         ledger = self.load(self.ledger_path)
         ledger["batches"] = "not-an-array"
@@ -538,6 +633,16 @@ class LedgerCase(unittest.TestCase):
         self.render()
         self.assert_fails_with("PASS 缺少由 AC 关联 passed flow 覆盖的 required 平台")
 
+    def test_pass_rejects_all_platforms_changed_to_coordination(self):
+        ledger, _, _ = self.upgrade_to_pass()
+        item = self.item(ledger, "A10")
+        item["platform_roles"] = {
+            platform: "coordination" for platform in item["platform_roles"]
+        }
+        self.save(self.ledger_path, ledger)
+        self.render()
+        self.assert_fails_with("PASS 必须至少声明一个 required/read_only 平台")
+
     def test_verified_ac_rejects_stale_ref(self):
         ledger, evidence, _ = self.upgrade_to_pass()
         ac = self.item(ledger, "A10")["acceptance_criteria"][0]
@@ -562,6 +667,29 @@ class LedgerCase(unittest.TestCase):
         self.save(self.ledger_path, ledger)
         self.render()
         self.assert_fails_with("item R05 未反向引用决定 DEC-R05-AC05")
+
+    def test_pending_decision_rejects_multiple_ac_bindings(self):
+        decisions = self.load(self.decisions_path)
+        dec = next(d for d in decisions["decisions"] if d["id"] == "DEC-R05-AC05")
+        dec["ac_ids"] = ["R05-AC05", "R05-AC06"]
+        self.save(self.decisions_path, decisions)
+        self.render()
+        self.assert_fails_with("pending 决定不能绑定多个 AC")
+
+    def test_blocked_ac_rejects_reused_decision_for_other_ac(self):
+        ledger = self.load(self.ledger_path)
+        ac = next(
+            criterion for criterion in self.item(ledger, "R05")["acceptance_criteria"]
+            if criterion["id"] == "R05-AC06"
+        )
+        ac["blocked"] = {
+            "reason": "fixture blocker",
+            "unblock": ["fixture unblock"],
+            "decision_id": "DEC-R05-AC05",
+        }
+        self.save(self.ledger_path, ledger)
+        self.render()
+        self.assert_fails_with("必须精确绑定该 AC")
 
     def test_status_counts_are_recomputed(self):
         ledger = self.load(self.ledger_path)
@@ -637,6 +765,35 @@ class LedgerCase(unittest.TestCase):
         validator.items_by_id["C12"]["dependencies"] = ["ITEM:A01"]
         validator.check_closed_batch("test", [validator.items_by_id["C14"]])
         self.assertIn("依赖 ITEM:A01 未满足", "\n".join(validator.errors))
+
+    def test_closed_batch_approved_exception_requires_passed_platform_evidence(self):
+        ledger = self.load(self.ledger_path)
+        validator = validator_module.Validator(self.tmp, git_root=self.git_root)
+        validator.items_by_id = {i["id"]: copy.deepcopy(i) for i in ledger["items"]}
+        validator.batches_by_id = {b["id"]: b for b in ledger["batches"]}
+        validator.check_closed_batch("test", [validator.items_by_id["B15"]])
+        errors = "\n".join(validator.errors)
+        self.assertIn("APPROVED-EXCEPTION 项 B15 缺少 current passed 平台证据", errors)
+        self.assertIn("android", errors)
+        self.assertIn("windows", errors)
+        self.assertIn("web", errors)
+
+    def test_closed_batch_approved_exception_accepts_complete_platform_evidence(self):
+        ledger = self.load(self.ledger_path)
+        validator = validator_module.Validator(self.tmp, git_root=self.git_root)
+        validator.items_by_id = {i["id"]: copy.deepcopy(i) for i in ledger["items"]}
+        validator.batches_by_id = {b["id"]: b for b in ledger["batches"]}
+        validator.flows = {
+            "RF-TEST-B15": {
+                "id": "RF-TEST-B15",
+                "items": ["B15"],
+                "platforms": ["web", "android", "windows"],
+                "result": "passed",
+                "freshness": "current",
+            },
+        }
+        validator.check_closed_batch("test", [validator.items_by_id["B15"]])
+        self.assertEqual(validator.errors, [])
 
     def test_current_item_cannot_use_legacy_basis(self):
         ledger = self.load(self.ledger_path)
@@ -799,6 +956,75 @@ class LedgerCase(unittest.TestCase):
         self.render()
         self.assert_fails_with("未声明 superseded_by 的 stale failed")
 
+    def test_pass_rejects_unsuperseded_stale_blocked_flow(self):
+        ledger, evidence, flows = self.upgrade_to_pass()
+        self.add_stale_flow(
+            ledger, evidence, flows, "A10",
+            suffix="A10-ITEM-STALE-BLOCKED", result="blocked",
+            ac_ids=["A10-AC01"], platforms=["api"])
+        self.save(self.ledger_path, ledger)
+        self.save(self.evidence_path, evidence)
+        self.save(self.flows_path, flows)
+        self.render()
+        self.assert_fails_with("未声明 superseded_by 的 stale blocked")
+
+    def test_pass_accepts_superseded_stale_failed_flow(self):
+        ledger, evidence, flows = self.upgrade_to_pass()
+        self.add_stale_flow(
+            ledger, evidence, flows, "A10",
+            suffix="A10-SUPERSEDED-FAILED", result="failed",
+            ac_ids=["A10-AC01"], platforms=["android"],
+            superseded_by="RF-TEST-A10")
+        self.save(self.ledger_path, ledger)
+        self.save(self.evidence_path, evidence)
+        self.save(self.flows_path, flows)
+        self.render()
+        self.assert_baseline_valid()
+
+    def test_pass_accepts_superseded_stale_blocked_flow(self):
+        ledger, evidence, flows = self.upgrade_to_pass()
+        self.add_stale_flow(
+            ledger, evidence, flows, "A10",
+            suffix="A10-SUPERSEDED-BLOCKED", result="blocked",
+            ac_ids=["A10-AC01"], platforms=["web"],
+            superseded_by="RF-TEST-A10")
+        self.save(self.ledger_path, ledger)
+        self.save(self.evidence_path, evidence)
+        self.save(self.flows_path, flows)
+        self.render()
+        self.assert_baseline_valid()
+
+    def test_superseded_flow_must_cover_all_old_acs(self):
+        ledger, evidence, flows = self.upgrade_to_pass()
+        target_ev, target_flow = self.add_current_flow(
+            ledger, evidence, flows, "A10",
+            suffix="A10-SUPERSEDE-PARTIAL", result="passed",
+            ac_ids=["A10-AC01"], platforms=["web", "android", "windows"])
+        self.assertTrue(target_ev)
+        self.add_stale_flow(
+            ledger, evidence, flows, "A10",
+            suffix="A10-SUPERSEDED-PARTIAL-FAILED", result="failed",
+            ac_ids=["A10-AC01", "A10-AC02"], platforms=["android"],
+            superseded_by=target_flow)
+        self.save(self.ledger_path, ledger)
+        self.save(self.evidence_path, evidence)
+        self.save(self.flows_path, flows)
+        self.render()
+        self.assert_fails_with("superseded_by 未覆盖被取代流程的全部 AC")
+
+    def test_superseded_flow_target_must_be_current_passed(self):
+        ledger, evidence, flows = self.upgrade_to_pass()
+        self.add_stale_flow(
+            ledger, evidence, flows, "A10",
+            suffix="A10-SUPERSEDED-WRONG-TARGET", result="failed",
+            ac_ids=["A10-AC01"], platforms=["android"],
+            superseded_by="RF-R04-ISOLATED")
+        self.save(self.ledger_path, ledger)
+        self.save(self.evidence_path, evidence)
+        self.save(self.flows_path, flows)
+        self.render()
+        self.assert_fails_with("superseded_by 必须指向 current passed 流程")
+
     def test_platform_coverage_requires_ac_link(self):
         ledger, evidence, flows = self.upgrade_to_pass()
         main_flow = next(f for f in flows["flows"] if f["id"] == "RF-TEST-A10")
@@ -907,6 +1133,16 @@ class LedgerCase(unittest.TestCase):
         self.save(self.prs_path, prs)
         self.render()
         self.assert_baseline_valid()
+
+    def test_pass_rejects_merge_commit_after_snapshot(self):
+        ledger, _, _ = self.upgrade_to_pass()
+        prs = self.load(self.prs_path)
+        self.attach_pr(ledger, prs, state="merged", number=9994,
+                       merge_commit=self.second_commit, verified_by="git-history")
+        self.save(self.ledger_path, ledger)
+        self.save(self.prs_path, prs)
+        self.render()
+        self.assert_fails_with("merge_commit 晚于 source_snapshot.commit")
 
     def test_current_ci_requires_current_head_flag(self):
         ledger = self.load(self.ledger_path)
@@ -1074,6 +1310,12 @@ class RendererCase(unittest.TestCase):
         self.assertIn("按裁决实现容量上限与告警，并补真实 PostgreSQL 验收。", row)
         self.assertIn("DEC-R05-AC05", row)
 
+    def test_renderer_decision_index_shows_bound_ac(self):
+        text = self.render()
+        row = next(line for line in text.splitlines()
+                   if line.startswith("| DEC-R05-AC05 |"))
+        self.assertIn("| R05 | R05-AC05 |", row)
+
     def test_renderer_distinguishes_current_basis_from_legacy(self):
         ledger_path = self.tmp / "docs/product/delivery/ledger.json"
         ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
@@ -1138,6 +1380,15 @@ class RendererCase(unittest.TestCase):
             json.dumps(evidence, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         text = self.render()
         self.assertIn("—", text)
+
+    def test_renderer_tolerates_non_array_acceptance_criteria(self):
+        ledger_path = self.tmp / "docs/product/delivery/ledger.json"
+        ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+        ledger["items"][0]["acceptance_criteria"] = 1
+        ledger_path.write_text(
+            json.dumps(ledger, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        text = self.render()
+        self.assertIn("verified 0/0", text)
 
 
 class RealLedgerTest(unittest.TestCase):
