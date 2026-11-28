@@ -1,5 +1,6 @@
 using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
+using System.Globalization;
 using Pim.Core.Data;
 
 namespace Pim.Infrastructure.Data.Entities;
@@ -16,6 +17,25 @@ public static class RecycleBinPurgePhases
     public const string DbCommitted = "db_committed";
     public const string Completed = "completed";
     public const string Abandoned = "abandoned";
+}
+
+public static class RecycleBinPurgeDomains
+{
+    public const string Note = "note";
+    public const string File = "file";
+    public const string Task = "task";
+    public const string Calendar = "calendar";
+}
+
+/// <summary>
+/// A soft-delete generation is identified by its tombstone timestamp. A purge receipt
+/// recorded for one generation must never be confused with a later trash cycle of the
+/// same object.
+/// </summary>
+public static class RecycleBinPurgeGenerations
+{
+    public static string FromDeletedAt(DateTimeOffset deletedAt) =>
+        deletedAt.ToUniversalTime().UtcTicks.ToString(CultureInfo.InvariantCulture);
 }
 
 /// <summary>
@@ -42,10 +62,20 @@ public sealed class RecycleBinOperationEntity : IUserOwnedEntity
 }
 
 /// <summary>
-/// Durable note-purge intent. It is committed before any material/derived file is touched
-/// and survives until the PostgreSQL rows are committed and the file-ledger tombstone is
-/// removed. A retry can therefore distinguish "never started" from "files gone, database
-/// pending" and from "database committed, ledger finalization pending" without guessing.
+/// Durable per-item purge ledger shared by every recycle-bin domain.
+///
+/// <para>
+/// Notes commit a <c>pending</c> intent before touching material/derived files and advance
+/// it through <c>db_committed</c> to <c>completed</c>, so a retry can distinguish "never
+/// started" from "files gone, database pending" and from "database committed, ledger
+/// finalization pending" without guessing.
+/// </para>
+/// <para>
+/// Files and calendar items have one PostgreSQL commit for their destructive work, so they
+/// write an already-<c>completed</c> receipt in that same <c>SaveChanges</c>. The unique key
+/// is <c>(owner, domain, item, generation)</c>, so a receipt only proves the exact trashed
+/// generation was purged; a missing object without a matching receipt still fails closed.
+/// </para>
 /// </summary>
 [Table("recycle_bin_purge_intents")]
 public sealed class RecycleBinPurgeIntentEntity : IUserOwnedEntity

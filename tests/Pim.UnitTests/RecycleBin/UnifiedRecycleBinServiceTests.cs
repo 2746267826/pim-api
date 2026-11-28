@@ -485,16 +485,21 @@ public sealed class UnifiedRecycleBinServiceTests : IDisposable
         var evt = SeedEvent(book, "没有持久回执的日程", deleted: true);
         await _db.SaveChangesAsync();
 
-        var first = await _service.PurgeAsync(Batch(
-            (RecycleBinDomains.Note, note.NoteId),
-            (RecycleBinDomains.File, localFile.Id),
-            (RecycleBinDomains.Calendar, evt.Id)));
+        // The note purge commits its own durable intent. The file/calendar rows disappear
+        // without any purge receipt, so absence alone must not be reported as "purged".
+        var noteOnly = await _service.PurgeAsync(Batch((RecycleBinDomains.Note, note.NoteId)));
+        Assert.Equal(1, noteOnly.Succeeded);
+        _db.Set<FileItemEntity>().Remove(
+            await _db.Set<FileItemEntity>().SingleAsync(row => row.Id == localFile.Id));
+        _db.Set<EventEntity>().Remove(
+            await _db.Set<EventEntity>().SingleAsync(row => row.Id == evt.Id));
+        await _db.SaveChangesAsync();
+
         var second = await _service.PurgeAsync(Batch(
             (RecycleBinDomains.Note, note.NoteId),
             (RecycleBinDomains.File, localFile.Id),
             (RecycleBinDomains.Calendar, evt.Id)));
 
-        Assert.Equal(3, first.Succeeded);
         var noteRetry = second.Items.Single(item => item.Id == note.NoteId);
         Assert.Equal(RecycleBinItemStatuses.Success, noteRetry.Status);
         Assert.Contains("无需重复", noteRetry.Message);
@@ -504,6 +509,87 @@ public sealed class UnifiedRecycleBinServiceTests : IDisposable
         Assert.Equal(40401, fileRetry.ErrorCode);
         Assert.Equal(RecycleBinItemStatuses.Failed, calendarRetry.Status);
         Assert.Equal(40401, calendarRetry.ErrorCode);
+    }
+
+    [Fact]
+    public async Task BatchPurge_CrashBeforeReceiptWrite_ReplayReconcilesCommittedItemsWithoutFailure()
+    {
+        var note = await SeedNoteAsync(_user, "崩溃窗口笔记");
+        await _notes.SoftDeleteAsync(_user, note.NoteId);
+        var localFile = await SeedLocalFileAsync("崩溃窗口文件.txt");
+        await _files.DeleteToTrashAsync(localFile.Id);
+        var book = SeedCalendar(_user, "崩溃窗口日历", "calendar", deleted: false);
+        var evt = SeedEvent(book, "崩溃窗口日程", deleted: true);
+        await _db.SaveChangesAsync();
+        var fileDeletedAt = (await _db.Set<FileItemEntity>()
+            .SingleAsync(row => row.Id == localFile.Id)).DeletedAt;
+        var eventDeletedAt = evt.DeletedAt;
+
+        var operationId = Guid.NewGuid();
+        var request = new RecycleBinBatchRequest(
+        [
+            new RecycleBinItemRef(RecycleBinDomains.Note, note.NoteId),
+            new RecycleBinItemRef(RecycleBinDomains.File, localFile.Id),
+            new RecycleBinItemRef(RecycleBinDomains.Calendar, evt.Id)
+        ], operationId);
+
+        // Commit every item's destructive work, then rewind the operation row to exactly the
+        // state a crash before CompleteOperationAsync would leave: still Running, no receipt,
+        // expired lease. All business rows and per-item receipts stay committed.
+        var first = await _service.PurgeAsync(request);
+        Assert.Equal(3, first.Succeeded);
+        var operationRow = await _db.RecycleBinOperations
+            .SingleAsync(row => row.OperationId == operationId);
+        operationRow.Status = RecycleBinOperationStatuses.Running;
+        operationRow.ReceiptJson = null;
+        operationRow.CompletedAt = null;
+        operationRow.LeaseExpiresAt = DateTimeOffset.UtcNow.AddMinutes(-1);
+        await _db.SaveChangesAsync();
+        _db.ChangeTracker.Clear();
+
+        var interrupted = await _db.RecycleBinOperations.AsNoTracking()
+            .SingleAsync(row => row.OperationId == operationId);
+        Assert.Equal(RecycleBinOperationStatuses.Running, interrupted.Status);
+        Assert.Null(interrupted.ReceiptJson);
+        Assert.True(interrupted.LeaseExpiresAt <= DateTimeOffset.UtcNow);
+        Assert.Null(await _db.Set<FileItemEntity>().SingleOrDefaultAsync(row => row.Id == localFile.Id));
+        Assert.Null(await _db.Set<EventEntity>().IgnoreQueryFilters()
+            .SingleOrDefaultAsync(row => row.Id == evt.Id));
+
+        var replay = await _service.PurgeAsync(request);
+
+        Assert.Equal(3, replay.Succeeded);
+        Assert.Equal(0, replay.Failed);
+        Assert.All(replay.Items, item => Assert.Equal(RecycleBinItemStatuses.Success, item.Status));
+        Assert.Equal(interrupted.Id, replay.ReceiptId);
+        Assert.Equal(operationId, replay.OperationId);
+
+        var fileReceipt = await _db.RecycleBinPurgeIntents.AsNoTracking()
+            .SingleAsync(row => row.Domain == RecycleBinPurgeDomains.File
+                && row.ItemId == localFile.Id);
+        Assert.Equal(RecycleBinPurgePhases.Completed, fileReceipt.Phase);
+        Assert.Equal(
+            RecycleBinPurgeGenerations.FromDeletedAt(fileDeletedAt!.Value),
+            fileReceipt.Generation);
+        var calendarReceipt = await _db.RecycleBinPurgeIntents.AsNoTracking()
+            .SingleAsync(row => row.Domain == RecycleBinPurgeDomains.Calendar
+                && row.ItemId == evt.Id);
+        Assert.Equal(RecycleBinPurgePhases.Completed, calendarReceipt.Phase);
+        Assert.Equal(
+            RecycleBinPurgeGenerations.FromDeletedAt(eventDeletedAt!.Value),
+            calendarReceipt.Generation);
+
+        // Reconciliation must replay the durable outcome, not delete/audit a second time.
+        Assert.Equal(1, await _db.AuditLogs.CountAsync(row =>
+            row.Action == "files.recycle_bin.purge"
+                && row.ResourceId == localFile.Id.ToString("D")));
+        Assert.Equal(1, await _db.AuditLogs.CountAsync(row =>
+            row.Action == "calendar.recycle_bin.purge"
+                && row.ResourceId == evt.Id.ToString("D")));
+        var completed = await _db.RecycleBinOperations.AsNoTracking()
+            .SingleAsync(row => row.OperationId == operationId);
+        Assert.Equal(RecycleBinOperationStatuses.Completed, completed.Status);
+        Assert.NotNull(completed.ReceiptJson);
     }
 
     [Fact]

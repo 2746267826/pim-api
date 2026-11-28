@@ -3,6 +3,7 @@ using Pim.Core.Common;
 using Pim.Core.Exceptions;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
+using Pim.Infrastructure.Data.Entities;
 using Pim.Module.Calendar.DTOs;
 using Pim.Module.Calendar.Entities;
 
@@ -718,6 +719,19 @@ public sealed class CalendarRecycleBinService
     /// This is the unified recycle-bin path; the existing restore/GC methods remain the
     /// source of truth for calendar rules.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The delete rows and a durable per-generation purge receipt are committed in the same
+    /// <c>SaveChanges</c>. If the process dies after the commit but before the batch operation
+    /// receipt is written, a retry with the same <c>operationId</c> finds the item gone and the
+    /// receipt present, so it can truthfully report "already purged" instead of reporting the
+    /// item as failed. The receipt is keyed by <c>(owner, domain, item, generation)</c>: a
+    /// different trash cycle of the same id will not match it.
+    /// </para>
+    /// <para>
+    /// Without a matching receipt, a missing item still fails closed (never a fake success).
+    /// </para>
+    /// </remarks>
     public async Task<int> PurgeAsync(
         string type,
         Guid id,
@@ -754,6 +768,8 @@ public sealed class CalendarRecycleBinService
                 var evt = await LoadDeletedEventAsync(id, ct);
                 EnsureExpectedDeletedAt(evt.DeletedAt, expectedDeletedAt, "日程");
                 _db.Set<EventEntity>().Remove(evt);
+                await WritePurgeReceiptsAsync(
+                    [(RecycleBinPurgeDomains.Calendar, id, evt.DeletedAt, evt.Title)], ct);
                 await _db.SaveChangesAsync(ct);
                 await _audit.RecordSuccessAsync(
                     UserId,
@@ -789,6 +805,8 @@ public sealed class CalendarRecycleBinService
                 var task = await LoadDeletedTaskAsync(id, ct);
                 EnsureExpectedDeletedAt(task.DeletedAt, expectedDeletedAt, "任务");
                 _db.Set<TaskEntity>().Remove(task);
+                await WritePurgeReceiptsAsync(
+                    [(RecycleBinPurgeDomains.Task, id, task.DeletedAt, task.Title)], ct);
                 await _db.SaveChangesAsync(ct);
                 await _audit.RecordSuccessAsync(
                     UserId,
@@ -831,6 +849,24 @@ public sealed class CalendarRecycleBinService
                 _db.Set<TaskEntity>().RemoveRange(tasks);
                 _db.Set<OutlookCalendarBindingEntity>().RemoveRange(bindings);
                 _db.Set<CalendarEntity>().Remove(calendar);
+                // Cascaded children get their own receipts in the same commit. A batch that
+                // also listed one of them (or a retry after a crash) can then prove that the
+                // child disappeared because this purge removed it, not because it never existed.
+                await WritePurgeReceiptsAsync(
+                    events
+                        .Select(evt => (
+                            RecycleBinPurgeDomains.Calendar, evt.Id, evt.DeletedAt, evt.Title))
+                        .Concat(tasks.Select(task => (
+                            RecycleBinPurgeDomains.Task, task.Id, task.DeletedAt, task.Title)))
+                        .Append((
+                            type == "task-book"
+                                ? RecycleBinPurgeDomains.Task
+                                : RecycleBinPurgeDomains.Calendar,
+                            id,
+                            calendar.DeletedAt,
+                            calendar.Name))
+                        .ToArray(),
+                    ct);
                 var affected = 1 + events.Count + tasks.Count + bindings.Count;
                 await _db.SaveChangesAsync(ct);
                 await _audit.RecordSuccessAsync(
@@ -851,6 +887,60 @@ public sealed class CalendarRecycleBinService
     {
         if (expected.HasValue && actual != expected)
             throw new DomainException(40901, $"{label}状态已变化，请刷新回收站后重试");
+    }
+
+    /// <summary>
+    /// Adds completed per-generation receipts for rows this purge is deleting, in the same
+    /// <c>SaveChanges</c> as the deletion. Existing receipts are left untouched so a retried
+    /// purge cannot violate the (owner, domain, item, generation) unique key.
+    /// </summary>
+    private async Task WritePurgeReceiptsAsync(
+        IReadOnlyList<(string Domain, Guid Id, DateTimeOffset? DeletedAt, string Title)> items,
+        CancellationToken ct)
+    {
+        var planned = items
+            .Where(item => item.DeletedAt is not null)
+            .Select(item => (
+                item.Domain,
+                item.Id,
+                Generation: RecycleBinPurgeGenerations.FromDeletedAt(item.DeletedAt!.Value),
+                DeletedAt: item.DeletedAt!.Value,
+                item.Title))
+            .DistinctBy(item => (item.Domain, item.Id, item.Generation))
+            .ToArray();
+        if (planned.Length == 0) return;
+
+        var itemIds = planned.Select(item => item.Id).Distinct().ToArray();
+        var existing = await _db.RecycleBinPurgeIntents
+            .Where(row => row.UserId == UserId
+                && itemIds.Contains(row.ItemId))
+            .Select(row => new { row.Domain, row.ItemId, row.Generation })
+            .ToListAsync(ct);
+        var known = existing
+            .Select(row => (row.Domain, row.ItemId, row.Generation))
+            .ToHashSet();
+
+        var now = DateTimeOffset.UtcNow;
+        foreach (var receipt in planned)
+        {
+            if (!known.Add((receipt.Domain, receipt.Id, receipt.Generation))) continue;
+            _db.RecycleBinPurgeIntents.Add(new RecycleBinPurgeIntentEntity
+            {
+                UserId = UserId,
+                Domain = receipt.Domain,
+                ItemId = receipt.Id,
+                Generation = receipt.Generation,
+                ExpectedDeletedAt = receipt.DeletedAt,
+                Title = receipt.Title.Length > 500 ? receipt.Title[..500] : receipt.Title,
+                Phase = RecycleBinPurgePhases.Completed,
+                LeaseToken = null,
+                LeaseExpiresAt = null,
+                AttemptCount = 1,
+                CreatedAt = now,
+                UpdatedAt = now,
+                CompletedAt = now
+            });
+        }
     }
 
     /// <summary>

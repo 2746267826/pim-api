@@ -260,8 +260,8 @@ public sealed class UnifiedRecycleBinService(
     }
 
     internal Task<(RecycleBinOperationEntity Operation, RecycleBinBatchReceiptDto? Replay)>
-        ClaimOperationAsync(Guid operationId, string action, string payloadHash,
-            CancellationToken ct) =>
+        ClaimOperationAsync(
+        Guid operationId, string action, string payloadHash, CancellationToken ct) =>
         AdvisoryLock.RunAsync(
             db,
             OperationLockKey(UserId, operationId),
@@ -314,6 +314,9 @@ public sealed class UnifiedRecycleBinService(
                         40904,
                         "该 operationId 的批次仍在处理中，请稍后使用同一 operationId 重试");
 
+                // An expired running lease means a previous attempt died before persisting its
+                // receipt. The retry re-runs the same batch, but each item reconciles against its
+                // own durable state so work that already committed is not reported as failed.
                 operation.ProcessingToken = Guid.NewGuid();
                 operation.LeaseExpiresAt = now.Add(OperationLease);
                 operation.AttemptCount++;
@@ -565,7 +568,26 @@ public sealed class UnifiedRecycleBinService(
                 && entity.Provider != null
                 && entity.Provider.UserId == UserId, ct);
         if (row is null)
+        {
+            if (!restore
+                && await FindCommittedPurgeAsync(
+                    RecycleBinPurgeDomains.File, id, item.ExpectedDeletedAt, ct) is { } receipt)
+            {
+                // A crash after the catalog commit but before the batch receipt was written
+                // leaves the row gone and the durable per-item receipt behind. That receipt is
+                // the only thing that makes "already purged" truthful here.
+                return Success(
+                    index,
+                    RecycleBinDomains.File,
+                    id,
+                    string.IsNullOrWhiteSpace(receipt.Title) ? "未知文件" : receipt.Title,
+                    action,
+                    "builtin",
+                    "文件已永久删除，无需重复提交");
+            }
+
             throw new DomainException(40401, "文件不存在");
+        }
         var provider = row.Provider ?? throw new DomainException(40401, "文件来源不存在");
         var source = SourceOf(provider.Provider);
         if (!row.IsDeleted)
@@ -660,6 +682,54 @@ public sealed class UnifiedRecycleBinService(
                     || candidate.Path == row.Path
                     || candidate.Path.StartsWith(prefix)))
             .ToListAsync(ct);
+
+        // PostgreSQL enforces two RESTRICT edges inside the files schema:
+        //   file_items.current_version_id -> file_versions(file_item_id,id)
+        //   file_index_jobs.version_id     -> file_versions(file_item_id,id)
+        // A bare DELETE of file_items can therefore hit the index-job guard before the
+        // cascade removes the versions. Break both edges first, then delete versions, so
+        // the final catalog delete is deterministic instead of depending on trigger order.
+        var itemIds = metadataRows.Select(candidate => candidate.Id).ToArray();
+        var indexJobs = await db.Set<FileIndexJobEntity>()
+            .Where(job => itemIds.Contains(job.FileItemId))
+            .ToListAsync(ct);
+        var versions = await db.Set<FileVersionEntity>()
+            .Where(version => itemIds.Contains(version.FileItemId))
+            .ToListAsync(ct);
+        // Prepare the RESTRICT edges in an explicit order: index jobs first, then null the
+        // current-version pointers, then delete the versions. EF cannot order a single
+        // SaveChanges through the item<->version cycle reliably, and PostgreSQL rejects the
+        // version delete while a current_version_id still references it.
+        if (indexJobs.Count > 0 || versions.Count > 0)
+        {
+            if (indexJobs.Count > 0)
+                db.Set<FileIndexJobEntity>().RemoveRange(indexJobs);
+            if (versions.Count > 0)
+            {
+                foreach (var candidate in metadataRows)
+                    candidate.CurrentVersionId = null;
+            }
+
+            await db.SaveChangesAsync(ct);
+            if (versions.Count > 0)
+            {
+                db.Set<FileVersionEntity>().RemoveRange(versions);
+                await db.SaveChangesAsync(ct);
+            }
+        }
+
+        // The catalog delete and the per-generation receipts commit together, so a retry after
+        // a crash between commit and batch-receipt write can prove this exact trash generation
+        // was purged instead of reporting it as failed.
+        await WritePurgeReceiptsAsync(
+            RecycleBinPurgeDomains.File,
+            metadataRows
+                .Select(candidate => (
+                    candidate.Id,
+                    (DateTimeOffset?)(candidate.DeletedAt ?? candidate.ModifiedAt),
+                    candidate.Name))
+                .ToArray(),
+            ct);
         db.Set<FileItemEntity>().RemoveRange(metadataRows);
         audit.Enqueue(new CreateAuditLogRequest(
             UserId,
@@ -675,7 +745,9 @@ public sealed class UnifiedRecycleBinService(
             new Dictionary<string, string>
             {
                 ["metadataRows"] = metadataRows.Count.ToString(),
-                ["blobs"] = blobKeys.Count.ToString()
+                ["blobs"] = blobKeys.Count.ToString(),
+                ["versions"] = versions.Count.ToString(),
+                ["indexJobs"] = indexJobs.Count.ToString()
             },
             null,
             null));
@@ -693,7 +765,26 @@ public sealed class UnifiedRecycleBinService(
     {
         var target = await CalendarTargetAsync(item.Domain, item.Id, ct);
         if (target is null)
+        {
+            if (!restore
+                && await FindCommittedPurgeAsync(item.Domain, item.Id, item.ExpectedDeletedAt, ct)
+                    is { } receipt)
+            {
+                // The calendar purge committed but the process died before the batch receipt
+                // was written. The durable per-generation receipt proves the covered work
+                // already happened, so this is a truthful replay rather than a new deletion.
+                return Success(
+                    index,
+                    item.Domain,
+                    item.Id,
+                    string.IsNullOrWhiteSpace(receipt.Title) ? "未知日历项" : receipt.Title,
+                    action,
+                    receipt.Domain == RecycleBinPurgeDomains.Task ? "task" : "calendar",
+                    "日历项已永久删除，无需重复提交");
+            }
+
             throw new DomainException(40401, "日历项不存在");
+        }
         if (restore && target.Active)
         {
             return Success(
@@ -925,6 +1016,91 @@ public sealed class UnifiedRecycleBinService(
     {
         if (expected.HasValue && expected.Value != actual)
             throw new DomainException(40901, $"{label}状态已变化，请刷新回收站后重试");
+    }
+
+    /// <summary>
+    /// Looks up a purge receipt for exactly this soft-delete generation. Callers use it only
+    /// to reconcile "row is gone but our destructive work provably ran"; it never turns an
+    /// unproven request into a success.
+    /// </summary>
+    private Task<RecycleBinPurgeIntentEntity?> FindCommittedPurgeAsync(
+        string domain,
+        Guid id,
+        DateTimeOffset? deletedAt,
+        CancellationToken ct)
+    {
+        var query = db.RecycleBinPurgeIntents
+            .AsNoTracking()
+            .Where(row => row.UserId == UserId
+                && row.Domain == domain
+                && row.ItemId == id
+                && (row.Phase == RecycleBinPurgePhases.Completed
+                    || row.Phase == RecycleBinPurgePhases.DbCommitted));
+        if (deletedAt is { } deletionAt)
+        {
+            var generation = RecycleBinPurgeGenerations.FromDeletedAt(deletionAt);
+            query = query.Where(row => row.Generation == generation);
+        }
+        return query
+            .OrderByDescending(row => row.CompletedAt ?? row.UpdatedAt)
+            .FirstOrDefaultAsync(ct);
+    }
+
+    /// <summary>
+    /// Adds completed per-generation receipts for work committed in the current
+    /// <see cref="db"/> change set. The caller commits them in the same SaveChanges as the
+    /// deletion, so a crash before the batch receipt is written can still be reconciled.
+    /// Existing receipts are left untouched so a retried purge cannot violate the
+    /// (owner, domain, item, generation) unique key.
+    /// </summary>
+    private async Task WritePurgeReceiptsAsync(
+        string domain,
+        IReadOnlyList<(Guid Id, DateTimeOffset? DeletedAt, string Title)> items,
+        CancellationToken ct)
+    {
+        var planned = items
+            .Where(item => item.DeletedAt is not null)
+            .Select(item => (
+                item.Id,
+                Generation: RecycleBinPurgeGenerations.FromDeletedAt(item.DeletedAt!.Value),
+                DeletedAt: item.DeletedAt!.Value,
+                item.Title))
+            .DistinctBy(item => (item.Id, item.Generation))
+            .ToArray();
+        if (planned.Length == 0) return;
+
+        var itemIds = planned.Select(item => item.Id).Distinct().ToArray();
+        var existing = await db.RecycleBinPurgeIntents
+            .Where(row => row.UserId == UserId
+                && row.Domain == domain
+                && itemIds.Contains(row.ItemId))
+            .Select(row => new { row.ItemId, row.Generation })
+            .ToListAsync(ct);
+        var known = existing
+            .Select(row => (row.ItemId, row.Generation))
+            .ToHashSet();
+
+        var now = DateTimeOffset.UtcNow;
+        foreach (var receipt in planned)
+        {
+            if (!known.Add((receipt.Id, receipt.Generation))) continue;
+            db.RecycleBinPurgeIntents.Add(new RecycleBinPurgeIntentEntity
+            {
+                UserId = UserId,
+                Domain = domain,
+                ItemId = receipt.Id,
+                Generation = receipt.Generation,
+                ExpectedDeletedAt = receipt.DeletedAt,
+                Title = receipt.Title.Length > 500 ? receipt.Title[..500] : receipt.Title,
+                Phase = RecycleBinPurgePhases.Completed,
+                LeaseToken = null,
+                LeaseExpiresAt = null,
+                AttemptCount = 1,
+                CreatedAt = now,
+                UpdatedAt = now,
+                CompletedAt = now
+            });
+        }
     }
 
     private static RecycleBinItemResultDto Success(

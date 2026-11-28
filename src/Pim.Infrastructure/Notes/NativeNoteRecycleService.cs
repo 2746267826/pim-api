@@ -858,7 +858,7 @@ public sealed class NativeNoteRecycleService(
     }
 
     private static string GenerationKey(DateTimeOffset deletionAt) =>
-        deletionAt.ToUniversalTime().UtcTicks.ToString(CultureInfo.InvariantCulture);
+        RecycleBinPurgeGenerations.FromDeletedAt(deletionAt);
 
     private static NativeNotePurgeResult Result(RecycleBinPurgeIntentEntity intent) =>
         new(
