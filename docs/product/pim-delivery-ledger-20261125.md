@@ -1,5 +1,13 @@
 # PIM 全量交付逐项状态台账（2026-11-25）
 
+> **历史快照 / Historical snapshot（冻结于 2026-11-27）**
+>
+> 本文件已冻结，仅用于追溯 2026-11-25–27 的逐项文本记录。当前可续跑的唯一事实源是
+> [`docs/product/delivery/ledger.json`](delivery/ledger.json)，当前视图由
+> [`scripts/ci/render-delivery-ledger.py`](../../scripts/ci/render-delivery-ledger.py) 生成到
+> [`docs/product/pim-delivery-ledger.md`](pim-delivery-ledger.md)。请勿在本文件新增或改写状态；
+> 新证据写入结构化源。本文件不删除，以便保留原始证据措辞与未迁移细节。
+
 本文件是交付包 A–R、Z 原始 160 项的持续盘点；Release/版本与发布安全 S01 作为补充项单独列出，不计入交付包 160 项。历史细节仍保留在 [`docs/product/pim-delivery-ledger.md`](pim-delivery-ledger.md)；本文件补齐每项的平台、验收条件、历史验收文本、当前证据回填、依赖、负责 Agent、PR/HEAD、状态与下一批动作。
 
 ## 快照与口径

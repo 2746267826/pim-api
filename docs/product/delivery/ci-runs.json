@@ -1,0 +1,461 @@
+{
+  "schema_version": 1,
+  "runs": [
+    {
+      "id": "CI-45507678632",
+      "run_id": "45507678632",
+      "repo": "pim-api",
+      "repository": "2746267826/pim-api",
+      "workflow": "CI",
+      "pr": "PR-pim-api-588",
+      "head": "5e2768d7",
+      "conclusion": "success",
+      "jobs": [
+        "CI Gate",
+        "build-api",
+        "web-build",
+        "build-docker"
+      ],
+      "observed_at": "2026-11-27",
+      "freshness": "stale",
+      "head_is_current": false,
+      "source": "docs/product/pim-delivery-ledger-20261125.md",
+      "notes": "旧台账引用的运行；本次 docs-only 变更未重新触发或查询，不能作为当前 head 的通过证据。"
+    },
+    {
+      "id": "CI-45412194523",
+      "run_id": "45412194523",
+      "repo": "pim-api",
+      "repository": "2746267826/pim-api",
+      "workflow": "CI",
+      "pr": "PR-pim-api-576",
+      "head": "84f43d6b",
+      "conclusion": "success",
+      "jobs": [
+        "CI Gate",
+        "build-api",
+        "web-build",
+        "build-docker"
+      ],
+      "observed_at": "2026-11-27",
+      "freshness": "stale",
+      "head_is_current": false,
+      "source": "docs/product/pim-delivery-ledger-20261125.md",
+      "notes": "旧台账引用的运行；本次 docs-only 变更未重新触发或查询，不能作为当前 head 的通过证据。"
+    },
+    {
+      "id": "CI-45750942089",
+      "run_id": "45750942089",
+      "repo": "pim-api",
+      "repository": "2746267826/pim-api",
+      "workflow": "CI",
+      "pr": "PR-pim-api-597",
+      "head": "bcee101f",
+      "conclusion": "success",
+      "jobs": [
+        "CI Gate",
+        "6 shards",
+        "web-build"
+      ],
+      "observed_at": "2026-11-27",
+      "freshness": "stale",
+      "head_is_current": false,
+      "source": "docs/product/pim-delivery-ledger-20261125.md",
+      "notes": "旧台账引用的运行；本次 docs-only 变更未重新触发或查询，不能作为当前 head 的通过证据。"
+    },
+    {
+      "id": "CI-45662774385",
+      "run_id": "45662774385",
+      "repo": "pim-api",
+      "repository": "2746267826/pim-api",
+      "workflow": "CI",
+      "pr": "PR-pim-api-600",
+      "head": "a3b6b568",
+      "conclusion": "success",
+      "jobs": [
+        "CI Gate",
+        "6 shards",
+        "web-build",
+        "build-mcp",
+        "build-docker"
+      ],
+      "observed_at": "2026-11-27",
+      "freshness": "stale",
+      "head_is_current": false,
+      "source": "docs/product/pim-delivery-ledger-20261125.md",
+      "notes": "旧台账引用的运行；本次 docs-only 变更未重新触发或查询，不能作为当前 head 的通过证据。"
+    },
+    {
+      "id": "CI-45664309218",
+      "run_id": "45664309218",
+      "repo": "pim-api",
+      "repository": "2746267826/pim-api",
+      "workflow": "CI",
+      "pr": "PR-pim-api-594",
+      "head": "d3a55ceb",
+      "conclusion": "success",
+      "jobs": [
+        "CI Gate",
+        "web-build",
+        "build-api",
+        "build-docker"
+      ],
+      "observed_at": "2026-11-27",
+      "freshness": "stale",
+      "head_is_current": false,
+      "source": "docs/product/pim-delivery-ledger-20261125.md",
+      "notes": "旧台账引用的运行；本次 docs-only 变更未重新触发或查询，不能作为当前 head 的通过证据。"
+    },
+    {
+      "id": "CI-45640493402",
+      "run_id": "45640493402",
+      "repo": "pim-api",
+      "repository": "2746267826/pim-api",
+      "workflow": "CI",
+      "pr": "PR-pim-api-589",
+      "head": "743a77ac",
+      "conclusion": "success",
+      "jobs": [
+        "CI Gate",
+        "build-api",
+        "web-build",
+        "build-docker"
+      ],
+      "observed_at": "2026-11-27",
+      "freshness": "stale",
+      "head_is_current": false,
+      "source": "docs/product/pim-delivery-ledger-20261125.md",
+      "notes": "旧台账引用的运行；本次 docs-only 变更未重新触发或查询，不能作为当前 head 的通过证据。"
+    },
+    {
+      "id": "CI-45630816563",
+      "run_id": "45630816563",
+      "repo": "pim-api",
+      "repository": "2746267826/pim-api",
+      "workflow": "CI",
+      "pr": "PR-pim-api-604",
+      "head": "033f3a5f",
+      "conclusion": "success",
+      "jobs": [
+        "CI Gate",
+        "build-api",
+        "build-mcp",
+        "build-docker"
+      ],
+      "observed_at": "2026-11-27",
+      "freshness": "stale",
+      "head_is_current": false,
+      "source": "docs/product/pim-delivery-ledger-20261125.md",
+      "notes": "旧台账引用的运行；本次 docs-only 变更未重新触发或查询，不能作为当前 head 的通过证据。"
+    },
+    {
+      "id": "CI-45881012067",
+      "run_id": "45881012067",
+      "repo": "pim-api",
+      "repository": "2746267826/pim-api",
+      "workflow": "CI",
+      "pr": "PR-pim-api-613",
+      "head": "add843e9",
+      "conclusion": "success",
+      "jobs": [
+        "CI Gate",
+        "6 shards",
+        "build-docker"
+      ],
+      "observed_at": "2026-11-27",
+      "freshness": "stale",
+      "head_is_current": false,
+      "source": "docs/product/pim-delivery-ledger-20261125.md",
+      "notes": "旧台账引用的运行；本次 docs-only 变更未重新触发或查询，不能作为当前 head 的通过证据。"
+    },
+    {
+      "id": "CI-45848909302",
+      "run_id": "45848909302",
+      "repo": "pim-api",
+      "repository": "2746267826/pim-api",
+      "workflow": "CI",
+      "pr": "PR-pim-api-590",
+      "head": "0e6262f2",
+      "conclusion": "success",
+      "jobs": [
+        "CI Gate",
+        "6 shards",
+        "web-build",
+        "build-docker"
+      ],
+      "observed_at": "2026-11-27",
+      "freshness": "stale",
+      "head_is_current": false,
+      "source": "docs/product/pim-delivery-ledger-20261125.md",
+      "notes": "旧台账引用的运行；本次 docs-only 变更未重新触发或查询，不能作为当前 head 的通过证据。"
+    },
+    {
+      "id": "CI-45850989877",
+      "run_id": "45850989877",
+      "repo": "pim-api",
+      "repository": "2746267826/pim-api",
+      "workflow": "CI",
+      "pr": "PR-pim-api-596",
+      "head": "3594289e",
+      "conclusion": "success",
+      "jobs": [
+        "CI Gate",
+        "6 shards",
+        "web-build",
+        "build-docker"
+      ],
+      "observed_at": "2026-11-27",
+      "freshness": "stale",
+      "head_is_current": false,
+      "source": "docs/product/pim-delivery-ledger-20261125.md",
+      "notes": "旧台账引用的运行；本次 docs-only 变更未重新触发或查询，不能作为当前 head 的通过证据。"
+    },
+    {
+      "id": "CI-45856428856",
+      "run_id": "45856428856",
+      "repo": "pim-api",
+      "repository": "2746267826/pim-api",
+      "workflow": "CI",
+      "pr": "PR-pim-api-602",
+      "head": "65d1d2b5",
+      "conclusion": "success",
+      "jobs": [
+        "CI Gate",
+        "6 shards",
+        "web-build",
+        "build-docker"
+      ],
+      "observed_at": "2026-11-27",
+      "freshness": "stale",
+      "head_is_current": false,
+      "source": "docs/product/pim-delivery-ledger-20261125.md",
+      "notes": "旧台账引用的运行；本次 docs-only 变更未重新触发或查询，不能作为当前 head 的通过证据。"
+    },
+    {
+      "id": "CI-45841606243",
+      "run_id": "45841606243",
+      "repo": "pim-api",
+      "repository": "2746267826/pim-api",
+      "workflow": "CI",
+      "pr": "PR-pim-api-607",
+      "head": "cfd4f573",
+      "conclusion": "success",
+      "jobs": [
+        "CI Gate",
+        "6 shards",
+        "web-build",
+        "build-docker"
+      ],
+      "observed_at": "2026-11-27",
+      "freshness": "stale",
+      "head_is_current": false,
+      "source": "docs/product/pim-delivery-ledger-20261125.md",
+      "notes": "旧台账引用的运行；本次 docs-only 变更未重新触发或查询，不能作为当前 head 的通过证据。"
+    },
+    {
+      "id": "CI-45926319904",
+      "run_id": "45926319904",
+      "repo": "pim-api",
+      "repository": "2746267826/pim-api",
+      "workflow": "CI",
+      "pr": "PR-pim-api-616",
+      "head": "e5de6753",
+      "conclusion": "success",
+      "jobs": [
+        "CI Gate",
+        "6 shards",
+        "web-build",
+        "build-docker"
+      ],
+      "observed_at": "2026-11-27",
+      "freshness": "stale",
+      "head_is_current": false,
+      "source": "docs/product/pim-delivery-ledger-20261125.md",
+      "notes": "旧台账引用的运行；本次 docs-only 变更未重新触发或查询，不能作为当前 head 的通过证据。"
+    },
+    {
+      "id": "CI-45835093386",
+      "run_id": "45835093386",
+      "repo": "pim-api",
+      "repository": "2746267826/pim-api",
+      "workflow": "CI",
+      "pr": "PR-pim-api-617",
+      "head": "95568663",
+      "conclusion": "success",
+      "jobs": [
+        "CI Gate",
+        "6 shards",
+        "web-build",
+        "build-mcp",
+        "build-docker"
+      ],
+      "observed_at": "2026-11-27",
+      "freshness": "stale",
+      "head_is_current": false,
+      "source": "docs/product/pim-delivery-ledger-20261125.md",
+      "notes": "旧台账引用的运行；本次 docs-only 变更未重新触发或查询，不能作为当前 head 的通过证据。"
+    },
+    {
+      "id": "CI-45857319607",
+      "run_id": "45857319607",
+      "repo": "pim-api",
+      "repository": "2746267826/pim-api",
+      "workflow": "CI",
+      "pr": "PR-pim-api-612",
+      "head": "f12c4c23",
+      "conclusion": "success",
+      "jobs": [
+        "CI Gate",
+        "6 shards",
+        "web-build",
+        "build-docker"
+      ],
+      "observed_at": "2026-11-27",
+      "freshness": "stale",
+      "head_is_current": false,
+      "source": "docs/product/pim-delivery-ledger-20261125.md",
+      "notes": "旧台账引用的运行；本次 docs-only 变更未重新触发或查询，不能作为当前 head 的通过证据。"
+    },
+    {
+      "id": "CI-45863519886",
+      "run_id": "45863519886",
+      "repo": "pim-api",
+      "repository": "2746267826/pim-api",
+      "workflow": "CI",
+      "pr": "PR-pim-api-614",
+      "head": "e1c15b99",
+      "conclusion": "success",
+      "jobs": [
+        "CI Gate",
+        "6 shards",
+        "web-build",
+        "build-docker"
+      ],
+      "observed_at": "2026-11-27",
+      "freshness": "stale",
+      "head_is_current": false,
+      "source": "docs/product/pim-delivery-ledger-20261125.md",
+      "notes": "旧台账引用的运行；本次 docs-only 变更未重新触发或查询，不能作为当前 head 的通过证据。"
+    },
+    {
+      "id": "CI-45867495126",
+      "run_id": "45867495126",
+      "repo": "pim-api",
+      "repository": "2746267826/pim-api",
+      "workflow": "CI",
+      "pr": "PR-pim-api-615",
+      "head": "9d7af01d",
+      "conclusion": "success",
+      "jobs": [
+        "CI Gate",
+        "6 shards",
+        "web-build",
+        "build-docker"
+      ],
+      "observed_at": "2026-11-27",
+      "freshness": "stale",
+      "head_is_current": false,
+      "source": "docs/product/pim-delivery-ledger-20261125.md",
+      "notes": "旧台账引用的运行；本次 docs-only 变更未重新触发或查询，不能作为当前 head 的通过证据。"
+    },
+    {
+      "id": "CI-45653708869",
+      "run_id": "45653708869",
+      "repo": "pim-api",
+      "repository": "2746267826/pim-api",
+      "workflow": "CI",
+      "pr": "PR-pim-api-589",
+      "head": "05552e84",
+      "conclusion": "success",
+      "jobs": [
+        "CI Gate",
+        "build-api",
+        "web-build",
+        "build-docker",
+        "release"
+      ],
+      "observed_at": "2026-11-27",
+      "freshness": "stale",
+      "head_is_current": false,
+      "source": "docs/product/pim-delivery-ledger-20261125.md",
+      "notes": "旧台账引用的运行；本次 docs-only 变更未重新触发或查询，不能作为当前 head 的通过证据。"
+    },
+    {
+      "id": "CI-45671814150",
+      "run_id": "45671814150",
+      "repo": "pim-android",
+      "repository": "2746267826/pim-android",
+      "workflow": "CI",
+      "pr": "PR-pim-android-100",
+      "head": "b23fbe89",
+      "conclusion": "failure",
+      "jobs": [
+        "Contract freshness"
+      ],
+      "observed_at": "2026-11-27",
+      "freshness": "stale",
+      "head_is_current": false,
+      "source": "docs/product/pim-delivery-ledger-20261125.md",
+      "notes": "旧台账引用的运行；本次 docs-only 变更未重新触发或查询，不能作为当前 head 的通过证据。"
+    },
+    {
+      "id": "CI-45515208111",
+      "run_id": "45515208111",
+      "repo": "pim-android",
+      "repository": "2746267826/pim-android",
+      "workflow": "CI",
+      "pr": "PR-pim-android-94",
+      "head": "e3e496bc",
+      "conclusion": "success",
+      "jobs": [
+        "CI Gate",
+        "build-android",
+        "Contract freshness"
+      ],
+      "observed_at": "2026-11-27",
+      "freshness": "stale",
+      "head_is_current": false,
+      "source": "docs/product/pim-delivery-ledger-20261125.md",
+      "notes": "旧台账引用的运行；本次 docs-only 变更未重新触发或查询，不能作为当前 head 的通过证据。"
+    },
+    {
+      "id": "CI-45652799869",
+      "run_id": "45652799869",
+      "repo": "pim-windows",
+      "repository": "2746267826/pim-windows",
+      "workflow": "CI",
+      "pr": "PR-pim-windows-59",
+      "head": "70b735a5",
+      "conclusion": "success",
+      "jobs": [
+        "CI Gate",
+        "build-windows",
+        "contract-freshness"
+      ],
+      "observed_at": "2026-11-27",
+      "freshness": "stale",
+      "head_is_current": false,
+      "source": "docs/product/pim-delivery-ledger-20261125.md",
+      "notes": "旧台账引用的运行；本次 docs-only 变更未重新触发或查询，不能作为当前 head 的通过证据。"
+    },
+    {
+      "id": "CI-45511045329",
+      "run_id": "45511045329",
+      "repo": "pim-windows",
+      "repository": "2746267826/pim-windows",
+      "workflow": "CI",
+      "pr": "PR-pim-windows-57",
+      "head": "bd45e21e",
+      "conclusion": "success",
+      "jobs": [
+        "CI Gate",
+        "build-windows"
+      ],
+      "observed_at": "2026-11-27",
+      "freshness": "stale",
+      "head_is_current": false,
+      "source": "docs/product/pim-delivery-ledger-20261125.md",
+      "notes": "旧台账引用的运行；本次 docs-only 变更未重新触发或查询，不能作为当前 head 的通过证据。"
+    }
+  ]
+}

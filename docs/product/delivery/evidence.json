@@ -1,0 +1,2782 @@
+{
+  "schema_version": 1,
+  "evidence": [
+    {
+      "id": "EV-A01-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "Android #96 已合并，但只覆盖权限门禁、新建进编辑页、录音归属选择；完整离线新篇、重接连同身份发布、双端冲突、进程死亡和 OPPO 真机未交付；A01 文案与“新建后手动开录”不一致",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L179",
+      "observed_at": "2026-11-27",
+      "items": [
+        "A01"
+      ],
+      "limits": "边界：WO-A01-FULL。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-A02-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "三端列表仍缺累计录音时长与逐篇上传/转写/整理统一状态；Android #102 仅部分改善且仍 OPEN",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L180",
+      "observed_at": "2026-11-27",
+      "items": [
+        "A02"
+      ],
+      "limits": "边界：WO-A02-LIBRARY。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-A03-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "Android #102 OPEN；A03-07 正文同步写入受当前契约阻塞，OPPO/平板/断网/多窗口未验",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L181",
+      "observed_at": "2026-11-27",
+      "items": [
+        "A03"
+      ],
+      "limits": "边界：WO-A03-BODY-SYNC。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-A04-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "API #600 已合并 API/Web 全文搜索；Android/Windows 未消费，字段级定位和真实浏览器双账号未验",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L182",
+      "observed_at": "2026-11-27",
+      "items": [
+        "A04"
+      ],
+      "limits": "边界：WO-A04-CLIENTS。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-A05-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "契约无笔记 folder/tag/folderId，三端无文件夹/分类/标签模型与入口；Windows 应用知识与分类不能替代",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L183",
+      "observed_at": "2026-11-27",
+      "items": [
+        "A05"
+      ],
+      "limits": "边界：WO-A05-A06-ORG。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-A06-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "契约无 pinned/favorite/pinnedAt，三端无置顶/收藏入口",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L184",
+      "observed_at": "2026-11-27",
+      "items": [
+        "A06"
+      ],
+      "limits": "边界：WO-A05-A06-ORG。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-A07-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "#614 仅 API/Web 四域回收站且 OPEN；Android/Windows 原生回收站、恢复/永久清理未交付",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L185",
+      "observed_at": "2026-11-27",
+      "items": [
+        "A07"
+      ],
+      "limits": "边界：WO-A07-Q03。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-A08-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "Android 平板仍单页编辑；三端均缺“可收起列表 + 共享材料侧栏 + 可调栏宽/偏好”完整实现",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L186",
+      "observed_at": "2026-11-27",
+      "items": [
+        "A08"
+      ],
+      "limits": "边界：WO-A08-A09-WORKSPACE。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-A09-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "三端无笔记多选、批量删除/移动；依赖 A05/A07",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L187",
+      "observed_at": "2026-11-27",
+      "items": [
+        "A09"
+      ],
+      "limits": "边界：WO-A08-A09-WORKSPACE。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-A10-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "空态/加载/错误界面基本存在；Android 读取失败无重试，Windows 空库/错误态较简陋，真实三端状态矩阵未验",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L188",
+      "observed_at": "2026-11-27",
+      "items": [
+        "A10"
+      ],
+      "limits": "边界：WO-A10-ACCEPT。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-B01-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "Android 分段 Tiptap、Web 分段文本框、Windows 单 Markdown 文本框；Markdown 往返和混排测试存在，真实浏览器/设备连续文档未验",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L189",
+      "observed_at": "2026-11-27",
+      "items": [
+        "B01"
+      ],
+      "limits": "边界：WO-B01-04-ACCEPT。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-B02-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "Android 全屏编辑、Windows 三栏、Web 右侧编辑区存在；真实平板/窄窗/分屏正文占比未验",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L190",
+      "observed_at": "2026-11-27",
+      "items": [
+        "B02"
+      ],
+      "limits": "边界：WO-B01-04-ACCEPT。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-B03-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "Android 顶栏无“PIM 笔记”，Web/Windows 标题语义存在；真实 UI 验收未做",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L191",
+      "observed_at": "2026-11-27",
+      "items": [
+        "B03"
+      ],
+      "limits": "边界：WO-B01-04-ACCEPT。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-B04-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "Android 右上悬浮“结束”+确认；Web 仅“保存笔记”；Windows 工具栏“开始录音/停止并保存”；平台适用范围需验收明确",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L192",
+      "observed_at": "2026-11-27",
+      "items": [
+        "B04"
+      ],
+      "limits": "边界：WO-B01-04-ACCEPT。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-B05-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "Android 光标处插入；Web 拍照/相册只追加末尾；Windows 无拍照、只能选文件",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L193",
+      "observed_at": "2026-11-27",
+      "items": [
+        "B05"
+      ],
+      "limits": "边界：WO-B05-B06-MEDIA。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-B06-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "Android 一次只能选 1 张；Web 多选但只追加末尾；Windows 进材料列表而非正文光标",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L194",
+      "observed_at": "2026-11-27",
+      "items": [
+        "B06"
+      ],
+      "limits": "边界：WO-B05-B06-MEDIA。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-B07-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "Android 无大图/删除/裁剪/缩放；Web 只能删未保存新图；Windows 双击系统看图；复制/剪切/粘贴缺失",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L195",
+      "observed_at": "2026-11-27",
+      "items": [
+        "B07"
+      ],
+      "limits": "边界：WO-B07-IMAGE。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-B08-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "Android 有格式工具条；Web/Windows 无同等格式工具栏，只能手打 Markdown",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L196",
+      "observed_at": "2026-11-27",
+      "items": [
+        "B08"
+      ],
+      "limits": "边界：WO-B08-B09-B16-EDITOR。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-B09-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "Android 有叶块+整篇两层但不统一覆盖材料；Web/Windows 仅文本框 Ctrl+Z",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L197",
+      "observed_at": "2026-11-27",
+      "items": [
+        "B09"
+      ],
+      "limits": "边界：WO-B08-B09-B16-EDITOR。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-B10-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "Android 原子写、Windows 700ms 自动保存、Web 内存草稿+离开提示；真实崩溃/刷新恢复未验",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L198",
+      "observed_at": "2026-11-27",
+      "items": [
+        "B10"
+      ],
+      "limits": "边界：WO-B10-12-ACCEPT。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-B11-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "Android 有 IME 组字/回写保护；OPPO 真机输入法、Web/Windows 中文输入未验",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L199",
+      "observed_at": "2026-11-27",
+      "items": [
+        "B11"
+      ],
+      "limits": "边界：WO-B10-12-ACCEPT。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-B12-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "Android/Windows 本机离线，Web 按决议页面缓存+联网保存；真实断网/恢复未验",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L200",
+      "observed_at": "2026-11-27",
+      "items": [
+        "B12"
+      ],
+      "limits": "边界：WO-B10-12-ACCEPT。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-B13-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "Web `note-material-editor.tsx` 的 `editable = !busy` 在保存/上传期间锁整页编辑，与要求不符",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L201",
+      "observed_at": "2026-11-27",
+      "items": [
+        "B13"
+      ],
+      "limits": "边界：WO-B13-WEB-UPLOAD。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-B14-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "Android 有 IME 避让/底部 dock；Web/Windows 无同等 dock；OPPO 真机与桌面布局未验",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L202",
+      "observed_at": "2026-11-27",
+      "items": [
+        "B14"
+      ],
+      "limits": "边界：WO-B14-ACCEPT。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-B15-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "交付包原决议不做 100 分钟长笔记性能验收，仅登记性能风险",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L203",
+      "observed_at": "2026-11-27",
+      "items": [
+        "B15"
+      ],
+      "limits": "边界：不排期。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-B16-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "Android 分段 Tiptap/ProseMirror；Web/Windows 仍是普通文本框，未接成熟编辑器核心",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L204",
+      "observed_at": "2026-11-27",
+      "items": [
+        "B16"
+      ],
+      "limits": "边界：WO-B08-B09-B16-EDITOR。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-C01-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "Android/Windows 手动开始/停止存在，Web 只查看；真实设备开始/结束未验",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L205",
+      "observed_at": "2026-11-27",
+      "items": [
+        "C01"
+      ],
+      "limits": "边界：WO-C-ACCEPT。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-C02-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "Windows 录音服务只有 StartAsync/StopAsync，无暂停/继续；Android 有，交付包确认 Windows 必须补齐",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L206",
+      "observed_at": "2026-11-27",
+      "items": [
+        "C02"
+      ],
+      "limits": "边界：WO-C-WIN-REC。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-C03-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "Android 前台服务+唤醒锁；Windows 进程内单例/最小化继续；OPPO/ColorOS、划除任务、睡眠恢复未验",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L207",
+      "observed_at": "2026-11-27",
+      "items": [
+        "C03"
+      ],
+      "limits": "边界：WO-C-ACCEPT。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-C04-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "Android #89 已合并，但 Android 16 QPR1+ 实况胶囊、锁屏隐私、拒绝权限未真机验",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L208",
+      "observed_at": "2026-11-27",
+      "items": [
+        "C04"
+      ],
+      "limits": "边界：WO-C-ACCEPT。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-C05-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "Android 通知有暂停/继续/结束；Windows 托盘只有开始/停止，无暂停/继续/直接结束",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L209",
+      "observed_at": "2026-11-27",
+      "items": [
+        "C05"
+      ],
+      "limits": "边界：WO-C-WIN-REC。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-C06-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "Android 真实 PCM 波形；Windows 仅累计峰值文字、无波形绘制",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L210",
+      "observed_at": "2026-11-27",
+      "items": [
+        "C06"
+      ],
+      "limits": "边界：WO-C-WIN-REC。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-C07-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "Android 左下悬浮条/宽屏右上/5 秒收起；Windows 仍在顶部工具栏，无悬浮控件",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L211",
+      "observed_at": "2026-11-27",
+      "items": [
+        "C07"
+      ],
+      "limits": "边界：WO-C-WIN-REC。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-C08-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "Android 有“录音 N”分组；Windows 多次录音仍平铺 WAV，无会话身份/录音 N/统一状态",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L212",
+      "observed_at": "2026-11-27",
+      "items": [
+        "C08"
+      ],
+      "limits": "边界：WO-C-WIN-REC。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-C09-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "Android 3 小时内部段；Windows 单 WAV 无上限；服务端未按 `(recordingId, segment)` 累计校验",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L213",
+      "observed_at": "2026-11-27",
+      "items": [
+        "C09"
+      ],
+      "limits": "边界：WO-C-WIN-REC。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-C10-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "Android 到 3 小时自动续段；Windows 无自动续段；服务端无同段累计校验",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L214",
+      "observed_at": "2026-11-27",
+      "items": [
+        "C10"
+      ],
+      "limits": "边界：WO-C-WIN-REC。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-C11-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "Android 按样本计时；Windows 无暂停，Stopwatch 墙上时间无法实现暂停冻结",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L215",
+      "observed_at": "2026-11-27",
+      "items": [
+        "C11"
+      ],
+      "limits": "边界：WO-C-WIN-REC。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-C12-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "#596 仅服务端 Ogg Opus；Android `RecordingModels.kt` 仍 60 秒 WAV 分片，Windows 单 WAV，无客户端 Opus 采集；真实 FFmpeg 用例 skip",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L216",
+      "observed_at": "2026-11-27",
+      "items": [
+        "C12"
+      ],
+      "limits": "边界：WO-C-FORMAT。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-C13-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "Android `START_NOT_STICKY`，无等待麦克风恢复/通话状态/自动重开状态机；Windows 无中断恢复",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L217",
+      "observed_at": "2026-11-27",
+      "items": [
+        "C13"
+      ],
+      "limits": "边界：WO-C-WIN-REC。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-C14-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "保留交付包决议：由 C12 直接采集 Opus/Ogg 取代“结束后合成”，随 C12 验收，不单独立项",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L218",
+      "observed_at": "2026-11-27",
+      "items": [
+        "C14"
+      ],
+      "limits": "边界：随 C12。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-C15-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "Android 结束后可补录；Windows 可再次录音；云端恢复例外、真实设备流程未验",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L219",
+      "observed_at": "2026-11-27",
+      "items": [
+        "C15"
+      ],
+      "limits": "边界：WO-C-ACCEPT。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-C16-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "Android 逐 WAV 播放/停止，无暂停/拖动/倍速；Windows 交系统播放器；Web 无笔记播放器",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L220",
+      "observed_at": "2026-11-27",
+      "items": [
+        "C16"
+      ],
+      "limits": "边界：WO-C-PLAYBACK。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-C17-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "Android 转写片段仅显示时间，点击不跳播；Web 无播放器；Windows 无同等定位",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L221",
+      "observed_at": "2026-11-27",
+      "items": [
+        "C17"
+      ],
+      "limits": "边界：WO-C-PLAYBACK。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-C18-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "Android #96 已补麦克风/通知/渠道/设置入口；Windows 仍无麦克风隐私预检和“打开隐私设置”入口",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L222",
+      "observed_at": "2026-11-27",
+      "items": [
+        "C18"
+      ],
+      "limits": "边界：WO-C-WIN-REC。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-C19-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "Android 开始 64 MiB 门禁，但录音中每 1 秒检查 16 MiB，与“只开始前检查一次”不符；Windows 开始前无空间检查",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L223",
+      "observed_at": "2026-11-27",
+      "items": [
+        "C19"
+      ],
+      "limits": "边界：WO-C19-STORAGE。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-C20-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "契约无 marker/bookmark 字段，无标记 API/通知/托盘入口/时间轴列表",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L224",
+      "observed_at": "2026-11-27",
+      "items": [
+        "C20"
+      ],
+      "limits": "边界：WO-C-PLAYBACK。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-C21-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "保留交付包决议：实时转写暂缓，仅保留本地小模型定义勘误",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L225",
+      "observed_at": "2026-11-27",
+      "items": [
+        "C21"
+      ],
+      "limits": "边界：不排期。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-C22-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "Android 打开笔记可扫描/修复 WAV 并标中断；Windows 无重启扫描/恢复，列表无中断标识",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L226",
+      "observed_at": "2026-11-27",
+      "items": [
+        "C22"
+      ],
+      "limits": "边界：WO-C-WIN-REC。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-CI-45412194523",
+      "type": "ci",
+      "level": "E3",
+      "freshness": "stale",
+      "claim": "pim-api#576 head 84f43d6b run 45412194523 success",
+      "source": "docs/product/pim-delivery-ledger-20261125.md",
+      "observed_at": "2026-11-27",
+      "items": [
+        "R04"
+      ],
+      "ci_run": "CI-45412194523",
+      "limits": "CI 不是真实用户流程验收；旧 head/旧 run 不证明当前 head。"
+    },
+    {
+      "id": "EV-CI-45507678632",
+      "type": "ci",
+      "level": "E3",
+      "freshness": "stale",
+      "claim": "pim-api#588 head 5e2768d7 run 45507678632 success",
+      "source": "docs/product/pim-delivery-ledger-20261125.md",
+      "observed_at": "2026-11-27",
+      "items": [
+        "R01"
+      ],
+      "ci_run": "CI-45507678632",
+      "limits": "CI 不是真实用户流程验收；旧 head/旧 run 不证明当前 head。"
+    },
+    {
+      "id": "EV-CI-45511045329",
+      "type": "ci",
+      "level": "E3",
+      "freshness": "stale",
+      "claim": "pim-windows#57 head bd45e21e run 45511045329 success",
+      "source": "docs/product/pim-delivery-ledger-20261125.md",
+      "observed_at": "2026-11-27",
+      "items": [
+        "R04"
+      ],
+      "ci_run": "CI-45511045329",
+      "limits": "CI 不是真实用户流程验收；旧 head/旧 run 不证明当前 head。"
+    },
+    {
+      "id": "EV-CI-45515208111",
+      "type": "ci",
+      "level": "E3",
+      "freshness": "stale",
+      "claim": "pim-android#94 head e3e496bc run 45515208111 success",
+      "source": "docs/product/pim-delivery-ledger-20261125.md",
+      "observed_at": "2026-11-27",
+      "items": [
+        "R04"
+      ],
+      "ci_run": "CI-45515208111",
+      "limits": "CI 不是真实用户流程验收；旧 head/旧 run 不证明当前 head。"
+    },
+    {
+      "id": "EV-CI-45630816563",
+      "type": "ci",
+      "level": "E3",
+      "freshness": "stale",
+      "claim": "pim-api#604 head 033f3a5f run 45630816563 success",
+      "source": "docs/product/pim-delivery-ledger-20261125.md",
+      "observed_at": "2026-11-27",
+      "items": [
+        "S01"
+      ],
+      "ci_run": "CI-45630816563",
+      "limits": "CI 不是真实用户流程验收；旧 head/旧 run 不证明当前 head。"
+    },
+    {
+      "id": "EV-CI-45640493402",
+      "type": "ci",
+      "level": "E3",
+      "freshness": "stale",
+      "claim": "pim-api#589 head 743a77ac run 45640493402 success",
+      "source": "docs/product/pim-delivery-ledger-20261125.md",
+      "observed_at": "2026-11-27",
+      "items": [
+        "I03",
+        "I04",
+        "S01"
+      ],
+      "ci_run": "CI-45640493402",
+      "limits": "CI 不是真实用户流程验收；旧 head/旧 run 不证明当前 head。"
+    },
+    {
+      "id": "EV-CI-45652799869",
+      "type": "ci",
+      "level": "E3",
+      "freshness": "stale",
+      "claim": "pim-windows#59 head 70b735a5 run 45652799869 success",
+      "source": "docs/product/pim-delivery-ledger-20261125.md",
+      "observed_at": "2026-11-27",
+      "items": [
+        "M06"
+      ],
+      "ci_run": "CI-45652799869",
+      "limits": "CI 不是真实用户流程验收；旧 head/旧 run 不证明当前 head。"
+    },
+    {
+      "id": "EV-CI-45653708869",
+      "type": "ci",
+      "level": "E3",
+      "freshness": "stale",
+      "claim": "pim-api#589 head 05552e84 run 45653708869 success",
+      "source": "docs/product/pim-delivery-ledger-20261125.md",
+      "observed_at": "2026-11-27",
+      "items": [
+        "I03",
+        "I04",
+        "S01"
+      ],
+      "ci_run": "CI-45653708869",
+      "limits": "CI 不是真实用户流程验收；旧 head/旧 run 不证明当前 head。"
+    },
+    {
+      "id": "EV-CI-45662774385",
+      "type": "ci",
+      "level": "E3",
+      "freshness": "stale",
+      "claim": "pim-api#600 head a3b6b568 run 45662774385 success",
+      "source": "docs/product/pim-delivery-ledger-20261125.md",
+      "observed_at": "2026-11-27",
+      "items": [
+        "A04",
+        "Q08"
+      ],
+      "ci_run": "CI-45662774385",
+      "limits": "CI 不是真实用户流程验收；旧 head/旧 run 不证明当前 head。"
+    },
+    {
+      "id": "EV-CI-45664309218",
+      "type": "ci",
+      "level": "E3",
+      "freshness": "stale",
+      "claim": "pim-api#594 head d3a55ceb run 45664309218 success",
+      "source": "docs/product/pim-delivery-ledger-20261125.md",
+      "observed_at": "2026-11-27",
+      "items": [
+        "D04"
+      ],
+      "ci_run": "CI-45664309218",
+      "limits": "CI 不是真实用户流程验收；旧 head/旧 run 不证明当前 head。"
+    },
+    {
+      "id": "EV-CI-45671814150",
+      "type": "ci",
+      "level": "E3",
+      "freshness": "stale",
+      "claim": "pim-android#100 head b23fbe89 run 45671814150 failure",
+      "source": "docs/product/pim-delivery-ledger-20261125.md",
+      "observed_at": "2026-11-27",
+      "items": [
+        "I02",
+        "I03",
+        "I04"
+      ],
+      "ci_run": "CI-45671814150",
+      "limits": "CI 不是真实用户流程验收；旧 head/旧 run 不证明当前 head。"
+    },
+    {
+      "id": "EV-CI-45750942089",
+      "type": "ci",
+      "level": "E3",
+      "freshness": "stale",
+      "claim": "pim-api#597 head bcee101f run 45750942089 success",
+      "source": "docs/product/pim-delivery-ledger-20261125.md",
+      "observed_at": "2026-11-27",
+      "items": [
+        "Z01"
+      ],
+      "ci_run": "CI-45750942089",
+      "limits": "CI 不是真实用户流程验收；旧 head/旧 run 不证明当前 head。"
+    },
+    {
+      "id": "EV-CI-45835093386",
+      "type": "ci",
+      "level": "E3",
+      "freshness": "stale",
+      "claim": "pim-api#617 head 95568663 run 45835093386 success",
+      "source": "docs/product/pim-delivery-ledger-20261125.md",
+      "observed_at": "2026-11-27",
+      "items": [
+        "J01",
+        "J05",
+        "J06",
+        "J08"
+      ],
+      "ci_run": "CI-45835093386",
+      "limits": "CI 不是真实用户流程验收；旧 head/旧 run 不证明当前 head。"
+    },
+    {
+      "id": "EV-CI-45841606243",
+      "type": "ci",
+      "level": "E3",
+      "freshness": "stale",
+      "claim": "pim-api#607 head cfd4f573 run 45841606243 success",
+      "source": "docs/product/pim-delivery-ledger-20261125.md",
+      "observed_at": "2026-11-27",
+      "items": [
+        "Q04"
+      ],
+      "ci_run": "CI-45841606243",
+      "limits": "CI 不是真实用户流程验收；旧 head/旧 run 不证明当前 head。"
+    },
+    {
+      "id": "EV-CI-45848909302",
+      "type": "ci",
+      "level": "E3",
+      "freshness": "stale",
+      "claim": "pim-api#590 head 0e6262f2 run 45848909302 success",
+      "source": "docs/product/pim-delivery-ledger-20261125.md",
+      "observed_at": "2026-11-27",
+      "items": [
+        "J03",
+        "J04",
+        "J09"
+      ],
+      "ci_run": "CI-45848909302",
+      "limits": "CI 不是真实用户流程验收；旧 head/旧 run 不证明当前 head。"
+    },
+    {
+      "id": "EV-CI-45850989877",
+      "type": "ci",
+      "level": "E3",
+      "freshness": "stale",
+      "claim": "pim-api#596 head 3594289e run 45850989877 success",
+      "source": "docs/product/pim-delivery-ledger-20261125.md",
+      "observed_at": "2026-11-27",
+      "items": [
+        "C12",
+        "G13"
+      ],
+      "ci_run": "CI-45850989877",
+      "limits": "CI 不是真实用户流程验收；旧 head/旧 run 不证明当前 head。"
+    },
+    {
+      "id": "EV-CI-45856428856",
+      "type": "ci",
+      "level": "E3",
+      "freshness": "stale",
+      "claim": "pim-api#602 head 65d1d2b5 run 45856428856 success",
+      "source": "docs/product/pim-delivery-ledger-20261125.md",
+      "observed_at": "2026-11-27",
+      "items": [
+        "P05"
+      ],
+      "ci_run": "CI-45856428856",
+      "limits": "CI 不是真实用户流程验收；旧 head/旧 run 不证明当前 head。"
+    },
+    {
+      "id": "EV-CI-45857319607",
+      "type": "ci",
+      "level": "E3",
+      "freshness": "stale",
+      "claim": "pim-api#612 head f12c4c23 run 45857319607 success",
+      "source": "docs/product/pim-delivery-ledger-20261125.md",
+      "observed_at": "2026-11-27",
+      "items": [
+        "H03"
+      ],
+      "ci_run": "CI-45857319607",
+      "limits": "CI 不是真实用户流程验收；旧 head/旧 run 不证明当前 head。"
+    },
+    {
+      "id": "EV-CI-45863519886",
+      "type": "ci",
+      "level": "E3",
+      "freshness": "stale",
+      "claim": "pim-api#614 head e1c15b99 run 45863519886 success",
+      "source": "docs/product/pim-delivery-ledger-20261125.md",
+      "observed_at": "2026-11-27",
+      "items": [
+        "A07",
+        "Q03"
+      ],
+      "ci_run": "CI-45863519886",
+      "limits": "CI 不是真实用户流程验收；旧 head/旧 run 不证明当前 head。"
+    },
+    {
+      "id": "EV-CI-45867495126",
+      "type": "ci",
+      "level": "E3",
+      "freshness": "stale",
+      "claim": "pim-api#615 head 9d7af01d run 45867495126 success",
+      "source": "docs/product/pim-delivery-ledger-20261125.md",
+      "observed_at": "2026-11-27",
+      "items": [
+        "R03"
+      ],
+      "ci_run": "CI-45867495126",
+      "limits": "CI 不是真实用户流程验收；旧 head/旧 run 不证明当前 head。"
+    },
+    {
+      "id": "EV-CI-45881012067",
+      "type": "ci",
+      "level": "E3",
+      "freshness": "stale",
+      "claim": "pim-api#613 head add843e9 run 45881012067 success",
+      "source": "docs/product/pim-delivery-ledger-20261125.md",
+      "observed_at": "2026-11-27",
+      "items": [
+        "R05"
+      ],
+      "ci_run": "CI-45881012067",
+      "limits": "CI 不是真实用户流程验收；旧 head/旧 run 不证明当前 head。"
+    },
+    {
+      "id": "EV-CI-45926319904",
+      "type": "ci",
+      "level": "E3",
+      "freshness": "stale",
+      "claim": "pim-api#616 head e5de6753 run 45926319904 success",
+      "source": "docs/product/pim-delivery-ledger-20261125.md",
+      "observed_at": "2026-11-27",
+      "items": [
+        "H08",
+        "Q06"
+      ],
+      "ci_run": "CI-45926319904",
+      "limits": "CI 不是真实用户流程验收；旧 head/旧 run 不证明当前 head。"
+    },
+    {
+      "id": "EV-D01-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "Android 正文内手写块已有；Web 仍追加末尾；Windows 进材料列表；三端端到端未验",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L232",
+      "observed_at": "2026-11-27",
+      "items": [
+        "D01"
+      ],
+      "limits": "边界：WO-D01-WEB-WIN-INLINE。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-D02-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "Android 尺寸拖拽/缩放保护；Web 固定 320×240；Windows 固定窗口；真实触摸/笔未验",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L233",
+      "observed_at": "2026-11-27",
+      "items": [
+        "D02"
+      ],
+      "limits": "边界：WO-D02-RESIZE。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-D03-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "Android #97 已进 master，发布包在合并后生成；未安装 APK、未在真机确认手写入口",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L234",
+      "observed_at": "2026-11-27",
+      "items": [
+        "D03"
+      ],
+      "limits": "边界：WO-D03-RELEASE-APK。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-D04-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "#594/#97 已合并；Windows 只有画笔/选择/撤销/粘贴/删除/清除，无颜色/粗细/橡皮；Web 已保存 `sha256` 块不可再编辑",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L235",
+      "observed_at": "2026-11-27",
+      "items": [
+        "D04"
+      ],
+      "limits": "边界：WO-D04-WINDOWS-TOOLS、WO-D04-WEB-REEDIT、WO-D04-CROSS-END-E2E。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-D05-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "Android 存压力但绘制只用固定 `stroke.width`，仅手动 stylusOnly；Web 只存压力；Windows 依赖 InkCanvas 默认",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L236",
+      "observed_at": "2026-11-27",
+      "items": [
+        "D05"
+      ],
+      "limits": "边界：WO-D05-PRESSURE-PALM。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-D06-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "Android/Windows 可重开并编辑原始笔迹；Web 已保存手写块不可编辑，与 D04 同根因",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L237",
+      "observed_at": "2026-11-27",
+      "items": [
+        "D06"
+      ],
+      "limits": "边界：WO-D06-WEB-REEDIT。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-D07-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "API 已把手写 PNG 作为 `InkPreview` 进入视觉批次；真实视觉 provider 质量/费用/失败恢复未验",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L238",
+      "observed_at": "2026-11-27",
+      "items": [
+        "D07"
+      ],
+      "limits": "边界：WO-D07-VISION-PROVIDER。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-D08-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "Windows #52 已合并鼠标绘制/选择/整组移动/撤销重做/复制粘贴/删除；真实桌面、DPI、多屏、托盘未验",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L239",
+      "observed_at": "2026-11-27",
+      "items": [
+        "D08"
+      ],
+      "limits": "边界：WO-D08-WINDOWS-DESKTOP。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-DEC-B15",
+      "type": "decision",
+      "level": "E0",
+      "freshness": "current",
+      "claim": "不做 100 分钟长笔记性能验收，仅登记性能风险。",
+      "source": "PIM功能确认-最终交付-20261122/01-讨论记录/B08-B16-编辑器基础能力.md",
+      "observed_at": "2026-11-22",
+      "items": [
+        "B15"
+      ],
+      "limits": "范围决议不是实现或真实验收证据。"
+    },
+    {
+      "id": "EV-DEC-C14",
+      "type": "decision",
+      "level": "E0",
+      "freshness": "current",
+      "claim": "由 C12 直接采集 Opus/Ogg 取代结束后 WAV 合成，随 C12 验收。",
+      "source": "PIM功能确认-最终交付-20261122/01-讨论记录/C12-压缩录音格式与处理链路.md",
+      "observed_at": "2026-11-22",
+      "items": [
+        "C14"
+      ],
+      "limits": "范围决议不是实现或真实验收证据。"
+    },
+    {
+      "id": "EV-DEC-C21",
+      "type": "decision",
+      "level": "E0",
+      "freshness": "current",
+      "claim": "实时转写暂缓，仅保留本地小模型定义勘误。",
+      "source": "PIM功能确认-最终交付-20261122/01-讨论记录/C21-实时转写.md",
+      "observed_at": "2026-11-22",
+      "items": [
+        "C21"
+      ],
+      "limits": "范围决议不是实现或真实验收证据。"
+    },
+    {
+      "id": "EV-DEC-E03",
+      "type": "decision",
+      "level": "E0",
+      "freshness": "current",
+      "claim": "不做通用 PDF/文档附件，仅保留 Markdown、照片、手写和录音。",
+      "source": "PIM功能确认-最终交付-20261122/01-讨论记录/E03-文档附件.md",
+      "observed_at": "2026-11-22",
+      "items": [
+        "E03"
+      ],
+      "limits": "范围决议不是实现或真实验收证据。"
+    },
+    {
+      "id": "EV-DEC-MIGRATION-STRUCTURE",
+      "type": "decision",
+      "level": "E0",
+      "freshness": "current",
+      "claim": "把 2026-11-25 文本台账迁移为结构化源；旧证据保持 stale，不重新认定为当前通过。",
+      "source": "docs/product/pim-delivery-ledger-20261125.md",
+      "observed_at": "2026-11-22",
+      "items": [],
+      "limits": "迁移记录只说明来源转换。"
+    },
+    {
+      "id": "EV-DEC-O04",
+      "type": "decision",
+      "level": "E0",
+      "freshness": "current",
+      "claim": "跳过 OPPO 笔记动画和字体采用，原素材清单移出接入计划。",
+      "source": "PIM功能确认-最终交付-20261122/01-讨论记录/O03-Android视觉组件接入.md",
+      "observed_at": "2026-11-22",
+      "items": [
+        "O04"
+      ],
+      "limits": "范围决议不是实现或真实验收证据。"
+    },
+    {
+      "id": "EV-DEC-Q01",
+      "type": "decision",
+      "level": "E0",
+      "freshness": "current",
+      "claim": "Q01 平台范围与验收口径未确认，保持 BLOCKED。",
+      "source": "PIM功能确认-最终交付-20261122/README.md",
+      "observed_at": "2026-11-22",
+      "items": [
+        "Q01"
+      ],
+      "limits": "待裁决，不构成批准。"
+    },
+    {
+      "id": "EV-DEC-Q02",
+      "type": "decision",
+      "level": "E0",
+      "freshness": "current",
+      "claim": "当前不做全量备份与导出，Kopia 仅保留为早期文件基础能力。",
+      "source": "PIM功能确认-最终交付-20261122/01-讨论记录/Q02-全量备份与导出.md",
+      "observed_at": "2026-11-22",
+      "items": [
+        "Q02"
+      ],
+      "limits": "范围决议不是实现或真实验收证据。"
+    },
+    {
+      "id": "EV-DEC-Q07",
+      "type": "decision",
+      "level": "E0",
+      "freshness": "current",
+      "claim": "Conflict 终态清理语义需用户裁决，保持 BLOCKED。",
+      "source": "PIM功能确认-最终交付-20261122/01-讨论记录/Q07-本地缓存清理.md",
+      "observed_at": "2026-11-22",
+      "items": [
+        "Q07"
+      ],
+      "limits": "待裁决，不构成批准。"
+    },
+    {
+      "id": "EV-DEC-R05-AC05",
+      "type": "decision",
+      "level": "E0",
+      "freshness": "current",
+      "claim": "R05 永久身份墓碑容量策略未获产品/运营批准，AC-05 保持 BLOCKED。",
+      "source": "docs/product/pim-delivery-ledger-20261125.md",
+      "observed_at": "2026-11-22",
+      "items": [],
+      "limits": "待裁决，不构成批准。"
+    },
+    {
+      "id": "EV-E01-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "笔记二进制用 `ManagedBinaryStore.NoteParts` 分块，ZIP 下载时组装；没有稳定成员路径的完整 ZIP 持久化和在线成员写 API",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L240",
+      "observed_at": "2026-11-27",
+      "items": [
+        "E01"
+      ],
+      "limits": "边界：WO-E01-NOTE-FS-ZIP。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-E02-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "Android 笔记库仍内联 `NoteUploadJobs`；#102 才把完整上传记录收进“更多”，尚未合并且契约陈旧",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L241",
+      "observed_at": "2026-11-27",
+      "items": [
+        "E02"
+      ],
+      "limits": "边界：WO-E02-MERGE-102。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-E03-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "用户明确不做 PDF/通用文档附件，只保留 Markdown、照片、手写、录音",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L242",
+      "observed_at": "2026-11-27",
+      "items": [
+        "E03"
+      ],
+      "limits": "边界：不排期。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-F01-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "新确认要求在线成员同步 + 封口 Ogg 自动上传；当前 API 只有固定版本上传，Android 仍整版冻结+旧持续授权，Windows 手动上传",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L243",
+      "observed_at": "2026-11-27",
+      "items": [
+        "F01"
+      ],
+      "limits": "边界：WO-F01-F02-ONLINE-MEMBERS。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-F02-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "F02 已并入 F01/C12；Android 仍是可撤销的整版自动提交，Windows 无自动队列，不是封口 Ogg 自动上传",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L244",
+      "observed_at": "2026-11-27",
+      "items": [
+        "F02"
+      ],
+      "limits": "边界：WO-F01-F02-ONLINE-MEMBERS。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-F03-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "上传成功不清理本机；Android 仍写“暂无自动清理”；Windows 保留全部材料；Web 无持久副本；Conflict 终态待 Q07",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L245",
+      "observed_at": "2026-11-27",
+      "items": [
+        "F03"
+      ],
+      "limits": "边界：WO-F03-CLEANUP-UPLOADED、WO-Q07-CONFLICT-DECISION。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-F04-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "Android 有 9 次退避/暂停后手动继续，但队列单位仍是整版；Windows 无自动队列；Ogg 断网续传未接入",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L246",
+      "observed_at": "2026-11-27",
+      "items": [
+        "F04"
+      ],
+      "limits": "边界：WO-F04-OFFLINE-QUEUE。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-F05-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "服务端 1 MiB 分块/断点续传，三端跳过已收块已有实现；真实大文件/弱网/重启续传未验",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L247",
+      "observed_at": "2026-11-27",
+      "items": [
+        "F05"
+      ],
+      "limits": "边界：WO-F05-TRANSFER-E2E。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-F06-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "#82 已在材料版本页接入服务器 ASR/整理状态；Android 笔记库仍 `showProcessingStatuses=false`，无单篇三状态；#102 未合并",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L248",
+      "observed_at": "2026-11-27",
+      "items": [
+        "F06"
+      ],
+      "limits": "边界：WO-F06-STATUS-UX。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-F07-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "Android WorkManager 可离开页面；Windows 上传在窗口内等待；Web 用 AbortController 中断，关闭/离开不保留队列",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L249",
+      "observed_at": "2026-11-27",
+      "items": [
+        "F07"
+      ],
+      "limits": "边界：WO-F07-BACKGROUND-UPLOAD。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-F08-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "Android 打开云端笔记会下载成本机副本；Windows 服务器来源只读；Web 笔记页无 Ogg 播放器",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L250",
+      "observed_at": "2026-11-27",
+      "items": [
+        "F08"
+      ],
+      "limits": "边界：WO-F08-ONLINE-SAME-NOTE。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-F09-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "版本级冲突选择已具备：Android 冲突面板、Web 比较、Windows 设为云端当前版本；文字块级合并、不同 ID 材料自动合并、媒体冲突选择仍缺",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L251",
+      "observed_at": "2026-11-27",
+      "items": [
+        "F09"
+      ],
+      "limits": "边界：WO-F09-BLOCK-MERGE。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-F10-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "用户已确认不做 Wi-Fi-only；Android 上传约束为 CONNECTED；自动 Ogg 队列未闭环，信息性流量估算 UI 未做",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L252",
+      "observed_at": "2026-11-27",
+      "items": [
+        "F10"
+      ],
+      "limits": "边界：WO-F10-NETWORK-COPY。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-F11-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "三端已有失败原因与重试；确认的后台汇总通知 `uploads.attention_digest` 未实现，依赖 Q06 扩展通知类别",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L253",
+      "observed_at": "2026-11-27",
+      "items": [
+        "F11"
+      ],
+      "limits": "边界：WO-F11-ATTENTION-NOTIFY。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-G01-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "master 已有材料完成后自动触发和补偿扫描；在没有原始音频白名单时，含录音的整理仍 `waitForAsr`；真实 provider、Hangfire 与客户端状态闭环未验，#620 持续授权待决",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L259",
+      "observed_at": "2026-11-27",
+      "items": [
+        "G01"
+      ],
+      "limits": "边界：WO-G01-AUTO-PROCESSING-E2E。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-G02-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "Web 平铺“第 N 片”、每页 10 片；Android 按录音分组但组内仍是内部片卡片；Windows 无逐段转写视图",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L260",
+      "observed_at": "2026-11-27",
+      "items": [
+        "G02"
+      ],
+      "limits": "边界：WO-G02-H-G-UX。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-G03-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "后端有 ASR 预设注册表和 MiMo ASR/多模态预设；Web 可选内置预设，新增厂商仍需写 C# 并注册；真实 MiMo 未验",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L261",
+      "observed_at": "2026-11-27",
+      "items": [
+        "G03"
+      ],
+      "limits": "边界：WO-G03-G05-PROVIDER。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-G04-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "`AllowUnverifiedAudioBatch` 默认 false，`NoteAsrBatchService` 提交前直接拒绝；真实 Batch 上游、24 小时窗口、计费/失败恢复未验",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L262",
+      "observed_at": "2026-11-27",
+      "items": [
+        "G04"
+      ],
+      "limits": "边界：WO-G03-G05-PROVIDER。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-G05-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "Web 已有 ASR 配置、默认模型、执行位置、Batch 监控和本机节点入口；真实 Test API + provider 保存/调用/错误恢复未验",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L263",
+      "observed_at": "2026-11-27",
+      "items": [
+        "G05"
+      ],
+      "limits": "边界：WO-G03-G05-PROVIDER。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-G06-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "只有进程级固定闸门普通 4、视觉 2、ASR 2；模型 DTO、Web 编辑器、Windows 节点均无 provider 级并发配置或跨实例共享配额",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L264",
+      "observed_at": "2026-11-27",
+      "items": [
+        "G06"
+      ],
+      "limits": "边界：WO-G06-PROVIDER-CONCURRENCY。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-G07-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "重试接口拒绝 Succeeded/Running，只恢复失败/未知/排队片；没有成功片质量重试、费用确认和修订幂等",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L265",
+      "observed_at": "2026-11-27",
+      "items": [
+        "G07"
+      ],
+      "limits": "边界：WO-G07-QUALITY-RETRY。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-G08-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "未找到“标为无内容/课间”“撤销标记”的字段、接口或三端按钮；空文字仍按失败/未完成处理",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L266",
+      "observed_at": "2026-11-27",
+      "items": [
+        "G08"
+      ],
+      "limits": "边界：WO-G08-NO-CONTENT。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-G09-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "`NoteAsrSegmentDto` 只有片级偏移和整段 Transcript，没有句级时间戳；Web 诊断解析不等于正式转写时间轴",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L267",
+      "observed_at": "2026-11-27",
+      "items": [
+        "G09"
+      ],
+      "limits": "边界：WO-G09-G10-TRANSCRIPT-DTO。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-G10-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "正式 ASR DTO 无 speaker 字段，无跨片说话人身份、改名或合并；miMo-asr 预设未启用说话人分离",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L268",
+      "observed_at": "2026-11-27",
+      "items": [
+        "G10"
+      ],
+      "limits": "边界：WO-G09-G10-TRANSCRIPT-DTO。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-G11-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "单片失败可恢复，Web/Android 有失败片选择和恢复回执；单片失败会停住后续片，Windows 片段级恢复缺失，真实 provider 失败未验",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L269",
+      "observed_at": "2026-11-27",
+      "items": [
+        "G11"
+      ],
+      "limits": "边界：WO-G11-RECOVERY-E2E。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-G12-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "转写 API 无修改文字接口，Web/Android 只读展示；可编辑的是后续整理结果，不是转写稿",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L270",
+      "observed_at": "2026-11-27",
+      "items": [
+        "G12"
+      ],
+      "limits": "边界：WO-G12-TRANSCRIPT-EDIT。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-G13-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "服务端仍约 60 秒逻辑片、自适应最多 6 层/31 次调用；#596 只增加 Ogg Opus 服务端边界，未隐藏内部片，真实 Opus 解码 skip",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L271",
+      "observed_at": "2026-11-27",
+      "items": [
+        "G13"
+      ],
+      "limits": "边界：WO-C-FORMAT、WO-G13-CONTINUOUS。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-H01-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "master 派生计划生成“完整记录 + 独立分析”，自动处理会创建整理任务；在没有原始音频白名单时，有录音的整理先等 ASR；真实模型、自动完成、结果可见性未验，#620 待决",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L272",
+      "observed_at": "2026-11-27",
+      "items": [
+        "H01"
+      ],
+      "limits": "边界：WO-H01-AUTO-DERIVED-E2E。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-H02-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "未发现速览图、思维导图或类似可视化 artifact/UI；结果仍是 Markdown 文本",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L273",
+      "observed_at": "2026-11-27",
+      "items": [
+        "H02"
+      ],
+      "limits": "边界：WO-H02-VISUAL-SUMMARY。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-H03-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "#583 已合并最小原始音频上下文，默认白名单为空；长音频分批/预算/失败恢复只在 OPEN 的 #612；真实多模态、Hangfire、PG 行锁、三端未验",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L274",
+      "observed_at": "2026-11-27",
+      "items": [
+        "H03"
+      ],
+      "limits": "边界：WO-H03-LONG-AUDIO。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-H04-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "正文/照片/手写预览参与整理，但仅 PNG/JPEG；单图 ≤4 MiB、每批 ≤4 张/8 MiB、总量 ≤32 张/8 批；无 WebP 转码/方向校正",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L275",
+      "observed_at": "2026-11-27",
+      "items": [
+        "H04"
+      ],
+      "limits": "边界：WO-H04-IMAGE-ADAPT。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-H05-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "提示词没有生成/应用标题要求；标题只作为输入，结果不更新笔记标题",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L276",
+      "observed_at": "2026-11-27",
+      "items": [
+        "H05"
+      ],
+      "limits": "边界：WO-H05-TITLE。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-H06-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "有人工修订、版本选择、head 和“再次生成作为候选追加”基础；首次结果不自动成 head，真实三端修改/重生成未验",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L277",
+      "observed_at": "2026-11-27",
+      "items": [
+        "H06"
+      ],
+      "limits": "边界：WO-H06-DERIVED-PROVENANCE。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-H07-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "没有“读取最新确认稿并创建本次更新整理”的统一入口；Android“重新生成”仍用旧材料版本",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L278",
+      "observed_at": "2026-11-27",
+      "items": [
+        "H07"
+      ],
+      "limits": "边界：WO-H07-UPDATE-DERIVED。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-H08-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "Web 运行中每 5 秒刷新，Android 主要手动，Windows 明确刷新；#616 仅提供通知基础且 OPEN，FCM/WNS 未实现",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L279",
+      "observed_at": "2026-11-27",
+      "items": [
+        "H08"
+      ],
+      "limits": "边界：WO-H08-NOTIFY。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-H09-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "整理提示词硬编码“教材笔记”，请求无课堂/会议模板或整理偏好参数",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L280",
+      "observed_at": "2026-11-27",
+      "items": [
+        "H09"
+      ],
+      "limits": "边界：WO-H09-TEMPLATES。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-H10-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "三端都无整理结果导出/分享；Android/Windows 的“导出”只导出材料/文档包",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L281",
+      "observed_at": "2026-11-27",
+      "items": [
+        "H10"
+      ],
+      "limits": "边界：WO-H10-EXPORT。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-H11-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "后端会读所选固定版本的全部录音/全文/图片，但转写绑定材料版本，不能跨版本复用；Android 重新生成仍用旧版本",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L282",
+      "observed_at": "2026-11-27",
+      "items": [
+        "H11"
+      ],
+      "limits": "边界：WO-H11-LATEST-CONTEXT。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-I01-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "当前是独立文本模型提取，最多 10 条，来源为整理结果而非 H02 要求的多模态总结推荐卡；拆成另一次调用并放在独立面板",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L288",
+      "observed_at": "2026-11-27",
+      "items": [
+        "I01"
+      ],
+      "limits": "边界：WO-I01-INLINE-SUGGESTION。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-I02-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "API/Web 已有编辑、确认回执、任务创建、来源幂等；Android #100 已合入但 master 契约红，Windows #62 未合并；真实三端未验",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L289",
+      "observed_at": "2026-11-27",
+      "items": [
+        "I02"
+      ],
+      "limits": "边界：WO-I02-I04-CLIENTS。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-I03-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "API/Web 已有 Event、start/end、IANA 时区、默认日历、eventId 回执与重放；Android #100 编译受 #93 search 类型阻断，Windows #62 OPEN",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L290",
+      "observed_at": "2026-11-27",
+      "items": [
+        "I03"
+      ],
+      "limits": "边界：WO-I03-I04-CLIENTS。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-I04-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "API 有 note 级锁、确认幂等、已确认重放、同版本提取去重和对象指纹；未覆盖可靠同事项/可能重复/关联已有/另建完整交互，客户端未绿",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L291",
+      "observed_at": "2026-11-27",
+      "items": [
+        "I04"
+      ],
+      "limits": "边界：WO-I03-I04-CLIENTS。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-J01-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "文字/视觉/普通 ASR 已走 MEAI + OpenAI .NET SDK；MiMo 多模态和 Batch 仍手拼 JSON/自建 HttpClient；#617 未迁移这两条路径",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L292",
+      "observed_at": "2026-11-27",
+      "items": [
+        "J01"
+      ],
+      "limits": "边界：WO-J01-SDK-ADAPTER。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-J02-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "master 有 Web AI 设置、Text/Vision/Transcription 默认、能力声明、最多 64 个模型、ASR 预设和管理员权限；真实管理员浏览器未验",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L293",
+      "observed_at": "2026-11-27",
+      "items": [
+        "J02"
+      ],
+      "limits": "边界：WO-J02-ADMIN-BROWSER。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-J03-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "多数文字/视觉/ASR 调用保存实际请求与回复；MiMo Batch 不写通用 `ai_request_logs`；#590 只增 Batch 父级审计，无逐项/原始批次/保留期清理",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L294",
+      "observed_at": "2026-11-27",
+      "items": [
+        "J03"
+      ],
+      "limits": "边界：WO-J03-BATCH-AUDIT。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-J04-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "`AiUsageService` 只查 `AiRequestLogs`；Web 不传时间范围，Batch 未逐项纳入，blocked 计入记录数，成功率/平均耗时混合口径，跨币种直接求和；#590 未改统计",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L295",
+      "observed_at": "2026-11-27",
+      "items": [
+        "J04"
+      ],
+      "limits": "边界：WO-J04-USAGE-STATS。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-J05-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "master 仍有 AiGateway、旧 AiChatClientFactory/ProviderHealth、`/api/v1/ai/test`、`/health-check`、开发和生产 compose 的 LiteLLM 配置；#617 清理但 OPEN",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L296",
+      "observed_at": "2026-11-27",
+      "items": [
+        "J05"
+      ],
+      "limits": "边界：WO-J05-LITELLM-REMOVAL。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-J06-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "master 只有 Text/Vision/Transcription 默认；#617 新增用途默认但 OPEN；#620 截至 2026-11-27 16:50 Asia/Shanghai（08:50Z）head `b884f3ec`，run `45967984281` 仍在进行；此前 head `225834fa`/`45965628196` 与 `3235ec37`/`45963742316` 均为 failure（shard-5、`CI Gate`），且与 #617 重叠；真实自动处理默认未验",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L297",
+      "observed_at": "2026-11-27",
+      "items": [
+        "J06"
+      ],
+      "limits": "边界：WO-J06-PURPOSE-DEFAULTS、WO-Z02-CONSENT-E2E。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-J07-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "已有 DataProtection、hasApiKey、密码框不回显、主地址变更重填；Batch 地址变更不要求重填 Key，Batch 结果/异常未统一遮盖，ASR 原始正文可绕过遮盖，远端 HTTP 仍允许",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L298",
+      "observed_at": "2026-11-27",
+      "items": [
+        "J07"
+      ],
+      "limits": "边界：WO-J07-SECRET-BOUNDARY。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-J08-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "master 只有旧 `/api/v1/ai/test` 和 `/health-check`，没有按已保存 revision 的测试入口；#617 新增但 OPEN，仍无 Batch/音频理解探测和真实 provider/管理员浏览器",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L299",
+      "observed_at": "2026-11-27",
+      "items": [
+        "J08"
+      ],
+      "limits": "边界：WO-J08-CONNECTION-TEST。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-J09-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "#585 已合并连接级 Token 累计/周期/提醒/已读；#590 将费用上限降级为 unsupported，只保留 Token 上限，无可信实际/估算费用来源",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L300",
+      "observed_at": "2026-11-27",
+      "items": [
+        "J09"
+      ],
+      "limits": "边界：WO-J09-USAGE-COST。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-K01-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "有内置服务器存储、云盘回退、默认云盘、20 GiB/10 万对象和 Web 文件页；当前 head 无真实浏览器+隔离 PG 完整 E2E",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L306",
+      "observed_at": "2026-11-27",
+      "items": [
+        "K01"
+      ],
+      "limits": "边界：WO-K01-FILES-E2E。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-K02-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "OneDrive 设备码、Google OAuth 代码存在；正式生产 compose 未传 Google client ID/secret，默认回调仍是 `home.hsww.party:15858`；真实 OAuth 未验",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L307",
+      "observed_at": "2026-11-27",
+      "items": [
+        "K02"
+      ],
+      "limits": "边界：WO-K02-CLOUD-OAUTH-CONFIG。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-K03-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "Web 文件页完整；Android 无“文件”导航和文件 API，Windows 无文件窗口",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L308",
+      "observed_at": "2026-11-27",
+      "items": [
+        "K03"
+      ],
+      "limits": "边界：WO-K03-FILES-CLIENTS。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-K04-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "无容量/占用接口或 DTO；OneDrive quota 读取后被丢弃，Web 无数字，内置存储只在写入超限时报错",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L309",
+      "observed_at": "2026-11-27",
+      "items": [
+        "K04"
+      ],
+      "limits": "边界：WO-K04-STORAGE-USAGE。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-L01-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "`client-shell-android` 和构建 workflow 仍在，最新 release 仍发 `pim-shell-android-*.apk`，README 仍写旧壳待退役",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L310",
+      "observed_at": "2026-11-27",
+      "items": [
+        "L01"
+      ],
+      "limits": "边界：WO-L01-SHELL-RETIRE。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-L02-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "Android 采集/笔记/录音同包，Windows 同 `Pim.Client.App.exe`；无真实安装入口验收",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L311",
+      "observed_at": "2026-11-27",
+      "items": [
+        "L02"
+      ],
+      "limits": "边界：WO-L02-DEVICE-SINGLE-ENTRY。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-L03-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "原生今日页和待传/拒绝/死信芯片已存在；任务仍只取前 100 条，真机边界未验",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L312",
+      "observed_at": "2026-11-27",
+      "items": [
+        "L03"
+      ],
+      "limits": "边界：WO-L03-DEVICE-TODAY。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-L04-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "原生任务页支持搜索/新建/编辑/删除/任务本/完成/计时；仍只取 100 条、无翻页，真机未验",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L313",
+      "observed_at": "2026-11-27",
+      "items": [
+        "L04"
+      ],
+      "limits": "边界：WO-L04-DEVICE-TASKS。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-L05-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "#91 已合并日/周/月、导航、totalPages、时区/DST/重复；master CI 红是契约 freshness，#88 仍 DIRTY，真机未验",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L314",
+      "observed_at": "2026-11-27",
+      "items": [
+        "L05"
+      ],
+      "limits": "边界：WO-L05-ANDROID-CALENDAR。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-L06-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "工作台有提醒页，可延后/忽略；卡片仍直接显示 status/riskLevel/ISO/objectType/objectId，未翻成人话",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L315",
+      "observed_at": "2026-11-27",
+      "items": [
+        "L06"
+      ],
+      "limits": "边界：WO-L06-DEVICE-REMINDERS。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-L07-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "无“文件”目的地、文件 provider 或文件系统端点；只有笔记材料 `files/{fileIndex}`",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L316",
+      "observed_at": "2026-11-27",
+      "items": [
+        "L07"
+      ],
+      "limits": "边界：WO-L07-ANDROID-FILES。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-L08-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "设置页有服务器/登录/采集/日志/诊断，但无 AI 设置、无笔记上传/同步设置；“仅限非流量网络”不控制笔记上传",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L317",
+      "observed_at": "2026-11-27",
+      "items": [
+        "L08"
+      ],
+      "limits": "边界：WO-L08-ANDROID-SETTINGS。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-L09-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "设置页可填 API 地址、保存、测试连接、登录/退出；无首次启动引导，真机未验",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L318",
+      "observed_at": "2026-11-27",
+      "items": [
+        "L09"
+      ],
+      "limits": "边界：WO-L09-DEVICE-LOGIN。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-L10-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "Manifest 无 AppWidget、shortcuts、TileService；用量统计中的 SHORTCUT_INVOCATION 不是 PIM 快捷方式",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L319",
+      "observed_at": "2026-11-27",
+      "items": [
+        "L10"
+      ],
+      "limits": "边界：WO-L10-ANDROID-LAUNCH。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-L11-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "`PimTheme` 的 `darkTheme` 默认 false，注释明确系统深色是另一项变更；笔记页仍强制浅色状态栏图标",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L320",
+      "observed_at": "2026-11-27",
+      "items": [
+        "L11"
+      ],
+      "limits": "边界：WO-L11-ANDROID-DARK。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-L12-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "设置页有检查更新并进页自动查，下载跳浏览器；最新 release 仍停在 `c7ff54f7`，落后 master，真机更新未验",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L321",
+      "observed_at": "2026-11-27",
+      "items": [
+        "L12"
+      ],
+      "limits": "边界：WO-L12-DEVICE-UPDATE。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-L13-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "今日/轨迹仍保留“打开旧版”WebView，`PimShellActivity` 仍注册；高风险管理详情/离线仍走旧壳",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L322",
+      "observed_at": "2026-11-27",
+      "items": [
+        "L13"
+      ],
+      "limits": "边界：WO-L13-ANDROID-WEBVIEW-RETIRE。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-L14-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "Release 构建有 CI 签名配置和 APK；release 落后 master #100，无真机安装/升级验收",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L323",
+      "observed_at": "2026-11-27",
+      "items": [
+        "L14"
+      ],
+      "limits": "边界：WO-L14-DEVICE-RELEASE。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-M01-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "托盘可开始/停止笔记录音；原生笔记支持 Markdown、录音、照片、鼠标手写、导入音频、手动上传；真实桌面未验",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L324",
+      "observed_at": "2026-11-27",
+      "items": [
+        "M01"
+      ],
+      "limits": "边界：WO-M01-DEVICE-RECORDING。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-M02-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "原生笔记库有列表/搜索/编辑；服务器来源笔记仍整体只读，正文仍是 Consolas TextBox，不渲染 Markdown",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L325",
+      "observed_at": "2026-11-27",
+      "items": [
+        "M02"
+      ],
+      "limits": "边界：WO-M02-WINDOWS-NOTES。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-M03-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "16 kHz 单声道 16 位整段 WAV；无暂停、分片、时长上限、波形，崩溃恢复未实现",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L326",
+      "observed_at": "2026-11-27",
+      "items": [
+        "M03"
+      ],
+      "limits": "边界：WO-M03-WINDOWS-RECORDING。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-M04-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "托盘、Tracker、浏览器桥、KeyStats、心跳仍在同一 `Pim.Client.App.exe`；真实桌面未验",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L327",
+      "observed_at": "2026-11-27",
+      "items": [
+        "M04"
+      ],
+      "limits": "边界：WO-M04-DEVICE-TRAY。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-M05-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "#58 已合入原生今日窗口、托盘“原生今日”和工作台入口，支持读取/快速新建/完成/刷新；真实 Windows 交互未验",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L328",
+      "observed_at": "2026-11-27",
+      "items": [
+        "M05"
+      ],
+      "limits": "边界：WO-M05-WINDOWS-TODAY。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-M06-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "#59 已合入原生工作台/托盘和 WebView2 移除，但无 ToastContentBuilder/系统通知/协议深链，旧壳仍独立发布，无 Tauri 工程，#60 契约红",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L329",
+      "observed_at": "2026-11-27",
+      "items": [
+        "M06"
+      ],
+      "limits": "边界：WO-M06-WINDOWS-SHELL。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-N01-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "Web 有列表、打开、编辑、追加材料；无笔记录音播放器，正文仍是分段 Textarea，已有照片/手写不能删除/替换，保存确认默认不勾且必填",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L335",
+      "observed_at": "2026-11-27",
+      "items": [
+        "N01"
+      ],
+      "limits": "边界：WO-N01-WEB-NOTES。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-N02-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "`/native-notes/processing` 和 5 秒轮询存在，但 `NativeNoteSummaryDto` 只有 noteId/title/currentVersionId/hasConflict，列表无处理状态；真实浏览器未验",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L336",
+      "observed_at": "2026-11-27",
+      "items": [
+        "N02"
+      ],
+      "limits": "边界：WO-N02-WEB-STATUS。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-N03-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "设置已有笔记处理、管理员 AI/ASR、MCP、数据/回收站；无“外观”入口，无个人完整调用记录与保留清理",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L337",
+      "observed_at": "2026-11-27",
+      "items": [
+        "N03"
+      ],
+      "limits": "边界：WO-N03-WEB-SETTINGS。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-O01-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "Web 主色 `#2563eb`，Android `#1D63D8`，未完全对齐；旧壳通知主题缺口仍在，无跨端视觉验收",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L338",
+      "observed_at": "2026-11-27",
+      "items": [
+        "O01"
+      ],
+      "limits": "边界：WO-VISUAL-FINISH。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-O02-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "颜色和基础组件仍有分散定义及裸 hex，三端无共享来源",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L339",
+      "observed_at": "2026-11-27",
+      "items": [
+        "O02"
+      ],
+      "limits": "边界：WO-VISUAL-FINISH。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-O03-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "Android Material 3、Compose Animation、Adaptive、Coil、Lottie 未完整接入，无收口 PR",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L340",
+      "observed_at": "2026-11-27",
+      "items": [
+        "O03"
+      ],
+      "limits": "边界：WO-VISUAL-FINISH。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-O04-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "交付包明确跳过 OPPO 笔记动画和字体采用",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L341",
+      "observed_at": "2026-11-27",
+      "items": [
+        "O04"
+      ],
+      "limits": "边界：不排期。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-O05-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "三端仍暴露版本、材料、CAS、TaskId 等工程文案，与 Z01 重叠",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L342",
+      "observed_at": "2026-11-27",
+      "items": [
+        "O05"
+      ],
+      "limits": "边界：WO-Z01-USER-FACING、WO-VISUAL-FINISH。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-O06-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "Web 有统一空状态、骨架屏和错误组件；Android/Windows 仍不完整",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L343",
+      "observed_at": "2026-11-27",
+      "items": [
+        "O06"
+      ],
+      "limits": "边界：WO-VISUAL-FINISH。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-P01-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "Android 定位主要依赖精度门限与重复合并，未覆盖速度、模拟定位、高铁/飞机等场景",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L344",
+      "observed_at": "2026-11-27",
+      "items": [
+        "P01"
+      ],
+      "limits": "边界：WO-P01-LOCATION-QUALITY。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-P02-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "手机使用记录基线存在，无当前版本真实流程验收",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L345",
+      "observed_at": "2026-11-27",
+      "items": [
+        "P02"
+      ],
+      "limits": "边界：WO-P02-PHONE-USAGE-E2E。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-P03-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "Windows 守护程序和浏览器扩展链路存在，无真实扩展/桌面环境验收",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L346",
+      "observed_at": "2026-11-27",
+      "items": [
+        "P03"
+      ],
+      "limits": "边界：WO-P03-EXTENSION-E2E。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-P04-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "Android #95 head `8d95efae` CI success 但未合并；真实 OEM 设置返回、电池豁免、Doze 未验，Windows/API/Web 不在该 PR",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L347",
+      "observed_at": "2026-11-27",
+      "items": [
+        "P04"
+      ],
+      "limits": "边界：WO-P04-PERMISSIONS-E2E。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-P05-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "#602 OPEN/CLEAN，CI `45856428856` success；真实浏览器 E2E、真实 HTTP+PostgreSQL、Android/Windows 只读消费未验",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L348",
+      "observed_at": "2026-11-27",
+      "items": [
+        "P05"
+      ],
+      "limits": "边界：WO-P05-LOCATION-CORRECTION-E2E。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-Q01-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "API 有注册/登录/refresh/管理员建号/角色/停用基础；三端平台范围与验收口径未确认，真实登录/续期/管理员流程未执行",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L349",
+      "observed_at": "2026-11-27",
+      "items": [
+        "Q01"
+      ],
+      "limits": "边界：WO-Q01-AUTH-SCOPE。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-Q02-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "保留原决议：全量备份/导出不做，Kopia 仅保留为早期文件基础能力",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L350",
+      "observed_at": "2026-11-27",
+      "items": [
+        "Q02"
+      ],
+      "limits": "边界：不排期。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-Q03-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "#614 OPEN/CLEAN，API/Web 四域回收站已实现；Android/Windows 原生回收站未交付，真实跨端流程未验",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L351",
+      "observed_at": "2026-11-27",
+      "items": [
+        "Q03"
+      ],
+      "limits": "边界：WO-Q03-Q08-E2E。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-Q04-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "#607 API/Web TLS 门禁 OPEN；Android #101、Windows #63 OPEN；真实公网 TLS、1Panel/OpenResty/证书链未验",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L352",
+      "observed_at": "2026-11-27",
+      "items": [
+        "Q04"
+      ],
+      "limits": "边界：WO-Q04-PUBLIC-TLS。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-Q05-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "#609 OPEN/DIRTY，API/Web 诊断事件/概览/ZIP/脱敏/限额已实现；真实 Android/Windows 客户端、生产诊断导出未验",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L353",
+      "observed_at": "2026-11-27",
+      "items": [
+        "Q05"
+      ],
+      "limits": "边界：WO-Q05-DIAGNOSTICS-E2E。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-Q06-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "#616 OPEN/CLEAN，CI `45926319904` success；精确 categoryKey、设备 dismiss/click/vendor message id/90 天保留、时区/DND、FCM/WNS、真实 Web Push 未实现或未验",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L354",
+      "observed_at": "2026-11-27",
+      "items": [
+        "Q06"
+      ],
+      "limits": "边界：WO-Q06-PUSH-E2E。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-Q07-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "#611 只清理 Web 查询缓存/缩略图/播放器/传输历史并保护草稿；不裁决 Conflict 终态，不改 Android/Windows；Android 仍保留双方材料",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L355",
+      "observed_at": "2026-11-27",
+      "items": [
+        "Q07"
+      ],
+      "limits": "边界：WO-Q07-UPLOAD-RETENTION。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-Q08-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "#600 已合并，head `a3b6b568`，merge `a4919618`；真实浏览器双账号、持久索引/重建/离线缓存、字段级定位未验",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L356",
+      "observed_at": "2026-11-27",
+      "items": [
+        "Q08"
+      ],
+      "limits": "边界：WO-Q08-SEARCH-E2E。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-R01-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "#588 已合并，14 个 snake_case 别名移除、149 工具不变、旧名 400；外部独立 MCP 客户端未验",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L357",
+      "observed_at": "2026-11-27",
+      "items": [
+        "R01"
+      ],
+      "limits": "边界：WO-R01-EXTERNAL-MCP。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-R02-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "#610 OPEN/DIRTY，REST/MCP 显式偏移、IANA、unknown、UTC 查询、DST fold 已实现；真实 Graph、真实浏览器→API→PostgreSQL、AC12 未验",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L358",
+      "observed_at": "2026-11-27",
+      "items": [
+        "R02"
+      ],
+      "limits": "边界：WO-R02-R03-GRAPH。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-R03-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "#615 OPEN/CLEAN，fake Graph + 真实 PostgreSQL/TestServer 通过；真实 Graph/OAuth、外部 MCP、真实崩溃/连接中断未验",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L359",
+      "observed_at": "2026-11-27",
+      "items": [
+        "R03"
+      ],
+      "limits": "边界：WO-R02-R03-GRAPH。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-R04-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "#576、Windows #57、Android #94 已合并；真实 Windows 桌面、Android OEM、外部独立 MCP 未验",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L360",
+      "observed_at": "2026-11-27",
+      "items": [
+        "R04"
+      ],
+      "limits": "边界：WO-R04-CLIENTS-EXTERNAL。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-R05-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "#613 OPEN，19 个 native-note 工具；正文 create/update、文件夹/标签、discard/永久删除、ASR 片段级重试、按板块采用未交付；#621 无 master 目标 PR CI，AC-05 容量策略缺失，AC-06 BLOCKED",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L361",
+      "observed_at": "2026-11-27",
+      "items": [
+        "R05"
+      ],
+      "limits": "边界：WO-R05-COMPLETE-MCP、WO-R05-AC05-CAPACITY。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-RF-C12-FFMPEG",
+      "type": "real-flow",
+      "level": "E4",
+      "freshness": "not-verified",
+      "claim": "C12 真实 FFmpeg 解码与客户端分片",
+      "source": "docs/product/pim-delivery-ledger-20261125.md",
+      "observed_at": "2026-11-27",
+      "items": [
+        "C12"
+      ],
+      "limits": "客户端仍为 WAV 分片/整段；runner 无 FFmpeg，相关用例 skipped。"
+    },
+    {
+      "id": "EV-RF-D04-CROSS-END",
+      "type": "real-flow",
+      "level": "E4",
+      "freshness": "not-verified",
+      "claim": "D04 Android/Windows/Web 手写跨端闭环",
+      "source": "docs/product/pim-delivery-ledger-20261125.md",
+      "observed_at": "2026-11-27",
+      "items": [
+        "D04"
+      ],
+      "limits": "Windows 工具缺口、Web 已保存块不可再编辑、真机与往返回读均未验。"
+    },
+    {
+      "id": "EV-RF-H03-MULTIMODAL",
+      "type": "real-flow",
+      "level": "E4",
+      "freshness": "not-verified",
+      "claim": "H03 真实多模态 provider 长音频",
+      "source": "docs/product/pim-delivery-ledger-20261125.md",
+      "observed_at": "2026-11-27",
+      "items": [
+        "H03"
+      ],
+      "limits": "真实 provider 质量/费用、Hangfire 多进程与 PostgreSQL 行锁未验。"
+    },
+    {
+      "id": "EV-RF-I03-I04-CLIENTS",
+      "type": "real-flow",
+      "level": "E4",
+      "freshness": "not-verified",
+      "claim": "I03/I04 三端建议与确认闭环",
+      "source": "docs/product/pim-delivery-ledger-20261125.md",
+      "observed_at": "2026-11-27",
+      "items": [
+        "I03",
+        "I04"
+      ],
+      "limits": "Windows 客户端 PR 仍 OPEN；Android 契约 freshness 红；真实三端未验。"
+    },
+    {
+      "id": "EV-RF-J09-PROVIDER",
+      "type": "real-flow",
+      "level": "E4",
+      "freshness": "not-verified",
+      "claim": "J09 真实 provider Token 限额",
+      "source": "docs/product/pim-delivery-ledger-20261125.md",
+      "observed_at": "2026-11-27",
+      "items": [
+        "J09"
+      ],
+      "limits": "真实第三方 provider 记账/限额、管理员浏览器与崩溃恢复未验。"
+    },
+    {
+      "id": "EV-RF-M05-WINDOWS-TODAY",
+      "type": "real-flow",
+      "level": "E4",
+      "freshness": "not-verified",
+      "claim": "M05 真实 Windows 桌面今日流程",
+      "source": "docs/product/pim-delivery-ledger-20261125.md",
+      "observed_at": "2026-11-27",
+      "items": [
+        "M05"
+      ],
+      "limits": "登录、托盘点击、刷新、新建与完成任务未在真实桌面执行。"
+    },
+    {
+      "id": "EV-RF-N01-BROWSER",
+      "type": "real-flow",
+      "level": "E4",
+      "freshness": "not-verified",
+      "claim": "N01 Web 笔记完整编辑与回放",
+      "source": "docs/product/pim-delivery-ledger-20261125.md",
+      "observed_at": "2026-11-27",
+      "items": [
+        "N01"
+      ],
+      "limits": "无录音播放器、正文分段 Textarea、已有材料不可删除，真实浏览器未验。"
+    },
+    {
+      "id": "EV-RF-P05-BROWSER",
+      "type": "real-flow",
+      "level": "E4",
+      "freshness": "not-verified",
+      "claim": "P05 位置纠正真实浏览器 E2E",
+      "source": "docs/product/pim-delivery-ledger-20261125.md",
+      "observed_at": "2026-11-27",
+      "items": [
+        "P05"
+      ],
+      "limits": "API/Web 实现 OPEN；真实浏览器 E2E 与客户端只读消费未验。"
+    },
+    {
+      "id": "EV-RF-Q03-CROSS-DEVICE",
+      "type": "real-flow",
+      "level": "E4",
+      "freshness": "not-verified",
+      "claim": "Q03 回收站跨端流程",
+      "source": "docs/product/pim-delivery-ledger-20261125.md",
+      "observed_at": "2026-11-27",
+      "items": [
+        "Q03"
+      ],
+      "limits": "Android/Windows 原生回收站未交付，真实浏览器跨端未验。"
+    },
+    {
+      "id": "EV-RF-Q04-PUBLIC-TLS",
+      "type": "real-flow",
+      "level": "E4",
+      "freshness": "not-verified",
+      "claim": "Q04 公网 TLS 与生产反代",
+      "source": "docs/product/pim-delivery-ledger-20261125.md",
+      "observed_at": "2026-11-27",
+      "items": [
+        "Q04"
+      ],
+      "limits": "仅隔离拓扑通过；1Panel/OpenResty/证书链与生产入口未验。"
+    },
+    {
+      "id": "EV-RF-Q06-PUSH",
+      "type": "real-flow",
+      "level": "E4",
+      "freshness": "not-verified",
+      "claim": "Q06 真实推送通道",
+      "source": "docs/product/pim-delivery-ledger-20261125.md",
+      "observed_at": "2026-11-27",
+      "items": [
+        "Q06"
+      ],
+      "limits": "FCM/WNS/Web Push、设备级 dismiss/click 与保留策略未验。"
+    },
+    {
+      "id": "EV-RF-Q08-BROWSER",
+      "type": "real-flow",
+      "level": "E4",
+      "freshness": "not-verified",
+      "claim": "Q08 真实浏览器双账号搜索",
+      "source": "docs/product/pim-delivery-ledger-20261125.md",
+      "observed_at": "2026-11-27",
+      "items": [
+        "Q08"
+      ],
+      "limits": "双账号、持久索引/重建/离线缓存与字段级定位未验。"
+    },
+    {
+      "id": "EV-RF-R04-AC8-EXTERNAL-MCP",
+      "type": "real-flow",
+      "level": "E4",
+      "freshness": "not-verified",
+      "claim": "R04-AC8 外部独立 MCP 客户端",
+      "source": "docs/product/pim-delivery-ledger-20261125.md",
+      "observed_at": "2026-11-27",
+      "items": [
+        "R04"
+      ],
+      "limits": "尚无外部独立 MCP 客户端执行记录，R04 不得记 PASS。"
+    },
+    {
+      "id": "EV-RF-R04-ISOLATED",
+      "type": "real-flow",
+      "level": "E4",
+      "freshness": "stale",
+      "claim": "R04 隔离环境 REST/MCP/Web 多状态链路",
+      "source": "docs/product/pim-delivery-ledger-20261125.md",
+      "observed_at": "2026-11-24",
+      "items": [
+        "R04"
+      ],
+      "limits": "旧台账记录的真实链路未在本轮重跑；不能证明外部独立 MCP 客户端。 环境：隔离 Docker Test API + PostgreSQL + Chromium；产物：REST 19/19, MCP 14/14, HTTP/Chromium 用例通过。"
+    },
+    {
+      "id": "EV-RF-R05-EXTERNAL-MCP",
+      "type": "real-flow",
+      "level": "E4",
+      "freshness": "not-verified",
+      "claim": "R05 外部独立 MCP 客户端 19 工具",
+      "source": "docs/product/pim-delivery-ledger-20261125.md",
+      "observed_at": "2026-11-27",
+      "items": [
+        "R05"
+      ],
+      "limits": "#613 仍 OPEN；外部客户端与真实部署未验。"
+    },
+    {
+      "id": "EV-RF-S01-RELEASE",
+      "type": "real-flow",
+      "level": "E4",
+      "freshness": "not-verified",
+      "claim": "S01 真实 release dispatch 与生产拉取",
+      "source": "docs/product/pim-delivery-ledger-20261125.md",
+      "observed_at": "2026-11-27",
+      "items": [
+        "S01"
+      ],
+      "limits": "正式 bump/promote、并发重跑、`:latest` 收敛与生产部署未执行。"
+    },
+    {
+      "id": "EV-RF-Z01-BROWSER",
+      "type": "real-flow",
+      "level": "E4",
+      "freshness": "not-verified",
+      "claim": "Z01 普通用户/管理员浏览器走查",
+      "source": "docs/product/pim-delivery-ledger-20261125.md",
+      "observed_at": "2026-11-27",
+      "items": [
+        "Z01"
+      ],
+      "limits": "协议/诊断例外仍存在，真实浏览器与客户端呈现未验。"
+    },
+    {
+      "id": "EV-RF-Z02-CROSS-DEVICE",
+      "type": "real-flow",
+      "level": "E4",
+      "freshness": "not-verified",
+      "claim": "Z02 换端恢复与真实 provider",
+      "source": "docs/product/pim-delivery-ledger-20261125.md",
+      "observed_at": "2026-11-27",
+      "items": [
+        "Z02"
+      ],
+      "limits": "真实 provider、Hangfire 多进程、浏览器与客户端换端未执行。"
+    },
+    {
+      "id": "EV-S01-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "#601/#603/#604 已合并；正式版仍是 `api-v26.11.1157` target `f79cc3e8`，`1182`/`1273` 为 pre-release；#604 后无真实 bump/promote dispatch，Windows #61 OPEN，生产 `:latest` 未验",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L364",
+      "observed_at": "2026-11-27",
+      "items": [
+        "S01"
+      ],
+      "limits": "边界：WO-RELEASE-REAL-PROMOTION。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-Z01-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "#597 已合并，Web 版本历史仅管理员、数据中心/审计 RequireAdmin、普通冲突不显示版本 ID；Android/Windows 仍有材料版本/恢复/设为云端当前版本，协议与诊断例外仍在",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L362",
+      "observed_at": "2026-11-27",
+      "items": [
+        "Z01"
+      ],
+      "limits": "边界：WO-Z01-USER-FACING。只读审计，未重跑构建或真实流程。"
+    },
+    {
+      "id": "EV-Z02-AUDIT",
+      "type": "audit-note",
+      "level": "E1",
+      "freshness": "stale",
+      "claim": "#572/#50/#82 已合并高层编排；#620 截至 2026-11-27 16:50 Asia/Shanghai（08:50Z）head `b884f3ec`，run `45967984281` 仍在进行（上一 `225834fa`/`45965628196` 与更早 `3235ec37`/`45963742316` 均为 failure），只覆盖 API/Web 持续授权与单链；真实 provider/Hangfire/浏览器/Android/Windows 换端未验",
+      "source": "docs/product/pim-delivery-ledger-20261125.md:L363",
+      "observed_at": "2026-11-27",
+      "items": [
+        "Z02"
+      ],
+      "limits": "边界：WO-Z02-CONSENT-E2E、WO-Z02-CROSS-DEVICE。只读审计，未重跑构建或真实流程。"
+    }
+  ]
+}
