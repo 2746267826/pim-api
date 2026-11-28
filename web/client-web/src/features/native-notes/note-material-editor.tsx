@@ -1,7 +1,18 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import type { CSSProperties } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Camera, Download, ImagePlus, PenLine, Plus, RotateCcw, Save, Trash2 } from 'lucide-react'
-import { Button, Card, InlineAlert, Input, Label, PageHeader, Skeleton, StatusBadge, Textarea } from '@/components/ui'
+import { ArrowLeft, Download, ImagePlus, RotateCcw, Save } from 'lucide-react'
+import {
+  Button,
+  Card,
+  ConfirmDialog,
+  InlineAlert,
+  Input,
+  Label,
+  PageHeader,
+  Skeleton,
+  StatusBadge,
+} from '@/components/ui'
 import {
   buildMaterialBundle,
   createMaterialId,
@@ -10,16 +21,19 @@ import {
   type MaterialBundle,
   type MaterialDraftBlock,
   type NoteMaterialUpload,
+  type NoteMaterialVersion,
   type ParsedNoteMaterial,
-  type SupportedPhotoMime,
 } from './material-model'
 import type { NativeNotesClient } from './api'
 import type { PromoteVersionOutcome } from './note-version-panel'
 import { uploadMaterialBundle, type MaterialUploadProgress } from './upload-engine'
-import { InkCanvasEditor } from './ink-canvas-editor'
 import { exportAndroidNotePackage } from './material-package'
 import { useUnsavedDraft } from '@/lib/unsaved-drafts'
 import { noteDraftRegistrations } from './note-draft-protection'
+import {
+  ContinuousMaterialEditor,
+  type ContinuousMaterialEditorHandle,
+} from './continuous-material-editor'
 
 export interface NoteEditorSeed {
   noteId: string
@@ -29,6 +43,8 @@ export interface NoteEditorSeed {
   legacyNotice?: string
 }
 
+export type EndWithoutSaveReason = 'unchanged' | 'empty'
+
 export interface NoteEditorPaneProps {
   ownerId: string
   serverBinding: string
@@ -37,7 +53,9 @@ export interface NoteEditorPaneProps {
   versionId?: string
   seed?: NoteEditorSeed
   onDirtyChange?: (dirty: boolean) => void
-  onSaved: (upload: NoteMaterialUpload) => void
+  onSaved: (upload: NoteMaterialUpload, outcome: 'save' | 'end') => void
+  onEnded: (reason: EndWithoutSaveReason) => void
+  onBack: () => void
   promoteInFlight: boolean
   promotingVersionId: string
   onPromoteVersion: (versionId: string) => Promise<PromoteVersionOutcome>
@@ -59,10 +77,21 @@ interface LoadedEditorProps {
   api: NativeNotesClient
   showVersionDetails: boolean
   onDirtyChange?: (dirty: boolean) => void
-  onSaved: (upload: NoteMaterialUpload) => void
+  onSaved: (upload: NoteMaterialUpload, outcome: 'save' | 'end') => void
+  onEnded: (reason: EndWithoutSaveReason) => void
+  onBack: () => void
   promoteInFlight: boolean
   promotingVersionId: string
   onPromoteVersion: (versionId: string) => Promise<PromoteVersionOutcome>
+}
+
+interface AcceptedEditorLoad {
+  versionId: string
+  material: NoteMaterialVersion
+  hydrated: {
+    parsed: ParsedNoteMaterial
+    blocks: MaterialDraftBlock[]
+  }
 }
 
 export function NoteEditorPane({
@@ -74,6 +103,8 @@ export function NoteEditorPane({
   seed,
   onDirtyChange,
   onSaved,
+  onEnded,
+  onBack,
   promoteInFlight,
   promotingVersionId,
   onPromoteVersion,
@@ -98,6 +129,25 @@ export function NoteEditorPane({
     },
     enabled: Boolean(material.data),
   })
+  const dirtyRef = useRef(false)
+  const [acceptedLoad, setAcceptedLoad] = useState<AcceptedEditorLoad | null>(null)
+
+  useEffect(() => {
+    if (!versionId || !material.data || !hydrated.data) return
+    setAcceptedLoad((current) => {
+      if (current?.versionId === versionId && dirtyRef.current) return current
+      if (current?.versionId === versionId &&
+          current.material === material.data && current.hydrated === hydrated.data) {
+        return current
+      }
+      return { versionId, material: material.data, hydrated: hydrated.data }
+    })
+  }, [hydrated.data, material.data, versionId])
+
+  const updateDirty = useCallback((dirty: boolean) => {
+    dirtyRef.current = dirty
+    onDirtyChange?.(dirty)
+  }, [onDirtyChange])
 
   if (!versionId) {
     if (!seed) return <EmptyEditor />
@@ -114,46 +164,88 @@ export function NoteEditorPane({
       serverBinding={serverBinding}
       api={api}
       showVersionDetails={showVersionDetails}
-      onDirtyChange={onDirtyChange}
+      onDirtyChange={updateDirty}
       onSaved={onSaved}
+      onEnded={onEnded}
+      onBack={onBack}
       promoteInFlight={promoteInFlight}
       promotingVersionId={promotingVersionId}
       onPromoteVersion={onPromoteVersion}
     />
   }
 
-  if (material.isPending || hydrated.isPending) {
+  const acceptedForVersion = acceptedLoad?.versionId === versionId ? acceptedLoad : null
+  if (!acceptedForVersion) {
+    if (material.isError) {
+      return <LoadFailureCard
+        title="笔记读取失败"
+        detail={errorText(material.error)}
+        retrying={material.isFetching}
+        onRetry={() => void material.refetch()}
+      />
+    }
+    if (hydrated.isError) {
+      return <LoadFailureCard
+        title={showVersionDetails ? '材料原字节核对失败' : '笔记内容读取失败'}
+        detail={errorText(hydrated.error)}
+        retrying={hydrated.isFetching}
+        onRetry={() => void hydrated.refetch()}
+      />
+    }
     return <Card className="space-y-3 p-5"><Skeleton className="h-9 w-2/3" /><Skeleton className="h-56" /><p className="text-xs text-text-3">{showVersionDetails ? '正在核对固定材料、正文块和图片原字节…' : '正在载入笔记内容…'}</p></Card>
   }
-  if (material.isError) {
-    return <Card className="p-5"><InlineAlert tone="crit" title="笔记读取失败">{errorText(material.error)}</InlineAlert></Card>
-  }
-  if (hydrated.isError || !hydrated.data) {
-    return <Card className="p-5"><InlineAlert tone="crit" title={showVersionDetails ? '材料原字节核对失败' : '笔记内容读取失败'}>{errorText(hydrated.error)}</InlineAlert></Card>
+
+  const parsed = acceptedForVersion.hydrated.parsed
+  const refreshFailures = [
+    material.isError ? `版本：${errorText(material.error)}` : '',
+    hydrated.isError ? `正文材料：${errorText(hydrated.error)}` : '',
+  ].filter(Boolean)
+
+  async function retryRefresh() {
+    if (material.isError) {
+      const result = await material.refetch()
+      if (result.isError) return
+    }
+    if (hydrated.isError) await hydrated.refetch()
   }
 
-  const parsed = hydrated.data.parsed
-  return <LoadedEditor
-    key={`${parsed.versionId}/${parsed.revision}`}
-    noteId={parsed.noteId}
-    title={parsed.title}
-    blocks={hydrated.data.blocks}
-    revision={parsed.revision}
-    noteCreatedAtMillis={parsed.createdAtMillis}
-    baseVersionId={parsed.versionId}
-    isCurrent={material.data.upload.isCurrent}
-    preservedRecordings={parsed.recordingEntries}
-    preservedFiles={parsed.manifestFiles}
-    sourceInputJson={parsed.sourceInputJson}
-    serverBinding={serverBinding}
-    api={api}
-    showVersionDetails={showVersionDetails}
-    onDirtyChange={onDirtyChange}
-    onSaved={onSaved}
-    promoteInFlight={promoteInFlight}
-    promotingVersionId={promotingVersionId}
-    onPromoteVersion={onPromoteVersion}
-  />
+  return <>
+    {refreshFailures.length > 0 && <InlineAlert className="mb-3" tone="crit" title="笔记刷新失败，当前草稿已保留">
+      <p>{refreshFailures.join('；')}。正文、材料节点和未确认提交仍保留在本页，没有被替换。</p>
+      <Button
+        className="mt-2"
+        size="sm"
+        variant="secondary"
+        loading={material.isFetching || hydrated.isFetching}
+        onClick={() => void retryRefresh()}
+      >
+        就地重试
+      </Button>
+    </InlineAlert>}
+    <LoadedEditor
+      key={`${parsed.versionId}/${parsed.revision}`}
+      noteId={parsed.noteId}
+      title={parsed.title}
+      blocks={acceptedForVersion.hydrated.blocks}
+      revision={parsed.revision}
+      noteCreatedAtMillis={parsed.createdAtMillis}
+      baseVersionId={parsed.versionId}
+      isCurrent={acceptedForVersion.material.upload.isCurrent}
+      preservedRecordings={parsed.recordingEntries}
+      preservedFiles={parsed.manifestFiles}
+      sourceInputJson={parsed.sourceInputJson}
+      serverBinding={serverBinding}
+      api={api}
+      showVersionDetails={showVersionDetails}
+      onDirtyChange={updateDirty}
+      onSaved={onSaved}
+      onEnded={onEnded}
+      onBack={onBack}
+      promoteInFlight={promoteInFlight}
+      promotingVersionId={promotingVersionId}
+      onPromoteVersion={onPromoteVersion}
+    />
+  </>
 }
 
 function EmptyEditor() {
@@ -162,6 +254,26 @@ function EmptyEditor() {
       <span className="grid size-14 place-items-center rounded-full bg-surface-2 text-primary"><ImagePlus className="size-6" aria-hidden /></span>
       <h2 className="mt-4 text-lg font-semibold text-text-1">选一篇笔记或新建笔记</h2>
       <p className="mt-2 text-sm leading-6 text-text-3">写好标题和内容后保存。保存遇到问题时，当前页面中的内容会保留，可重试。</p>
+    </div>
+  </Card>
+}
+
+function LoadFailureCard({
+  title,
+  detail,
+  retrying,
+  onRetry,
+}: {
+  title: string
+  detail: string
+  retrying: boolean
+  onRetry: () => void
+}) {
+  return <Card className="p-5">
+    <InlineAlert tone="crit" title={title}>{detail}</InlineAlert>
+    <div className="mt-3 flex items-center gap-2">
+      <Button size="sm" variant="secondary" loading={retrying} onClick={onRetry}>就地重试</Button>
+      <span className="text-xs text-text-3">当前编辑上下文仍保留；重试只重新读取这一项。</span>
     </div>
   </Card>
 }
@@ -183,12 +295,13 @@ function LoadedEditor({
   showVersionDetails,
   onDirtyChange,
   onSaved,
+  onEnded,
+  onBack,
   promoteInFlight,
   promotingVersionId,
   onPromoteVersion,
 }: LoadedEditorProps) {
   const [title, setTitle] = useState(initialTitle)
-  const [blocks, setBlocks] = useState<MaterialDraftBlock[]>(initialBlocks)
   const [versionId, setVersionId] = useState(createMaterialId)
   const [frozen, setFrozen] = useState<MaterialBundle | null>(null)
   const [progress, setProgress] = useState<MaterialUploadProgress | null>(null)
@@ -200,26 +313,58 @@ function LoadedEditor({
   const [storageConsent, setStorageConsent] = useState(false)
   const [dirty, setDirty] = useState(false)
   const [textDirty, setTextDirty] = useState(false)
+  const [draftBlocks, setDraftBlocks] = useState<MaterialDraftBlock[]>(initialBlocks)
+  const [inkEditorOpen, setInkEditorOpen] = useState(false)
   const [inkPending, setInkPending] = useState(false)
-  const [inkEditor, setInkEditor] = useState<{ id: string; ink: Record<string, unknown>; sessionId: string } | null>(null)
-  const inkEditorRef = useRef<{ id: string; ink: Record<string, unknown>; sessionId: string } | null>(null)
-  const inkSessionIdRef = useRef<string | null>(null)
+  const [hasEditorContent, setHasEditorContent] = useState(initialBlocks.length > 0)
+  const [endConfirmOpen, setEndConfirmOpen] = useState(false)
+  const [stickyHeaderHeight, setStickyHeaderHeight] = useState(0)
+  const stickyHeaderRef = useRef<HTMLDivElement>(null)
+  const continuousEditorRef = useRef<ContinuousMaterialEditorHandle>(null)
   const uploadSessionRef = useRef<EditorUploadSession | null>(null)
   const editable = !busy && !exporting && !frozen && isCurrent
   const editableRef = useRef(editable)
   useEffect(() => {
     editableRef.current = editable
   }, [editable])
-  const canSubmit = editable && blocks.length > 0 && storageConsent && !inkEditor && !inkPending
+  const canRetryFrozen = Boolean(frozen) && isCurrent && !busy && !inkEditorOpen && !inkPending
+  const canSubmit = hasEditorContent && storageConsent && !inkEditorOpen && !inkPending &&
+    (editable || canRetryFrozen)
+
+  useLayoutEffect(() => {
+    const node = stickyHeaderRef.current
+    if (!node) return
+    const measure = () => {
+      const height = Math.ceil(node.getBoundingClientRect().height)
+      if (height <= 0) return
+      setStickyHeaderHeight((current) => current === height ? current : height)
+    }
+    measure()
+    const observer = typeof ResizeObserver === 'undefined'
+      ? null
+      : new ResizeObserver(measure)
+    observer?.observe(node)
+    window.addEventListener('resize', measure)
+    return () => {
+      observer?.disconnect()
+      window.removeEventListener('resize', measure)
+    }
+  }, [])
+
+  const stickyVariables = {
+    '--note-sticky-top': '0px',
+    '--note-sticky-header-height': `${stickyHeaderHeight || 72}px`,
+  } as CSSProperties
+
   const noteDrafts = noteDraftRegistrations({
     noteId,
     title,
     baseVersionId,
     textDirty,
     dirty,
-    blocks,
+    blocks: draftBlocks,
     inkPending,
-    inkEditorOpen: Boolean(inkEditor),
+    inkEditorOpen,
   })
   useUnsavedDraft(noteDrafts.text.active, noteDrafts.text.descriptor)
   useUnsavedDraft(noteDrafts.photos.active, noteDrafts.photos.descriptor)
@@ -248,35 +393,10 @@ function LoadedEditor({
   const isUploadSessionActive = (session: EditorUploadSession) =>
     uploadSessionRef.current === session && !session.controller.signal.aborted
 
-  function isInkSessionActive(sessionId: string) {
-    const session = uploadSessionRef.current
-    return inkSessionIdRef.current === sessionId && inkEditorRef.current?.sessionId === sessionId &&
-      editableRef.current && session !== null && !session.controller.signal.aborted &&
-      session.noteId === noteId && session.baseVersionId === baseVersionId
-  }
-
-  function openInkEditor(id: string, ink: Record<string, unknown>) {
-    const sessionId = createMaterialId()
-    inkSessionIdRef.current = sessionId
-    const next = { id, ink, sessionId }
-    inkEditorRef.current = next
-    setInkEditor(next)
-    setInkPending(false)
-  }
-
-  function closeInkEditor(sessionId: string) {
-    if (inkSessionIdRef.current !== sessionId) return
-    inkSessionIdRef.current = null
-    inkEditorRef.current = null
-    setInkEditor(null)
-    setInkPending(false)
-  }
-
   useEffect(() => {
     const controller = new AbortController()
     uploadSessionRef.current = { noteId, baseVersionId, controller }
     return () => {
-      inkSessionIdRef.current = null
       if (uploadSessionRef.current?.controller === controller) uploadSessionRef.current = null
       controller.abort()
     }
@@ -292,13 +412,32 @@ function LoadedEditor({
       ? '保存尚未确认完成。重试会继续核对同一次保存，不会另建一份。'
       : ''
 
-  async function save() {
-    if (busy || inkEditor || inkPending || !isCurrent || !blocks.length || !storageConsent) return
+  async function save(outcome: 'save' | 'end' = 'save'): Promise<boolean> {
+    if (busy || inkEditorOpen || inkPending || !isCurrent) return false
+    if (!title.trim()) {
+      setError('请先填写笔记标题，再保存或结束这次记录；当前草稿仍保留在本页。')
+      return false
+    }
+    if (!storageConsent) {
+      setError('请先在页内勾选“确认保存到当前服务器”，再保存或结束本次记录。')
+      return false
+    }
+    let blocks: MaterialDraftBlock[]
+    try {
+      blocks = continuousEditorRef.current?.getBlocks() ?? []
+    } catch (failure) {
+      setError(`${errorText(failure)}。当前草稿仍保留在本页，未提交任何内容。`)
+      return false
+    }
+    if (!blocks.length) {
+      setError('正文还没有可保存的内容。')
+      return false
+    }
     let session: EditorUploadSession
     try {
       session = requireUploadSession()
     } catch {
-      return
+      return false
     }
     setBusy(true)
     setError('')
@@ -321,7 +460,7 @@ function LoadedEditor({
           preserveSourceFiles: Boolean(baseVersionId),
           sourceInputJson,
         })
-        if (!isUploadSessionActive(session)) return
+        if (!isUploadSessionActive(session)) return false
         setFrozen(batch)
         setDirty(true)
       }
@@ -343,17 +482,51 @@ function LoadedEditor({
         : '正文已同步。')
       setDirty(false)
       setTextDirty(false)
-      onSaved(upload)
+      onSaved(upload, outcome)
+      return true
     } catch (failure) {
-      if (!isUploadSessionActive(session)) return
+      if (!isUploadSessionActive(session)) return false
       setError(`${errorText(failure)}。本次提交状态已保留，可在本页重试。`)
+      return false
     } finally {
       if (isUploadSessionActive(session)) setBusy(false)
     }
   }
 
+  async function finishSession(): Promise<boolean> {
+    if (busy || inkEditorOpen || inkPending || !isCurrent) return false
+    if (!baseVersionId && !hasEditorContent && !frozen) {
+      onEnded('empty')
+      return true
+    }
+    if (!dirty && baseVersionId && !frozen) {
+      onEnded('unchanged')
+      return true
+    }
+    if (!title.trim()) {
+      setError('请先填写笔记标题，再保存或结束这次记录；当前草稿仍保留在本页。')
+      return false
+    }
+    if (!storageConsent) {
+      setError('结束前需要先确认保存到当前服务器；当前正文仍保留在本页，未提交任何内容。')
+      return false
+    }
+    return save('end')
+  }
+
   async function exportPackage() {
-    if (busy || exporting || inkEditor || inkPending) return
+    if (busy || exporting || inkEditorOpen || inkPending) return
+    let blocks: MaterialDraftBlock[]
+    try {
+      blocks = continuousEditorRef.current?.getBlocks() ?? []
+    } catch (failure) {
+      setError(`${errorText(failure)}。当前草稿仍保留在本页，未导出任何内容。`)
+      return
+    }
+    if (!blocks.length) {
+      setError('正文还没有可导出的内容。')
+      return
+    }
     let session: EditorUploadSession
     try {
       session = requireUploadSession()
@@ -444,49 +617,6 @@ function LoadedEditor({
     }
   }
 
-  async function addPhotos(files: FileList | null) {
-    if (!files?.length || !editable) return
-    let session: EditorUploadSession
-    try {
-      session = requireUploadSession()
-    } catch {
-      return
-    }
-    setError('')
-    const accepted: MaterialDraftBlock[] = []
-    for (const file of [...files]) {
-      if (file.type !== 'image/jpeg' && file.type !== 'image/png' && file.type !== 'image/webp') {
-        setError('Web 材料当前只接受 JPEG/PNG/WebP 照片。')
-        continue
-      }
-      if (file.size > 32 * 1024 * 1024) {
-        setError(`照片 ${file.name} 超过 32 MiB，未加入材料。`)
-        continue
-      }
-      accepted.push({
-        kind: 'photo',
-        id: createMaterialId(),
-        assetId: createMaterialId(),
-        mimeType: file.type as SupportedPhotoMime,
-        bytes: new Uint8Array(await file.arrayBuffer()),
-      })
-    }
-    if (!isUploadSessionActive(session)) return
-    if (accepted.length) {
-      setBlocks((current) => [...current, ...accepted])
-      setDirty(true)
-    }
-  }
-
-  function editMarkdown(id: string, text: string) {
-    if (!editable) return
-    setBlocks((current) => current.map((block) => block.id === id && block.kind === 'markdown'
-      ? { ...block, text }
-      : block))
-    setTextDirty(true)
-    setDirty(true)
-  }
-
   function createBlankVersion() {
     if (busy) return
     setFrozen(null)
@@ -496,42 +626,74 @@ function LoadedEditor({
     setMessage('已放弃本页的提交尝试；部分未完成上传会由服务端按策略过期清理。再次保存会重新提交。')
   }
 
-  return <Card className="overflow-hidden">
-    <div className="border-b border-divider bg-[linear-gradient(120deg,var(--color-surface),var(--color-bg))] px-5 py-4">
-      <PageHeader className="mb-0" title={baseVersionId ? '继续写这篇笔记' : '新建笔记'} subtitle={baseVersionId ? '标题、正文、照片与手写内容按原顺序编辑。' : '先写下内容，再决定是否保存到当前服务器。'} actions={
-        <div className="flex items-center gap-2">
+  const endsEmptyNewNote = !baseVersionId && !hasEditorContent && !frozen
+  const endsSavedWithoutChanges = Boolean(baseVersionId) && !dirty && !frozen
+  const endNeedsSave = !endsEmptyNewNote && !endsSavedWithoutChanges
+  const endDescription = endsEmptyNewNote
+    ? '当前没有可保存的正文，不会在服务器创建新笔记；标题和本页内容不会上传。'
+    : endsSavedWithoutChanges
+      ? '服务器上的当前版本会保持不变；结束不会创建新版本。'
+      : '会先保存当前标题与连续正文，再结束本次编辑。保存失败时留在本页，当前草稿不会丢失。'
+
+  return <>
+  <Card className="relative overflow-visible" style={stickyVariables}>
+    <div
+      ref={stickyHeaderRef}
+      data-testid="note-editor-sticky-header"
+      className="sticky z-30 rounded-t-card border-b border-divider bg-bg/95 px-4 py-3 shadow-card backdrop-blur"
+      style={{ top: 'var(--note-sticky-top, 0px)' }}
+    >
+      <PageHeader className="mb-0" actionsClassName="ml-auto justify-end" title={baseVersionId ? '继续写这篇笔记' : '新建笔记'} subtitle={baseVersionId ? '标题、正文、照片与手写共用唯一连续编辑上下文。' : '先写下内容，再决定是否保存到当前服务器。'} actions={
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <Button className="xl:hidden" size="sm" variant="ghost" aria-label="返回笔记列表" onClick={onBack}>
+            <ArrowLeft className="size-4" aria-hidden />
+          </Button>
           {dirty && <StatusBadge tone="warn" dot={false}>有未保存更改</StatusBadge>}
-          <Button size="sm" variant="primary" loading={busy} disabled={!canSubmit} onClick={() => void save()}>
-            <Save className="size-4" aria-hidden />{busy ? '正在保存…' : '保存笔记'}
+          <Button size="sm" variant="primary" loading={busy} disabled={!canSubmit} onClick={() => void save('save')}>
+            <Save className="size-4" aria-hidden />{busy ? '正在保存…' : frozen ? '重试同一提交' : '保存笔记'}
+          </Button>
+          <Button
+            className="shadow-card"
+            size="sm"
+            variant="secondary"
+            disabled={!isCurrent || busy || inkEditorOpen || inkPending}
+            onClick={() => {
+              setError('')
+              setEndConfirmOpen(true)
+            }}
+          >
+            结束
           </Button>
         </div>
       } />
     </div>
 
-    <div className="space-y-4 p-5">
+    <div className="mx-auto max-w-[76rem] space-y-4 p-4 sm:p-6">
       {legacyNotice && <InlineAlert tone="warn" title="旧闪念兼容副本">{legacyNotice}</InlineAlert>}
       {lockedReason && <InlineAlert tone={!isCurrent ? 'warn' : 'info'}>{lockedReason}</InlineAlert>}
       {showVersionDetails && (
-        <section className="rounded-ctl border border-border bg-surface p-3" aria-labelledby="note-save-identity">
-          <div className="flex flex-wrap items-center gap-2">
-            <h2 id="note-save-identity" className="text-xs font-semibold text-text-1">本次保存回执</h2>
-            <StatusBadge tone={isCurrent ? 'ok' : 'warn'} dot={false}>{isCurrent ? '可编辑' : '只读历史版本'}</StatusBadge>
-            <StatusBadge className="ml-auto" tone="neutral" dot={false}>修订 {revision}</StatusBadge>
-          </div>
-          <dl className="mt-2 grid gap-x-4 gap-y-1 text-[11px] leading-5 sm:grid-cols-[8rem_minmax(0,1fr)]">
-            <dt className="text-text-4">笔记 ID</dt>
-            <dd className="mono break-all text-text-2">{noteId}</dd>
-            <dt className="text-text-4">当前载入版本 ID</dt>
-            <dd className="mono break-all text-text-2">{baseVersionId ?? '尚未保存'}</dd>
-            <dt className="text-text-4">本次保存编号</dt>
-            <dd className="mono break-all text-text-2">{versionId}</dd>
-            <dt className="text-text-4">本次保存来源版本</dt>
-            <dd className="mono break-all text-text-2">{baseVersionId ?? '新建笔记'}</dd>
-          </dl>
-          <p className="mt-2 text-[11px] leading-5 text-text-3">
-            保存编号在提交后由服务器固定为版本 ID；历史版本只读，不能覆盖当前版本。
-          </p>
-        </section>
+        <details className="rounded-ctl border border-border bg-surface px-3 py-2 text-xs text-text-2">
+          <summary className="cursor-pointer font-medium">本次保存回执 · 修订 {revision}</summary>
+          <section className="mt-3" aria-labelledby="note-save-identity">
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 id="note-save-identity" className="text-xs font-semibold text-text-1">本次保存回执</h2>
+              <StatusBadge tone={isCurrent ? 'ok' : 'warn'} dot={false}>{isCurrent ? '可编辑' : '只读历史版本'}</StatusBadge>
+            </div>
+            <dl className="mt-2 grid gap-x-4 gap-y-1 text-[11px] leading-5 sm:grid-cols-[8rem_minmax(0,1fr)]">
+              <dt className="text-text-4">笔记 ID</dt>
+              <dd className="mono break-all text-text-2">{noteId}</dd>
+              <dt className="text-text-4">当前载入版本 ID</dt>
+              <dd className="mono break-all text-text-2">{baseVersionId ?? '尚未保存'}</dd>
+              <dt className="text-text-4">本次保存编号</dt>
+              <dd className="mono break-all text-text-2">{versionId}</dd>
+              <dt className="text-text-4">本次保存来源版本</dt>
+              <dd className="mono break-all text-text-2">{baseVersionId ?? '新建笔记'}</dd>
+            </dl>
+            <p className="mt-2 text-[11px] leading-5 text-text-3">
+              保存编号在提交后由服务器固定为版本 ID；历史版本只读，不能覆盖当前版本。
+            </p>
+          </section>
+        </details>
       )}
       <div>
         <Label htmlFor="native-note-title">笔记标题</Label>
@@ -543,73 +705,31 @@ function LoadedEditor({
           }} />
       </div>
 
-      <div className="space-y-3">
-        {baseVersionId && <InlineAlert tone="info">已有录音、照片和手写材料会完整保留。当前支持续写正文及追加照片/手写；已有照片或手写原件不能替换或删除。</InlineAlert>}
-        {inkEditor && <InkCanvasEditor
-          key={inkEditor.sessionId}
-          initialInk={inkEditor.ink}
-          disabled={!editable}
-          isSessionActive={() => isInkSessionActive(inkEditor.sessionId)}
-          onPendingChange={(pending) => {
-            if (inkSessionIdRef.current === inkEditor.sessionId) setInkPending(pending)
-          }}
-          onDirty={() => {
-            if (isInkSessionActive(inkEditor.sessionId)) setDirty(true)
-          }}
-          onCancel={() => closeInkEditor(inkEditor.sessionId)}
-          onSave={(ink, bytes) => {
-            if (!isInkSessionActive(inkEditor.sessionId)) return
-            const inkBlockId = inkEditor.id
-            const next = { id: inkBlockId, kind: 'ink' as const, ink, bytes }
-            setBlocks((current) => current.some((block) => block.kind === 'ink' && block.id === inkBlockId)
-              ? current.map((block) => block.kind === 'ink' && block.id === inkBlockId ? next : block)
-              : [...current, next])
-            closeInkEditor(inkEditor.sessionId)
-            setDirty(true)
-          }}
-        />}
-        {blocks.map((block, index) => block.kind === 'markdown'
-          ? <div key={block.id} className="rounded-ctl border border-border bg-bg p-3">
-            <div className="mb-2 flex items-center justify-between gap-2">
-              <Label htmlFor={`native-note-block-${block.id}`}>正文块 {index + 1}</Label>
-              <span className="text-[11px] text-text-4">Markdown · {block.text.length.toLocaleString()} 字符</span>
-            </div>
-            <Textarea id={`native-note-block-${block.id}`} aria-label={`正文块 ${index + 1}`} className="min-h-64 font-sans text-sm leading-6"
-              value={block.text} disabled={!editable} onChange={(event) => editMarkdown(block.id, event.target.value)} />
-          </div>
-          : <MaterialImageBlock key={block.id} block={block} index={index} showTechnicalDetails={showVersionDetails} editable={editable && !('sha256' in block)}
-            onEdit={block.kind === 'ink' && !('sha256' in block) ? () => openInkEditor(block.id, block.ink) : undefined}
-            onRemove={block.kind === 'photo' && !('sha256' in block)
-              ? () => {
-                setBlocks((current) => current.filter((item) => item.id !== block.id))
-                setDirty(true)
-              }
-              : undefined} />)}
-      </div>
-
-      <div className="flex flex-wrap items-center gap-2 rounded-ctl bg-surface p-3">
-        <Button size="sm" disabled={!editable} onClick={() => {
-          setBlocks((current) => [
-            ...current,
-            { id: createMaterialId(), kind: 'markdown', text: '' },
-          ])
+      <ContinuousMaterialEditor
+        ref={continuousEditorRef}
+        initialBlocks={initialBlocks}
+        editable={editable}
+        showVersionDetails={showVersionDetails}
+        isSessionActive={() => {
+          const session = uploadSessionRef.current
+          return editableRef.current && session !== null && !session.controller.signal.aborted &&
+            session.noteId === noteId && session.baseVersionId === baseVersionId
+        }}
+        onDirty={() => {
+          setTextDirty(true)
           setDirty(true)
-        }}><Plus className="size-4" aria-hidden />添加正文段</Button>
-        <Button size="sm" disabled={!editable || Boolean(inkEditor)} onClick={() => openInkEditor(
-          createMaterialId(),
-          { width: 320, height: 240, strokes: [] },
-        )}><PenLine className="size-4" aria-hidden />添加手写卡片</Button>
-        <label className={fileLabelClass(editable)}>
-          <ImagePlus className="size-4" aria-hidden />添加照片
-          <input className="hidden" type="file" aria-label="添加照片" accept="image/jpeg,image/png,image/webp" multiple disabled={!editable}
-            onChange={(event) => { void addPhotos(event.target.files); event.currentTarget.value = '' }} />
-        </label>
-        <label className={fileLabelClass(editable)}>
-          <Camera className="size-4" aria-hidden />拍照加入
-          <input className="hidden" type="file" aria-label="拍照加入笔记" accept="image/jpeg,image/png,image/webp" capture="environment" disabled={!editable}
-            onChange={(event) => { void addPhotos(event.target.files); event.currentTarget.value = '' }} />
-        </label>
-      </div>
+          try {
+            setDraftBlocks(continuousEditorRef.current?.getBlocks() ?? initialBlocks)
+          } catch {
+            setDraftBlocks(initialBlocks)
+          }
+        }}
+        onContentStateChange={setHasEditorContent}
+        onInkEditorChange={setInkEditorOpen}
+        onInkPendingChange={setInkPending}
+        onError={setError}
+      />
+      {baseVersionId && <InlineAlert tone="info">已有录音、照片和手写材料会完整保留。正文中的照片和手写可继续在原位置前后编辑；历史版本始终只读。</InlineAlert>}
 
       <section className="space-y-3 rounded-card border border-border bg-surface p-4" aria-labelledby="note-save-heading">
         <div>
@@ -631,7 +751,7 @@ function LoadedEditor({
           </span>
         </label>
         <div className="flex flex-wrap items-center gap-2">
-          <Button size="sm" variant="primary" loading={busy} disabled={!canSubmit} onClick={() => void save()}>
+          <Button size="sm" variant="primary" loading={busy} disabled={!canSubmit} onClick={() => void save('save')}>
             <Save className="size-4" aria-hidden />{busy ? '正在保存…' : frozen ? '重试同一提交' : '保存笔记'}
           </Button>
           {dirty && <StatusBadge tone="warn" dot={false}>有未保存更改</StatusBadge>}
@@ -647,7 +767,7 @@ function LoadedEditor({
             {showVersionDetails ? ` · ${progress.currentPath}` : ''}
           </p>
         </div>}
-        {error && <InlineAlert tone="crit" title="未完成">{error}</InlineAlert>}
+        {error && !endConfirmOpen && <InlineAlert tone="crit" title="未完成">{error}</InlineAlert>}
         {message && <InlineAlert tone={message.includes('选择采用哪一份') ? 'warn' : 'ok'}>{message}</InlineAlert>}
       </section>
 
@@ -667,7 +787,7 @@ function LoadedEditor({
           {showVersionDetails && baseVersionId && <Button size="sm" variant="secondary" disabled={downloading} loading={downloading} onClick={() => void downloadOriginalBundle()}>
             <Download className="size-4" aria-hidden />下载完整原始材料包
           </Button>}
-          <Button size="sm" variant="ghost" disabled={busy || exporting || Boolean(inkEditor) || inkPending} loading={exporting} onClick={() => void exportPackage()}>
+          <Button size="sm" variant="ghost" disabled={busy || exporting || inkEditorOpen || inkPending} loading={exporting} onClick={() => void exportPackage()}>
             <Download className="size-4" aria-hidden />导出 Android 笔记包
           </Button>
           {frozen && <Button size="sm" variant="ghost" disabled={busy} onClick={createBlankVersion}><RotateCcw className="size-4" aria-hidden />重新开始保存</Button>}
@@ -677,65 +797,23 @@ function LoadedEditor({
       </details>
     </div>
   </Card>
-}
-
-function MaterialImageBlock({
-  block,
-  index,
-  showTechnicalDetails,
-  editable,
-  onEdit,
-  onRemove,
-}: {
-  block: Extract<MaterialDraftBlock, { kind: 'photo' | 'ink' }>
-  index: number
-  showTechnicalDetails: boolean
-  editable: boolean
-  onEdit?: () => void
-  onRemove?: () => void
-}) {
-  return <div className="overflow-hidden rounded-ctl border border-border bg-bg">
-    <PreviewImage bytes={block.bytes} mimeType={block.kind === 'photo' ? block.mimeType : 'image/png'}
-      alt={block.kind === 'photo' ? `正文照片 ${index + 1}` : `手写卡片 ${index + 1}`} />
-    <div className="flex flex-wrap items-center gap-2 border-t border-divider px-3 py-2">
-      <div>
-        <p className="text-xs font-medium text-text-1">{block.kind === 'photo' ? `照片 ${index + 1}` : `手写卡片 ${index + 1}`}</p>
-        {showTechnicalDetails && (
-          <p className="break-all text-[11px] text-text-4">{block.kind === 'photo' ? block.assetId : '原始向量、尺寸与身份随 note.json 保留'}</p>
-        )}
-      </div>
-      <StatusBadge className="ml-auto" tone={block.kind === 'photo' ? 'info' : 'neutral'} dot={false}>
-        {block.kind === 'photo' ? '照片原字节' : '可编辑向量'}
-      </StatusBadge>
-      {onEdit && <Button size="sm" variant="ghost" disabled={!editable} onClick={onEdit} aria-label={`编辑手写卡片 ${index + 1}`}>
-        <PenLine className="size-3.5" aria-hidden />编辑
-      </Button>}
-      {onRemove && <Button size="sm" variant="danger-soft" disabled={!editable} onClick={onRemove} aria-label={`移除照片 ${index + 1}`}>
-        <Trash2 className="size-3.5" aria-hidden />
-      </Button>}
-    </div>
-  </div>
-}
-
-function PreviewImage({ bytes, mimeType, alt }: { bytes: Uint8Array; mimeType: string; alt: string }) {
-  const [url, setUrl] = useState('')
-  useEffect(() => {
-    const next = URL.createObjectURL(new Blob([bytes as BlobPart], { type: mimeType }))
-    setUrl(next)
-    return () => URL.revokeObjectURL(next)
-  }, [bytes, mimeType])
-  return url
-    ? <img src={url} alt={alt} className="max-h-72 w-full object-contain bg-surface" />
-    : <div className="h-40 bg-surface" aria-hidden />
+  <ConfirmDialog
+    open={endConfirmOpen}
+    onOpenChange={setEndConfirmOpen}
+    title="结束这次记录？"
+    description={endDescription}
+    feedback={error ? <InlineAlert tone="crit" title="结束未完成">{error}</InlineAlert> : undefined}
+    confirmLabel={endNeedsSave ? '结束并保存' : '结束'}
+    cancelLabel="继续编辑"
+    loading={busy}
+    onConfirm={finishSession}
+  />
+  </>
 }
 
 function safePackageName(value: string) {
   const normalized = value.trim().replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_').replace(/[. ]+$/g, '').slice(0, 80)
   return normalized || 'PIM-note'
-}
-
-function fileLabelClass(enabled: boolean) {
-  return `inline-flex h-8 cursor-pointer items-center justify-center gap-1.5 rounded-ctl border border-border bg-bg px-3 text-[13px] font-medium text-text-1 hover:border-border-strong hover:bg-surface ${enabled ? '' : 'pointer-events-none opacity-50'}`
 }
 
 function errorText(error: unknown) {

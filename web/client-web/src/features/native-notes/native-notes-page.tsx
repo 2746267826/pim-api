@@ -14,6 +14,7 @@ import { Button, Card, EmptyState, InlineAlert, Input, PageHeader, Skeleton, Sta
 import { ApiError } from '@/api/client'
 import { getApiBase } from '@/lib/apiBase'
 import { formatTime } from '@/lib/datetime'
+import { cn } from '@/lib/utils'
 import { useAuth } from '@/features/auth/auth-context'
 import { quickNotesApi } from '@/features/quick-notes/api'
 import type { QuickNoteListItem } from '@/features/quick-notes/types'
@@ -21,7 +22,11 @@ import { groupNoteLibrary, type NoteLibraryEntry } from './library-model'
 import { bindNativeNotesApi } from './api'
 import { createMaterialId, type NoteMaterialUpload } from './material-model'
 import { assertAndroidNotePackageSize, importAndroidNotePackage } from './material-package'
-import { NoteEditorPane, type NoteEditorSeed } from './note-material-editor'
+import {
+  NoteEditorPane,
+  type EndWithoutSaveReason,
+  type NoteEditorSeed,
+} from './note-material-editor'
 import { NoteVersionPanel, type ConflictMaterialState, type PromoteVersionOutcome } from './note-version-panel'
 import { versionShortId } from './version-model'
 import {
@@ -36,6 +41,12 @@ function currentBinding() {
 
 const EMPTY_NOTE_VERSIONS: NoteMaterialUpload[] = []
 const EMPTY_REFRESH_ISSUE: string[] = []
+
+interface ListReadFailure {
+  id: number
+  failedAt: string
+  message: string
+}
 
 export function NativeNotesPage() {
   const { user } = useAuth()
@@ -65,6 +76,9 @@ function Workspace({ ownerId, role, serverBinding }: { ownerId: string; role?: s
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
   const [editorDirty, setEditorDirty] = useState(false)
+  const editorDirtyRef = useRef(false)
+  const [editorVersionState, setEditorVersionState] = useState<{ noteId: string; versionId: string } | null>(null)
+  const [listFailures, setListFailures] = useState<ListReadFailure[]>([])
   const [refreshIssueState, setRefreshIssueState] = useState<{ noteId: string; failed: string[] }>({ noteId: '', failed: [] })
   const [returnNoteId] = useState(() => {
     const key = returnVersionStorageKey(ownerId, serverBinding)
@@ -80,6 +94,8 @@ function Workspace({ ownerId, role, serverBinding }: { ownerId: string; role?: s
   const packageInputRef = useRef<HTMLInputElement>(null)
   const sessionGenerationRef = useRef(0)
   const promoteInFlightRef = useRef(false)
+  const lastLoggedListFailureRef = useRef(0)
+  const listFailureSequenceRef = useRef(0)
   const [promoteInFlight, setPromoteInFlight] = useState(false)
   const [promotingVersionId, setPromotingVersionId] = useState('')
   const allowInternalNavigationRef = useRef(false)
@@ -173,6 +189,18 @@ function Workspace({ ownerId, role, serverBinding }: { ownerId: string; role?: s
     getNextPageParam: (last) =>
       last.offset + last.items.length < last.total ? last.offset + last.items.length : undefined,
   })
+
+  useEffect(() => {
+    if (!sources.isError || !sources.error || sources.errorUpdatedAt === lastLoggedListFailureRef.current) return
+    lastLoggedListFailureRef.current = sources.errorUpdatedAt
+    const failure: ListReadFailure = {
+      id: ++listFailureSequenceRef.current,
+      failedAt: new Date(sources.errorUpdatedAt || Date.now()).toISOString(),
+      message: errorText(sources.error),
+    }
+    console.error('[native-notes] 笔记列表读取失败', failure)
+    setListFailures((current) => [...current, failure])
+  }, [sources.error, sources.errorUpdatedAt, sources.isError])
   const selectedCurrent = useQuery({
     queryKey: ['native-notes', ownerId, serverBinding, 'current', selectedNoteId],
     queryFn: ({ signal }) => requestApi.current(selectedNoteId, signal),
@@ -194,6 +222,15 @@ function Workspace({ ownerId, role, serverBinding }: { ownerId: string; role?: s
     return query ? library.filter((item) => item.title.toLocaleLowerCase().includes(query)) : library
   }, [library, search])
   const selectedSource = selectedCurrent.data?.upload
+  const liveCurrentVersionId = selectedSource?.versionId ?? ''
+  const editorVersionId = selectedVersionId ||
+    (editorDirty && editorVersionState?.noteId === selectedNoteId
+      ? editorVersionState.versionId
+      : liveCurrentVersionId)
+  const currentReadFailedBeforeLoad = selectedCurrent.isError && selectedCurrent.data === undefined
+  const serverVersionMoved = !seed && !selectedVersionId && editorDirty &&
+    Boolean(editorVersionId) && Boolean(liveCurrentVersionId) &&
+    editorVersionId !== liveCurrentVersionId
   const selectedNoteVersions = selectedVersions.data ?? EMPTY_NOTE_VERSIONS
   const conflictVersions = useMemo(
     () => selectedNoteVersions.filter((version) =>
@@ -223,6 +260,20 @@ function Workspace({ ownerId, role, serverBinding }: { ownerId: string; role?: s
   const legacyCount = quickNotes.data?.totalCount ?? 0
   const refreshIssue = refreshIssueState.noteId === selectedNoteId ? refreshIssueState.failed : EMPTY_REFRESH_ISSUE
 
+  function updateEditorDirty(dirty: boolean) {
+    const wasDirty = editorDirtyRef.current
+    editorDirtyRef.current = dirty
+    if (!dirty) {
+      setEditorVersionState(null)
+    } else if (!wasDirty && !seed && selectedNoteId) {
+      const visibleVersionId = selectedVersionId || liveCurrentVersionId
+      if (visibleVersionId) {
+        setEditorVersionState({ noteId: selectedNoteId, versionId: visibleVersionId })
+      }
+    }
+    setEditorDirty(dirty)
+  }
+
   function blockNavigationWhilePromoting() {
     if (!promoteInFlightRef.current) return false
     setMessage(canViewVersions
@@ -232,14 +283,14 @@ function Workspace({ ownerId, role, serverBinding }: { ownerId: string; role?: s
   }
 
   function confirmDiscardEditor(reason: string) {
-    if (!editorDirty) return true
+    if (!editorDirtyRef.current) return true
     return window.confirm(`${DIRTY_DRAFT_NOTICE}\n\n${reason}`)
   }
 
   function beginNew(initial?: NoteEditorSeed): boolean {
     if (blockNavigationWhilePromoting()) return false
     if (!confirmDiscardEditor(initial?.blocks ? '继续将用笔记包内容替换当前编辑器。' : '继续将切换到一份新的空白材料。')) return false
-    setEditorDirty(false)
+    updateEditorDirty(false)
     setSeed(initial ?? { noteId: createMaterialId(), title: '', body: '' })
     setMessage('')
     setError('')
@@ -318,7 +369,7 @@ function Workspace({ ownerId, role, serverBinding }: { ownerId: string; role?: s
     if (noteId === selectedNoteId && !seed) return
     if (blockNavigationWhilePromoting()) return
     if (!confirmDiscardEditor('继续将打开另一篇笔记。')) return
-    setEditorDirty(false)
+    updateEditorDirty(false)
     setSeed(null)
     setMessage('')
     setError('')
@@ -328,30 +379,59 @@ function Workspace({ ownerId, role, serverBinding }: { ownerId: string; role?: s
   function openVersionId(versionId: string) {
     if (blockNavigationWhilePromoting()) return
     if (!confirmDiscardEditor('继续查看另一版笔记。')) return
-    setEditorDirty(false)
+    updateEditorDirty(false)
     setSeed(null)
     changeInternalNavigation(() => setParams({ note: selectedNoteId, version: versionId }))
   }
 
-  async function saved(upload: NoteMaterialUpload) {
-    if (!sessionIsActive()) return
-    setEditorDirty(false)
+  function backToLibrary() {
+    if (blockNavigationWhilePromoting()) return
+    if (!confirmDiscardEditor('返回笔记列表会离开当前编辑页。')) return
+    updateEditorDirty(false)
     setSeed(null)
-    setMessage(canViewVersions
-      ? '固定材料版本已保存。页面正在回读实际服务端版本与当前选用状态。'
-      : '笔记已保存到服务器，正在回读最新内容。')
+    setError('')
+    changeInternalNavigation(() => setParams({}, { replace: true }))
+  }
+
+  function endedWithoutSave(reason: EndWithoutSaveReason) {
+    updateEditorDirty(false)
+    setSeed(null)
+    setError('')
+    setMessage(reason === 'empty'
+      ? '本次记录已结束。当前没有可保存的正文，未在服务器创建笔记。'
+      : '本次记录已结束。没有检测到需要提交的改动，服务器上的当前内容保持不变。')
+    changeInternalNavigation(() => setParams({}, { replace: true }))
+  }
+
+  async function saved(upload: NoteMaterialUpload, outcome: 'save' | 'end' = 'save') {
+    if (!sessionIsActive()) return
+    updateEditorDirty(false)
+    setSeed(null)
+    setMessage(outcome === 'end'
+      ? upload.hasConflict
+        ? '本次记录已结束并保存，但另一端也保存了修改；两份内容均已保留，可在笔记列表中重新打开处理。'
+        : '本次记录已结束，正文和材料已保存到服务器。'
+      : canViewVersions
+        ? '固定材料版本已保存。页面正在回读实际服务端版本与当前选用状态。'
+        : '笔记已保存到服务器，正在回读最新内容。')
     try {
       await Promise.all([
         qc.invalidateQueries({ queryKey: ['native-notes', ownerId, serverBinding] }),
         qc.invalidateQueries({ queryKey: ['native-note-material'] }),
       ])
       assertSessionActive()
-      changeInternalNavigation(() => setParams({ note: upload.noteId }))
+      if (outcome === 'end') {
+        changeInternalNavigation(() => setParams({}, { replace: true }))
+      } else {
+        changeInternalNavigation(() => setParams({ note: upload.noteId }))
+      }
     } catch (failure) {
       if (!isAbortError(failure) && sessionIsActive()) {
-        setError(canViewVersions
-          ? `版本已保存，但页面未能回到该笔记：${errorText(failure)}`
-          : `笔记已保存，但页面未能回到这篇笔记：${errorText(failure)}`)
+        setError(outcome === 'end'
+          ? `本次记录已保存并结束，但列表未能刷新：${errorText(failure)}`
+          : canViewVersions
+            ? `版本已保存，但页面未能回到该笔记：${errorText(failure)}`
+            : `笔记已保存，但页面未能回到这篇笔记：${errorText(failure)}`)
       }
     }
   }
@@ -460,7 +540,7 @@ function Workspace({ ownerId, role, serverBinding }: { ownerId: string; role?: s
     if (!selectedVersionId) return
     if (blockNavigationWhilePromoting()) return
     if (!confirmDiscardEditor('继续回到服务器当前版本。')) return
-    setEditorDirty(false)
+    updateEditorDirty(false)
     setSeed(null)
     changeInternalNavigation(() => setParams({ note: selectedNoteId }))
   }
@@ -479,27 +559,70 @@ function Workspace({ ownerId, role, serverBinding }: { ownerId: string; role?: s
     }
   }
 
+  function reloadServerVersion() {
+    if (!serverVersionMoved) return
+    if (!confirmDiscardEditor('载入服务器当前版本会替换本页未保存草稿。')) return
+    updateEditorDirty(false)
+    setSeed(null)
+    setError('')
+    setMessage('已载入服务器当前版本。')
+  }
+
+  const isEditing = Boolean(seed || selectedNoteId)
+  const listHasLoaded = sources.data !== undefined
+  const versionPanelFirst = Boolean(selectedVersionId) || conflictVersions.length > 0 ||
+    Boolean(selectedCurrent.data?.upload.hasConflict) || selectedCurrent.isError || selectedVersions.isError
+  const versionPanel = selectedNoteId
+    ? <div className="min-w-0" style={{ order: versionPanelFirst ? 1 : 3 }}>
+        <NoteVersionPanel
+          key={selectedNoteId}
+          mode={canViewVersions ? 'admin' : 'conflict'}
+          noteId={selectedNoteId}
+          versions={selectedNoteVersions}
+          versionsLoading={selectedVersions.isPending}
+          versionsError={selectedVersions.error}
+          refreshIssue={refreshIssue}
+          current={selectedCurrent.data}
+          currentLoading={selectedCurrent.isPending}
+          currentError={currentReadFailedBeforeLoad ? undefined : selectedCurrent.error}
+          currentUnavailable={currentReadFailedBeforeLoad}
+          selectedVersionId={selectedVersionId}
+          conflictMaterials={conflictMaterials}
+          promoteInFlight={promoteInFlight}
+          promotingVersionId={promotingVersionId}
+          onOpenVersion={openVersionId}
+          onOpenCurrent={openCurrentVersion}
+          onRefresh={() => {
+            if (blockNavigationWhilePromoting()) return
+            void refreshVersionState()
+          }}
+          onCancelConflict={cancelConflictSelection}
+          onPromote={promoteVersion}
+        />
+      </div>
+    : null
   return <div className="space-y-4">
-    <PageHeader
+    {!isEditing && <PageHeader
       title="笔记库"
       subtitle="写下、找回并继续处理你的笔记"
-      actions={<>
-        <Button size="sm" variant="primary" onClick={() => beginNew()}><FilePlus2 className="size-4" aria-hidden />新建笔记</Button>
-        <input ref={packageInputRef} className="hidden" type="file" accept=".zip,application/zip" aria-label="选择 Android 笔记包"
-          onChange={(event) => { void importPackage(event.currentTarget.files?.[0]); event.currentTarget.value = '' }} />
-      </>}
-    />
+    />}
+    <input ref={packageInputRef} className="hidden" type="file" accept=".zip,application/zip" aria-label="选择 Android 笔记包"
+      onChange={(event) => { void importPackage(event.currentTarget.files?.[0]); event.currentTarget.value = '' }} />
 
     {message && <InlineAlert tone="ok">{message}</InlineAlert>}
     {error && <InlineAlert tone="crit" title="操作未完成">{error}</InlineAlert>}
-    <p className="text-xs leading-5 text-text-3">
+    {!isEditing && <p className="text-xs leading-5 text-text-3">
       {canViewVersions
         ? '已保存版本与冲突候选都会保留。含录音的当前版本可在保留原件的前提下续写；历史版本仅供阅读。'
         : '笔记会保存到服务器。发生真实冲突时，可先比较服务器当前内容与另一份已保存内容，再决定采用哪一份。'}
-    </p>
+    </p>}
 
-    <div className="grid gap-4 xl:grid-cols-[minmax(260px,.72fr)_minmax(0,1.6fr)]">
-      <div className="min-w-0">
+    <div
+      data-testid="note-workspace"
+      data-mode={isEditing ? 'editing' : 'library'}
+      className={cn('gap-4', isEditing ? 'grid items-start xl:grid-cols-[18rem_minmax(0,1fr)]' : '')}
+    >
+      <aside data-testid="note-library-pane" className={cn('min-w-0 space-y-4', isEditing && 'hidden xl:sticky xl:top-20 xl:block')}>
         <Card className="overflow-hidden">
           <div className="border-b border-divider p-4">
             <div className="flex items-center justify-between gap-2">
@@ -507,33 +630,79 @@ function Workspace({ ownerId, role, serverBinding }: { ownerId: string; role?: s
                 <h2 className="text-sm font-semibold text-text-1">最近笔记</h2>
                 <p className="mt-1 text-xs text-text-3">{canViewVersions ? '按当前材料更新排列' : '按最近更新排列'}</p>
               </div>
-              <Button size="sm" variant="ghost" aria-label="刷新笔记库" onClick={() => void sources.refetch()}><RefreshCw className="size-4" aria-hidden /></Button>
+              <div className="flex items-center gap-1">
+                <Button size="sm" variant="primary" onClick={() => beginNew()}><FilePlus2 className="size-4" aria-hidden />新建笔记</Button>
+                <Button size="sm" variant="ghost" aria-label="刷新笔记库" disabled={sources.isFetching} loading={sources.isFetching} onClick={() => void sources.refetch()}><RefreshCw className="size-4" aria-hidden /></Button>
+              </div>
             </div>
             <Input className="mt-3" aria-label="搜索笔记标题" placeholder="搜索标题…" value={search} onChange={(event) => setSearch(event.target.value)} />
+            {search && <div className="mt-2 flex items-center gap-2 text-xs text-text-3">
+              <span>当前条件只匹配已加载笔记的标题。</span>
+              <Button className="ml-auto" size="sm" variant="ghost" onClick={() => setSearch('')}>清空搜索</Button>
+            </div>}
           </div>
-          <div className="max-h-[min(72vh,52rem)] overflow-y-auto p-2">
-            {sources.isPending ? <div className="space-y-2 p-2">{Array.from({ length: 5 }, (_, index) => <Skeleton key={index} className="h-24" />)}</div>
-              : sources.isError ? <div className="p-3"><InlineAlert tone="crit" title="笔记库读取失败">{errorText(sources.error)}</InlineAlert></div>
-                : !filtered.length ? <EmptyState title={search ? '没有匹配标题' : '还没有原生笔记'} description={search ? '清空搜索可查看全部笔记。' : '从“新建笔记”开始；也可以把旧闪念主动复制为纯文本新笔记。'} action={<Button size="sm" onClick={() => beginNew()}>新建笔记</Button>} />
-                  : <div className="space-y-2">{filtered.map((item) => <button key={item.noteId} type="button" onClick={() => openVersion(item)}
-                    className={`block w-full rounded-ctl border p-3 text-left outline-none transition-colors hover:border-border-strong hover:bg-surface ${selectedSource?.noteId === item.noteId ? 'border-primary bg-primary/5' : 'border-border bg-bg'}`}>
-                    <div className="flex items-start gap-2">
-                      <span className="grid size-8 shrink-0 place-items-center rounded-ctl bg-surface-2 text-primary"><BookOpenText className="size-4" aria-hidden /></span>
-                      <span className="min-w-0 flex-1">
-                        <span className="block truncate text-sm font-medium text-text-1">{item.title}</span>
-                        <span className="mt-1 block text-[11px] text-text-4">
-                          {canViewVersions
-                            ? <>当前版本 <span className="mono">{versionShortId(item.currentVersionId)}</span> · 点击打开</>
-                            : '点击打开'}
-                        </span>
-                      </span>
-                      <ArrowRight className="mt-1 size-4 shrink-0 text-text-4" aria-hidden />
-                    </div>
-                    <div className="mt-3 flex flex-wrap gap-1.5">
-                      {item.hasConflict && <StatusBadge tone="warn" dot={false}>有待处理冲突</StatusBadge>}
-                      {!item.hasConflict && <StatusBadge tone="ok" dot={false}>{canViewVersions ? '当前版' : '已同步'}</StatusBadge>}
-                    </div>
-                  </button>)}</div>}
+          <div className="max-h-[min(70vh,46rem)] overflow-y-auto p-2">
+            {!listHasLoaded && sources.isPending
+              ? <div className="space-y-2 p-2" aria-label="正在读取笔记">
+                  <p className="px-1 text-xs text-text-3">正在读取笔记…</p>
+                  {Array.from({ length: 5 }, (_, index) => <Skeleton key={index} className="h-24" />)}
+                </div>
+              : !listHasLoaded && sources.isError
+                ? <div className="space-y-3 p-3">
+                    <InlineAlert tone="crit" title="笔记库读取失败">{errorText(sources.error)}</InlineAlert>
+                    <Button size="sm" variant="secondary" loading={sources.isFetching} onClick={() => void sources.refetch()}>就地重试</Button>
+                  </div>
+                : <>
+                    {sources.isFetching && <p className="px-3 py-2 text-[11px] text-text-3" aria-live="polite">正在更新笔记列表，现有内容保持可见…</p>}
+                    {sources.isError && <div className="mx-1 mb-2 rounded-ctl border border-crit-border bg-crit-soft p-3" aria-live="polite">
+                      <div className="flex flex-wrap items-start gap-2">
+                        <div className="min-w-0 flex-1">
+                          <p className="text-xs font-semibold text-crit">更新失败</p>
+                          <p className="mt-1 break-words text-xs leading-5 text-text-2">{errorText(sources.error)}</p>
+                          <p className="mt-1 text-[11px] text-text-3">列表与浏览位置保持不变。</p>
+                        </div>
+                        <Button size="sm" variant="secondary" loading={sources.isFetching} onClick={() => void sources.refetch()}>重试</Button>
+                      </div>
+                      {listFailures.length > 0 && <details className="mt-2 text-[11px] leading-5 text-text-3">
+                        <summary className="cursor-pointer font-medium text-text-2">错误详情与失败记录（{listFailures.length}）</summary>
+                        <ol className="mt-2 space-y-1">
+                          {listFailures.map((failure) => <li key={failure.id} className="rounded border border-border/70 bg-bg/60 px-2 py-1">
+                            <span className="mono text-text-4">#{failure.id} · {formatTime(failure.failedAt)}</span>
+                            <span className="ml-2 break-all">{failure.message}</span>
+                          </li>)}
+                        </ol>
+                      </details>}
+                    </div>}
+                    {!filtered.length
+                      ? <EmptyState
+                          title={search ? '没有匹配的笔记' : '还没有笔记'}
+                          description={search
+                            ? '当前搜索条件仍保留；可修改关键词或清空后查看全部笔记。'
+                            : '从“新建笔记”开始；也可以把旧闪念主动复制为纯文本新笔记。'}
+                          action={search
+                            ? <Button size="sm" onClick={() => setSearch('')}>清空搜索</Button>
+                            : <Button size="sm" onClick={() => beginNew()}>开始第一篇笔记</Button>}
+                        />
+                      : <div className="space-y-2">{filtered.map((item) => <button key={item.noteId} type="button" onClick={() => openVersion(item)}
+                          className={`block w-full rounded-ctl border p-3 text-left outline-none transition-colors hover:border-border-strong hover:bg-surface ${selectedSource?.noteId === item.noteId ? 'border-primary bg-primary/5' : 'border-border bg-bg'}`}>
+                          <div className="flex items-start gap-2">
+                            <span className="grid size-8 shrink-0 place-items-center rounded-ctl bg-surface-2 text-primary"><BookOpenText className="size-4" aria-hidden /></span>
+                            <span className="min-w-0 flex-1">
+                              <span className="block truncate text-sm font-medium text-text-1">{item.title}</span>
+                              <span className="mt-1 block text-[11px] text-text-4">
+                                {canViewVersions
+                                  ? <>当前版本 <span className="mono">{versionShortId(item.currentVersionId)}</span> · 点击打开</>
+                                  : '点击打开'}
+                              </span>
+                            </span>
+                            <ArrowRight className="mt-1 size-4 shrink-0 text-text-4" aria-hidden />
+                          </div>
+                          <div className="mt-3 flex flex-wrap gap-1.5">
+                            {item.hasConflict && <StatusBadge tone="warn" dot={false}>有待处理冲突</StatusBadge>}
+                            {!item.hasConflict && <StatusBadge tone="ok" dot={false}>{canViewVersions ? '当前版' : '已同步'}</StatusBadge>}
+                          </div>
+                        </button>)}</div>}
+                  </>}
           </div>
           {sources.hasNextPage && <div className="border-t border-divider p-3"><Button size="sm" className="w-full" loading={sources.isFetchingNextPage} onClick={() => void sources.fetchNextPage()}>加载更多笔记</Button></div>}
         </Card>
@@ -546,19 +715,19 @@ function Workspace({ ownerId, role, serverBinding }: { ownerId: string; role?: s
                 <h2 id="legacy-notes-title" className="text-sm font-semibold text-text-1">旧快速记录</h2>
                 <p className="mt-1 text-xs leading-5 text-text-3">仍由快速记录服务单独管理；这里只能主动复制成新笔记，不会自动迁移或删除原记录。</p>
               </div>
-            <InlineAlert tone="warn" title="旧 HTML 不是原生 Markdown">{LEGACY_QUICK_NOTE_NOTICE}</InlineAlert>
-            {quickNotes.isPending ? <Skeleton className="h-20" />
-              : quickNotes.isError ? <InlineAlert tone="crit">{errorText(quickNotes.error)}</InlineAlert>
-                : !quickNotes.data?.items.length ? <p className="text-xs text-text-3">没有旧闪念记录。</p>
-                  : <div className="space-y-2">{quickNotes.data.items.slice(0, 5).map((item) => <div key={item.id} className="rounded-ctl border border-border p-3">
-                    <p className="line-clamp-3 whitespace-pre-wrap text-xs leading-5 text-text-2">{item.contentPreview || '（无文本内容）'}</p>
-                    <div className="mt-2 flex flex-wrap items-center gap-2">
-                      <span className="text-[11px] text-text-4">{formatTime(item.createdAt)}</span>
-                      <Button className="ml-auto" size="sm" variant="ghost" onClick={() => navigate('/quick-notes')}>打开旧记录</Button>
-                      <Button size="sm" loading={legacyBusy === item.id} onClick={() => void beginLegacyCopy(item)}>纯文本副本</Button>
-                    </div>
-                  </div>)}</div>}
-            <Button size="sm" variant="secondary" onClick={() => navigate('/quick-notes')}>打开旧快速记录</Button>
+              <InlineAlert tone="warn" title="旧 HTML 不是原生 Markdown">{LEGACY_QUICK_NOTE_NOTICE}</InlineAlert>
+              {quickNotes.isPending ? <Skeleton className="h-20" />
+                : quickNotes.isError ? <InlineAlert tone="crit">{errorText(quickNotes.error)}</InlineAlert>
+                  : !quickNotes.data?.items.length ? <p className="text-xs text-text-3">没有旧闪念记录。</p>
+                    : <div className="space-y-2">{quickNotes.data.items.slice(0, 5).map((item) => <div key={item.id} className="rounded-ctl border border-border p-3">
+                        <p className="line-clamp-3 whitespace-pre-wrap text-xs leading-5 text-text-2">{item.contentPreview || '（无文本内容）'}</p>
+                        <div className="mt-2 flex flex-wrap items-center gap-2">
+                          <span className="text-[11px] text-text-4">{formatTime(item.createdAt)}</span>
+                          <Button className="ml-auto" size="sm" variant="ghost" onClick={() => navigate('/quick-notes')}>打开旧记录</Button>
+                          <Button size="sm" loading={legacyBusy === item.id} onClick={() => void beginLegacyCopy(item)}>纯文本副本</Button>
+                        </div>
+                      </div>)}</div>}
+              <Button size="sm" variant="secondary" onClick={() => navigate('/quick-notes')}>打开旧快速记录</Button>
             </section>
             <section className="space-y-3 border-t border-divider pt-4" aria-labelledby="note-import-title">
               <h2 id="note-import-title" className="text-sm font-semibold text-text-1">从 Android 导入</h2>
@@ -569,9 +738,9 @@ function Workspace({ ownerId, role, serverBinding }: { ownerId: string; role?: s
             </section>
           </div>
         </details>
-      </div>
+      </aside>
 
-      <div className="min-w-0">
+      <main data-testid="note-editor-pane" className={cn('flex min-w-0 flex-col', !isEditing && 'hidden')}>
         {selectedSource && !selectedVersionId && <section className="mb-3 flex flex-wrap items-center gap-2 rounded-card border border-border bg-bg p-3" aria-label="笔记处理操作">
           <span className="mr-auto text-xs font-medium text-text-2">按需处理</span>
           {recordingCount(selectedCurrent.data?.inputJson) > 0
@@ -583,50 +752,39 @@ function Workspace({ ownerId, role, serverBinding }: { ownerId: string; role?: s
             </Button>}
           {editorDirty && <p className="w-full text-xs text-text-3">请先保存当前编辑，再开始处理；未保存内容不会发送。</p>}
         </section>}
-        {selectedNoteId && <div className="min-w-0">
-          <NoteVersionPanel
-            key={selectedNoteId}
-            mode={canViewVersions ? 'admin' : 'conflict'}
-            noteId={selectedNoteId}
-            versions={selectedNoteVersions}
-            versionsLoading={selectedVersions.isPending}
-            versionsError={selectedVersions.error}
-            refreshIssue={refreshIssue}
-            current={selectedCurrent.data}
-            currentLoading={selectedCurrent.isPending}
-            currentError={selectedCurrent.error}
-            selectedVersionId={selectedVersionId}
-            conflictMaterials={conflictMaterials}
-            promoteInFlight={promoteInFlight}
-            promotingVersionId={promotingVersionId}
-            onOpenVersion={openVersionId}
-            onOpenCurrent={openCurrentVersion}
-            onRefresh={() => {
-              if (blockNavigationWhilePromoting()) return
-              void refreshVersionState()
-            }}
-            onCancelConflict={cancelConflictSelection}
-            onPromote={promoteVersion}
-          />
-        </div>}
-        {selectedNoteId && !selectedVersionId && selectedCurrent.isPending
-          ? <Card className="p-6"><Skeleton className="h-8 w-2/3" /><Skeleton className="mt-4 h-56" /><p className="mt-3 text-xs text-text-3">{canViewVersions ? '正在读取当前版本…' : '正在读取笔记…'}</p></Card>
-          : selectedNoteId && !selectedVersionId && selectedCurrent.isError
-            ? <Card className="p-5"><InlineAlert tone="crit" title={canViewVersions ? '当前版本读取失败' : '笔记读取失败'}>{errorText(selectedCurrent.error)}</InlineAlert></Card>
-            : <NoteEditorPane
-              ownerId={ownerId}
-              serverBinding={serverBinding}
-              api={requestApi}
-              showVersionDetails={canViewVersions}
-              versionId={selectedVersionId || selectedSource?.versionId || selectedCurrent.data?.upload.versionId}
-              seed={seed ?? undefined}
-              onDirtyChange={setEditorDirty}
-              onSaved={(upload) => void saved(upload)}
-              promoteInFlight={promoteInFlight}
-              promotingVersionId={promotingVersionId}
-              onPromoteVersion={promoteVersion}
-            />}
-      </div>
+        {serverVersionMoved && <InlineAlert className="mb-3" tone="warn" title="服务器当前版本已更新">
+          <p>当前页面仍保留你的未保存草稿、材料节点和冻结提交，没有自动替换。保存会基于本次载入的版本提交；也可以明确载入服务器最新版本后放弃本页草稿。</p>
+          <Button className="mt-2" size="sm" variant="secondary" onClick={reloadServerVersion}>
+            载入服务器最新版本
+          </Button>
+        </InlineAlert>}
+        <div className="min-w-0" style={{ order: 2 }}>
+          {selectedNoteId && !selectedVersionId && selectedCurrent.isPending && !selectedCurrent.data
+            ? <Card className="p-6"><Skeleton className="h-8 w-2/3" /><Skeleton className="mt-4 h-56" /><p className="mt-3 text-xs text-text-3">{canViewVersions ? '正在读取当前版本…' : '正在读取笔记…'}</p></Card>
+            : selectedNoteId && !selectedVersionId && currentReadFailedBeforeLoad
+              ? <Card className="space-y-3 p-5">
+                  <InlineAlert tone="crit" title={canViewVersions ? '当前版本读取失败' : '笔记读取失败'}>{errorText(selectedCurrent.error)}</InlineAlert>
+                  <Button size="sm" variant="secondary" loading={selectedCurrent.isFetching} onClick={() => void selectedCurrent.refetch()}>就地重试</Button>
+                </Card>
+              : <NoteEditorPane
+                key={seed ? `seed/${seed.noteId}` : `note/${selectedNoteId}/${selectedVersionId || editorVersionId || 'pending'}`}
+                ownerId={ownerId}
+                serverBinding={serverBinding}
+                api={requestApi}
+                showVersionDetails={canViewVersions}
+                versionId={seed ? undefined : editorVersionId || undefined}
+                seed={seed ?? undefined}
+                onDirtyChange={updateEditorDirty}
+                onSaved={(upload, outcome) => void saved(upload, outcome)}
+                onEnded={endedWithoutSave}
+                onBack={backToLibrary}
+                promoteInFlight={promoteInFlight}
+                promotingVersionId={promotingVersionId}
+                onPromoteVersion={promoteVersion}
+              />}
+        </div>
+        {versionPanel}
+      </main>
     </div>
   </div>
 }
